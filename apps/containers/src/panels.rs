@@ -14,11 +14,14 @@ use vello::Scene;
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::app::{ContainersApp, Hit, HitRegion, ViewState};
+use crate::app::{
+    ConfirmTarget, ContainersApp, Hit, HitRegion, PromptKind, ViewState,
+};
+use crate::combobox;
 use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
 use crate::draw::{self, Icon};
 use crate::model::{human_bytes, Container, ContainerStatus, Stats};
-use crate::podman::Action;
+use crate::podman::{Action, ImageAction};
 
 /// Sizes used across the panels — kept here so the layout reads coherently.
 const PAD: f64 = 16.0;
@@ -46,13 +49,17 @@ impl ContainersApp {
         view: &ViewState,
     ) {
         let c = &theme.tokens.colors;
+        // `expanded` gates the text labels; the rail keeps its look — the same
+        // raised surface, accent wordmark, section pills, and footer — just
+        // narrowed to an icon strip while collapsed.
+        let expanded = self.rail_expanded();
         draw::fill_round(scene, rail, 0.0, c.surfaces.raised);
         draw::divider(scene, rail.x1 - 0.5, rail.x1 - 0.5, rail.y1, c.border_standard);
         // re-draw the right border as a vertical line.
         let border = Rect::new(rail.x1 - 1.0, rail.y0, rail.x1, rail.y1);
         scene.fill(Fill::NonZero, Affine::IDENTITY, c.border_standard, None, &border);
 
-        // App wordmark.
+        // App wordmark + collapse toggle.
         let title_y = rail.y0 + PAD + 8.0;
         draw::icon(
             scene,
@@ -61,23 +68,44 @@ impl ContainersApp {
             c.accent[5],
             1.8,
         );
-        draw::text(
-            scene,
-            tr,
-            "Containers",
-            theme.tokens.typography.scale.lg,
-            c.text_primary,
-            Point::new(rail.x0 + PAD + 28.0, title_y),
-            TextWeight::Bold,
-        );
+        if expanded {
+            draw::text(
+                scene,
+                tr,
+                "Containers",
+                theme.tokens.typography.scale.lg,
+                c.text_primary,
+                Point::new(rail.x0 + PAD + 28.0, title_y),
+                TextWeight::Bold,
+            );
+        }
+        // Collapse / expand toggle — a chevron at the top-right of the rail.
+        let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
+        if expanded {
+            if self.hovered(tgl) {
+                draw::fill_round(scene, tgl, theme.tokens.radii.sm as f64, c.surface_white_10);
+            }
+            // "«" collapse glyph
+            draw::text(scene, tr, "«", theme.tokens.typography.scale.base, c.text_dim, Point::new(tgl.center().x - 5.0, tgl.center().y - 9.0), TextWeight::Bold);
+            self.push_hit(tgl, Hit::ToggleSidebar);
+        } else {
+            // Collapsed: the toggle is a wide hit over the header icon area.
+            let ctgl = Rect::new(rail.x0 + 4.0, rail.y0 + 44.0, rail.x1 - 4.0, rail.y0 + 62.0);
+            if self.hovered(ctgl) {
+                draw::fill_round(scene, ctgl, theme.tokens.radii.sm as f64, c.surface_white_10);
+            }
+            draw::text(scene, tr, "»", theme.tokens.typography.scale.base, c.text_dim, Point::new(ctgl.center().x - 5.0, ctgl.center().y - 9.0), TextWeight::Bold);
+            self.push_hit(ctgl, Hit::ToggleSidebar);
+        }
 
         // Section items.
         let items = [
             (Section::Containers, Icon::Box, self.engine.containers.len()),
             (Section::Images, Icon::Layers, self.engine.images.len()),
+            (Section::Volumes, Icon::Box, self.engine.volumes.len()),
             (Section::Distrobox, Icon::Terminal, self.engine.distroboxes.len()),
         ];
-        let mut y = rail.y0 + 64.0;
+        let mut y = rail.y0 + 72.0;
         for (section, icon, count) in items {
             let item = Rect::new(rail.x0 + 8.0, y, rail.x1 - 8.0, y + 40.0);
             let active = view.section == section;
@@ -94,72 +122,76 @@ impl ContainersApp {
                 fg,
                 1.6,
             );
-            draw::text(
-                scene,
-                tr,
-                section.label(),
-                theme.tokens.typography.scale.base,
-                if active { c.text_primary } else { c.text_dim },
-                Point::new(item.x0 + 38.0, item.center().y - 8.0),
-                if active { TextWeight::Semibold } else { TextWeight::Medium },
-            );
-            // count chip on the right
-            let count_str = count.to_string();
-            let (cw, _) = tr.measure(&count_str, theme.tokens.typography.scale.xs, None);
-            let chip = Rect::new(item.x1 - 14.0 - cw as f64, item.center().y - 8.0, item.x1 - 6.0, item.center().y + 8.0);
-            draw::fill_round(scene, chip, 8.0, c.surface_white_10);
-            draw::text(
-                scene,
-                tr,
-                &count_str,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                Point::new(chip.x0 + 4.0, chip.center().y - 5.0),
-                TextWeight::Medium,
-            );
+            if expanded {
+                draw::text(
+                    scene,
+                    tr,
+                    section.label(),
+                    theme.tokens.typography.scale.base,
+                    if active { c.text_primary } else { c.text_dim },
+                    Point::new(item.x0 + 38.0, item.center().y - 8.0),
+                    if active { TextWeight::Semibold } else { TextWeight::Medium },
+                );
+                // count chip on the right
+                let count_str = count.to_string();
+                let (cw, _) = tr.measure(&count_str, theme.tokens.typography.scale.xs, None);
+                let chip = Rect::new(item.x1 - 14.0 - cw as f64, item.center().y - 8.0, item.x1 - 6.0, item.center().y + 8.0);
+                draw::fill_round(scene, chip, 8.0, c.surface_white_10);
+                draw::text(
+                    scene,
+                    tr,
+                    &count_str,
+                    theme.tokens.typography.scale.xs,
+                    c.text_dim,
+                    Point::new(chip.x0 + 4.0, chip.center().y - 5.0),
+                    TextWeight::Medium,
+                );
+            }
             self.push_hit(item, Hit::Section(section));
             y += 46.0;
         }
 
-        // Engine status footer.
+        // Engine status footer (text only when expanded; the live dot always).
         let foot_y = rail.y1 - 76.0;
-        draw::divider(scene, rail.x0 + PAD, rail.x1 - PAD, foot_y - 12.0, c.border_standard);
         let dot_color = if self.engine.live { c.semantic.success } else { c.semantic.warning };
         let dot = vello::kurbo::Circle::new(Point::new(rail.x0 + PAD + 4.0, foot_y + 4.0), 4.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, dot_color, None, &dot);
-        draw::text(
-            scene,
-            tr,
-            if self.engine.live { "Connected" } else { "Offline" },
-            theme.tokens.typography.scale.sm,
-            c.text_primary,
-            Point::new(rail.x0 + PAD + 16.0, foot_y - 3.0),
-            TextWeight::Medium,
-        );
-        draw::text_clip(
-            scene,
-            tr,
-            &self.engine.connection,
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            Point::new(rail.x0 + PAD, foot_y + 18.0),
-            rail.width() - PAD * 2.0,
-            TextWeight::Regular,
-        );
-        let summary = format!(
-            "{} running · {} stopped",
-            self.engine.running_count(),
-            self.engine.stopped_count()
-        );
-        draw::text(
-            scene,
-            tr,
-            &summary,
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            Point::new(rail.x0 + PAD, foot_y + 36.0),
-            TextWeight::Regular,
-        );
+        if expanded {
+            draw::divider(scene, rail.x0 + PAD, rail.x1 - PAD, foot_y - 12.0, c.border_standard);
+            draw::text(
+                scene,
+                tr,
+                if self.engine.live { "Connected" } else { "Offline" },
+                theme.tokens.typography.scale.sm,
+                c.text_primary,
+                Point::new(rail.x0 + PAD + 16.0, foot_y - 3.0),
+                TextWeight::Medium,
+            );
+            draw::text_clip(
+                scene,
+                tr,
+                &self.engine.connection,
+                theme.tokens.typography.scale.xs,
+                c.text_dim,
+                Point::new(rail.x0 + PAD, foot_y + 18.0),
+                rail.width() - PAD * 2.0,
+                TextWeight::Regular,
+            );
+            let summary = format!(
+                "{} running · {} stopped",
+                self.engine.running_count(),
+                self.engine.stopped_count()
+            );
+            draw::text(
+                scene,
+                tr,
+                &summary,
+                theme.tokens.typography.scale.xs,
+                c.text_dim,
+                Point::new(rail.x0 + PAD, foot_y + 36.0),
+                TextWeight::Regular,
+            );
+        }
     }
 
     // =================================================================
@@ -857,13 +889,23 @@ impl ContainersApp {
         // blinking caret
         let caret = Rect::new(inner.x0 + 14.0 + 30.0, y - (mono * 1.6) as f64, inner.x0 + 14.0 + 38.0, y - (mono * 1.6) as f64 + mono as f64);
         scene.fill(Fill::NonZero, Affine::IDENTITY, draw::with_alpha(c.semantic.success, 180), None, &caret);
+        // Attach button (real exec via the qOS terminal) for running containers.
+        if container.status.is_running() {
+            let bw = 150.0;
+            let btn = Rect::new(inner.x1 - 14.0 - bw, inner.y1 - 44.0, inner.x1 - 14.0, inner.y1 - 12.0);
+            let hov = self.hovered(btn);
+            draw::fill_round(scene, btn, theme.tokens.radii.md as f64, if hov { c.accent[4] } else { c.accent[5] });
+            draw::icon(scene, Icon::Terminal, Rect::new(btn.x0 + 10.0, btn.center().y - 8.0, btn.x0 + 26.0, btn.center().y + 8.0), Color::WHITE, 1.5);
+            draw::text(scene, tr, "Attach shell", theme.tokens.typography.scale.sm, Color::WHITE, Point::new(btn.x0 + 32.0, btn.center().y - 7.0), TextWeight::Semibold);
+            self.push_hit(btn, Hit::AttachShell(container.id.clone()));
+        }
         // hint
         let hint = if container.status.is_running() {
-            "Interactive exec attaches a shell in the running container."
+            "Attach opens the qOS terminal running podman exec -it in this container."
         } else {
             "Start the container to attach an interactive shell."
         };
-        draw::text(scene, tr, hint, theme.tokens.typography.scale.xs, c.text_dim, Point::new(inner.x0 + 14.0, inner.y1 - 24.0), TextWeight::Regular);
+        draw::text(scene, tr, hint, theme.tokens.typography.scale.xs, c.text_dim, Point::new(inner.x0 + 14.0, inner.y1 - 64.0), TextWeight::Regular);
     }
 
     // =================================================================
@@ -878,7 +920,7 @@ impl ContainersApp {
         content: Rect,
         view: &ViewState,
     ) {
-        let body_y = self.draw_header(scene, tr, theme, content, "Images", view, None);
+        let body_y = self.draw_header(scene, tr, theme, content, "Images", view, Some(("Pull image", Hit::PullTyped)));
         let c = &theme.tokens.colors;
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
 
@@ -911,31 +953,136 @@ impl ContainersApp {
         for &idx in &images {
             let image = self.engine.images[idx].clone();
             let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_h);
+            // Whole-row select FIRST (lowest priority — action buttons pushed
+            // later win at resolve time, which returns the last matching hit).
+            self.push_hit(row, Hit::SelectImage(idx));
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
                 let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
                 if self.hovered(row) {
                     draw::fill_round(scene, inner, theme.tokens.radii.md as f64, c.surface_white_5);
                 }
                 draw::icon(scene, Icon::Layers, Rect::new(inner.x0 + 8.0, inner.center().y - 12.0, inner.x0 + 32.0, inner.center().y + 12.0), c.accent[6], 1.5);
-                draw::text_clip(scene, tr, &image.reference(), theme.tokens.typography.scale.base, c.text_primary, Point::new(inner.x0 + 44.0, row.center().y - 16.0), inner.width() * 0.5, TextWeight::Semibold);
+                draw::text_clip(scene, tr, &image.reference(), theme.tokens.typography.scale.base, c.text_primary, Point::new(inner.x0 + 44.0, row.center().y - 16.0), inner.width() * 0.42, TextWeight::Semibold);
                 draw::text(scene, tr, image.short_id(), theme.tokens.typography.scale.xs, c.text_dim, Point::new(inner.x0 + 44.0, row.center().y + 4.0), TextWeight::Regular);
-                // right cluster: size, created, in-use chip
+                // Action cluster on the far right (pull again / tag / inspect / remove).
+                let acts_right = self.draw_image_actions(scene, theme, &image.reference(), row);
+                // right metadata cluster: size, created, in-use chip — left of the actions.
+                let meta_right = acts_right - 12.0;
                 let size = human_bytes(image.size_bytes);
                 let (sw, _) = tr.measure_weighted(&size, theme.tokens.typography.scale.base, None, TextWeight::Semibold);
-                draw::text(scene, tr, &size, theme.tokens.typography.scale.base, c.text_primary, Point::new(inner.x1 - sw as f64, row.center().y - 16.0), TextWeight::Semibold);
-                draw::text(scene, tr, &image.created, theme.tokens.typography.scale.xs, c.text_dim, Point::new(inner.x1 - 110.0, row.center().y + 4.0), TextWeight::Regular);
+                draw::text(scene, tr, &size, theme.tokens.typography.scale.base, c.text_primary, Point::new(meta_right - sw as f64, row.center().y - 16.0), TextWeight::Semibold);
+                draw::text(scene, tr, &image.created, theme.tokens.typography.scale.xs, c.text_dim, Point::new(meta_right - 100.0, row.center().y + 4.0), TextWeight::Regular);
                 if image.in_use_by > 0 {
-                    draw::chip(scene, tr, theme, &format!("in use ×{}", image.in_use_by), Point::new(inner.x0 + inner.width() * 0.5, row.center().y - 8.0), 16.0, c.semantic.success);
+                    draw::chip(scene, tr, theme, &format!("in use ×{}", image.in_use_by), Point::new(inner.x0 + inner.width() * 0.42, row.center().y - 8.0), 16.0, c.semantic.success);
                 } else {
-                    draw::chip(scene, tr, theme, "unused", Point::new(inner.x0 + inner.width() * 0.5, row.center().y - 8.0), 16.0, c.text_dim);
+                    draw::chip(scene, tr, theme, "unused", Point::new(inner.x0 + inner.width() * 0.42, row.center().y - 8.0), 16.0, c.text_dim);
                 }
                 draw::divider(scene, inner.x0, inner.x1, row.y1, draw::with_alpha(c.border_standard, 90));
             }
-            self.push_hit(row, Hit::SelectImage(idx));
             y += row_h;
         }
         if images.is_empty() {
             self.draw_empty(scene, tr, theme, rows_area, "No images match your search.");
+        }
+        self.draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+    }
+
+    /// Draw the per-image action cluster (pull-again / tag / inspect /
+    /// remove) on the far right of an image row. Returns the left x of the
+    /// cluster so the metadata can sit beside it.
+    fn draw_image_actions(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        reference: &str,
+        row: Rect,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        // ordered left→right: pull, tag, inspect, remove
+        let actions: [(Icon, Hit, Color); 4] = [
+            (Icon::Restart, Hit::PullImage(reference.to_string()), c.semantic.info),
+            (Icon::Plus, Hit::TagImage(reference.to_string()), c.accent[5]),
+            (Icon::Search, Hit::InspectImage(reference.to_string()), c.text_dim),
+            (Icon::Trash, Hit::ImageAct { reference: reference.to_string(), action: ImageAction::Remove }, c.semantic.danger),
+        ];
+        let mut x = row.x1 - 12.0;
+        for (icon, hit, color) in actions.into_iter().rev() {
+            x -= ICON_BTN;
+            let btn = Rect::new(x, row.center().y - ICON_BTN / 2.0, x + ICON_BTN, row.center().y + ICON_BTN / 2.0);
+            let hov = self.hovered(btn);
+            if hov {
+                draw::fill_round(scene, btn, theme.tokens.radii.md as f64, draw::with_alpha(color, 46));
+            }
+            draw::icon(scene, icon, Rect::new(btn.x0 + 7.0, btn.y0 + 7.0, btn.x1 - 7.0, btn.y1 - 7.0), if hov { color } else { draw::with_alpha(color, 200) }, 1.6);
+            self.push_hit(btn, hit);
+            x -= 4.0;
+        }
+        x
+    }
+
+    // =================================================================
+    // Volumes section
+    // =================================================================
+
+    pub(crate) fn draw_volumes(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        view: &ViewState,
+    ) {
+        let body_y = self.draw_header(scene, tr, theme, content, "Volumes", view, Some(("New volume", Hit::CreateVolume)));
+        let c = &theme.tokens.colors;
+        let list = Rect::new(content.x0, body_y, content.x1, content.y1);
+
+        // Summary banner.
+        let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
+        draw::fill_round(scene, banner, theme.tokens.radii.md as f64, c.surfaces.raised);
+        let in_use = self.engine.volumes.iter().filter(|v| v.in_use_by > 0).count();
+        let summary = format!("{} volumes · {} in use", self.engine.volumes.len(), in_use);
+        draw::text(scene, tr, &summary, theme.tokens.typography.scale.sm, c.text_dim, Point::new(banner.x0 + 14.0, banner.center().y - 7.0), TextWeight::Medium);
+
+        let query = view.search.clone();
+        let vols: Vec<_> = self.engine.volumes.iter().filter(|v| v.matches(&query)).cloned().collect();
+
+        let rows_area = Rect::new(list.x0, banner.y1 + 8.0, list.x1, list.y1);
+        let row_h = 56.0;
+        let content_h = vols.len() as f64 * row_h;
+        let max_scroll = (content_h - rows_area.height()).max(0.0);
+        self.clamp_list_scroll(max_scroll);
+        let mut y = rows_area.y0 - self.list_scroll;
+        for v in &vols {
+            let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_h);
+            if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
+                let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
+                if self.hovered(row) {
+                    draw::fill_round(scene, inner, theme.tokens.radii.md as f64, c.surface_white_5);
+                }
+                draw::icon(scene, Icon::Box, Rect::new(inner.x0 + 8.0, inner.center().y - 12.0, inner.x0 + 32.0, inner.center().y + 12.0), c.accent[6], 1.5);
+                draw::text_clip(scene, tr, &v.name, theme.tokens.typography.scale.base, c.text_primary, Point::new(inner.x0 + 44.0, row.center().y - 16.0), inner.width() * 0.5, TextWeight::Semibold);
+                draw::text_clip(scene, tr, &v.mountpoint, theme.tokens.typography.scale.xs, c.text_dim, Point::new(inner.x0 + 44.0, row.center().y + 4.0), inner.width() * 0.55, TextWeight::Regular);
+                // driver + usage chips
+                if v.in_use_by > 0 {
+                    draw::chip(scene, tr, theme, &format!("in use ×{}", v.in_use_by), Point::new(inner.x0 + inner.width() * 0.62, row.center().y - 8.0), 16.0, c.semantic.success);
+                } else {
+                    draw::chip(scene, tr, theme, "unused", Point::new(inner.x0 + inner.width() * 0.62, row.center().y - 8.0), 16.0, c.text_dim);
+                }
+                // remove button (far right)
+                let bw = ICON_BTN;
+                let btn = Rect::new(inner.x1 - bw, row.center().y - bw / 2.0, inner.x1, row.center().y + bw / 2.0);
+                let hov = self.hovered(btn);
+                if hov {
+                    draw::fill_round(scene, btn, theme.tokens.radii.md as f64, draw::with_alpha(c.semantic.danger, 46));
+                }
+                draw::icon(scene, Icon::Trash, Rect::new(btn.x0 + 7.0, btn.y0 + 7.0, btn.x1 - 7.0, btn.y1 - 7.0), if hov { c.semantic.danger } else { draw::with_alpha(c.semantic.danger, 200) }, 1.6);
+                self.push_hit(btn, Hit::RemoveVolume(v.name.clone()));
+                draw::divider(scene, inner.x0, inner.x1, row.y1, draw::with_alpha(c.border_standard, 90));
+            }
+            y += row_h;
+        }
+        if vols.is_empty() {
+            self.draw_empty(scene, tr, theme, rows_area, "No volumes yet — create one to persist container data.");
         }
         self.draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
     }
@@ -1013,36 +1160,52 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, Affine::IDENTITY, c.surfaces.overlay, None, &full);
-        let mw = 480.0_f64.min(full.width() - 48.0);
-        let mh = 420.0_f64;
+        let mw = 520.0_f64.min(full.width() - 48.0);
+        let mh = 540.0_f64.min(full.height() - 32.0);
         let modal = Rect::from_center_size(full.center(), (mw, mh));
         draw::fill_round(scene, modal, theme.tokens.radii.lg as f64, c.surfaces.raised);
         draw::stroke_round(scene, modal, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
 
-        draw::text(scene, tr, "New container", theme.tokens.typography.scale.xl, c.text_primary, Point::new(modal.x0 + 24.0, modal.y0 + 20.0), TextWeight::Bold);
-        draw::text(scene, tr, "podman run, rootless", theme.tokens.typography.scale.xs, c.text_dim, Point::new(modal.x0 + 24.0, modal.y0 + 46.0), TextWeight::Regular);
+        draw::text(scene, tr, "New container", theme.tokens.typography.scale.xl, c.text_primary, Point::new(modal.x0 + 24.0, modal.y0 + 18.0), TextWeight::Bold);
+        draw::text(scene, tr, "podman run, rootless", theme.tokens.typography.scale.xs, c.text_dim, Point::new(modal.x0 + 24.0, modal.y0 + 42.0), TextWeight::Regular);
 
-        let mut y = modal.y0 + 76.0;
+        // Defer the image combobox dropdown so it overlays the fields below it.
+        let mut combo_input: Option<Rect> = None;
+
+        let row_step = 56.0;
+        let mut y = modal.y0 + 68.0;
         for (i, field) in CreateField::ALL.iter().enumerate() {
             let focused = self.create_focus == i;
             draw::text(scene, tr, field.label(), theme.tokens.typography.scale.xs, c.text_dim, Point::new(modal.x0 + 24.0, y), TextWeight::Medium);
-            let input = Rect::new(modal.x0 + 24.0, y + 16.0, modal.x1 - 24.0, y + 48.0);
+            let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
             draw::fill_round(scene, input, theme.tokens.radii.md as f64, c.surfaces.base);
             draw::stroke_round(scene, input, theme.tokens.radii.md as f64, if focused { 2.0 } else { 1.0 }, if focused { c.border_focus } else { c.border_standard });
             let value = &view.create[i];
+            // The Image field is the typeable combobox: text reservation leaves
+            // room for the dropdown chevron on the right.
+            let is_image = *field == CreateField::Image;
+            let text_w = if is_image { input.width() - 24.0 - 28.0 } else { input.width() - 24.0 };
             if value.is_empty() {
                 draw::text(scene, tr, field.placeholder(), theme.tokens.typography.scale.sm, draw::with_alpha(c.text_dim, 150), Point::new(input.x0 + 12.0, input.center().y - 7.0), TextWeight::Regular);
             } else {
-                draw::text_clip(scene, tr, value, theme.tokens.typography.scale.sm, c.text_primary, Point::new(input.x0 + 12.0, input.center().y - 7.0), input.width() - 24.0, TextWeight::Regular);
+                draw::text_clip(scene, tr, value, theme.tokens.typography.scale.sm, c.text_primary, Point::new(input.x0 + 12.0, input.center().y - 7.0), text_w, TextWeight::Regular);
             }
             if focused {
                 let (vw, _) = tr.measure(value, theme.tokens.typography.scale.sm, None);
-                let cx = (input.x0 + 12.0 + vw as f64).min(input.x1 - 14.0);
+                let cx = (input.x0 + 12.0 + vw as f64).min(input.x0 + 12.0 + text_w);
                 let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
             }
             self.push_hit(input, Hit::CreateField(*field));
-            y += 62.0;
+            if is_image {
+                // Dropdown chevron toggles the suggestion list.
+                let chev = Rect::new(input.x1 - 28.0, input.y0, input.x1, input.y1);
+                let glyph = if self.combo.open { "▴" } else { "▾" };
+                draw::text(scene, tr, glyph, theme.tokens.typography.scale.sm, c.text_dim, Point::new(chev.center().x - 5.0, chev.center().y - 8.0), TextWeight::Bold);
+                self.push_hit(chev, Hit::ComboToggle);
+                combo_input = Some(input);
+            }
+            y += row_step;
         }
 
         // Buttons
@@ -1054,6 +1217,54 @@ impl ContainersApp {
         draw::text(scene, tr, "Create", theme.tokens.typography.scale.sm, Color::WHITE, Point::new(create.center().x - 21.0, create.center().y - 7.0), TextWeight::Semibold);
         self.push_hit(cancel, Hit::CreateCancel);
         self.push_hit(create, Hit::CreateSubmit);
+
+        // Image suggestion dropdown — drawn LAST so it overlays the rows below.
+        if self.combo.open {
+            if let Some(input) = combo_input {
+                let typed = view.create[CreateField::Image.index()].clone();
+                self.draw_image_dropdown(scene, tr, theme, input, &typed);
+            }
+        }
+    }
+
+    /// The combobox suggestion dropdown: locally-installed image references
+    /// filtered by the typed query, each pickable to fill the Image field.
+    fn draw_image_dropdown(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        input: Rect,
+        typed: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let options = self.engine.image_references();
+        let filtered = combobox::filter_options(&options, typed);
+        let row_h = 30.0;
+        let max_rows = 6usize;
+        let shown = filtered.len().min(max_rows);
+        let panel_h = if shown == 0 { row_h } else { shown as f64 * row_h + 8.0 };
+        let panel = Rect::new(input.x0, input.y1 + 4.0, input.x1, input.y1 + 4.0 + panel_h);
+        // An opaque popover surface so the suggestions sit above the fields.
+        draw::fill_round(scene, panel, theme.tokens.radii.md as f64, c.neutral[2]);
+        draw::stroke_round(scene, panel, theme.tokens.radii.md as f64, 1.0, c.border_focus);
+
+        if filtered.is_empty() {
+            draw::text(scene, tr, "Type a custom image reference, then Pull or Create", theme.tokens.typography.scale.xs, c.text_dim, Point::new(panel.x0 + 12.0, panel.center().y - 7.0), TextWeight::Regular);
+            return;
+        }
+        let mut y = panel.y0 + 4.0;
+        for (pos, &opt_idx) in filtered.iter().take(max_rows).enumerate() {
+            let row = Rect::new(panel.x0 + 4.0, y, panel.x1 - 4.0, y + row_h);
+            let hl = self.combo.highlight == pos;
+            if hl || self.hovered(row) {
+                draw::fill_round(scene, row, theme.tokens.radii.sm as f64, draw::with_alpha(c.accent[5], if hl { 60 } else { 36 }));
+            }
+            draw::icon(scene, Icon::Layers, Rect::new(row.x0 + 6.0, row.center().y - 8.0, row.x0 + 22.0, row.center().y + 8.0), c.accent[6], 1.4);
+            draw::text_clip(scene, tr, &options[opt_idx], theme.tokens.typography.scale.sm, c.text_primary, Point::new(row.x0 + 28.0, row.center().y - 7.0), row.width() - 36.0, TextWeight::Regular);
+            self.push_hit(row, Hit::ComboPick(pos));
+            y += row_h;
+        }
     }
 
     pub(crate) fn draw_confirm(
@@ -1070,7 +1281,7 @@ impl ContainersApp {
         draw::fill_round(scene, modal, theme.tokens.radii.lg as f64, c.surfaces.raised);
         draw::stroke_round(scene, modal, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
         draw::icon(scene, Icon::Trash, Rect::new(modal.x0 + 24.0, modal.y0 + 22.0, modal.x0 + 48.0, modal.y0 + 46.0), c.semantic.danger, 1.8);
-        draw::text(scene, tr, &format!("{} container?", confirm.action.label()), theme.tokens.typography.scale.lg, c.text_primary, Point::new(modal.x0 + 58.0, modal.y0 + 24.0), TextWeight::Bold);
+        draw::text(scene, tr, &format!("{}?", confirm.verb), theme.tokens.typography.scale.lg, c.text_primary, Point::new(modal.x0 + 58.0, modal.y0 + 24.0), TextWeight::Bold);
         let msg = format!("This permanently removes \"{}\". This cannot be undone.", confirm.name);
         draw::text_clip(scene, tr, &msg, theme.tokens.typography.scale.sm, c.text_dim, Point::new(modal.x0 + 24.0, modal.y0 + 64.0), modal.width() - 48.0, TextWeight::Regular);
 
@@ -1079,9 +1290,97 @@ impl ContainersApp {
         draw::fill_round(scene, cancel, theme.tokens.radii.md as f64, c.surface_white_5);
         draw::text(scene, tr, "Cancel", theme.tokens.typography.scale.sm, c.text_primary, Point::new(cancel.center().x - 22.0, cancel.center().y - 7.0), TextWeight::Medium);
         draw::fill_round(scene, ok, theme.tokens.radii.md as f64, c.semantic.danger);
-        draw::text(scene, tr, confirm.action.label(), theme.tokens.typography.scale.sm, Color::WHITE, Point::new(ok.center().x - 22.0, ok.center().y - 7.0), TextWeight::Semibold);
+        draw::text(scene, tr, "Remove", theme.tokens.typography.scale.sm, Color::WHITE, Point::new(ok.center().x - 22.0, ok.center().y - 7.0), TextWeight::Semibold);
         hits.push(HitRegion { rect: cancel, hit: Hit::ConfirmCancel });
         hits.push(HitRegion { rect: ok, hit: Hit::ConfirmOk });
+    }
+
+    /// A single-line text prompt (new volume name / image tag). Reads its
+    /// value from the live `Prompt` so typing reflects immediately.
+    pub(crate) fn draw_prompt(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        full: Rect,
+    ) {
+        let Some(prompt) = &self.prompt else { return };
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, Affine::IDENTITY, c.surfaces.overlay, None, &full);
+        let modal = Rect::from_center_size(full.center(), (420.0, 184.0));
+        draw::fill_round(scene, modal, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        draw::stroke_round(scene, modal, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
+        draw::text(scene, tr, &prompt.title, theme.tokens.typography.scale.lg, c.text_primary, Point::new(modal.x0 + 24.0, modal.y0 + 20.0), TextWeight::Bold);
+
+        let input = Rect::new(modal.x0 + 24.0, modal.y0 + 56.0, modal.x1 - 24.0, modal.y0 + 90.0);
+        draw::fill_round(scene, input, theme.tokens.radii.md as f64, c.surfaces.base);
+        draw::stroke_round(scene, input, theme.tokens.radii.md as f64, 2.0, c.border_focus);
+        if prompt.value.is_empty() {
+            draw::text(scene, tr, &prompt.placeholder, theme.tokens.typography.scale.sm, draw::with_alpha(c.text_dim, 150), Point::new(input.x0 + 12.0, input.center().y - 7.0), TextWeight::Regular);
+        } else {
+            draw::text_clip(scene, tr, &prompt.value, theme.tokens.typography.scale.sm, c.text_primary, Point::new(input.x0 + 12.0, input.center().y - 7.0), input.width() - 24.0, TextWeight::Regular);
+            let (vw, _) = tr.measure(&prompt.value, theme.tokens.typography.scale.sm, None);
+            let cx = (input.x0 + 12.0 + vw as f64).min(input.x1 - 14.0);
+            let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
+        }
+
+        let cancel = Rect::new(modal.x1 - 24.0 - 196.0, modal.y1 - 52.0, modal.x1 - 24.0 - 104.0, modal.y1 - 16.0);
+        let ok = Rect::new(modal.x1 - 24.0 - 92.0, modal.y1 - 52.0, modal.x1 - 24.0, modal.y1 - 16.0);
+        draw::fill_round(scene, cancel, theme.tokens.radii.md as f64, c.surface_white_5);
+        draw::text(scene, tr, "Cancel", theme.tokens.typography.scale.sm, c.text_primary, Point::new(cancel.center().x - 22.0, cancel.center().y - 7.0), TextWeight::Medium);
+        draw::fill_round(scene, ok, theme.tokens.radii.md as f64, c.accent[5]);
+        let ok_label = match prompt.kind { PromptKind::NewVolume => "Create", PromptKind::TagImage => "Tag" };
+        draw::text(scene, tr, ok_label, theme.tokens.typography.scale.sm, Color::WHITE, Point::new(ok.center().x - 18.0, ok.center().y - 7.0), TextWeight::Semibold);
+        self.push_hit(cancel, Hit::PromptCancel);
+        self.push_hit(ok, Hit::PromptOk);
+    }
+
+    /// A live `podman pull` progress overlay — a console of streamed lines
+    /// with a header and a Close button that appears once the pull settles.
+    pub(crate) fn draw_pull_overlay(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        full: Rect,
+    ) {
+        let Some(pull) = &self.pull else { return };
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, Affine::IDENTITY, c.surfaces.overlay, None, &full);
+        let mw = 560.0_f64.min(full.width() - 48.0);
+        let mh = 360.0_f64.min(full.height() - 48.0);
+        let modal = Rect::from_center_size(full.center(), (mw, mh));
+        draw::fill_round(scene, modal, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        draw::stroke_round(scene, modal, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
+
+        // Header: spinner-ish dot + reference + state.
+        let state_color = if let Some(_) = &pull.failed { c.semantic.danger } else if pull.done { c.semantic.success } else { c.semantic.info };
+        let dot = vello::kurbo::Circle::new(Point::new(modal.x0 + 28.0, modal.y0 + 28.0), 5.0);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, state_color, None, &dot);
+        draw::text(scene, tr, &format!("Pulling {}", pull.reference), theme.tokens.typography.scale.lg, c.text_primary, Point::new(modal.x0 + 44.0, modal.y0 + 18.0), TextWeight::Bold);
+        let status = if let Some(e) = &pull.failed { format!("failed: {e}") } else if pull.done { "complete".into() } else { "in progress…".into() };
+        draw::text(scene, tr, &status, theme.tokens.typography.scale.xs, state_color, Point::new(modal.x0 + 44.0, modal.y0 + 40.0), TextWeight::Medium);
+
+        // Console body.
+        let body = Rect::new(modal.x0 + 16.0, modal.y0 + 60.0, modal.x1 - 16.0, modal.y1 - 60.0);
+        draw::fill_round(scene, body, theme.tokens.radii.md as f64, c.neutral[0]);
+        let mono = theme.tokens.typography.scale.xs;
+        let line_h = (mono * 1.5) as f64;
+        let visible = ((body.height() - 16.0) / line_h).floor() as usize;
+        let start = pull.lines.len().saturating_sub(visible);
+        let mut y = body.y0 + 10.0;
+        for line in pull.lines.iter().skip(start) {
+            draw::text_clip(scene, tr, line, mono, c.text_dim, Point::new(body.x0 + 12.0, y), body.width() - 24.0, TextWeight::Regular);
+            y += line_h;
+        }
+
+        // Close button (always available; cancels by dismissing the overlay).
+        let close = Rect::new(modal.x1 - 24.0 - 92.0, modal.y1 - 48.0, modal.x1 - 24.0, modal.y1 - 16.0);
+        draw::fill_round(scene, close, theme.tokens.radii.md as f64, if self.hovered(close) { c.accent[4] } else { c.surface_white_10 });
+        let label = if pull.done || pull.failed.is_some() { "Close" } else { "Hide" };
+        draw::text(scene, tr, label, theme.tokens.typography.scale.sm, c.text_primary, Point::new(close.center().x - 16.0, close.center().y - 7.0), TextWeight::Semibold);
+        self.push_hit(close, Hit::PromptCancel); // reuse the dismiss path
     }
 
     pub(crate) fn draw_toast(
@@ -1154,7 +1453,10 @@ impl ContainersApp {
 
     pub(crate) fn on_click(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
         // Modal layers consume clicks even outside their controls.
-        let modal_active = self.confirm.is_some() || self.create_open;
+        let modal_active = self.confirm.is_some()
+            || self.prompt.is_some()
+            || self.pull.is_some()
+            || self.create_open;
         // Resolve top-most hit (later draws are on top), so scan in reverse.
         let hit = self
             .hits
@@ -1166,9 +1468,16 @@ impl ContainersApp {
         // Clicking outside a modal closes it (but a hit inside still routes).
         let Some(hit) = hit else {
             if modal_active {
-                // click on the scrim: dismiss
-                self.confirm = None;
-                self.create_open = false;
+                // click on the scrim: dismiss the top-most overlay only.
+                if self.confirm.take().is_some() {
+                } else if self.prompt.take().is_some() {
+                } else if self.pull.take().is_some() {
+                } else if self.combo.open {
+                    // First click outside the dropdown only closes it.
+                    self.combo.close();
+                } else {
+                    self.create_open = false;
+                }
                 *handled = true;
             } else {
                 self.search_focus = false;
@@ -1186,9 +1495,13 @@ impl ContainersApp {
                 self.list_scroll = 0.0;
                 self.search_focus = false;
             }
+            Hit::ToggleSidebar => {
+                self.toggle_sidebar();
+                self.structure_dirty = true;
+            }
             Hit::NewContainer => {
                 self.create_open = true;
-                self.create_focus = 1; // image is the required field
+                self.create_focus = CreateField::Image.index();
             }
             Hit::SelectContainer(id) => {
                 let already = ViewDoc::selected(doc).as_deref() == Some(id.as_str());
@@ -1204,10 +1517,79 @@ impl ContainersApp {
             Hit::Action { id, action } => {
                 if action.is_destructive() {
                     let name = self.engine.find(&id).map(|c| c.name.clone()).unwrap_or_else(|| id.clone());
-                    self.confirm = Some(crate::app::Confirm { id, name, action });
+                    self.confirm = Some(crate::app::Confirm {
+                        name,
+                        verb: "Remove container".into(),
+                        target: ConfirmTarget::Container { id, action },
+                    });
                 } else {
                     self.apply_action(action, &id);
                 }
+            }
+            Hit::ImageAct { reference, action } => {
+                // Only Remove exists; it's destructive → confirm.
+                let _ = action;
+                self.confirm = Some(crate::app::Confirm {
+                    name: reference.clone(),
+                    verb: "Remove image".into(),
+                    target: ConfirmTarget::Image { reference },
+                });
+            }
+            Hit::PullImage(reference) => {
+                self.start_pull(&reference);
+            }
+            Hit::PullTyped => {
+                // Pull whatever is typed into the create-form image field, or
+                // prompt via a quick image pull dialog when empty.
+                let typed = ViewDoc::create_field(doc, CreateField::Image);
+                if typed.trim().is_empty() {
+                    self.prompt = Some(crate::app::Prompt {
+                        kind: PromptKind::NewVolume, // generic text path; handled below
+                        title: "Pull image".into(),
+                        placeholder: "docker.io/library/alpine:3.20".into(),
+                        value: String::new(),
+                        context: "__pull__".into(),
+                    });
+                } else {
+                    self.start_pull(&typed);
+                }
+            }
+            Hit::TagImage(reference) => {
+                self.prompt = Some(crate::app::Prompt {
+                    kind: PromptKind::TagImage,
+                    title: format!("Tag {reference}"),
+                    placeholder: "registry.local/app:edge".into(),
+                    value: String::new(),
+                    context: reference,
+                });
+            }
+            Hit::InspectImage(reference) => {
+                if self.live {
+                    let json = crate::podman::inspect_image(&reference);
+                    let n = json.lines().count();
+                    self.show_toast(format!("Inspected {reference} ({n} lines)"), false);
+                } else {
+                    self.show_toast(format!("podman image inspect {reference}"), false);
+                }
+            }
+            Hit::CreateVolume => {
+                self.prompt = Some(crate::app::Prompt {
+                    kind: PromptKind::NewVolume,
+                    title: "New volume".into(),
+                    placeholder: "my-volume".into(),
+                    value: String::new(),
+                    context: String::new(),
+                });
+            }
+            Hit::RemoveVolume(name) => {
+                self.confirm = Some(crate::app::Confirm {
+                    name: name.clone(),
+                    verb: "Remove volume".into(),
+                    target: ConfirmTarget::Volume { name },
+                });
+            }
+            Hit::AttachShell(id) => {
+                self.attach_shell(&id);
             }
             Hit::DistroEnter(name) => {
                 self.enter_distrobox(&name);
@@ -1225,9 +1607,15 @@ impl ContainersApp {
             }
             Hit::ConfirmOk => {
                 if let Some(confirm) = self.confirm.take() {
-                    self.apply_action(confirm.action, &confirm.id);
-                    if ViewDoc::selected(doc).as_deref() == Some(confirm.id.as_str()) {
-                        ViewDoc::set_selected(doc, None);
+                    match confirm.target {
+                        ConfirmTarget::Container { id, action } => {
+                            self.apply_action(action, &id);
+                            if ViewDoc::selected(doc).as_deref() == Some(id.as_str()) {
+                                ViewDoc::set_selected(doc, None);
+                            }
+                        }
+                        ConfirmTarget::Image { reference } => self.remove_image(&reference),
+                        ConfirmTarget::Volume { name } => self.remove_volume(&name),
                     }
                 }
             }
@@ -1235,13 +1623,43 @@ impl ContainersApp {
                 self.confirm = None;
             }
             Hit::CreateField(field) => {
-                self.create_focus = CreateField::ALL.iter().position(|f| *f == field).unwrap_or(0);
+                self.create_focus = field.index();
+                // Focusing a non-image field closes the suggestion dropdown.
+                if field != CreateField::Image {
+                    self.combo.close();
+                } else {
+                    self.combo.open = true;
+                }
+            }
+            Hit::ComboToggle => {
+                self.create_focus = CreateField::Image.index();
+                self.combo.open = !self.combo.open;
+                self.combo.highlight = 0;
+            }
+            Hit::ComboPick(pos) => {
+                let typed = ViewDoc::create_field(doc, CreateField::Image);
+                let options = self.engine.image_references();
+                let filtered = combobox::filter_options(&options, &typed);
+                if let Some(&idx) = filtered.get(pos) {
+                    ViewDoc::set_create_field(doc, CreateField::Image, &options[idx]);
+                }
+                self.combo.close();
             }
             Hit::CreateSubmit => {
                 self.submit_create(doc);
             }
             Hit::CreateCancel => {
                 self.create_open = false;
+                self.combo.close();
+            }
+            Hit::PromptOk => {
+                self.commit_prompt(doc);
+            }
+            Hit::PromptCancel => {
+                // Shared dismiss for the prompt AND the pull overlay (the
+                // pull's Close button reuses this hit).
+                self.prompt = None;
+                self.pull = None;
             }
             Hit::SearchFocus => {
                 self.search_focus = true;
@@ -1254,15 +1672,33 @@ impl ContainersApp {
         self.refresh_view(doc);
     }
 
+    /// Apply a committed text prompt (new volume / image tag / image pull).
+    fn commit_prompt(&mut self, _doc: &mut AutoCommit) {
+        let Some(prompt) = self.prompt.take() else { return };
+        match prompt.kind {
+            PromptKind::NewVolume if prompt.context == "__pull__" => {
+                self.start_pull(prompt.value.trim());
+            }
+            PromptKind::NewVolume => {
+                self.create_volume(prompt.value.trim());
+            }
+            PromptKind::TagImage => {
+                self.tag_image(&prompt.context, prompt.value.trim());
+            }
+        }
+    }
+
+    /// Launch a REAL terminal entering the distrobox: spawn the qOS terminal
+    /// app running `distrobox enter <box>` (see [`crate::terminal`]).
     fn enter_distrobox(&mut self, name: &str) {
         if self.live {
-            // Launch a terminal session entering the box. Best-effort: if no
-            // terminal is available this is a no-op the toast still reports.
-            let _ = std::process::Command::new("distrobox")
-                .args(["enter", name])
-                .spawn();
+            match crate::terminal::spawn_distrobox_enter(name) {
+                Ok(()) => self.show_toast(format!("Entering {name}"), false),
+                Err(e) => self.show_toast(format!("Terminal failed: {e}"), true),
+            }
+        } else {
+            self.show_toast(format!("terminal → distrobox enter {name}"), false);
         }
-        self.show_toast(format!("Entering {}", name), false);
     }
 
     pub(crate) fn on_key(
@@ -1278,7 +1714,12 @@ impl ContainersApp {
 
         // Escape closes the top-most overlay / clears focus.
         if let Key::Named(NamedKey::Escape) = key.logical_key {
-            if self.confirm.take().is_some() || self.create_open {
+            if self.confirm.take().is_some() {
+            } else if self.prompt.take().is_some() {
+            } else if self.pull.take().is_some() {
+            } else if self.combo.open {
+                self.combo.close();
+            } else if self.create_open {
                 self.create_open = false;
             } else if self.search_focus {
                 self.search_focus = false;
@@ -1286,6 +1727,13 @@ impl ContainersApp {
                 ViewDoc::set_selected(doc, None);
             }
             *handled = true;
+            self.refresh_view(doc);
+            return;
+        }
+
+        // A text-prompt dialog owns the keyboard while open.
+        if self.prompt.is_some() {
+            self.prompt_key(doc, key, handled);
             self.refresh_view(doc);
             return;
         }
@@ -1311,9 +1759,11 @@ impl ContainersApp {
                 match s.as_str() {
                     "1" => { ViewDoc::set_section(doc, Section::Containers); *handled = true; }
                     "2" => { ViewDoc::set_section(doc, Section::Images); *handled = true; }
-                    "3" => { ViewDoc::set_section(doc, Section::Distrobox); *handled = true; }
+                    "3" => { ViewDoc::set_section(doc, Section::Volumes); *handled = true; }
+                    "4" => { ViewDoc::set_section(doc, Section::Distrobox); *handled = true; }
                     "/" => { self.search_focus = true; *handled = true; }
-                    "n" => { self.create_open = true; self.create_focus = 1; *handled = true; }
+                    "n" => { self.create_open = true; self.create_focus = CreateField::Image.index(); *handled = true; }
+                    "b" => { self.toggle_sidebar(); self.structure_dirty = true; *handled = true; }
                     _ => {}
                 }
             }
@@ -1351,9 +1801,44 @@ impl ContainersApp {
 
     fn create_modal_key(&mut self, doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
         let field = CreateField::ALL[self.create_focus];
+        let on_image = field == CreateField::Image;
+        // The combobox owns Up/Down/Enter while its dropdown is open and the
+        // image field is focused.
+        if on_image && self.combo.open {
+            match &key.logical_key {
+                Key::Named(NamedKey::ArrowDown) => {
+                    let len = self.filtered_image_len(doc);
+                    self.combo.move_highlight(1, len);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    let len = self.filtered_image_len(doc);
+                    self.combo.move_highlight(-1, len);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    // Pick the highlighted suggestion, else submit.
+                    let typed = ViewDoc::create_field(doc, CreateField::Image);
+                    let options = self.engine.image_references();
+                    let filtered = combobox::filter_options(&options, &typed);
+                    if let Some(&idx) = filtered.get(self.combo.highlight) {
+                        ViewDoc::set_create_field(doc, CreateField::Image, &options[idx]);
+                        self.combo.close();
+                    } else {
+                        self.submit_create(doc);
+                    }
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match &key.logical_key {
             Key::Named(NamedKey::Tab) => {
                 self.create_focus = (self.create_focus + 1) % CreateField::ALL.len();
+                self.combo.close();
                 *handled = true;
             }
             Key::Named(NamedKey::Enter) => {
@@ -1365,6 +1850,10 @@ impl ContainersApp {
                 let mut chars: Vec<char> = cur.chars().collect();
                 chars.pop();
                 ViewDoc::set_create_field(doc, field, &chars.into_iter().collect::<String>());
+                if on_image {
+                    self.combo.open = true;
+                    self.combo.highlight = 0;
+                }
                 *handled = true;
             }
             Key::Named(NamedKey::Space) => {
@@ -1375,6 +1864,42 @@ impl ContainersApp {
             Key::Character(ch) => {
                 let cur = ViewDoc::create_field(doc, field);
                 ViewDoc::set_create_field(doc, field, &format!("{cur}{ch}"));
+                // Typing in the image field re-opens + re-filters the dropdown.
+                if on_image {
+                    self.combo.open = true;
+                    self.combo.highlight = 0;
+                }
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Number of locally-installed images matching the currently-typed image
+    /// query — drives the combobox highlight clamp.
+    fn filtered_image_len(&self, doc: &mut AutoCommit) -> usize {
+        let typed = ViewDoc::create_field(doc, CreateField::Image);
+        let options = self.engine.image_references();
+        combobox::filter_options(&options, &typed).len()
+    }
+
+    fn prompt_key(&mut self, _doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
+        let Some(prompt) = &mut self.prompt else { return };
+        match &key.logical_key {
+            Key::Named(NamedKey::Enter) => {
+                *handled = true;
+                self.commit_prompt(_doc);
+            }
+            Key::Named(NamedKey::Backspace) => {
+                prompt.value.pop();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                prompt.value.push(' ');
+                *handled = true;
+            }
+            Key::Character(ch) => {
+                prompt.value.push_str(ch);
                 *handled = true;
             }
             _ => {}
