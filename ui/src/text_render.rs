@@ -388,28 +388,54 @@ impl TextRenderer {
         transform: Affine,
         color: Color,
     ) {
+        use crate::richtext::BaselineShift;
         let resolve = |c: Option<cosmic_text::Color>| {
             c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b())).unwrap_or(color)
         };
+
+        // 1. Highlight bands — paint behind glyphs so the ink reads on top.
+        //    One fill per (contiguous) run-segment on each visual line.
+        for &(s, e, [br, bg, bb]) in &layout.backgrounds {
+            let band = Color::from_rgb8(br, bg, bb);
+            for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
+                let rect = vello::kurbo::Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64);
+                scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
+            }
+        }
+
+        // 2. Glyphs. We batch by (face, colour, size, baseline-shift) so a
+        //    super/subscript run — shaped smaller and drawn with a vertical
+        //    offset — flushes as its own batch with the right size & y.
         for run in layout.buffer.layout_runs() {
             let mut face: Option<cosmic_text::fontdb::ID> = None;
             let mut cur_color: Option<cosmic_text::Color> = None;
+            let mut cur_shift = BaselineShift::None;
             let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
             let mut size = 16.0f32;
+            let mut batch_size = 16.0f32;
             for g in run.glyphs.iter() {
-                size = g.font_size;
-                // Flush when either the face or the per-run colour changes.
-                if (face != Some(g.font_id) || cur_color != g.color_opt) && !batch.is_empty() {
-                    self.flush_glyphs(scene, face.unwrap(), &batch, size, resolve(cur_color), transform, run.line_y);
+                let g_shift = layout.baseline_at(g.start);
+                // Flush when face, colour, glyph size, or baseline-shift change.
+                let changed = face != Some(g.font_id)
+                    || cur_color != g.color_opt
+                    || (g.font_size - batch_size).abs() > f32::EPSILON
+                    || cur_shift != g_shift;
+                if changed && !batch.is_empty() {
+                    let dy = cur_shift.offset(batch_size);
+                    self.flush_glyphs(scene, face.unwrap(), &batch, batch_size, resolve(cur_color), transform, run.line_y + dy);
                     batch.clear();
                 }
                 face = Some(g.font_id);
                 cur_color = g.color_opt;
+                cur_shift = g_shift;
+                size = g.font_size;
+                batch_size = g.font_size;
                 batch.push(g.clone());
             }
             if let Some(f) = face {
                 if !batch.is_empty() {
-                    self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y);
+                    let dy = cur_shift.offset(batch_size);
+                    self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y + dy);
                 }
             }
         }
@@ -527,6 +553,40 @@ mod tests {
         let (hits, misses) = tr.cache_stats();
         assert_eq!(hits, 1);
         assert_eq!(misses, 2);
+    }
+
+    /// A highlighted run must add a real fill to the draw output. We render
+    /// the same text twice — once with a background span, once without — and
+    /// assert the highlighted scene encodes strictly more paths (the extra
+    /// path is the highlight band `draw_rich` fills before the glyphs).
+    #[test]
+    fn background_span_emits_an_extra_fill_in_the_scene() {
+        use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
+        let mut tr = TextRenderer::new();
+
+        let plain_spans = [RichSpan::new("highlighted")];
+        let plain = RichTextLayout::shape(
+            &mut tr.font_system, &plain_spans, false, 16.0, 400.0,
+            TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+        );
+        let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
+        let highlighted = RichTextLayout::shape(
+            &mut tr.font_system, &hl_spans, false, 16.0, 400.0,
+            TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+        );
+
+        let mut plain_scene = Scene::new();
+        tr.draw_rich(&mut plain_scene, &plain, Affine::IDENTITY, Color::from_rgb8(0, 0, 0));
+        let plain_paths = plain_scene.encoding().n_paths;
+
+        let mut hl_scene = Scene::new();
+        tr.draw_rich(&mut hl_scene, &highlighted, Affine::IDENTITY, Color::from_rgb8(0, 0, 0));
+        let hl_paths = hl_scene.encoding().n_paths;
+
+        assert!(
+            hl_paths > plain_paths,
+            "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
+        );
     }
 
     /// `bump_generation` blows away every cached entry — the next
