@@ -10,12 +10,15 @@
 //! (`ics`), and `app_root()` is the single integration point used by both
 //! the live event loop and the `--shots` offscreen renderer.
 
+pub mod account;
 pub mod app;
+pub mod caldav;
 pub mod date;
 pub mod doc;
 pub mod ics;
 pub mod model;
 
+pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
 pub use model::{Event, Model, Priority, Project, Recurrence, Task, View};
 
