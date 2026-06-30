@@ -138,6 +138,69 @@ fn table_created_in_editor_survives_odt_save_reload() {
 }
 
 #[test]
+fn custom_named_style_survives_odt_save_reload() {
+    use editor::{StyleProps, WordProcessor};
+
+    let path = temp_path("styled.odt");
+
+    // Author: a paragraph carrying a user-defined named style.
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "Heading text");
+
+    let mut sheet = wp.model().stylesheet(&state.doc);
+    sheet.styles.insert(
+        "callout".into(),
+        StyleProps {
+            name: "Callout".into(),
+            font: "serif".into(),
+            size: 22.0,
+            bold: true,
+            italic: true,
+            color: [0xc0, 0x20, 0x20],
+            align: "center".into(),
+            space_before: 0.0,
+            space_after: 10.0,
+            indent: 0.0,
+        },
+    );
+    wp.model_mut().set_stylesheet(&mut state.doc, &sheet);
+    wp.model_mut().set_block_style(&mut state.doc, "callout");
+
+    save_document(&state, &path, WpFormat::Odt).unwrap();
+
+    // Reopen: the style is back in the stylesheet, still applied to the block.
+    let (mut s2, mut wp2, _) = open_document(&path).unwrap();
+    wp2.sync(&mut s2.doc, &s2.root);
+    assert_eq!(wp2.model().block_texts(&s2.doc), vec!["Heading text".to_string()]);
+
+    let sheet2 = wp2.model().stylesheet(&s2.doc);
+    let cs = sheet2.get("callout");
+    assert_eq!(cs.name, "Callout", "custom style present after reload");
+    assert_eq!(cs.size, 22.0);
+    assert!(cs.bold && cs.italic);
+    assert_eq!(cs.color, [0xc0, 0x20, 0x20], "color round-tripped");
+    assert_eq!(cs.align, "center");
+    assert_eq!(cs.space_after, 10.0);
+    // Built-ins must still resolve (the import only writes referenced named styles).
+    assert_eq!(sheet2.get("body").name, "Body", "built-in body still available after import");
+
+    // The block still references the named style.
+    let ed = editor::EditorDoc::bind(&mut s2.doc, &s2.root);
+    let snap = ed.snapshot(&s2.doc);
+    assert_eq!(
+        snap.blocks[0].attrs.get("style"),
+        Some(&qdoc::AttrVal::Str("callout".into())),
+        "block keeps its named-style ref: {:?}",
+        snap.blocks[0].attrs
+    );
+    assert!(snap.styles.contains_key("callout"), "styles container holds the custom style after reload");
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn open_edit_save_reload_markdown() {
     let path = temp_path("doc.md");
     std::fs::write(&path, b"# Title\n\nbody\n").unwrap();

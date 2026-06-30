@@ -97,6 +97,25 @@ fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<Strin
     if let Some(l) = level {
         doc.set_attr(&id, "level", l);
     }
+    // A *named* (common) non-heading paragraph style → a real CRDT-native style:
+    // lift its definition into the styles container and point the block at it via
+    // an explicit `style` attr (keyed by the decoded style name). The style now
+    // supplies the block's alignment + formatting, so they are not *also* lifted
+    // onto the block as direct attrs / inline marks (keeps the round-trip
+    // idempotent). Built-in heading/list mapping is untouched.
+    if level.is_none() {
+        if let Some(s) = style {
+            if reg.is_named_para(s) {
+                if let Some(props) = reg.style_props(s) {
+                    let key = super::styles::decode_style_name(s);
+                    doc.set_style(&key, &props);
+                    doc.set_attr(&id, "style", key.as_str());
+                    return Vec::new();
+                }
+            }
+        }
+    }
+    // Automatic style or heading: lift alignment as a direct attr.
     if let Some(a) = style.and_then(|s| reg.para_align(s)) {
         doc.set_attr(&id, "align", a.as_str());
     }
