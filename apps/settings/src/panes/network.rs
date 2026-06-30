@@ -28,9 +28,11 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::widgets::{card, card_with_action, caption, rows, setting_row, value_row, El};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
+pub const VPN_KEY: &str = "network.open_vpn";
 
 /// Build the per-SSID "connect" CRDT key. Inverse of
 /// [`ssid_from_connect_key`].
@@ -124,60 +126,85 @@ impl NetworkPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let status_row = Row::new()
-            .push(Box::new(
-                Text::new(&self.connection_status_text()).with_size(12.0),
-            ))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Button::new(
-                "settings.network.refresh",
-                "Refresh",
-                Some(REFRESH_KEY),
-            )));
-        let toggle_row = Row::new()
-            .push(Box::new(Text::new("Wi-Fi").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY)
-                    .with_id("network.wifi"),
-            ));
-        let mut col = Column::new()
-            .push(Box::new(status_row))
-            .push(Box::new(toggle_row));
+        // --- Wi-Fi card: header carries the toggle; body is status +
+        //     scanned-network rows + a Refresh action.
+        let wifi_toggle: El = Box::new(
+            Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi"),
+        );
+
+        let mut wifi_rows: Vec<El> = Vec::new();
+        wifi_rows.push(value_row("Status", &self.connection_status_text()));
 
         for net in &self.networks {
             let signal_glyph = match net.signal {
-                0 => "▁",
-                1 => "▂",
-                2 => "▃",
-                3 => "▆",
-                _ => "█",
+                0 => "\u{2581}",
+                1 => "\u{2582}",
+                2 => "\u{2584}",
+                3 => "\u{2586}",
+                _ => "\u{2588}",
             };
-            let lock_glyph = if net.secure { "🔒" } else { "  " };
-            let label = format!(
-                "{signal_glyph} {lock_glyph} {ssid}",
-                ssid = net.ssid
-            );
+            let lock_glyph = if net.secure { "\u{f033e}" } else { " " };
+            let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
             let key = connect_key(&net.ssid);
             let cta_id = format!("settings.network.connect.{}", net.ssid);
             let net_row = Row::new()
-                .push(Box::new(Text::new(&label).with_size(12.0)))
+                .push(Box::new(Text::new(&label).with_size(13.0)))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(Button::new(
                     &cta_id,
                     if net.connected { "Connected" } else { "Connect" },
                     Some(&key),
                 )));
-            col = col.push(Box::new(net_row));
+            wifi_rows.push(Box::new(net_row));
         }
-        col = col.push(Box::new(
-            Text::new(
-                "Wi-Fi list and connection are best-effort via nmcli; \
-                 secure networks require a known password.",
-            )
-            .with_size(11.0),
+        wifi_rows.push(Box::new(
+            Row::new()
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(Button::new(
+                    "settings.network.refresh",
+                    "\u{f0450}  Refresh",
+                    Some(REFRESH_KEY),
+                ))),
         ));
-        Box::new(col)
+        wifi_rows.push(caption(
+            "Wi-Fi scanning and connection are best-effort via nmcli; \
+             secure networks require a known password.",
+        ));
+
+        let wifi_card = card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows));
+
+        // --- Wired card.
+        let wired_card = card(
+            "Wired",
+            rows(vec![
+                value_row("Ethernet", "Connected · 1000 Mb/s"),
+                value_row("IPv4", "192.168.1.42"),
+            ]),
+        );
+
+        // --- VPN shortcut card (opens the dedicated VPN app/panel).
+        let vpn_card = card(
+            "VPN",
+            rows(vec![
+                setting_row(
+                    "Virtual Private Network",
+                    Box::new(Button::new(
+                        "settings.network.open_vpn",
+                        "\u{f0582}  Manage VPN",
+                        Some(VPN_KEY),
+                    )),
+                ),
+                caption("Configure and connect VPN profiles in the VPN app."),
+            ]),
+        );
+
+        Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .push(wifi_card)
+                .push(wired_card)
+                .push(vpn_card),
+        )
     }
 }
 
@@ -261,7 +288,7 @@ impl Widget for NetworkPane {
             flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
             ..Default::default()
         };
