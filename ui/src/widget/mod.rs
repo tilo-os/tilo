@@ -11,6 +11,13 @@ use crate::dnd::DragPayload;
 
 use std::collections::HashMap;
 
+/// Group opacity applied to a widget's painted output when it is
+/// disabled (`Widget::is_enabled() == false`). Kept in one place so the
+/// dimmed look is consistent across Button / Checkbox / Toggle / Slider /
+/// Dropdown — wrap the widget's draw output in a
+/// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()` pair.
+pub const DISABLED_ALPHA: f32 = 0.45;
+
 pub trait Widget {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool { false }
@@ -39,6 +46,18 @@ pub trait Widget {
     fn is_focusable(&self) -> bool { false }
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
+
+    /// Whether this widget is interactive. The default is `true`.
+    ///
+    /// A disabled widget (`false`) must be skipped by keyboard focus
+    /// traversal — `App::update_focusable_order` excludes it from
+    /// `focusable_order` — and must reject input in `handle_event`
+    /// (no state mutation, no CRDT write, no callback). Disabled
+    /// interactive widgets also render a dimmed, no-hover/no-press
+    /// look (see [`DISABLED_ALPHA`]). Implementors back this with a
+    /// stored `enabled: bool` set via a `with_enabled`/`set_enabled`
+    /// builder; non-interactive widgets inherit the default.
+    fn is_enabled(&self) -> bool { true }
     fn needs_commit(&self) -> bool { false }
     fn on_commit(&mut self) {}
     fn get_state(&self) -> Option<String> { None }
