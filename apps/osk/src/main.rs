@@ -40,8 +40,9 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 /// Default offscreen viewport for `--shots`. Phone-portrait-ish width with
-/// just enough height for the toolbar + four key rows.
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 320);
+/// just enough height for the toolbar + suggestion bar + four key rows
+/// (48 + 40 + 4×56 = 312, rounded up).
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 360);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
