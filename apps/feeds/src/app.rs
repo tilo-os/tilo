@@ -28,7 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::doc::FeedsDoc;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
@@ -43,6 +43,14 @@ const LIST_W: f64 = 400.0;
 const HEADER_H: f64 = 56.0;
 const SIDE_ROW_H: f64 = 34.0;
 const LIST_ROW_H: f64 = 88.0;
+
+/// Below this allocated width (logical px) the three panes stop fitting side
+/// by side: the subscriptions sidebar collapses to an overlay flap and the
+/// list + reader switch to single-pane master→detail push navigation. Above
+/// it the classic three-pane desktop layout is kept. Sized so the sidebar
+/// (256) + a usable article list (400) + a readable reader column still fit
+/// when docked.
+const NAV_BREAKPOINT: f64 = 820.0;
 
 // ---------------------------------------------------------------------
 // Local geometry / interaction model
@@ -127,6 +135,25 @@ pub struct FeedsApp {
     modal: Option<Modal>,
     toast: Option<(String, Instant)>,
 
+    // Responsive chrome. `sidebar` is the eased open/closed state of the
+    // subscriptions flap (docked beside the content on a wide window; an
+    // overlay over a scrim on a narrow one). `detail_pushed` drives the
+    // narrow-only master→detail push: the article list is the master, the
+    // reader is the detail pushed in on selection.
+    sidebar: FlapState,
+    detail_pushed: bool,
+    /// Whether the flap's `reveal` has been settled to the resolved layout
+    /// default once the real allocated width is first known. Without this a
+    /// fresh narrow window would animate the sidebar out from the construction
+    /// default (docked-open ⇒ reveal 1).
+    settled_once: bool,
+    // Hit rects for the responsive affordances, recomputed each layout. Empty
+    // (`Rect::ZERO`) when the affordance isn't shown at the current width.
+    hamburger_rect: Rect,
+    scrim_rect: Rect,
+    back_rect: Rect,
+    last_frame: Instant,
+
     worker: Option<FetchWorker>,
     synced: bool,
     now: i64,
@@ -163,12 +190,42 @@ impl FeedsApp {
             last_mouse: Point::ZERO,
             modal: None,
             toast: None,
+            sidebar: FlapState::open_when_docked(),
+            detail_pushed: false,
+            settled_once: false,
+            hamburger_rect: Rect::ZERO,
+            scrim_rect: Rect::ZERO,
+            back_rect: Rect::ZERO,
+            last_frame: Instant::now(),
             worker: None,
             synced: false,
             now: chrono::Utc::now().timestamp(),
         };
         app.select_featured();
         app
+    }
+
+    /// Resolve the navigation layout purely from the *allocated* width: wide
+    /// keeps the three panes docked side by side; narrow collapses the
+    /// subscriptions sidebar to an overlay flap and switches the list + reader
+    /// to single-pane master→detail push.
+    fn nav_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), NAV_BREAKPOINT)
+    }
+
+    /// Snap the subscriptions sidebar fully open/closed with no animation, so
+    /// the single-frame `--shots` renderer captures a settled flap (the live
+    /// app eases via [`FlapState::tick`]). Used to stage the narrow-window
+    /// overlay screenshot.
+    pub fn snap_sidebar_open(&mut self, open: bool) {
+        self.sidebar.snap(open);
+    }
+
+    /// Stage the narrow master→detail flow as having pushed the reader in, so
+    /// the single-frame `--shots` renderer can capture the detail pane with its
+    /// Back affordance.
+    pub fn force_detail_pushed(&mut self) {
+        self.detail_pushed = true;
     }
 
     /// Choose an interesting article to open on launch (the richest unread
@@ -229,6 +286,11 @@ impl FeedsApp {
         self.list_scroll = 0.0;
         self.ensure_selection();
         self.reader_scroll = 0.0;
+        // Changing the source in narrow mode returns to the list so the new
+        // selection is visible (the reader is pushed back on the next select).
+        if self.nav_layout() == SplitLayout::Overlay {
+            self.detail_pushed = false;
+        }
     }
 
     fn select_article(&mut self, id: Id, doc: &mut AutoCommit) {
@@ -237,6 +299,16 @@ impl FeedsApp {
         if self.store.mark_read(id, true) {
             FeedsDoc::set_read(doc, id, true);
         }
+        // Narrow master→detail: selecting from the list pushes the reader in.
+        if self.nav_layout() == SplitLayout::Overlay {
+            self.detail_pushed = true;
+        }
+    }
+
+    /// Return from the pushed reader (detail) to the article list (master) in
+    /// narrow master→detail navigation.
+    fn show_master(&mut self) {
+        self.detail_pushed = false;
     }
 
     fn move_selection(&mut self, delta: i64, doc: &mut AutoCommit) {
@@ -412,14 +484,90 @@ impl FeedsApp {
 
     fn recompute_geometry(&mut self) {
         let r = self.rect;
-        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
-        let right_x0 = r.x0 + SIDEBAR_W;
-        self.toolbar_rect = Rect::new(right_x0, r.y0, r.x1, r.y0 + HEADER_H);
-        self.list_rect = Rect::new(right_x0, r.y0, right_x0 + LIST_W, r.y1);
-        self.reader_rect = Rect::new(right_x0 + LIST_W, r.y0, r.x1, r.y1);
+        let layout = self.nav_layout();
+        let reveal = self.sidebar.reveal();
+        // Sidebar can't be wider than the window (very narrow phones).
+        let sw = SIDEBAR_W.min(r.width());
+
+        match layout {
+            SplitLayout::Docked => {
+                // Wide: the subscriptions sidebar is docked beside the content,
+                // which is inset by the eased width so it reveals/collapses
+                // smoothly. The list + reader sit side by side in the content.
+                let inset = sw * reveal;
+                self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
+                let content_x0 = r.x0 + inset;
+                self.toolbar_rect = Rect::new(content_x0, r.y0, r.x1, r.y0 + HEADER_H);
+                self.list_rect = Rect::new(content_x0, r.y0, content_x0 + LIST_W, r.y1);
+                self.reader_rect = Rect::new(content_x0 + LIST_W, r.y0, r.x1, r.y1);
+                self.scrim_rect = Rect::ZERO;
+                // The hamburger only appears while the docked rail is collapsing
+                // / collapsed, so a hidden rail can always be summoned back.
+                self.hamburger_rect = if reveal < 0.999 {
+                    self.toggle_button_rect(self.toolbar_rect)
+                } else {
+                    Rect::ZERO
+                };
+            }
+            SplitLayout::Overlay => {
+                // Narrow: the content spans the full width and the subscriptions
+                // sidebar floats in over a scrim. Within the content, the list
+                // and reader are a single master→detail push — one fills the
+                // pane at a time.
+                let content = r;
+                self.toolbar_rect = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+                if self.detail_pushed {
+                    // Detail (reader) fills the content; list is parked off-pane.
+                    self.list_rect = Rect::new(content.x0 - content.width(), content.y0, content.x0, content.y1);
+                    self.reader_rect = content;
+                } else {
+                    // Master (list) fills the content; reader is parked off-pane.
+                    self.list_rect = content;
+                    self.reader_rect = Rect::new(content.x1, content.y0, content.x1 + content.width(), content.y1);
+                }
+                // Sidebar slides in from the left edge by the eased reveal.
+                let slide = self.sidebar.slide();
+                let x0 = r.x0 - sw * (1.0 - slide);
+                self.sidebar_rect = Rect::new(x0, r.y0, x0 + sw, r.y1);
+                self.scrim_rect = if reveal > 0.001 { r } else { Rect::ZERO };
+                // The top-left affordance is the Back chevron while a detail is
+                // pushed (the sidebar is summoned from the master list); the
+                // hamburger otherwise. They share the corner, so only one shows.
+                self.hamburger_rect = if self.detail_pushed {
+                    Rect::ZERO
+                } else {
+                    self.toggle_button_rect(self.toolbar_rect)
+                };
+            }
+        }
+
         self.build_sidebar_rows();
         self.build_list_rows();
         self.build_toolbar();
+        self.build_back_affordance();
+    }
+
+    /// The hamburger / close toggle rect, pinned to the top-left of the
+    /// content's toolbar so it never collides with the right-aligned action
+    /// buttons.
+    fn toggle_button_rect(&self, toolbar: Rect) -> Rect {
+        let size = 36.0;
+        let x = toolbar.x0 + 10.0;
+        let cy = toolbar.y0 + HEADER_H / 2.0;
+        Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
+    }
+
+    /// In narrow master→detail mode, a Back chevron in the reader's header
+    /// returns to the list. Empty otherwise.
+    fn build_back_affordance(&mut self) {
+        self.back_rect = if self.nav_layout() == SplitLayout::Overlay && self.detail_pushed {
+            let size = 36.0;
+            let x = self.reader_rect.x0 + 10.0;
+            let cy = self.reader_rect.y0 + HEADER_H / 2.0;
+            Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
+        } else {
+            Rect::ZERO
+        };
     }
 
     fn build_sidebar_rows(&mut self) {
@@ -593,24 +741,35 @@ impl FeedsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Advance the sidebar flap transition with real elapsed time, then
+        // recompute the eased geometry so the slide is reflected this frame.
+        let now = Instant::now();
+        let dt = (now - self.last_frame).as_secs_f64().min(0.1);
+        self.last_frame = now;
+        self.sidebar.reconcile(self.nav_layout());
+        self.sidebar.tick(self.nav_layout(), dt);
+        self.recompute_geometry();
+
         let c = &theme.tokens.colors;
         let base = c.surfaces.base;
         let sidebar_bg = c.neutral[0];
+        let layout = self.nav_layout();
+        let overlay = layout == SplitLayout::Overlay;
 
-        // Pane backgrounds.
+        // Base background covers the whole widget so an off-pane child never
+        // shows through during a push slide.
         scene.fill(Fill::NonZero, t, base, None, &self.rect);
-        scene.fill(Fill::NonZero, t, sidebar_bg, None, &self.sidebar_rect);
 
-        // Pane dividers.
-        let divider = alpha(c.border_standard, 150);
-        vline(scene, t, self.sidebar_rect.x1, self.rect.y0, self.rect.y1, divider);
-        vline(scene, t, self.list_rect.x1, self.rect.y0, self.rect.y1, divider);
-
-        draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows);
+        // --- content (list + reader) ------------------------------------
+        // In narrow master→detail, only the title shifts right to make room
+        // for the toggle / Back affordance; the list and reader still own the
+        // full pane width so their content isn't cropped.
+        let list_inset = if overlay && !self.detail_pushed { 46.0 } else { 0.0 };
         draw_list(
             scene, t, tr, theme, &self.list_rect, &self.list_rows, &self.store, self.selected,
-            self.now, &self.filter_title(), self.store.count_for(self.filter),
+            self.now, &self.filter_title(), self.store.count_for(self.filter), list_inset,
         );
+        let reader_inset = if overlay && self.detail_pushed { 46.0 } else { 0.0 };
         let (links, open_rect, content_h) = draw_reader(
             scene,
             t,
@@ -621,12 +780,47 @@ impl FeedsApp {
             self.selected.and_then(|id| self.store.article(id)).and_then(|a| self.store.feed(a.feed_id)),
             self.reader_scroll,
             self.now,
+            reader_inset,
         );
         self.reader_links = links;
         self.reader_open_rect = open_rect;
         self.reader_content_h = content_h;
 
+        // The list/reader divider only exists in the wide three-pane layout.
+        let divider = alpha(c.border_standard, 150);
+        if !overlay {
+            vline(scene, t, self.list_rect.x1, self.rect.y0, self.rect.y1, divider);
+        }
+
         draw_toolbar(scene, t, tr, theme, &self.toolbar_rect, &self.toolbar_buttons);
+
+        // Narrow Back affordance (return from the pushed reader to the list).
+        if self.back_rect.area() > 0.0 {
+            draw_chrome_button(scene, t, theme, &self.back_rect, ChromeGlyph::Back, self.last_mouse);
+        }
+
+        // --- subscriptions sidebar (over a scrim when it's an overlay) ----
+        // The scrim dims the content behind the floating flap and eats clicks
+        // to dismiss it.
+        if overlay && self.scrim_rect.area() > 0.0 {
+            // Pure-black dimming scrim faded by the eased reveal (matches the
+            // shared NavSplit flap), so the content clearly recedes behind the
+            // floating sidebar.
+            let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((self.sidebar.reveal() * 0.5) as f32);
+            scene.fill(Fill::NonZero, t, scrim, None, &self.scrim_rect);
+        }
+        if self.sidebar_rect.area() > 0.0 {
+            scene.fill(Fill::NonZero, t, sidebar_bg, None, &self.sidebar_rect);
+            vline(scene, t, self.sidebar_rect.x1, self.rect.y0, self.rect.y1, divider);
+            draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows);
+        }
+
+        // The hamburger / close toggle sits over the content's top-left, drawn
+        // last so it stays clickable above the panes.
+        if self.hamburger_rect.area() > 0.0 {
+            let glyph = if self.sidebar.reveal() > 0.5 { ChromeGlyph::Close } else { ChromeGlyph::Menu };
+            draw_chrome_button(scene, t, theme, &self.hamburger_rect, glyph, self.last_mouse);
+        }
 
         // Toast (auto-expires after 4s).
         if let Some((msg, since)) = &self.toast {
@@ -647,6 +841,30 @@ impl FeedsApp {
         if self.modal.is_some() {
             return true;
         }
+
+        // --- responsive chrome (handled before the panes) ----------------
+        // Back: return from the pushed reader to the list (narrow only).
+        if self.back_rect.area() > 0.0 && self.back_rect.contains(p) {
+            self.show_master();
+            return true;
+        }
+        // Hamburger: summon / dismiss the subscriptions sidebar.
+        if self.hamburger_rect.area() > 0.0 && self.hamburger_rect.contains(p) {
+            self.sidebar.toggle(self.nav_layout());
+            return true;
+        }
+        // Scrim: a click on the dimmed content (outside the floating sidebar)
+        // dismisses an open overlay sidebar before reaching any pane.
+        if self.nav_layout() == SplitLayout::Overlay
+            && self.sidebar.is_open(SplitLayout::Overlay)
+            && self.scrim_rect.area() > 0.0
+            && self.scrim_rect.contains(p)
+            && !self.sidebar_rect.contains(p)
+        {
+            self.sidebar.close();
+            return true;
+        }
+
         // Toolbar.
         for b in self.toolbar_buttons.clone() {
             if b.rect.contains(p) {
@@ -666,6 +884,9 @@ impl FeedsApp {
             if !row.rect.contains(p) {
                 continue;
             }
+            // Whether this row navigates (vs. just toggling a folder's
+            // disclosure) — a navigation auto-dismisses the overlay sidebar.
+            let mut navigated = true;
             match row.role {
                 RowRole::Smart(SmartKind::All) => self.set_filter(Filter::All),
                 RowRole::Smart(SmartKind::Unread) => self.set_filter(Filter::Unread),
@@ -674,12 +895,18 @@ impl FeedsApp {
                     // Chevron hit (left 28px) toggles; else filter to folder.
                     if p.x < row.rect.x0 + 28.0 {
                         self.toggle_folder(id, doc);
+                        navigated = false;
                     } else {
                         self.set_filter(Filter::Folder(id));
                     }
                 }
                 RowRole::Feed { id, .. } => self.set_filter(Filter::Feed(id)),
-                RowRole::Section => {}
+                RowRole::Section => navigated = false,
+            }
+            // On a narrow window, navigating from the overlay sidebar closes it
+            // so the chosen list is revealed.
+            if navigated && self.nav_layout() == SplitLayout::Overlay {
+                self.sidebar.close();
             }
             return true;
         }
@@ -904,15 +1131,18 @@ fn draw_list(
     now: i64,
     title: &str,
     count: usize,
+    header_inset: f64,
 ) {
     let c = &theme.tokens.colors;
-    // Header.
+    // Header. `header_inset` shifts the title right of the hamburger toggle
+    // when the list is the narrow master pane.
+    let title_x = rect.x0 + 18.0 + header_inset;
     tr.draw_text_weighted(
         scene,
         title,
         17.0,
         c.text_primary,
-        t * Affine::translate((rect.x0 + 18.0, rect.y0 + 16.0)),
+        t * Affine::translate((title_x, rect.y0 + 16.0)),
         None,
         TextWeight::Bold,
     );
@@ -923,7 +1153,7 @@ fn draw_list(
         &count_label,
         13.0,
         c.text_dim,
-        t * Affine::translate((rect.x0 + 18.0 + title_w0 + 10.0, rect.y0 + 19.0)),
+        t * Affine::translate((title_x + title_w0 + 10.0, rect.y0 + 19.0)),
         None,
     );
     let content = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
@@ -1034,6 +1264,8 @@ fn draw_reader(
     feed: Option<&Feed>,
     scroll: f64,
     now: i64,
+    // Extra left margin so the body clears a narrow-mode Back affordance.
+    header_inset: f64,
 ) -> (Vec<(Rect, String)>, Option<Rect>, f64) {
     let c = &theme.tokens.colors;
     let mut links = Vec::new();
@@ -1045,13 +1277,13 @@ fn draw_reader(
             "Select an article to read",
             16.0,
             c.text_dim,
-            t * Affine::translate((rect.x0 + 48.0, rect.y0 + 64.0)),
+            t * Affine::translate((rect.x0 + 48.0 + header_inset, rect.y0 + 64.0)),
             None,
         );
         return (links, open_rect, 0.0);
     };
 
-    let pad = 48.0;
+    let pad = (48.0_f64).max(header_inset);
     let content_x = rect.x0 + pad;
     let content_w = (rect.width() - pad * 2.0).max(120.0) as f32;
     // The shared toolbar bar occupies the top HEADER_H of this pane, so the
@@ -1289,6 +1521,49 @@ fn draw_toolbar(
     }
 }
 
+/// Which glyph a responsive chrome button shows.
+#[derive(Clone, Copy)]
+enum ChromeGlyph {
+    /// Hamburger — summon the collapsed sidebar.
+    Menu,
+    /// Close (X) — dismiss the open overlay sidebar.
+    Close,
+    /// Back chevron — return from the pushed detail to the list.
+    Back,
+}
+
+/// A small raised, rounded button hosting a single chrome glyph (hamburger /
+/// close / back). Used for the responsive sidebar toggle and the narrow
+/// master→detail Back affordance.
+fn draw_chrome_button(
+    scene: &mut Scene,
+    t: Affine,
+    theme: &Theme,
+    rect: &Rect,
+    glyph: ChromeGlyph,
+    mouse: Point,
+) {
+    let c = &theme.tokens.colors;
+    let shape = RoundedRect::from_rect(*rect, 9.0);
+    let hovered = rect.contains(mouse);
+    let bg = if hovered { c.neutral[3] } else { c.surfaces.raised };
+    scene.fill(Fill::NonZero, t, bg.with_alpha_factor(0.94), None, &shape);
+    scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 150), None, &shape);
+    let center = rect.center();
+    match glyph {
+        ChromeGlyph::Menu => icons::hamburger(scene, t, center, 8.0, c.text_primary),
+        ChromeGlyph::Close => {
+            let r = 6.0;
+            let s = Stroke::new(1.8);
+            scene.stroke(&s, t, c.text_primary, None,
+                &Line::new(Point::new(center.x - r, center.y - r), Point::new(center.x + r, center.y + r)));
+            scene.stroke(&s, t, c.text_primary, None,
+                &Line::new(Point::new(center.x + r, center.y - r), Point::new(center.x - r, center.y + r)));
+        }
+        ChromeGlyph::Back => icons::back_arrow(scene, t, center, 6.0, c.text_primary),
+    }
+}
+
 fn draw_toast(
     scene: &mut Scene,
     t: Affine,
@@ -1485,6 +1760,19 @@ impl Widget for FeedsApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // The width is now known — reconcile the flap so a breakpoint crossing
+        // adopts the new default (wide ⇒ docked-open, narrow ⇒ overlay-closed)
+        // before the next draw.
+        let layout = self.nav_layout();
+        self.sidebar.reconcile(layout);
+        // On the very first real layout, settle the eased reveal to the
+        // resolved default so a fresh narrow window opens closed (no slide-out
+        // from the docked-open construction default) and a fresh wide window
+        // opens with the rail already docked.
+        if !self.settled_once {
+            self.sidebar.snap(self.sidebar.is_open(layout));
+            self.settled_once = true;
+        }
         self.recompute_geometry();
     }
 
@@ -1570,9 +1858,11 @@ impl Widget for FeedsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames flowing while network fetches are outstanding so the
-        // `sync` drain runs, and briefly while a toast is visible.
-        self.worker.as_ref().map(|w| w.pending() > 0).unwrap_or(false)
+        // Keep frames flowing while the sidebar flap is mid-slide, while
+        // network fetches are outstanding so the `sync` drain runs, and
+        // briefly while a toast is visible.
+        self.sidebar.is_animating(self.nav_layout())
+            || self.worker.as_ref().map(|w| w.pending() > 0).unwrap_or(false)
             || self
                 .toast
                 .as_ref()
@@ -1612,6 +1902,23 @@ impl FeedsApp {
             }
             *handled = true;
             return;
+        }
+
+        // Esc dismisses the responsive overlay sidebar, then unwinds a pushed
+        // detail back to the list (narrow master→detail).
+        if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
+            if self.nav_layout() == SplitLayout::Overlay
+                && self.sidebar.is_open(SplitLayout::Overlay)
+            {
+                self.sidebar.close();
+                *handled = true;
+                return;
+            }
+            if self.nav_layout() == SplitLayout::Overlay && self.detail_pushed {
+                self.show_master();
+                *handled = true;
+                return;
+            }
         }
 
         match &key_event.logical_key {
@@ -1768,5 +2075,120 @@ mod tests {
         let before = a.store.folder(fid).unwrap().collapsed;
         a.toggle_folder(fid, &mut doc);
         assert_ne!(a.store.folder(fid).unwrap().collapsed, before);
+    }
+
+    // --- responsive layout ------------------------------------------------
+
+    /// Drive the same path `apply_layout` runs: set the allocated rect,
+    /// reconcile + settle the flap, and recompute the cached pane geometry.
+    fn lay_out(app: &mut FeedsApp, w: f64, h: f64) {
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        let layout = app.nav_layout();
+        app.sidebar.reconcile(layout);
+        if !app.settled_once {
+            app.sidebar.snap(app.sidebar.is_open(layout));
+            app.settled_once = true;
+        }
+        app.recompute_geometry();
+    }
+
+    #[test]
+    fn wide_keeps_three_panes_docked() {
+        let mut a = app();
+        lay_out(&mut a, 1280.0, 800.0);
+        assert_eq!(a.nav_layout(), SplitLayout::Docked);
+        // Sidebar is docked open beside the content (full reveal).
+        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
+        // All three panes are present and ordered left→right.
+        assert!(a.sidebar_rect.x1 <= a.list_rect.x0 + 0.5);
+        assert!(a.list_rect.x1 <= a.reader_rect.x0 + 0.5);
+        assert!(a.reader_rect.width() > 1.0, "reader pane has room when wide");
+        // No overlay chrome when docked-open.
+        assert_eq!(a.scrim_rect.area(), 0.0);
+        assert_eq!(a.hamburger_rect.area(), 0.0);
+    }
+
+    #[test]
+    fn narrow_collapses_sidebar_to_closed_overlay() {
+        let mut a = app();
+        lay_out(&mut a, 560.0, 800.0);
+        assert_eq!(a.nav_layout(), SplitLayout::Overlay);
+        // Sidebar starts closed (slid off the left edge) — a fresh narrow
+        // window opens straight to the list.
+        assert!(!a.sidebar.is_open(SplitLayout::Overlay));
+        assert!(a.sidebar_rect.x1 <= a.rect.x0 + 0.5, "closed flap is off-screen left");
+        // The hamburger is offered to summon it; no scrim while closed.
+        assert!(a.hamburger_rect.area() > 0.0);
+        assert_eq!(a.scrim_rect.area(), 0.0);
+        // Master (list) fills the full content width.
+        assert!((a.list_rect.width() - a.rect.width()).abs() < 0.5);
+    }
+
+    #[test]
+    fn hamburger_click_opens_overlay_sidebar_with_scrim() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        lay_out(&mut a, 560.0, 800.0);
+        let p = a.hamburger_rect.center();
+        assert!(a.click(p, &mut doc), "hamburger click is consumed");
+        assert!(a.sidebar.is_open(SplitLayout::Overlay), "sidebar opens");
+        a.snap_sidebar_open(true);
+        lay_out_keep(&mut a, 560.0, 800.0);
+        assert!(a.scrim_rect.area() > 0.0, "open overlay flap dims the content");
+        assert!((a.sidebar_rect.x0 - a.rect.x0).abs() < 0.5, "flap slid flush to the left");
+    }
+
+    #[test]
+    fn scrim_click_dismisses_overlay_sidebar() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        lay_out(&mut a, 560.0, 800.0);
+        a.snap_sidebar_open(true);
+        lay_out_keep(&mut a, 560.0, 800.0);
+        // Click on the dimmed content to the right of the floating sidebar.
+        let p = Point::new(a.rect.x1 - 20.0, 400.0);
+        assert!(a.click(p, &mut doc), "scrim click is consumed");
+        assert!(!a.sidebar.is_open(SplitLayout::Overlay), "scrim click closes the flap");
+    }
+
+    #[test]
+    fn selecting_an_article_pushes_detail_when_narrow() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 560.0, 800.0);
+        assert!(!a.detail_pushed, "narrow window opens on the master list");
+        let id = a.store.articles_for(Filter::All)[0].id;
+        a.select_article(id, &mut doc);
+        assert!(a.detail_pushed, "selecting pushes the reader (detail) in");
+        // Recompute: the reader now fills the pane and a Back affordance shows.
+        lay_out_keep(&mut a, 560.0, 800.0);
+        assert!((a.reader_rect.width() - a.rect.width()).abs() < 0.5);
+        assert!(a.back_rect.area() > 0.0, "detail pane offers a Back affordance");
+        // Hamburger is suppressed in detail (Back owns the corner).
+        assert_eq!(a.hamburger_rect.area(), 0.0);
+        // Back returns to the master list.
+        let p = a.back_rect.center();
+        assert!(a.click(p, &mut doc), "Back click is consumed");
+        assert!(!a.detail_pushed, "Back returns to the master list");
+    }
+
+    #[test]
+    fn selecting_an_article_does_not_push_when_wide() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+        let id = a.store.articles_for(Filter::All)[0].id;
+        a.select_article(id, &mut doc);
+        assert!(!a.detail_pushed, "wide layout shows list + reader together");
+        assert_eq!(a.back_rect.area(), 0.0, "no Back affordance in the docked layout");
+    }
+
+    /// Re-run geometry without re-settling the flap (so an explicit
+    /// snap/toggle survives), mirroring a post-interaction draw frame.
+    fn lay_out_keep(app: &mut FeedsApp, w: f64, h: f64) {
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.recompute_geometry();
     }
 }

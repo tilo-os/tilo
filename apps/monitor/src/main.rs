@@ -25,7 +25,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(monitor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // `--shots` renders one offscreen frame. A `--viewport WxH` arg
+        // overrides the default desktop viewport so the same binary can
+        // capture the narrow responsive layout (overlay rail + single-pane
+        // Processes push). `--scenario NAME` snaps a deterministic
+        // interaction state (`rail` = open overlay rail, `detail` = pushed
+        // detail pane) since a single frame has no event loop.
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let mut app = monitor::MonitorApp::new();
+        if let Some(scenario) = parse_scenario_arg(&args) {
+            app.seed_shot_scenario(&scenario);
+        }
+        render_shot_to_png(Box::new(app), viewport, &out)?;
         return Ok(());
     }
 
@@ -33,6 +44,37 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, monitor::app_root());
     app.run();
     Ok(())
+}
+
+/// Parse `--viewport WxH` (e.g. `--viewport 480x900`) for `--shots`.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let spec = if arg == "--viewport" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--viewport=")
+        };
+        if let Some(spec) = spec {
+            let (w, h) = spec.split_once(['x', 'X'])?;
+            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
+        }
+    }
+    None
+}
+
+/// Parse `--scenario NAME` for a deterministic `--shots` interaction state.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

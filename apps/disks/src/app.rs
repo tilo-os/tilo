@@ -23,7 +23,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::doc::DisksDoc;
 use crate::model::{
@@ -39,6 +39,15 @@ const CARD_H: f64 = 96.0;
 const CARD_GAP: f64 = 12.0;
 const HEADER_H: f64 = 116.0;
 const TAB_H: f64 = 40.0;
+
+/// Below this allocated width (logical px) the drive list stops fitting
+/// beside a readable detail pane, so it collapses from a docked column into
+/// an overlay flap summoned by the hamburger. Matches the shared toolkit's
+/// `DEFAULT_BREAKPOINT`.
+const BREAKPOINT: f64 = 900.0;
+/// The full slide width of the overlay drive list (its column plus the
+/// padding gutters either side), so the eased slide and scrim line up.
+const SIDEBAR_W: f64 = PAD + LIST_W + PAD;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -151,6 +160,16 @@ struct Pending {
 /// viewport + current state, so `draw` and `handle_event` agree without
 /// any ordering hazard.
 struct Layout {
+    /// How the drive list relates to the detail at this width: a permanent
+    /// docked column (wide) or an overlay flap over the content (narrow).
+    split: SplitLayout,
+    /// The drive-list panel rect — its column plus gutters. In overlay mode
+    /// this slides in from the left edge under the eased reveal.
+    sidebar: Rect,
+    /// Dimming scrim behind the open overlay flap (`ZERO` when not overlaid).
+    scrim: Rect,
+    /// Hamburger toggle in the top bar (only painted/hit in overlay mode).
+    hamburger: Option<Rect>,
     refresh: Rect,
     cards: Vec<Rect>,
     header: Rect,
@@ -182,6 +201,19 @@ pub struct DisksApp {
     hover_card: Option<usize>,
     hover_action: Option<ActionKind>,
     hover_tab: Option<Tab>,
+    /// Eased open/closed state of the drive-list flap. Open by default when
+    /// the list is docked (wide window); closed by default when it collapses
+    /// to an overlay (narrow window). The same kernel the shared `NavSplit`
+    /// widget drives — adopted directly here because the whole app is one
+    /// self-drawing canvas rather than a tree of `ui` elements.
+    flap: FlapState,
+    /// Whether a hamburger toggle is hovered (overlay mode only).
+    hover_menu: bool,
+    /// `false` until the first layout pass resolves the width. Used to settle
+    /// the flap to its resolved default on the very first frame (so a cold
+    /// start at a narrow width opens straight to the detail, with no flash of
+    /// the list sliding out).
+    laid_out: bool,
 }
 
 impl DisksApp {
@@ -200,7 +232,31 @@ impl DisksApp {
             hover_card: None,
             hover_action: None,
             hover_tab: None,
+            flap: FlapState::open_when_docked(),
+            hover_menu: false,
+            laid_out: false,
         }
+    }
+
+    /// The drive-list layout at the current width: a docked column beside the
+    /// detail (wide) or an overlay flap over it (narrow).
+    fn split_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), BREAKPOINT)
+    }
+
+    /// Force the drive-list flap to a settled open/closed state with no
+    /// animation. The single-frame `--shots` renderer calls this so a narrow
+    /// capture shows the overlay flap fully revealed over its scrim (rather
+    /// than a frame caught mid-slide).
+    pub fn snap_sidebar(&mut self, open: bool) {
+        self.flap.snap(open);
+        self.dirty = true;
+    }
+
+    /// Whether the drive list is currently open (resolving the user's
+    /// preference against the layout default).
+    fn list_open(&self) -> bool {
+        self.flap.is_open(self.split_layout())
     }
 
     fn drive(&self) -> Option<&Drive> {
@@ -212,15 +268,40 @@ impl DisksApp {
         let v = self.rect;
         let refresh = Rect::new(v.x1 - PAD - 110.0, (TOPBAR_H - 32.0) / 2.0, v.x1 - PAD, (TOPBAR_H + 32.0) / 2.0);
 
-        // Drive list cards.
+        // Responsive split: in a wide window the drive list is a permanent
+        // column beside the detail; in a narrow window it collapses to an
+        // overlay flap that the hamburger summons over the full-width detail.
+        let split = self.split_layout();
+        let (sidebar, scrim, hamburger, list_x0, detail_x0) = match split {
+            SplitLayout::Docked => {
+                // The list column eases in/out by the reveal so toggling it is
+                // smooth; the detail follows the list's trailing edge.
+                let inset = SIDEBAR_W * self.flap.reveal();
+                let sidebar = Rect::new(v.x0, v.y0, v.x0 + inset, v.y1);
+                let detail_x0 = v.x0 + inset + if inset > 0.5 { 0.0 } else { PAD };
+                (sidebar, Rect::ZERO, None, v.x0 + PAD, detail_x0.max(v.x0 + PAD))
+            }
+            SplitLayout::Overlay => {
+                // Detail spans the full width; the list slides in from the
+                // left over a scrim. The hamburger lives in the top bar.
+                let slide = self.flap.slide();
+                let panel_x0 = v.x0 - SIDEBAR_W * (1.0 - slide);
+                let sidebar = Rect::new(panel_x0, v.y0, panel_x0 + SIDEBAR_W, v.y1);
+                let scrim = if self.flap.reveal() > 0.001 { v } else { Rect::ZERO };
+                let ham = Rect::new(PAD, (TOPBAR_H - 30.0) / 2.0, PAD + 38.0, (TOPBAR_H + 30.0) / 2.0);
+                (sidebar, scrim, Some(ham), panel_x0 + PAD, v.x0 + PAD)
+            }
+        };
+
+        // Drive list cards — anchored to the (possibly sliding) list column.
         let mut cards = Vec::new();
         let mut cy = TOPBAR_H + PAD;
         for _ in &self.topo.drives {
-            cards.push(Rect::new(PAD, cy, PAD + LIST_W, cy + CARD_H));
+            cards.push(Rect::new(list_x0, cy, list_x0 + LIST_W, cy + CARD_H));
             cy += CARD_H + CARD_GAP;
         }
 
-        let dx0 = PAD + LIST_W + PAD;
+        let dx0 = detail_x0;
         let dx1 = v.x1 - PAD;
         let region_top = TOPBAR_H + PAD;
         let header = Rect::new(dx0, region_top, dx1, region_top + HEADER_H);
@@ -288,6 +369,10 @@ impl DisksApp {
         });
 
         Layout {
+            split,
+            sidebar,
+            scrim,
+            hamburger,
             refresh,
             cards,
             header,
@@ -376,14 +461,36 @@ impl DisksApp {
             None,
             &Line::new(Point::new(bar.x0, bar.y1), Point::new(bar.x1, bar.y1)),
         );
-        self.txt(scene, tr, "Disks", 22.0, c.text_primary, PAD, 14.0, None, TextWeight::Bold);
+
+        // Hamburger toggle (narrow window only): summons the drive-list flap.
+        // It nudges the title rightward so the two never collide.
+        let title_x = if let Some(hb) = lay.hamburger {
+            let hov = self.hover_menu;
+            Self::fill_rr(scene, t, hb, 8.0, if hov { c.neutral[3] } else { c.neutral[2] });
+            Self::stroke_rr(scene, t, hb, 8.0, c.border_standard, 1.0);
+            let lx = hb.x0 + 11.0;
+            for i in 0..3 {
+                let ly = hb.y0 + 10.0 + i as f64 * 5.0;
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    t,
+                    c.text_primary,
+                    None,
+                    &Line::new(Point::new(lx, ly), Point::new(hb.x1 - 11.0, ly)),
+                );
+            }
+            hb.x1 + 12.0
+        } else {
+            PAD
+        };
+        self.txt(scene, tr, "Disks", 22.0, c.text_primary, title_x, 14.0, None, TextWeight::Bold);
         let summary = format!(
             "{} drives · {} total · {} in use",
             self.topo.drives.len(),
             fmt_size(self.topo.total_size()),
             fmt_size(self.topo.total_used()),
         );
-        self.txt(scene, tr, &summary, 13.0, c.text_dim, PAD + 92.0, 21.0, None, TextWeight::Regular);
+        self.txt(scene, tr, &summary, 13.0, c.text_dim, title_x + 74.0, 21.0, None, TextWeight::Regular);
 
         // Refresh button.
         let r = lay.refresh;
@@ -1080,6 +1187,31 @@ impl Widget for DisksApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // Now that the width is known, reconcile the flap so a window resize
+        // across the breakpoint drops a stale toggle and returns to the new
+        // layout's default (wide ⇒ list docked-open, narrow ⇒ overlay-closed).
+        let split = self.split_layout();
+        self.flap.reconcile(split);
+        // Settle the very first frame to its resolved default so a cold start
+        // at any width paints a static layout (no list sliding in/out).
+        if !self.laid_out {
+            self.flap.snap(self.flap.is_open(split));
+            self.laid_out = true;
+        }
+    }
+
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Advance the eased slide every frame so the flap opens/collapses
+        // smoothly. Mirrors the shared `NavSplit`'s fixed-step tick.
+        let animating = self.flap.tick(self.split_layout(), 1.0 / 60.0);
+        if animating {
+            self.dirty = true;
+        }
+        animating
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.flap.is_animating(self.split_layout())
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
@@ -1089,9 +1221,8 @@ impl Widget for DisksApp {
 
         let lay = self.compute_layout();
         let tr = text_renderer;
-        self.draw_topbar(scene, tr, theme, transform, &lay);
-        self.draw_drive_list(scene, tr, theme, transform, &lay);
 
+        // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
             self.draw_header(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
@@ -1106,6 +1237,33 @@ impl Widget for DisksApp {
         }
 
         self.draw_statusline(scene, tr, theme, transform);
+
+        // Dimming scrim behind the open overlay flap (eased with the reveal).
+        if lay.scrim.width() > 0.0 {
+            let alpha = (self.flap.reveal() * 0.5 * 255.0) as u8;
+            scene.fill(Fill::NonZero, transform, with_alpha(Color::BLACK, alpha), None, &lay.scrim);
+        }
+
+        // Drive-list flap. In overlay mode it floats above the content with an
+        // opaque backdrop so the list reads cleanly; in docked mode it is the
+        // permanent left column and is only hidden mid-collapse.
+        if self.flap.reveal() > 0.001 {
+            if lay.split == SplitLayout::Overlay {
+                let panel = lay.sidebar.intersect(self.rect);
+                scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &panel);
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    c.border_standard,
+                    None,
+                    &Line::new(Point::new(panel.x1, panel.y0), Point::new(panel.x1, panel.y1)),
+                );
+            }
+            self.draw_drive_list(scene, tr, theme, transform, &lay);
+        }
+
+        // Top bar last so the hamburger + title stay above the flap panel.
+        self.draw_topbar(scene, tr, theme, transform, &lay);
 
         if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
             self.draw_modal(scene, tr, theme, transform, &ml, p);
@@ -1133,8 +1291,14 @@ impl Widget for DisksApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
-                let prev = (self.hover_card, self.hover_action, self.hover_tab);
-                self.hover_card = lay.cards.iter().position(|r| r.contains(p));
+                let prev = (self.hover_card, self.hover_action, self.hover_tab, self.hover_menu);
+                // The drive list only receives hover when it's actually shown.
+                let list_shown = self.list_open();
+                self.hover_card = if list_shown {
+                    lay.cards.iter().position(|r| r.contains(p))
+                } else {
+                    None
+                };
                 self.hover_action = lay
                     .actions
                     .iter()
@@ -1142,7 +1306,8 @@ impl Widget for DisksApp {
                     .find(|(r, _)| r.contains(p))
                     .map(|(_, a)| *a);
                 self.hover_tab = lay.tabs.iter().find(|(r, _)| r.contains(p)).map(|(_, t)| *t);
-                if prev != (self.hover_card, self.hover_action, self.hover_tab) {
+                self.hover_menu = lay.hamburger.is_some_and(|hb| hb.contains(p));
+                if prev != (self.hover_card, self.hover_action, self.hover_tab, self.hover_menu) {
                     self.dirty = true;
                 }
             }
@@ -1164,16 +1329,44 @@ impl Widget for DisksApp {
                     self.dirty = true;
                     return;
                 }
+                // Hamburger toggles the overlay flap (narrow window only).
+                if lay.hamburger.is_some_and(|hb| hb.contains(p)) {
+                    self.flap.toggle(self.split_layout());
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                // While the overlay flap is open, a click on the scrim (i.e.
+                // outside the sliding list panel) dismisses it.
+                if lay.split == SplitLayout::Overlay
+                    && self.list_open()
+                    && lay.scrim.width() > 0.0
+                    && !lay.sidebar.contains(p)
+                {
+                    self.flap.close();
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
                 if lay.refresh.contains(p) {
                     self.do_refresh(state);
                     *handled = true;
                     self.dirty = true;
                     return;
                 }
-                if let Some(i) = lay.cards.iter().position(|r| r.contains(p)) {
-                    self.select(state, i);
-                    *handled = true;
-                    return;
+                // Drive cards are only clickable when the list is shown.
+                if self.list_open() {
+                    if let Some(i) = lay.cards.iter().position(|r| r.contains(p)) {
+                        self.select(state, i);
+                        // Selecting from the overlay flap dismisses it so the
+                        // detail is immediately visible (single-pane feel).
+                        if lay.split == SplitLayout::Overlay {
+                            self.flap.close();
+                        }
+                        *handled = true;
+                        self.dirty = true;
+                        return;
+                    }
                 }
                 if let Some((_, tab)) = lay.tabs.iter().find(|(r, _)| r.contains(p)) {
                     self.set_tab(state, *tab);
@@ -1211,6 +1404,16 @@ impl Widget for DisksApp {
                         }
                         _ => {}
                     }
+                    return;
+                }
+                // Esc dismisses an open overlay flap before any other binding.
+                if matches!(logical_key, Key::Named(NamedKey::Escape))
+                    && lay.split == SplitLayout::Overlay
+                    && self.list_open()
+                {
+                    self.flap.close();
+                    *handled = true;
+                    self.dirty = true;
                     return;
                 }
                 match logical_key {
@@ -1377,5 +1580,97 @@ mod tests {
         assert_eq!(lay.cards.len(), 4);
         assert_eq!(lay.tabs.len(), 4);
         assert_eq!(lay.actions.len(), 4);
+    }
+
+    /// Lay the app out at a given width through the real `build_layout` +
+    /// `apply_layout` passes, so these tests exercise the production
+    /// responsiveness path (reconcile + first-frame settle) rather than a
+    /// synthetic shortcut.
+    fn at_width(width: f64) -> DisksApp {
+        let (mut app, _doc) = seeded_app();
+        layout_at(&mut app, width);
+        app
+    }
+
+    fn layout_at(app: &mut DisksApp, width: f64) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width as f32),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn wide_window_docks_the_list_beside_the_detail() {
+        let app = at_width(1280.0);
+        assert_eq!(app.split_layout(), SplitLayout::Docked);
+        assert!(app.list_open(), "docked list is open by default");
+        let lay = app.compute_layout();
+        assert!(lay.hamburger.is_none(), "no hamburger when docked");
+        assert_eq!(lay.scrim.width(), 0.0, "no scrim when docked");
+        // The detail header begins to the right of the docked list column.
+        assert!(
+            lay.header.x0 >= PAD + LIST_W,
+            "detail is inset past the docked list, got x0={}",
+            lay.header.x0
+        );
+    }
+
+    #[test]
+    fn narrow_window_collapses_list_to_a_closed_overlay() {
+        let app = at_width(640.0);
+        assert_eq!(app.split_layout(), SplitLayout::Overlay);
+        assert!(!app.list_open(), "overlay list is closed by default");
+        let lay = app.compute_layout();
+        assert!(lay.hamburger.is_some(), "narrow window shows a hamburger");
+        assert_eq!(lay.scrim.width(), 0.0, "closed flap paints no scrim");
+        // Detail uses the full width (minus the usual padding) when collapsed.
+        assert!(
+            (lay.content.width() - (app.rect.width() - 2.0 * PAD)).abs() < 1.0,
+            "collapsed detail spans the full width"
+        );
+        // The list panel is slid fully off the left edge while closed.
+        assert!(lay.sidebar.x1 <= app.rect.x0 + 0.5, "closed flap is off-screen left");
+    }
+
+    #[test]
+    fn hamburger_summons_overlay_flap_with_scrim() {
+        let mut app = at_width(640.0);
+        app.flap.snap(true); // settle open deterministically
+        assert!(app.list_open());
+        let lay = app.compute_layout();
+        assert!(lay.scrim.width() > 0.0, "open overlay flap dims the content behind a scrim");
+        // Fully revealed, the list panel sits flush at the left edge.
+        assert!(
+            (lay.sidebar.x0 - app.rect.x0).abs() < 1.0,
+            "revealed overlay list is flush left, got x0={}",
+            lay.sidebar.x0
+        );
+        // Cards ride along with the panel.
+        assert_eq!(lay.cards.len(), 4);
+        assert!((lay.cards[0].x0 - (app.rect.x0 + PAD)).abs() < 1.0);
+    }
+
+    #[test]
+    fn crossing_breakpoint_restores_the_layout_default() {
+        // User hides the docked list, then the window narrows: the stale
+        // preference is dropped and the overlay default (closed) applies;
+        // widening again returns to the docked default (open).
+        let mut app = at_width(1280.0);
+        app.flap.close();
+        assert!(!app.list_open());
+        layout_at(&mut app, 640.0);
+        assert!(!app.list_open(), "narrow default is closed");
+        layout_at(&mut app, 1280.0);
+        assert!(app.list_open(), "widening restores the docked-open default");
     }
 }

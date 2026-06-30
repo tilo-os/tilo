@@ -34,3 +34,16 @@ pub use app::BooksApp;
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
     Box::new(BooksApp::new())
 }
+
+/// Like [`app_root`] but staged with a named scenario for the headless
+/// `--shots` renderer (which captures one settled frame and can't drive live
+/// input). See [`BooksApp::seed_shot_scenario`]. An empty/unknown name yields
+/// the default frame.
+///
+/// Recognised scenarios: `narrow` — the contents rail summoned as an overlay
+/// flap over the page behind a scrim (the narrow-window layout).
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
+    let mut app = BooksApp::new();
+    app.seed_shot_scenario(scenario);
+    Box::new(app)
+}
