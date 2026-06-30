@@ -169,6 +169,20 @@ impl Document {
         crate::model::doc_props(&self.doc, &self.c)
     }
 
+    /// Set the document-wide multi-column layout: `count` newspaper-style columns
+    /// for the body, with an optional `gap` (px) between them. `count <= 1` clears
+    /// the setting (single column). Round-trips through `.odt`/`.docx`.
+    pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
+        self.as_mut().set_columns(count, gap);
+        self.doc.commit();
+    }
+
+    /// The document-wide multi-column layout: `(column_count, optional_gap_px)`.
+    /// Defaults to `(1, None)` (single column) for documents with no column setting.
+    pub fn columns(&self) -> (u32, Option<f64>) {
+        crate::model::columns(&self.doc, &self.c)
+    }
+
     pub fn blocks_in_order(&self) -> Vec<String> {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
@@ -522,6 +536,47 @@ mod tests {
         let d2 = Document::load(&bytes).unwrap();
         let (v, _) = d2.doc.get(&ROOT, KEY_SCHEMA).unwrap().unwrap();
         assert_eq!(v.to_str(), Some(SCHEMA_ID));
+    }
+
+    #[test]
+    fn columns_default_set_clear_and_persist() {
+        let mut d = Document::new();
+        // Absent → single column, surfaced in the snapshot.
+        assert_eq!(d.columns(), (1, None), "default is a single column with no gap");
+        assert_eq!(d.materialize().columns, 1);
+        assert_eq!(d.materialize().column_gap, None);
+
+        // Set + read back, and surface in the snapshot.
+        d.set_columns(2, Some(18.0));
+        assert_eq!(d.columns(), (2, Some(18.0)));
+        let snap = d.materialize();
+        assert_eq!(snap.columns, 2);
+        assert_eq!(snap.column_gap, Some(18.0));
+
+        // Survives a CRDT save/load round-trip.
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.columns(), (2, Some(18.0)), "columns survive save/load");
+
+        // Setting back to one column clears the setting (single-column default).
+        let mut d3 = Document::load(&bytes).unwrap();
+        d3.set_columns(1, None);
+        assert_eq!(d3.columns(), (1, None));
+        assert_eq!(d3.materialize().columns, 1);
+    }
+
+    #[test]
+    fn columns_count_is_clamped_to_at_least_one() {
+        let mut d = Document::new();
+        // A zero count is meaningless; the reader clamps to a single column.
+        d.set_columns(0, None);
+        assert_eq!(d.columns(), (1, None));
+    }
+
+    #[test]
+    fn docsnapshot_default_is_single_column() {
+        // The hand-rolled `Default` must yield one column, not the integer default 0.
+        assert_eq!(crate::snapshot::DocSnapshot::default().columns, 1);
     }
 
     #[test]

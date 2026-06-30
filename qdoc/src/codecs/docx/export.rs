@@ -56,8 +56,13 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     // Page header/footer parts + the `w:sectPr` references that wire them in.
     let hf_parts = super::headers::export_parts(&doc);
-    let sectpr = if hf_parts.any() {
-        format!(r#"<w:sectPr>{}</w:sectPr>"#, super::headers::section_references(&hf_parts))
+    // Multi-column section layout: a `<w:cols>` element folded into the same sectPr.
+    let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
+    // The `w:sectPr` is emitted when *either* the header/footer references or the
+    // columns need to ride in it. In a sectPr's defined element order the
+    // header/footer references precede `w:cols`, so the references come first.
+    let sectpr = if hf_parts.any() || !cols.is_empty() {
+        format!(r#"<w:sectPr>{}{}</w:sectPr>"#, super::headers::section_references(&hf_parts), cols)
     } else {
         String::new()
     };
@@ -1854,5 +1859,71 @@ mod tests {
         assert!(out.get("word/document.xml").is_some(), "body regenerated");
         // styles.xml from the source survives verbatim.
         assert_eq!(out.get("word/styles.xml"), c.get("word/styles.xml"));
+    }
+
+    #[test]
+    fn columns_roundtrip() {
+        // Author a 2-column body with a gap, export to .docx, re-import: the column
+        // setting survives, and the sectPr carries a `w:cols w:num="2" w:space="…"`.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "flows across columns");
+        d.set_columns(2, Some(24.0)); // 24 px gap → 360 twips
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<w:sectPr>"), "sectPr emitted for columns: {document}");
+        assert!(document.contains(r#"<w:cols w:num="2""#), "w:cols num=2 in sectPr: {document}");
+        assert!(document.contains(r#"w:space="360""#), "w:cols space=360 twips (24px): {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let (count, gap) = d2.columns();
+        assert_eq!(count, 2, "column count survives .docx round-trip");
+        assert_eq!(gap, Some(24.0), "column gap (px) survives .docx round-trip");
+        assert_eq!(d2.materialize().columns, 2, "snapshot surfaces the column count");
+    }
+
+    #[test]
+    fn columns_added_to_existing_header_sectpr() {
+        // A document that already needs a sectPr (it has a header) must get `w:cols`
+        // ADDED to that same sectPr, not a second one.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "body");
+        let h = d.insert_header_block(None, "paragraph");
+        d.splice_header_text(&h, 0, 0, "Header");
+        d.set_columns(3, None);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+        assert_eq!(document.matches("<w:sectPr>").count(), 1, "exactly one sectPr: {document}");
+        assert!(document.contains("<w:headerReference"), "header reference kept: {document}");
+        assert!(document.contains(r#"<w:cols w:num="3""#), "columns folded into the sectPr: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.columns().0, 3, "column count survives alongside the header");
+        assert_eq!(d2.header()[0].text, "Header", "header survives alongside columns");
+    }
+
+    #[test]
+    fn single_column_emits_no_cols() {
+        // The default single-column document must not emit a `w:cols` (nor force a
+        // sectPr when nothing else needs one).
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "plain");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+        assert!(!document.contains("<w:cols"), "no w:cols for a single-column doc: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.columns(), (1, None), "single-column default round-trips");
     }
 }
