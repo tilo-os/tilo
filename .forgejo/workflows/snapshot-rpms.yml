@@ -1,0 +1,61 @@
+name: Snapshot frozen RPM repo
+
+# Builds + pushes the digest-pinned frozen RPM repo that os/Containerfile
+# installs from (for cross-time-reproducible OS builds). Runs in CI — the image
+# ships from here, never a laptop. Manual dispatch: run it when you bump the
+# base image or the package set. It prints the new RPMS_REF; commit that to
+# os/rpms-snapshot.env (a normal PR/commit) and the OS build picks it up.
+on:
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      # Single source of truth: base image + package set both come from
+      # os/Containerfile, so the snapshot can never drift from what's installed.
+      - name: Derive base image + package set from os/Containerfile
+        run: |
+          echo "BASE=$(awk '/^FROM .*fedora-bootc.* AS builder/{print $2; exit}' os/Containerfile)" >> "$GITHUB_ENV"
+          pkgs=$(awk '/dnf install -y/{blk=$0; while(blk ~ /\\[[:space:]]*$/){getline nx; sub(/\\[[:space:]]*$/,"",blk); blk=blk" "nx} sub(/.*dnf install -y/,"",blk); sub(/&&.*/,"",blk); n=split(blk,a," "); for(i=1;i<=n;i++) if(a[i] ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/) print a[i]}' os/Containerfile | sort -u | tr '\n' ' ')
+          echo "PACKAGES=$pkgs" >> "$GITHUB_ENV"
+          echo "packages: $pkgs"
+
+      - name: Log in to the code.podesta.ai registry
+        uses: docker/login-action@v3
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build + push the frozen RPM repo image
+        id: rpms
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: os/Containerfile.rpms
+          push: true
+          tags: code.podesta.ai/qos/rpms:${{ github.sha }}
+          build-args: |
+            BASE=${{ env.BASE }}
+            PACKAGES=${{ env.PACKAGES }}
+          provenance: false
+
+      - name: Report the pinned RPMS_REF to commit
+        run: |
+          ref="code.podesta.ai/qos/rpms@${{ steps.rpms.outputs.digest }}"
+          echo "::notice::Frozen RPM repo published. Set os/rpms-snapshot.env to: RPMS_REF=$ref"
+          {
+            echo "## Frozen RPM repo published"
+            echo ""
+            echo 'Commit this to `os/rpms-snapshot.env`:'
+            echo ""
+            echo '```'
+            echo "RPMS_REF=$ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
