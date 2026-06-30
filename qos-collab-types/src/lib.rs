@@ -90,7 +90,7 @@ pub use crypto::{
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
-pub use op::SignedOp;
+pub use op::{EncryptionMetadata, SignedOp};
 pub use role::{ArtifactKind, OpClass, Role, role_permits};
 pub use space::{Space, SpaceId};
 pub use validator::{ChannelState, ValidationError, validate_inbound_op};
