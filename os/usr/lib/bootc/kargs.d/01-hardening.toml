@@ -1,0 +1,23 @@
+# qOS kernel hardening (security plan §11 — "table stakes"). bootc applies these
+# kargs to the bootloader entry at install/upgrade. All are low-risk and mostly
+# free on the Fedora kernel; the qos-security-audit.service asserts they're live.
+kargs = [
+  # Zero kernel heap + page allocations on alloc and free — kills a large class
+  # of kernel use-after-free / uninitialised-memory info leaks.
+  "init_on_alloc=1",
+  "init_on_free=1",
+  # Kernel lockdown in integrity mode: even root can't modify the running kernel
+  # (kexec, /dev/mem, raw MSRs, unsigned modules). Fully enforced under Secure
+  # Boot; harmless without it.
+  "lockdown=integrity",
+  # Don't merge slab caches of similar size — makes heap-spray/overwrite attacks
+  # across cache boundaries much harder.
+  "slab_nomerge",
+  # Randomise the kernel stack offset per syscall (defeats stack-based info leaks
+  # / ROP that rely on a predictable offset).
+  "randomize_kstack_offset=on",
+  # Shuffle the page allocator free lists (entropy against heap-layout attacks).
+  "page_alloc.shuffle=1",
+  # Disable the legacy vsyscall page (a fixed-address, executable ROP target).
+  "vsyscall=none",
+]
