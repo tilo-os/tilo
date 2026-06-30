@@ -287,18 +287,44 @@ impl FrameBuilder {
     ) -> bool {
         let mut handled = false;
         let child = self.host_node();
-        let (host, taffy) = self.host_and_taffy_mut();
-        host.handle_event(
-            event,
-            1.0,
-            modifiers,
-            state,
-            root_obj,
-            &mut handled,
-            focus,
-            child,
-            taffy,
-        );
+        // Snapshot the focus going in so we can detect any new target
+        // set by the host's `handle_event`. Mirrors what
+        // `ui::App::window_event` does at the production seam.
+        let prior_focus = *focus;
+        let mut focus_target: Option<NodeId> = None;
+        {
+            let (host, taffy) = self.host_and_taffy_mut();
+            host.handle_event(
+                event,
+                1.0,
+                modifiers,
+                state,
+                root_obj,
+                &mut handled,
+                &mut focus_target,
+                child,
+                taffy,
+            );
+        }
+        // Apply the requested focus change: drop old widget's focus,
+        // raise new widget's focus. Without this step, clicking on a
+        // focusable widget like NotesApp would set `focus_target` but
+        // the widget itself would never see `set_focus(true)` — its
+        // `is_focused()` stays `false` and rendering keeps showing the
+        // unfocused state ("Click to edit" instead of editing chrome).
+        if let Some(new_id) = focus_target {
+            if prior_focus != Some(new_id) {
+                if let Some(old_id) = prior_focus {
+                    if let Some(&w_ptr) = self.node_map.get(&old_id) {
+                        unsafe { (*w_ptr).set_focus(false); }
+                    }
+                }
+                if let Some(&w_ptr) = self.node_map.get(&new_id) {
+                    unsafe { (*w_ptr).set_focus(true); }
+                }
+                *focus = Some(new_id);
+            }
+        }
         handled
     }
 
