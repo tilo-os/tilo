@@ -36,7 +36,8 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::backend::{
-    headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId, WinitBackend,
+    combined_geometry, headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId,
+    WinitBackend,
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
@@ -747,11 +748,14 @@ pub fn run() -> ! {
     // The compositor and the offscreen tooling share `FrameBuilder`,
     // so the chrome rendered into the host window is byte-identical
     // to the screenshots `cargo run --bin shots` produces.
-    let initial_size = backend
-        .outputs()
-        .first()
-        .map(|o| o.size)
-        .unwrap_or((1600, 900));
+    // Size the scene to the bounding box spanning every output (Track
+    // B3): the compositor paints one scene across the combined geometry
+    // and each output presents its own sub-rect. For a single output this
+    // equals that output's size, so single-monitor layout is unchanged.
+    let initial_size = match combined_geometry(backend.outputs()) {
+        (0, 0) => (1600, 900),
+        size => size,
+    };
     let mut frame_builder = FrameBuilder::new(initial_size);
 
     // `new_auto` walks `wayland-1..wayland-32` and binds the first free name.
