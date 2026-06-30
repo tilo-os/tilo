@@ -23,6 +23,7 @@ pub mod app;
 pub mod doc;
 pub mod journal;
 pub mod model;
+pub mod responsive;
 pub mod theme_ext;
 
 pub use app::LogsApp;
