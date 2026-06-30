@@ -40,6 +40,10 @@ pub struct ActionButton {
     label: String,
     /// CRDT path of the boolean flag raised when the button fires.
     click_path: String,
+    /// Stable E2E `test_id`. Defaults to the label, but the label can change
+    /// (e.g. a checkbox-style toggle), so it can be pinned via
+    /// [`ActionButton::with_test_id`] to stay addressable across rebuilds.
+    test_id: Option<String>,
     primary: bool,
     disabled: bool,
     rect: Rect,
@@ -54,6 +58,7 @@ impl ActionButton {
         Self {
             label: label.to_string(),
             click_path: click_path.to_string(),
+            test_id: None,
             primary: false,
             disabled: false,
             rect: Rect::ZERO,
@@ -66,6 +71,12 @@ impl ActionButton {
     /// Promote to the accent-filled primary call-to-action.
     pub fn primary(mut self) -> Self {
         self.primary = true;
+        self
+    }
+
+    /// Pin a stable E2E `test_id` (defaults to the label otherwise).
+    pub fn with_test_id(mut self, id: &str) -> Self {
+        self.test_id = Some(id.to_string());
         self
     }
 
@@ -248,7 +259,7 @@ impl Widget for ActionButton {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some(self.label.as_str())
+        Some(self.test_id.as_deref().unwrap_or(self.label.as_str()))
     }
 
     fn get_rect(&self) -> Rect {

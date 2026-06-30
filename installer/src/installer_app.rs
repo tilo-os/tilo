@@ -75,6 +75,8 @@ const HOSTNAME_PATH: &str = "installer.hostname";
 const TIMEZONE_PATH: &str = "installer.timezone";
 /// CRDT path holding the selected keyboard layout's *display name*.
 const KEYMAP_PATH: &str = "installer.keymap";
+/// CRDT path holding the (masked) TPM2 unlock PIN, when encryption is on.
+const PIN_PATH: &str = "installer.pin";
 const NEXT_PATH: &str = "installer.next";
 const BACK_PATH: &str = "installer.back";
 const BEGIN_PATH: &str = "installer.begin";
@@ -93,10 +95,22 @@ fn fs_path(i: usize) -> String {
 fn encrypt_path(i: usize) -> String {
     format!("installer.encrypt.{i}")
 }
+/// Per-FIDO2-choice selection flag path: `installer.fido2.<index>`
+/// (index 0 = off, 1 = on). Mirrors the encryption segmented selector.
+fn fido2_path(i: usize) -> String {
+    format!("installer.fido2.{i}")
+}
+/// Rising-edge flag toggling the "I've saved my recovery key" acknowledgement.
+const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
 
 /// Labels for the encryption segmented selector, in display order. Index 0
-/// (off) is the default; index 1 enables TPM2-bound LUKS.
+/// (off) is the default; index 1 enables multi-factor LUKS.
 pub const ENCRYPT_LABELS: [&str; 2] = ["No encryption", "Encrypt disk (LUKS)"];
+
+/// Labels for the FIDO2 segmented selector, in display order. Index 0 (off)
+/// is the default; index 1 enrolls a hardware security key as an extra
+/// unlock factor. Only shown when encryption is on.
+pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "qos";
@@ -121,7 +135,7 @@ fn fs_description(i: usize) -> &'static str {
 /// Explanation shown under the encryption chooser, reflecting the choice.
 fn encrypt_description(encrypt: bool) -> &'static str {
     if encrypt {
-        "Encrypts the whole disk with LUKS, unlocked automatically by this computer's TPM2 security chip — no passphrase to type at boot. Requires a TPM2 device."
+        "Encrypts the whole disk with LUKS. This computer's TPM2 chip unlocks it at boot, and a recovery key (shown once during install) is always generated as a backup in case the TPM is reset or fails. Requires a TPM2 device."
     } else {
         "The disk is not encrypted. Anyone with physical access can read your data."
     }
@@ -458,8 +472,17 @@ pub struct InstallerApp {
     selected_disk: Option<usize>,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
-    /// Full-disk encryption (TPM2-bound LUKS) opt-in. Default `false`.
+    /// Full-disk encryption (multi-factor LUKS) opt-in. Default `false`.
     encrypt: bool,
+    /// Enroll a FIDO2 security key as an extra unlock factor (only with
+    /// encryption). Default `false`.
+    fido2: bool,
+    /// Cached (masked) TPM2 unlock PIN (mirrors the `installer.pin` CRDT
+    /// Text). Empty ⇒ no PIN slot is enrolled. Only used with encryption.
+    pin: String,
+    /// User has acknowledged they will save the install-time recovery key.
+    /// Required before Begin Install when encryption is on. Default `false`.
+    recovery_ack: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -519,6 +542,9 @@ impl InstallerApp {
             selected_disk: None,
             selected_fs: 0,
             encrypt: false,
+            fido2: false,
+            pin: String::new(),
+            recovery_ack: false,
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -628,8 +654,34 @@ impl InstallerApp {
         layouts::by_display_name(self.keymap.trim()).unwrap_or_else(layouts::default_layout)
     }
 
+    /// Human-readable summary of the encryption factors for the Review step.
+    fn encryption_summary(&self) -> String {
+        if !self.encrypt {
+            return "Off".to_string();
+        }
+        // Recovery key is always present; TPM is PIN-protected iff a PIN was
+        // entered; FIDO2 is listed only when enrolling.
+        let mut factors = vec!["recovery key".to_string()];
+        if self.pin.trim().is_empty() {
+            factors.push("TPM2".to_string());
+        } else {
+            factors.push("TPM2 + PIN".to_string());
+        }
+        if self.fido2 {
+            factors.push("FIDO2".to_string());
+        }
+        format!("On (LUKS — {})", factors.join(", "))
+    }
+
     fn install_options(&self) -> InstallOptions {
         let layout = self.layout();
+        // PIN / FIDO2 are only meaningful alongside encryption; drop them
+        // when it's off so a stale value can't reach the backend.
+        let (pin, fido2) = if self.encrypt {
+            (self.pin.clone(), self.fido2)
+        } else {
+            (String::new(), false)
+        };
         InstallOptions {
             filesystem: self.filesystem().to_string(),
             hostname: self.hostname.trim().to_string(),
@@ -637,6 +689,8 @@ impl InstallerApp {
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
             encrypt: self.encrypt,
+            pin,
+            fido2,
         }
     }
 
@@ -673,12 +727,18 @@ impl InstallerApp {
                 let _ = state.splice_text(&obj, 0, 0, &self.keymap);
             }
         }
+        // The TPM2 PIN is a Text object so the masked TextInput can splice
+        // into it like every other field; it starts empty (no PIN).
+        if state.get(root, PIN_PATH).ok().flatten().is_none() {
+            let _ = state.put_object(root, PIN_PATH, ObjType::Text);
+        }
         for path in [
             NEXT_PATH,
             BACK_PATH,
             BEGIN_PATH,
             REBOOT_PATH,
             POWEROFF_PATH,
+            RECOVERY_ACK_PATH,
         ] {
             if state.get(root, path).ok().flatten().is_none() {
                 let _ = state.put(root, path, false);
@@ -698,6 +758,12 @@ impl InstallerApp {
         }
         for i in 0..ENCRYPT_LABELS.len() {
             let p = encrypt_path(i);
+            if state.get(root, p.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, p.as_str(), false);
+            }
+        }
+        for i in 0..FIDO2_LABELS.len() {
+            let p = fido2_path(i);
             if state.get(root, p.as_str()).ok().flatten().is_none() {
                 let _ = state.put(root, p.as_str(), false);
             }
@@ -772,6 +838,12 @@ impl InstallerApp {
             self.set_status("Select a disk to continue");
             return;
         };
+        // Encryption requires the recovery-key acknowledgement (defense in
+        // depth — the Begin button and Enter both gate on this too).
+        if self.encrypt && !self.recovery_ack {
+            self.set_status("Confirm you'll save your recovery key first");
+            return;
+        }
         let user = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
         let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
         let opts = self.install_options();
@@ -982,6 +1054,38 @@ impl InstallerApp {
                         .with_color(dim),
                 ));
 
+                // The extra unlock factors only make sense with encryption on,
+                // so they appear only then.
+                if self.encrypt {
+                    children.push(Box::new(Text::new("Unlock PIN (optional)").with_size(base)));
+                    children.push(Box::new(
+                        TextInput::new(Vec::new())
+                            .with_id("installer.pin")
+                            .with_on_change_path(PIN_PATH)
+                            .with_secret(true),
+                    ));
+                    children.push(Box::new(
+                        Text::new("Add a PIN you'll type at boot alongside the TPM. Leave blank to unlock with the TPM alone.")
+                            .with_size(sm)
+                            .with_color(dim),
+                    ));
+
+                    children.push(Box::new(Text::new("Security key").with_size(base)));
+                    children.push(Box::new(
+                        SegChoice::new(
+                            FIDO2_LABELS.iter().map(|s| s.to_string()).collect(),
+                            (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
+                            if self.fido2 { 1 } else { 0 },
+                        )
+                        .with_test_id("fido2_choice"),
+                    ));
+                    children.push(Box::new(
+                        Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
+                            .with_size(sm)
+                            .with_color(dim),
+                    ));
+                }
+
                 children.push(Box::new(Text::new("Hostname").with_size(base)));
                 children.push(Box::new(
                     TextInput::new(Vec::new())
@@ -1023,11 +1127,7 @@ impl InstallerApp {
                 children.push(summary_row(
                     theme,
                     "Encryption",
-                    if self.encrypt {
-                        "On (LUKS, TPM2-bound)"
-                    } else {
-                        "Off"
-                    },
+                    &self.encryption_summary(),
                 ));
                 children.push(summary_row(theme, "Hostname", self.hostname.trim()));
                 children.push(summary_row(theme, "Time zone", self.timezone.trim()));
@@ -1039,7 +1139,37 @@ impl InstallerApp {
                         .with_size(base)
                         .with_color(danger),
                 ));
-                children.push(nav_row(Step::Review, BEGIN_PATH, "Begin Install", false));
+
+                // Encryption generates a recovery key shown ONCE during the
+                // install. Make the user explicitly acknowledge they'll save
+                // it before they can proceed — otherwise a lost TPM = lost
+                // data with no warning.
+                if self.encrypt {
+                    children.push(Box::new(
+                        Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
+                            .with_size(sm)
+                            .with_color(dim),
+                    ));
+                    let ack_label = if self.recovery_ack {
+                        "[x] I will save my recovery key"
+                    } else {
+                        "[ ] I will save my recovery key"
+                    };
+                    children.push(Box::new(
+                        ActionButton::new(ack_label, RECOVERY_ACK_PATH)
+                            .with_test_id("recovery_ack"),
+                    ));
+                }
+
+                // Begin is gated on the recovery-key acknowledgement when
+                // encrypting (otherwise always enabled).
+                let begin_disabled = self.encrypt && !self.recovery_ack;
+                children.push(nav_row(
+                    Step::Review,
+                    BEGIN_PATH,
+                    "Begin Install",
+                    begin_disabled,
+                ));
             }
             Step::Install => {
                 match self.install_state {
@@ -1263,9 +1393,50 @@ impl Widget for InstallerApp {
             let p = encrypt_path(i);
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
-                self.encrypt = i == 1;
+                let now_on = i == 1;
+                if now_on != self.encrypt {
+                    self.encrypt = now_on;
+                    // Turning encryption off clears the dependent factors so
+                    // a stale PIN / FIDO2 / ack can't survive a toggle.
+                    if !now_on {
+                        self.fido2 = false;
+                        self.recovery_ack = false;
+                        if let Some((Value::Object(ObjType::Text), pobj)) =
+                            state.get(root, PIN_PATH).ok().flatten()
+                        {
+                            if let Ok(cur) = state.text(&pobj) {
+                                let _ =
+                                    state.splice_text(&pobj, 0, cur.chars().count() as isize, "");
+                            }
+                        }
+                        self.pin.clear();
+                    }
+                    self.dirty_structure = true;
+                }
+            }
+        }
+
+        // FIDO2-choice rising edges (Options step, only when encrypting).
+        for i in 0..FIDO2_LABELS.len() {
+            let p = fido2_path(i);
+            if Self::read_flag(state, root, p.as_str()) {
+                let _ = state.put(root, p.as_str(), false);
+                self.fido2 = i == 1;
                 self.dirty_structure = true;
             }
+        }
+
+        // Cache the (masked) PIN text for the backend argv / stdin.
+        if let Some(pin) = Self::read_text(state, root, PIN_PATH) {
+            self.pin = pin;
+        }
+
+        // Recovery-key acknowledgement toggle (Review step, when encrypting).
+        if Self::read_flag(state, root, RECOVERY_ACK_PATH) {
+            let _ = state.put(root, RECOVERY_ACK_PATH, false);
+            self.recovery_ack = !self.recovery_ack;
+            self.status.clear();
+            self.dirty_structure = true;
         }
 
         // Back rising edge.
@@ -1422,7 +1593,12 @@ impl Widget for InstallerApp {
             {
                 match self.step {
                     Step::Review => {
-                        let _ = state.put(root, BEGIN_PATH, true);
+                        // Enter must honour the same gate as the Begin button:
+                        // when encrypting, the recovery-key acknowledgement is
+                        // required before the install can start.
+                        if !(self.encrypt && !self.recovery_ack) {
+                            let _ = state.put(root, BEGIN_PATH, true);
+                        }
                         *handled = true;
                     }
                     Step::Disk | Step::Account | Step::Keyboard | Step::Options => {
@@ -1733,6 +1909,207 @@ mod tests {
         app.sync(&mut doc, &root);
         assert!(!app.encrypt, "selecting the off segment disables encryption");
         assert!(!app.install_options().encrypt);
+    }
+
+    #[test]
+    fn fido2_flag_only_threads_into_options_when_encrypting() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Options;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        // Raise FIDO2 "on" while encryption is OFF: the field tracks the
+        // toggle, but install_options drops it (only meaningful with LUKS).
+        let _ = doc.put(&root, fido2_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(app.fido2, "the toggle state is tracked");
+        assert!(
+            !app.install_options().fido2,
+            "FIDO2 must not reach the backend without encryption"
+        );
+
+        // Turn encryption on → FIDO2 now flows through.
+        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(app.install_options().encrypt);
+        assert!(app.install_options().fido2, "FIDO2 threads through with LUKS");
+    }
+
+    #[test]
+    fn pin_text_threads_into_options_only_when_encrypting() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Options;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        // Type a PIN into the CRDT Text while encryption is OFF.
+        let (_, pobj) = doc.get(&root, PIN_PATH).unwrap().unwrap();
+        let _ = doc.splice_text(&pobj, 0, 0, "2468");
+        app.sync(&mut doc, &root);
+        assert_eq!(app.pin, "2468");
+        assert!(
+            app.install_options().pin.is_empty(),
+            "PIN must not reach the backend without encryption"
+        );
+
+        // Enable encryption → the PIN now flows through.
+        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.install_options().pin, "2468");
+    }
+
+    #[test]
+    fn turning_encryption_off_clears_pin_fido2_and_ack() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Options;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        // Encrypt on, with a PIN, FIDO2, and acknowledgement.
+        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
+        let _ = doc.put(&root, fido2_path(1).as_str(), true);
+        let (_, pobj) = doc.get(&root, PIN_PATH).unwrap().unwrap();
+        let _ = doc.splice_text(&pobj, 0, 0, "1357");
+        let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.encrypt && app.fido2 && app.recovery_ack && app.pin == "1357");
+
+        // Encrypt off → every dependent factor is reset.
+        let _ = doc.put(&root, encrypt_path(0).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(!app.encrypt);
+        assert!(!app.fido2, "FIDO2 cleared when encryption turned off");
+        assert!(!app.recovery_ack, "ack cleared when encryption turned off");
+        assert!(app.pin.is_empty(), "PIN cleared when encryption turned off");
+        let opts = app.install_options();
+        assert!(!opts.encrypt && !opts.fido2 && opts.pin.is_empty());
+    }
+
+    #[test]
+    fn recovery_ack_toggles_and_gates_begin() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.step = Step::Review;
+        app.encrypt = true;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        assert!(!app.recovery_ack);
+
+        // Begin while encrypting + un-acknowledged: install must NOT start.
+        let _ = doc.put(&root, BEGIN_PATH, true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.install_state, InstallState::Idle);
+        assert_eq!(app.step, Step::Review, "blocked until the key is acknowledged");
+
+        // Toggle the acknowledgement on.
+        let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.recovery_ack, "ack flips on");
+        assert!(!InstallerApp::read_flag(&doc, &root, RECOVERY_ACK_PATH));
+
+        // Toggle off again (it's a checkbox-style flip).
+        let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(!app.recovery_ack, "ack flips back off");
+    }
+
+    #[test]
+    fn encryption_summary_reflects_factors() {
+        let mut app = InstallerApp::with_disks(sample());
+        assert_eq!(app.encryption_summary(), "Off");
+
+        app.encrypt = true;
+        assert_eq!(app.encryption_summary(), "On (LUKS — recovery key, TPM2)");
+
+        app.pin = "1234".to_string();
+        assert_eq!(
+            app.encryption_summary(),
+            "On (LUKS — recovery key, TPM2 + PIN)"
+        );
+
+        app.fido2 = true;
+        assert_eq!(
+            app.encryption_summary(),
+            "On (LUKS — recovery key, TPM2 + PIN, FIDO2)"
+        );
+    }
+
+    #[test]
+    fn review_begin_disabled_until_ack_when_encrypting() {
+        // Encrypting + un-acknowledged: the Begin button (nav row's primary,
+        // its last child) must be disabled (non-focusable).
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.step = Step::Review;
+        app.encrypt = true;
+        let _ = build(&mut app);
+        let card = app.children()[0];
+        let begin_disabled = card
+            .children()
+            .last()
+            .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
+        assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
+
+        // Acknowledge → Begin enables.
+        let mut app2 = InstallerApp::with_disks(sample());
+        app2.selected_disk = Some(0);
+        app2.step = Step::Review;
+        app2.encrypt = true;
+        app2.recovery_ack = true;
+        let _ = build(&mut app2);
+        let card2 = app2.children()[0];
+        let begin_enabled = card2
+            .children()
+            .last()
+            .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
+        assert_eq!(begin_enabled, Some(true), "Begin enabled once acknowledged");
+    }
+
+    #[test]
+    fn unencrypted_review_begin_always_enabled() {
+        // No encryption ⇒ no acknowledgement needed; Begin is enabled.
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.step = Step::Review;
+        app.encrypt = false;
+        let _ = build(&mut app);
+        let card = app.children()[0];
+        let begin_enabled = card
+            .children()
+            .last()
+            .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
+        assert_eq!(begin_enabled, Some(true));
+    }
+
+    #[test]
+    fn options_step_shows_pin_and_fido2_only_when_encrypting() {
+        // Encryption off: no PIN input, no FIDO2 SegChoice.
+        let mut off = InstallerApp::with_disks(sample());
+        off.step = Step::Options;
+        off.encrypt = false;
+        let _ = build(&mut off);
+        let card = off.children()[0];
+        let has_fido2 = card
+            .children()
+            .iter()
+            .any(|c| c.test_id() == Some("fido2_choice"));
+        assert!(!has_fido2, "no FIDO2 control when encryption is off");
+
+        // Encryption on: the FIDO2 SegChoice appears.
+        let mut on = InstallerApp::with_disks(sample());
+        on.step = Step::Options;
+        on.encrypt = true;
+        let _ = build(&mut on);
+        let card = on.children()[0];
+        let has_fido2 = card
+            .children()
+            .iter()
+            .any(|c| c.test_id() == Some("fido2_choice"));
+        assert!(has_fido2, "FIDO2 control shows when encrypting");
     }
 
     #[test]

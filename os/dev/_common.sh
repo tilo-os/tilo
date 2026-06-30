@@ -46,6 +46,14 @@ QOS_PIDFILE="$QOS_RUN/qemu.pid"
 QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_RUN/target.qcow2}"
 QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-20G}"
 
+# Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
+# unlock-tested. Off by default; enable with `--tpm` on a boot subcommand or
+# QOS_TPM=1. State persists in QOS_TPM_DIR so boot-installer (enroll) and
+# boot-target (unlock) share the same emulated TPM across a reboot.
+QOS_TPM="${QOS_TPM:-0}"
+QOS_TPM_DIR="${QOS_TPM_DIR:-$QOS_RUN/tpm}"
+QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
+
 # Guest login (from os/config.toml — the bootc-image-builder user).
 QOS_USER="${QOS_USER:-quickuser}"
 QOS_PASS="${QOS_PASS:-quickdesktop}"
@@ -117,4 +125,31 @@ ovmf_code() {
 ovmf_vars() {
   inenv 'for f in /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
     || die "OVMF_VARS not found"
+}
+
+# --- software TPM (swtpm) -----------------------------------------------------
+# Start a persistent swtpm 2.0 socket inside the env (where qemu runs). Idempotent
+# — reuses an already-running instance so boot-installer/boot-target share state.
+swtpm_start() {
+  [ "$QOS_TPM" = "1" ] || return 0
+  inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${QOS_DISTROBOX:-env}'; exit 1; }" \
+    || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${QOS_DISTROBOX:-the env})"
+  inenv "mkdir -p '$QOS_TPM_DIR'; \
+    if ! test -S '$QOS_TPM_SOCK'; then \
+      setsid nohup swtpm socket --tpmstate dir='$QOS_TPM_DIR' \
+        --ctrl type=unixio,path='$QOS_TPM_SOCK' --tpm2 \
+        >'$QOS_TPM_DIR/swtpm.log' 2>&1 & disown; \
+      for _ in \$(seq 1 50); do test -S '$QOS_TPM_SOCK' && break; sleep 0.1; done; \
+    fi; \
+    test -S '$QOS_TPM_SOCK'" \
+    || die "swtpm failed to start (see $QOS_TPM_DIR/swtpm.log)"
+  msg "swtpm up (TPM 2.0, state=$QOS_TPM_DIR)"
+}
+swtpm_stop() {
+  inenv "pkill -f \"swtpm socket .*$QOS_TPM_SOCK\" 2>/dev/null || true"
+}
+# qemu args attaching the swtpm to the guest (empty when TPM disabled).
+tpm_qemu_args() {
+  [ "$QOS_TPM" = "1" ] || return 0
+  printf -- '-chardev socket,id=chrtpm,path=%s -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0' "$QOS_TPM_SOCK"
 }

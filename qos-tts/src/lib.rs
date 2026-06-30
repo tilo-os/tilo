@@ -1,7 +1,7 @@
 //! # qos-tts — the qOS text-to-speech engine
 //!
 //! A small, dependency-light, **offline** speech engine for the qOS built-in
-//! screen reader (a11y workstream W5; consumed by the reader in W6). It abstracts
+//! screen reader. It abstracts
 //! over several speech backends behind one [`Speaker`] trait and adds an
 //! interrupt-aware [`SpeechQueue`] so chatty focus narration coalesces and
 //! preempts sanely.
