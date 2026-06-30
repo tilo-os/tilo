@@ -202,6 +202,22 @@ impl Widget for Checkbox {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The checkbox's own label is a sibling `Text`, so it has no intrinsic
+        // accessible name here; the tree builder (W4) resolves the label-for
+        // relationship. The checked state is the load-bearing semantic.
+        Some(
+            AccessNode::new(Role::Checkbox).with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                checked: Some(self.is_checked),
+                ..Default::default()
+            }),
+        )
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -265,6 +281,28 @@ mod tests {
         let c = Checkbox::new("any", "path").with_enabled(false);
         assert!(!Widget::is_enabled(&c));
         assert!(Widget::is_enabled(&Checkbox::new("any", "path")), "default is enabled");
+    }
+
+    #[test]
+    fn accessibility_unchecked_default() {
+        use crate::a11y::Role;
+        let c = Checkbox::new("any", "path");
+        let node = Widget::accessibility(&c).unwrap();
+        assert_eq!(node.role, Role::Checkbox);
+        assert_eq!(node.state.checked, Some(false));
+        assert!(!node.state.disabled);
+        assert!(node.state.focusable);
+    }
+
+    #[test]
+    fn accessibility_disabled_checked_reports_checked_and_disabled() {
+        use crate::a11y::Role;
+        let mut c = Checkbox::new("any", "path").with_enabled(false);
+        c.is_checked = true; // same module → can set the synced state directly
+        let node = Widget::accessibility(&c).unwrap();
+        assert_eq!(node.role, Role::Checkbox);
+        assert_eq!(node.state.checked, Some(true), "checked state surfaces");
+        assert!(node.state.disabled, "disabled surfaces");
     }
 
     #[test]
