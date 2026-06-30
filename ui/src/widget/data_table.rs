@@ -603,6 +603,18 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 }
             }
         }
+
+        // Keyboard-focus ring around the whole table, so arrow-key row
+        // navigation reads as a focused control and not just a striped grid.
+        if self.is_focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &self.rect,
+            );
+        }
     }
 
     fn handle_event(
@@ -1139,5 +1151,43 @@ mod tests {
         // visible window also starts around row 10 (minus overscan).
         let (start, _end) = t.visible_row_range();
         assert!(start <= 10 && start >= 8, "window starts near the scroll position: {start}");
+    }
+
+    fn table_color_fills(t: &mut DataTable<R>) -> usize {
+        use vello::Scene;
+        use vello_encoding::DrawTag;
+        let _laid = lay_out(t);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        t.draw(&mut scene, vello::kurbo::Affine::IDENTITY, &mut tr, &theme, &presence);
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|tag| **tag == DrawTag::COLOR)
+            .count()
+    }
+
+    /// A focused table paints a focus ring around its rect — one extra stroke
+    /// over the unfocused render. Asserts on the production `draw` path.
+    #[test]
+    fn focused_table_paints_a_focus_ring() {
+        let mut unfocused = DataTable::<R>::new(sample_cols()).selectable(true);
+        unfocused.set_rows(rows4());
+        unfocused.set_focus(false);
+        let without = table_color_fills(&mut unfocused);
+
+        let mut focused = DataTable::<R>::new(sample_cols()).selectable(true);
+        focused.set_rows(rows4());
+        focused.set_focus(true);
+        let with = table_color_fills(&mut focused);
+
+        assert_eq!(
+            with,
+            without + 1,
+            "a focused table must add exactly one focus-ring stroke ({with} vs {without})",
+        );
     }
 }

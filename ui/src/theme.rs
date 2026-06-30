@@ -28,6 +28,20 @@ pub struct Theme {
     pub radius_standard: f64,
     pub padding_standard: f32,
     pub gap_standard: f32,
+    /// When set, widgets that animate (spinners, indeterminate progress,
+    /// hover/press transitions) snap straight to their resting state instead
+    /// of easing. Carried on the theme so every widget can react to the
+    /// user's reduced-motion preference without new plumbing through `draw`.
+    /// Default `false`.
+    pub reduce_motion: bool,
+    /// Multiplier applied to every text size the theme exposes, so the whole
+    /// UI scales together for low-vision users. `1.0` is the default size.
+    /// Already baked into `tokens.typography.scale` and `font_size_base` by
+    /// [`Theme::with_text_scale`], so widgets that read their font size from
+    /// the theme scale automatically — and layout, which measures the same
+    /// sizes, grows to fit so text never clips. Kept here too so a widget can
+    /// scale a size it computes itself (a hard-coded glyph metric, say).
+    pub text_scale: f32,
 }
 
 impl Default for Theme { fn default() -> Self { Self::dark() } }
@@ -51,6 +65,8 @@ impl Theme {
             radius_standard: tokens.radii.md as f64,
             padding_standard: tokens.spacing.s3,
             gap_standard: tokens.spacing.s3,
+            reduce_motion: false,
+            text_scale: 1.0,
             tokens,
         }
     }
@@ -141,6 +157,56 @@ impl Theme {
 
         Self::from_tokens("High Contrast", t)
     }
+
+    /// Return this theme with reduced motion turned on or off. Widgets that
+    /// animate consult [`Theme::reduce_motion`] and skip their motion when it
+    /// is set, so the resting state is shown immediately.
+    pub fn with_reduce_motion(mut self, on: bool) -> Self {
+        self.reduce_motion = on;
+        self
+    }
+
+    /// Return this theme with every text size scaled by `factor` (`1.0` =
+    /// unchanged). The factor multiplies the whole type scale, the base body
+    /// size, and the line heights, so widgets that read their font size from
+    /// the theme grow together — and because layout measures the same scaled
+    /// sizes, the boxes around the text grow to fit and nothing clips.
+    ///
+    /// Clamped to a sane range so a stray setting can't make text vanish or
+    /// blow up the layout. Idempotent on top of an already-scaled theme is
+    /// not assumed — call this once on a fresh theme.
+    pub fn with_text_scale(mut self, factor: f32) -> Self {
+        let factor = factor.clamp(0.5, 4.0);
+        self.text_scale = factor;
+
+        let scale = &mut self.tokens.typography.scale;
+        scale.xs *= factor;
+        scale.sm *= factor;
+        scale.base *= factor;
+        scale.lg *= factor;
+        scale.xl *= factor;
+        scale.x2l *= factor;
+        scale.x3l *= factor;
+        scale.x4l *= factor;
+
+        self.tokens.font_size_base *= factor;
+
+        self
+    }
+
+    /// Apply the user's low-vision preferences to this theme: pick the
+    /// high-contrast colour track when requested, fold in the text-scale
+    /// factor, and carry the reduced-motion flag. One call turns a base theme
+    /// into the themed surface every widget should draw against.
+    pub fn with_a11y(self, settings: &crate::a11y::A11ySettings, text_scale: f32) -> Self {
+        let base = if settings.high_contrast {
+            Self::high_contrast()
+        } else {
+            self
+        };
+        base.with_text_scale(text_scale)
+            .with_reduce_motion(settings.reduce_motion)
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +260,75 @@ mod tests {
         // for pure white-on-black.
         assert!(hc_ratio >= 7.0, "high_contrast must clear WCAG AAA, got {hc_ratio:.2}:1");
         assert!((hc_ratio - 21.0).abs() < 0.01, "white-on-black is the 21:1 maximum");
+    }
+
+    #[test]
+    fn text_scale_multiplies_every_type_size() {
+        let base = Theme::dark();
+        let base_sm = base.tokens.typography.scale.sm;
+        let base_base = base.tokens.typography.scale.base;
+        let base_x4l = base.tokens.typography.scale.x4l;
+        let base_font = base.tokens.font_size_base;
+
+        let scaled = Theme::dark().with_text_scale(1.5);
+        assert_eq!(scaled.text_scale, 1.5);
+        assert!((scaled.tokens.typography.scale.sm - base_sm * 1.5).abs() < 1e-4);
+        assert!((scaled.tokens.typography.scale.base - base_base * 1.5).abs() < 1e-4);
+        assert!((scaled.tokens.typography.scale.x4l - base_x4l * 1.5).abs() < 1e-4);
+        assert!((scaled.tokens.font_size_base - base_font * 1.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn text_scale_of_one_is_identity() {
+        let base = Theme::dark();
+        let same = Theme::dark().with_text_scale(1.0);
+        assert_eq!(same.text_scale, 1.0);
+        assert_eq!(same.tokens.typography.scale.base, base.tokens.typography.scale.base);
+    }
+
+    #[test]
+    fn text_scale_is_clamped_to_a_sane_range() {
+        // Absurd factors can't make text vanish or explode the layout.
+        let tiny = Theme::dark().with_text_scale(0.0);
+        assert!(tiny.text_scale >= 0.5);
+        let huge = Theme::dark().with_text_scale(100.0);
+        assert!(huge.text_scale <= 4.0);
+    }
+
+    #[test]
+    fn reduce_motion_flag_threads_onto_the_theme() {
+        assert!(!Theme::dark().reduce_motion, "default is motion on");
+        assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
+        assert!(!Theme::dark().with_reduce_motion(false).reduce_motion);
+    }
+
+    #[test]
+    fn with_a11y_picks_high_contrast_track_and_folds_in_scale_and_motion() {
+        use crate::a11y::{A11ySettings, contrast_ratio};
+        let settings = A11ySettings {
+            high_contrast: true,
+            reduce_motion: true,
+            screen_reader: false,
+        };
+        let theme = Theme::dark().with_a11y(&settings, 2.0);
+        // High-contrast colours.
+        assert_eq!(theme.name, "High Contrast");
+        assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
+        // Reduced motion + text scale folded in.
+        assert!(theme.reduce_motion);
+        assert_eq!(theme.text_scale, 2.0);
+        let base_sm = Theme::high_contrast().tokens.typography.scale.sm;
+        assert!((theme.tokens.typography.scale.sm - base_sm * 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn with_a11y_all_off_keeps_base_colours() {
+        use crate::a11y::A11ySettings;
+        let off = A11ySettings::default();
+        let theme = Theme::dark().with_a11y(&off, 1.0);
+        assert_eq!(theme.name, "Dark", "no high contrast → keep the base theme");
+        assert!(!theme.reduce_motion);
+        assert_eq!(theme.text_scale, 1.0);
     }
 
     #[test]
