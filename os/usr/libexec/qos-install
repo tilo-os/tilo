@@ -140,6 +140,9 @@ TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
 ENCRYPT=0            # --encrypt → bootc --block-setup tpm2-luks (else direct)
+WANT_PIN=0           # --pin → enroll a TPM2+PIN keyslot (PIN read on stdin line 2)
+WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
+PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --disk) DISK="${2:-}"; shift 2 ;;
@@ -150,6 +153,8 @@ while [ $# -gt 0 ]; do
     --keymap) KEYMAP_VAL="${2:-}"; shift 2 ;;
     --keyvariant) KEYVARIANT_VAL="${2:-}"; shift 2 ;;
     --encrypt) ENCRYPT=1; shift ;;
+    --pin) WANT_PIN=1; shift ;;
+    --fido2) WANT_FIDO2=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -170,6 +175,10 @@ esac
 # rather than letting bootc fail partway through the install.
 if [ "$ENCRYPT" -eq 1 ] && [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
   die "--encrypt requires a TPM2 device (/dev/tpm*), none found on this machine"
+fi
+# The extra factors only make sense on an encrypted disk.
+if [ "$ENCRYPT" -eq 0 ] && { [ "$WANT_PIN" -eq 1 ] || [ "$WANT_FIDO2" -eq 1 ]; }; then
+  die "--pin/--fido2 require --encrypt"
 fi
 
 # Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
@@ -239,6 +248,12 @@ fi
 # --- read the password (now that we are root) --------------------------------
 IFS= read -r PASSWORD || true
 [ -n "$PASSWORD" ] || die "no password received on stdin"
+# Second stdin line is the disk-encryption PIN (only when --pin). Kept off argv
+# so it never shows in process listings.
+if [ "$WANT_PIN" -eq 1 ]; then
+  IFS= read -r PIN || true
+  [ -n "$PIN" ] || die "--pin set but no PIN received on stdin (line 2)"
+fi
 
 log "qOS installer"
 log "  target disk : $DISK"
@@ -256,20 +271,10 @@ log "  -> $LOCAL_IMG"
 
 # --- 2. bootc install to-disk ------------------------------------------------
 # direct = plain filesystem; tpm2-luks = TPM2-bound LUKS full-disk encryption.
+# bootc sets up a single TPM2-sealed keyslot; the multi-factor enrollment that
+# follows the install (below) adds the recovery key + optional PIN/FIDO2.
 BLOCK_SETUP=direct
 [ "$ENCRYPT" -eq 1 ] && BLOCK_SETUP=tpm2-luks
-# MEASURED-BOOT (security plan §4) — NOT YET ACTIVE, intentionally.
-# The trust root /usr/share/qos/tpm2-pcr-signing.public.pem is baked into the
-# image. The full design seals the LUKS keyslot to *signed PCR predictions*:
-#   systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
-#     --tpm2-public-key=/usr/share/qos/tpm2-pcr-signing.public.pem \
-#     --tpm2-public-key-pcrs=11 <luks-dev>
-# Enabling that REQUIRES the build/update pipeline to ship signed predictions
-# for a UKI (systemd-measure sign with the matching private key) — without them
-# the TPM has nothing valid to release against and unlock would FAIL. So this is
-# deliberately left until the UKI + prediction-signing land; today `--block-setup
-# tpm2-luks` uses bootc's default PCR policy. Adding the PIN + recovery-key +
-# FIDO2 keyslots (§5) is the companion near-term change.
 step "Installing qOS onto $DISK (this ERASES the disk; block-setup=$BLOCK_SETUP)"
 podman run --rm --privileged --pid=host --ipc=host \
   -v /var/lib/containers:/var/lib/containers \
@@ -287,6 +292,71 @@ log "  base system installed."
 # Make sure the kernel sees the freshly written partition table.
 udevadm settle 2>/dev/null || true
 partprobe "$DISK" 2>/dev/null || true
+
+# --- 2b. multi-factor LUKS enrollment ----------------------------------------
+# bootc left ONE TPM2-sealed keyslot. A TPM-only disk is a single point of
+# failure: a cleared/dead TPM or a swapped board means the data is gone, and a
+# bare TPM (no PIN) gives weak protection against powered-off theft. So we add
+# independent factors with systemd-cryptenroll (run here on the live host, which
+# has systemd + the TPM): ALWAYS a recovery key (the non-TPM backstop), TPM2+PIN
+# in place of the bare-TPM slot when a PIN was given, and optionally a FIDO2 key.
+if [ "$ENCRYPT" -eq 1 ]; then
+  step "Enrolling disk-encryption factors"
+  # Find the freshly-created LUKS partition on the target disk.
+  LUKS_DEV=""
+  while IFS= read -r _name _fstype; do
+    [ "$_fstype" = "crypto_LUKS" ] && LUKS_DEV="/dev/$_name" && break
+  done <<EOF
+$(lsblk -rno NAME,FSTYPE "$DISK" 2>/dev/null)
+EOF
+  [ -n "$LUKS_DEV" ] || die "encryption: no crypto_LUKS partition found on $DISK after install"
+  log "  LUKS device: $LUKS_DEV"
+
+  # (1) Recovery key — the mandatory, TPM-independent backstop. Authorise via the
+  # TPM slot bootc just created. Capture + show it ONCE; refuse to continue if it
+  # fails (never leave a TPM-only disk).
+  log "  enrolling recovery key…"
+  REC_OUT="$(systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$LUKS_DEV" 2>&1)" \
+    || die "encryption: recovery-key enrollment failed; aborting (refusing a TPM-only disk):"$'\n'"$REC_OUT"
+  REC_KEY="$(printf '%s\n' "$REC_OUT" | grep -oE '[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}' | tail -1)"
+  [ -n "$REC_KEY" ] || REC_KEY="$(printf '%s\n' "$REC_OUT" | tail -1)"
+  log ""
+  log "  ============================================================"
+  log "   RECOVERY KEY — write this down / save it off-device NOW."
+  log "   It unlocks the disk if the TPM or PIN ever fails."
+  log ""
+  log "       $REC_KEY"
+  log ""
+  if command -v qrencode >/dev/null 2>&1; then
+    qrencode -t ANSIUTF8 "$REC_KEY" 2>/dev/null || true
+  fi
+  log "  ============================================================"
+  log ""
+
+  # (2) Optional FIDO2 — enroll while the bare-TPM slot still exists to authorise.
+  if [ "$WANT_FIDO2" -eq 1 ]; then
+    log "  enrolling FIDO2 security key (touch it now if prompted)…"
+    if systemd-cryptenroll --unlock-tpm2-device=auto --fido2-device=auto "$LUKS_DEV"; then
+      log "  FIDO2 key enrolled."
+    else
+      log "  WARNING: FIDO2 enrollment failed (no token?) — continuing; recovery key + TPM still protect the disk."
+    fi
+  fi
+
+  # (3) TPM2+PIN — replace bootc's bare-TPM slot with a PIN-protected one. PIN via
+  # env, never argv. Last, because it wipes the slot used to authorise the above.
+  if [ "$WANT_PIN" -eq 1 ]; then
+    log "  re-enrolling TPM2 with a PIN…"
+    if NEWPIN="$PIN" systemd-cryptenroll --unlock-tpm2-device=auto \
+         --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes "$LUKS_DEV"; then
+      log "  TPM2+PIN enrolled (bare-TPM slot removed)."
+    else
+      die "encryption: TPM2+PIN enrollment failed; the recovery key still works, but aborting so the disk isn't left in a half-configured state."
+    fi
+  fi
+  unset PIN NEWPIN 2>/dev/null || true
+  log "  encryption factors enrolled."
+fi
 udevadm settle 2>/dev/null || true
 
 # --- 3. seed the user account ------------------------------------------------
