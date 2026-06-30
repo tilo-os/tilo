@@ -23,6 +23,10 @@ pub struct Toggle {
     enabled: bool,
     /// Optional override for `Widget::test_id()`. Defaults to `"toggle"`.
     id_override: Option<String>,
+    /// Spoken name for a standalone toggle that has no adjacent text label
+    /// (e.g. an icon-only switch in a toolbar). When unset the toggle
+    /// relies on a sibling label resolved by the tree builder.
+    accessible_name: Option<String>,
 }
 
 impl Toggle {
@@ -38,6 +42,7 @@ impl Toggle {
             permission_scope: None,
             enabled: true,
             id_override: None,
+            accessible_name: None,
         }
     }
 
@@ -66,6 +71,14 @@ impl Toggle {
     /// by focus, rejects input and renders dimmed. Default `true`.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Give a label-less toggle a spoken name, so a screen reader
+    /// announces what it switches ("Airplane mode", "Dark theme") rather
+    /// than just "switch, on".
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.accessible_name = Some(name.to_string());
         self
     }
 
@@ -233,15 +246,24 @@ impl Widget for Toggle {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A toggle is a Switch: the on/off state lives in `checked`.
+        // A toggle is a Switch: the on/off state lives in `checked`. An
+        // explicit accessible name covers label-less switches; otherwise a
+        // sibling label is resolved by the tree builder.
+        let name = self
+            .accessible_name
+            .as_ref()
+            .map(|n| crate::i18n!(n))
+            .filter(|n| !n.is_empty());
         Some(
-            AccessNode::new(Role::Switch).with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                checked: Some(self.is_checked),
-                ..Default::default()
-            }),
+            AccessNode::new(Role::Switch)
+                .with_optional_name(name)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    checked: Some(self.is_checked),
+                    ..Default::default()
+                }),
         )
     }
 
@@ -321,6 +343,20 @@ mod tests {
         t.is_checked = true; // same module → set the synced on-state directly
         let on = Widget::accessibility(&t).unwrap();
         assert_eq!(on.state.checked, Some(true));
+    }
+
+    #[test]
+    fn accessibility_uses_accessible_name_when_set() {
+        // A label-less toggle has no name by default, but `with_accessible_name`
+        // gives the switch a spoken identity.
+        let plain = Toggle::new("any", "path");
+        assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
+
+        let named = Toggle::new("any", "path").with_accessible_name("Airplane mode");
+        assert_eq!(
+            Widget::accessibility(&named).unwrap().name.as_deref(),
+            Some("Airplane mode"),
+        );
     }
 
     #[test]

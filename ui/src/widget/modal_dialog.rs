@@ -128,6 +128,14 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
+    /// Imperatively show or hide the dialog after construction. Flipping this
+    /// toggles whether the dialog [traps focus](Widget::traps_focus), so the
+    /// host can open it in response to a click and close it without rebuilding
+    /// the widget tree.
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+
     /// Attach a primary action. The label drives the button text; the
     /// callback fires on a left-click inside `primary_rect`.
     pub fn primary_action(
@@ -312,19 +320,26 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The dialog overlays the entire viewport so it can paint the
-        // backdrop everywhere outside the box.
+        // backdrop everywhere outside the box. The body content is registered
+        // as a child node so its focusable widgets join the host's keyboard
+        // focus order (and, when the dialog is open, the focus trap) — even
+        // though `place_content` re-lays-out the body itself for drawing.
+        let content_node = self.content.build_layout(taffy, theme, node_map);
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &[content_node],
+            )
             .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
@@ -494,6 +509,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn name(&self) -> &str { "ModalDialog" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    /// An open dialog traps keyboard focus: the host keeps Tab/Shift+Tab and
+    /// arrow navigation inside the dialog's content while it's up, and
+    /// restores the previously-focused element when it closes.
+    fn traps_focus(&self) -> bool { self.open }
 
     /// Expose the inner content so the accessibility tree builder can
     /// descend into the dialog body. Additive — the default is an empty

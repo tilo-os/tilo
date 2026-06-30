@@ -47,6 +47,11 @@ pub struct Slider {
     /// callers can disambiguate multiple sliders in the same surface
     /// (e.g. `"volume"`, `"brightness"`).
     id_override: Option<String>,
+    /// Spoken name for a slider with no adjacent text label, so a screen
+    /// reader announces what is being adjusted ("Volume, 50 percent")
+    /// instead of just the value. When unset a sibling label is resolved
+    /// by the tree builder.
+    accessible_name: Option<String>,
 }
 
 impl Slider {
@@ -64,6 +69,7 @@ impl Slider {
             enabled: true,
             last_cursor: Point::ZERO,
             id_override: None,
+            accessible_name: None,
         }
     }
 
@@ -92,6 +98,13 @@ impl Slider {
     /// by focus, rejects input and renders dimmed. Default `true`.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Give a label-less slider a spoken name so a screen reader announces
+    /// what it adjusts alongside the value.
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.accessible_name = Some(name.to_string());
         self
     }
 
@@ -342,8 +355,14 @@ impl Widget for Slider {
         // The slider models a normalized 0..1 value; expose it as a percentage
         // so a screen reader announces something meaningful ("50 percent").
         let pct = (self.value.clamp(0.0, 1.0) * 100.0).round() as i64;
+        let name = self
+            .accessible_name
+            .as_ref()
+            .map(|n| crate::i18n!(n))
+            .filter(|n| !n.is_empty());
         Some(
             AccessNode::new(Role::Slider)
+                .with_optional_name(name)
                 .with_value(format!("{pct}%"))
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
@@ -607,6 +626,19 @@ mod tests {
         let node = Widget::accessibility(&s).unwrap();
         assert_eq!(node.value.as_deref(), Some("25%"));
         assert!(node.state.disabled);
+    }
+
+    #[test]
+    fn accessibility_uses_accessible_name_when_set() {
+        // No name by default; `with_accessible_name` names what the slider
+        // adjusts so the reader pairs it with the value.
+        let plain = Slider::new("any", "value");
+        assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
+
+        let named = Slider::new("any", "value").with_accessible_name("Volume");
+        let node = Widget::accessibility(&named).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Volume"));
+        assert_eq!(node.value.as_deref(), Some("50%"));
     }
 
     #[test]

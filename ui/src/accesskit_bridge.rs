@@ -286,6 +286,12 @@ fn visit(
             for child in w.children() {
                 visit(child, ptr_to_taffy, scale, walk_counter, nodes, &mut my_children);
             }
+            // Synthetic children with no backing widget — a table's rows/cells,
+            // a virtualized list's items — described directly by the widget's
+            // AccessNode.
+            for synth in &access_node.children {
+                visit_synthetic(synth, walk_counter, nodes, &mut my_children);
+            }
             ak.set_children(my_children);
 
             nodes.push((id, ak));
@@ -301,9 +307,56 @@ fn visit(
     }
 }
 
+/// Emit an [`AccessNode`] that has no backing [`Widget`] — a table row/cell,
+/// a virtualized list item. Recurses into its own synthetic children. Carries
+/// no geometry (these elements aren't laid out as widgets); everything else
+/// (role, name/description/value, state, position, actions) is applied just as
+/// for a real widget node.
+fn visit_synthetic(
+    access: &AccessNode,
+    walk_counter: &mut u64,
+    nodes: &mut Vec<(AkNodeId, AkNode)>,
+    parent_children: &mut Vec<AkNodeId>,
+) {
+    // Synthetic nodes have no taffy id, so they take the structural fallback
+    // id keyed off the monotonic walk counter.
+    let id = widget_node_id(None, *walk_counter);
+    *walk_counter += 1;
+
+    let mut ak = AkNode::new(map_role(access.role));
+    apply_semantics_common(&mut ak, access);
+
+    let mut my_children: Vec<AkNodeId> = Vec::new();
+    for child in &access.children {
+        visit_synthetic(child, walk_counter, nodes, &mut my_children);
+    }
+    ak.set_children(my_children);
+
+    nodes.push((id, ak));
+    parent_children.push(id);
+}
+
 /// Copy an [`AccessNode`]'s name/description/value/state plus the widget's
 /// bounds and supported actions onto an [`accesskit::Node`].
 fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: f64) {
+    apply_semantics_common(ak, access);
+
+    // Geometry: logical rect → (optionally scaled) AccessKit Rect.
+    let r = w.get_rect();
+    if r.width() > 0.0 || r.height() > 0.0 {
+        ak.set_bounds(AkRect::new(
+            r.x0 * scale,
+            r.y0 * scale,
+            r.x1 * scale,
+            r.y1 * scale,
+        ));
+    }
+}
+
+/// The widget-independent half of [`apply_semantics`]: name/description/value,
+/// heading level, collection position, state, and implicit/role actions.
+/// Shared with [`visit_synthetic`] (table rows/cells), which has no geometry.
+fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if let Some(name) = &access.name {
         ak.set_label(name.clone());
     }
@@ -323,18 +376,19 @@ fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: 
         ak.set_level(level as usize);
     }
 
-    apply_state(ak, access);
-
-    // Geometry: logical rect → (optionally scaled) AccessKit Rect.
-    let r = w.get_rect();
-    if r.width() > 0.0 || r.height() > 0.0 {
-        ak.set_bounds(AkRect::new(
-            r.x0 * scale,
-            r.y0 * scale,
-            r.x1 * scale,
-            r.y1 * scale,
-        ));
+    // Collection position ("row 2 of 4", "tab 3 of 5") and explicit nesting
+    // depth, so an AT can place the element within its set.
+    if let Some(pos) = access.pos_in_set {
+        ak.set_position_in_set(pos);
     }
+    if let Some(size) = access.set_size {
+        ak.set_size_of_set(size);
+    }
+    if let Some(level) = access.level {
+        ak.set_level(level);
+    }
+
+    apply_state(ak, access);
 
     // Implicit actions every accessible, enabled widget supports: Focus (if
     // focusable) and the default Click activation.
@@ -661,6 +715,60 @@ mod tests {
             .expect("group child of window");
         let (_, group_node) = update.nodes.iter().find(|(id, _)| *id == group_id).unwrap();
         assert_eq!(group_node.children().len(), 1, "group owns the button");
+    }
+
+    #[test]
+    fn synthetic_children_flow_into_the_tree_with_position_and_labels() {
+        // A widget that owns rows/cells with no backing widgets — modelling a
+        // DataTable. Each row is a Row node carrying its position, with two
+        // header-named Cell children.
+        let row = |pos: usize, size: usize| {
+            AccessNode::new(Role::Row)
+                .with_position(pos, size)
+                .with_children(vec![
+                    AccessNode::new(Role::Cell).with_name("Name").with_position(1, 2),
+                    AccessNode::new(Role::Cell).with_name("Age").with_position(2, 2),
+                ])
+        };
+        let table_access = AccessNode::new(Role::Table)
+            .with_name("People")
+            .with_children(vec![row(1, 2), row(2, 2)]);
+        let mut root = TestWidget::new(Some(table_access));
+
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+
+        // The table node owns two synthetic rows.
+        let (_, table) = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == AkRole::Table)
+            .expect("table node present");
+        assert_eq!(table.children().len(), 2, "table owns two synthetic rows");
+
+        // Rows carry their 1-based position and own two header-named cells.
+        let row_nodes: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == AkRole::Row)
+            .collect();
+        assert_eq!(row_nodes.len(), 2, "two row nodes reached the tree");
+        for (_, r) in &row_nodes {
+            assert_eq!(r.size_of_set(), Some(2), "row knows the table has 2 rows");
+            assert!(r.position_in_set().is_some(), "row carries its 1-based position");
+            assert_eq!(r.children().len(), 2, "each row owns two cells");
+        }
+
+        // Cells are named by their column header.
+        let cell_labels: Vec<Option<&str>> = update
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == AkRole::Cell)
+            .map(|(_, n)| n.label())
+            .collect();
+        assert!(cell_labels.contains(&Some("Name")), "a cell is named for the Name column");
+        assert!(cell_labels.contains(&Some("Age")), "a cell is named for the Age column");
+        assert_eq!(cell_labels.len(), 4, "two cells per row across two rows");
     }
 
     #[test]
