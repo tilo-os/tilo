@@ -1,0 +1,28 @@
+[package]
+name = "qos-tts"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "qOS text-to-speech engine for the built-in screen reader: speech-dispatcher (SSIP) primary backend, espeak-ng subprocess fallback, null recording mock, and an interrupt-aware speech queue."
+
+[lib]
+name = "qos_tts"
+path = "src/lib.rs"
+
+# License posture (see src/lib.rs for the full note):
+#
+# qOS code links ONLY permissive crates. The speech engines themselves
+# (speech-dispatcher, espeak-ng, Piper) are GPL but are reached as
+# *separate processes* — speech-dispatcher over its SSIP socket, espeak-ng
+# as a subprocess. The socket / process boundary means their GPL imposes
+# no licensing constraint on this crate or anything that links it.
+#
+# `ssip-client` (the only TTS dependency we link) is MIT OR Apache-2.0.
+
+[dependencies]
+# Pure-Rust speech-dispatcher SSIP client. MIT OR Apache-2.0 — no C
+# linkage, no GPL propagation (speech-dispatcher sits behind the socket).
+# 0.10.2 is the current release on crates.io as of 2026-06-30.
+ssip-client = "0.10"
+thiserror = "1"
+log = "0.4"
