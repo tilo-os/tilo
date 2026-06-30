@@ -44,6 +44,9 @@ const ENDNOTES_OVERRIDE: &str = r#"<Override PartName="/word/endnotes.xml" Conte
 const FOOTNOTES_REL: &str = r#"<Relationship Id="rIdQdocFtnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>"#;
 const ENDNOTES_REL: &str = r#"<Relationship Id="rIdQdocEndnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/>"#;
 
+const COMMENTS_OVERRIDE: &str = r#"<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>"#;
+const COMMENTS_REL: &str = r#"<Relationship Id="rIdQdocComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>"#;
+
 const STYLES_OVERRIDE: &str = r#"<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>"#;
 const STYLES_REL: &str = r#"<Relationship Id="rIdQdocStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#;
 const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -60,7 +63,10 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     };
     // Footnote/endnote parts + the qdoc-id → docx-id / kind maps the body references.
     let notes = super::notes::export_notes(&doc);
-    let (document, named_refs, numbering) = build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map);
+    // Comments part + the qdoc-id → docx-id map the body's range markers reference.
+    let comments = super::comments::export_comments(&doc);
+    let (document, named_refs, numbering) =
+        build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map, &comments.id_map);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     let has_styles = !named_refs.is_empty();
 
@@ -78,6 +84,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut had_footer_part = false;
     let mut had_footnotes_part = false;
     let mut had_endnotes_part = false;
+    let mut had_comments_part = false;
     let mut original_core: Option<Vec<u8>> = None;
     let mut original_app: Option<Vec<u8>> = None;
     for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
@@ -91,6 +98,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             had_footer_part |= name == super::headers::FOOTER_PART;
             had_footnotes_part |= name == super::notes::FOOTNOTES_PART;
             had_endnotes_part |= name == super::notes::ENDNOTES_PART;
+            had_comments_part |= name == super::comments::COMMENTS_PART;
             if name == "docProps/core.xml" {
                 had_core = true;
                 original_core = Some(bytes.clone());
@@ -130,6 +138,14 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
     let need_footnotes_wireup = notes.footnotes_xml.is_some() && !had_footnotes_part;
     let need_endnotes_wireup = notes.endnotes_xml.is_some() && !had_endnotes_part;
+
+    // Comments part. Written under the fixed `word/comments.xml` name; the body's
+    // `w:commentRangeStart/End` + `w:commentReference` use the matching docx ids. A
+    // part newly created here needs a content-type override + a document relationship.
+    if let Some(cmt) = comments.comments_xml.clone() {
+        c.set(super::comments::COMMENTS_PART, cmt);
+    }
+    let need_comments_wireup = comments.comments_xml.is_some() && !had_comments_part;
 
     // Document properties → `docProps/core.xml` (+ `app.xml` generator). Regenerate
     // from the canonical properties, merging unmodeled children of the preserved
@@ -199,6 +215,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if notes.endnotes_xml.is_some() {
             ct.push_str(ENDNOTES_OVERRIDE);
         }
+        if comments.comments_xml.is_some() {
+            ct.push_str(COMMENTS_OVERRIDE);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
     } else {
@@ -226,6 +245,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
         if need_endnotes_wireup {
             overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
+        }
+        if need_comments_wireup {
+            overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
         }
         if !overrides.is_empty() {
             if let Some(ct) = c.get("[Content_Types].xml") {
@@ -267,7 +289,14 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
 
     // word/_rels/document.xml.rels — needed once there's a numbering, a
     // freshly-synthesised styles part, a header/footer part, and/or a notes part.
-    if has_lists || need_styles_wireup || need_header_wireup || need_footer_wireup || need_footnotes_wireup || need_endnotes_wireup {
+    if has_lists
+        || need_styles_wireup
+        || need_header_wireup
+        || need_footer_wireup
+        || need_footnotes_wireup
+        || need_endnotes_wireup
+        || need_comments_wireup
+    {
         if !had_doc_rels {
             let mut inner = String::new();
             if need_styles_wireup {
@@ -287,6 +316,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if need_endnotes_wireup {
                 inner.push_str(ENDNOTES_REL);
+            }
+            if need_comments_wireup {
+                inner.push_str(COMMENTS_REL);
             }
             let rels = format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -312,6 +344,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if need_endnotes_wireup && !s.contains("Target=\"endnotes.xml\"") {
                 inject_before(&mut s, "</Relationships>", ENDNOTES_REL);
+            }
+            if need_comments_wireup && !s.contains("Target=\"comments.xml\"") {
+                inject_before(&mut s, "</Relationships>", COMMENTS_REL);
             }
             c.set("word/_rels/document.xml.rels", s.into_bytes());
         }
@@ -613,23 +648,72 @@ fn note_reference_run(
     ))
 }
 
+/// The comment ids whose `comment` mark starts / ends exactly at `i` (sorted for
+/// deterministic output). `ends_at` matches `mark.end == i`.
+fn comment_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Whether any run boundary (mark-set change, note-ref placeholder, or comment
+/// range boundary) occurs *at* `j`, so a text run must break before it.
+fn run_breaks_at(chars: &[char], marks: &[crate::document::MarkSpan], active: &[(String, MarkValue)], j: usize) -> bool {
+    marks_at(j, marks) != active
+        || is_note_ref_placeholder(chars, marks, j)
+        || !comment_starts_at(marks, j).is_empty()
+        || !comment_ends_at(marks, j).is_empty()
+}
+
 /// Render a block's text + marks as a sequence of `<w:r>` runs. A new run starts
 /// whenever the active mark set changes, so output is always well-formed. A
-/// placeholder carrying a `note-ref` mark is emitted as its reference element run.
+/// placeholder carrying a `note-ref` mark is emitted as its reference element run. A
+/// `comment` mark emits a `w:commentRangeStart` at its start and a
+/// `w:commentRangeEnd` + `w:commentReference` run at its end.
 fn render_runs(
     text: &str,
     marks: &[crate::document::MarkSpan],
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, crate::model::NoteKind>,
+    comment_ids: &BTreeMap<String, i64>,
 ) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
-    if n == 0 {
-        return String::new();
-    }
     let mut out = String::new();
+    // Comment boundary markers at index `i`: ends (+ their reference run) before
+    // starts so an adjacent comment's end closes before the next opens.
+    let emit_comment_boundaries = |out: &mut String, i: usize| {
+        for id in comment_ends_at(marks, i) {
+            if let Some(end) = super::comments::comment_range_end(&id, comment_ids) {
+                out.push_str(&end);
+            }
+            if let Some(rf) = super::comments::comment_reference_run(&id, comment_ids) {
+                out.push_str(&rf);
+            }
+        }
+        for id in comment_starts_at(marks, i) {
+            if let Some(start) = super::comments::comment_range_start(&id, comment_ids) {
+                out.push_str(&start);
+            }
+        }
+    };
     let mut i = 0;
     while i < n {
+        emit_comment_boundaries(&mut out, i);
         // A note-reference placeholder is its own run (no text), independent of the
         // surrounding mark set.
         if chars[i] == crate::schema::FIELD_PLACEHOLDER {
@@ -643,7 +727,7 @@ fn render_runs(
         }
         let active = marks_at(i, marks);
         let mut j = i + 1;
-        while j < n && marks_at(j, marks) == active && !is_note_ref_placeholder(&chars, marks, j) {
+        while j < n && !run_breaks_at(&chars, marks, &active, j) {
             j += 1;
         }
         let rpr = run_props(&active);
@@ -655,6 +739,8 @@ fn render_runs(
         out.push_str("</w:r>");
         i = j;
     }
+    // Comments ending exactly at the block's end emit their range-end + reference.
+    emit_comment_boundaries(&mut out, n);
     out
 }
 
@@ -782,6 +868,7 @@ fn build_document_xml(
     sectpr: &str,
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, crate::model::NoteKind>,
+    comment_ids: &BTreeMap<String, i64>,
 ) -> (String, BTreeSet<String>, Numbering) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
@@ -798,7 +885,7 @@ fn build_document_xml(
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids)
                 ));
                 i += 1;
             }
@@ -807,7 +894,7 @@ fn build_document_xml(
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids)
                 ));
                 i += 1;
             }
@@ -838,7 +925,7 @@ fn build_document_xml(
                         let inner = cells
                             .iter()
                             .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds))
+                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids))
                             .unwrap_or_default();
                         body.push_str(&format!(
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
@@ -861,7 +948,7 @@ fn build_document_xml(
                 }
                 ppr_inner.push_str(&jc_xml(b));
                 let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
-                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds)));
+                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids)));
                 i += 1;
             }
         }
@@ -1448,6 +1535,123 @@ mod tests {
             v
         };
         assert_eq!(kinds_texts(&d2.materialize()), kinds_texts(&d3.materialize()), "notes stable across a second round-trip");
+    }
+
+    #[test]
+    fn comment_imports_from_comments_part() {
+        use crate::document::MarkValue;
+        use crate::schema::MARK_COMMENT;
+        // A body paragraph "fix this word" whose "this word" is wrapped in a comment
+        // range id 0, with content in word/comments.xml. Import must place a `comment`
+        // mark over the range + create the comment with author/date/body.
+        let body = concat!(
+            r#"<w:p>"#,
+            r#"<w:r><w:t xml:space="preserve">fix </w:t></w:r>"#,
+            r#"<w:commentRangeStart w:id="0"/>"#,
+            r#"<w:r><w:t>this word</w:t></w:r>"#,
+            r#"<w:commentRangeEnd w:id="0"/>"#,
+            r#"<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>"#,
+            r#"</w:p>"#,
+        );
+        let comments = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            "\n",
+            r#"<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+            r#"<w:comment w:id="0" w:author="Ada" w:date="2021-01-02T03:04:05"><w:p><w:r><w:t>note: fix</w:t></w:r></w:p></w:comment>"#,
+            r#"</w:comments>"#,
+        );
+        let base = minimal_docx(body);
+        let mut c = DocxContainer::read(&base).unwrap();
+        c.set("word/comments.xml", comments.as_bytes().to_vec());
+        let docx = c.write().unwrap();
+
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        let p = &snap.blocks[0];
+        assert_eq!(p.text, "fix this word", "comment markup not in text: {:?}", p.text);
+        let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
+        assert_eq!((cm.start, cm.end), (4, 13), "marker spans 'this word': {:?}", p.marks);
+        let cid = match &cm.value {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("comment value is the comment id: {other:?}"),
+        };
+        assert_eq!(snap.comments.len(), 1, "one comment: {:?}", snap.comments);
+        let cmt = &snap.comments[0];
+        assert_eq!(cmt.id, cid);
+        assert_eq!(cmt.author, "Ada");
+        assert_eq!(cmt.date, "2021-01-02T03:04:05");
+        assert_eq!(cmt.blocks[0].text, "note: fix");
+    }
+
+    #[test]
+    fn comment_roundtrips_through_docx() {
+        use crate::document::MarkValue;
+        use crate::schema::MARK_COMMENT;
+        // Build from scratch: a comment over "this word". Export must write
+        // comments.xml + the range markers + reference + content-types/rels, and
+        // re-import as the same anchored range + comment author/text.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "please fix this word now");
+        d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        // The comments part is written with author + body.
+        let cmts = std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written")).unwrap();
+        assert!(cmts.contains(r#"w:author="Ada Lovelace""#), "author emitted: {cmts}");
+        assert!(cmts.contains("note: fix"), "comment body emitted: {cmts}");
+        // Body range markers + reference emitted.
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<w:commentRangeStart"), "range start emitted: {document}");
+        assert!(document.contains("<w:commentRangeEnd"), "range end emitted: {document}");
+        assert!(document.contains("<w:commentReference"), "reference emitted: {document}");
+        // Wired into content-types + rels.
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains("/word/comments.xml"), "comments part in content-types: {ct}");
+        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="comments.xml""#), "comments rel registered: {rels}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        assert_eq!(snap.blocks[0].text, "please fix this word now");
+        let cm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment marker survives");
+        assert_eq!((cm.start, cm.end), (11, 20), "anchored range survives: {:?}", snap.blocks[0].marks);
+        let new_id = match &cm.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("comment value"),
+        };
+        let cmt = snap.comments.iter().find(|c| c.id == new_id).expect("comment present by id");
+        assert_eq!(cmt.author, "Ada Lovelace");
+        assert_eq!(cmt.blocks[0].text, "note: fix");
+        assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
+
+        // Idempotent across a second round-trip (ids volatile; compare author+text+span).
+        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        let authors_texts = |snap: &DocSnapshot| {
+            let mut v: Vec<(String, String, Option<(usize, usize)>)> = snap
+                .comments
+                .iter()
+                .map(|c| {
+                    (
+                        c.author.clone(),
+                        c.blocks.iter().map(|b| b.text.clone()).collect(),
+                        c.range.as_ref().map(|(_, s, e)| (*s, *e)),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            authors_texts(&d2.materialize()),
+            authors_texts(&d3.materialize()),
+            "comments stable across a second round-trip"
+        );
     }
 
     #[test]

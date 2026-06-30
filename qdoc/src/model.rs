@@ -37,6 +37,11 @@ pub struct Containers {
     /// authored before notes existed; created lazily on the first note insert so
     /// older documents migrate transparently. Mirrors `header`/`footer`.
     pub notes: Option<ObjId>,
+    /// Comment/annotation container (`Map<comment_id, comment>`). Eager-initialised
+    /// like `notes` (so concurrent comment adds converge on one shared object);
+    /// `None` only for documents authored before the comments map existed (created
+    /// lazily on the first comment insert so they migrate transparently).
+    pub comments: Option<ObjId>,
 }
 
 /// Which page region a block container refers to. The body is the canonical
@@ -129,6 +134,14 @@ pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u6
             bump(&bid);
         }
     }
+    // Comment ids + comment-body block ids draw from the same generator, so a seeded
+    // generator must skip them too (otherwise it could re-mint an existing comment).
+    for cid in comment_ids(doc, c) {
+        bump(&cid);
+        for bid in comment_blocks_in_order(doc, c, &cid) {
+            bump(&bid);
+        }
+    }
     next
 }
 
@@ -155,9 +168,14 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     // authored before the notes map existed still open (it reads as `None` and is
     // created lazily on first write — see `notes_container`).
     let notes = doc.put_object(root, KEY_NOTES, ObjType::Map).unwrap();
+    // The comments container is created eagerly for the same convergence reason as
+    // `notes`: two replicas concurrently adding a comment must share ONE container
+    // object. Documents authored before it existed still open (`opt_map_at` reads it
+    // as `None`, and `comments_container` creates it lazily on first write).
+    let comments = doc.put_object(root, KEY_COMMENTS, ObjType::Map).unwrap();
     // Header/footer regions are created lazily on first write (a fresh document has
     // neither), so they stay `None` here.
-    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None, notes: Some(notes) }
+    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None, notes: Some(notes), comments: Some(comments) }
 }
 
 /// Resolve existing containers under `root`. The blobs map is optional so
@@ -173,6 +191,7 @@ pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
         header: opt_map_at(doc, root, KEY_HEADER),
         footer: opt_map_at(doc, root, KEY_FOOTER),
         notes: opt_map_at(doc, root, KEY_NOTES),
+        comments: opt_map_at(doc, root, KEY_COMMENTS),
     })
 }
 
@@ -302,6 +321,113 @@ pub fn materialize_notes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapsho
         .map(|id| crate::snapshot::NoteView {
             kind: note_kind(doc, c, &id).unwrap_or(NoteKind::Footnote).as_str().to_string(),
             blocks: materialize_note_blocks(doc, c, &id),
+            id,
+        })
+        .collect()
+}
+
+// ---- comments / annotations ------------------------------------------------
+
+/// Resolve the comments container object, preferring the cached id and falling back
+/// to a fresh root lookup (so a lazily-created comments map is still found via reads).
+fn comments_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
+    c.comments.clone().or_else(|| opt_map_at(doc, &c.root, KEY_COMMENTS))
+}
+
+/// Resolve a single comment's sub-map object by id.
+fn comment_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
+    let comments = comments_obj(doc, c)?;
+    match doc.get(&comments, id) {
+        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
+        _ => None,
+    }
+}
+
+/// Resolve a comment's block container (`comment.blocks`) sub-map object.
+fn comment_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
+    let comment = comment_obj(doc, c, id)?;
+    match doc.get(&comment, COMMENT_BLOCKS) {
+        Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
+        _ => None,
+    }
+}
+
+/// The comment ids present in the document, in a stable (sorted) order. Canonical so
+/// two replicas that merged in different orders materialize byte-identically; the
+/// anchored ranges are recovered separately from the body `comment` marks.
+pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    match comments_obj(doc, c) {
+        Some(comments) => {
+            let mut ids: Vec<String> = doc
+                .keys(&comments)
+                .filter(|id| matches!(doc.get(&comments, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+                .collect();
+            ids.sort();
+            ids
+        }
+        None => Vec::new(),
+    }
+}
+
+/// A comment's author display name (empty if unset / unknown id).
+pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
+    let comment = comment_obj(doc, c, id)?;
+    match doc.get(&comment, COMMENT_AUTHOR) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// A comment's date / timestamp string (empty if unset / unknown id).
+pub fn comment_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
+    let comment = comment_obj(doc, c, id)?;
+    match doc.get(&comment, COMMENT_DATE) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// The ordered block ids of a comment's content (empty if absent).
+pub fn comment_blocks_in_order(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<String> {
+    match comment_blocks_obj(doc, c, id) {
+        Some(obj) => ordered_keys(doc, &obj),
+        None => Vec::new(),
+    }
+}
+
+/// Materialize a comment's block sequence (empty if the comment has no blocks / is
+/// unknown).
+pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<BlockView> {
+    match comment_blocks_obj(doc, c, id) {
+        Some(obj) => ordered_keys(doc, &obj).into_iter().map(|bid| materialize_block(doc, &obj, &bid)).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The anchored body range `(block_id, start, end)` of a comment, recovered from the
+/// `comment` mark covering text whose value is the comment id. `None` if no such mark
+/// is present (e.g. the commented text was deleted). Scans only the body container.
+pub fn comment_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(String, usize, usize)> {
+    for bid in blocks_in_order(doc, c) {
+        for m in marks(doc, c, &bid) {
+            if m.name == MARK_COMMENT && m.value == crate::document::MarkValue::Str(id.to_string()) {
+                return Some((bid, m.start, m.end));
+            }
+        }
+    }
+    None
+}
+
+/// Materialize every comment into a [`crate::snapshot::CommentView`] (sorted by id),
+/// recovering each comment's anchored body range from the `comment` marks.
+pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::CommentView> {
+    comment_ids(doc, c)
+        .into_iter()
+        .map(|id| crate::snapshot::CommentView {
+            author: comment_author(doc, c, &id).unwrap_or_default(),
+            date: comment_date(doc, c, &id).unwrap_or_default(),
+            blocks: materialize_comment_blocks(doc, c, &id),
+            range: comment_range(doc, c, &id),
             id,
         })
         .collect()
@@ -513,6 +639,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         header: materialize_region(doc, c, Region::Header),
         footer: materialize_region(doc, c, Region::Footer),
         notes: materialize_notes(doc, c),
+        comments: materialize_comments(doc, c),
     }
 }
 
@@ -826,6 +953,100 @@ impl<'a> DocMut<'a> {
         if let Some(tid) = self.note_text_obj(note_id, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
+        }
+    }
+
+    // ---- comments / annotations -------------------------------------------
+
+    /// Resolve-or-create the `comments` root container (created lazily on the first
+    /// comment insert so older documents migrate transparently).
+    fn comments_container(&mut self) -> ObjId {
+        if let Some(obj) = self.c.comments.clone() {
+            return obj;
+        }
+        if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_COMMENTS) {
+            return obj;
+        }
+        self.doc.put_object(&self.c.root, KEY_COMMENTS, ObjType::Map).unwrap()
+    }
+
+    /// Create a new comment with an `author`, a `date` string, and an empty block
+    /// sequence; returns its freshly-minted id. The id is minted from the same
+    /// per-replica generator as body/region/note blocks, so it never collides. The
+    /// comment's content is then filled via [`Self::insert_comment_block`] +
+    /// [`Self::splice_comment_text`]; the body anchor is placed via
+    /// [`Self::add_comment_mark`].
+    pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
+        let comments = self.comments_container();
+        let id = self.ids.mint();
+        let comment = self.doc.put_object(&comments, id.as_str(), ObjType::Map).unwrap();
+        self.doc.put(&comment, COMMENT_AUTHOR, author).unwrap();
+        self.doc.put(&comment, COMMENT_DATE, date).unwrap();
+        self.doc.put_object(&comment, COMMENT_BLOCKS, ObjType::Map).unwrap();
+        id
+    }
+
+    /// Anchor a comment to the body range `[start, end)` of `block_id`: cover it with
+    /// a `comment` mark valued with the comment id. The mark merges with concurrent
+    /// text edits and round-trips through the codecs.
+    pub fn add_comment_mark(&mut self, block_id: &str, start: usize, end: usize, comment_id: &str) {
+        self.add_mark(block_id, start, end, MARK_COMMENT, comment_id);
+    }
+
+    /// Convenience: create a comment authored by `author` with body `text` (a single
+    /// paragraph), anchor it to the body range `[start, end)` of `block_id`, and
+    /// return the new comment id. `date` is left empty (set it via a fuller path if a
+    /// timestamp is desired). For multi-paragraph content, use [`Self::insert_comment`]
+    /// + [`Self::insert_comment_block`] + [`Self::splice_comment_text`] directly.
+    pub fn add_comment(&mut self, block_id: &str, start: usize, end: usize, author: &str, text: &str) -> String {
+        let id = self.insert_comment(author, "");
+        if let Some(b) = self.insert_comment_block(&id, None, "paragraph") {
+            self.splice_comment_text(&id, &b, 0, 0, text);
+        }
+        self.add_comment_mark(block_id, start, end, &id);
+        id
+    }
+
+    /// Resolve-or-create a comment's block container (`comment.blocks`).
+    fn comment_blocks_container(&mut self, comment_id: &str) -> Option<ObjId> {
+        let comment = comment_obj(self.doc, self.c, comment_id)?;
+        match self.doc.get(&comment, COMMENT_BLOCKS) {
+            Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
+            _ => self.doc.put_object(&comment, COMMENT_BLOCKS, ObjType::Map).ok(),
+        }
+    }
+
+    /// Insert a block into a comment's content (created lazily); returns its id, or
+    /// `None` if the comment id is unknown.
+    pub fn insert_comment_block(&mut self, comment_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+        let container = self.comment_blocks_container(comment_id)?;
+        let key = self.order_after_in(&container, after);
+        let id = self.ids.mint();
+        let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
+        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
+        self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
+        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        Some(id)
+    }
+
+    /// Resolve-or-create the Text object of a comment's block.
+    fn comment_text_obj(&mut self, comment_id: &str, block_id: &str) -> Option<ObjId> {
+        let container = self.comment_blocks_container(comment_id)?;
+        let obj = block_obj(self.doc, &container, block_id)?;
+        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
+            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
+            _ => None,
+        };
+        if let Some(tid) = existing {
+            return Some(tid);
+        }
+        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+    }
+
+    /// Splice text into a comment's block.
+    pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, idx: usize, del: isize, ins: &str) {
+        if let Some(tid) = self.comment_text_obj(comment_id, block_id) {
+            let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
     }
 
@@ -1234,6 +1455,86 @@ mod region_tests {
         assert_ne!(nid, nid2, "second note id must not collide with the first");
         let snap = materialize(&doc, &c);
         assert_eq!(snap.notes.len(), 2, "both notes survive (no overwrite): {:?}", snap.notes);
+    }
+
+    #[test]
+    fn comments_container_is_empty_on_fresh_doc_and_backward_compatible() {
+        use automerge::transaction::Transactable;
+        // A fresh doc has an (empty) comments container — created eagerly so concurrent
+        // comment adds converge on one shared object.
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        assert!(c.comments.is_some(), "comments container present on a fresh doc");
+        assert!(comment_ids(&doc, &c).is_empty(), "but empty");
+        assert!(materialize_comments(&doc, &c).is_empty());
+
+        // Backward-compat: a document authored before the comments map existed (no
+        // root.comments) must still open and read as having no comments.
+        let mut old = AutoCommit::new();
+        let oc = init(&mut old, &ROOT);
+        let _ = oc;
+        old.delete(&ROOT, KEY_COMMENTS).unwrap();
+        let bytes = old.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        let c2 = open(&reloaded, &ROOT).unwrap();
+        assert!(c2.comments.is_none(), "old-schema doc opens with no comments container");
+        assert!(comment_ids(&reloaded, &c2).is_empty());
+    }
+
+    #[test]
+    fn comment_anchor_and_content() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (pid, cid);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "please fix this word");
+            // Comment over "this word" (chars 11..20).
+            cid = dm.add_comment(&pid, 11, 20, "Ada", "note: fix");
+        }
+        // The body carries a `comment` mark over the anchored range, valued with the id.
+        let p = materialize_block(&doc, &c.blocks, &pid);
+        let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
+        assert_eq!((cm.start, cm.end), (11, 20));
+        assert_eq!(cm.value, crate::document::MarkValue::Str(cid.clone()));
+        // The comment exists with author + content; range recovered from the mark.
+        assert_eq!(comment_author(&doc, &c, &cid).as_deref(), Some("Ada"));
+        let blocks = materialize_comment_blocks(&doc, &c, &cid);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "note: fix");
+        // The snapshot surfaces the comment with its anchored range.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.comments.len(), 1);
+        assert_eq!(snap.comments[0].author, "Ada");
+        assert_eq!(snap.comments[0].blocks[0].text, "note: fix");
+        assert_eq!(snap.comments[0].range, Some((pid.clone(), 11, 20)));
+    }
+
+    #[test]
+    fn seeded_id_gen_does_not_remint_comment_ids() {
+        // A generator seeded over a reloaded doc must skip past comment ids, otherwise
+        // it would re-mint (and overwrite) an existing comment.
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (pid, cid);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "abcdef");
+            cid = dm.add_comment(&pid, 0, 3, "A", "first");
+        }
+        let mut ids2 = seeded_id_gen(&doc, &c);
+        let cid2;
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids2 };
+            cid2 = dm.add_comment(&pid, 3, 6, "B", "second");
+        }
+        assert_ne!(cid, cid2, "second comment id must not collide with the first");
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.comments.len(), 2, "both comments survive (no overwrite): {:?}", snap.comments);
     }
 
     #[test]
