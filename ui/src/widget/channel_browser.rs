@@ -1368,7 +1368,7 @@ impl Widget for ChannelBrowser {
         "ChannelBrowser"
     }
 
-    /// Accessibility (W3): a filterable channel list. `Role::List` named
+    /// Accessibility: a filterable channel list. `Role::List` named
     /// "Channels", with the count of currently-visible (post-filter) channels
     /// in the description, and the focus state derived from the search input's
     /// focus.

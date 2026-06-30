@@ -89,8 +89,8 @@ pub trait Widget {
     /// ([`is_focused`](Widget::is_focused), [`is_enabled`](Widget::is_enabled),
     /// selection indices, …) at call time so it can't drift from `draw`.
     /// Geometry flows from [`get_rect`](Widget::get_rect); names must already be
-    /// [`i18n!`](crate::i18n)-resolved strings, not keys. A later workstream
-    /// (W4) walks the tree, maps each node onto AccessKit's schema, and exports
+    /// [`i18n!`](crate::i18n)-resolved strings, not keys. The export layer
+    /// walks the tree, maps each node onto AccessKit's schema, and exports
     /// it over AT-SPI2 so standard ATs (Orca, braille) work — while an
     /// in-process channel feeds the same nodes to the built-in screen reader.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> { None }

@@ -755,7 +755,7 @@ impl Widget for HistoryScrubber {
         "HistoryScrubber"
     }
 
-    /// Accessibility (W3): a scrubber over the document's revision history
+    /// Accessibility: a scrubber over the document's revision history
     /// behaves like a slider — `Role::Slider` whose value is the selected
     /// tick's position ("revision N of M"). Reusing the slider role means an
     /// AT offers the same increment/decrement affordance the scrubber's drag
