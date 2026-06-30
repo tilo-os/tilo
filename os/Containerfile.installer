@@ -35,6 +35,12 @@ COPY usr/lib/systemd/system/qos-installer-setup.service /usr/lib/systemd/system/
 # Inactive-until-runtime sudoers rule (qos-installer-setup.service installs it).
 COPY usr/share/qos/installer-sudoers /usr/share/qos/installer-sudoers
 
+# Live-medium SELinux module (qos-installer-setup.service `semodule -i`s it at
+# boot): lets the greeter session domain launch the privileged install backend
+# as a transient system unit, so the live medium can boot SELinux-ENFORCING
+# instead of enforcing=0. See os/usr/share/qos/selinux/qos-installer.cil.
+COPY usr/share/qos/selinux/qos-installer.cil /usr/share/qos/selinux/qos-installer.cil
+
 # Point greetd at the session selector (installer-vs-greeter by cmdline).
 COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 
