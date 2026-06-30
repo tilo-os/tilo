@@ -122,6 +122,11 @@ impl BlockKind {
 pub struct Block {
     pub kind: BlockKind,
     pub line: RichTextLine,
+    /// `true` when this block was created by Shift+Enter — it's a
+    /// soft-break continuation of the previous block. Rendered with
+    /// no inter-block top spacing so the two visual lines read as
+    /// one paragraph.
+    pub soft_break: bool,
 }
 
 impl Block {
@@ -131,6 +136,7 @@ impl Block {
             line: RichTextLine::new()
                 .with_text(text)
                 .with_size(BlockKind::Paragraph.font_size()),
+            soft_break: false,
         }
     }
 
@@ -139,6 +145,7 @@ impl Block {
         Self {
             kind: kind.clone(),
             line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            soft_break: false,
         }
     }
 
@@ -149,6 +156,7 @@ impl Block {
         Self {
             kind: kind.clone(),
             line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            soft_break: false,
         }
     }
 
@@ -158,6 +166,7 @@ impl Block {
         Self {
             kind: kind.clone(),
             line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            soft_break: false,
         }
     }
 
@@ -170,6 +179,7 @@ impl Block {
         Self {
             kind: kind.clone(),
             line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            soft_break: false,
         }
     }
 
@@ -180,6 +190,7 @@ impl Block {
         Self {
             kind: BlockKind::Divider,
             line: RichTextLine::new().with_size(BlockKind::Divider.font_size()),
+            soft_break: false,
         }
     }
 
@@ -216,6 +227,20 @@ pub struct BlockEditor {
     /// `CursorMoved` events so click-handling code can hit-test the
     /// checkbox glyphs without re-reading the winit event.
     last_mouse_pos: Point,
+    /// Start of an in-flight cross-block selection drag: `(block_idx,
+    /// byte_in_that_block)`. Set on MouseInput::Pressed by the
+    /// click's hit-test, cleared on Released. While present, the
+    /// CursorMoved handler paints selection bands across every block
+    /// between the start and the pointer's current block — the only
+    /// way to extend a selection past a paragraph boundary, since the
+    /// per-block TextInput's drag only tracks x within its own rect.
+    cross_block_drag_start: Option<(usize, usize)>,
+    /// Furthest range the cross-block drag has touched on this drag
+    /// session. When the pointer retreats (e.g. user drags from block
+    /// 3 down to block 5 then back up to block 4), the previously-
+    /// dragged-through blocks (5) need their selections cleared. We
+    /// remember the range so we know which blocks to wipe.
+    cross_block_drag_touched: Option<(usize, usize)>,
     /// Slash menu popover. Owned by the editor so it shares lifecycle
     /// with the surrounding block list; rendered out-of-band via
     /// [`BlockEditor::draw_overlay`].
@@ -262,6 +287,8 @@ impl BlockEditor {
             structure_dirty: true,
             edit_pending: false,
             last_mouse_pos: Point::ZERO,
+            cross_block_drag_start: None,
+            cross_block_drag_touched: None,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
             link_popover: LinkPopover::new(),
@@ -296,6 +323,8 @@ impl BlockEditor {
             structure_dirty: true,
             edit_pending: false,
             last_mouse_pos: Point::ZERO,
+            cross_block_drag_start: None,
+            cross_block_drag_touched: None,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
             link_popover: LinkPopover::new(),
@@ -1249,7 +1278,7 @@ pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 /// caret/selection in that block can be looked up. Both peers derive the
 /// same key from the block's position in the shared `blocks` list, so the
 /// caret renders on the matching block on every peer.
-pub(crate) fn block_presence_key(index: usize) -> PresenceKey {
+pub fn block_presence_key(index: usize) -> PresenceKey {
     PresenceKey::Widget {
         path: vec![
             PathSegment::Field("notes_block".to_string()),
@@ -1394,6 +1423,98 @@ impl Default for BlockEditor {
     }
 }
 
+impl BlockEditor {
+    /// Index of the block whose row contains `y`. Clamps to the first
+    /// or last block when `y` is above / below the editor — so a drag
+    /// started inside a block extends cleanly past either edge.
+    fn block_at_y(&self, y: f64) -> Option<usize> {
+        if self.blocks.is_empty() {
+            return None;
+        }
+        for (i, b) in self.blocks.iter().enumerate() {
+            let r = b.line.get_rect();
+            if y >= r.y0 && y <= r.y1 {
+                return Some(i);
+            }
+        }
+        if y < self.blocks[0].line.get_rect().y0 {
+            Some(0)
+        } else {
+            Some(self.blocks.len() - 1)
+        }
+    }
+
+    /// Paint a selection band across `[lo_block, hi_block]`. `start`
+    /// is where the user pressed; `end` is where the pointer is now.
+    /// Blocks previously dragged through but no longer in the range
+    /// get their selection cleared (so a drag-down-then-back-up
+    /// leaves the right state).
+    fn paint_cross_block_selection(
+        &mut self,
+        start_block: usize,
+        start_byte: usize,
+        end_block: usize,
+        end_byte: usize,
+    ) {
+        let (lo_block, hi_block) = if start_block <= end_block {
+            (start_block, end_block)
+        } else {
+            (end_block, start_block)
+        };
+        if let Some((prev_lo, prev_hi)) = self.cross_block_drag_touched {
+            for i in prev_lo..=prev_hi {
+                if (i < lo_block || i > hi_block) && i < self.blocks.len() {
+                    let pos = self.blocks[i].line.inner_mut().cursor_pos();
+                    self.blocks[i].line.inner_mut().set_selection(pos, pos);
+                }
+            }
+        }
+        self.cross_block_drag_touched = Some((lo_block, hi_block));
+        if start_block == end_block {
+            return;
+        }
+        let forward = start_block < end_block;
+        for i in lo_block..=hi_block {
+            if i >= self.blocks.len() {
+                continue;
+            }
+            let len = self.blocks[i].line.value().len();
+            let (a, c) = if i == start_block {
+                if forward {
+                    (start_byte, len)
+                } else {
+                    (0, start_byte)
+                }
+            } else if i == end_block {
+                if forward {
+                    (0, end_byte)
+                } else {
+                    (end_byte, len)
+                }
+            } else if forward {
+                (0, len)
+            } else {
+                (len, 0)
+            };
+            self.blocks[i].line.inner_mut().set_selection(a, c);
+        }
+    }
+
+    /// Clear every block's cross-block selection contribution. Called
+    /// on the next fresh click (so the new selection doesn't OR with
+    /// the old one).
+    fn clear_cross_block_selection(&mut self) {
+        if let Some((lo, hi)) = self.cross_block_drag_touched.take() {
+            for i in lo..=hi {
+                if i < self.blocks.len() {
+                    let pos = self.blocks[i].line.inner_mut().cursor_pos();
+                    self.blocks[i].line.inner_mut().set_selection(pos, pos);
+                }
+            }
+        }
+    }
+}
+
 impl Widget for BlockEditor {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         let Some(list) = self.blocks_list.clone() else {
@@ -1442,8 +1563,28 @@ impl Widget for BlockEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.child_nodes.clear();
-        for b in &mut self.blocks {
+        for (i, b) in self.blocks.iter_mut().enumerate() {
             let n = b.line.build_layout(taffy, theme, node_map);
+            // Per-block top margin replaces the parent's `gap` so we
+            // can zero it out for soft-break (Shift+Enter)
+            // continuation blocks. First block always gets 0 (the
+            // parent's own padding handles the top).
+            let top_margin = if i == 0 || b.soft_break {
+                0.0
+            } else {
+                8.0
+            };
+            if top_margin > 0.0 {
+                let existing = taffy.style(n).cloned().unwrap_or_default();
+                let mut s = existing;
+                s.margin = taffy::Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(top_margin as f32),
+                    bottom: length(0.0),
+                };
+                let _ = taffy.set_style(n, s);
+            }
             self.child_nodes.push(n);
         }
         let node = taffy
@@ -1452,9 +1593,12 @@ impl Widget for BlockEditor {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
                     align_items: Some(taffy::AlignItems::Stretch),
+                    // Gap is 0 — per-block `margin_top` (above) gives
+                    // each block its own inter-block spacing so soft-
+                    // break blocks can opt out.
                     gap: taffy::Size {
                         width: length(0.0),
-                        height: length(8.0),
+                        height: length(0.0),
                     },
                     size: Size {
                         width: Dimension::percent(1.0),
@@ -1561,31 +1705,13 @@ impl Widget for BlockEditor {
             // across every kind regardless of indent level.
             let row_x0 = prefix_x0 - indent_px;
 
-            // Focused-block indicator: a 2 px accent-tinted vertical
-            // bar at the leftmost edge of the focused block's row.
-            // Drawn at ~50% alpha so it reads as a subtle cue rather
-            // than competing with the caret. Skipped for Dividers
-            // since they don't get focus.
-            if Some(idx) == self.focused && self.is_focused
-                && !matches!(b.kind, BlockKind::Divider)
-            {
-                use crate::color_compat::ColorCompat;
-                let bar_color =
-                    theme.accent_primary.with_alpha_factor(0.5);
-                let bar = Rect::new(
-                    row_x0,
-                    line_rect.y0 + 2.0,
-                    row_x0 + 2.0,
-                    line_rect.y1 - 2.0,
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    bar_color,
-                    None,
-                    &bar,
-                );
-            }
+            // (Was: 2 px translucent accent vertical bar at row_x0 to
+            // mark the focused block. The bar's geometry was identical
+            // to the caret — 2 px wide, full line height, accent
+            // colour — so it read as a "ghost caret at the start of
+            // the line". The actual caret is already the focus
+            // signal; the extra bar just confused the eye. Removed.)
+            let _ = row_x0;
 
             match &b.kind {
                 BlockKind::Paragraph | BlockKind::Heading(_) => {
@@ -1746,8 +1872,6 @@ impl Widget for BlockEditor {
             }
             if let Some(list) = presence.carets.get(&key) {
                 for (user, byte_pos) in list {
-                    // Highlight the block this peer is editing.
-                    presence.draw_peer_focus(scene, theme, user, tr_rect);
                     // The line owns the caret geometry, so the peer caret
                     // is pixel-identical to a local caret (just recoloured).
                     presence.draw_peer_caret(
@@ -1856,6 +1980,31 @@ impl Widget for BlockEditor {
                 self.slash_menu.set_visible(false);
                 self.slash_open_at = None;
             }
+            // Cross-block drag start: clear any leftover band from a
+            // previous drag and record where this click landed (block
+            // + byte). The inner TextInput's own press handler also
+            // runs and starts a single-block drag — they cooperate:
+            // the per-block drag handles X within the source block,
+            // and our coordinator picks up the slack when the
+            // pointer crosses into a different block.
+            self.clear_cross_block_selection();
+            if let Some(block_idx) = self.block_at_y(self.last_mouse_pos.y) {
+                if block_idx < self.blocks.len() {
+                    let byte = self.blocks[block_idx]
+                        .line
+                        .inner_mut()
+                        .byte_at_x(self.last_mouse_pos.x);
+                    self.cross_block_drag_start = Some((block_idx, byte));
+                }
+            }
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.cross_block_drag_start = None;
         }
         // Cache the last mouse position so the next MouseInput knows
         // where the click landed. Same shape as TextInput.
@@ -1863,6 +2012,41 @@ impl Widget for BlockEditor {
             let logical =
                 Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_mouse_pos = logical;
+
+            // Cross-block drag: while a drag is in flight (cross_
+            // block_drag_start set + at least one inner TextInput is
+            // dragging) AND the pointer has moved into a *different*
+            // block than the start, paint selection bands across the
+            // whole range. Per-block drag stays under the start
+            // TextInput's control inside its own rect; we only add a
+            // band on the OTHER blocks the pointer has crossed into.
+            if let Some((start_block, start_byte)) = self.cross_block_drag_start
+            {
+                let any_dragging = self
+                    .blocks
+                    .iter()
+                    .any(|b| b.line.inner().is_dragging());
+                if any_dragging {
+                    if let Some(end_block) = self.block_at_y(logical.y) {
+                        let end_byte = if end_block < self.blocks.len() {
+                            self.blocks[end_block]
+                                .line
+                                .inner_mut()
+                                .byte_at_x(logical.x)
+                        } else {
+                            0
+                        };
+                        if end_block != start_block {
+                            self.paint_cross_block_selection(
+                                start_block,
+                                start_byte,
+                                end_block,
+                                end_byte,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // Tab / Shift-Tab on a list block adjusts indent BEFORE the
@@ -2116,6 +2300,16 @@ impl BlockEditor {
         match sig {
             LineSignal::Enter { split_at } => {
                 self.split_at_cursor(idx, split_at);
+            }
+            LineSignal::SoftNewline { split_at } => {
+                // Same split semantics as Enter, but mark the new
+                // block as a soft-break continuation so it renders
+                // tight to the previous one (no paragraph gap).
+                self.split_at_cursor(idx, split_at);
+                let new_idx = idx + 1;
+                if new_idx < self.blocks.len() {
+                    self.blocks[new_idx].soft_break = true;
+                }
             }
             LineSignal::BackspaceAtStart => {
                 if idx == 0 {

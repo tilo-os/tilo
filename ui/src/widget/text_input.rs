@@ -67,6 +67,19 @@ const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// they're treated as separate click chains.
 const MULTI_CLICK_RADIUS: f64 = 4.0;
 
+/// What unit the in-flight drag snaps to. Set on press based on the
+/// click ladder so a double-click-then-drag extends by whole words
+/// (matching every editor on the planet).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum DragUnit {
+    /// Plain char-level drag (single click + drag, or shift+click).
+    Char,
+    /// Word-level drag (double click + drag).
+    Word,
+    /// All-content (triple click + drag, mostly a no-op for single-line).
+    All,
+}
+
 pub struct TextInput {
     _id: String,
     path: Vec<PathSegment>,
@@ -87,6 +100,17 @@ pub struct TextInput {
     /// `wants_pointer_capture` so a drag that leaves the rect keeps
     /// updating the selection.
     is_dragging: bool,
+    /// Snap-unit for the in-flight drag. Set on the click that started
+    /// the drag based on the click ladder: single click → `Char`,
+    /// double click → `Word`, triple click → `All`. The CursorMoved
+    /// handler honours this so dragging from a double-click extends
+    /// by whole words, etc.
+    drag_unit: DragUnit,
+    /// Anchor span snapped to `drag_unit` boundaries. For a
+    /// double-click this is the whole word the user clicked on; the
+    /// drag then extends from whichever end of this span is
+    /// "opposite" the current pointer.
+    drag_anchor_span: (usize, usize),
     /// Time + position of the most recent click — used to detect
     /// double / triple clicks (within `MULTI_CLICK_INTERVAL` and
     /// `MULTI_CLICK_RADIUS`).
@@ -169,6 +193,8 @@ impl TextInput {
             cursor_pos: 0,
             selection_anchor: None,
             is_dragging: false,
+            drag_unit: DragUnit::Char,
+            drag_anchor_span: (0, 0),
             last_click_time: None,
             last_click_pos: Point::ZERO,
             click_count: 0,
@@ -594,6 +620,37 @@ impl TextInput {
         self.dirty = true;
     }
 
+    /// Whether the user is mid-drag — public for BlockEditor's cross-
+    /// block drag coordinator, which checks if any inner TextInput is
+    /// still dragging to decide whether to paint multi-block bands.
+    pub fn is_dragging(&self) -> bool {
+        self.is_dragging
+    }
+
+    /// Force the selection to span `[anchor, cursor)` from outside the
+    /// input. Used by BlockEditor's cross-block drag coordinator to
+    /// paint a selection band on a block the user is dragging
+    /// THROUGH without that block ever having been the click target.
+    /// `cursor` becomes the active end; `anchor == cursor` clears.
+    pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
+        let a = anchor.min(self.text.len());
+        let c = cursor.min(self.text.len());
+        if a == c {
+            self.selection_anchor = None;
+        } else {
+            self.selection_anchor = Some(a);
+        }
+        self.cursor_pos = c;
+    }
+
+    /// Snap a logical-space x to the byte position in this input's text
+    /// — public counterpart to the private `cursor_from_x` for callers
+    /// that need to hit-test from outside the widget (BlockEditor's
+    /// cross-block drag).
+    pub fn byte_at_x(&self, logical_x: f64) -> usize {
+        self.cursor_from_x(logical_x)
+    }
+
     // ---- right-click context menu ------------------------------------------
 
     /// Copy the current selection to the clipboard (no-op when nothing is
@@ -945,12 +1002,49 @@ impl Widget for TextInput {
                 self.last_mouse_pos = logical_pos;
 
                 if self.is_dragging {
-                    let pos = self.cursor_from_x(logical_pos.x);
-                    if pos != self.cursor_pos {
-                        if self.selection_anchor.is_none() {
-                            self.selection_anchor = Some(self.cursor_pos);
+                    let raw = self.cursor_from_x(logical_pos.x);
+                    let (anchor_lo, anchor_hi) = self.drag_anchor_span;
+                    // Snap the pointer position + pick the anchor end
+                    // so the selection always *contains* the original
+                    // span clicked. Standard "extend selection by
+                    // word/line" behaviour.
+                    let (new_anchor, new_cursor) = match self.drag_unit {
+                        DragUnit::Char => {
+                            // Plain char-level drag: anchor stays put
+                            // (the position the press landed on), cursor
+                            // follows the pointer.
+                            (anchor_lo, raw)
                         }
-                        self.cursor_pos = pos;
+                        DragUnit::Word => {
+                            let (w_start, w_end) = word_boundaries(&self.text, raw);
+                            if raw < anchor_lo {
+                                // Dragging left of the original word —
+                                // pin the anchor to the original word's
+                                // right edge, walk cursor to the left
+                                // edge of whichever word the pointer is
+                                // currently inside.
+                                (anchor_hi, w_start)
+                            } else {
+                                // Dragging right of (or inside) the
+                                // original word — pin the anchor to
+                                // the original word's left edge, walk
+                                // cursor to the right edge of the word
+                                // containing the pointer.
+                                (anchor_lo, w_end)
+                            }
+                        }
+                        DragUnit::All => {
+                            // Whole content is already selected; drag is
+                            // a no-op.
+                            (anchor_lo, anchor_hi)
+                        }
+                    };
+                    if new_anchor != self.cursor_pos
+                        || self.selection_anchor != Some(new_anchor)
+                        || new_cursor != self.cursor_pos
+                    {
+                        self.selection_anchor = Some(new_anchor);
+                        self.cursor_pos = new_cursor;
                         *handled = true;
                     }
                 }
@@ -1013,21 +1107,49 @@ impl Widget for TextInput {
                         match self.click_count {
                             1 => {
                                 if modifiers.state().shift_key() {
-                                    self.set_cursor(pos, true);
+                                    // Shift+click extends the existing
+                                    // selection (or starts one from the
+                                    // current caret) to the clicked
+                                    // position. Drag continues at
+                                    // char-granularity from the original
+                                    // anchor.
+                                    let anchor = self
+                                        .selection_anchor
+                                        .unwrap_or(self.cursor_pos);
+                                    self.selection_anchor = Some(anchor);
+                                    self.cursor_pos = pos;
+                                    self.drag_unit = DragUnit::Char;
+                                    self.drag_anchor_span = (anchor, anchor);
+                                    self.is_dragging = true;
                                 } else {
                                     self.selection_anchor = None;
                                     self.cursor_pos = pos;
+                                    self.drag_unit = DragUnit::Char;
+                                    self.drag_anchor_span = (pos, pos);
                                     self.is_dragging = true;
                                 }
                             }
                             2 => {
+                                // Double-click: select the word + arm a
+                                // word-granularity drag so dragging
+                                // beyond the word extends by whole words.
                                 let (start, end) = word_boundaries(&self.text, pos);
                                 self.selection_anchor = Some(start);
                                 self.cursor_pos = end;
+                                self.drag_unit = DragUnit::Word;
+                                self.drag_anchor_span = (start, end);
+                                self.is_dragging = true;
                             }
                             _ => {
+                                // Triple-click: select all + arm an
+                                // all-granularity drag (no-op extension
+                                // for single-line, but the flag flow
+                                // stays uniform).
                                 self.selection_anchor = Some(0);
                                 self.cursor_pos = self.text.len();
+                                self.drag_unit = DragUnit::All;
+                                self.drag_anchor_span = (0, self.text.len());
+                                self.is_dragging = true;
                             }
                         }
                         *handled = true;

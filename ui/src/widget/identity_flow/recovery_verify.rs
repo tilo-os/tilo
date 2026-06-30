@@ -24,15 +24,18 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
-use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
+use crate::color_compat::ColorCompat;
+use crate::widget::identity_flow::{LineEditState, RecoveryChallenge, ScreenOutcome};
 
 /// Screen 2b: type-3-words verification.
 pub struct RecoveryVerifyScreen {
     rect: Rect,
     mnemonic: String,
     challenge: Option<RecoveryChallenge>,
-    /// User's typed answers, one per challenge slot.
-    answers: [String; 3],
+    /// User's typed answers, one per challenge slot. Each slot is a
+    /// `LineEditState` so the user gets the full keyboard-shortcut
+    /// kit (Ctrl+arrows, Shift selection, Ctrl+A/C/X/V) per slot.
+    editors: [LineEditState; 3],
     /// Index of the currently-focused slot (0..3) or `None`.
     focused_slot: Option<usize>,
     /// Whether the last submit produced a mismatch — drives the
@@ -50,7 +53,7 @@ impl RecoveryVerifyScreen {
             rect: Rect::ZERO,
             mnemonic: String::new(),
             challenge: None,
-            answers: [String::new(), String::new(), String::new()],
+            editors: [LineEditState::new(), LineEditState::new(), LineEditState::new()],
             focused_slot: None,
             last_attempt_failed: false,
             slot_rects: [Rect::ZERO; 3],
@@ -65,7 +68,7 @@ impl RecoveryVerifyScreen {
     pub fn seed_mnemonic(&mut self, mnemonic: String) {
         self.mnemonic = mnemonic;
         self.challenge = RecoveryChallenge::from_mnemonic(&self.mnemonic).ok();
-        self.answers = [String::new(), String::new(), String::new()];
+        self.editors = [LineEditState::new(), LineEditState::new(), LineEditState::new()];
         self.last_attempt_failed = false;
     }
 
@@ -76,7 +79,7 @@ impl RecoveryVerifyScreen {
     /// Pick a fresh 3-word challenge.
     pub fn reseed(&mut self) {
         self.challenge = RecoveryChallenge::from_mnemonic(&self.mnemonic).ok();
-        self.answers = [String::new(), String::new(), String::new()];
+        self.editors = [LineEditState::new(), LineEditState::new(), LineEditState::new()];
         self.last_attempt_failed = false;
     }
 
@@ -84,19 +87,19 @@ impl RecoveryVerifyScreen {
     /// of `positions` is reproducible.
     pub fn seed_challenge(&mut self, positions: [usize; 3]) {
         self.challenge = RecoveryChallenge::at_positions(&self.mnemonic, positions).ok();
-        self.answers = [String::new(), String::new(), String::new()];
+        self.editors = [LineEditState::new(), LineEditState::new(), LineEditState::new()];
         self.last_attempt_failed = false;
     }
 
     pub fn set_answer(&mut self, slot: usize, value: impl Into<String>) {
         if slot < 3 {
-            self.answers[slot] = value.into();
+            self.editors[slot] = LineEditState::with_text(value);
             self.last_attempt_failed = false;
         }
     }
 
     pub fn answer(&self, slot: usize) -> Option<&str> {
-        self.answers.get(slot).map(|s| s.as_str())
+        self.editors.get(slot).map(|e| e.text.as_str())
     }
 
     pub fn last_attempt_failed(&self) -> bool {
@@ -108,9 +111,9 @@ impl RecoveryVerifyScreen {
         match &self.challenge {
             None => false,
             Some(c) => {
-                let r0 = self.answers[0].as_str();
-                let r1 = self.answers[1].as_str();
-                let r2 = self.answers[2].as_str();
+                let r0 = self.editors[0].text.as_str();
+                let r1 = self.editors[1].text.as_str();
+                let r2 = self.editors[2].text.as_str();
                 c.check(&[r0, r1, r2])
             }
         }
@@ -173,24 +176,27 @@ impl RecoveryVerifyScreen {
                 let Some(slot) = self.focused_slot else {
                     return ScreenOutcome::Stay;
                 };
-                let answer = &mut self.answers[slot];
+                // Tab + Enter are screen-level shortcuts; everything
+                // else delegates to the slot's LineEditState so we
+                // get Ctrl+arrows, Shift selection, Ctrl+A/C/X/V,
+                // Home/End for free.
                 match logical_key {
-                    Key::Named(NamedKey::Backspace) => {
-                        if !answer.is_empty() {
-                            // Pop the last char.
-                            let new_len = answer
-                                .char_indices()
-                                .last()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            answer.truncate(new_len);
-                            self.last_attempt_failed = false;
-                            *handled = true;
-                        }
-                    }
                     Key::Named(NamedKey::Tab) => {
-                        // Move focus to next slot.
-                        self.focused_slot = Some((slot + 1) % 3);
+                        // Tab walks the slots in *visual* order (by
+                        // ascending position number), not storage
+                        // order. The challenge's `positions` array is
+                        // in Fisher-Yates insertion order, so slot 0
+                        // may be the rightmost blank in the grid;
+                        // walking `(slot+1) % 3` would jump
+                        // backwards on screen. Shift+Tab walks the
+                        // same order in reverse.
+                        if let Some(c) = &self.challenge {
+                            self.focused_slot = Some(next_slot_in_visual_order(
+                                slot,
+                                &c.positions,
+                                _modifiers.state().shift_key(),
+                            ));
+                        }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
@@ -202,15 +208,10 @@ impl RecoveryVerifyScreen {
                         }
                     }
                     _ => {
-                        if let Some(t) = text {
-                            for c in t.chars() {
-                                if c.is_control() {
-                                    continue;
-                                }
-                                answer.push(c);
-                                self.last_attempt_failed = false;
-                                *handled = true;
-                            }
+                        let editor = &mut self.editors[slot];
+                        if editor.apply_key(logical_key, _modifiers, text.as_deref()) {
+                            self.last_attempt_failed = false;
+                            *handled = true;
                         }
                     }
                 }
@@ -218,6 +219,52 @@ impl RecoveryVerifyScreen {
             }
             _ => ScreenOutcome::Stay,
         }
+    }
+}
+
+/// Given the current `slot` index and the challenge's `positions`
+/// array (in storage order, NOT visual order), return the slot index
+/// the user would expect Tab to land on — i.e. the slot whose
+/// position number is the next-larger (Tab) or next-smaller
+/// (Shift+Tab) in the grid. Wraps around at the ends.
+///
+/// Example: positions = [13, 12, 23], current slot = 0 (position 13).
+/// Visual order is [12, 13, 23] → Tab from 13 goes to 23 (slot 2),
+/// Shift+Tab from 13 goes to 12 (slot 1).
+pub fn next_slot_in_visual_order(slot: usize, positions: &[usize; 3], backward: bool) -> usize {
+    let current_pos = positions[slot];
+    if backward {
+        // Largest position smaller than current; wrap to largest.
+        positions
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| **p < current_pos)
+            .max_by_key(|(_, p)| **p)
+            .map(|(i, _)| i)
+            .or_else(|| {
+                positions
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, p)| **p)
+                    .map(|(i, _)| i)
+            })
+            .unwrap_or(slot)
+    } else {
+        // Smallest position larger than current; wrap to smallest.
+        positions
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| **p > current_pos)
+            .min_by_key(|(_, p)| **p)
+            .map(|(i, _)| i)
+            .or_else(|| {
+                positions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, p)| **p)
+                    .map(|(i, _)| i)
+            })
+            .unwrap_or(slot)
     }
 }
 
@@ -251,22 +298,45 @@ impl Widget for RecoveryVerifyScreen {
             origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
             origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
         );
-        let card_w = 560.0;
-        let card_h = 440.0;
+        // Matches recovery_share's card dimensions so the two screens
+        // feel like the same surface — only the blanks differ.
+        let card_w = 680.0;
+        let card_h = 540.0;
         let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 32.0;
-        let slot_w = (card_w - 2.0 * pad - 32.0) / 3.0;
-        for i in 0..3 {
-            let x = card.x0 + pad + i as f64 * (slot_w + 16.0);
-            let y = card.y0 + 170.0;
-            self.slot_rects[i] = Rect::new(x, y, x + slot_w, y + 40.0);
+
+        // 6×4 grid, mirroring recovery_share's `apply_layout`. Slots
+        // get mapped onto whichever grid cells the challenge picked.
+        let grid_x = card.x0 + pad;
+        let grid_y = card.y0 + 110.0;
+        let col_w = (card_w - 2.0 * pad) / 4.0;
+        let row_h = 50.0;
+
+        if let Some(c) = &self.challenge {
+            for (slot_i, pos1) in c.positions.iter().enumerate() {
+                let zero = pos1.saturating_sub(1);
+                let row = zero / 4;
+                let col = zero % 4;
+                let cell_x = grid_x + col as f64 * col_w + 28.0;
+                let cell_y = grid_y + row as f64 * row_h;
+                // Editable slot is the "value area" of the grid cell —
+                // sits next to the position-number prefix.
+                let slot_x0 = cell_x;
+                let slot_y0 = cell_y - 4.0;
+                let slot_x1 = grid_x + (col as f64 + 1.0) * col_w - 8.0;
+                let slot_y1 = slot_y0 + 30.0;
+                self.slot_rects[slot_i] = Rect::new(slot_x0, slot_y0, slot_x1, slot_y1);
+            }
+        } else {
+            self.slot_rects = [Rect::ZERO; 3];
         }
+
         self.reseed_rect = Rect::new(
             card.x0 + pad,
             card.y1 - pad - 44.0,
-            card.x0 + pad + 140.0,
+            card.x0 + pad + 180.0,
             card.y1 - pad,
         );
         self.continue_rect = Rect::new(
@@ -287,8 +357,10 @@ impl Widget for RecoveryVerifyScreen {
     ) {
         let backdrop = Color::from_rgba8(0, 0, 0, 180);
         scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        let card_w = 560.0;
-        let card_h = 440.0;
+        // Card matches `recovery_share` so the two screens feel like
+        // the same surface — only the blanks differ.
+        let card_w = 680.0;
+        let card_h = 540.0;
         let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
@@ -319,27 +391,63 @@ impl Widget for RecoveryVerifyScreen {
         );
         text_renderer.draw_text(
             scene,
-            "Type the words at the positions below to prove you have them.",
+            "Compare with your written list. Fill in the highlighted blanks to confirm.",
             13.0,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((card.x0 + pad, card.y0 + pad + 32.0)),
             None,
         );
 
-        // Position labels above each slot.
-        if let Some(c) = &self.challenge {
-            for (i, r) in self.slot_rects.iter().enumerate() {
-                text_renderer.draw_text(
-                    scene,
-                    &format!("Word #{:>2}", c.positions[i]),
-                    13.0,
-                    theme.tokens.colors.text_dim,
-                    transform * Affine::translate((r.x0, r.y0 - 20.0)),
-                    None,
-                );
-                let focused = self.focused_slot == Some(i);
+        // 24-word grid mirroring `recovery_share`. Three of the
+        // positions are blanked out for the user to fill; the other
+        // 21 are read-only so the user can scan the full list to
+        // find where the gaps are against their written-down copy.
+        let challenge_positions: [usize; 3] = self
+            .challenge
+            .as_ref()
+            .map(|c| c.positions)
+            .unwrap_or([0, 0, 0]);
+        let words: Vec<&str> = self.mnemonic.split_whitespace().collect();
+        let grid_x = card.x0 + pad;
+        let grid_y = card.y0 + 110.0;
+        let col_w = (card_w - 2.0 * pad) / 4.0;
+        let row_h = 50.0;
+        for i in 0..24usize {
+            let row = i / 4;
+            let col = i % 4;
+            let pos1 = i + 1;
+            let x = grid_x + col as f64 * col_w;
+            let y = grid_y + row as f64 * row_h;
+
+            // Position number.
+            let num = format!("{:>2}.", pos1);
+            text_renderer.draw_text(
+                scene,
+                &num,
+                12.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x, y + 8.0)),
+                None,
+            );
+
+            // Find which (if any) slot this position is.
+            let slot = challenge_positions.iter().position(|&p| p == pos1);
+            if let Some(slot_i) = slot {
+                // Editable blank.
+                let r = self.slot_rects[slot_i];
+                let focused = self.focused_slot == Some(slot_i);
+                let answer_text = self.editors[slot_i].text.as_str();
+                let filled_correct = self.challenge.as_ref().is_some_and(|c| {
+                    answer_text
+                        .trim()
+                        .eq_ignore_ascii_case(&c.expected_word(slot_i))
+                });
                 let border = if focused {
                     theme.border_focus
+                } else if filled_correct {
+                    theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                } else if self.last_attempt_failed && !answer_text.is_empty() {
+                    Color::from_rgb8(220, 60, 60)
                 } else {
                     theme.tokens.colors.border_standard
                 };
@@ -348,27 +456,81 @@ impl Widget for RecoveryVerifyScreen {
                     transform,
                     theme.tokens.colors.surfaces.base,
                     None,
-                    &RoundedRect::from_rect(*r, 6.0),
+                    &RoundedRect::from_rect(r, 6.0),
                 );
                 scene.stroke(
                     &Stroke::new(if focused { 2.0 } else { 1.0 }),
                     transform,
                     border,
                     None,
-                    &RoundedRect::from_rect(*r, 6.0),
+                    &RoundedRect::from_rect(r, 6.0),
                 );
+                // Selection highlight band, if any.
+                if let Some((lo, hi)) = self.editors[slot_i].selection_range() {
+                    let (pre_w, _) =
+                        text_renderer.measure(&answer_text[..lo], 14.0, None);
+                    let (mid_w, _) =
+                        text_renderer.measure(&answer_text[lo..hi], 14.0, None);
+                    let sel_color = theme.accent_primary.with_alpha_factor(0.30);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        sel_color,
+                        None,
+                        &Rect::new(
+                            r.x0 + 8.0 + pre_w as f64,
+                            r.y0 + 5.0,
+                            r.x0 + 8.0 + pre_w as f64 + mid_w as f64,
+                            r.y0 + r.height() - 5.0,
+                        ),
+                    );
+                }
                 text_renderer.draw_text(
                     scene,
-                    self.answers[i].as_str(),
+                    answer_text,
                     14.0,
                     theme.tokens.colors.text_primary,
-                    transform * Affine::translate((r.x0 + 10.0, r.y0 + 12.0)),
+                    transform * Affine::translate((r.x0 + 8.0, r.y0 + 7.0)),
+                    None,
+                );
+                // Caret if focused. Painted over the selection.
+                if focused {
+                    let cursor_byte = self.editors[slot_i]
+                        .cursor
+                        .min(answer_text.len());
+                    let prefix = &answer_text[..cursor_byte];
+                    let (prefix_w, _) = text_renderer.measure(prefix, 14.0, None);
+                    let caret_x = r.x0 + 8.0 + prefix_w as f64;
+                    let caret_top = r.y0 + 5.0;
+                    let caret_bottom = r.y0 + r.height() - 5.0;
+                    let caret_rect =
+                        Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                        None,
+                        &caret_rect,
+                    );
+                }
+            } else {
+                // Read-only word.
+                let word = words.get(i).copied().unwrap_or("");
+                text_renderer.draw_text(
+                    scene,
+                    word,
+                    14.0,
+                    theme.tokens.colors.text_primary,
+                    transform * Affine::translate((x + 28.0, y + 6.0)),
                     None,
                 );
             }
         }
 
-        // Reseed button.
+        // Reseed button — label clarified: this picks DIFFERENT
+        // blanks against the same mnemonic, doesn't regenerate the
+        // recovery share itself. (The user already wrote those words
+        // down on the previous screen.)
         scene.fill(
             Fill::NonZero,
             transform,
@@ -383,14 +545,15 @@ impl Widget for RecoveryVerifyScreen {
             None,
             &RoundedRect::from_rect(self.reseed_rect, 8.0),
         );
+        let (rw, _) = text_renderer.measure("Pick different blanks", 13.0, None);
         text_renderer.draw_text(
             scene,
-            "Pick new words",
+            "Pick different blanks",
             13.0,
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    self.reseed_rect.x0 + 16.0,
+                    self.reseed_rect.x0 + (self.reseed_rect.width() - rw as f64) / 2.0,
                     self.reseed_rect.y0 + (self.reseed_rect.height() - 13.0) / 2.0,
                 )),
             None,
@@ -488,6 +651,49 @@ mod tests {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[test]
+    fn tab_walks_slots_in_ascending_position_order_not_storage_order() {
+        // Regression for the bug the user reported:
+        //
+        //   "I got to put in 12, 13, 23. When my caret is in 13 and
+        //    I press tab, it goes to 12, not 23, which is wrong."
+        //
+        // With challenge positions stored as [13, 12, 23] (whatever
+        // order Fisher-Yates picked), Tab from the position-13 slot
+        // (storage index 0) used to land at `(0+1) % 3 = 1` which
+        // is position 12. Visual order is 12 → 13 → 23, so the
+        // correct next-from-13 is position 23 (storage index 2).
+        let positions = [13usize, 12, 23];
+
+        // From slot at position 13 (storage index 0): Tab → slot at
+        // position 23 (storage index 2).
+        assert_eq!(
+            next_slot_in_visual_order(0, &positions, false),
+            2,
+            "Tab from pos 13 should land on pos 23",
+        );
+        // Shift+Tab from same slot → slot at position 12 (storage 1).
+        assert_eq!(
+            next_slot_in_visual_order(0, &positions, true),
+            1,
+            "Shift+Tab from pos 13 should land on pos 12",
+        );
+        // From slot at position 23 (storage index 2): Tab wraps to
+        // the smallest position 12 (storage index 1).
+        assert_eq!(
+            next_slot_in_visual_order(2, &positions, false),
+            1,
+            "Tab from largest pos should wrap to smallest",
+        );
+        // From slot at position 12 (storage index 1): Shift+Tab
+        // wraps to the largest position 23 (storage index 2).
+        assert_eq!(
+            next_slot_in_visual_order(1, &positions, true),
+            2,
+            "Shift+Tab from smallest pos should wrap to largest",
+        );
     }
 
     #[test]
