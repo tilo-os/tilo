@@ -41,6 +41,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      # Deterministic timestamp for reproducible builds: the HEAD commit time.
+      # buildkit rewrites layer/image timestamps to SOURCE_DATE_EPOCH, and the
+      # builder stage honours it for the compile.
+      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
       - name: Extract image metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -58,12 +64,19 @@ jobs:
       - name: Build (and push if not a PR) the qOS image
         id: build
         uses: docker/build-push-action@v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
           context: .
           file: os/Containerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+          # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
+          # reproducible image digests.
+          provenance: false
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
