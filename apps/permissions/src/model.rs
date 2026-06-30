@@ -343,12 +343,30 @@ pub struct Override {
     pub context: Option<ContextId>,
 }
 
-/// A workspace member: a person who holds zero or more roles and may
-/// carry individual overrides.
+/// A workspace member: a **role binding onto a real qOS identity**. A
+/// member is not an invented name — it references a real workspace
+/// identity (the same peer/device id the collaboration layer uses; see
+/// [`crate::identity`]) via [`identity_id`](Self::identity_id), and holds
+/// zero or more roles plus individual overrides for that identity.
+///
+/// The member stores only the identity's *stable id*; its display name and
+/// colour are resolved through the [`IdentitySource`](crate::identity::IdentitySource)
+/// at render time so they always track the live identity rather than a
+/// frozen copy. `display_name` is retained as a cached label for offline
+/// resolution + the CRDT round-trip, but the live name/colour come from the
+/// identity source.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Member {
     pub id: MemberId,
+    /// Cached display label. The authoritative display name is resolved
+    /// from the identity source via [`identity_id`](Self::identity_id); this
+    /// is the fallback for offline peers + the CRDT-persisted label.
     pub display_name: String,
+    /// The stable id of the real qOS identity this member binds roles onto
+    /// — the same string the collaboration layer keys peers by
+    /// ([`ui::permissions::UserId`] / [`ui::collaboration::Collaborator::id`]).
+    /// `None` only for legacy/free members not yet linked to an identity.
+    pub identity_id: Option<String>,
     pub role_ids: Vec<RoleId>,
     pub overrides: Vec<Override>,
 }
@@ -358,6 +376,20 @@ impl Member {
         Member {
             id: MemberId::new(),
             display_name: name.into(),
+            identity_id: None,
+            role_ids: Vec::new(),
+            overrides: Vec::new(),
+        }
+    }
+
+    /// Create a member that binds roles onto a **real qOS identity**. The
+    /// member references the identity's stable id; the display name is
+    /// cached from it for offline resolution.
+    pub fn for_identity(identity: &crate::identity::Identity) -> Self {
+        Member {
+            id: MemberId::new(),
+            display_name: identity.display_name.clone(),
+            identity_id: Some(identity.id.clone()),
             role_ids: Vec::new(),
             overrides: Vec::new(),
         }

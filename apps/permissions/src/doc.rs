@@ -68,6 +68,10 @@ impl PermissionsDoc {
         for mem in &set.members {
             let m = map_child(doc, &members, &mem.id.to_string());
             put_str(doc, &m, "name", &mem.display_name);
+            // The real-identity binding: persist the stable identity id so
+            // peers converge on *which* identity this member is. Empty string
+            // encodes `None` (a legacy free member).
+            put_str(doc, &m, "identity", mem.identity_id.as_deref().unwrap_or(""));
             write_str_list(doc, &m, "roles", &mem.role_ids.iter().map(|r| r.to_string()).collect::<Vec<_>>());
             write_grant_tuples(doc, &m, "overrides", overrides_as_tuples(&mem.overrides));
         }
@@ -125,6 +129,10 @@ impl PermissionsDoc {
                 set.members.push(Member {
                     id,
                     display_name: read_str(doc, &m, "name"),
+                    identity_id: {
+                        let s = read_str(doc, &m, "identity");
+                        if s.is_empty() { None } else { Some(s) }
+                    },
                     role_ids: read_str_list(doc, &m, "roles")
                         .into_iter()
                         .filter_map(|s| s.parse::<RoleId>().ok())
@@ -403,6 +411,38 @@ mod tests {
         let m = back.member(mid).unwrap();
         assert!(m.has_role(rid));
         assert_eq!(m.override_for("workspace.manage", None), Grant::Deny);
+    }
+
+    #[test]
+    fn member_identity_binding_round_trips() {
+        // A member's real-identity binding must survive the CRDT round-trip
+        // so peers converge on which identity the member is.
+        let mut set = PermissionSet::default();
+        let ident = crate::identity::Identity::new("alice", "Alice Ada");
+        let mut m = Member::for_identity(&ident);
+        let mid = m.id;
+        m.role_ids.clear();
+        set.members.push(m);
+
+        let mut doc = AutoCommit::new();
+        PermissionsDoc::write(&mut doc, &set);
+        let back = PermissionsDoc::read(&doc);
+        let got = back.member(mid).expect("member round-trips");
+        assert_eq!(got.identity_id.as_deref(), Some("alice"), "identity binding persists");
+        assert_eq!(got.display_name, "Alice Ada");
+    }
+
+    #[test]
+    fn unlinked_member_round_trips_as_none() {
+        // A free (unlinked) member round-trips with identity_id == None.
+        let mut set = PermissionSet::default();
+        let m = Member::new("Freeform");
+        let mid = m.id;
+        set.members.push(m);
+        let mut doc = AutoCommit::new();
+        PermissionsDoc::write(&mut doc, &set);
+        let back = PermissionsDoc::read(&doc);
+        assert_eq!(back.member(mid).unwrap().identity_id, None);
     }
 
     #[test]

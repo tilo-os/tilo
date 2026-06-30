@@ -228,24 +228,40 @@ pub fn sample_set() -> PermissionSet {
     set.roles.extend([admin, moderator, member_role, guest]);
 
     // Members holding those roles, with a couple of illustrative
-    // overrides.
-    let mut ada = Member::new("Ada Lovelace");
-    ada.role_ids.push(admin_id);
+    // overrides. Each member binds its roles onto a REAL qOS identity from
+    // the workspace identity model (see [`crate::identity`]) — the ids are
+    // the collaboration layer's own canonical peer ids, not invented names.
+    // In production the host supplies the live roster
+    // (`IdentitySource::from_collaborators`); here the sample identity model
+    // stands in so the screenshots show real-identity bindings.
+    let idents = crate::identity::IdentitySource::sample_workspace();
+    let ident = |id: &str| idents.get(id).cloned().unwrap_or_else(|| crate::identity::Identity::new(id, id));
 
-    let mut grace = Member::new("Grace Hopper");
-    grace.role_ids.push(mod_id);
-    grace.role_ids.push(member_id);
-    // A per-server override: Grace may screen-share, but only in eng.
-    grace.set_override("chat.screen_share", Some(ContextId::new("chat:server:eng")), Grant::Allow);
+    let mut me = Member::for_identity(&ident("me"));
+    me.role_ids.push(admin_id);
 
-    let mut linus = Member::new("Linus Torvalds");
-    linus.role_ids.push(member_id);
-    // A global override pinning a deny on Linus regardless of role.
-    linus.set_override("chat.start_call", None, Grant::Deny);
+    let mut alice = Member::for_identity(&ident("alice"));
+    alice.role_ids.push(mod_id);
+    alice.role_ids.push(member_id);
+    // A per-server override: Alice may screen-share, but only in eng.
+    alice.set_override("chat.screen_share", Some(ContextId::new("chat:server:eng")), Grant::Allow);
 
-    let mut guest_user = Member::new("Visitor");
+    let mut bob = Member::for_identity(&ident("bob"));
+    bob.role_ids.push(member_id);
+    // A global override pinning a deny on Bob regardless of role.
+    bob.set_override("chat.start_call", None, Grant::Deny);
+
+    let mut guest_user = Member::for_identity(&ident("guest"));
     guest_user.role_ids.push(guest_id);
 
-    set.members.extend([ada, grace, linus, guest_user]);
+    set.members.extend([me, alice, bob, guest_user]);
     set
+}
+
+/// The identity model the sample document is built against — the real
+/// `(id, display_name, color)` identities the sample members bind onto.
+/// The standalone app + `--shots` use this to resolve member names/colours;
+/// a live host swaps in [`crate::identity::IdentitySource::from_collaborators`].
+pub fn sample_identities() -> crate::identity::IdentitySource {
+    crate::identity::IdentitySource::sample_workspace()
 }

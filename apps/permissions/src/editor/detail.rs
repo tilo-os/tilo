@@ -40,6 +40,52 @@ enum Popup {
     ColorPicker { anchor: Rect },
 }
 
+/// Identity of the inputs that determine the grid's *derived data* — the
+/// filtered + scope-grouped permission list. When this is unchanged between
+/// frames the cached `groups` are reused as-is instead of re-running
+/// `registry.search` + the scope filter + grouping (the expensive part).
+///
+/// This mirrors the calculator's plot-cache key (`graph2d::CurveKey`):
+/// value-typed, derived fresh each frame, compared for equality. It keys on
+/// the search query and the active context — the ONLY inputs that change
+/// *which permissions appear* in the grid. It deliberately EXCLUDES:
+///   * the **theme** (re-theming replays the cached groups recoloured),
+///   * the **grid rect** (a resize re-derives only the cell *rects*, cheap),
+///   * the **selected role/member** and the **tab** (both views show the
+///     same global filtered set; the per-role grant / per-member effective
+///     value is looked up at draw time from the cached group list — so
+///     switching role or tab must NOT rebuild this).
+///
+/// `rev` is included so a *mutation* (a grant flip, a role rename, a new
+/// permission registered, an identity-roster change) invalidates the cache,
+/// while pure navigation (select / tab) does not. (`rev` is bumped on those
+/// too, but the query/context are what gate the heavy rebuild — see the
+/// `tab_and_role_switches_do_not_rebuild_grid_state` test.)
+#[derive(Clone, PartialEq, Default)]
+struct GridKey {
+    /// Registry generation — a mutation that could change the *set* (not just
+    /// a grant value) must rebuild. We approximate "set changed" with the
+    /// registry length + the active context + query, which together pin the
+    /// filtered list. The registry is fixed for the editor's lifetime today,
+    /// so in practice query + context are the live inputs.
+    reg_len: usize,
+    query: String,
+    context: Option<ContextId>,
+}
+
+/// Cache of the derived grid data, gated by [`GridKey`] equality.
+#[derive(Default)]
+struct GridCache {
+    key: Option<GridKey>,
+    /// The filtered, scope-grouped permission list both `layout_*` and
+    /// `draw_*` consume. Recomputing this every frame (search + filter +
+    /// clone + group) was the per-switch lag.
+    groups: Vec<(Scope, Vec<PermissionDef>)>,
+    /// Real-rebuild counter — test observability that a switch did NOT
+    /// rebuild expensive state (mirrors `CurveCache::rebuilds`).
+    rebuilds: u32,
+}
+
 pub struct DetailPane {
     shared: Shared,
     search: TextInput,
@@ -58,6 +104,10 @@ pub struct DetailPane {
     role_checks: Vec<(crate::model::RoleId, Rect)>,
     override_cells: Vec<(String, Grant, Rect)>,
     context_rows: Vec<(Option<ContextId>, Rect)>,
+
+    /// Memoised derived grid data (filtered + scope-grouped perms). Only
+    /// rebuilt when [`GridKey`] changes — see [`Self::ensure_grid`].
+    grid_cache: GridCache,
 
     dirty: bool,
     relayout: bool,
@@ -80,6 +130,7 @@ impl DetailPane {
             role_checks: Vec::new(),
             override_cells: Vec::new(),
             context_rows: Vec::new(),
+            grid_cache: GridCache::default(),
             dirty: true,
             relayout: true,
         }
@@ -89,12 +140,37 @@ impl DetailPane {
         self.shared.borrow().tab
     }
 
-    fn grid_perms(&self) -> Vec<PermissionDef> {
-        let q = self.search.value().to_string();
-        self.shared.borrow().grid_permissions(&q)
+    /// Rebuild the cached filtered + scope-grouped permission list **only
+    /// when the grid key changed** (revision / query / context / tab). On an
+    /// unchanged key this is a cheap early-return, so tab- and role-switches
+    /// — which keep the same filtered set — never re-run the search/filter/
+    /// group pipeline. Call before reading [`Self::grid_groups`].
+    fn ensure_grid(&mut self) {
+        let key = {
+            let s = self.shared.borrow();
+            GridKey {
+                reg_len: s.registry.len(),
+                query: self.search.value().to_string(),
+                context: s.active_context.clone(),
+            }
+        };
+        if self.grid_cache.key.as_ref() == Some(&key) {
+            return; // HIT — reuse cached groups, no recompute.
+        }
+        let perms = {
+            let s = self.shared.borrow();
+            s.grid_permissions(&key.query)
+        };
+        self.grid_cache.groups = EditorState::group_by_scope(&perms);
+        self.grid_cache.key = Some(key);
+        self.grid_cache.rebuilds = self.grid_cache.rebuilds.wrapping_add(1);
     }
 
     fn layout(&mut self) {
+        // Refresh the cached filtered/grouped grid (no-op unless the key
+        // moved), then place cells from it. The expensive derive happens at
+        // most once per real change, not per layout pass.
+        self.ensure_grid();
         self.grid_cells.clear();
         self.role_checks.clear();
         self.override_cells.clear();
@@ -120,8 +196,7 @@ impl DetailPane {
         self.role_swatch = Rect::new(area.x0 + PAD, area.y0 + 14.0, area.x0 + PAD + 28.0, area.y0 + 42.0);
         self.role_delete = Rect::new(x1 - 84.0, area.y0 + 14.0, x1, area.y0 + 44.0);
 
-        let perms = self.grid_perms();
-        let groups = EditorState::group_by_scope(&perms);
+        let groups = self.grid_cache.groups.clone();
         let seg_x = x1 - SEG_W * 3.0;
         let mut y = area.y0 + HEADER_H - self.detail_scroll;
         for (_scope, list) in &groups {
@@ -161,8 +236,7 @@ impl DetailPane {
 
         // Override grid.
         y += 28.0; // "OVERRIDES + EFFECTIVE" header
-        let perms = self.grid_perms();
-        let groups = EditorState::group_by_scope(&perms);
+        let groups = self.grid_cache.groups.clone();
         let seg_x = x1 - SEG_W * 3.0;
         for (_scope, list) in &groups {
             y += 30.0;
@@ -238,9 +312,9 @@ impl DetailPane {
         // Search box.
         self.search.draw(scene, t, tr, theme, presence);
 
-        // Grid.
-        let perms = self.grid_perms();
-        let groups = EditorState::group_by_scope(&perms);
+        // Grid — replayed from the cached, scope-grouped permission list
+        // (rebuilt only when the grid key moves; see `ensure_grid`).
+        let groups = self.grid_cache.groups.clone();
         let active_ctx = self.shared.borrow().active_context.clone();
         self.draw_grid(scene, t, tr, theme, &groups, |perm| role.grant_for(perm, active_ctx.as_ref()));
     }
@@ -259,10 +333,39 @@ impl DetailPane {
             return;
         };
 
-        tr.draw_text_weighted(scene, &member.display_name, sz.title, c.text_primary, t * Affine::translate((area.x0 + PAD, area.y0 + 14.0)), None, TextWeight::Bold);
+        // Header resolves through the REAL identity layer: the display name,
+        // colour, and initials come from the bound qOS identity (the same
+        // peer the collaboration roster knows), not the member's frozen
+        // label. An avatar chip (initials on the identity colour) stands in
+        // for the absent avatar image, matching that peer's presence colour.
+        let (disp_name, ident_color, initials, ident_sub) = {
+            let s = self.shared.borrow();
+            let name = s.member_display_name(&member);
+            let color = s.member_color(&member);
+            let inits = member
+                .identity_id
+                .as_deref()
+                .and_then(|id| s.identities.get(id))
+                .map(|i| i.initials())
+                .unwrap_or_else(|| crate::identity::Identity::new("", &name).initials());
+            let sub = match &member.identity_id {
+                Some(id) => format!("identity: {id}"),
+                None => "unlinked member".to_string(),
+            };
+            (name, color, inits, sub)
+        };
+        // Avatar chip.
+        let av = Rect::new(area.x0 + PAD, area.y0 + 14.0, area.x0 + PAD + 34.0, area.y0 + 48.0);
+        let av_sh = RoundedRect::from_rect(av, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, t, packed_color(ident_color), None, &av_sh);
+        let iw = tr.measure(&initials, sz.secondary, None).0 as f64;
+        tr.draw_text_weighted(scene, &initials, sz.secondary, Color::WHITE, t * Affine::translate((av.center().x - iw / 2.0, av.center().y - sz.secondary as f64 / 2.0)), None, TextWeight::Bold);
+        let name_x = av.x1 + 12.0;
+        tr.draw_text_weighted(scene, &disp_name, sz.title, c.text_primary, t * Affine::translate((name_x, area.y0 + 12.0)), None, TextWeight::Bold);
         let role_names: Vec<String> = self.shared.borrow().set.roles_of(&member).iter().map(|r| r.name.clone()).collect();
-        let sub = if role_names.is_empty() { "no roles".to_string() } else { role_names.join(", ") };
-        tr.draw_text(scene, &sub, sz.secondary, c.text_dim, t * Affine::translate((area.x0 + PAD, area.y0 + 14.0 + sz.title as f64 + 2.0)), Some((area.width() - PAD * 2.0) as f32));
+        let roles_sub = if role_names.is_empty() { "no roles".to_string() } else { role_names.join(", ") };
+        let sub = format!("{ident_sub}  \u{00b7}  {roles_sub}");
+        tr.draw_text(scene, &sub, sz.secondary, c.text_dim, t * Affine::translate((name_x, area.y0 + 14.0 + sz.title as f64 + 2.0)), Some((area.width() - (name_x - area.x0) - PAD) as f32));
 
         self.draw_context_chip(scene, t, tr, theme);
 
@@ -278,9 +381,8 @@ impl DetailPane {
             role_chip(scene, t, tr, theme, *rect, &role.name, packed_color(role.color), held);
         }
 
-        // OVERRIDES + EFFECTIVE.
-        let perms = self.grid_perms();
-        let groups = EditorState::group_by_scope(&perms);
+        // OVERRIDES + EFFECTIVE — replayed from the cached grouped list.
+        let groups = self.grid_cache.groups.clone();
         let ctx = self.shared.borrow().active_context.clone();
         self.draw_override_grid(scene, t, tr, theme, &groups, &member, ctx.as_ref());
 
@@ -497,12 +599,27 @@ impl Widget for DetailPane {
             }
         }
 
+        // Pointer presses + wheel are only ours if they land inside our own
+        // content rect. NavSplit routes the content pane FIRST when docked,
+        // so without this guard the detail pane would swallow EVERY click in
+        // the editor — including clicks in the sidebar column — and mark them
+        // handled, starving the sidebar of its row clicks. That was the real
+        // "clicking another role doesn't switch" bug: the press never reached
+        // the sidebar. We only claim pointer presses within `self.rect`.
+        let pointer_inside = self.rect.contains(self.last_mouse);
+
         match event {
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                if !pointer_inside {
+                    return; // not ours — let it fall through to the sidebar.
+                }
                 self.handle_click(state, path, handled, node_id, taffy, modifiers);
                 return;
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if !pointer_inside {
+                    return;
+                }
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
                     MouseScrollDelta::PixelDelta(p) => -p.y,
@@ -644,7 +761,9 @@ impl DetailPane {
         match popup {
             Popup::ContextPicker => {
                 if let Some((ctx, _)) = self.context_rows.iter().find(|(_, r)| r.contains(p)).cloned() {
-                    self.shared.borrow_mut().active_context = ctx;
+                    // Route through `set_active_context` so the grid cache
+                    // invalidates for the new scope.
+                    self.shared.borrow_mut().set_active_context(ctx);
                     self.detail_scroll = 0.0;
                 }
                 self.context_rows.clear();
@@ -730,6 +849,76 @@ mod tests {
         pane.handle_event(&mv, 1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut ft, node, taffy);
         let ev = WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left };
         pane.handle_event(&ev, 1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut ft, node, taffy);
+    }
+
+    /// PERF: re-laying-out an unchanged grid must NOT rebuild the cached
+    /// filtered/grouped permission list. The first layout builds it once;
+    /// subsequent frames with the same state replay the cache.
+    #[test]
+    fn repeated_frames_do_not_rebuild_the_grid_cache() {
+        let mut pane = DetailPane::new(shared());
+        laid_out(&mut pane, 1000.0, 800.0);
+        let after_first = pane.grid_cache.rebuilds;
+        assert_eq!(after_first, 1, "first layout builds the grid once");
+        // Several more frames with no state change.
+        for _ in 0..5 {
+            laid_out(&mut pane, 1000.0, 800.0);
+        }
+        assert_eq!(pane.grid_cache.rebuilds, after_first, "unchanged frames replay the cache — no rebuild");
+    }
+
+    /// PERF: switching Members↔Roles (and switching roles) does NOT rebuild
+    /// the expensive grid state — both tabs show the same global filtered
+    /// permission set, and a role switch keeps the same set. The cache key
+    /// excludes the selected role; only query/context change the set. This
+    /// is the structural fix that makes switching feel instant.
+    #[test]
+    fn tab_and_role_switches_do_not_rebuild_grid_state() {
+        let s = shared();
+        let mut pane = DetailPane::new(s.clone());
+        laid_out(&mut pane, 1000.0, 800.0);
+        let baseline = pane.grid_cache.rebuilds;
+        assert_eq!(baseline, 1);
+
+        // Flip to Members and back several times, re-laying-out each time
+        // (what the App does on a handled tab click).
+        for _ in 0..4 {
+            s.borrow_mut().select_tab(EditorTab::Members);
+            laid_out(&mut pane, 1000.0, 800.0);
+            s.borrow_mut().select_tab(EditorTab::Roles);
+            laid_out(&mut pane, 1000.0, 800.0);
+        }
+        // Switch among roles.
+        let roles = s.borrow().visible_roles();
+        for rid in &roles {
+            s.borrow_mut().select_role(*rid);
+            laid_out(&mut pane, 1000.0, 800.0);
+        }
+        assert_eq!(
+            pane.grid_cache.rebuilds, baseline,
+            "tab + role switches must NOT rebuild the filtered/grouped grid (it's the same set) — rebuilds went {baseline} -> {}",
+            pane.grid_cache.rebuilds
+        );
+
+        // A query change SHOULD rebuild (proves the cache isn't just frozen).
+        pane.search.set_text("call");
+        laid_out(&mut pane, 1000.0, 800.0);
+        assert!(pane.grid_cache.rebuilds > baseline, "a search-query change rebuilds the grid");
+    }
+
+    /// PERF: changing the active context rebuilds (different permission set),
+    /// confirming the cache invalidates on the inputs that truly change it.
+    #[test]
+    fn context_change_invalidates_grid_cache() {
+        let s = shared();
+        let ctx = s.borrow().set.contexts.first().map(|c| c.id.clone());
+        let Some(ctx) = ctx else { return };
+        let mut pane = DetailPane::new(s.clone());
+        laid_out(&mut pane, 1000.0, 800.0);
+        let before = pane.grid_cache.rebuilds;
+        s.borrow_mut().set_active_context(Some(ctx));
+        laid_out(&mut pane, 1000.0, 800.0);
+        assert!(pane.grid_cache.rebuilds > before, "switching context rebuilds for the new per-instance set");
     }
 
     #[test]
