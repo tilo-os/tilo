@@ -9,17 +9,30 @@
 //!
 //! ## Integration seams
 //!
+//! ## The keyboard is special — the compositor owns its visibility
+//!
+//! In qOS a normal app can't hide itself; every window lives in the tile
+//! layout and the OS owns its chrome. The on-screen keyboard is the one
+//! exception: it floats over whatever the user is typing into and vanishes when
+//! nothing wants text. That decision belongs to the **compositor**, not to this
+//! app. The compositor recognises the keyboard by its app-id
+//! ([`osk::KEYBOARD_APP_ID`]), keeps it out of the tile layout, and shows it
+//! only while a text input is focused — relaying that show/hide to the keyboard
+//! (and only the keyboard) over the input method. The widget never decides for
+//! itself to appear or disappear.
+//!
 //! * **Auto-show via input-method-v2 (WIRED HERE):** when the compositor
 //!   advertises `zwp_input_method_manager_v2` (the qOS compositor does), the OSK
-//!   becomes an input-method client: it starts hidden, appears when a text field
-//!   is focused, picks the layout from the field's content purpose, hides when
-//!   focus leaves, and types via `commit_string` (the clean IM path) rather than
-//!   synthetic key events. The input-method client runs on its own Wayland
-//!   connection ([`osk::imclient`]); a background thread turns its events into
-//!   show/hide/purpose commands delivered to the winit loop through the
-//!   `EventLoopProxy`, where the widget reacts via `on_external_event`. Use
-//!   `--no-input-method` to force the always-visible path; `--input-method`
-//!   requires the protocol (errors if absent).
+//!   becomes an input-method client: it starts hidden, appears when the
+//!   compositor activates it (a text field is focused), picks the layout from
+//!   the field's content purpose, hides when focus leaves, and types via
+//!   `commit_string` (the clean IM path) rather than synthetic key events. The
+//!   input-method client runs on its own Wayland connection ([`osk::imclient`]);
+//!   a background thread turns its events into show/hide/purpose commands
+//!   delivered to the winit loop through the `EventLoopProxy`, where the widget
+//!   reacts via `on_external_event`. Use `--no-input-method` to force the
+//!   always-visible path; `--input-method` requires the protocol (errors if
+//!   absent).
 //!
 //! * **Text injection (client half, fallback):** when there is no input method,
 //!   the live path builds a [`TextInjector`] (real `virtual-keyboard-v1`
@@ -29,12 +42,18 @@
 //!   See [`osk::inject`] for the keymap-generation details and the manual-test
 //!   recipe.
 //!
-//! * **Layer-shell (server half, still a seam):** in production the OSK
-//!   runs as a `wlr-layer-shell` surface (overlay layer, bottom-anchored,
-//!   exclusive zone). `ui::App` does not yet create a layer-shell surface, so
-//!   today this binary opens a normal window and collapses the keyboard to zero
-//!   height when hidden; swap the surface role in here when that lands — the
-//!   widget, the injector, and the input-method client are unchanged.
+//! * **Floating overlay surface (still a seam):** the compositor already
+//!   recognises the keyboard by app-id, keeps it out of the tile layout, and
+//!   computes a bottom-anchored rect over the focused app (see the compositor's
+//!   `keyboard_overlay` module). What is not wired yet is the *surface role*:
+//!   the keyboard wants to be a `wlr-layer-shell` overlay (or an equivalent
+//!   compositor-positioned surface) so the compositor maps/unmaps and places it
+//!   directly. `ui::App` (winit) creates a plain xdg-toplevel and exposes no way
+//!   to request a layer-shell role or even set the Wayland app-id, so today this
+//!   binary opens a normal window and the keyboard simply paints nothing while
+//!   the compositor's decision says hidden. Closing this seam means teaching
+//!   `ui::App` to (a) set the surface app-id and (b) request the layer-shell
+//!   role; the widget, the injector, and the input-method client are unchanged.
 //!
 //! * **FUTO swipe + prediction:** a swipe decoder will consume the
 //!   pointer path during a press-drag, normalise it against
