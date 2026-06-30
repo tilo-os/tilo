@@ -618,6 +618,15 @@ impl Widget for Scrollable {
 
     fn get_rect(&self) -> Rect { self.rect }
 
+    /// A scroll container is a semantic region: it reports [`Role::Group`]
+    /// (a generic scroll region) so it stays in the a11y tree as a container
+    /// while its scrolled content flows through `children()`. It carries no
+    /// name of its own — the meaningful label belongs to whatever it wraps.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Group))
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
@@ -796,6 +805,16 @@ mod tests {
             (paged - 300.0 * PAGE_FRACTION).abs() < 1.0,
             "page step should be ≈viewport*{PAGE_FRACTION}, got {paged}",
         );
+    }
+
+    #[test]
+    fn accessibility_reports_group_role_and_no_name() {
+        use crate::a11y::Role;
+        let s = vertical(1200.0);
+        let node = Widget::accessibility(&s).expect("scroll container is a region");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name, None, "a scroll container carries no name of its own");
+        assert_eq!(node.value, None);
     }
 
     #[test]

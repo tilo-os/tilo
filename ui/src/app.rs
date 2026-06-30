@@ -42,6 +42,26 @@ pub enum UserEvent {
     /// thread) back into the App for rendering. The App requests a redraw
     /// + re-sync after dispatch so the new state surfaces next frame.
     External(String),
+    /// An accessibility event from the `accesskit_winit::Adapter`, delivered
+    /// through the same winit event-loop proxy the synthetic-input variants
+    /// use. Carries one of:
+    /// - `InitialTreeRequested` — an AT just connected; the App must push a
+    ///   full [`accesskit::TreeUpdate`] via `update_if_active`.
+    /// - `ActionRequested(req)` — the AT asks us to perform an action on a
+    ///   node; the App maps it back to our [`crate::a11y::Action`] and
+    ///   dispatches via [`crate::widget::Widget::perform_action`] (falling
+    ///   back to a synthetic click through the existing input path).
+    /// - `AccessibilityDeactivated` — all ATs disconnected.
+    ///
+    /// Defined as its own variant (rather than translated to a `WindowEvent`)
+    /// because accesskit events have no `WindowEvent` analogue.
+    AccessKit(accesskit_winit::WindowEvent),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(e: accesskit_winit::Event) -> Self {
+        UserEvent::AccessKit(e.window_event)
+    }
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -769,6 +789,81 @@ impl App {
         if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
     }
 
+    /// Build a fresh [`accesskit::TreeUpdate`] from the current widget tree,
+    /// node map, and focus. Pure delegation to
+    /// [`crate::accesskit_bridge::build_tree_update`]; kept on `App` so the
+    /// adapter's `update_if_active` closure can build the tree from the App's
+    /// live state. `scale` is the window scale factor so bounds land in
+    /// physical pixels (what AT-SPI expects).
+    pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
+        crate::accesskit_bridge::build_tree_update(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            self.focused_node,
+            scale,
+        )
+    }
+
+    /// Dispatch an accessibility action (already mapped to our
+    /// [`crate::a11y::Action`]) at the AccessKit node `target`.
+    ///
+    /// The `target` is an [`accesskit::NodeId`] derived from a `taffy::NodeId`
+    /// (`taffy_id + 1`, with `0` reserved for the synthetic window root — see
+    /// [`crate::accesskit_bridge`]). We invert that to find the live widget in
+    /// `node_map` and:
+    ///   1. give the widget first refusal via
+    ///      [`Widget::perform_action`](crate::widget::Widget::perform_action);
+    ///   2. if it declines, handle [`Action::Focus`] by moving keyboard focus,
+    ///      and any other verb by synthesising a click through the existing
+    ///      input path (return the click coordinates so the caller can inject a
+    ///      [`UserEvent::Click`]).
+    ///
+    /// Returns `Some((x, y))` window-logical coordinates if the caller should
+    /// synthesise a click there (the generic activation fallback), else `None`
+    /// (the action was fully handled in-place).
+    pub fn dispatch_a11y_action(
+        &mut self,
+        target: accesskit::NodeId,
+        action: &crate::a11y::Action,
+    ) -> Option<(f64, f64)> {
+        use crate::a11y::Action;
+        let raw = target.0;
+        // Reverse the bridge's id scheme: window root (0) has no widget.
+        if raw == 0 {
+            return None;
+        }
+        let taffy_id = NodeId::from(raw - 1);
+        let Some(&w_ptr) = self.node_map.get(&taffy_id) else {
+            return None;
+        };
+
+        // 1. Widget gets first refusal.
+        let handled = unsafe {
+            (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
+        };
+        if handled {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+            return None;
+        }
+
+        // 2. Generic fallbacks.
+        match action {
+            Action::Focus => {
+                self.set_focused_node(Some(taffy_id));
+                None
+            }
+            Action::Activate | Action::ToggleCheck => {
+                // Synthesise a click at the widget's centre through the same
+                // path real pointer input takes.
+                let rect = unsafe { (*w_ptr).get_rect() };
+                let c = rect.center();
+                Some((c.x, c.y))
+            }
+            _ => None,
+        }
+    }
+
     /// Build the initial taffy tree, seed the focus order, and (when
     /// [`Self::autofocus_first`] is set) hand the keyboard to the first
     /// focusable widget. Factored out of [`Self::run_with_setup`] so the
@@ -916,6 +1011,10 @@ impl App {
             .build()
             .unwrap();
         let proxy = event_loop.create_proxy();
+        // Keep a clone for the AccessKit adapter (it routes initial-tree /
+        // action-request / deactivation events back through this same proxy as
+        // `UserEvent::AccessKit`).
+        let a11y_proxy = proxy.clone();
         setup(proxy);
 
         // Build the taffy tree up-front so widgets that don't depend on a
@@ -927,6 +1026,8 @@ impl App {
             app: self,
             window: None,
             render: None,
+            a11y_adapter: None,
+            a11y_proxy,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
@@ -954,6 +1055,17 @@ struct AppHandler {
     /// the worker is joined so its surface is dropped BEFORE the
     /// `Window` arc goes away.
     render: Option<RenderThreadHandle>,
+    /// AccessKit ↔ winit adapter (W4). `None` until `resumed` creates the
+    /// window (the adapter must be created while the window is hidden, then the
+    /// window is shown). On Linux this pulls in `accesskit_unix`, which
+    /// publishes our exported tree over AT-SPI2 so Orca / braille work. The
+    /// adapter is **lazy**: `update_if_active` is a no-op until an AT actually
+    /// connects, so the hot path pays nothing when no screen reader is running.
+    /// Guarded so headless / no-window code paths never require it.
+    a11y_adapter: Option<accesskit_winit::Adapter>,
+    /// Proxy used to construct the adapter (it delivers accesskit events back
+    /// through the winit event loop as [`UserEvent::AccessKit`]).
+    a11y_proxy: EventLoopProxy<UserEvent>,
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
@@ -1014,6 +1126,62 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
+            UserEvent::AccessKit(ak_event) => {
+                use accesskit_winit::WindowEvent as AkWindowEvent;
+                match ak_event {
+                    AkWindowEvent::InitialTreeRequested => {
+                        // An AT just connected. Push the full tree so the
+                        // adapter has something to publish immediately.
+                        if let Some(adapter) = self.a11y_adapter.as_mut() {
+                            let scale = window.scale_factor();
+                            let app_ref: &App = &self.app;
+                            adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+                        }
+                        window.request_redraw();
+                    }
+                    AkWindowEvent::ActionRequested(req) => {
+                        // Map the AccessKit action (+ data) back to ours and
+                        // dispatch it to the target widget. A `Some((x, y))`
+                        // result means "synthesise a click here" — we route it
+                        // through the same path as a real / injected click.
+                        if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
+                            req.action,
+                            req.data.as_ref(),
+                        ) {
+                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
+                            if let Some((x, y)) = click {
+                                // Reuse the synthetic-click path (CursorMoved →
+                                // Pressed → Released) so the activation takes the
+                                // identical route a pointer click would.
+                                let scale = window.scale_factor();
+                                let (px, py) = (x * scale, y * scale);
+                                let moved = WindowEvent::CursorMoved {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    position: PhysicalPosition::new(px, py),
+                                };
+                                self.window_event(event_loop, window_id, moved);
+                                let press = WindowEvent::MouseInput {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    state: ElementState::Pressed,
+                                    button: MouseButton::Left,
+                                };
+                                self.window_event(event_loop, window_id, press);
+                                let release = WindowEvent::MouseInput {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    state: ElementState::Released,
+                                    button: MouseButton::Left,
+                                };
+                                self.window_event(event_loop, window_id, release);
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    AkWindowEvent::AccessibilityDeactivated => {
+                        // All ATs gone — nothing to do; `update_if_active`
+                        // becomes a no-op until the next activation.
+                    }
+                }
+            }
         }
     }
 
@@ -1025,10 +1193,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.window.is_some() {
             return;
         }
+        // The AccessKit adapter must be created while the window is still
+        // hidden (it asserts this), so build the window invisible, create the
+        // adapter, then show it.
         let window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
+            .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+        // Accessibility (W4): wire the AccessKit winit adapter so the exported
+        // tree reaches AT-SPI2 (Orca, braille). Events (initial-tree request,
+        // action requests, deactivation) are delivered back through our event
+        // loop proxy as `UserEvent::AccessKit`. This is intentionally created
+        // before the window is shown.
+        self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop,
+            &window,
+            self.a11y_proxy.clone(),
+        ));
+        window.set_visible(true);
 
         let mut render_cx = RenderContext::new();
         let surface = pollster::block_on(render_cx.create_surface(
@@ -1092,6 +1276,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         if window.id() != window_id {
             return;
+        }
+        // Accessibility: let the AccessKit adapter observe every window event
+        // before the app handles it (it tracks focus / window state for the
+        // AT-SPI bridge). No-op when no AT is attached.
+        if let Some(adapter) = self.a11y_adapter.as_mut() {
+            adapter.process_event(&window, &event);
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -1377,6 +1567,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         0,
                         &debug_outline_cycle,
                     );
+                }
+
+                // Accessibility (W4): push the freshly-laid-out tree to the
+                // AccessKit adapter. `update_if_active` only builds + sends the
+                // `TreeUpdate` when an AT is actually attached, so this is free
+                // (a single bool check) on the common no-screen-reader path.
+                // Bounds are emitted in physical pixels (scale-multiplied) to
+                // match what the AT-SPI bridge expects from the window.
+                if let Some(adapter) = self.a11y_adapter.as_mut() {
+                    let app_ref: &App = app;
+                    let scale = scale_factor as f64;
+                    adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
                 }
 
                 // Hand the encoded Scene to the render worker. The
