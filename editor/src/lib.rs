@@ -69,8 +69,8 @@ pub enum WpFormat {
     /// HTML — **export only** (rendered via the `dochtml` crate). Importing HTML
     /// is not supported and returns a clear error.
     Html,
-    /// RTF — **export only** (rendered via the `docrtf` crate). Importing RTF is
-    /// not supported and returns a clear error.
+    /// RTF — export via the `docrtf` crate; **import** via `qdoc::RtfCodec` (so
+    /// `.rtf` files can be opened as well as saved).
     Rtf,
     /// EPUB — **export only** (rendered via the `docepub` crate). Importing EPUB
     /// is not supported and returns a clear error.
@@ -103,9 +103,9 @@ impl WpFormat {
             WpFormat::Html => Err(qdoc::CodecError::Unsupported(
                 "opening HTML documents is not supported (HTML is export-only)".to_string(),
             )),
-            WpFormat::Rtf => Err(qdoc::CodecError::Unsupported(
-                "opening RTF documents is not supported (RTF is export-only)".to_string(),
-            )),
+            // RTF import is handled by the `qdoc::RtfCodec` codec (export still
+            // routes through `docrtf` below).
+            WpFormat::Rtf => qdoc::RtfCodec.import(bytes, dm),
             WpFormat::Epub => Err(qdoc::CodecError::Unsupported(
                 "opening EPUB documents is not supported (EPUB is export-only)".to_string(),
             )),
@@ -469,17 +469,67 @@ mod tests {
         assert_eq!(WpFormat::from_path(Path::new("doc.EPUB")), WpFormat::Epub, "case-insensitive");
     }
 
-    /// HTML and RTF import are unsupported and surface a clear error.
+    /// HTML import is unsupported and surfaces a clear error. (RTF import is now
+    /// supported — see `rtf_import_opens_a_paragraph` and the round-trip test.)
     #[test]
-    fn html_and_rtf_import_is_unsupported() {
+    fn html_import_is_unsupported() {
         let mut s = ui::State::new();
         let containers = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
         let html_err = WpFormat::Html.import(b"<html></html>", &mut dm).unwrap_err();
         assert!(matches!(html_err, qdoc::CodecError::Unsupported(_)), "got {html_err:?}");
-        let rtf_err = WpFormat::Rtf.import(b"{\\rtf1}", &mut dm).unwrap_err();
-        assert!(matches!(rtf_err, qdoc::CodecError::Unsupported(_)), "got {rtf_err:?}");
+    }
+
+    /// `WpFormat::Rtf.import` of a small `.rtf` document produces the expected
+    /// first paragraph (RTF import is wired to `qdoc::RtfCodec`).
+    #[test]
+    fn rtf_import_opens_a_paragraph() {
+        let mut s = ui::State::new();
+        let containers = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+            WpFormat::Rtf
+                .import(b"{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Opened from RTF\\par}}", &mut dm)
+                .expect("rtf import succeeds");
+        }
+        let snap = qdoc::model::materialize(&s.doc, &containers);
+        let first = snap.blocks.first().expect("rtf import yields at least one block");
+        assert_eq!(first.text, "Opened from RTF", "first paragraph text: {snap:?}");
+    }
+
+    /// Full round-trip: render a Markdown-built document to `.rtf` via `docrtf`
+    /// (the export path), re-open it through `WpFormat::Rtf.import` (the new
+    /// import path), and assert the text and a bold run survive.
+    #[test]
+    fn rtf_export_then_import_roundtrips_text_and_bold() {
+        // Source document with a bold word.
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"Hello **world** today\n", &mut dm).unwrap();
+        }
+
+        // Export to RTF bytes via the editor's export path (docrtf).
+        let containers = qdoc::model::open(&s.doc, &s.root).unwrap();
+        let dr = qdoc::DocRef { doc: &s.doc, c: &containers };
+        let rtf = WpFormat::Rtf.export(dr).expect("rtf export");
+
+        // Re-import those bytes into a fresh document via the import path.
+        let mut s2 = ui::State::new();
+        let containers2 = qdoc::model::init(&mut s2.doc, &s2.root);
+        let mut ids2 = qdoc::IdGen::new(s2.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut { doc: &mut s2.doc, c: &containers2, ids: &mut ids2 };
+            WpFormat::Rtf.import(&rtf, &mut dm).expect("rtf import");
+        }
+        let snap = qdoc::model::materialize(&s2.doc, &containers2);
+        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("a paragraph survives");
+        assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
+        let strong = p.marks.iter().find(|m| m.name == "strong").expect("bold run survives");
+        assert_eq!(&p.text[strong.start..strong.end], "world", "bold covers the right run: {:?}", p.marks);
     }
 
     /// The version timeline + time-travel work over a bound document.

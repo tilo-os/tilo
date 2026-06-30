@@ -4,10 +4,12 @@
 pub mod docx;
 pub mod markdown;
 pub mod odt;
+pub mod rtf;
 
 pub use docx::DocxCodec;
 pub use markdown::MarkdownCodec;
 pub use odt::OdtCodec;
+pub use rtf::RtfCodec;
 
 use crate::format::{ProviderTier, Registry};
 
@@ -18,11 +20,15 @@ pub fn builtin_registry() -> Registry {
     r.register("markdown", ProviderTier::Builtin, Box::new(MarkdownCodec));
     r.register("odt", ProviderTier::Builtin, Box::new(OdtCodec));
     r.register("docx", ProviderTier::Builtin, Box::new(DocxCodec));
+    // RTF is import-only via this codec (its `export` returns Unsupported; RTF
+    // writing lives in the editor's `docrtf` crate). Registering it still makes
+    // `.rtf` an openable document type.
+    r.register("rtf", ProviderTier::Builtin, Box::new(RtfCodec));
     r
 }
 
-/// Extensions the built-in codecs handle (`md`, `markdown`, `odt`, `docx`) —
-/// the OS source of truth for "this file is an editable document".
+/// Extensions the built-in codecs handle (`md`, `markdown`, `odt`, `docx`,
+/// `rtf`) — the OS source of truth for "this file is an editable document".
 pub fn supported_extensions() -> Vec<String> {
     builtin_registry().extensions()
 }
@@ -61,17 +67,20 @@ mod tests {
         assert!(r.provider_for_ext("MD").is_some(), "extension lookup is case-insensitive");
         assert!(r.provider_for_ext("markdown").is_some());
         assert!(r.provider_for_ext("DOCX").is_some(), "extension lookup is case-insensitive");
-        assert!(r.provider_for_ext("rtf").is_none(), "unregistered type resolves to None");
+        assert!(r.provider_for_ext("rtf").is_some(), "RTF import is now a built-in codec");
+        assert!(r.provider_for_ext("RTF").is_some(), "extension lookup is case-insensitive");
+        assert!(r.provider_for_ext("xyz").is_none(), "unregistered type resolves to None");
     }
 
     #[test]
     fn supported_extensions_is_registry_driven() {
         let exts = supported_extensions();
-        for want in ["md", "markdown", "odt", "docx"] {
+        for want in ["md", "markdown", "odt", "docx", "rtf"] {
             assert!(exts.iter().any(|e| e == want), "{want} should be a supported document format");
         }
         assert!(is_supported_ext("ODT"), "case-insensitive");
-        assert!(!is_supported_ext("rtf"), "unregistered is not supported");
+        assert!(is_supported_ext("RTF"), "RTF import is now supported (case-insensitive)");
+        assert!(!is_supported_ext("xyz"), "an unregistered extension is not supported");
     }
 
     use proptest::prelude::*;
