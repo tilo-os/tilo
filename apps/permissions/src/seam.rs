@@ -55,6 +55,35 @@
 //! view with [`EditorIntent::roles`]. The host turns an intent into a
 //! widget with [`open_editor`].
 //!
+//! # 3a. Members are real identities (the identity seam)
+//!
+//! A [`Member`](crate::model::Member) is **not** an invented name — it is a
+//! role binding placed on a real qOS identity. Members store the stable
+//! identity id used everywhere else in qOS (the collaboration layer's
+//! [`ui::permissions::UserId`] / [`ui::collaboration::Collaborator::id`],
+//! anchored by the compositor's persisted ed25519 `PeerId`). Display name +
+//! colour are resolved through a [`crate::identity::IdentitySource`] so they
+//! track the live identity instead of a frozen copy.
+//!
+//! The single join point is [`crate::identity::IdentitySource`]:
+//!
+//! ```ignore
+//! // Production: adapt the live roster delivered by CollabEvent::Context.
+//! let source = permissions::IdentitySource::from_collaborators(&collaborators);
+//! let view = permissions::open_editor(intent).with_identities(source);
+//! // …and push updates as peers join/leave:
+//! view.update_identities(permissions::IdentitySource::from_collaborators(&roster));
+//! ```
+//!
+//! Headless / first-run / `--shots` use
+//! [`IdentitySource::sample_workspace`](crate::identity::IdentitySource::sample_workspace)
+//! — a *real* identity model whose ids are the collaboration layer's own
+//! canonical peer ids with [`ui::presence::user_color`] colours, never
+//! fabricated strings. The compositor owns the canonical roster (it brokers
+//! the app↔compositor collab socket); when it is available the host builds
+//! the source via `from_collaborators`, otherwise the sample source stands
+//! in. Either way the editor only ever reads `(id, display_name, color)`.
+//!
 //! # 4. Enforcement (out of scope here — documented only)
 //!
 //! This crate deliberately never *enforces*. Enforcement lives where the
