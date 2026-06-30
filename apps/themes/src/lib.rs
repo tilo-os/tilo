@@ -1,0 +1,24 @@
+//! Themes — qOS native theme studio (CRDT-native, built on the `ui`
+//! toolkit). Browse preset themes, customise the OS token set live, and
+//! create / duplicate / export your own.
+//!
+//! `app_root()` is the single integration point used by both the live
+//! winit event loop and the `--shots` offscreen renderer.
+
+pub mod app;
+pub mod customizer;
+pub mod doc;
+pub mod draw;
+pub mod gallery;
+pub mod model;
+pub mod preview;
+pub mod widgets;
+
+pub use app::ThemesApp;
+
+use ui::widget::Widget;
+
+/// Build and return the app's root widget tree.
+pub fn app_root() -> Box<dyn Widget> {
+    Box::new(ThemesApp::new())
+}
