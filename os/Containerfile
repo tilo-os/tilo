@@ -311,10 +311,10 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 # would fail the service. (Base daemons use the system allocator — verified no
 # jemalloc — so the preload is safe.)
 RUN dnf install -y compiler-rt && dnf clean all && \
-    scudo="$(find /usr/lib64 /usr/lib -name 'libclang_rt.scudo_standalone-x86_64.so' 2>/dev/null | head -1)" && \
+    scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
-    printf '[Service]\n# Hardened allocator (security plan §11). Path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n' "$scudo" \
+    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n' "$scudo" \
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
     echo "scudo wired: $scudo"
 
