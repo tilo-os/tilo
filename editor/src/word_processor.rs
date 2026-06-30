@@ -252,6 +252,37 @@ impl WordProcessor {
         self.set_stylesheet(state, &sheet);
     }
 
+    /// The document's persisted page margins as `[top, right, bottom, left]` (px),
+    /// or `None` when the document does not record them (a fresh / legacy doc, so
+    /// the widget keeps its defaults). Stored as four document-level meta strings
+    /// so page setup survives save/reopen — part of the document, not the widget.
+    pub fn page_margins(&self, state: &AutoCommit) -> Option<[f64; 4]> {
+        let c = self.containers.as_ref()?;
+        let get = |k: &str| qdoc::model::meta_str(state, c, k).and_then(|s| s.parse::<f64>().ok());
+        Some([
+            get("page_margin_top")?,
+            get("page_margin_right")?,
+            get("page_margin_bottom")?,
+            get("page_margin_left")?,
+        ])
+    }
+
+    /// Persist the page margins `[top, right, bottom, left]` (px) into the document
+    /// as four meta registers, so they round-trip through save/reopen and merge
+    /// field-by-field across replicas.
+    pub fn set_page_margins(&mut self, state: &mut AutoCommit, margins: [f64; 4]) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_meta_str("page_margin_top", &margins[0].to_string());
+            dm.set_meta_str("page_margin_right", &margins[1].to_string());
+            dm.set_meta_str("page_margin_bottom", &margins[2].to_string());
+            dm.set_meta_str("page_margin_left", &margins[3].to_string());
+        }
+    }
+
     /// Assign a style id to every block in the selection (or the caret's block).
     /// Empty clears it, reverting to the kind-derived default style.
     pub fn set_block_style(&mut self, state: &mut AutoCommit, style_id: &str) {
