@@ -44,22 +44,12 @@ pub enum ColumnWidth {
     Auto,
 }
 
-/// Type-erased cell renderer. Takes `(&Row, &mut Scene, &Theme)` so it can
-/// match the widget-level `draw` contract without threading the full
-/// `TextRenderer`/transform state through (callers that need text should
-/// handle that themselves in later tasks).
-pub type CellRender<Row> =
-    Box<dyn Fn(&Row, &mut Scene, &Theme) + Send + Sync>;
-
-/// Richer cell renderer with everything needed to paint *text* — the
+/// Cell renderer with everything needed to paint a cell — the
 /// `TextRenderer`, the resolved cell [`Rect`] (already positioned for the
 /// row), and whether the row is selected (so the closure can flip the
-/// text colour for contrast on the selection fill).
-///
-/// The original [`CellRender`] couldn't draw text because it never
-/// received a `TextRenderer` or a cell rect; columns that need text (the
-/// file-explorer list mode, …) register one of these via
-/// [`ColumnDef::with_text_render`] and the draw pass prefers it.
+/// text colour for contrast on the selection fill). Register one per
+/// column via [`ColumnDef::with_text_render`]; columns without one render
+/// nothing (header + chrome still draw).
 pub type CellTextRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
 
@@ -69,9 +59,7 @@ pub struct ColumnDef<Row> {
     pub header: String,
     pub width: ColumnWidth,
     pub sortable: bool,
-    pub render_cell: CellRender<Row>,
-    /// Preferred text-capable renderer. When set, the draw pass uses this
-    /// instead of [`render_cell`](ColumnDef::render_cell).
+    /// Per-row cell renderer. `None` renders an empty cell.
     pub text_render: Option<CellTextRender<Row>>,
     /// Width in px of the right-edge resize hit area. Used by T5.
     #[allow(dead_code)]
@@ -89,7 +77,6 @@ impl<Row> ColumnDef<Row> {
             header: header.into(),
             width,
             sortable: false,
-            render_cell: Box::new(|_, _, _| {}),
             text_render: None,
             resize_handle_px: 6.0,
         }
@@ -100,13 +87,7 @@ impl<Row> ColumnDef<Row> {
         self
     }
 
-    pub fn with_render(mut self, f: CellRender<Row>) -> Self {
-        self.render_cell = f;
-        self
-    }
-
-    /// Register a text-capable cell renderer. Preferred over
-    /// [`with_render`](ColumnDef::with_render) when set.
+    /// Register a text-capable cell renderer.
     pub fn with_text_render(mut self, f: CellTextRender<Row>) -> Self {
         self.text_render = Some(f);
         self
@@ -279,7 +260,7 @@ impl<Row> DataTable<Row> {
         if rel < 0.0 {
             return None;
         }
-        let idx = (rel / ROW_HEIGHT) as usize;
+        let idx = (rel / self.row_height as f64) as usize;
         if idx < self.view.len() { Some(idx) } else { None }
     }
 
@@ -579,10 +560,16 @@ impl<Row: 'static> Widget for DataTable<Row> {
         // Body rows — virtualization windows the loop to the visible range
         // plus a small overscan (see `visible_row_range`).
         let (vis_start, vis_end) = self.visible_row_range();
+        let row_h = self.row_height as f64;
         for ri in vis_start..vis_end {
             let Some(&row_idx) = self.view.get(ri) else { break };
-            let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * ROW_HEIGHT;
-            let y1 = y0 + ROW_HEIGHT;
+            // Subtract the scroll offset so internal virtualization places
+            // the visible window at the top of the body band. When the table
+            // is driven by an outer Scrollable, scroll_y stays 0 and the
+            // whole rect is translated instead — both paths render correctly.
+            let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * row_h - self.scroll_y as f64;
+            let y1 = y0 + row_h;
+            if y1 <= self.rect.y0 + HEADER_HEIGHT { continue; }
             if y0 >= self.rect.y1 { break; }
             let selected = self.selectable && self.selection.is_selected(ri);
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(self.rect.y1));
@@ -605,16 +592,14 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     &row_rect,
                 );
             }
-            // Per-column cell render. Prefer the text-capable closure
-            // (gets the TextRenderer + cell rect + selected flag); fall
-            // back to the legacy scene-only renderer otherwise.
+            // Per-column cell render — the text-capable closure gets the
+            // TextRenderer + resolved cell rect + selected flag. Columns
+            // without a renderer draw nothing.
             for (i, col) in self.columns.iter().enumerate() {
                 if let Some(tr) = &col.text_render {
                     let cell_x = self.col_rects.get(i).map(|c| (c.x0, c.x1)).unwrap_or((self.rect.x0, self.rect.x1));
                     let cell_rect = Rect::new(cell_x.0, y0, cell_x.1, y1);
                     tr(&self.rows[row_idx], scene, text_renderer, cell_rect, theme, selected);
-                } else {
-                    (col.render_cell)(&self.rows[row_idx], scene, theme);
                 }
             }
         }
@@ -1015,5 +1000,24 @@ mod tests {
         dispatch(&mut t, &tree, node, key(NamedKey::ArrowDown), &mods); // → 1
         assert_eq!(t.selection().primary(), Some(1));
         assert!(t.selection().is_selected(1));
+    }
+
+    #[test]
+    fn internal_scroll_offsets_hit_testing() {
+        // Regression for the virtualization bug: when scrolled via the
+        // table's own scroll_y, a click at the top of the body band must
+        // resolve to the first *scrolled-in* row, matching where draw now
+        // positions it (draw subtracts scroll_y; row_at adds it).
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows((0..100).map(|i| R { name: format!("r{i}") }).collect());
+        let _laid = lay_out(&mut t);
+        t.set_viewport(5.0 * ROW_HEIGHT as f32, ROW_HEIGHT as f32);
+        t.set_scroll_y(10.0 * ROW_HEIGHT as f32); // scrolled past 10 rows
+        let rect = t.get_rect();
+        let p = Point::new(rect.x0 + 5.0, rect.y0 + HEADER_HEIGHT + 1.0);
+        assert_eq!(t.row_at(p), Some(10), "top of body maps to the scrolled-in row");
+        // visible window also starts around row 10 (minus overscan).
+        let (start, _end) = t.visible_row_range();
+        assert!(start <= 10 && start >= 8, "window starts near the scroll position: {start}");
     }
 }
