@@ -1,0 +1,39 @@
+[package]
+name = "music"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "music"
+path = "src/lib.rs"
+
+[[bin]]
+name = "music"
+path = "src/main.rs"
+
+[features]
+# Real HTTP audio-stream resolution (Piped/Invidious). Off by default so the
+# default build + offline `--shots` need no HTTP stack; the bundled sample
+# library keeps the UI fully populated.
+default = []
+streaming = ["dep:reqwest"]
+# Real GStreamer `playbin` audio output. Off by default (no system GStreamer
+# dependency for CI / screenshots).
+audio = ["dep:gstreamer"]
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+
+# Optional: enabled only by the `streaming` / `audio` features above.
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+gstreamer = { version = "0.23", optional = true }
