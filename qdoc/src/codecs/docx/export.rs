@@ -36,7 +36,7 @@ const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone
 
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
-    let (document, named_refs) = build_document_xml(&snap);
+    let (document, named_refs, numbering) = build_document_xml(&snap);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     let has_styles = !named_refs.is_empty();
 
@@ -62,8 +62,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     c.set("word/document.xml", document.into_bytes());
 
     if has_lists {
-        // Ensure a numbering part exists that maps numId 1 → bullet, 2 → decimal.
-        c.set("word/numbering.xml", NUMBERING_XML.as_bytes().to_vec());
+        // Ensure a numbering part exists mapping numId 1 → bullet, 2 → decimal, plus
+        // any custom ordered numberings (roman/alpha and/or non-1 start) the
+        // document uses, so list numbering format + start round-trip. The static
+        // fallback covers the common bullet/decimal case.
+        let xml = if numbering.has_custom() { numbering.numbering_xml() } else { NUMBERING_XML.to_string() };
+        c.set("word/numbering.xml", xml.into_bytes());
     }
 
     // word/styles.xml — merge the referenced CRDT styles into the preserved part
@@ -220,6 +224,7 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
         let v = match a {
             "center" => "center",
             "right" => "right",
+            "justify" => "both",
             _ => "",
         };
         if !v.is_empty() {
@@ -339,6 +344,7 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     let (mut b, mut i, mut u, mut strike) = (false, false, false, false);
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
+    let mut color: Option<&str> = None;
     for (name, val) in marks {
         match name.as_str() {
             "strong" => b = true,
@@ -347,6 +353,7 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
             "strike" => strike = true,
             "fontSize" => sz = val.as_int(),
             "fontFamily" => font = val.as_str(),
+            "color" => color = val.as_str(),
             _ => {}
         }
     }
@@ -363,6 +370,9 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     }
     if strike {
         s.push_str("<w:strike/>");
+    }
+    if let Some(c) = color {
+        s.push_str(&format!(r#"<w:color w:val="{}"/>"#, color_hex(c)));
     }
     if let Some(n) = sz {
         let hp = n * 2;
@@ -438,6 +448,7 @@ fn jc_xml(b: &BlockView) -> String {
         Some(AttrVal::Str(a)) => match a.as_str() {
             "center" => r#"<w:jc w:val="center"/>"#.into(),
             "right" => r#"<w:jc w:val="right"/>"#.into(),
+            "justify" => r#"<w:jc w:val="both"/>"#.into(),
             _ => String::new(),
         },
         _ => String::new(),
@@ -459,11 +470,94 @@ fn cell_rc(b: &BlockView) -> (usize, usize) {
     (g("row"), g("col"))
 }
 
+/// Map the model's canonical numbering format onto an OOXML `w:numFmt w:val`
+/// (inverse of `styles::map_num_format`).
+fn ooxml_num_format(fmt: &str) -> &'static str {
+    match fmt {
+        "lower-roman" => "lowerRoman",
+        "upper-roman" => "upperRoman",
+        "lower-alpha" => "lowerLetter",
+        "upper-alpha" => "upperLetter",
+        _ => "decimal",
+    }
+}
+
+/// Collects the distinct list numberings a document uses and assigns each a stable
+/// `w:numId`, so an ordered list's format + start round-trip. numId 1 is the
+/// bullet list and numId 2 the plain decimal-from-1 list (matching the static
+/// fallback); non-default ordered numberings get fresh ids from 3 up.
+#[derive(Default)]
+struct Numbering {
+    /// `(ordered, format, start)` → assigned numId.
+    ids: Vec<((bool, String, i64), i64)>,
+}
+
+impl Numbering {
+    /// The `w:numId` for a list item, registering a new id if the numbering is
+    /// novel. Bullet and plain decimal-from-1 reuse the fixed ids 1 / 2.
+    fn num_id(&mut self, b: &BlockView) -> i64 {
+        let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
+        if !ordered {
+            return 1;
+        }
+        let fmt = match b.attrs.get("num_format") {
+            Some(AttrVal::Str(s)) => s.clone(),
+            _ => "decimal".to_string(),
+        };
+        let start = match b.attrs.get("num_start") {
+            Some(AttrVal::Int(n)) => *n,
+            _ => 1,
+        };
+        if fmt == "decimal" && start == 1 {
+            return 2;
+        }
+        let key = (ordered, fmt, start);
+        if let Some((_, id)) = self.ids.iter().find(|(k, _)| *k == key) {
+            return *id;
+        }
+        let id = 3 + self.ids.len() as i64;
+        self.ids.push((key, id));
+        id
+    }
+
+    /// Whether any non-default ordered numbering was registered (so the exporter
+    /// generates a custom numbering.xml rather than the static fallback).
+    fn has_custom(&self) -> bool {
+        !self.ids.is_empty()
+    }
+
+    /// The full `word/numbering.xml` reconstructing every numbering this document
+    /// uses: bullet (1), decimal-from-1 (2), and each registered custom ordered
+    /// numbering with its `w:numFmt` + `w:start`.
+    fn numbering_xml(&self) -> String {
+        let mut abs = String::new();
+        let mut nums = String::new();
+        // Fixed: abstract 0 = bullet → numId 1; abstract 1 = decimal → numId 2.
+        abs.push_str(r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/></w:lvl></w:abstractNum>"#);
+        abs.push_str(r#"<w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#);
+        nums.push_str(r#"<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#);
+        nums.push_str(r#"<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>"#);
+        for ((_, fmt, start), id) in &self.ids {
+            let nf = ooxml_num_format(fmt);
+            abs.push_str(&format!(
+                r#"<w:abstractNum w:abstractNumId="{id}"><w:lvl w:ilvl="0"><w:start w:val="{start}"/><w:numFmt w:val="{nf}"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#
+            ));
+            nums.push_str(&format!(r#"<w:num w:numId="{id}"><w:abstractNumId w:val="{id}"/></w:num>"#));
+        }
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{abs}{nums}</w:numbering>"#
+        )
+    }
+}
+
 /// Build `word/document.xml` and collect the set of CRDT styles-container styleIds
-/// referenced by a `<w:pStyle>` (so the caller can emit their definitions).
-fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>) {
+/// referenced by a `<w:pStyle>` (so the caller can emit their definitions), plus
+/// the list-numbering plan (so the caller can write a matching numbering.xml).
+fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>, Numbering) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
+    let mut numbering = Numbering::default();
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -481,8 +575,7 @@ fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>) {
                 i += 1;
             }
             "list_item" => {
-                let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-                let numid = if ordered { 2 } else { 1 };
+                let numid = numbering.num_id(b);
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
@@ -550,7 +643,7 @@ fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>) {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}</w:body></w:document>"#
     );
-    (document, named_refs)
+    (document, named_refs, numbering)
 }
 
 #[cfg(test)]
@@ -649,6 +742,78 @@ mod tests {
         assert_eq!(items[0].text, "first");
         assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)));
         assert_eq!(items[1].attrs.get("ordered"), Some(&AttrVal::Bool(false)));
+    }
+
+    #[test]
+    fn list_numbering_format_and_start_roundtrip_through_docx() {
+        // An upper-roman ordered list starting at 3: format + start must survive a
+        // .docx export then re-import (fidelity preservation).
+        let mut d = Document::new();
+        let a = d.insert_block(None, "list_item");
+        d.splice_text(&a, 0, 0, "three");
+        let b = d.insert_block(Some(&a), "list_item");
+        d.splice_text(&b, 0, 0, "four");
+        {
+            let mut dm = d.as_mut();
+            for id in [&a, &b] {
+                dm.set_attr(id, "ordered", true);
+                dm.set_attr(id, "num_format", "upper-roman");
+                dm.set_attr(id, "num_start", 3_i64);
+                dm.set_attr(id, "num_restart", true);
+            }
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let numbering = std::str::from_utf8(cont.get("word/numbering.xml").unwrap()).unwrap();
+        assert!(numbering.contains(r#"<w:numFmt w:val="upperRoman"/>"#), "upper-roman numFmt emitted: {numbering}");
+        assert!(numbering.contains(r#"<w:start w:val="3"/>"#), "start value emitted: {numbering}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let items: Vec<_> = snap.blocks.iter().filter(|x| x.kind == "list_item").collect();
+        assert_eq!(items.len(), 2, "{snap:?}");
+        for it in &items {
+            assert_eq!(it.attrs.get("ordered"), Some(&AttrVal::Bool(true)), "still ordered: {:?}", it.attrs);
+            assert_eq!(it.attrs.get("num_format"), Some(&AttrVal::Str("upper-roman".into())), "format survives: {:?}", it.attrs);
+            assert_eq!(it.attrs.get("num_start"), Some(&AttrVal::Int(3)), "start survives: {:?}", it.attrs);
+        }
+
+        // Idempotent: a second round-trip preserves the same numbering attrs.
+        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "list-numbering model stable across a second round-trip");
+    }
+
+    #[test]
+    fn colored_serif_20pt_justified_run_roundtrips_through_docx() {
+        // The headline task: a coloured + serif + 20pt run in a justified
+        // paragraph must round-trip export→import with every attribute intact.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "styled");
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&p, "align", "justify");
+            dm.add_mark(&p, 0, 6, "color", "#3366cc");
+            dm.add_mark(&p, 0, 6, "fontFamily", "serif");
+            dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
+        }
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains(r#"<w:jc w:val="both"/>"#), "justify → w:jc both: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "styled");
+        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("justify".into())), "justify survives: {:?}", b.attrs);
+        assert!(b.marks.iter().any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())), "colour: {:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "serif: {:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "20pt: {:?}", b.marks);
     }
 
     #[test]

@@ -269,6 +269,7 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
         let v = match a.as_str() {
             "center" => "center",
             "right" => "end",
+            "justify" => "justify",
             _ => "",
         };
         if !v.is_empty() {
@@ -321,6 +322,101 @@ fn snap_list_level(b: &BlockView) -> i64 {
         Some(AttrVal::Int(n)) if *n >= 0 => *n,
         _ => 0,
     }
+}
+
+/// Whether a list item is ordered (numbered).
+fn snap_list_ordered(b: &BlockView) -> bool {
+    matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)))
+}
+
+/// The model numbering format string of a list item (default `decimal`).
+fn snap_num_format(b: &BlockView) -> &str {
+    match b.attrs.get("num_format") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "decimal",
+    }
+}
+
+/// The numbering start value of a list item (default 1).
+fn snap_num_start(b: &BlockView) -> i64 {
+    match b.attrs.get("num_start") {
+        Some(AttrVal::Int(n)) => *n,
+        _ => 1,
+    }
+}
+
+/// Whether a list item restarts numbering (vs continuing).
+fn snap_num_restart(b: &BlockView) -> bool {
+    matches!(b.attrs.get("num_restart"), Some(AttrVal::Bool(true)))
+}
+
+/// Map the model's canonical numbering format onto an ODF `style:num-format`
+/// value (inverse of `styles::map_num_format`).
+fn odf_num_format(fmt: &str) -> &'static str {
+    match fmt {
+        "lower-roman" => "i",
+        "upper-roman" => "I",
+        "lower-alpha" => "a",
+        "upper-alpha" => "A",
+        _ => "1",
+    }
+}
+
+/// A `text:list-style` definition reconstructing a level-0 numbering (format +
+/// start) so an ordered list re-imports with its numbering intact. `name` is the
+/// generated automatic-style name referenced by the `text:list`.
+fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
+    let nf = odf_num_format(fmt);
+    let sv = if start != 1 { format!(r#" text:start-value="{start}""#) } else { String::new() };
+    format!(
+        r#"<text:list-style style:name="{name}"><text:list-level-style-number text:level="1" style:num-format="{nf}"{sv}/></text:list-style>"#
+    )
+}
+
+/// A registered reconstructed list-style: its generated name + the `(format,
+/// start)` key it encodes + its full `text:list-style` XML.
+struct ListStyle {
+    name: String,
+    key: (String, i64),
+    xml: String,
+}
+
+/// The opening `<text:list …>` tag for the list `li` lives in. An ordered item
+/// with a non-default format and/or start gets a reconstructed `text:list-style`
+/// (registered in `list_styles`, deduped on `(format, start)`) referenced via
+/// `text:style-name`, plus `text:start-value` (a restart) or
+/// `text:continue-numbering` on the element.
+fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
+    if !snap_list_ordered(li) {
+        return "<text:list>".to_string();
+    }
+    let fmt = snap_num_format(li);
+    let start = snap_num_start(li);
+    // Plain decimal-from-1 ordered lists need no explicit style (LibreOffice's
+    // default), keeping the output minimal.
+    if fmt == "decimal" && start == 1 {
+        return "<text:list>".to_string();
+    }
+    let key = (fmt.to_string(), start);
+    let name = match list_styles.iter().find(|s| s.key == key) {
+        Some(s) => s.name.clone(),
+        None => {
+            let name = format!("Lqdoc{}", list_styles.len() + 1);
+            let xml = list_style_def_xml(&name, fmt, start);
+            list_styles.push(ListStyle { name: name.clone(), key, xml });
+            name
+        }
+    };
+    let mut tag = format!(r#"<text:list text:style-name="{name}""#);
+    if start != 1 && snap_num_restart(li) {
+        tag.push_str(&format!(r#" text:start-value="{start}""#));
+    } else if start != 1 {
+        // A non-default start that continues: mark it continuing so the importer
+        // doesn't treat it as a fresh restart.
+        tag.push_str(r#" text:continue-numbering="true""#);
+    }
+    tag.push('>');
+    tag
 }
 
 fn snap_cell_table(b: &BlockView) -> Option<String> {
@@ -446,6 +542,7 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
         let v = match a {
             "center" => "center",
             "right" => "end",
+            "justify" => "justify",
             _ => "",
         };
         if !v.is_empty() {
@@ -482,6 +579,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<(Option<String>, String, String)> = Vec::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
+    // Reconstructed `text:list-style`s for ordered lists with non-default
+    // numbering (format/start), emitted into automatic-styles.
+    let mut list_styles: Vec<ListStyle> = Vec::new();
+    let list_styles = &mut list_styles;
     let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
     let mut i = 0;
     while i < snap.blocks.len() {
@@ -504,7 +605,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 // lists, reconstructing the `text:list`/`text:list-item` nesting
                 // from each item's 0-based `level` so depth round-trips. A nested
                 // list lives inside its parent item, so items stay open until we
-                // know whether the next item is deeper.
+                // know whether the next item is deeper. The list opening the run of
+                // a given level carries a reconstructed `text:list-style` reference
+                // (format + start) when the item is ordered with non-default
+                // numbering, so the numbering survives the round-trip.
                 let mut depth: i64 = 0; // number of <text:list> currently open
                 let mut item_open = false; // a <text:list-item> awaiting its close
                 while i < snap.blocks.len() && snap.blocks[i].kind == "list_item" {
@@ -512,9 +616,16 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                     let target = snap_list_level(li) + 1; // lists that should be open
                     if target > depth {
                         // Deeper: open new lists nested inside the current open item.
+                        // The innermost (last) list opened is the one `li` lives in,
+                        // so it gets `li`'s numbering reference.
                         while depth < target {
-                            body.push_str("<text:list>");
                             depth += 1;
+                            let open = if depth == target {
+                                open_list_tag(li, list_styles)
+                            } else {
+                                "<text:list>".to_string()
+                            };
+                            body.push_str(&open);
                         }
                     } else {
                         // Sibling or shallower: close the current item, then unwind
@@ -621,6 +732,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
             idx + 1
         ));
+    }
+    // Reconstructed list-styles (numbering format + start) for ordered lists.
+    for ls in list_styles.iter() {
+        styles.push_str(&ls.xml);
     }
 
     // Declare the common ODF namespaces so re-emitted fidelity atoms (tables,
@@ -906,6 +1021,80 @@ mod tests {
             vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1), ("c".into(), 0)],
             "levels round-trip through nested ODF lists"
         );
+    }
+
+    #[test]
+    fn colored_serif_20pt_justified_run_roundtrips_through_odt() {
+        use crate::document::MarkValue;
+        // The headline task: a coloured + serif + 20pt run in a justified
+        // paragraph must round-trip export→import with every attribute intact.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "styled");
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&p, "align", "justify");
+            dm.add_mark(&p, 0, 6, "color", "#3366cc");
+            dm.add_mark(&p, 0, 6, "fontFamily", "serif");
+            dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
+        }
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r#"fo:text-align="justify""#), "justify → fo:text-align justify: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "styled");
+        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("justify".into())), "justify survives: {:?}", b.attrs);
+        assert!(b.marks.iter().any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())), "colour: {:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "serif: {:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "20pt: {:?}", b.marks);
+    }
+
+    #[test]
+    fn list_numbering_format_and_start_roundtrip_through_odt() {
+        // An upper-roman ordered list starting at 3: the format + start must
+        // survive an .odt export then re-import (fidelity preservation — the editor
+        // renders decimal, but the numbering metadata must not be lost).
+        let mut d = Document::new();
+        let a = d.insert_block(None, "list_item");
+        d.splice_text(&a, 0, 0, "three");
+        let b = d.insert_block(Some(&a), "list_item");
+        d.splice_text(&b, 0, 0, "four");
+        {
+            let mut dm = d.as_mut();
+            for id in [&a, &b] {
+                dm.set_attr(id, "ordered", true);
+                dm.set_attr(id, "num_format", "upper-roman");
+                dm.set_attr(id, "num_start", 3_i64);
+                dm.set_attr(id, "num_restart", true);
+            }
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r#"style:num-format="I""#), "upper-roman list-style emitted: {content}");
+        assert!(content.contains(r#"text:start-value="3""#), "start value emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        assert_eq!(items.len(), 2, "{snap:?}");
+        for it in &items {
+            assert_eq!(it.attrs.get("ordered"), Some(&AttrVal::Bool(true)), "still ordered: {:?}", it.attrs);
+            assert_eq!(it.attrs.get("num_format"), Some(&AttrVal::Str("upper-roman".into())), "format survives: {:?}", it.attrs);
+            assert_eq!(it.attrs.get("num_start"), Some(&AttrVal::Int(3)), "start survives: {:?}", it.attrs);
+        }
+
+        // Idempotent: a second round-trip preserves the same numbering attrs.
+        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "list-numbering model stable across a second round-trip");
     }
 
     #[test]
