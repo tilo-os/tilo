@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# Frozen RPM repo snapshot — built + pushed by CI (.forgejo/workflows/
+# snapshot-rpms.yml), NOT locally. Resolves the exact install transaction
+# against the digest-pinned base and packages it as a tiny FROM-scratch OCI
+# image. os/Containerfile then installs ONLY from this (pinned by digest), so
+# the OS image is reproducible across time regardless of upstream package
+# movement. Re-dispatch the workflow to re-snapshot when bumping packages/base.
+# ============================================================================
+ARG BASE
+FROM ${BASE} AS resolve
+
+# The exact package set the OS image installs (passed by the workflow, derived
+# from os/Containerfile's dnf-install blocks — single source of truth).
+ARG PACKAGES
+
+# Resolve the REAL install transaction against the base (captures rich/
+# conditional deps like greetd-selinux and the exact non-conflicting versions),
+# download-only, then collect the cached RPMs into a repo. qemu-user-static-*
+# (foreign-arch emulators, weak Recommends qOS doesn't need) are excluded.
+RUN dnf install -y createrepo_c \
+ && dnf clean packages \
+ && dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
+ && mkdir -p /repo \
+ && find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; \
+ && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
+ && createrepo_c --quiet /repo \
+ && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo
+
+# The published artifact: just the repo, nothing else.
+FROM scratch
+COPY --from=resolve /repo /repo
