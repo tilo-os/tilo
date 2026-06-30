@@ -16,6 +16,8 @@ path = "src/main.rs"
 ui = { path = "../ui" }
 qdoc = { path = "../qdoc" }
 docpdf = { path = "../docpdf" }
+dochtml = { path = "../dochtml" }
+docrtf = { path = "../docrtf" }
 automerge = "0.8.0"
 vello = "0.9"
 taffy = "0.10.1"
