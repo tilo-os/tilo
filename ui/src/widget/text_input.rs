@@ -128,6 +128,12 @@ pub struct TextInput {
     /// installer's `ActionButton::disabled`. Default `false`, so existing
     /// callers are unaffected.
     disabled: bool,
+    /// Hint text shown in `theme.text_dim` when the input is BOTH empty
+    /// and unfocused. Cleared (rendered as nothing) once the user focuses
+    /// the field or types into it, exactly like a native form placeholder.
+    /// Empty string (the default) disables the placeholder entirely, so
+    /// existing callers are unaffected.
+    placeholder: String,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -164,6 +170,7 @@ impl TextInput {
             local_author: None,
             secret: false,
             disabled: false,
+            placeholder: String::new(),
         }
     }
 
@@ -448,6 +455,31 @@ impl TextInput {
     /// Whether the input is currently disabled (inert).
     pub fn is_disabled(&self) -> bool {
         self.disabled
+    }
+
+    /// Builder-style: set the placeholder hint shown in dim text while the
+    /// input is empty AND unfocused. Pass `""` to clear it. The default
+    /// (empty) shows no placeholder, so existing callers are unaffected.
+    pub fn with_placeholder(mut self, hint: &str) -> Self {
+        self.placeholder = hint.to_string();
+        self
+    }
+
+    /// Mutate the placeholder after construction.
+    pub fn set_placeholder(&mut self, hint: &str) {
+        self.placeholder = hint.to_string();
+    }
+
+    /// The placeholder hint, or `""` when none is set.
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Whether the placeholder hint should be painted this frame — true
+    /// only when a non-empty placeholder is set and the input is both
+    /// empty and unfocused (native form-field semantics).
+    pub fn shows_placeholder(&self) -> bool {
+        !self.placeholder.is_empty() && self.text.is_empty() && !self.is_focused
     }
 
     /// The string actually painted / measured. For secret inputs this is
@@ -758,6 +790,20 @@ impl Widget for TextInput {
         } else {
             theme.text_primary
         };
+        // Placeholder hint: painted in dim text in the body slot when the
+        // input is empty and unfocused. `display` is empty here so the
+        // two never overlap; the placeholder shares the same baseline and
+        // gutter as real text so the transition is seamless on focus.
+        if self.shows_placeholder() {
+            text_renderer.draw_text(
+                scene,
+                &self.placeholder,
+                text_size,
+                theme.text_dim,
+                transform * Affine::translate((self.rect.x0 + padding_x, text_y)),
+                None,
+            );
+        }
         text_renderer.draw_text(
             scene,
             &display,
@@ -1341,6 +1387,62 @@ mod tests {
     fn text_input_test_id_can_be_overridden() {
         let ti = TextInput::new(Vec::new()).with_id("search_box");
         assert_eq!(Widget::test_id(&ti), Some("search_box"));
+    }
+
+    /// The placeholder shows ONLY when the input is empty AND unfocused.
+    /// Typing text or gaining focus must hide it — native form semantics.
+    #[test]
+    fn placeholder_visible_only_when_empty_and_unfocused() {
+        let mut ti = TextInput::local().with_placeholder("Search…");
+        assert_eq!(ti.placeholder(), "Search…");
+        // Empty + unfocused → shown.
+        assert!(ti.shows_placeholder(), "empty unfocused input shows placeholder");
+
+        // Focused → hidden even while empty.
+        ti.set_focus(true);
+        assert!(!ti.shows_placeholder(), "focused input hides placeholder");
+
+        // Unfocused but non-empty → hidden.
+        ti.set_focus(false);
+        ti.set_text("hello");
+        assert!(!ti.shows_placeholder(), "non-empty input hides placeholder");
+
+        // Back to empty + unfocused → shown again.
+        ti.set_text("");
+        assert!(ti.shows_placeholder());
+
+        // No placeholder set → never shown.
+        let plain = TextInput::local();
+        assert!(!plain.shows_placeholder(), "no placeholder set → never shows");
+    }
+
+    /// The placeholder draw path emits a glyph run when (and only when) it
+    /// should be visible — proves the dim hint actually paints.
+    #[test]
+    fn placeholder_emits_glyphs_when_shown() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::empty();
+
+        let mut shown = TextInput::local().with_placeholder("Type here");
+        shown.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut scene = Scene::new();
+        Widget::draw(&mut shown, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(
+            !scene.encoding().resources.glyph_runs.is_empty(),
+            "placeholder must paint a glyph run when shown",
+        );
+
+        // Focused empty input: placeholder hidden → no glyph run.
+        let mut hidden = TextInput::local().with_placeholder("Type here");
+        hidden.set_focus(true);
+        hidden.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut scene2 = Scene::new();
+        Widget::draw(&mut hidden, &mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(
+            scene2.encoding().resources.glyph_runs.is_empty(),
+            "focused input must not paint the placeholder",
+        );
     }
 
     /// Walking back through a sentence with `prev_word_boundary` must
