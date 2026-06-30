@@ -459,9 +459,10 @@ impl MusicApp {
         let content_x0 = r.x0 + self.content_inset();
         let header = Rect::new(content_x0, r.y0, r.x1, r.y0 + HEADER_H);
         let body = Rect::new(content_x0, r.y0 + HEADER_H, r.x1, r.y1 - NOWPLAYING_H);
-        // The now-playing transport is persistent chrome spanning the full
-        // window width along the bottom (the sidebar sits above it).
-        let nowplaying = Rect::new(r.x0, r.y1 - NOWPLAYING_H, r.x1, r.y1);
+        // The now-playing transport runs along the bottom of the content column,
+        // starting to the right of the docked sidebar so the full-height sidebar
+        // is never occluded (full-width in overlay, where the inset is 0).
+        let nowplaying = self.nowplaying_rect();
         self.body_rect = body;
 
         // Body first so chrome draws on top (and chrome hits win).
@@ -704,7 +705,10 @@ impl MusicApp {
         let shown = elide(tr, &txt, 14.0, TextWeight::Regular, pill.width() - 60.0);
         draw_text(tr, scene, t, &shown, pill.x0 + 38.0, vy(pill.y0, 36.0, 14.0), 14.0, col, TextWeight::Regular, None);
         if focused {
-            let cw = tr.measure_weighted(&txt, 14.0, None, TextWeight::Regular).0 as f64;
+            // Caret tracks the *typed query* width, never the placeholder — an
+            // empty field puts the caret at the text start, not at the end of the
+            // dim "Search songs, albums, artists" hint.
+            let cw = tr.measure_weighted(&self.search_query, 14.0, None, TextWeight::Regular).0 as f64;
             let cx = (pill.x0 + 38.0 + cw).min(pill.x1 - 14.0);
             scene.fill(
                 Fill::NonZero,

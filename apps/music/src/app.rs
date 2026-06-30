@@ -788,9 +788,15 @@ impl MusicApp {
     /// The sidebar's on-screen rect. Docked: pinned to the left, its width
     /// scaled by the reveal so collapsing slides the content over it. Overlay:
     /// slides in from the left edge, fully off-screen at reveal 0.
+    ///
+    /// The sidebar spans the **full window height** (down to `r.y1`). The
+    /// now-playing transport is inset to start to the right of the docked
+    /// sidebar (see `nowplaying_rect`), so the two never overlap — the sidebar
+    /// is not truncated above the bar, and the bar does not claim the sidebar's
+    /// bottom-left corner.
     fn sidebar_rect(&self) -> Rect {
         let r = self.rect;
-        let bottom = r.y1 - NOWPLAYING_H;
+        let bottom = r.y1;
         match self.sidebar_layout() {
             SplitLayout::Docked => {
                 let w = SIDEBAR_W * self.flap.reveal();
@@ -802,6 +808,16 @@ impl MusicApp {
                 Rect::new(x0, r.y0, x0 + SIDEBAR_W, bottom)
             }
         }
+    }
+
+    /// The now-playing transport's on-screen rect. It runs along the bottom of
+    /// the content column — starting to the right of the docked sidebar (so the
+    /// full-height sidebar is never occluded) and spanning to the window's right
+    /// edge. In overlay mode `content_inset()` is 0, so the bar is full-width
+    /// and the floating sidebar draws above it.
+    fn nowplaying_rect(&self) -> Rect {
+        let r = self.rect;
+        Rect::new(r.x0 + self.content_inset(), r.y1 - NOWPLAYING_H, r.x1, r.y1)
     }
 
     /// Whether the hamburger toggle is currently shown — i.e. whenever the
@@ -842,6 +858,15 @@ impl MusicApp {
         if matches!(self.view, View::Home) {
             self.view = View::Playlists;
         }
+    }
+
+    /// Stage the header search pill focused with an empty query for a `--shots`
+    /// frame — captures the caret at the field start (it must not sit at the end
+    /// of the placeholder hint). `search_focused` is plain widget state, so no
+    /// deferral is needed.
+    pub fn snap_search_focus(&mut self) {
+        self.search_focused = true;
+        self.search_query.clear();
     }
 
     /// Apply a deferred `--shots` staging action now that the library is
