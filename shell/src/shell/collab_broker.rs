@@ -38,7 +38,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use qos_collab_types::{
-    ArtifactId, ChannelState, SignedOp, ValidationError, validate_inbound_op,
+    ArtifactId, ChannelState, OpClass, SignedOp, ValidationError, validate_inbound_op,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -234,6 +234,62 @@ impl PeerTable {
             self.remove(id);
         }
     }
+
+    /// Send `event` to exactly one peer by id. Used by the Phase 6
+    /// `FetchScrollback` path — the reply only belongs to the
+    /// requester, not the whole fan-out. Drops the peer if the write
+    /// fails. Returns whether the send happened (false when the peer
+    /// id was not in the table at lookup time).
+    fn send_to_peer(&self, peer_id: u64, event: &CollabEvent) -> bool {
+        let bytes = match serde_json::to_vec(event) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let target = self
+            .snapshot()
+            .into_iter()
+            .find(|p| p.id == peer_id);
+        let Some(peer) = target else { return false };
+        if write_frame(&peer.writer, &bytes).is_err() {
+            self.remove(peer.id);
+            return false;
+        }
+        true
+    }
+}
+
+/// Outcome of [`translate`]. The broker hot path consumes one of these
+/// per inbound request and decides whether to fan out, reply to one
+/// peer, or do nothing. Splitting the cases as a typed enum (rather
+/// than two `Option`s + a bool) keeps `reader_loop`'s post-translate
+/// logic dispatch-on-pattern clean.
+enum TranslatedAction {
+    /// Nothing to do — `Hello` swallowed, invalid op dropped after
+    /// auditing, etc.
+    Nothing,
+    /// Forward `event` to every locally-connected peer *except* the
+    /// originating one (the pre-Phase-6 fan-out behaviour).
+    FanoutExcept(CollabEvent),
+    /// Reply only to the originating peer. Used by `FetchScrollback`
+    /// — peers other than the requester have no interest in a paged
+    /// history fetch they didn't ask for.
+    ReplyToSource(CollabEvent),
+    /// A `SignedSyncIncremental` validated and was a `Compaction`
+    /// checkpoint. The broker should still fan the envelope out
+    /// (peers downstream need to evict their own logs too) but the
+    /// local channel state has already been mutated by the time this
+    /// variant is returned.
+    ///
+    /// `evicted` is the number of ops removed from the local op log;
+    /// it's surfaced on the variant for future telemetry / a
+    /// "Compaction applied (N ops collapsed)" toast even though the
+    /// current reader loop only reads `event`. Marked `allow(dead_code)`
+    /// so the contract stays explicit without a compiler warning.
+    #[allow(dead_code)]
+    CompactionApplied {
+        event: CollabEvent,
+        evicted: usize,
+    },
 }
 
 /// Read one length-prefixed frame. Returns `None` on EOF / broken pipe
@@ -260,22 +316,29 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
 }
 
 /// Translate one `CollabRequest` (already deserialized off the wire)
-/// to the `CollabEvent` peers should observe. Returns `None` for
-/// `Hello` (which is swallowed — see module docs).
+/// to the action peers should observe. Returns
+/// [`TranslatedAction::Nothing`] for `Hello` (which is swallowed —
+/// see module docs).
 fn translate(
     src_id: u64,
     req: CollabRequest,
     channels: &Arc<Mutex<BrokerChannels>>,
-) -> Option<CollabEvent> {
+) -> TranslatedAction {
     match req {
-        CollabRequest::Hello { .. } => None,
-        CollabRequest::SyncIncremental { data } => Some(CollabEvent::CRDTIncremental { data }),
-        CollabRequest::SyncCRDT { data } => Some(CollabEvent::CRDTUpdate { data }),
-        CollabRequest::Presence { key, payload } => Some(CollabEvent::RemotePresenceUpdate {
-            user_id: format!("peer-{src_id}"),
-            key,
-            payload,
-        }),
+        CollabRequest::Hello { .. } => TranslatedAction::Nothing,
+        CollabRequest::SyncIncremental { data } => {
+            TranslatedAction::FanoutExcept(CollabEvent::CRDTIncremental { data })
+        }
+        CollabRequest::SyncCRDT { data } => {
+            TranslatedAction::FanoutExcept(CollabEvent::CRDTUpdate { data })
+        }
+        CollabRequest::Presence { key, payload } => {
+            TranslatedAction::FanoutExcept(CollabEvent::RemotePresenceUpdate {
+                user_id: format!("peer-{src_id}"),
+                key,
+                payload,
+            })
+        }
         CollabRequest::SignedSyncIncremental { envelope } => {
             // Phase 3 hot path: validate the envelope against the
             // per-artifact `ChannelState` before fanning out. Default
@@ -285,16 +348,71 @@ fn translate(
             let artifact = envelope.artifact;
             let validation = {
                 let Ok(mut ch) = channels.lock() else {
-                    return None;
+                    return TranslatedAction::Nothing;
                 };
                 let state = ch.state_for(artifact);
                 validate_inbound_op(&envelope, state)
             };
             match validation {
-                Ok(()) => Some(CollabEvent::SignedCRDTIncremental {
-                    envelope,
-                    from_user_id: format!("peer-{src_id}"),
-                }),
+                Ok(()) => {
+                    // Phase 6 housekeeping after a green validation:
+                    // record the op in the per-artifact in-memory log,
+                    // then — if this op is itself a Compaction
+                    // checkpoint — apply it. The order matters: a
+                    // checkpoint op's own envelope should NOT be
+                    // evicted by its own application (its seq is
+                    // strictly greater than `up_to_seq` by
+                    // construction), so recording first and
+                    // compacting afterwards is safe.
+                    let mut compaction_evicted: Option<usize> = None;
+                    if let Ok(mut ch) = channels.lock() {
+                        let state = ch.state_for(artifact);
+                        state.record_validated_op((*envelope).clone());
+                        if envelope.op_class == OpClass::Compaction {
+                            match qos_collab_types::parse_compaction_payload(&envelope) {
+                                Ok(cp) => match state.apply_compaction(&cp) {
+                                    Ok(n) => {
+                                        compaction_evicted = Some(n);
+                                        tracing::info!(
+                                            artifact = ?artifact,
+                                            up_to_seq = cp.up_to_seq,
+                                            evicted = n,
+                                            "collab_broker: applied compaction checkpoint",
+                                        );
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            artifact = ?artifact,
+                                            up_to_seq = cp.up_to_seq,
+                                            "collab_broker: compaction rejected: {err}",
+                                        );
+                                    }
+                                },
+                                Err(err) => {
+                                    // Malformed payload from a peer
+                                    // who passed signature + role
+                                    // checks. Log + skip the
+                                    // compaction; the envelope still
+                                    // fans out (other peers can audit
+                                    // independently).
+                                    tracing::warn!(
+                                        artifact = ?artifact,
+                                        "collab_broker: malformed compaction payload: {err}",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    let event = CollabEvent::SignedCRDTIncremental {
+                        envelope,
+                        from_user_id: format!("peer-{src_id}"),
+                    };
+                    if let Some(evicted) = compaction_evicted {
+                        TranslatedAction::CompactionApplied { event, evicted }
+                    } else {
+                        TranslatedAction::FanoutExcept(event)
+                    }
+                }
                 Err(reason) => {
                     tracing::warn!(
                         artifact = ?artifact,
@@ -312,9 +430,35 @@ fn translate(
                             },
                         );
                     }
-                    None
+                    TranslatedAction::Nothing
                 }
             }
+        }
+        CollabRequest::FetchScrollback {
+            artifact,
+            before_seq,
+            max,
+        } => {
+            // Phase 6: read-only access to the artifact's in-memory
+            // op log. The broker returns up to `max` ops in seq
+            // order; the `exhausted` flag tells the requester
+            // whether to fall back to the cooperative path.
+            //
+            // The `ScrollbackBatch` goes ONLY to the requesting
+            // peer — other locally-connected apps did not ask, and
+            // would just have to filter on `artifact` anyway.
+            let (ops, exhausted) = {
+                let Ok(mut ch) = channels.lock() else {
+                    return TranslatedAction::Nothing;
+                };
+                let state = ch.state_for(artifact);
+                state.scrollback_for(artifact, before_seq, max)
+            };
+            TranslatedAction::ReplyToSource(CollabEvent::ScrollbackBatch {
+                artifact,
+                ops: ops.into_iter().map(Box::new).collect(),
+                exhausted,
+            })
         }
     }
 }
@@ -372,8 +516,60 @@ fn reader_loop(
                 .unwrap_or_else(|| (String::new(), String::new()));
             net.publish_app_crdt_incremental(app_id, cluster_id, data.clone());
         }
-        if let Some(event) = translate(peer.id, req, &channels) {
-            table.fanout_except(&event, peer.id);
+        // Phase 6 cooperative-fetch outbound bridge: a local
+        // `FetchScrollback` always replies first from the local op
+        // log (handled by `translate`). When peer-sync is wired AND
+        // the local broker's reply turned out to be empty, ALSO
+        // publish a cooperative request so remote peers can chime in.
+        // The remote responses funnel back through the drain thread
+        // and reach the requesting app as a follow-up
+        // `ScrollbackBatch`.
+        let cooperative_fetch = if let CollabRequest::FetchScrollback {
+            artifact,
+            before_seq,
+            max,
+        } = &req
+        {
+            Some((*artifact, *before_seq, *max))
+        } else {
+            None
+        };
+        match translate(peer.id, req, &channels) {
+            TranslatedAction::Nothing => {}
+            TranslatedAction::FanoutExcept(event) => {
+                table.fanout_except(&event, peer.id);
+            }
+            TranslatedAction::ReplyToSource(event) => {
+                // Phase 6 targeted reply: scrollback batches only go
+                // to the peer that asked. Failure is silently
+                // dropped; the peer can re-ask.
+                let _ = table.send_to_peer(peer.id, &event);
+                // Cooperative follow-up: if the local reply was
+                // empty (the in-memory log holds nothing in the
+                // requested range), broadcast a `ScrollbackRequest`
+                // over libp2p. Any peer holding the range responds
+                // via `ScrollbackResponse`, which the broker drain
+                // thread then fans into a follow-up `ScrollbackBatch`
+                // for the locally-connected app.
+                if let (Some(net), Some((art, before_seq, max))) =
+                    (peer_sync.as_ref(), cooperative_fetch)
+                {
+                    let is_empty = matches!(
+                        &event,
+                        CollabEvent::ScrollbackBatch { ops, .. } if ops.is_empty()
+                    );
+                    if is_empty {
+                        net.publish_scrollback_request(art, before_seq, max);
+                    }
+                }
+            }
+            TranslatedAction::CompactionApplied { event, evicted: _ } => {
+                // The local compaction has already been applied
+                // inside `translate`. Fan the envelope out so peers
+                // can replicate the same eviction; without this they
+                // never converge on the new horizon.
+                table.fanout_except(&event, peer.id);
+            }
         }
     }
     tracing::debug!("collab_broker: peer-{} disconnected", peer.id);
@@ -599,15 +795,33 @@ pub fn spawn_with_peer_sync(
     // `CRDTIncremental`. 100 ms is well under typical CRDT
     // convergence cadence and keeps the drainer's CPU footprint
     // negligible.
+    //
+    // Phase 6 stretches the same drainer to cover three new queues:
+    //   - inbound app-CRDT-signed envelopes (validated + fanned to
+    //     local apps as `SignedCRDTIncremental`),
+    //   - inbound cooperative-scrollback requests (consult local op
+    //     log; if matching ops exist, publish a response over
+    //     gossipsub),
+    //   - inbound cooperative-scrollback responses (fan a
+    //     `ScrollbackBatch` to every local app — every locally-
+    //     connected app gets it, because the broker can't tell which
+    //     app issued the original request once it's been bridged via
+    //     gossipsub).
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync.as_ref().map(|net| {
         let inbound = net.inbound_app_crdt_handle();
+        let signed_inbound = net.inbound_app_crdt_signed_handle();
+        let sb_req_inbound = net.inbound_scrollback_request_handle();
+        let sb_resp_inbound = net.inbound_scrollback_response_handle();
         let drain_table = Arc::clone(&table);
+        let drain_channels = Arc::clone(&channels);
+        let drain_net = Arc::clone(net);
         let quit = Arc::clone(&drain_quit);
         std::thread::Builder::new()
             .name("qos-collab-broker-drain".into())
             .spawn(move || {
                 while !quit.load(Ordering::Relaxed) {
+                    // Drain inbound unsigned CRDT increments.
                     let drained: Vec<_> = {
                         let mut buf = match inbound.lock() {
                             Ok(g) => g,
@@ -622,6 +836,116 @@ pub fn spawn_with_peer_sync(
                         // should be skipped.
                         drain_table.fanout_except(&event, u64::MAX);
                     }
+
+                    // Drain inbound signed envelopes — validate
+                    // against the local channel state, record into
+                    // the op log on success, then fan to local apps.
+                    let drained_signed: Vec<_> = {
+                        let mut buf = match signed_inbound.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        std::mem::take(&mut *buf)
+                    };
+                    for entry in drained_signed {
+                        let envelope = *entry.envelope;
+                        let artifact = envelope.artifact;
+                        let validation = {
+                            let Ok(mut ch) = drain_channels.lock() else {
+                                continue;
+                            };
+                            let state = ch.state_for(artifact);
+                            validate_inbound_op(&envelope, state)
+                        };
+                        match validation {
+                            Ok(()) => {
+                                if let Ok(mut ch) = drain_channels.lock() {
+                                    let state = ch.state_for(artifact);
+                                    state.record_validated_op(envelope.clone());
+                                    if envelope.op_class == OpClass::Compaction {
+                                        if let Ok(cp) =
+                                            qos_collab_types::parse_compaction_payload(&envelope)
+                                        {
+                                            let _ = state.apply_compaction(&cp);
+                                        }
+                                    }
+                                }
+                                let event = CollabEvent::SignedCRDTIncremental {
+                                    envelope: Box::new(envelope),
+                                    from_user_id: format!("peer-net-{}", entry.peer),
+                                };
+                                drain_table.fanout_except(&event, u64::MAX);
+                            }
+                            Err(reason) => {
+                                tracing::warn!(
+                                    "collab_broker (net): dropping invalid signed op: {reason}",
+                                );
+                                if let Ok(mut ch) = drain_channels.lock() {
+                                    ch.audit.record(
+                                        artifact,
+                                        AuditEntry {
+                                            envelope: Box::new(envelope),
+                                            rejection: Some(reason),
+                                            at: std::time::SystemTime::now(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Drain inbound scrollback requests — consult
+                    // local op log and publish a response if we have
+                    // matching ops. Empty matches are silently
+                    // dropped so the requester doesn't get spammed
+                    // by every peer saying "I don't have it either".
+                    let drained_req: Vec<_> = {
+                        let mut buf = match sb_req_inbound.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        std::mem::take(&mut *buf)
+                    };
+                    for entry in drained_req {
+                        let (ops, _exhausted) = {
+                            let Ok(mut ch) = drain_channels.lock() else {
+                                continue;
+                            };
+                            let state = ch.state_for(entry.artifact);
+                            state.scrollback_for(entry.artifact, entry.before_seq, entry.max)
+                        };
+                        if !ops.is_empty() {
+                            let boxed: Vec<Box<qos_collab_types::SignedOp>> =
+                                ops.into_iter().map(Box::new).collect();
+                            drain_net.publish_scrollback_response(entry.artifact, boxed);
+                        }
+                    }
+
+                    // Drain inbound scrollback responses — fan the
+                    // payload to every locally-connected app as a
+                    // `ScrollbackBatch`. The bridge can't tell which
+                    // app originally asked, so we deliver
+                    // best-effort to all; apps filter by `artifact`.
+                    let drained_resp: Vec<_> = {
+                        let mut buf = match sb_resp_inbound.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        std::mem::take(&mut *buf)
+                    };
+                    for entry in drained_resp {
+                        // A response from gossipsub is the closing
+                        // half of a cooperative round-trip; mark
+                        // exhausted=true so the receiving app
+                        // doesn't immediately re-ask.
+                        let event = CollabEvent::ScrollbackBatch {
+                            artifact: entry.artifact,
+                            ops: entry.ops,
+                            exhausted: true,
+                        };
+                        drain_table.fanout_except(&event, u64::MAX);
+                    }
+
                     std::thread::sleep(Duration::from_millis(100));
                 }
             })
