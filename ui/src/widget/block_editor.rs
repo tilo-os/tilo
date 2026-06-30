@@ -2057,6 +2057,16 @@ impl Widget for BlockEditor {
         self.rect
     }
 
+    /// The whole editor body is an editable text surface, so show the
+    /// I-beam over it. `point` is in `self.rect`'s logical space.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Text)
+        } else {
+            None
+        }
+    }
+
     fn is_focusable(&self) -> bool {
         true
     }
