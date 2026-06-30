@@ -55,6 +55,32 @@ pub struct DocSnapshot {
     /// documents with no notes (and absent in snapshots authored before this field).
     #[serde(default)]
     pub notes: Vec<NoteView>,
+    /// Comments / annotations, each anchored to a body text range (recovered from
+    /// the `comment` mark — see `schema::MARK_COMMENT`) carrying the comment id, with
+    /// the author / date / content held in the `comments` container keyed by that id.
+    /// Round-trips through `office:annotation`(+`office:annotation-end`) in `.odt`
+    /// and `word/comments.xml` + `commentRangeStart`/`commentRangeEnd`/
+    /// `commentReference` in `.docx`. Empty for documents with no comments (and absent
+    /// in snapshots authored before this field existed).
+    #[serde(default)]
+    pub comments: Vec<CommentView>,
+}
+
+/// One comment / annotation: its id, author, date string, the block sequence forming
+/// its content, and the anchored body range `[start, end)` it covers (recovered from
+/// the `comment` mark; `None` if the anchoring mark is absent — e.g. the commented
+/// text was deleted). The body text references it by a `comment` mark valued with
+/// this `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommentView {
+    pub id: String,
+    pub author: String,
+    pub date: String,
+    pub blocks: Vec<BlockView>,
+    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the
+    /// anchoring mark is absent.
+    #[serde(default)]
+    pub range: Option<(String, usize, usize)>,
 }
 
 /// One footnote/endnote: its id, kind (`"footnote"`/`"endnote"`), and the block
