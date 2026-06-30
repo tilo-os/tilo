@@ -45,6 +45,11 @@ pub enum LineSignal {
     /// Enter was pressed* — the parent splits the line there, drops
     /// the suffix into a new block, and re-focuses.
     Enter { split_at: usize },
+    /// User pressed Shift+Enter while focused. Same split point as
+    /// `Enter`, but the parent flags the new block as a soft-break
+    /// continuation of the current paragraph — rendered with no
+    /// top spacing so the two lines visually read as one paragraph.
+    SoftNewline { split_at: usize },
     /// User pressed Backspace while the caret was at byte 0 with no
     /// active selection. Parent decides whether to merge with the
     /// previous block, delete an empty block, or no-op.
@@ -372,6 +377,14 @@ impl RichTextLine {
     pub fn inner_mut(&mut self) -> &mut TextInput {
         &mut self.inner
     }
+
+    /// Read-only access to the inner [`TextInput`]. Used by the
+    /// cross-block drag coordinator on `BlockEditor` to check the
+    /// drag state of each line without taking `&mut self`.
+    #[doc(hidden)]
+    pub fn inner(&self) -> &TextInput {
+        &self.inner
+    }
 }
 
 impl Default for RichTextLine {
@@ -680,9 +693,16 @@ impl Widget for RichTextLine {
 
                 match logical_key {
                     Key::Named(NamedKey::Enter) => {
-                        self.signal = Some(LineSignal::Enter {
-                            split_at: self.inner.cursor_pos(),
-                        });
+                        // Shift+Enter is a soft-break inside a
+                        // paragraph (a second visual line, no
+                        // paragraph gap); plain Enter is a true
+                        // paragraph split.
+                        let split_at = self.inner.cursor_pos();
+                        self.signal = if modifiers.state().shift_key() {
+                            Some(LineSignal::SoftNewline { split_at })
+                        } else {
+                            Some(LineSignal::Enter { split_at })
+                        };
                         *handled = true;
                         return;
                     }
