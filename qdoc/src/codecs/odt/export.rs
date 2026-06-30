@@ -96,6 +96,25 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
         }
     }
+    // Document default language → `styles.xml` paragraph default-style: splice the
+    // document's `fo:language`/`fo:country` (split from the BCP-47 tag) into a
+    // `<style:default-style style:family="paragraph">` in `<office:styles>`,
+    // synthesising the section / a minimal styles.xml when the source had none. Only
+    // runs when the document declares a default language, so a doc without one leaves
+    // `styles.xml` untouched (or absent).
+    {
+        let base = c
+            .get("styles.xml")
+            .map(|b| b.to_vec())
+            .unwrap_or_else(|| MINIMAL_STYLES.to_vec());
+        if let Some(styles_xml) = super::language::export_default_language(&doc, &base) {
+            let is_new = !had_styles;
+            c.set("styles.xml", styles_xml);
+            if is_new {
+                had_styles = true;
+            }
+        }
+    }
     // Document properties → `meta.xml`: regenerate the part from the canonical
     // properties, merging in any unmodeled `office:meta` children from the
     // preserved original so they survive. Created when the doc has properties even
@@ -227,6 +246,13 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         // matching what LibreOffice writes for menu super/subscript).
         "super" => Some(("qdoc-super".into(), r#"style:text-position="super 58%""#.into())),
         "sub" => Some(("qdoc-sub".into(), r#"style:text-position="sub 58%""#.into())),
+        // Per-run language override: split BCP-47 `de-DE` into ODF
+        // `fo:language="de" fo:country="DE"` text-properties.
+        "lang" => m
+            .value
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .map(|c| (format!("qdoc-lang-{}", lang_token(c)), lang_text_props(c))),
         _ => None,
     }
 }
@@ -235,6 +261,24 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
 /// generated automatic-style name a valid XML name.
 fn color_token(c: &str) -> String {
     c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+}
+
+/// A style-name-safe token for a BCP-47 tag (`de-DE` → `deDE`); keeps the generated
+/// automatic-style name a valid XML name.
+fn lang_token(c: &str) -> String {
+    c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+}
+
+/// The ODF `style:text-properties` attribute string for a BCP-47 language tag: split
+/// `xx-YY` into `fo:language="xx" fo:country="YY"` (an `xx`-only tag emits just
+/// `fo:language`). Re-imported by `styles::marks_from_text_props` / `reassemble_bcp47`.
+fn lang_text_props(code: &str) -> String {
+    match code.split_once('-') {
+        Some((lang, country)) if !country.is_empty() => {
+            format!(r#"fo:language="{}" fo:country="{}""#, escape_attr(lang), escape_attr(country))
+        }
+        _ => format!(r#"fo:language="{}""#, escape_attr(code)),
+    }
 }
 
 /// Escape a string for use inside a double-quoted XML attribute value.

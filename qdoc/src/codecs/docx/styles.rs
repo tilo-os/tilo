@@ -116,6 +116,10 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
             .or_else(|| attr_val(e, b"w:hAnsi"))
             .map(|f| ("fontFamily".into(), MarkValue::Str(generic_font(&f)))),
         b"w:color" => attr_val(e, b"w:val").and_then(|v| normalize_color(&v)).map(|c| ("color".into(), MarkValue::Str(c))),
+        // Per-run language override. `w:lang w:val` is already a BCP-47 tag (`fr`,
+        // `de-DE`), so it passes straight through to a `lang` mark. Supports per-span
+        // spell-check locale and screen-reader language.
+        b"w:lang" => attr_val(e, b"w:val").filter(|v| !v.is_empty()).map(|v| ("lang".into(), MarkValue::Str(v))),
         // Text background (highlight). Prefer `w:shd w:fill` (arbitrary hex);
         // `w:highlight` carries a named colour (`yellow`, …) mapped to its hex.
         b"w:shd" => attr_val(e, b"w:fill")
@@ -134,6 +138,44 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
         },
         _ => None,
     }
+}
+
+/// The document default language declared in `word/styles.xml` under
+/// `<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="…"/>`, the home Word reads for
+/// the document's default spell-check / screen-reader locale. Returns the BCP-47 tag
+/// (e.g. `de-DE`) or `None` if the part declares no default language. Only the run
+/// default (`w:rPrDefault`) is inspected — never a `<w:style>`'s own `<w:lang>`.
+pub(super) fn doc_default_language(styles_xml: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(styles_xml).ok()?;
+    let mut reader = Reader::from_str(s);
+    // Track whether we're inside the `docDefaults > rPrDefault > rPr` subtree; only a
+    // `<w:lang>` there is the document default (a `<w:lang>` inside a `<w:style>`'s rPr
+    // is a *style's* language, not the document default).
+    let (mut in_doc_defaults, mut in_rpr_default, mut in_rpr) = (false, false, false);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"w:docDefaults" => in_doc_defaults = true,
+                b"w:rPrDefault" if in_doc_defaults => in_rpr_default = true,
+                b"w:rPr" if in_rpr_default => in_rpr = true,
+                _ => {}
+            },
+            Ok(Event::Empty(e)) if in_rpr && e.name().as_ref() == b"w:lang" => {
+                if let Some(v) = attr_val(&e, b"w:val").filter(|v| !v.is_empty()) {
+                    return Some(v);
+                }
+            }
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"w:rPr" => in_rpr = false,
+                b"w:rPrDefault" => in_rpr_default = false,
+                b"w:docDefaults" => return None, // default block closed without a lang
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Map an OOXML `w:highlight` named colour to a canonical `#rrggbb`. The OOXML

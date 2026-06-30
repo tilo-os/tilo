@@ -1189,4 +1189,51 @@ mod tests {
         };
         assert_eq!(raw1, raw2, "fidelity atom round-trips verbatim");
     }
+
+    #[test]
+    fn imports_run_language_as_mark() {
+        use crate::document::MarkValue;
+        // A text style carrying `fo:language` + `fo:country` → a `lang` run mark with
+        // the reassembled BCP-47 tag.
+        let styles = r#"<style:style style:name="Lf" style:family="text"><style:text-properties fo:language="fr" fo:country="FR"/></style:style>"#;
+        let body = r#"<text:p>a <text:span text:style-name="Lf">bonjour</text:span></text:p>"#;
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let b = &d.materialize().blocks[0];
+        assert_eq!(b.text, "a bonjour");
+        assert!(
+            b.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr-FR".into())),
+            "lang mark reassembled from fo:language+fo:country, ranged: {:?}",
+            b.marks
+        );
+    }
+
+    #[test]
+    fn document_and_run_language_roundtrip() {
+        use crate::document::MarkValue;
+        // Author a document with a `de-DE` default language and a `fr`-marked run,
+        // export to `.odt`, re-import: both the document language and the run mark
+        // survive, with BCP-47 reassembled from `fo:language`+`fo:country`.
+        let mut d = Document::new();
+        d.set_language("de-DE");
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "bonjour monde");
+        // Mark "bonjour" (chars 0..7) as French (`fr`, no country).
+        d.add_mark(&id, 0, 7, "lang", "fr");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+
+        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "bonjour monde");
+        assert!(
+            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            "run lang mark `fr` survives over 'bonjour': {:?}",
+            b.marks
+        );
+    }
 }
