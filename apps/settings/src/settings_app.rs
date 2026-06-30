@@ -10,58 +10,61 @@
 //! back affordance to return to the list. This mirrors the Adwaita
 //! leaflet/overlay-flap behaviour.
 //!
-//! ## How responsiveness works without a viewport hook
+//! ## How responsiveness works
 //!
-//! The `Widget` trait's `build_layout` doesn't receive the window size, so
-//! the app reads its own measured width from the *previous* frame
-//! ([`SettingsApp::last_width`], set in `apply_layout`) to choose the
-//! composition. The one-frame lag is invisible in practice and fully
-//! deterministic under `--shots` (the offscreen renderer fixes the
-//! viewport before the first `build_layout`, and the app seeds
-//! `last_width` from a render hint so the very first frame is already
-//! correct — see [`SettingsApp::with_width_hint`]).
+//! The two panes are wrapped in a single [`NavSplit`] from the shared
+//! toolkit. `NavSplit` owns the responsive behaviour entirely: when its
+//! allocated width is at or above [`NAV_BREAKPOINT`] the sidebar is docked
+//! beside the content; below it the sidebar becomes an overlay flap that
+//! slides in over a dimming scrim (dismissed by the scrim, Esc, or a
+//! toggle). Settings supplies the two child widgets and reacts to category
+//! selection; it does not re-implement the flap, the breakpoint, or the
+//! scrim.
 //!
-//! ## State
+//! ## State and the rebuild that drives navigation
 //!
-//! The composed child tree is rebuilt at the top of every `build_layout`
-//! so a category switch or a narrow/wide transition shows up next frame
-//! without a separate message bus — the same pattern the sibling native
-//! apps use. Category selection and the narrow drill-in flag live on the
-//! widget; everything a panel persists lives in that panel's own store.
+//! The selected category lives on the widget (and is mirrored into the
+//! document via the per-row select key). When [`SettingsApp::sync`] sees a
+//! category's select key set, it updates `selected` **and flags
+//! `structure_dirty`**. The host's frame loop polls `take_structure_dirty`
+//! and, when set, re-runs `build_layout` — which is where the `NavSplit`
+//! (and therefore the content pane for the new category) is rebuilt. That
+//! rebuild-on-selection is exactly what makes clicking a category switch the
+//! visible pane: without the dirty flag, `build_layout` would never re-run
+//! after the initial frame and the content would stay frozen on the first
+//! category.
 
-use crate::categories::{Category, Section};
+use crate::categories::Category;
 use crate::panes;
-use ui::widget::{Button, Column, Container, Row, Scrollable, Text, Widget};
+use crate::sidebar;
+use ui::widget::{Column, Container, NavSplit, Row, SplitLayout, SplitMode, Text, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
-/// Below this measured content width (logical px) the app uses the
-/// single-pane narrow layout.
-pub const NARROW_BREAKPOINT_PX: f32 = 720.0;
-
-/// CRDT key the narrow-mode "back" affordance writes to. Reading it true
-/// in `sync` pops the drill-in back to the category list.
-pub const BACK_KEY: &str = "settings.nav.back";
+/// At or above this allocated width (logical px) the sidebar docks beside the
+/// content; below it the sidebar becomes an overlay flap. Sized so a typical
+/// settings window is docked while a narrow / split-screen placement gets the
+/// overlay.
+pub const NAV_BREAKPOINT: f64 = 720.0;
 
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
-    /// In narrow mode, whether the panel is "pushed in" (showing the
-    /// selected category) vs. the category list. Ignored in wide mode.
-    drilled_in: bool,
-    /// Last measured content width, used to pick the responsive layout.
-    last_width: f32,
+    /// `true` once a selection (or other composition-affecting change) has
+    /// happened and the host must re-run `build_layout` to rebuild the
+    /// `NavSplit` with the new content pane. Drained by `take_structure_dirty`.
+    structure_dirty: bool,
+    /// In `--shots` / headless rendering the live `ui::App` event loop that
+    /// would normally drive the flap open is absent, so we force the sidebar
+    /// open after building. Set via [`SettingsApp::with_sidebar_open_shot`].
+    force_sidebar_open: bool,
+    /// Seed width hint so the very first offscreen frame resolves the correct
+    /// docked/overlay layout. `None` lets `NavSplit` decide from its own rect.
+    width_hint: Option<f32>,
     rect: vello::kurbo::Rect,
-    /// Composed child widgets, rebuilt each `build_layout`. One entry in
-    /// narrow mode (the active pane); two in wide mode (sidebar, content).
-    /// They're assembled into a non-wrapping flex row with explicit widths
-    /// in `build_layout` so the sidebar stays a fixed fraction and the
-    /// content fills the rest — `ui`'s `Row` widget wraps, which can't
-    /// express a stable two-pane split.
-    composed: Vec<Box<dyn Widget>>,
+    /// The composed split (sidebar | content), rebuilt each `build_layout` so
+    /// a category switch shows up once the host re-runs the layout pass.
+    split: Option<NavSplit>,
 }
-
-/// Fraction of the width the sidebar takes in the wide two-pane layout.
-const SIDEBAR_FRACTION: f32 = 0.24;
 
 impl Default for SettingsApp {
     fn default() -> Self {
@@ -73,11 +76,11 @@ impl SettingsApp {
     pub fn new() -> Self {
         Self {
             selected: Category::DEFAULT,
-            drilled_in: false,
-            // Assume wide until the first measured frame proves otherwise.
-            last_width: 1200.0,
+            structure_dirty: false,
+            force_sidebar_open: false,
+            width_hint: None,
             rect: vello::kurbo::Rect::ZERO,
-            composed: Vec::new(),
+            split: None,
         }
     }
 
@@ -89,14 +92,19 @@ impl SettingsApp {
         s
     }
 
-    /// Seed the responsive layout with a known width before the first
-    /// frame — the offscreen `--shots` renderer calls this so the cold
-    /// screenshot is already in the right layout.
+    /// Seed the responsive layout with a known width before the first frame —
+    /// the offscreen `--shots` renderer calls this so the cold screenshot
+    /// resolves the correct docked/overlay layout immediately.
     pub fn with_width_hint(mut self, width: f32) -> Self {
-        self.last_width = width;
-        // In narrow mode the cold screenshot is most useful drilled into
-        // the selected panel (that's the interesting single-pane state).
-        self.drilled_in = width < NARROW_BREAKPOINT_PX;
+        self.width_hint = Some(width);
+        self
+    }
+
+    /// Force the overlay sidebar open for a `--shots` still. Without the live
+    /// event loop nothing toggles the flap, so the narrow screenshot would
+    /// otherwise show a closed sidebar. Has no visible effect when docked.
+    pub fn with_sidebar_open_shot(mut self) -> Self {
+        self.force_sidebar_open = true;
         self
     }
 
@@ -104,43 +112,41 @@ impl SettingsApp {
         self.selected
     }
 
+    /// Switch the active category. Flags `structure_dirty` so the host's next
+    /// frame re-runs `build_layout` and rebuilds the content pane.
     pub fn select(&mut self, category: Category) {
-        self.selected = category;
-        self.drilled_in = true;
-    }
-
-    /// Whether the current frame uses the narrow single-pane layout.
-    pub fn is_narrow(&self) -> bool {
-        self.last_width < NARROW_BREAKPOINT_PX
-    }
-
-    pub fn drilled_in(&self) -> bool {
-        self.drilled_in
-    }
-
-    /// The header shown above every content pane: the category icon +
-    /// label + one-line subtitle. In narrow mode it leads with a back
-    /// affordance that pops to the category list.
-    fn build_pane_header(&self, with_back: bool) -> Box<dyn Widget> {
-        // The header reuses the proven card structure: a background
-        // `Container` whose inner column carries the (optional) back row,
-        // the title, and the subtitle. Putting the lines inside a
-        // background `Container` is what makes them draw reliably — bare
-        // text at the head of a plain column can be skipped by the cached
-        // draw path.
-        let mut inner = Column::new().with_no_padding();
-
-        if with_back {
-            inner = inner.push(Box::new(
-                Row::new().push(Box::new(Button::new(
-                    "settings.nav.back",
-                    "\u{f0141}  Back",
-                    Some(BACK_KEY),
-                ))),
-            ));
+        if self.selected != category {
+            self.selected = category;
+            self.structure_dirty = true;
         }
+    }
 
-        inner = inner
+    /// Whether the current frame resolves to the narrow (overlay) layout.
+    /// Reads the live `NavSplit` once it exists, else the seeded width hint.
+    pub fn is_narrow(&self) -> bool {
+        match &self.split {
+            Some(s) => s.layout_mode() == SplitLayout::Overlay,
+            None => self
+                .width_hint
+                .map(|w| (w as f64) < NAV_BREAKPOINT)
+                .unwrap_or(false),
+        }
+    }
+
+    /// Whether the overlay sidebar is currently open (or docked, which always
+    /// reads as "open"). Used by `--shots` assertions.
+    pub fn sidebar_open(&self) -> bool {
+        self.split.as_ref().is_some_and(|s| s.is_sidebar_open())
+    }
+
+    /// The header shown above the content pane: the category title + a
+    /// one-line subtitle, on a card surface.
+    fn build_pane_header(&self) -> Box<dyn Widget> {
+        // Keeping the lines inside a background `Container` is what makes them
+        // draw reliably — bare text at the head of a plain column can be
+        // skipped by the cached draw path.
+        let inner = Column::new()
+            .with_no_padding()
             .push(Box::new(
                 Row::new().push(Box::new(
                     Text::new(self.selected.label()).with_size(22.0),
@@ -167,8 +173,8 @@ impl SettingsApp {
     /// not. The panels fit the window at the sizes they ship; making them
     /// scroll is a follow-up that belongs in `ui` (a measured
     /// `Scrollable` viewport), noted in the growth ledger.
-    fn build_content(&self, with_back: bool) -> Box<dyn Widget> {
-        let header = self.build_pane_header(with_back);
+    fn build_content(&self) -> Box<dyn Widget> {
+        let header = self.build_pane_header();
         let body = self.build_pane_body();
         let inner = Column::new()
             .with_intrinsic_height()
@@ -196,50 +202,30 @@ impl SettingsApp {
         }
     }
 
-    /// The categorized sidebar: app title, then one labelled section per
-    /// [`Section`], each listing its categories as buttons. Scrollable so
-    /// the full list reaches on short windows.
-    fn build_sidebar(&self) -> Box<dyn Widget> {
-        let mut col = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new("Settings").with_size(20.0)));
-
-        for section in Section::ALL {
-            col = col.push(Box::new(
-                Text::new(&section.label().to_uppercase())
-                    .with_size(10.0)
-                    .with_color(ui::Theme::dark().text_dim),
-            ));
-            for category in Category::in_section(*section) {
-                let id = format!("settings.sidebar.{}", category.slug());
-                let key = format!("settings.select.{}", category.slug());
-                let marker = if category == self.selected && !self.is_narrow() {
-                    "\u{2022} " // bullet marks the active row in wide mode
-                } else {
-                    "  "
-                };
-                let label = format!("{}{}  {}", marker, category.glyph(), category.label());
-                col = col.push(Box::new(Button::new(&id, &label, Some(&key))));
-            }
+    /// Build the responsive split: the cohesive category sidebar on the left
+    /// (see [`crate::sidebar::build`]) and the selected category's content
+    /// pane on the right, wrapped in a [`NavSplit`] that docks the sidebar
+    /// when wide and turns it into an overlay flap when narrow.
+    ///
+    /// The split is rebuilt fresh here (rather than mutated in place) because
+    /// the content child depends on `self.selected`; rebuilding is how a
+    /// category switch reaches the screen. The live `ui::App` loop never
+    /// drives `NavSplit::update` for this app, so the flap is snapped — not
+    /// eased — to its resolved open state right after construction (the same
+    /// approach `tube` uses for its rebuilt nav rail).
+    fn build_split(&self) -> NavSplit {
+        let sidebar = sidebar::build(self.selected);
+        let content = self.build_content();
+        let mut split = NavSplit::new(sidebar, content)
+            .with_mode(SplitMode::Adaptive)
+            .with_breakpoint(NAV_BREAKPOINT)
+            .with_sidebar_width(sidebar::SIDEBAR_WIDTH);
+        // Open the overlay flap for shots; docked layouts open by default so
+        // this is a no-op there.
+        if self.force_sidebar_open {
+            split.snap_open(true);
         }
-
-        let scroll = Scrollable::new_vertical().with_child(Box::new(col));
-        Box::new(Container::new().filling().with_child(Box::new(scroll)))
-    }
-
-    /// Build this frame's child widgets, picking wide vs. narrow based on
-    /// the last measured width. Wide returns `[sidebar, content]`; narrow
-    /// returns a single pane (the category list, or the drilled-in panel).
-    fn build_children(&self) -> Vec<Box<dyn Widget>> {
-        if self.is_narrow() {
-            if self.drilled_in {
-                vec![self.build_content(true)]
-            } else {
-                vec![self.build_sidebar()]
-            }
-        } else {
-            vec![self.build_sidebar(), self.build_content(false)]
-        }
+        split
     }
 }
 
@@ -247,19 +233,12 @@ impl Widget for SettingsApp {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::{transaction::Transactable, ReadDoc, Value};
 
-        // Narrow-mode "back" press pops the drill-in.
-        let back_pressed = matches!(
-            state.get(path, BACK_KEY),
-            Ok(Some((Value::Scalar(s), _)))
-                if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-        );
-        if back_pressed {
-            let _ = state.put(path, BACK_KEY, automerge::ScalarValue::Boolean(false));
-            self.drilled_in = false;
-        }
-
-        // Category selection: each sidebar button writes
-        // `settings.select.<slug>` = true. The first one seen wins.
+        // Category selection: each sidebar row writes `settings.select.<slug>`
+        // = true on click. Reading it true here switches the active category
+        // and (via `select`) flags `structure_dirty` so the host rebuilds the
+        // layout — that rebuild is what moves the content pane to the new
+        // category. The first key seen wins; we clear it so the selection is
+        // a one-shot edge, not a sticky state.
         for category in Category::ALL {
             let key = format!("settings.select.{}", category.slug());
             let pressed = matches!(
@@ -273,8 +252,8 @@ impl Widget for SettingsApp {
             }
         }
 
-        for c in &mut self.composed {
-            c.sync(state, path);
+        if let Some(split) = &mut self.split {
+            split.sync(state, path);
         }
     }
 
@@ -284,47 +263,22 @@ impl Widget for SettingsApp {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let mut children = self.build_children();
-        let two_pane = children.len() == 2;
-
-        let mut child_nodes: Vec<taffy::NodeId> = Vec::with_capacity(children.len());
-        for c in &mut children {
-            child_nodes.push(c.build_layout(taffy, theme, node_map));
-        }
-        self.composed = children;
-
-        if two_pane {
-            // Pin explicit widths so the sidebar holds a fixed fraction and
-            // the content fills the rest. This is the `ResizableSplit`
-            // technique — overwrite child size + lock flex — applied inline
-            // because our two children are dynamic `Box<dyn Widget>`s.
-            let widths = [SIDEBAR_FRACTION, 1.0 - SIDEBAR_FRACTION];
-            for (node, frac) in child_nodes.iter().zip(widths) {
-                if let Ok(mut style) = taffy.style(*node).cloned() {
-                    style.size = taffy::Size {
-                        width: taffy::Dimension::percent(frac),
-                        height: taffy::Dimension::percent(1.0),
-                    };
-                    style.flex_grow = 0.0;
-                    style.flex_shrink = 0.0;
-                    let _ = taffy.set_style(*node, style);
-                }
-            }
-        }
+        // Rebuild the split for the current selection. The host re-runs this
+        // pass whenever `take_structure_dirty` reports true (i.e. after a
+        // category change), so the freshly-built content pane is what reaches
+        // the screen.
+        let mut split = self.build_split();
+        let split_node = split.build_layout(taffy, theme, node_map);
+        self.split = Some(split);
 
         let style = taffy::Style {
-            display: taffy::Display::Flex,
-            // Wide: row (sidebar | content), no wrap. Narrow: single child,
-            // direction is immaterial.
-            flex_direction: taffy::FlexDirection::Row,
-            flex_wrap: taffy::FlexWrap::NoWrap,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &child_nodes).unwrap();
+        let node = taffy.new_with_children(style, &[split_node]).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -342,11 +296,9 @@ impl Widget for SettingsApp {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Record width for the next frame's responsive decision.
-        self.last_width = self.rect.width() as f32;
-        if let Ok(children) = taffy.children(node) {
-            for (c, child_node) in self.composed.iter_mut().zip(children) {
-                c.apply_layout(
+        if let (Some(split), Ok(children)) = (&mut self.split, taffy.children(node)) {
+            if let Some(&child_node) = children.first() {
+                split.apply_layout(
                     taffy,
                     child_node,
                     vello::kurbo::Point::new(self.rect.x0, self.rect.y0),
@@ -363,8 +315,22 @@ impl Widget for SettingsApp {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        for c in &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
+        if let Some(split) = &mut self.split {
+            split.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+        permissions: &ui::permissions::PermissionContext,
+    ) {
+        if let Some(split) = &mut self.split {
+            split.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
     }
 
@@ -380,9 +346,9 @@ impl Widget for SettingsApp {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
-        if let Ok(children) = taffy.children(node_id) {
-            for (c, child_node) in self.composed.iter_mut().zip(children) {
-                c.handle_event(
+        if let (Some(split), Ok(children)) = (&mut self.split, taffy.children(node_id)) {
+            if let Some(&child_node) = children.first() {
+                split.handle_event(
                     event,
                     scale_factor,
                     modifiers,
@@ -398,13 +364,18 @@ impl Widget for SettingsApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.iter().map(|c| c.as_ref() as &dyn Widget).collect()
+        self.split
+            .as_ref()
+            .map(|s| s as &dyn Widget)
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .iter_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+        self.split
+            .as_mut()
+            .map(|s| s as &mut (dyn Widget + '_))
+            .into_iter()
             .collect()
     }
 
@@ -414,6 +385,28 @@ impl Widget for SettingsApp {
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
+    }
+
+    /// Drains the selection-rebuild flag. Returning true tells the host's
+    /// frame loop to rebuild the taffy tree (re-running `build_layout`), which
+    /// is how a category switch reaches the content pane. Also bubbles any
+    /// child's own structure-dirty signal.
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self
+            .split
+            .as_mut()
+            .map(|s| s.take_structure_dirty())
+            .unwrap_or(false);
+        own || child
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.split.as_ref().is_some_and(|s| s.needs_animation_frame())
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.split.as_ref().is_some_and(|s| s.needs_idle_sync())
     }
 }
 
@@ -458,12 +451,21 @@ mod tests {
                 &[node],
             )
             .unwrap();
+        let measure_map = node_map.clone();
+        let mut tr = ui::text_render::TextRenderer::new();
         taffy
-            .compute_layout(
+            .compute_layout_with_measure(
                 root,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(w),
                     height: taffy::AvailableSpace::Definite(h),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
                 },
             )
             .unwrap();
@@ -484,30 +486,42 @@ mod tests {
     }
 
     #[test]
-    fn select_changes_category_and_drills_in() {
+    fn select_changes_category_and_flags_structure_dirty() {
         let mut app = SettingsApp::new();
         app.select(Category::Users);
         assert_eq!(app.selected(), Category::Users);
-        assert!(app.drilled_in());
+        assert!(
+            app.take_structure_dirty(),
+            "a real category change must flag a rebuild so the pane updates"
+        );
+        // Re-selecting the same category is a no-op (no spurious rebuild).
+        app.select(Category::Users);
+        assert!(!app.take_structure_dirty());
     }
 
     #[test]
-    fn width_hint_sets_narrow_and_drilled_in() {
-        let app = SettingsApp::new().with_width_hint(420.0);
-        assert!(app.is_narrow());
-        assert!(app.drilled_in());
-        let wide = SettingsApp::new().with_width_hint(1200.0);
-        assert!(!wide.is_narrow());
-    }
-
-    #[test]
-    fn layout_records_width_for_responsive_decision() {
+    fn wide_layout_docks_the_sidebar() {
         let mut app = SettingsApp::new();
-        layout_at(&mut app, 480.0, 700.0);
-        assert!(app.is_narrow(), "480px should be narrow");
-        let mut app2 = SettingsApp::new();
-        layout_at(&mut app2, 1200.0, 700.0);
-        assert!(!app2.is_narrow(), "1200px should be wide");
+        layout_at(&mut app, 1200.0, 760.0);
+        assert!(!app.is_narrow(), "1200px should dock the sidebar");
+        assert!(app.sidebar_open(), "docked sidebar is open by default");
+    }
+
+    #[test]
+    fn narrow_layout_uses_the_overlay() {
+        let mut app = SettingsApp::new();
+        layout_at(&mut app, 440.0, 820.0);
+        assert!(app.is_narrow(), "440px should resolve to the overlay layout");
+    }
+
+    #[test]
+    fn shot_flag_opens_overlay_when_narrow() {
+        let mut app = SettingsApp::with_selected(Category::RegionFormats)
+            .with_width_hint(440.0)
+            .with_sidebar_open_shot();
+        layout_at(&mut app, 440.0, 820.0);
+        assert!(app.is_narrow());
+        assert!(app.sidebar_open(), "the shot flag forces the overlay flap open");
     }
 
     #[test]
@@ -517,8 +531,9 @@ mod tests {
         assert!(wide.get_rect().width() > 0.0);
 
         let mut narrow = SettingsApp::with_selected(Category::RegionFormats)
-            .with_width_hint(420.0);
-        layout_at(&mut narrow, 420.0, 800.0);
+            .with_width_hint(440.0)
+            .with_sidebar_open_shot();
+        layout_at(&mut narrow, 440.0, 820.0);
         assert!(narrow.get_rect().width() > 0.0);
     }
 }
