@@ -32,7 +32,7 @@ use std::time::Duration;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -78,6 +78,10 @@ pub struct ToastStack {
     max: usize,
     default_ttl: Duration,
     rect: Rect,
+    /// Whether the pointer is currently over the stack — [`tick`] pauses
+    /// expiry while hovered so the user can read/click a toast.
+    hovered: bool,
+    last_cursor: Point,
 }
 
 impl std::fmt::Debug for ToastStack {
@@ -103,6 +107,8 @@ impl ToastStack {
             max: DEFAULT_MAX,
             default_ttl: DEFAULT_TTL,
             rect: Rect::ZERO,
+            hovered: false,
+            last_cursor: Point::ZERO,
         }
     }
 
@@ -134,12 +140,47 @@ impl ToastStack {
     }
 
     /// Advance time. Each toast's `ttl_remaining` is saturatingly
-    /// decremented by `dt`; entries that reach zero are removed.
+    /// decremented by `dt`; entries that reach zero are removed. Expiry is
+    /// **paused while the pointer hovers the stack** so a toast can be read
+    /// or clicked without vanishing.
     pub fn tick(&mut self, dt: Duration) {
+        if self.hovered {
+            return;
+        }
         for t in &mut self.toasts {
             t.ttl_remaining = t.ttl_remaining.saturating_sub(dt);
         }
         self.toasts.retain(|t| t.ttl_remaining > Duration::ZERO);
+    }
+
+    /// Whether the pointer is currently over the stack.
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
+    /// The card index under a logical point, if any (top-to-bottom layout).
+    fn card_at(&self, p: Point) -> Option<usize> {
+        if p.x < self.rect.x0 || p.x > self.rect.x0 + TOAST_WIDTH {
+            return None;
+        }
+        let rel = p.y - self.rect.y0;
+        if rel < 0.0 {
+            return None;
+        }
+        let stride = TOAST_HEIGHT + TOAST_GAP;
+        let idx = (rel / stride) as usize;
+        // Reject the inter-card gap.
+        if rel - idx as f64 * stride > TOAST_HEIGHT {
+            return None;
+        }
+        if idx < self.toasts.len() { Some(idx) } else { None }
+    }
+
+    /// Dismiss the toast at `idx` (no-op if out of range).
+    pub fn dismiss(&mut self, idx: usize) {
+        if idx < self.toasts.len() {
+            self.toasts.remove(idx);
+        }
     }
 
     /// Number of active (non-expired) toasts.
@@ -283,22 +324,103 @@ impl Widget for ToastStack {
 
     fn handle_event(
         &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
+        event: &WindowEvent,
+        scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
-        _handled: &mut bool,
+        handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Click-to-dismiss / hover-pause routing is wired by the first
-        // shell consumer. The primitive currently exposes `tick` for
-        // time-based expiry which keeps it deterministic for tests.
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Hover-pause: expiry halts while the pointer is over the stack.
+                let now_hover = !self.toasts.is_empty() && self.card_at(self.last_cursor).is_some();
+                if now_hover != self.hovered {
+                    self.hovered = now_hover;
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                if let Some(idx) = self.card_at(self.last_cursor) {
+                    self.dismiss(idx);
+                    self.hovered = false;
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
     }
 
     fn name(&self) -> &str { "ToastStack" }
 
     fn get_rect(&self) -> Rect { self.rect }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    fn lay_out(stack: &mut ToastStack) {
+        let mut tree = TaffyTree::<()>::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let theme = Theme::dark();
+        let node = stack.build_layout(&mut tree, &theme, &mut nm);
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(TOAST_WIDTH as f32),
+                height: taffy::AvailableSpace::Definite(1000.0),
+            },
+        )
+        .unwrap();
+        stack.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    fn device() -> DeviceId { unsafe { std::mem::zeroed() } }
+
+    fn feed(s: &mut ToastStack, ev: WindowEvent) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        s.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+    }
+
+    #[test]
+    fn click_dismisses_the_toast_under_the_cursor() {
+        let mut s = ToastStack::new();
+        s.push("first", ToastKind::Info);
+        s.push("second", ToastKind::Error);
+        lay_out(&mut s);
+        // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
+        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (160.0, 80.0).into() });
+        feed(&mut s, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.iter().next().unwrap().text, "first");
+    }
+
+    #[test]
+    fn hover_pauses_expiry() {
+        let mut s = ToastStack::new().with_default_ttl(Duration::from_millis(100));
+        s.push("stay", ToastKind::Info);
+        lay_out(&mut s);
+        // Hover over the only card.
+        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (160.0, 24.0).into() });
+        assert!(s.is_hovered());
+        // tick longer than the TTL — but hovered, so it must NOT expire.
+        s.tick(Duration::from_millis(500));
+        assert_eq!(s.len(), 1, "hovered toast does not expire");
+        // Move away → expiry resumes.
+        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (900.0, 900.0).into() });
+        assert!(!s.is_hovered());
+        s.tick(Duration::from_millis(500));
+        assert_eq!(s.len(), 0, "expires once un-hovered");
+    }
 }
