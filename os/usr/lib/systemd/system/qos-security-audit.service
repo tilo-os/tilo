@@ -1,0 +1,16 @@
+[Unit]
+Description=qOS security self-check (logs active hardening to the journal)
+Documentation=https://github.com/nirios/quickdesktop
+# After the bits it inspects are up (SELinux, mounts, fs.service).
+After=local-fs.target fs.service
+Wants=fs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-security-audit
+RemainAfterExit=yes
+# Reporting only — never let the audit affect boot.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
