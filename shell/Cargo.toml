@@ -136,6 +136,20 @@ postcard = { version = "1", features = ["alloc"] }
 # version as `qos-collab-types`'s direct dep so Cargo collapses to one
 # copy in the workspace lock.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+# The headline "everything composes" integration test
+# (`tests/everything_composes.rs`) exercises Phases 3 + 6 + 7 + 8 in a
+# single end-to-end flow — threshold-signed, MLS-encrypted op crossing
+# the broker, validated, decrypted, then compacted.
+qos-channel-crypto = { path = "../qos-channel-crypto" }
+qos-threshold-identity = { path = "../qos-threshold-identity" }
+# Deterministic RNG used by the FROST signing fixture in
+# `tests/everything_composes.rs`. Pinned to the same major as
+# `qos-threshold-identity`'s direct dep so the FROST primitives
+# Cargo-collapse to one copy across the workspace. (Shell's runtime
+# `rand = "0.10.1"` stays untouched — it's a separate compilation
+# unit for the production code path.)
+rand_08 = { package = "rand", version = "0.8" }
+rand_chacha = "0.3"
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
 # mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster = "0.4.0"
