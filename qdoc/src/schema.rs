@@ -118,6 +118,36 @@ pub const PROP_GENERATOR: &str = "generator"; // Str — meta:generator / app.xm
 pub const DOC_PROP_KEYS: [&str; 7] =
     [PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR];
 
+// Bookmarks (named anchors) + cross-references (internal links). A **bookmark** is a
+// named anchor over a body text range (or a point), modeled as an inline `bookmark`
+// mark whose value is the bookmark name, covering the range `[start, end)`. Like
+// `comment`, it spans real text rather than a placeholder character (a point bookmark
+// is widened to one character on import so the mark has somewhere to live; an
+// end-of-block point bookmark sits over the last character). The mark merges with
+// concurrent text edits and round-trips through the codecs (`text:bookmark-start`/
+// `text:bookmark-end` — or `text:bookmark` for a point — in `.odt`; `w:bookmarkStart
+// w:name`/`w:bookmarkEnd` in `.docx`). The mark is the source of truth; the snapshot
+// exposes a derived `bookmarks` registry (name → range) for convenience.
+//
+// A **cross-reference** is an *internal* link: a run pointing at a bookmark or a
+// heading. It reuses the external-hyperlink `link` mark, with the value taking the
+// fragment form `#<target>` (a leading `#` distinguishes an internal reference from an
+// external URL). The target is a bookmark name or a heading's derived id (see
+// `HEADING_REF_PREFIX`). Cross-refs round-trip through `text:a xlink:href="#name"` in
+// `.odt` and a `w:hyperlink w:anchor="name"` in `.docx`.
+pub const MARK_BOOKMARK: &str = "bookmark"; // Str — the bookmark name
+/// The inline `link` mark (external hyperlinks *and* internal cross-references). A
+/// value starting with `#` is an internal cross-reference; anything else is an
+/// external URL. Shared with the `.md`/`.html` codecs (which call it `link`).
+pub const MARK_LINK: &str = "link"; // Str — an href (external URL) or `#target` (internal ref)
+/// The leading character of an internal cross-reference `link` value (`#bookmarkName`).
+pub const CROSS_REF_PREFIX: char = '#';
+/// The prefix of a heading's auto/derived reference id (`_heading_<block_id>`), so a
+/// cross-reference can target a heading that carries no explicit bookmark. The block id
+/// is appended verbatim. Distinct from a user bookmark name (which never starts with
+/// this prefix in practice).
+pub const HEADING_REF_PREFIX: &str = "_heading_";
+
 // Inline field markers. A "field" is an inline placeholder whose rendered text is
 // computed at layout time (e.g. the current page number). It is modeled as a
 // single placeholder character in the block text covered by a `field` mark whose
