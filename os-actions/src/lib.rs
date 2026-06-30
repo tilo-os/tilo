@@ -38,13 +38,17 @@ pub mod bluetooth;
 pub mod display;
 pub mod network;
 pub mod power;
+pub mod time;
 mod process;
 
 pub use audio::{get_volume, set_mute, set_volume, toggle_mute};
 pub use bluetooth::{get_bluetooth, list_bt_devices, set_bluetooth, BtDeviceInfo};
 pub use display::{get_brightness, set_brightness};
-pub use network::{connect_wifi, get_wifi, list_wifi_networks, set_wifi, WifiNetworkInfo};
+pub use network::{
+    connect_wifi, get_wifi, get_wired, list_wifi_networks, set_wifi, WifiNetworkInfo, WiredInfo,
+};
 pub use power::{get_power_profile, set_power_profile, PowerProfile};
+pub use time::{get_ntp, now_clock, now_date, set_ntp};
 
 use std::time::Duration;
 
