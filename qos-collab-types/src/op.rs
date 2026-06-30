@@ -26,10 +26,49 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes};
-use crate::channel::ArtifactId;
+use crate::channel::{ArtifactId, ChannelId};
 use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpClass;
+
+/// Metadata describing how a `SignedOp.payload` was encrypted.
+///
+/// Added in Phase 7 (group encryption with MLS). The presence of
+/// this field, not a separate wire flag, is what tells a receiver
+/// the payload is ciphertext rather than cleartext:
+///
+/// - `encryption == None` → `payload` is a cleartext Automerge change
+///   blob, as in Phases 2-6. Legacy and unencrypted channels keep
+///   working in this mode.
+/// - `encryption == Some(_)` → `payload` is an MLS ciphertext from
+///   `qos_channel_crypto::ChannelGroup::encrypt`. The receiver looks
+///   up the `ChannelGroup` for `channel`, checks `epoch` is
+///   reachable, and calls `decrypt`. The cleartext is then handed
+///   to the existing pipeline as if it had arrived unencrypted.
+///
+/// The `SignedOp.signature` covers (cipher)bytes either way: tampering
+/// with the payload after signing breaks the signature regardless of
+/// the encryption mode. The `encryption` field is also covered by
+/// the signature so a malicious peer cannot strip the metadata and
+/// re-route the ciphertext to a different channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EncryptionMetadata {
+    /// MLS epoch counter the ciphertext was produced under. Mirrors
+    /// `openmls::group::MlsGroup::epoch().as_u64()` at the moment
+    /// `encrypt` was called. A receiver whose local `ChannelGroup`
+    /// is at an earlier epoch than `epoch` cannot decrypt and drops
+    /// the message until it catches up (or, with openmls's default
+    /// out-of-order tolerance, it accepts older-than-current
+    /// ciphertexts up to a window).
+    pub epoch: u64,
+    /// Channel id the ciphertext belongs to. Redundant with the
+    /// artifact→channel lookup the broker performs anyway, but
+    /// cheap (a 16-byte UUID) and lets the receiver pick the
+    /// `ChannelGroup` to ask for decryption without consulting any
+    /// other table.
+    pub channel: ChannelId,
+}
 
 /// One signed CRDT mutation.
 ///
@@ -72,6 +111,20 @@ pub struct SignedOp {
     /// author (validator check 7). Different authors maintain
     /// independent sequences.
     pub seq: u64,
+    /// Encryption mode. `None` is the Phase 2-6 legacy form
+    /// (`payload` is cleartext). `Some(meta)` is the Phase 7+ form
+    /// (`payload` is `qos-channel-crypto` ciphertext). The field is
+    /// part of the signed bytes so a peer cannot rewrite the
+    /// metadata to mis-route a ciphertext.
+    ///
+    /// Default-`None` is intentional: existing tests built before
+    /// Phase 7 keep their canonical-bytes stability because
+    /// `Option<T>` postcards as a single discriminant byte + the
+    /// optional payload. The serialised tail of an unencrypted op
+    /// now carries one extra `0x00` byte compared to pre-Phase-7
+    /// channels — accepted as a wire bump for this phase.
+    #[serde(default)]
+    pub encryption: Option<EncryptionMetadata>,
     /// Detached Ed25519 signature by `author` over the
     /// canonical-bytes view of every other field of this struct.
     /// See `SignedOp::signing_bytes`.
@@ -82,6 +135,11 @@ impl SignedOp {
     /// Build a fresh op envelope with a placeholder signature.
     /// Pass the result to [`crate::crypto::sign_op`] to stamp in
     /// the real signature in-place before sending.
+    ///
+    /// Defaults the `encryption` field to `None`. For an encrypted
+    /// op, mutate the field before signing — see
+    /// [`SignedOp::new_unsigned_with_encryption`] for a one-shot
+    /// helper.
     pub fn new_unsigned(
         payload: Vec<u8>,
         artifact: ArtifactId,
@@ -99,6 +157,38 @@ impl SignedOp {
             op_class,
             timestamp,
             seq,
+            encryption: None,
+            signature: Signature::from_bytes([0u8; 64]),
+        }
+    }
+
+    /// Construct an unsigned op carrying an MLS ciphertext payload.
+    ///
+    /// The caller has already encrypted the cleartext through a
+    /// `qos_channel_crypto::ChannelGroup::encrypt` call; the
+    /// ciphertext bytes go into `payload` and the matching `epoch`
+    /// + `channel` metadata into `encryption`. After construction,
+    /// stamp the signature with [`crate::crypto::sign_op`] as usual.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_unsigned_with_encryption(
+        payload: Vec<u8>,
+        artifact: ArtifactId,
+        author: Ed25519PublicKey,
+        attestation_id: AttestationId,
+        op_class: OpClass,
+        timestamp: SystemTime,
+        seq: u64,
+        encryption: EncryptionMetadata,
+    ) -> Self {
+        Self {
+            payload,
+            artifact,
+            author,
+            attestation_id,
+            op_class,
+            timestamp,
+            seq,
+            encryption: Some(encryption),
             signature: Signature::from_bytes([0u8; 64]),
         }
     }
@@ -119,6 +209,7 @@ impl SignedOp {
             op_class: &'a OpClass,
             timestamp: &'a SystemTime,
             seq: u64,
+            encryption: &'a Option<EncryptionMetadata>,
         }
         canonical_bytes(&View {
             payload: &self.payload,
@@ -128,6 +219,7 @@ impl SignedOp {
             op_class: &self.op_class,
             timestamp: &self.timestamp,
             seq: self.seq,
+            encryption: &self.encryption,
         })
     }
 }
@@ -153,6 +245,55 @@ mod tests {
         let bytes = canonical_bytes(&op).unwrap();
         let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
         assert_eq!(op, back);
+    }
+
+    #[test]
+    fn signed_op_with_encryption_round_trip() {
+        let (_, pk) = generate_keypair();
+        let mut op = SignedOp::new_unsigned_with_encryption(
+            b"ciphertext-bytes".to_vec(),
+            ArtifactId::new(),
+            pk,
+            AttestationId::new(),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            42,
+            EncryptionMetadata {
+                epoch: 3,
+                channel: crate::channel::ChannelId::new(),
+            },
+        );
+        op.signature = crate::crypto::Signature::from_bytes([1u8; 64]);
+        let bytes = canonical_bytes(&op).unwrap();
+        let back: SignedOp = from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(op, back);
+        assert!(back.encryption.is_some());
+        assert_eq!(back.encryption.unwrap().epoch, 3);
+    }
+
+    #[test]
+    fn encryption_metadata_changes_signing_bytes() {
+        // Two ops differing only in `encryption` must NOT have
+        // matching signing-bytes — otherwise a peer could strip the
+        // metadata to redirect a ciphertext, with the signature
+        // unchanged.
+        let (_, pk) = generate_keypair();
+        let cid = crate::channel::ChannelId::new();
+        let a = SignedOp::new_unsigned(
+            b"x".to_vec(),
+            ArtifactId::new(),
+            pk,
+            AttestationId::new(),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            0,
+        );
+        let mut b = a.clone();
+        b.encryption = Some(EncryptionMetadata {
+            epoch: 0,
+            channel: cid,
+        });
+        assert_ne!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
     }
 
     #[test]
