@@ -14,7 +14,7 @@ pub mod order;
 pub mod schema;
 pub mod snapshot;
 
-pub use codecs::{builtin_registry, is_supported_ext, supported_extensions, DocxCodec, MarkdownCodec, OdtCodec};
+pub use codecs::{builtin_registry, is_supported_ext, supported_extensions, DocxCodec, MarkdownCodec, OdtCodec, RtfCodec};
 pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
