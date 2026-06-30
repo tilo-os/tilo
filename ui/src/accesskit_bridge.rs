@@ -1,5 +1,4 @@
-//! AccessKit bridge — workstream **W4** of the a11y design
-//! (`docs/superpowers/specs/2026-06-30-accessibility-design.md`).
+//! AccessKit bridge.
 //!
 //! This module turns the toolkit's per-widget semantic model
 //! ([`crate::a11y::AccessNode`], exposed via
@@ -65,7 +64,7 @@ use crate::widget::Widget;
 pub const ROOT_ID: AkNodeId = AkNodeId(0);
 
 /// Map our compact [`a11y::Role`](Role) onto AccessKit's far richer role set.
-/// We keep the toolkit surface small and map liberally (per the W4 design):
+/// We keep the toolkit surface small and map liberally:
 /// e.g. our [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
 /// our [`Role::ToggleButton`] becomes a [`AkRole::Button`] carrying the
 /// `toggled` state. Heading depth rides along as the AccessKit heading level
@@ -211,7 +210,7 @@ fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
 /// the synthetic window root). Pushing a full tree each frame is correct;
 /// AccessKit's platform adapters suppress events for unchanged nodes, so the
 /// cost is processing, not spurious AT chatter. (A future optimization can diff
-/// against the previous frame — see the W4 design's "incremental diff" note.)
+/// against the previous frame.)
 pub fn build_tree_update(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,

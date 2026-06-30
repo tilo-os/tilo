@@ -746,7 +746,7 @@ impl Widget for ConflictPicker {
         "ConflictPicker"
     }
 
-    /// Accessibility (W3): the reconciliation UI for a single conflict family.
+    /// Accessibility: the reconciliation UI for a single conflict family.
     /// `Role::Group` named for the family; the description names the conflict
     /// kind so an AT can announce what choice is being asked for.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
