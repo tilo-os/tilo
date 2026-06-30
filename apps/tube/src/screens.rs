@@ -19,6 +19,10 @@ use crate::widgets::{
 const CARD_W: f32 = 300.0;
 const THUMB_H: f32 = 169.0;
 
+/// Width of the navigation rail (logical px). Shared with the responsive
+/// split so the docked rail and the overlay flap are exactly this wide.
+pub const NAV_RAIL_W: f64 = 86.0;
+
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
@@ -103,6 +107,26 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: IconKind, action: Action) -
             border: None,
         })
         .on_click(bus, action)
+}
+
+/// The hamburger in the top bar. Toggles the navigation rail — a no-op-looking
+/// affordance on a wide window (the rail is already docked) that becomes the
+/// way to summon the rail once it has collapsed into an overlay flap on a
+/// narrow one.
+fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
+    Flex::row()
+        .id("nav_toggle")
+        .fixed(40.0, 40.0)
+        .justify(Justify::Center)
+        .align(Align::Center)
+        .push(icon(IconKind::Menu, 20.0, theme.text_primary))
+        .surface(Surface { fill: None, radius: theme.tokens.radii.full as f64, border: None })
+        .hover_surface(Surface {
+            fill: Some(theme.tokens.colors.neutral.stops[8]),
+            radius: theme.tokens.radii.full as f64,
+            border: None,
+        })
+        .on_click(bus, Action::ToggleSidebar)
 }
 
 fn section_header(theme: &Theme, kind: IconKind, title: &str, subtitle: &str) -> Flex {
@@ -262,7 +286,7 @@ fn nav_item(theme: &Theme, bus: &ActionBus, kind: IconKind, label: &str, route: 
 pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
     let sec = model.route.nav_section();
     Flex::col()
-        .w(Len::Px(86.0))
+        .w(Len::Px(NAV_RAIL_W as f32))
         .fill_h()
         .pad_xy(8.0, 14.0)
         .gap(8.0)
@@ -343,6 +367,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             radius: 0.0,
             border: Some((1.0, theme.border_standard)),
         })
+        .push(menu_button(theme, bus))
         .push(
             Flex::row()
                 .gap(8.0)
