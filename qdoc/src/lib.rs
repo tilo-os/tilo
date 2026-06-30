@@ -19,7 +19,7 @@ pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
 pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region};
-pub use snapshot::{AttrVal, BlockView, CommentView, DocSnapshot, NoteView};
+pub use snapshot::{AttrVal, BlockView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView};
 
 #[cfg(test)]
 mod smoke {

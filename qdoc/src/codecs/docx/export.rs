@@ -672,24 +672,101 @@ fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String>
 
 /// Whether any run boundary (mark-set change, note-ref placeholder, or comment
 /// range boundary) occurs *at* `j`, so a text run must break before it.
-fn run_breaks_at(chars: &[char], marks: &[crate::document::MarkSpan], active: &[(String, MarkValue)], j: usize) -> bool {
+fn run_breaks_at(
+    chars: &[char],
+    marks: &[crate::document::MarkSpan],
+    active: &[(String, MarkValue)],
+    active_change: &Option<(crate::snapshot::ChangeKind, String)>,
+    j: usize,
+) -> bool {
     marks_at(j, marks) != active
+        || &change_at(marks, j) != active_change
         || is_note_ref_placeholder(chars, marks, j)
         || !comment_starts_at(marks, j).is_empty()
         || !comment_ends_at(marks, j).is_empty()
+}
+
+/// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
+type ChangeIndex<'a> = BTreeMap<String, &'a crate::snapshot::ChangeView>;
+
+fn change_index(snap: &DocSnapshot) -> ChangeIndex<'_> {
+    snap.changes.iter().map(|c| (c.id.clone(), c)).collect()
+}
+
+/// The tracked change (kind + id) anchoring char `i`, if any — the `ins`/`del` mark
+/// covering `[i, i+1)`. Insertion takes precedence if both somehow overlap (a single
+/// char is at most one kind of tracked change in practice).
+fn change_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<(crate::snapshot::ChangeKind, String)> {
+    let find = |name: &str| {
+        marks
+            .iter()
+            .find(|m| m.name == name && i >= m.start && i < m.end)
+            .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+    };
+    if let Some(id) = find(crate::schema::MARK_INS) {
+        return Some((crate::snapshot::ChangeKind::Ins, id));
+    }
+    find(crate::schema::MARK_DEL).map(|id| (crate::snapshot::ChangeKind::Del, id))
+}
+
+/// The `<w:ins …>`/`<w:del …>` open tag for a tracked change, carrying its docx id +
+/// author/date attributes. The element wraps the affected `<w:r>` runs.
+fn change_open_tag(change: &crate::snapshot::ChangeView, docx_id: i64) -> String {
+    let elem = match change.kind {
+        crate::snapshot::ChangeKind::Ins => "w:ins",
+        crate::snapshot::ChangeKind::Del => "w:del",
+    };
+    let date = if change.date.is_empty() { String::new() } else { format!(r#" w:date="{}""#, escape_attr(&change.date)) };
+    format!(r#"<{elem} w:id="{docx_id}" w:author="{}"{date}>"#, escape_attr(&change.author))
+}
+
+/// Emit run content for a *deleted* run, turning text into `<w:delText>` (OOXML requires
+/// deleted text use `w:delText`, not `w:t`); `\t`/`\n` still map to `<w:tab/>`/`<w:br/>`.
+fn del_run_content(chars: &[char]) -> String {
+    let mut out = String::new();
+    let mut buf = String::new();
+    let flush = |out: &mut String, buf: &mut String| {
+        if !buf.is_empty() {
+            out.push_str(r#"<w:delText xml:space="preserve">"#);
+            for c in buf.chars() {
+                push_escaped(out, c);
+            }
+            out.push_str("</w:delText>");
+            buf.clear();
+        }
+    };
+    for &c in chars {
+        match c {
+            '\t' => {
+                flush(&mut out, &mut buf);
+                out.push_str("<w:tab/>");
+            }
+            '\n' => {
+                flush(&mut out, &mut buf);
+                out.push_str("<w:br/>");
+            }
+            _ => buf.push(c),
+        }
+    }
+    flush(&mut out, &mut buf);
+    out
 }
 
 /// Render a block's text + marks as a sequence of `<w:r>` runs. A new run starts
 /// whenever the active mark set changes, so output is always well-formed. A
 /// placeholder carrying a `note-ref` mark is emitted as its reference element run. A
 /// `comment` mark emits a `w:commentRangeStart` at its start and a
-/// `w:commentRangeEnd` + `w:commentReference` run at its end.
+/// `w:commentRangeEnd` + `w:commentReference` run at its end. A run covered by a
+/// tracked `ins`/`del` mark is wrapped in a `<w:ins>`/`<w:del>` element (carrying the
+/// change's docx id + author/date); deleted runs use `<w:delText>` for their text.
 fn render_runs(
     text: &str,
     marks: &[crate::document::MarkSpan],
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, crate::model::NoteKind>,
     comment_ids: &BTreeMap<String, i64>,
+    changes: &ChangeIndex,
+    change_ids: &BTreeMap<String, i64>,
 ) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
@@ -726,17 +803,39 @@ fn render_runs(
             }
         }
         let active = marks_at(i, marks);
+        let active_change = change_at(marks, i);
         let mut j = i + 1;
-        while j < n && !run_breaks_at(&chars, marks, &active, j) {
+        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, j) {
             j += 1;
         }
+        // The tracked-change wrapper (if any) for this run group: a `<w:ins>`/`<w:del>`
+        // carrying the change's docx id + author/date. Deleted text uses `<w:delText>`.
+        let (wrap_open, wrap_close, is_del) = match &active_change {
+            Some((kind, id)) => match (changes.get(id), change_ids.get(id)) {
+                (Some(ch), Some(docx_id)) => {
+                    let close = match kind {
+                        crate::snapshot::ChangeKind::Ins => "</w:ins>",
+                        crate::snapshot::ChangeKind::Del => "</w:del>",
+                    };
+                    (change_open_tag(ch, *docx_id), close, *kind == crate::snapshot::ChangeKind::Del)
+                }
+                _ => (String::new(), "", false),
+            },
+            None => (String::new(), "", false),
+        };
         let rpr = run_props(&active);
+        out.push_str(&wrap_open);
         out.push_str("<w:r>");
         if !rpr.is_empty() {
             out.push_str(&format!("<w:rPr>{rpr}</w:rPr>"));
         }
-        out.push_str(&run_content(&chars[i..j]));
+        if is_del {
+            out.push_str(&del_run_content(&chars[i..j]));
+        } else {
+            out.push_str(&run_content(&chars[i..j]));
+        }
         out.push_str("</w:r>");
+        out.push_str(wrap_close);
         i = j;
     }
     // Comments ending exactly at the block's end emit their range-end + reference.
@@ -873,6 +972,12 @@ fn build_document_xml(
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut numbering = Numbering::default();
+    // Tracked changes: a `<w:ins>`/`<w:del>` wrapper carries an integer revision id.
+    // Assigned from 0 in canonical (sorted) order — independent of comment ids.
+    let changes = change_index(snap);
+    let change_ids: BTreeMap<String, i64> = snap.changes.iter().enumerate().map(|(i, c)| (c.id.clone(), i as i64)).collect();
+    let changes = &changes;
+    let change_ids = &change_ids;
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -885,7 +990,7 @@ fn build_document_xml(
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
                 ));
                 i += 1;
             }
@@ -894,7 +999,7 @@ fn build_document_xml(
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
                 ));
                 i += 1;
             }
@@ -925,7 +1030,7 @@ fn build_document_xml(
                         let inner = cells
                             .iter()
                             .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids))
+                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids, changes, change_ids))
                             .unwrap_or_default();
                         body.push_str(&format!(
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
@@ -948,7 +1053,7 @@ fn build_document_xml(
                 }
                 ppr_inner.push_str(&jc_xml(b));
                 let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
-                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids)));
+                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)));
                 i += 1;
             }
         }
@@ -1652,6 +1757,81 @@ mod tests {
             authors_texts(&d3.materialize()),
             "comments stable across a second round-trip"
         );
+    }
+
+    #[test]
+    fn tracked_changes_roundtrip_through_docx() {
+        use crate::document::MarkValue;
+        use crate::schema::{MARK_DEL, MARK_INS};
+        // A tracked insertion + a tracked deletion (with author) must export as
+        // <w:ins>/<w:del> run wrappers (deleted text via <w:delText>), and re-import
+        // with kind/author + anchored ranges intact.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "hello world");
+        let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00Z");
+        let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00Z"); // "world"
+        let _ = (ins, del);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<w:ins "), "ins wrapper emitted: {document}");
+        assert!(document.contains("<w:del "), "del wrapper emitted: {document}");
+        assert!(document.contains("<w:delText"), "deleted text uses delText: {document}");
+        assert!(document.contains(r#"w:author="Ada""#), "ins author emitted: {document}");
+        assert!(document.contains(r#"w:author="Bob""#), "del author emitted: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // The deleted text is retained (struck), the inserted text is present.
+        assert_eq!(snap.blocks[0].text, "hello there world", "ins kept, del retained: {:?}", snap.blocks[0].text);
+        let im = snap.blocks[0].marks.iter().find(|m| m.name == MARK_INS).expect("ins mark survives");
+        assert_eq!((im.start, im.end), (5, 11), "ins range survives: {:?}", snap.blocks[0].marks);
+        let dm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_DEL).expect("del mark survives");
+        assert_eq!((dm.start, dm.end), (12, 17), "del range survives: {:?}", snap.blocks[0].marks);
+        let ins_id = match &im.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("ins value"),
+        };
+        let del_id = match &dm.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("del value"),
+        };
+        assert_eq!(snap.changes.len(), 2, "both changes survive: {:?}", snap.changes);
+        let ic = snap.changes.iter().find(|c| c.id == ins_id).expect("ins change present");
+        assert_eq!(ic.kind, crate::snapshot::ChangeKind::Ins);
+        assert_eq!(ic.author, "Ada");
+        assert_eq!(ic.range, Some((snap.blocks[0].id.clone(), 5, 11)));
+        let dc = snap.changes.iter().find(|c| c.id == del_id).expect("del change present");
+        assert_eq!(dc.kind, crate::snapshot::ChangeKind::Del);
+        assert_eq!(dc.author, "Bob");
+        assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
+
+        // accept_change on the insertion clears the mark; on the deletion removes text.
+        d2.accept_change(&ins_id);
+        d2.accept_change(&del_id);
+        let after = d2.materialize();
+        assert_eq!(after.blocks[0].text, "hello there ", "accept-ins keeps text; accept-del removes 'world'");
+        assert!(after.changes.is_empty(), "both changes resolved");
+
+        // Idempotent across a second round-trip (ids volatile; compare kind+author+span).
+        let exported2 = DocxCodec.export(d.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        let summary = |snap: &DocSnapshot| {
+            let mut v: Vec<(crate::snapshot::ChangeKind, String, Option<(usize, usize)>)> = snap
+                .changes
+                .iter()
+                .map(|c| (c.kind, c.author.clone(), c.range.as_ref().map(|(_, s, e)| (*s, *e))))
+                .collect();
+            v.sort_by(|a, b| (a.2, &a.1).cmp(&(b.2, &b.1)));
+            v
+        };
+        let mut d_re = Document::new();
+        DocxCodec.import(&exported, &mut d_re.as_mut()).unwrap();
+        assert_eq!(summary(&d_re.materialize()), summary(&d3.materialize()), "changes stable across a second round-trip");
     }
 
     #[test]
