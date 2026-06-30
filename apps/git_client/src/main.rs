@@ -33,14 +33,30 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // `--stage-commit "<message>"` is a headless developer/CI helper: it
+    // opens the repo at `GIT_CLIENT_REPO` (or the CWD), stages every change
+    // and commits it through the EXACT production `git2` actions the UI uses,
+    // then prints the new commit id. Used to prove (and screenshot) a real
+    // commit made by this binary. It performs no rendering.
+    if let Some(msg) = parse_flag_value(&args, "--stage-commit") {
+        return stage_and_commit(&msg.to_string_lossy());
+    }
+
     let wide = parse_flag_value(&args, "--shots");
     let narrow = parse_flag_value(&args, "--shots-narrow");
     if wide.is_some() || narrow.is_some() {
-        // The headless capture should render a deterministic, fully
-        // populated state, not whatever repository happens to surround the
-        // working directory — force the bundled sample fixture.
-        unsafe {
-            std::env::set_var("GIT_CLIENT_SAMPLE", "1");
+        // The headless capture renders a deterministic, fully populated
+        // state. By default that is the bundled sample fixture (so a shot
+        // never depends on whatever repo surrounds the CWD). But when
+        // `GIT_CLIENT_REPO` is set explicitly, capture that REAL repository
+        // instead — used to screenshot the live `git2`-backed app (e.g. a
+        // commit just made in a prepared temp repo) for verification.
+        let real_repo = std::env::var_os("GIT_CLIENT_REPO").is_some();
+        if !real_repo {
+            unsafe {
+                std::env::set_var("GIT_CLIENT_SAMPLE", "1");
+            }
         }
         if let Some(out) = wide {
             render_shot_to_png(git_client::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
@@ -59,6 +75,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = ui::State::new();
     let app = ui::App::new(state, git_client::app_root());
     app.run();
+    Ok(())
+}
+
+/// Stage every change and commit it through the production `git2` actions,
+/// against the repo at `GIT_CLIENT_REPO` (or the current directory). Prints
+/// the new short commit id. This drives `git_client::repo::stage_all` +
+/// `git_client::repo::commit` — the same functions the UI's Stage-all and
+/// Commit buttons invoke.
+fn stage_and_commit(message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::var("GIT_CLIENT_REPO")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    git_client::repo::stage_all(&path)?;
+    let id = git_client::repo::commit(&path, message)?;
+    println!("git_client: committed {id} to {}", path.display());
     Ok(())
 }
 

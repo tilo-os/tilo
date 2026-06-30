@@ -25,10 +25,29 @@ pub enum RemoteAction {
     Push,
 }
 
+/// A branch / stash action a panel row can request. Distinct from
+/// [`RemoteAction`] so the app can route them to the matching `git2` calls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BranchAction {
+    /// Check out the named local branch (or remote-tracking ref).
+    Checkout(String),
+    /// Delete the named local branch.
+    Delete(String),
+    /// Apply the stash at the given index.
+    StashApply(usize),
+}
+
+/// Any clickable action emitted by the panels screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PanelHit {
+    Remote(RemoteAction),
+    Branch(BranchAction),
+}
+
 #[derive(Clone, Debug)]
 struct HitRegion {
     rect: Rect,
-    action: RemoteAction,
+    action: PanelHit,
 }
 
 pub struct PanelsView;
@@ -44,7 +63,7 @@ impl PanelsView {
         area: Rect,
         model: &RepoModel,
         hover_action: Option<RemoteAction>,
-    ) -> Vec<Box<dyn Fn(Point) -> Option<RemoteAction>>> {
+    ) -> Vec<Box<dyn Fn(Point) -> Option<PanelHit>>> {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
 
@@ -65,7 +84,7 @@ impl PanelsView {
         Self::branches_card(
             scene, tr, t, theme,
             Rect::new(col1_x, body.y0, col1_x + col_w, body.y0 + row_h),
-            model,
+            model, &mut regions,
         );
         Self::tags_card(
             scene, tr, t, theme,
@@ -75,7 +94,7 @@ impl PanelsView {
         Self::stashes_card(
             scene, tr, t, theme,
             Rect::new(col1_x, body.y0 + row_h + gap, col1_x + col_w, body.y1),
-            model,
+            model, &mut regions,
         );
         Self::remotes_card(
             scene, tr, t, theme,
@@ -86,8 +105,8 @@ impl PanelsView {
         regions
             .into_iter()
             .map(|r| {
-                Box::new(move |p: Point| if r.rect.contains(p) { Some(r.action) } else { None })
-                    as Box<dyn Fn(Point) -> Option<RemoteAction>>
+                Box::new(move |p: Point| if r.rect.contains(p) { Some(r.action.clone()) } else { None })
+                    as Box<dyn Fn(Point) -> Option<PanelHit>>
             })
             .collect()
     }
@@ -148,7 +167,7 @@ impl PanelsView {
                 scene, tr, t, label, 12.0, fg, bx + (bw - lw) / 2.0, by + 7.0, None,
                 TextWeight::Medium,
             );
-            regions.push(HitRegion { rect: brect, action: *action });
+            regions.push(HitRegion { rect: brect, action: PanelHit::Remote(*action) });
             bx -= bw + 8.0;
         }
     }
@@ -186,6 +205,7 @@ impl PanelsView {
         theme: &Theme,
         rect: Rect,
         model: &RepoModel,
+        regions: &mut Vec<HitRegion>,
     ) {
         let c = &theme.tokens.colors;
         let body = Self::card_frame(scene, tr, t, theme, rect, "Branches", model.branches.len());
@@ -195,6 +215,7 @@ impl PanelsView {
             if y > body.y1 - 18.0 {
                 break;
             }
+            let row = Rect::new(body.x0, y - 2.0, body.x1, y + 20.0);
             // Icon: filled dot for head, ring for others, cloud-ish for remote.
             let icon_color = if b.is_head {
                 theme.accent_primary
@@ -207,10 +228,22 @@ impl PanelsView {
 
             let name_color = if b.is_head { theme.accent_primary } else { c.text_primary };
             let weight = if b.is_head { TextWeight::Semibold } else { TextWeight::Regular };
-            draw::text_weighted(scene, tr, t, &b.name, 12.5, name_color, body.x0 + 30.0, y, Some((body.width() - 140.0) as f32), weight);
+            draw::text_weighted(scene, tr, t, &b.name, 12.5, name_color, body.x0 + 30.0, y, Some((body.width() - 170.0) as f32), weight);
 
-            // ahead/behind + tip on the right.
+            // Right edge: tip id, ahead/behind, and a delete affordance for
+            // non-head local branches.
             let mut rx = body.x1 - 16.0;
+            // Delete (✕) for local, non-head branches.
+            if !b.is_remote && !b.is_head {
+                let dw = 16.0;
+                let drect = Rect::new(rx - dw, y, rx, y + 16.0);
+                draw::text_weighted(scene, tr, t, "✕", 12.0, c.semantic.danger, drect.x0 + 2.0, y, None, TextWeight::Medium);
+                regions.push(HitRegion {
+                    rect: drect,
+                    action: PanelHit::Branch(BranchAction::Delete(b.name.clone())),
+                });
+                rx -= dw + 8.0;
+            }
             let tip = &b.tip;
             let tw = draw::mono_width(tr, tip, 11.0) as f64;
             rx -= tw;
@@ -220,6 +253,15 @@ impl PanelsView {
                 let abw = tr.measure(&ab, 10.5, None).0 as f64;
                 rx -= abw + 10.0;
                 draw::text(scene, tr, t, &ab, 10.5, c.text_dim, rx, y + 1.0, None);
+            }
+
+            // Clicking the row checks out the branch (head no-op). The delete
+            // region is pushed first so it wins the hit-test for its sub-rect.
+            if !b.is_head {
+                regions.push(HitRegion {
+                    rect: Rect::new(row.x0, row.y0, body.x1 - 28.0, row.y1),
+                    action: PanelHit::Branch(BranchAction::Checkout(b.name.clone())),
+                });
             }
             y += 26.0;
         }
@@ -265,6 +307,7 @@ impl PanelsView {
         theme: &Theme,
         rect: Rect,
         model: &RepoModel,
+        regions: &mut Vec<HitRegion>,
     ) {
         let c = &theme.tokens.colors;
         let body = Self::card_frame(scene, tr, t, theme, rect, "Stashes", model.stashes.len());
@@ -280,7 +323,17 @@ impl PanelsView {
             let idx = format!("stash@{{{}}}", s.index);
             draw::mono(scene, tr, t, &idx, 11.0, theme.accent_primary, body.x0 + 16.0, y + 1.0);
             let iw = draw::mono_width(tr, &idx, 11.0) as f64;
-            draw::text(scene, tr, t, &s.message, 12.0, c.text_primary, body.x0 + 24.0 + iw, y, Some((body.width() - iw - 50.0) as f32));
+            draw::text(scene, tr, t, &s.message, 12.0, c.text_primary, body.x0 + 24.0 + iw, y, Some((body.width() - iw - 90.0) as f32));
+
+            // "Apply" affordance on the right.
+            let label = "Apply";
+            let lw = tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0 as f64;
+            let lx = body.x1 - lw - 14.0;
+            draw::text_weighted(scene, tr, t, label, 11.0, theme.accent_primary, lx, y + 1.0, None, TextWeight::Medium);
+            regions.push(HitRegion {
+                rect: Rect::new(lx - 6.0, y - 2.0, body.x1, y + 18.0),
+                action: PanelHit::Branch(BranchAction::StashApply(s.index)),
+            });
             y += 26.0;
         }
         scene.pop_layer();
