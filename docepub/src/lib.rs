@@ -339,18 +339,7 @@ fn render_chapter_xhtml(
 /// A blank snapshot sharing the source's blobs + styles (so a sub-render of one
 /// block resolves styles/images identically).
 fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
-    DocSnapshot {
-        schema: snap.schema.clone(),
-        schema_version: snap.schema_version,
-        blocks: Vec::new(),
-        blobs: snap.blobs.clone(),
-        styles: snap.styles.clone(),
-        properties: std::collections::BTreeMap::new(),
-        header: Vec::new(),
-        footer: Vec::new(),
-        notes: Vec::new(),
-        comments: Vec::new(),
-    }
+    DocSnapshot { schema: snap.schema.clone(), schema_version: snap.schema_version, blobs: snap.blobs.clone(), styles: snap.styles.clone(), ..Default::default() }
 }
 
 /// Replace the inline `data:` URI emitted by `dochtml` for an image block with

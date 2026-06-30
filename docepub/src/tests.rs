@@ -16,18 +16,7 @@ use zip::ZipArchive;
 // ---- builders ---------------------------------------------------------------
 
 fn empty_snapshot() -> DocSnapshot {
-    DocSnapshot {
-        schema: "qos.richtext".into(),
-        schema_version: 1,
-        blocks: Vec::new(),
-        blobs: BTreeMap::new(),
-        styles: BTreeMap::new(),
-        properties: BTreeMap::new(),
-        header: Vec::new(),
-        footer: Vec::new(),
-        notes: Vec::new(),
-        comments: Vec::new(),
-    }
+    DocSnapshot { schema: "qos.richtext".into(), schema_version: 1, ..Default::default() }
 }
 
 fn block(kind: &str, text: &str) -> BlockView {
