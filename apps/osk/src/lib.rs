@@ -42,6 +42,18 @@
 //!
 //! See [`widget`] for where text injection and swipe plug in.
 
+/// The Wayland app-id the on-screen keyboard identifies itself with. The
+/// compositor matches a client's app-id against this to recognise the keyboard
+/// and treat its surface as the floating, compositor-managed keyboard overlay
+/// rather than an ordinary tiled window. Must stay in step with the
+/// compositor's matching constant.
+///
+/// Setting this on the actual Wayland surface still needs a way to pass an
+/// app-id through `ui::App` (winit's `WindowAttributesExtWayland::with_name`),
+/// which the toolkit does not expose yet; see the crate-level notes in
+/// `main.rs` for what that takes.
+pub const KEYBOARD_APP_ID: &str = "org.qos.Keyboard";
+
 pub mod dict;
 pub mod futo;
 pub mod imclient;
