@@ -15,6 +15,11 @@
 //! - [`sample`] — bundled, fully-populated offline data.
 //! - [`icon`] / [`chart`] — custom Vello vector drawing (weather glyphs,
 //!   the temperature curve).
+//! - [`sidebar`] — the adaptive flap (docked vs. overlay) state machine,
+//!   resolved from the widget's allocated width.
+//! - [`interaction`] — direct-manipulation state for the saved-place list:
+//!   drag-to-reorder, swipe-to-delete, and the right-click context menu,
+//!   with swipe⇔menu action parity.
 //! - [`app`] — the root [`WeatherApp`] widget that composes it all.
 //!
 //! ## `--shots` vs. live
@@ -30,9 +35,11 @@ pub mod app;
 pub mod chart;
 pub mod doc;
 pub mod icon;
+pub mod interaction;
 pub mod model;
 pub mod net;
 pub mod sample;
+pub mod sidebar;
 pub mod units;
 pub mod wxcode;
 
@@ -44,4 +51,14 @@ use ui::widget::Widget;
 /// used by both the live event loop and the `--shots` offscreen renderer.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(WeatherApp::new())
+}
+
+/// Like [`app_root`] but seeded with a named interaction scenario for a
+/// headless screenshot (e.g. an in-progress drag, an open overlay flap).
+/// See [`WeatherApp::seed_shot_scenario`]. An empty/unknown name yields the
+/// same default frame as [`app_root`].
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = WeatherApp::new();
+    app.seed_shot_scenario(scenario);
+    Box::new(app)
 }
