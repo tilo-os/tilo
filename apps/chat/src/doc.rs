@@ -6,21 +6,35 @@
 //!
 //! ```text
 //! root
-//! ├── "seeded"     (bool)                        # one-time seed guard
-//! ├── "workspaces" (Map<wsId,  {name,glyph,color_idx,order}>)
-//! ├── "users"      (Map<userId,{name,initials,color_idx,status}>)
-//! ├── "channels"   (Map<chId,  {workspace,name,topic,kind,order,unread}>)
-//! ├── "messages"   (Map<chId,  List<Message>>)
+//! ├── "seeded"       (bool)                      # one-time seed guard
+//! ├── "workspaces"   (Map<wsId,  {name,glyph,color_idx,order}>)
+//! ├── "categories"   (Map<catId, {workspace,name,order,collapsed}>)
+//! ├── "users"        (Map<userId,{name,initials,color_idx,status}>)
+//! ├── "channels"     (Map<chId,  {workspace,category,name,topic,kind,order,unread}>)
+//! ├── "messages"     (Map<chId,  List<Message>>)
 //! │      Message = { id, author, ts, text(Text), edited(bool),
-//! │                  parent(Str ""), reactions(Map<emoji,List<userId>>),
+//! │                  parent(Str ""), reactions(List<{emoji,user}>),
 //! │                  history(List<{ts,text}>), attachment(Map?) }
-//! └── "drafts"     (Map<chId, Text>)             # per-channel composer body
+//! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
+//! └── "drafts"       (Map<chId, Text>)           # per-channel composer body
 //! ```
 //!
-//! "Which channel I'm viewing", call state, and the composer caret are
-//! deliberately NOT in this document — they're per-peer UI state owned by
-//! [`crate::app::ChatApp`], exactly so two peers can read different
-//! channels while sharing one workspace.
+//! Structure (workspaces / categories / channels) is full CRUD: created,
+//! renamed, deleted, reordered, and moved between categories — all as plain
+//! map/scalar writes so two peers' edits converge.
+//!
+//! Persistence: the whole document is saved to disk (see
+//! [`crate::storage`]) so messages, structure, reactions, edits, and
+//! voice membership survive across runs. The save bytes are the raw
+//! Automerge document — no lossy projection — so reloading is a faithful
+//! restore and a future peer can merge against it.
+//!
+//! "Which channel I'm viewing", the open call overlay's position, and the
+//! composer caret are deliberately NOT in this document — they're per-peer
+//! UI state owned by [`crate::app::ChatApp`], exactly so two peers can read
+//! different channels while sharing one workspace. Voice *membership* IS in
+//! the document (it's shared truth: everyone sees who is in a call), while a
+//! given peer's overlay layout is local.
 
 use std::collections::HashMap;
 
@@ -29,7 +43,8 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
 
 use crate::model::{
-    Attachment, Channel, ChannelKind, EditRecord, Message, Presence, Reaction, User, Workspace,
+    Attachment, Category, Channel, ChannelKind, EditRecord, Message, Presence, Reaction, User,
+    VoiceMember, Workspace,
 };
 
 /// Deterministic "now" for the seeded fixture so the offline screenshot is
@@ -161,24 +176,49 @@ impl ChatDoc {
             Self::put_workspace(doc, id, name, glyph, color, order);
         }
 
+        // --- categories --------------------------------------------------
+        // Channels live under a named category; "" is the implicit
+        // uncategorised group rendered first.
+        for (id, ws, name, order) in [
+            ("cat_acme_main", "ws_acme", "Channels", 0u32),
+            ("cat_acme_voice", "ws_acme", "Voice", 1),
+            ("cat_qos_eng", "ws_qos", "Engineering", 0),
+            ("cat_qos_voice", "ws_qos", "Voice", 1),
+            ("cat_jam_main", "ws_jam", "Hangout", 0),
+        ] {
+            Self::put_category(doc, id, ws, name, order, false);
+        }
+
         // --- channels ----------------------------------------------------
-        let chans: &[(&str, &str, &str, &str, ChannelKind, u32, u32)] = &[
-            ("c_general", "ws_acme", "general", "Company-wide announcements", ChannelKind::Text, 0, 0),
-            ("c_crit", "ws_acme", "design-crit", "Share work, get sharp feedback", ChannelKind::Text, 1, 0),
-            ("c_frontend", "ws_acme", "frontend", "ui toolkit + app shells", ChannelKind::Text, 2, 3),
-            ("c_random", "ws_acme", "random", "Off-topic & watercooler", ChannelKind::Text, 3, 0),
-            ("c_standup", "ws_acme", "Daily Standup", "", ChannelKind::Voice, 4, 0),
-            ("c_huddle", "ws_acme", "Design Huddle", "", ChannelKind::Voice, 5, 0),
-            ("c_kernel", "ws_qos", "kernel", "bootc + immutable base", ChannelKind::Text, 0, 0),
-            ("c_compositor", "ws_qos", "compositor", "2D clusters & sandboxing", ChannelKind::Text, 1, 7),
-            ("c_fssync", "ws_qos", "fs-sync", "iroh projection & hydration", ChannelKind::Text, 2, 0),
-            ("c_releases", "ws_qos", "releases", "ship logs", ChannelKind::Text, 3, 0),
-            ("c_warroom", "ws_qos", "War Room", "", ChannelKind::Voice, 4, 0),
-            ("c_ideas", "ws_jam", "ideas", "weekend hacks", ChannelKind::Text, 0, 0),
-            ("c_music", "ws_jam", "music", "now playing", ChannelKind::Text, 1, 2),
+        let chans: &[(&str, &str, &str, &str, &str, ChannelKind, u32, u32)] = &[
+            ("c_general", "ws_acme", "cat_acme_main", "general", "Company-wide announcements", ChannelKind::Text, 0, 0),
+            ("c_crit", "ws_acme", "cat_acme_main", "design-crit", "Share work, get sharp feedback", ChannelKind::Text, 1, 0),
+            ("c_frontend", "ws_acme", "cat_acme_main", "frontend", "ui toolkit + app shells", ChannelKind::Text, 2, 3),
+            ("c_random", "ws_acme", "cat_acme_main", "random", "Off-topic & watercooler", ChannelKind::Text, 3, 0),
+            ("c_standup", "ws_acme", "cat_acme_voice", "Daily Standup", "", ChannelKind::Voice, 0, 0),
+            ("c_huddle", "ws_acme", "cat_acme_voice", "Design Huddle", "", ChannelKind::Voice, 1, 0),
+            ("c_kernel", "ws_qos", "cat_qos_eng", "kernel", "bootc + immutable base", ChannelKind::Text, 0, 0),
+            ("c_compositor", "ws_qos", "cat_qos_eng", "compositor", "2D clusters & sandboxing", ChannelKind::Text, 1, 7),
+            ("c_fssync", "ws_qos", "cat_qos_eng", "fs-sync", "iroh projection & hydration", ChannelKind::Text, 2, 0),
+            ("c_releases", "ws_qos", "cat_qos_eng", "releases", "ship logs", ChannelKind::Text, 3, 0),
+            ("c_warroom", "ws_qos", "cat_qos_voice", "War Room", "", ChannelKind::Voice, 0, 0),
+            ("c_ideas", "ws_jam", "cat_jam_main", "ideas", "weekend hacks", ChannelKind::Text, 0, 0),
+            ("c_music", "ws_jam", "cat_jam_main", "music", "now playing", ChannelKind::Text, 1, 2),
         ];
-        for (id, ws, name, topic, kind, order, unread) in chans {
-            Self::put_channel(doc, id, ws, name, topic, *kind, *order, *unread);
+        for (id, ws, cat, name, topic, kind, order, unread) in chans {
+            Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order, *unread);
+        }
+
+        // --- voice membership: a lively Design Huddle ---------------------
+        // Mirrors the call overlay's demo roster so the sidebar presence and
+        // the overlay agree out of the box. Aria is the active speaker.
+        for (user, talking, muted, audio_only) in [
+            ("u_aria", true, false, false),
+            ("u_milo", false, true, false),
+            ("u_sora", false, false, true),
+        ] {
+            Self::voice_join(doc, "c_huddle", user);
+            Self::voice_set_state(doc, "c_huddle", user, talking, muted, false, audio_only);
         }
 
         // --- a real conversation in #design-crit -------------------------
@@ -361,11 +401,28 @@ impl ChatDoc {
         let _ = doc.put(&w, "order", order as i64);
     }
 
+    fn put_category(
+        doc: &mut AutoCommit,
+        id: &str,
+        ws: &str,
+        name: &str,
+        order: u32,
+        collapsed: bool,
+    ) {
+        let cats = get_or_map(doc, &ROOT, "categories");
+        let cat = get_or_map(doc, &cats, id);
+        let _ = doc.put(&cat, "workspace", ws);
+        let _ = doc.put(&cat, "name", name);
+        let _ = doc.put(&cat, "order", order as i64);
+        let _ = doc.put(&cat, "collapsed", collapsed);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn put_channel(
         doc: &mut AutoCommit,
         id: &str,
         ws: &str,
+        category: &str,
         name: &str,
         topic: &str,
         kind: ChannelKind,
@@ -375,6 +432,7 @@ impl ChatDoc {
         let chans = get_or_map(doc, &ROOT, "channels");
         let c = get_or_map(doc, &chans, id);
         let _ = doc.put(&c, "workspace", ws);
+        let _ = doc.put(&c, "category", category);
         let _ = doc.put(&c, "name", name);
         let _ = doc.put(&c, "topic", topic);
         let _ = doc.put(&c, "kind", kind.as_str());
@@ -558,8 +616,262 @@ impl ChatDoc {
     }
 
     // -----------------------------------------------------------------------
+    // Structure CRUD — categories & channels
+    //
+    // Every structural edit is an idempotent set of scalar writes against a
+    // map keyed by a stable id, so two peers reordering or renaming converge
+    // without a server. Ordering uses a dense `order` integer; reorders
+    // renumber the affected siblings.
+    // -----------------------------------------------------------------------
+
+    /// Next free `order` for a category in `ws` (max + 1).
+    fn next_category_order(doc: &AutoCommit, ws: &str) -> u32 {
+        Self::list_categories(doc)
+            .into_iter()
+            .filter(|c| c.workspace == ws)
+            .map(|c| c.order)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0)
+    }
+
+    /// Next free `order` for a channel within `(ws, category)`.
+    fn next_channel_order(doc: &AutoCommit, ws: &str, category: &str) -> u32 {
+        Self::list_channels(doc)
+            .into_iter()
+            .filter(|c| c.workspace == ws && c.category == category)
+            .map(|c| c.order)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0)
+    }
+
+    /// Create a category at the end of `ws`. Returns its fresh id.
+    pub fn create_category(doc: &mut AutoCommit, ws: &str, name: &str) -> String {
+        let id = format!("cat_{}", Uuid::new_v4().simple());
+        let order = Self::next_category_order(doc, ws);
+        Self::put_category(doc, &id, ws, name, order, false);
+        id
+    }
+
+    /// Create a channel at the end of its category. Returns its fresh id.
+    pub fn create_channel(
+        doc: &mut AutoCommit,
+        ws: &str,
+        category: &str,
+        name: &str,
+        kind: ChannelKind,
+    ) -> String {
+        let id = format!("c_{}", Uuid::new_v4().simple());
+        let order = Self::next_channel_order(doc, ws, category);
+        Self::put_channel(doc, &id, ws, category, name, "", kind, order, 0);
+        id
+    }
+
+    pub fn rename_channel(doc: &mut AutoCommit, id: &str, name: &str) {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
+            let _ = doc.put(&c, "name", name);
+        }
+    }
+
+    pub fn set_channel_topic(doc: &mut AutoCommit, id: &str, topic: &str) {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
+            let _ = doc.put(&c, "topic", topic);
+        }
+    }
+
+    pub fn rename_category(doc: &mut AutoCommit, id: &str, name: &str) {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "categories").unwrap_or(ROOT), id) {
+            let _ = doc.put(&c, "name", name);
+        }
+    }
+
+    pub fn set_category_collapsed(doc: &mut AutoCommit, id: &str, collapsed: bool) {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "categories").unwrap_or(ROOT), id) {
+            let _ = doc.put(&c, "collapsed", collapsed);
+        }
+    }
+
+    pub fn toggle_category_collapsed(doc: &mut AutoCommit, id: &str) {
+        let collapsed = Self::list_categories(doc)
+            .into_iter()
+            .find(|c| c.id == id)
+            .map(|c| c.collapsed)
+            .unwrap_or(false);
+        Self::set_category_collapsed(doc, id, !collapsed);
+    }
+
+    /// Delete a channel and its messages, voice membership, and draft.
+    pub fn delete_channel(doc: &mut AutoCommit, id: &str) {
+        if let Some(chans) = map_at(doc, &ROOT, "channels") {
+            let _ = doc.delete(&chans, id);
+        }
+        if let Some(msgs) = map_at(doc, &ROOT, "messages") {
+            let _ = doc.delete(&msgs, id);
+        }
+        if let Some(voice) = map_at(doc, &ROOT, "voice") {
+            let _ = doc.delete(&voice, id);
+        }
+        if let Some(drafts) = map_at(doc, &ROOT, "drafts") {
+            let _ = doc.delete(&drafts, id);
+        }
+    }
+
+    /// Delete a category. Its channels are moved to the workspace's
+    /// uncategorised group (`""`) rather than destroyed, so a misclick is
+    /// recoverable.
+    pub fn delete_category(doc: &mut AutoCommit, id: &str) {
+        let channels: Vec<Channel> = Self::list_channels(doc)
+            .into_iter()
+            .filter(|c| c.category == id)
+            .collect();
+        for ch in channels {
+            Self::move_channel(doc, &ch.id, "");
+        }
+        if let Some(cats) = map_at(doc, &ROOT, "categories") {
+            let _ = doc.delete(&cats, id);
+        }
+    }
+
+    /// Move a channel into `category` (within its own workspace), appending
+    /// it at the end of the target group.
+    pub fn move_channel(doc: &mut AutoCommit, id: &str, category: &str) {
+        let Some(ch) = Self::list_channels(doc).into_iter().find(|c| c.id == id) else { return };
+        let order = Self::next_channel_order(doc, &ch.workspace, category);
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
+            let _ = doc.put(&c, "category", category);
+            let _ = doc.put(&c, "order", order as i64);
+        }
+    }
+
+    /// Move a channel one slot up/down within its category by swapping the
+    /// `order` of the adjacent sibling. `up == true` moves it earlier.
+    pub fn reorder_channel(doc: &mut AutoCommit, id: &str, up: bool) {
+        let Some(ch) = Self::list_channels(doc).into_iter().find(|c| c.id == id) else { return };
+        let mut siblings: Vec<Channel> = Self::list_channels(doc)
+            .into_iter()
+            .filter(|c| c.workspace == ch.workspace && c.category == ch.category)
+            .collect();
+        siblings.sort_by_key(|c| c.order);
+        let Some(pos) = siblings.iter().position(|c| c.id == id) else { return };
+        let swap = if up { pos.checked_sub(1) } else { pos.checked_add(1).filter(|&p| p < siblings.len()) };
+        let Some(swap) = swap else { return };
+        let a_order = siblings[pos].order;
+        let b_order = siblings[swap].order;
+        let chans = map_at(doc, &ROOT, "channels").unwrap_or(ROOT);
+        if let Some(a) = map_at(doc, &chans, &siblings[pos].id) {
+            let _ = doc.put(&a, "order", b_order as i64);
+        }
+        if let Some(b) = map_at(doc, &chans, &siblings[swap].id) {
+            let _ = doc.put(&b, "order", a_order as i64);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Voice membership
+    //
+    // `voice` maps a channel id to a map of member states. Membership is
+    // shared truth (everyone sees who is in a call); a peer's overlay layout
+    // is local. Per-member fields converge as last-writer-wins scalars,
+    // which is the right semantics for transient mic/cam state.
+    // -----------------------------------------------------------------------
+
+    fn voice_channel_map(doc: &mut AutoCommit, channel: &str) -> ObjId {
+        let voice = get_or_map(doc, &ROOT, "voice");
+        get_or_map(doc, &voice, channel)
+    }
+
+    pub fn voice_join(doc: &mut AutoCommit, channel: &str, user: &str) {
+        let ch = Self::voice_channel_map(doc, channel);
+        let m = get_or_map(doc, &ch, user);
+        // Only seed defaults on first join so a re-join doesn't clobber state.
+        if doc.get(&m, "talking").ok().flatten().is_none() {
+            let _ = doc.put(&m, "talking", false);
+            let _ = doc.put(&m, "muted", false);
+            let _ = doc.put(&m, "deafened", false);
+            let _ = doc.put(&m, "audio_only", false);
+        }
+    }
+
+    pub fn voice_leave(doc: &mut AutoCommit, channel: &str, user: &str) {
+        if let Some(voice) = map_at(doc, &ROOT, "voice") {
+            if let Some(ch) = map_at(doc, &voice, channel) {
+                let _ = doc.delete(&ch, user);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn voice_set_state(
+        doc: &mut AutoCommit,
+        channel: &str,
+        user: &str,
+        talking: bool,
+        muted: bool,
+        deafened: bool,
+        audio_only: bool,
+    ) {
+        let ch = Self::voice_channel_map(doc, channel);
+        let m = get_or_map(doc, &ch, user);
+        let _ = doc.put(&m, "talking", talking);
+        let _ = doc.put(&m, "muted", muted);
+        let _ = doc.put(&m, "deafened", deafened);
+        let _ = doc.put(&m, "audio_only", audio_only);
+    }
+
+    pub fn voice_set_field(doc: &mut AutoCommit, channel: &str, user: &str, field: &str, value: bool) {
+        let ch = Self::voice_channel_map(doc, channel);
+        let m = get_or_map(doc, &ch, user);
+        let _ = doc.put(&m, field, value);
+    }
+
+    // -----------------------------------------------------------------------
     // Readers
     // -----------------------------------------------------------------------
+
+    pub fn list_categories(doc: &AutoCommit) -> Vec<Category> {
+        let Some(cats) = map_at(doc, &ROOT, "categories") else { return vec![] };
+        let mut out: Vec<Category> = doc
+            .keys(&cats)
+            .filter_map(|id| {
+                let cat = map_at(doc, &cats, &id)?;
+                Some(Category {
+                    id: id.clone(),
+                    workspace: get_str(doc, &cat, "workspace"),
+                    name: get_str(doc, &cat, "name"),
+                    order: get_i64(doc, &cat, "order") as u32,
+                    collapsed: get_bool(doc, &cat, "collapsed"),
+                })
+            })
+            .collect();
+        out.sort_by_key(|c| c.order);
+        out
+    }
+
+    /// All members of a voice channel, sorted talking-first then by name-key.
+    pub fn list_voice_members(doc: &AutoCommit, channel: &str) -> Vec<VoiceMember> {
+        let Some(voice) = map_at(doc, &ROOT, "voice") else { return vec![] };
+        let Some(ch) = map_at(doc, &voice, channel) else { return vec![] };
+        let mut out: Vec<VoiceMember> = doc
+            .keys(&ch)
+            .filter_map(|user| {
+                let m = map_at(doc, &ch, &user)?;
+                Some(VoiceMember {
+                    user: user.clone(),
+                    talking: get_bool(doc, &m, "talking"),
+                    muted: get_bool(doc, &m, "muted"),
+                    deafened: get_bool(doc, &m, "deafened"),
+                    audio_only: get_bool(doc, &m, "audio_only"),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| b.talking.cmp(&a.talking).then_with(|| a.user.cmp(&b.user)));
+        out
+    }
+
+    pub fn voice_count(doc: &AutoCommit, channel: &str) -> usize {
+        Self::list_voice_members(doc, channel).len()
+    }
 
     pub fn list_workspaces(doc: &AutoCommit) -> Vec<Workspace> {
         let Some(wss) = map_at(doc, &ROOT, "workspaces") else { return vec![] };
@@ -605,6 +917,7 @@ impl ChatDoc {
                 Some(Channel {
                     id: id.clone(),
                     workspace: get_str(doc, &c, "workspace"),
+                    category: get_str(doc, &c, "category"),
                     name: get_str(doc, &c, "name"),
                     topic: get_str(doc, &c, "topic"),
                     kind: ChannelKind::from_str(&get_str(doc, &c, "kind")),
@@ -801,6 +1114,90 @@ mod tests {
         ChatDoc::clear_draft(&mut doc, "c_crit");
         assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
         assert_eq!(ChatDoc::list_messages(&doc, "c_crit").len(), before + 1);
+    }
+
+    #[test]
+    fn channels_carry_category_and_voice_seed() {
+        let doc = seeded();
+        let crit = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_crit").unwrap();
+        assert_eq!(crit.category, "cat_acme_main");
+        let cats = ChatDoc::list_categories(&doc);
+        assert!(cats.iter().any(|c| c.workspace == "ws_acme" && c.name == "Voice"));
+        // The huddle is pre-populated with three members; Aria is talking.
+        let members = ChatDoc::list_voice_members(&doc, "c_huddle");
+        assert_eq!(members.len(), 3);
+        assert!(members.iter().any(|m| m.user == "u_aria" && m.talking));
+        assert!(members.iter().any(|m| m.user == "u_milo" && m.muted));
+        assert!(members.iter().any(|m| m.user == "u_sora" && m.audio_only));
+    }
+
+    #[test]
+    fn channel_crud_roundtrips() {
+        let mut doc = seeded();
+        let before = ChatDoc::list_channels(&doc).len();
+        let id = ChatDoc::create_channel(&mut doc, "ws_acme", "cat_acme_main", "design-ops", ChannelKind::Text);
+        assert_eq!(ChatDoc::list_channels(&doc).len(), before + 1);
+        ChatDoc::rename_channel(&mut doc, &id, "ops");
+        let c = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(c.name, "ops");
+        // Move into the voice category, then delete.
+        ChatDoc::move_channel(&mut doc, &id, "cat_acme_voice");
+        let c = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(c.category, "cat_acme_voice");
+        ChatDoc::delete_channel(&mut doc, &id);
+        assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != id));
+    }
+
+    #[test]
+    fn reorder_channel_swaps_adjacent_order() {
+        let mut doc = seeded();
+        // general(0), design-crit(1) in cat_acme_main — move design-crit up.
+        let general_before = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_general").unwrap().order;
+        let crit_before = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_crit").unwrap().order;
+        assert!(crit_before > general_before);
+        ChatDoc::reorder_channel(&mut doc, "c_crit", true);
+        let general_after = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_general").unwrap().order;
+        let crit_after = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_crit").unwrap().order;
+        assert!(crit_after < general_after, "design-crit now sorts before general");
+    }
+
+    #[test]
+    fn deleting_category_rehomes_its_channels() {
+        let mut doc = seeded();
+        ChatDoc::delete_category(&mut doc, "cat_acme_main");
+        assert!(ChatDoc::list_categories(&doc).into_iter().all(|c| c.id != "cat_acme_main"));
+        // Its channels survive, rehomed to the uncategorised group.
+        let general = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_general").unwrap();
+        assert_eq!(general.category, "");
+    }
+
+    #[test]
+    fn voice_join_leave_and_state() {
+        let mut doc = seeded();
+        ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
+        assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 4);
+        ChatDoc::voice_set_field(&mut doc, "c_huddle", "u_me", "muted", true);
+        let me = ChatDoc::list_voice_members(&doc, "c_huddle").into_iter().find(|m| m.user == "u_me").unwrap();
+        assert!(me.muted);
+        ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
+        assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
+    }
+
+    #[test]
+    fn document_survives_a_save_load_cycle() {
+        // The persistence contract: send a message, save the raw bytes, load
+        // them into a fresh document, and the message is still there.
+        let mut doc = seeded();
+        ChatDoc::push_message(
+            &mut doc,
+            "c_general",
+            NewMessage { author: "u_me".into(), ts: NOW, text: "persisted!".into(), ..Default::default() },
+        );
+        let bytes = doc.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        assert!(ChatDoc::is_seeded(&reloaded), "reloaded doc keeps the seed guard");
+        let msgs = ChatDoc::list_messages(&reloaded, "c_general");
+        assert!(msgs.iter().any(|m| m.text == "persisted!"), "message survived reload");
     }
 
     #[test]

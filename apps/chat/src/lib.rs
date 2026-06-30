@@ -1,31 +1,64 @@
 //! Chat — qOS native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A bespoke collaborative chat + calls surface tied to workspaces. The
-//! convergent state — workspaces, channels, messages, reactions, edits +
-//! edit history, threads, and FUSE-shared attachments — lives in an
-//! Automerge document ([`doc`]); the [`app::ChatApp`] widget is a
-//! projection of that document plus an input router. Conferencing is a
-//! docked huddle / expandable overlay with a real `VideoPlayer` host tile;
-//! live MoQ-over-iroh transport is gated behind a TODO (see
-//! [`app`]'s `feed_demo_frame`).
+//! convergent state — workspaces, categories, channels, messages, reactions,
+//! edits + edit history, threads, members, voice membership, and FUSE-shared
+//! attachments — lives in an Automerge document ([`doc`]) that is **persisted
+//! to disk** ([`storage`]) so it survives across runs. The [`app::ChatApp`]
+//! widget is a projection of that document plus an input router.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! ## Layout
+//! Two adaptive flaps ([`responsive`]) frame a conversation column: a left
+//! flap (workspace rail + channel sidebar) and a right flap (members /
+//! thread). Each docks beside the content on a wide window and slides over
+//! it behind a scrim on a narrow one — a GNOME Adwaita overlay-flap.
+//!
+//! ## Calls
+//! Conferencing ([`call`]) is a movable floating overlay (drag to
+//! reposition) or an expanded grid, with an active-speaker ring, an
+//! adaptive participant list, voice-channel presence in the sidebar, and
+//! join/leave sounds. Call actions pass through a clean permission seam
+//! ([`call::CallPermissions`], default-allow). The real-time media engine
+//! ([`media`]) defines a MoQ-over-iroh transport trait with a simulated
+//! local backend and a feature-gated live one.
+//!
+//! `app_root()` is the single integration point used by the live event
+//! loop; [`app_root_for_shot`] stages a scenario for the offscreen renderer.
 
 pub mod app;
+pub mod call;
 pub mod doc;
 pub mod emoji;
 pub mod events;
+pub mod media;
 pub mod model;
 pub mod paint;
 pub mod render_call;
 pub mod render_chat;
+pub mod responsive;
+pub mod storage;
 
 pub use app::ChatApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build and return the app's root widget tree (live event loop). Loads the
+/// persisted workspace from disk if one exists and wires up the background
+/// saver so subsequent edits persist.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ChatApp::new())
+}
+
+/// Like [`app_root`] but staged with a named scenario for a headless
+/// screenshot, and explicitly NON-persistent (it never touches disk, so a
+/// `--shots` run can't clobber a real workspace). An empty/unknown name
+/// yields the default frame.
+///
+/// Recognised scenarios:
+/// * `"narrow"` — collapse both flaps for the responsive overlay capture.
+/// * `"context"` — open a channel context menu.
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = ChatApp::new_ephemeral();
+    app.seed_shot_scenario(scenario);
+    Box::new(app)
 }

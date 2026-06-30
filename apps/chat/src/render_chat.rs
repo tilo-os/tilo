@@ -12,7 +12,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::ColorCompat;
 
-use crate::app::{ChatApp, Hit, AVATAR};
+use crate::app::{ChatApp, Hit, MenuTarget, AVATAR};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::*;
 
@@ -112,12 +112,8 @@ impl ChatApp {
             add.center().x - aw as f64 / 2.0, add.center().y - ah as f64 / 2.0,
             TextWeight::Regular, None,
         );
-
-        // self avatar pinned to the bottom of the rail
-        if let Some(me) = self.user(model::ME) {
-            let mc = Point::new(cx, rail.y1 - 34.0);
-            draw_avatar(scene, tf, tr, theme, mc, 18.0, &me.initials, me.color_idx, Some(me.status));
-        }
+        // The single user avatar lives in the sidebar identity bar (drawn in
+        // `draw_sidebar`), not here — the rail foot intentionally has none.
     }
 
     // ------------------------------------------------------------- sidebar
@@ -153,57 +149,207 @@ impl ChatApp {
         label(scene, tr, tf, &pill_txt, 10.5, c.text_dim, pill.x0 + 17.0, pill.center().y - 7.0);
         hline(scene, tf, side.x0 + 12.0, side.x1 - 12.0, header.y1, c.border_standard);
 
-        let mut y = header.y1 + 10.0;
-        for (label_txt, kind) in [("TEXT CHANNELS", ChannelKind::Text), ("VOICE", ChannelKind::Voice)] {
-            label(scene, tr, tf, label_txt, 10.5, c.text_dim, side.x0 + 16.0, y);
-            y += 22.0;
-            for ch in self.ws_channels().into_iter().filter(|c| c.kind == kind) {
-                let row = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 34.0);
-                let is_active = ch.id == self.active_channel && kind == ChannelKind::Text;
-                let is_live = self.call_active && self.call_channel == ch.id;
-                if is_active {
-                    fill_round(scene, tf, row, 8.0, c.surface_white_10);
-                    let bar = Rect::new(side.x0, y + 7.0, side.x0 + 4.0, y + 27.0);
-                    fill_round(scene, tf, bar, 2.0, c.accent[5]);
-                }
-                let glyph = ch.kind.glyph();
-                let gcol = if is_active { c.accent[6] } else { c.text_dim };
-                label(scene, tr, tf, glyph, 14.0, gcol, row.x0 + 10.0, y + 9.0);
-                let name_col = if is_active || ch.unread > 0 { c.text_primary } else { c.text_dim };
-                let weight = if ch.unread > 0 { TextWeight::Semibold } else { TextWeight::Regular };
-                let name = truncate_to(tr, &ch.name, 14.0, row.width() - 80.0);
-                text(scene, tr, tf, &name, 14.0, name_col, row.x0 + 32.0, y + 9.0, weight, None);
+        // "+ category" affordance below the workspace title.
+        let add_cat = Rect::new(side.x0 + 12.0, header.y1 + 6.0, side.x0 + 118.0, header.y1 + 28.0);
+        fill_round(scene, tf, add_cat, 7.0, c.surface_white_5);
+        label(scene, tr, tf, "＋ Category", 11.0, c.text_dim, add_cat.x0 + 9.0, add_cat.center().y - 7.0);
+        ChatApp::push_hit(hits, add_cat, Hit::AddCategory(self.active_ws.clone()));
 
-                if is_live {
-                    // live-call dot + "in call"
-                    fill_circle(scene, tf, Point::new(row.x1 - 16.0, row.center().y), 4.0, c.semantic.success);
-                } else if ch.unread > 0 {
-                    let txt = ch.unread.to_string();
-                    let (bw, _) = tr.measure(&txt, 11.0, None);
-                    let badge = Rect::new(row.x1 - bw as f64 - 22.0, y + 8.0, row.x1 - 8.0, y + 26.0);
-                    fill_round(scene, tf, badge, 9.0, c.accent[5]);
-                    label(scene, tr, tf, &txt, 11.0, Color::WHITE, badge.x0 + 7.0, badge.center().y - 7.0);
-                }
-                ChatApp::push_hit(hits, row, Hit::Channel(ch.id.clone()));
-                y += 36.0;
+        // The channel tree: an uncategorised group first, then each category
+        // with a collapse caret, a "+" to add a channel, and its channels.
+        let mut y = header.y1 + 38.0;
+        let body_bottom = side.y1 - 60.0;
+
+        // Uncategorised channels (category id "").
+        y = self.draw_channel_group(scene, tf, tr, theme, side, None, y, hits);
+
+        for cat in self.ws_categories() {
+            if y > body_bottom {
+                break;
             }
-            y += 8.0;
+            // Category header row: caret + name + "+".
+            let hrow = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 24.0);
+            let caret = if cat.collapsed { "▸" } else { "▾" };
+            label(scene, tr, tf, caret, 10.0, c.text_dim, hrow.x0 + 4.0, y + 5.0);
+            // Inline rename for a category, else its name.
+            let renaming_cat = matches!(&self.rename, Some((MenuTarget::Category(id), _)) if id == &cat.id);
+            if renaming_cat {
+                if let Some((_, txt)) = &self.rename {
+                    self.draw_inline_rename(scene, tf, tr, theme, hrow.x0 + 18.0, y + 4.0, side.x1 - 60.0, txt, hits);
+                }
+            } else {
+                let name = truncate_to(tr, &cat.name.to_uppercase(), 10.5, hrow.width() - 60.0);
+                text(scene, tr, tf, &name, 10.5, c.text_dim, hrow.x0 + 18.0, y + 5.0, TextWeight::Semibold, None);
+            }
+            // "+" add-channel button.
+            let plus = Rect::new(hrow.x1 - 22.0, y + 2.0, hrow.x1 - 4.0, y + 20.0);
+            label(scene, tr, tf, "+", 16.0, c.text_dim, plus.x0 + 4.0, y + 1.0);
+            ChatApp::push_hit(hits, plus, Hit::AddChannel { workspace: self.active_ws.clone(), category: cat.id.clone() });
+            // Caret + name toggles collapse; right-click opens the menu.
+            let toggle = Rect::new(hrow.x0, y, plus.x0, y + 24.0);
+            ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
+            ChatApp::push_hit(hits, hrow, Hit::ContextMenu { target: MenuTarget::Category(cat.id.clone()), anchor: Point::new(hrow.x0 + 40.0, y + 22.0) });
+            y += 26.0;
+
+            if !cat.collapsed {
+                y = self.draw_channel_group(scene, tf, tr, theme, side, Some(&cat.id), y, hits);
+            }
+            y += 6.0;
         }
 
-        // self identity bar pinned to the sidebar bottom (mute toggle lives here)
+        // self identity bar pinned to the sidebar bottom — the SINGLE user
+        // avatar lives here (mute + deafen toggles to its right).
         let bar = Rect::new(side.x0, side.y1 - 56.0, side.x1, side.y1);
         fill_rect(scene, tf, bar, c.neutral[0]);
         if let Some(me) = self.user(model::ME) {
             draw_avatar(scene, tf, tr, theme, Point::new(bar.x0 + 28.0, bar.center().y), 16.0, &me.initials, me.color_idx, Some(me.status));
             label(scene, tr, tf, &me.name, 13.0, c.text_primary, bar.x0 + 50.0, bar.center().y - 14.0);
-            label(scene, tr, tf, "Available", 11.0, c.text_dim, bar.x0 + 50.0, bar.center().y + 2.0);
+            let sub = if self.call.active { "In voice" } else { "Available" };
+            label(scene, tr, tf, sub, 11.0, c.text_dim, bar.x0 + 50.0, bar.center().y + 2.0);
         }
+        // deafen + mute toggles.
+        let deaf = Rect::new(bar.x1 - 80.0, bar.center().y - 16.0, bar.x1 - 48.0, bar.center().y + 16.0);
+        fill_round(scene, tf, deaf, 8.0, if self.call.deafened { c.semantic.danger } else { c.surface_white_10 });
+        let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
+        let (dw, dh) = tr.measure(dglyph, 14.0, None);
+        text(scene, tr, tf, dglyph, 14.0, c.text_primary, deaf.center().x - dw as f64 / 2.0, deaf.center().y - dh as f64 / 2.0, TextWeight::Regular, None);
+        ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
+
         let mute = Rect::new(bar.x1 - 44.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
-        fill_round(scene, tf, mute, 8.0, if self.muted { c.semantic.danger } else { c.surface_white_10 });
-        let mglyph = if self.muted { "🔇" } else { "🎤" };
+        fill_round(scene, tf, mute, 8.0, if self.call.muted { c.semantic.danger } else { c.surface_white_10 });
+        let mglyph = if self.call.muted { "🔇" } else { "🎤" };
         let (mw, mh) = tr.measure(mglyph, 14.0, None);
         text(scene, tr, tf, mglyph, 14.0, c.text_primary, mute.center().x - mw as f64 / 2.0, mute.center().y - mh as f64 / 2.0, TextWeight::Regular, None);
         ChatApp::push_hit(hits, mute, Hit::CallMute);
+    }
+
+    /// Draw the channels of one group (a category id, or `None` for the
+    /// uncategorised group). Returns the new cursor `y`. Records per-row
+    /// click + right-click context-menu hits, applies the active row swipe
+    /// offset, and renders voice-channel presence (members + speaking) under
+    /// each voice channel — Discord-style.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_channel_group(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        side: Rect,
+        category: Option<&str>,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let cat_key = category.unwrap_or("");
+        let channels = self.category_channels(cat_key);
+        // Index for swipe parity: position among all ws_channels.
+        let ws_channels = self.ws_channels();
+        for ch in channels {
+            // Swipe offset: shift this row left while it's being swiped, and
+            // reveal a red delete affordance behind it.
+            let swipe_dx = self
+                .swipe
+                .filter(|s| ws_channels.get(s.channel_index).map(|cc| cc.id.as_str()) == Some(ch.id.as_str()))
+                .map(|s| s.dx())
+                .unwrap_or(0.0);
+            let row = Rect::new(side.x0 + 8.0 - swipe_dx, y, side.x1 - 8.0 - swipe_dx, y + 32.0);
+            if swipe_dx > 1.0 {
+                let trash = Rect::new(side.x1 - 8.0 - swipe_dx + 6.0, y, side.x1 - 8.0, y + 32.0);
+                fill_round(scene, tf, Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 32.0), 8.0, c.semantic.danger.with_alpha_factor(0.9));
+                let _ = trash;
+                label(scene, tr, tf, "🗑", 14.0, Color::WHITE, side.x1 - 30.0, y + 8.0);
+            }
+            let is_active = ch.id == self.active_channel && ch.kind == ChannelKind::Text;
+            let is_live = self.call.active && self.call.channel == ch.id;
+            if is_active {
+                fill_round(scene, tf, row, 8.0, c.surface_white_10);
+                let bar = Rect::new(side.x0, y + 6.0, side.x0 + 4.0, y + 26.0);
+                fill_round(scene, tf, bar, 2.0, c.accent[5]);
+            }
+            let glyph = ch.kind.glyph();
+            let gcol = if is_active { c.accent[6] } else { c.text_dim };
+            label(scene, tr, tf, glyph, 14.0, gcol, row.x0 + 10.0, y + 8.0);
+
+            // Inline rename for a channel, else its name.
+            let renaming = matches!(&self.rename, Some((MenuTarget::Channel(id), _)) if id == &ch.id);
+            if renaming {
+                if let Some((_, txt)) = &self.rename {
+                    self.draw_inline_rename(scene, tf, tr, theme, row.x0 + 32.0, y + 6.0, row.width() - 80.0, txt, hits);
+                }
+            } else {
+                let name_col = if is_active || ch.unread > 0 { c.text_primary } else { c.text_dim };
+                let weight = if ch.unread > 0 { TextWeight::Semibold } else { TextWeight::Regular };
+                let name = truncate_to(tr, &ch.name, 14.0, row.width() - 80.0);
+                text(scene, tr, tf, &name, 14.0, name_col, row.x0 + 32.0, y + 8.0, weight, None);
+            }
+
+            if is_live {
+                fill_circle(scene, tf, Point::new(row.x1 - 16.0, row.center().y), 4.0, c.semantic.success);
+            } else if ch.unread > 0 {
+                let txt = ch.unread.to_string();
+                let (bw, _) = tr.measure(&txt, 11.0, None);
+                let badge = Rect::new(row.x1 - bw as f64 - 22.0, y + 7.0, row.x1 - 8.0, y + 25.0);
+                fill_round(scene, tf, badge, 9.0, c.accent[5]);
+                label(scene, tr, tf, &txt, 11.0, Color::WHITE, badge.x0 + 7.0, badge.center().y - 7.0);
+            }
+            // Click joins/opens; right-click opens the row context menu.
+            let click_hit = if ch.kind == ChannelKind::Voice { Hit::VoiceChannel(ch.id.clone()) } else { Hit::Channel(ch.id.clone()) };
+            ChatApp::push_hit(hits, row, click_hit);
+            ChatApp::push_hit(hits, row, Hit::ContextMenu { target: MenuTarget::Channel(ch.id.clone()), anchor: Point::new(row.x0 + 40.0, y + 28.0) });
+            y += 34.0;
+
+            // Voice presence: list connected members under a voice channel.
+            if ch.kind == ChannelKind::Voice {
+                for m in self.voice_in(&ch.id) {
+                    if let Some(u) = self.user(&m.user) {
+                        let mrow = Rect::new(side.x0 + 36.0, y, side.x1 - 8.0, y + 24.0);
+                        let r = 9.0;
+                        let cc = Point::new(mrow.x0 + r + 2.0, mrow.center().y);
+                        if m.talking && !m.muted {
+                            stroke_circle(scene, tf, cc, r + 2.5, c.semantic.success, 2.0);
+                        }
+                        draw_avatar(scene, tf, tr, theme, cc, r, &u.initials, u.color_idx, None);
+                        let nm = truncate_to(tr, &u.name, 12.0, mrow.width() - 60.0);
+                        let ncol = if m.talking && !m.muted { c.text_primary } else { c.text_dim };
+                        label(scene, tr, tf, &nm, 12.0, ncol, mrow.x0 + 2.0 * r + 8.0, mrow.center().y - 7.0);
+                        // mic / audio-only state glyphs on the right.
+                        if m.muted {
+                            label(scene, tr, tf, "🔇", 11.0, c.semantic.danger, mrow.x1 - 18.0, mrow.center().y - 7.0);
+                        } else if m.audio_only {
+                            label(scene, tr, tf, "🎧", 11.0, c.text_dim, mrow.x1 - 18.0, mrow.center().y - 7.0);
+                        }
+                        y += 26.0;
+                    }
+                }
+            }
+        }
+        y
+    }
+
+    /// Draw the inline rename editor field (a bordered box + the working
+    /// text + a caret), recording a confirm hit on it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inline_rename(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        y: f64,
+        w: f64,
+        value: &str,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let box_r = Rect::new(x - 4.0, y - 3.0, x + w, y + 19.0);
+        fill_round(scene, tf, box_r, 5.0, c.neutral[2]);
+        stroke_round(scene, tf, box_r, 5.0, c.border_focus, 1.4);
+        let (tw, _) = text(scene, tr, tf, value, 13.0, c.text_primary, x, y, TextWeight::Regular, Some((w - 8.0) as f32));
+        let caret = Rect::new(x + tw as f64 + 1.0, y, x + tw as f64 + 2.4, y + 16.0);
+        fill_rect(scene, tf, caret, c.border_focus);
+        ChatApp::push_hit(hits, box_r, Hit::RenameConfirm);
     }
 
     // -------------------------------------------------------------- header
@@ -220,13 +366,21 @@ impl ChatApp {
         fill_rect(scene, tf, h, c.surfaces.base);
         hline(scene, tf, h.x0, h.x1, h.y1, c.border_standard);
 
+        // When the left flap is hidden/overlay, leave room for the floating
+        // hamburger that `draw_flap_toggles` paints at the header's left edge.
+        let left_inset = if self.left_flap_open() && self.left_mode == crate::responsive::FlapMode::Docked {
+            18.0
+        } else {
+            54.0
+        };
+
         let ch = self.channel(&self.active_channel).cloned();
         let (name, topic, glyph) = match &ch {
             Some(ch) => (ch.name.clone(), ch.topic.clone(), ch.kind.glyph()),
             None => (String::new(), String::new(), "#"),
         };
-        label(scene, tr, tf, glyph, 18.0, c.text_dim, h.x0 + 18.0, h.center().y - 11.0);
-        let nx = h.x0 + 40.0;
+        label(scene, tr, tf, glyph, 18.0, c.text_dim, h.x0 + left_inset, h.center().y - 11.0);
+        let nx = h.x0 + left_inset + 22.0;
         let (nw, _) = text(scene, tr, tf, &name, 17.0, c.text_primary, nx, h.center().y - 11.0, TextWeight::Bold, None);
         // topic after the name, dim, with a separator
         if !topic.is_empty() {
@@ -244,21 +398,85 @@ impl ChatApp {
         // call button (accent when a call is live)
         x -= 92.0;
         let call_btn = Rect::new(x, h.center().y - 16.0, x + 84.0, h.center().y + 16.0);
-        let (cbg, ctx) = if self.call_active {
+        let (cbg, ctx) = if self.call.active {
             (c.accent[5], Color::WHITE)
         } else {
             (c.surface_white_10, c.text_primary)
         };
         fill_round(scene, tf, call_btn, 8.0, cbg);
-        let call_label = if self.call_active { "● In call" } else { "📹 Call" };
+        let call_label = if self.call.active { "● In call" } else { "📹 Call" };
         label(scene, tr, tf, call_label, 12.5, ctx, call_btn.x0 + 12.0, call_btn.center().y - 8.0);
         ChatApp::push_hit(hits, call_btn, Hit::StartCall);
 
-        // members pill
+        // members pill — toggles the right flap (members / thread).
         x -= 60.0;
         let mem = Rect::new(x, h.center().y - 16.0, x + 52.0, h.center().y + 16.0);
-        fill_round(scene, tf, mem, 8.0, c.surface_white_5);
-        label(scene, tr, tf, &format!("👥 {members}"), 12.5, c.text_dim, mem.x0 + 9.0, mem.center().y - 8.0);
+        let mem_on = self.right_flap_open();
+        fill_round(scene, tf, mem, 8.0, if mem_on { c.accent[5].with_alpha_factor(0.22) } else { c.surface_white_5 });
+        label(scene, tr, tf, &format!("👥 {members}"), 12.5, if mem_on { c.accent[7] } else { c.text_dim }, mem.x0 + 9.0, mem.center().y - 8.0);
+        ChatApp::push_hit(hits, mem, Hit::ToggleRightFlap);
+    }
+
+    /// Floating flap toggles: a hamburger at the header's left edge when the
+    /// left flap is hidden/overlay, summoning the channel sidebar; the
+    /// members pill in `draw_header` toggles the right flap.
+    pub(crate) fn draw_flap_toggles(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let docked_open = self.left_flap_open() && self.left_mode == crate::responsive::FlapMode::Docked;
+        if !docked_open {
+            let h = self.header_rect();
+            let btn = Rect::new(h.x0 + 12.0, h.center().y - 16.0, h.x0 + 44.0, h.center().y + 16.0);
+            fill_round(scene, tf, btn, 8.0, c.surface_white_10);
+            label(scene, tr, tf, "☰", 16.0, c.text_primary, btn.x0 + 8.0, btn.center().y - 9.0);
+            ChatApp::push_hit(hits, btn, Hit::ToggleLeftFlap);
+        }
+    }
+
+    /// A right-click context menu over a channel / category / workspace.
+    /// Lays its items below the anchor and records a per-item action hit
+    /// plus a full-window scrim hit to dismiss.
+    pub(crate) fn draw_context_menu(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        menu: &crate::app::ContextMenu,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        // Dismiss scrim (lowest priority).
+        ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
+
+        let w = 188.0;
+        let item_h = 32.0;
+        let h = 10.0 + menu.items.len() as f64 * item_h + 6.0;
+        let x0 = menu.anchor.x.clamp(self.rect.x0 + 6.0, self.rect.x1 - w - 6.0);
+        let y0 = menu.anchor.y.clamp(self.rect.y0 + 6.0, (self.rect.y1 - h - 6.0).max(self.rect.y0 + 6.0));
+        let panel = Rect::new(x0, y0, x0 + w, y0 + h);
+        fill_round(scene, tf, panel.inflate(5.0, 5.0), 16.0, Color::from_rgba8(0, 0, 0, 80));
+        fill_round(scene, tf, panel, 12.0, c.neutral[1]);
+        stroke_round(scene, tf, panel, 12.0, c.border_white_10, 1.0);
+
+        let mut y = panel.y0 + 6.0;
+        for item in &menu.items {
+            let r = Rect::new(panel.x0 + 5.0, y, panel.x1 - 5.0, y + item_h - 3.0);
+            let hot = r.contains(self.last_mouse);
+            if hot {
+                fill_round(scene, tf, r, 8.0, c.surface_white_10);
+            }
+            let col = if item.is_destructive() { c.semantic.danger } else { c.text_primary };
+            label(scene, tr, tf, item.label(), 13.0, col, r.x0 + 12.0, r.center().y - 8.0);
+            ChatApp::push_hit(hits, r, Hit::MenuAction { target: menu.target.clone(), action: *item });
+            y += item_h;
+        }
     }
 
     // ------------------------------------------------------------ messages

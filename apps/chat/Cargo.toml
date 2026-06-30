@@ -11,6 +11,18 @@ path = "src/lib.rs"
 name = "chat"
 path = "src/main.rs"
 
+[features]
+default = []
+# The real-time media engine: voice/screen-share over iroh QUIC, GStreamer
+# audio for join/leave cues + capture, and the xdg-desktop-portal ScreenCast
+# request over zbus. OFF by default so the standard build and the `--shots`
+# headless path never need the GStreamer/portal dev libs or a Tokio runtime;
+# the call UI runs fully against simulated/local participants without it.
+# Enable on a real qOS install with `--features live-media`. See `src/media.rs`
+# and `src/call.rs`. (ffmpeg / ALSA / Pulse / opus dev libs are deliberately
+# NOT used — only GStreamer elements, PipeWire, and the portal via zbus.)
+live-media = ["dep:gstreamer", "dep:iroh", "dep:zbus", "dep:tokio"]
+
 [dependencies]
 ui = { path = "../../ui" }
 automerge = "0.8.0"
@@ -23,8 +35,20 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+# XDG data-dir resolution for on-disk persistence of the workspace document.
+dirs = "6.0.0"
 # Same pin as `ui`/`shell`: the in-tree C build (no runtime libopenh264.so).
 # Shared target dir means this links the already-compiled artifact — used to
 # synthesise the demo call frame so the VideoPlayer surface is populated
-# offline. Live MoQ-over-iroh transport is gated behind a worker + TODO.
+# offline.
 openh264 = { version = "0.9", features = ["source"] }
+
+# Live-media-only (feature-gated; never compiled for the default build).
+# Versions pinned to match the workspace lock so no extra copies resolve.
+gstreamer = { version = "0.23", optional = true }
+iroh = { version = "0.96", optional = true }
+zbus = { version = "4.4", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
