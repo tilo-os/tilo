@@ -1319,6 +1319,36 @@ mod tests {
     }
 
     #[test]
+    fn inline_color_font_size_marks_apply_to_selection() {
+        use qdoc::document::MarkValue;
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world");
+        // select "hello" (0..5)
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.set_text_color(&mut state, "#ff0000");
+        wp.set_font_size(&mut state, 24);
+        wp.set_font_family(&mut state, "serif");
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        let blk = &snap.blocks[0];
+        let mark = |name: &str| blk.marks.iter().find(|m| m.name == name && m.start == 0 && m.end == 5).map(|m| m.value.clone());
+        match mark("color") {
+            Some(MarkValue::Str(s)) => assert_eq!(s, "#ff0000"),
+            _ => panic!("color mark missing over selection"),
+        }
+        match mark("size") {
+            Some(MarkValue::Int(n)) => assert_eq!(n, 24),
+            _ => panic!("size mark missing over selection"),
+        }
+        match mark("font") {
+            Some(MarkValue::Str(s)) => assert_eq!(s, "serif"),
+            _ => panic!("font mark missing over selection"),
+        }
+    }
+
+    #[test]
     fn multi_block_selection_copy_and_delete() {
         let (mut wp, mut state) = bound();
         wp.insert_str(&mut state, "first");
