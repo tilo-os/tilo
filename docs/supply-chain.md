@@ -16,9 +16,19 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
 - **SBOM.** CI generates an SPDX SBOM (syft) and attaches it as a **signed**
   in-toto attestation to the image (`cosign attest`). Audit with
   `cosign verify-attestation --key keys/cosign.pub --type spdxjson <image>`.
-- **Reproducibility (partial).** The base image is **pinned by digest** (both
-  build stages, same digest → glibc match) and the Rust resolve is pinned via
-  `os/Cargo.lock.pinned`. Not yet bit-for-bit reproducible (see below).
+- **Reproducible builds (verified).** Two independent builds of the same commit
+  produce a **byte-identical image** (confirmed: built twice, same image ID).
+  Achieved by: base pinned by **digest** (both stages), Rust resolve pinned
+  (`os/Cargo.lock.pinned`), a deterministic compile (`CARGO_INCREMENTAL=0`,
+  `--remap-path-prefix=/build=.`, `LC_ALL=C.UTF-8`, `TZ=UTC`), and a
+  `SOURCE_DATE_EPOCH` derived from the HEAD commit time with layer/image
+  timestamps clamped to it (`podman --source-date-epoch --rewrite-timestamp`;
+  buildkit honours `SOURCE_DATE_EPOCH` + `provenance: false` in CI).
+  Reproduce: `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) ./os/dev/build-image.sh`
+  twice → identical `podman image inspect --format '{{.Id}}'`.
+  **Caveat:** reproducibility holds for a fixed package set. `dnf` pulls current
+  Fedora package versions, so a rebuild *weeks later* can differ as upstream
+  packages move; for cross-time reproducibility, pin a dnf repo snapshot/mirror.
 
 ## ⚠️ Operational caveat — first signed image
 
@@ -54,10 +64,11 @@ The signing key is the root of update trust — rotate on exposure or schedule.
   and a measured-boot PCR policy that *requires* the running image to appear in
   it (plan §4/§9) — is not yet stood up. This is what makes "trust qOS"
   publicly verifiable rather than "trust our key."
-- **Bit-reproducible builds.** Need `SOURCE_DATE_EPOCH`, deterministic file
-  ordering/timestamps, and a pinned toolchain so a third party can rebuild and
-  match the published digest. Today only the inputs (base digest + lockfile) are
-  pinned.
+- **Cross-time reproducibility.** Same-commit builds are now byte-identical
+  (above), but only against a fixed package set. To let a third party reproduce
+  the published digest *weeks later*, pin a `dnf` repo snapshot/mirror (and a
+  fixed rust/cargo package version) so upstream package movement can't change
+  the result.
 - **Key custody.** Private keys are file-based + in the CI secret store. Move to
   a **KMS/HSM** (`cosign --key <kms-ref>`) or sigstore keyless so no copyable
   file can sign as qOS (plan §3 "no single root of trust").
