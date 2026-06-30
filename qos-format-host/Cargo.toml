@@ -7,6 +7,23 @@ description = "qOS format-provider router daemon. Hosts WASM Component Model pro
 [dependencies]
 qos-format-provider-wit = { path = "../qos-format-provider-wit" }
 
+# Wasmtime 46 ships component-model + the on-disk compilation cache out of the
+# box. We rely on epoch-based interruption + ResourceLimiter for per-call
+# wallclock + memory caps.
+wasmtime = { version = "46", default-features = false, features = [
+    "cranelift",
+    "component-model",
+    "cache",
+    "runtime",
+    "std",
+    "addr2line",
+    "demangle",
+    "parallel-compilation",
+    "wat",
+] }
+wasmtime-wasi = { version = "46" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 dirs = "5"
