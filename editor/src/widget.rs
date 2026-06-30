@@ -879,6 +879,49 @@ fn block_indent_attr(b: &BlockView) -> f64 {
     }
 }
 
+/// An image block's `anchor` attr (`inline` | `paragraph` | `page`), defaulting
+/// to `inline`. `inline` flows the image in its own full-width vertical slot;
+/// `paragraph`/`page` let it float so following text wraps beside it (Wave 9).
+fn image_anchor(b: &BlockView) -> &str {
+    match b.attrs.get("anchor") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "inline",
+    }
+}
+
+/// An image block's `wrap` attr (`none` | `left` | `right` | `both`), defaulting
+/// to `none`. Only meaningful for a floated (paragraph/page-anchored) image:
+/// `left` floats the image to the left edge with text beside it on the right (and
+/// vice-versa for `right`); `both`/`none` keep the image in a centered full-width
+/// slot.
+fn image_wrap(b: &BlockView) -> &str {
+    match b.attrs.get("wrap") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "none",
+    }
+}
+
+/// An image block's explicit display size `(width, height)` in px from its
+/// `width`/`height` attrs (set by the ODF/OOXML importers and the model on
+/// insert). `None` when either dimension is missing, so callers fall back to the
+/// decoded intrinsic size. Accepts `Int` or `Float`.
+fn image_explicit_size(b: &BlockView) -> Option<(f64, f64)> {
+    let dim = |key: &str| match b.attrs.get(key) {
+        Some(AttrVal::Int(n)) if *n > 0 => Some(*n as f64),
+        Some(AttrVal::Float(f)) if *f > 0.0 => Some(*f),
+        _ => None,
+    };
+    Some((dim("width")?, dim("height")?))
+}
+
+/// True when an image block is floated (anchor paragraph/page) with a one-sided
+/// wrap (`left`/`right`) — the case where following paragraphs are narrowed and
+/// placed beside the image rather than below it.
+fn image_floats(b: &BlockView) -> bool {
+    let anchored = matches!(image_anchor(b), "paragraph" | "page");
+    anchored && matches!(image_wrap(b), "left" | "right")
+}
+
 /// Pick a block's horizontal alignment from its `align` attribute.
 fn block_align(b: &BlockView, default: TextAlign) -> TextAlign {
     match b.attrs.get("align") {
@@ -1382,6 +1425,27 @@ struct Laid {
     cell_row: Option<usize>,
     /// The page index this item was laid onto (0-based). Used to assign footnotes
     /// to the page where their reference marker falls.
+    page: usize,
+}
+
+/// A floated image's reserved column, live while subsequent body blocks lay out
+/// (coarse text-wrap, Wave 9). While `bottom` has not been passed, paragraphs on
+/// the same page are shaped at a reduced width and offset to the non-float side so
+/// they sit beside the image rather than under it. This is a *coarse* wrap: the
+/// whole paragraph is narrowed for its full height (not per wrapped line), because
+/// `ui::richtext` has no per-line exclusion zone. Once `y` clears `bottom`, blocks
+/// return to full width.
+#[derive(Clone, Copy)]
+struct FloatReserve {
+    /// `true` = image floated to the LEFT edge (text pushed right); `false` = RIGHT
+    /// edge (text stays left, just narrowed).
+    left: bool,
+    /// Width the text column must give up: image width + gutter (px).
+    reserve_w: f64,
+    /// Content-space y (pre-scroll) where the image's band ends; blocks whose top
+    /// is above this are narrowed, blocks at/below it are full-width again.
+    bottom: f64,
+    /// Page index the float lives on — a float only narrows blocks on its own page.
     page: usize,
 }
 
@@ -3849,6 +3913,11 @@ impl Widget for WordProcessorWidget {
         let mut cur_page = 0usize;
         let mut placed_on_page = false;
         let mut y = page_content_top(0);
+        // The currently-active floated image (anchor=paragraph/page, wrap=left/right),
+        // if any: subsequent paragraphs on its page are narrowed to flow beside it
+        // (coarse wrap — see `FloatReserve`). Cleared once `y` clears the float's
+        // bottom, when the page advances past it, or when the next float supersedes it.
+        let mut active_float: Option<FloatReserve> = None;
         // Per-level ordered-list counters (index = nesting level); reset when a
         // non-list block is reached or a shallower level re-enters.
         let mut ol_counts: Vec<u32> = Vec::new();
@@ -3856,6 +3925,18 @@ impl Widget for WordProcessorWidget {
         let mut bi = 0;
         while bi < blocks.len() {
             let b = &blocks[bi];
+            // Coarse-wrap only narrows *paragraph* blocks beside a float. A table or
+            // another image cannot share the float column, so before laying one out
+            // push the cursor below the active float and retire it — they stack under
+            // the image as a full-width block rather than overlapping it.
+            let next_is_paragraph = !b.kind.eq("image") && cell_table(b).is_none();
+            if !next_is_paragraph {
+                if let Some(f) = active_float.take() {
+                    if f.page == cur_page {
+                        y = y.max(f.bottom + self.sheet.get("body").space_after as f64);
+                    }
+                }
+            }
             if let Some(tid) = cell_table(b) {
                 ol_counts.clear();
                 let start = bi;
@@ -3967,12 +4048,23 @@ impl Widget for WordProcessorWidget {
                     self.image_cache.insert(hash.clone(), decoded);
                 }
                 let intrinsic = self.image_cache.get(&hash).and_then(|o| o.as_ref()).map(|im| im.intrinsic_size());
-                let (draw_w, draw_h) = match intrinsic {
-                    Some((iw, ih)) if iw > 0 && ih > 0 => {
-                        let w = (iw as f64).min(content_w as f64);
-                        (w, (ih as f64 * (w / iw as f64)).max(8.0))
+                // Display size: an explicit `width`/`height` attr (set by importers
+                // or a resize handle) wins; otherwise fit the decoded intrinsic size
+                // to the content column. Either way the final width is clamped to the
+                // content column and the height follows the chosen aspect ratio so a
+                // requested-but-too-wide image scales down without distorting.
+                let (draw_w, draw_h) = match image_explicit_size(b) {
+                    Some((ew, eh)) if ew > 0.0 && eh > 0.0 => {
+                        let w = ew.min(content_w as f64);
+                        (w, (eh * (w / ew)).max(8.0))
                     }
-                    _ => ((content_w as f64).min(280.0), 90.0),
+                    _ => match intrinsic {
+                        Some((iw, ih)) if iw > 0 && ih > 0 => {
+                            let w = (iw as f64).min(content_w as f64);
+                            (w, (ih as f64 * (w / iw as f64)).max(8.0))
+                        }
+                        _ => ((content_w as f64).min(280.0), 90.0),
+                    },
                 };
                 // Image blocks carry a trivial empty layout (used only so pointer
                 // hit-testing resolves to offset 0); it is cheap, so just re-shape
@@ -3989,25 +4081,72 @@ impl Widget for WordProcessorWidget {
                     y
                 };
                 placed_on_page = true;
-                laid.push(Laid {
-                    id: b.id.clone(),
-                    text: String::new(),
-                    kind: "image".into(),
-                    size: 16.0,
-                    y_top: item_top,
-                    text_x: content_x,
-                    width: draw_w,
-                    height: draw_h,
-                    layout_y: item_top,
-                    clip: None,
-                    bullet: None,
-                    ink: PAPER_INK,
-                    image_hash: intrinsic.map(|_| hash),
-                    cell_box: None,
-                    cell_row: None,
-                    page: cur_page,
-                });
-                y = item_top + draw_h + self.sheet.get("body").space_after as f64;
+                if image_floats(b) {
+                    // Floated image (anchor=paragraph/page, wrap=left/right): instead
+                    // of a full-width vertical slot, pin it to the left or right edge
+                    // of the content column and reserve that column so following
+                    // paragraphs flow beside it (coarse wrap — `FloatReserve`). `y`
+                    // does NOT advance past the image: the next blocks start level
+                    // with its top and are narrowed until they clear its bottom.
+                    let left = image_wrap(b) == "left";
+                    let img_x = if left { content_x } else { content_x + content_w as f64 - draw_w };
+                    const FLOAT_GUTTER: f64 = 12.0;
+                    laid.push(Laid {
+                        id: b.id.clone(),
+                        text: String::new(),
+                        kind: "image".into(),
+                        size: 16.0,
+                        y_top: item_top,
+                        text_x: img_x,
+                        width: draw_w,
+                        height: draw_h,
+                        layout_y: item_top,
+                        clip: None,
+                        bullet: None,
+                        ink: PAPER_INK,
+                        image_hash: intrinsic.map(|_| hash),
+                        cell_box: None,
+                        cell_row: None,
+                        page: cur_page,
+                    });
+                    active_float = Some(FloatReserve {
+                        left,
+                        reserve_w: draw_w + FLOAT_GUTTER,
+                        bottom: item_top + draw_h,
+                        page: cur_page,
+                    });
+                    // Leave `y` at the image top so following text wraps beside it.
+                    y = item_top;
+                } else {
+                    // Inline (default), or anchored with wrap none/both: a full-width
+                    // vertical slot. A non-inline-anchored image with no one-sided
+                    // wrap is centered in the column; inline images stay left-aligned.
+                    let centered = image_anchor(b) != "inline";
+                    let img_x = if centered {
+                        content_x + ((content_w as f64 - draw_w) / 2.0).max(0.0)
+                    } else {
+                        content_x
+                    };
+                    laid.push(Laid {
+                        id: b.id.clone(),
+                        text: String::new(),
+                        kind: "image".into(),
+                        size: 16.0,
+                        y_top: item_top,
+                        text_x: img_x,
+                        width: draw_w,
+                        height: draw_h,
+                        layout_y: item_top,
+                        clip: None,
+                        bullet: None,
+                        ink: PAPER_INK,
+                        image_hash: intrinsic.map(|_| hash),
+                        cell_box: None,
+                        cell_row: None,
+                        page: cur_page,
+                    });
+                    y = item_top + draw_h + self.sheet.get("body").space_after as f64;
+                }
                 bi += 1;
             } else {
                 // Resolve the block's style (component-instance model).
@@ -4037,7 +4176,24 @@ impl Widget for WordProcessorWidget {
                     // Style indent + the paragraph's own ruler indent attr.
                     (st.indent as f64 + block_indent_attr(b), None)
                 };
-                let wrap_w = (content_w - indent as f32).max(40.0);
+                // Coarse float-wrap: if a floated image is active on this page and
+                // this block's top still falls within the image band, narrow the
+                // text column by the reserved width and (for a left float) push the
+                // text origin right so it sits beside the image. The block is shaped
+                // at the reduced width, so all its line geometry already reflects the
+                // narrowing — draw + hit-test only need the shared x-origin offset.
+                let (float_reserve, float_offset) = match active_float {
+                    Some(f)
+                        if f.page == cur_page
+                            && y + st.space_before as f64 + 0.5 < f.bottom =>
+                    {
+                        // Subtract the reserved column from the wrap width; for a
+                        // left float, shift the text origin right by the same amount.
+                        (f.reserve_w, if f.left { f.reserve_w } else { 0.0 })
+                    }
+                    _ => (0.0, 0.0),
+                };
+                let wrap_w = (content_w - indent as f32 - float_reserve as f32).max(40.0);
                 let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
                 let align = block_align(b, style_align(&st.align));
                 let family = parse_font(&st.font);
@@ -4085,7 +4241,16 @@ impl Widget for WordProcessorWidget {
                     top_candidate
                 };
                 placed_on_page = true;
-                let text_x = content_x + indent;
+                // If the page advanced past the float (page-break), the float no
+                // longer applies to this block — drop the x-origin offset so the
+                // block lays full-width on its new page. (The float only ever
+                // narrows blocks on its own page.)
+                let float_offset = if active_float.map(|f| f.page == cur_page).unwrap_or(false) {
+                    float_offset
+                } else {
+                    0.0
+                };
+                let text_x = content_x + indent + float_offset;
                 let ink = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
                 let width = wrap_w as f64;
                 // Does the whole block fit on the current page from `item_top`? If
@@ -4171,6 +4336,20 @@ impl Widget for WordProcessorWidget {
                     }
                 }
                 new_cache.insert(b.id.clone(), (key, layout));
+                // Float bookkeeping: a float only narrows blocks on its own page and
+                // only while text is still beside the image. Clear it once the page
+                // has advanced past the float, or once this block has flowed down to
+                // (or past) the image's bottom — and in that latter case make sure
+                // the cursor sits at least at the image bottom so the next full-width
+                // block clears the image vertically rather than overlapping it.
+                if let Some(f) = active_float {
+                    if cur_page > f.page {
+                        active_float = None;
+                    } else if y >= f.bottom {
+                        y = y.max(f.bottom + st.space_after as f64);
+                        active_float = None;
+                    }
+                }
                 bi += 1;
             }
         }
@@ -7674,6 +7853,110 @@ mod tests {
         wp.sync(&mut state.doc, &state.root);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert!(wp.laid.iter().any(|l| l.kind == "image"), "an image block was laid out");
+    }
+
+    /// An image block carrying explicit `width`/`height` attrs renders at that size
+    /// (the requested width, clamped to the content column) — not auto-fit to the
+    /// intrinsic decoded size. Asserts on the production `Laid` geometry.
+    #[test]
+    fn explicit_image_size_is_honored() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let hash = dm.put_blob(A11Y_TINY_PNG);
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "caption");
+            let img = dm.insert_block(Some(&p), "image");
+            dm.set_attr(&img, "blob", hash.as_str());
+            // Request a 200×120 display size — far larger than the 2×3 intrinsic.
+            dm.set_attr(&img, "width", 200_i64);
+            dm.set_attr(&img, "height", 120_i64);
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1100, 900);
+
+        let img = wp.laid.iter().find(|l| l.kind == "image").expect("image laid out");
+        assert!((img.width - 200.0).abs() < 0.5, "image uses its explicit width, got {}", img.width);
+        assert!((img.height - 120.0).abs() < 0.5, "image uses its explicit height, got {}", img.height);
+    }
+
+    /// A `paragraph`-anchored, `wrap=right` floated image pins to the RIGHT edge of
+    /// the content column, and the paragraph that follows is laid at a reduced width
+    /// (beside the image) keeping its left x-origin. Asserts on production geometry.
+    #[test]
+    fn right_floated_image_narrows_following_paragraph() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            // A reference full-width paragraph (above the float) to read the content
+            // column geometry from, then the floated image, then the wrapped text.
+            let r = dm.insert_block(None, "paragraph");
+            dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
+            let hash = dm.put_blob(A11Y_TINY_PNG);
+            let img = dm.insert_block(Some(&r), "image");
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "anchor", "paragraph");
+            dm.set_attr(&img, "wrap", "right");
+            dm.set_attr(&img, "width", 200_i64);
+            dm.set_attr(&img, "height", 160_i64);
+            let beside = dm.insert_block(Some(&img), "paragraph");
+            dm.splice_text(&beside, 0, 0, "this paragraph should flow beside the floated image to its left");
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1100, 900);
+
+        let reference = wp.laid.iter().find(|l| l.text.starts_with("reference")).expect("ref laid");
+        let img = wp.laid.iter().find(|l| l.kind == "image").expect("image laid out");
+        let beside = wp.laid.iter().find(|l| l.text.starts_with("this paragraph")).expect("wrapped para laid");
+
+        // Content column: the reference paragraph spans it fully.
+        let content_left = reference.text_x;
+        let content_right = reference.text_x + reference.width;
+
+        // The image sits at the RIGHT edge of the content column.
+        let img_right = img.text_x + img.width;
+        assert!((img_right - content_right).abs() < 1.0, "right-floated image hugs the content right edge: img_right={img_right} content_right={content_right}");
+        assert!(img.text_x > content_left + 1.0, "the image is offset toward the right, not at the left edge");
+
+        // The wrapped paragraph keeps its LEFT origin (right float → text stays left)
+        // and is narrowed to clear the image.
+        assert!((beside.text_x - content_left).abs() < 0.5, "right-float text keeps its left x-origin: {} vs {}", beside.text_x, content_left);
+        assert!(beside.width < reference.width - 100.0, "wrapped paragraph is narrowed beside the image: beside={} reference={}", beside.width, reference.width);
+        // Specifically: reduced by ~ image width + gutter.
+        assert!(beside.width <= content_right - content_left - 200.0 + 0.5, "narrowed by at least the image width");
+    }
+
+    /// A `wrap=left` floated image pins to the LEFT edge and pushes the following
+    /// paragraph's text origin to the RIGHT (beside the image), still narrowed.
+    #[test]
+    fn left_floated_image_offsets_following_paragraph_right() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let r = dm.insert_block(None, "paragraph");
+            dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
+            let hash = dm.put_blob(A11Y_TINY_PNG);
+            let img = dm.insert_block(Some(&r), "image");
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "anchor", "paragraph");
+            dm.set_attr(&img, "wrap", "left");
+            dm.set_attr(&img, "width", 200_i64);
+            dm.set_attr(&img, "height", 160_i64);
+            let beside = dm.insert_block(Some(&img), "paragraph");
+            dm.splice_text(&beside, 0, 0, "this paragraph should flow to the right of the floated image");
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1100, 900);
+
+        let reference = wp.laid.iter().find(|l| l.text.starts_with("reference")).expect("ref laid");
+        let img = wp.laid.iter().find(|l| l.kind == "image").expect("image laid out");
+        let beside = wp.laid.iter().find(|l| l.text.starts_with("this paragraph")).expect("wrapped para laid");
+
+        let content_left = reference.text_x;
+        // The image sits at the LEFT edge.
+        assert!((img.text_x - content_left).abs() < 1.0, "left-floated image hugs the content left edge");
+        // The wrapped paragraph's origin is pushed right (beside the image) and is narrowed.
+        assert!(beside.text_x > content_left + 199.0, "left-float text is offset right past the image: {} vs {}", beside.text_x, content_left);
+        assert!(beside.width < reference.width - 100.0, "wrapped paragraph is narrowed beside the image");
+        // The narrowed text still ends within the content column (no overflow off the right edge).
+        assert!(beside.text_x + beside.width <= content_left + reference.width + 0.5, "narrowed text fits within the content column");
     }
 
     // ---- Zoom ---------------------------------------------------------------
