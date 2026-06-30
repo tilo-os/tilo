@@ -1,5 +1,5 @@
 [Unit]
-Description=qOS installer live-medium setup (privileged-backend sudoers)
+Description=qOS installer live-medium setup (privileged-backend sudoers + SELinux module)
 # ONLY on the installer live medium — the kernel cmdline carries qos.installer.
 # The INSTALLED system never has this arg, so this unit never fires there and
 # the passwordless sudoers rule is never present on installed machines.
@@ -15,6 +15,13 @@ RemainAfterExit=yes
 # run /usr/libexec/qos-install via `sudo -n`. install(1) copies + chmods 0440
 # (sudo refuses world/group-writable drop-ins) in one shot.
 ExecStart=/usr/bin/install -D -m 0440 /usr/share/qos/installer-sudoers /etc/sudoers.d/qos-installer
+# Load the live-medium SELinux module that lets the greeter session domain
+# (xdm_t) launch the privileged install backend as a transient system unit.
+# This is what lets the live medium stay SELinux-ENFORCING (the former
+# `enforcing=0` kernel arg is gone — see os/installer-disk.toml). Best-effort
+# (leading `-`): if SELinux is disabled or semodule is unavailable the greeter
+# must still come up; a load failure is surfaced in the journal, not fatal.
+ExecStart=-/usr/sbin/semodule -i /usr/share/qos/selinux/qos-installer.cil
 
 [Install]
 WantedBy=multi-user.target

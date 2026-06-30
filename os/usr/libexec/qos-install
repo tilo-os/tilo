@@ -93,6 +93,42 @@ if [ "$(id -u)" -ne 0 ]; then
   exec sudo -n "$0" "$@"
 fi
 
+# --- run the privileged work as a TRANSIENT SYSTEM UNIT ----------------------
+# Even as root, this script is still in the greeter session's SELinux domain
+# (xdm_t) — the UI runs under cage in the greetd session, and a plain `sudo`
+# does not change the SELinux domain. xdm_t is denied the privileged
+# container/install operations: `bootc image copy-to-storage` returns EACCES
+# ("Permission denied (os error 13)") under SELinux enforcing. This is the one
+# thing that historically forced the live medium to boot `enforcing=0`.
+#
+# Fix: re-launch ourselves as a TRANSIENT systemd unit. systemd (PID 1, the
+# `init_t` domain) spawns the unit, so the real work runs in a system-service
+# domain — NOT xdm_t — which the targeted policy already permits to drive
+# podman/bootc (the normal "systemd runs a container service" path). This is
+# what lets the installer live medium stay SELinux-ENFORCING (no enforcing=0).
+#
+# We are already root here (via the sudoers drop-in), so `systemd-run` talks to
+# the system manager directly — no second sudo, and the existing sudoers rule
+# is unchanged. `--pipe` forwards our stdin (the password) and stdout/stderr
+# (progress) straight through to the unit; `--wait` blocks and propagates the
+# unit's exit code; `--collect` reaps the unit afterwards; `--quiet` suppresses
+# systemd-run's own "Running as unit:" chatter so it never leaks into the log.
+# The QOS_INSTALL_TRANSIENT guard breaks the re-exec recursion: the unit runs
+# this same script again, already in the system domain, and falls through to
+# the real work below.
+#
+# If `systemd-run` is somehow unavailable we fall through and run in-process
+# (the historical behaviour) — correct on a permissive medium, and the live
+# medium also carries a scoped SELinux module (qos-installer.cil) as a backstop.
+if [ -z "${QOS_INSTALL_TRANSIENT:-}" ] && command -v systemd-run >/dev/null 2>&1; then
+  exec systemd-run \
+    --pipe --collect --quiet --wait \
+    --unit="qos-install-$$" \
+    --setenv=QOS_INSTALL_TRANSIENT=1 \
+    --setenv=QOS_TARGET_IMGREF="$QOS_TARGET_IMGREF" \
+    -- "$0" "$@"
+fi
+
 # --- parse args --------------------------------------------------------------
 DISK=""
 USERNAME=""
