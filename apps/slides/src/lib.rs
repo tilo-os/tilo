@@ -13,7 +13,7 @@ pub mod doc;
 pub mod model;
 pub mod render;
 
-pub use app::SlidesApp;
+pub use app::{PresentSurface, SlidesApp};
 
 use ui::widget::Widget;
 
