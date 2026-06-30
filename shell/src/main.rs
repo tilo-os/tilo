@@ -24,6 +24,7 @@
 
 use shell::compositor::hosted::HostedOptions;
 use shell::compositor::{self, Mode};
+use shell::shell::identity_provisioning;
 use shell::{firstboot, portal};
 
 /// Install a panic hook that writes a clearly-formatted crash report to
@@ -106,6 +107,36 @@ fn main() {
         // Fall through to the normal compositor entry point — the
         // systemd unit runs us as `Type=oneshot`, so the compositor
         // process exits at the bottom of `app.run()` as usual.
+    }
+
+    // Phase 8 identity gate. The full UI ceremony lives in
+    // `ui::widget::identity_flow::IdentityFlow`; the disk-backed
+    // persistence in `shell::shell::identity_provisioning`. v1
+    // surfaces the check here so a fresh-machine boot logs a clear
+    // line (and the integration follow-up can swap the log for a
+    // pre-desktop winit loop that hosts IdentityFlow).
+    //
+    // TODO Phase 8 integration: replace this log with a blocking
+    // winit loop that renders IdentityFlow until is_done() returns
+    // true; persist + then fall through to the desktop boot path
+    // below. The wiring requires composing the compositor's existing
+    // `App` setup with an IdentityFlow-only `App` and is documented
+    // in the Phase 8 follow-up.
+    match identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
+            tracing::warn!(
+                "no qOS identity found at {}; the desktop will boot without \
+                 a signing identity. Run the identity_flow_demo example to \
+                 walk the ceremony manually.",
+                store.path().display()
+            );
+        }
+        Ok(store) => {
+            tracing::info!("loaded qOS identity from {}", store.path().display());
+        }
+        Err(e) => {
+            tracing::warn!("could not initialise identity store: {e}");
+        }
     }
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
