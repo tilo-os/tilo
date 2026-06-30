@@ -1,12 +1,15 @@
 //! Printers pane — configured printers plus their recent queue / job
 //! status.
 //!
-//! A real deployment reads printers and jobs from CUPS (`lpstat`); that
-//! shell-out isn't wired through the shared `os-actions` dispatcher yet, so
-//! this pane renders a realistic sample of printers and an active queue.
-//! The data shape ([`Printer`], [`PrintJob`]) matches what a CUPS reader
-//! would produce, so swapping the sample for a live `lpstat` parse is a
-//! drop-in: only [`printers_for_display`] changes.
+//! Reads real printers from CUPS via `lpstat -p` when it's available
+//! ([`read_cups_printers`]), so on a machine with configured printers the
+//! panel reflects them. When `lpstat` is absent or reports no printers (a
+//! minimal container, or `--shots` on CI) it falls back to a realistic
+//! sample so the surface always reads as designed. The job queue is still a
+//! sample today (parsing `lpstat -o` per-printer is a follow-up that slots
+//! into [`jobs_for_display`] the same way).
+
+use std::process::Command;
 
 use ui::widget::{Button, Column, ProgressBar, Row, Spacer, Text, Widget};
 
@@ -74,6 +77,14 @@ impl Printer {
 }
 
 fn printers_for_display() -> Vec<Printer> {
+    match read_cups_printers() {
+        Some(printers) if !printers.is_empty() => printers,
+        _ => sample_printers(),
+    }
+}
+
+/// The fallback sample, shown when no real CUPS printers are configured.
+fn sample_printers() -> Vec<Printer> {
     vec![
         Printer::sample(
             "Office LaserJet",
@@ -84,6 +95,76 @@ fn printers_for_display() -> Vec<Printer> {
         Printer::sample("Front Desk Inkjet", "Reception", PrinterState::Ready, false),
         Printer::sample("Label Printer", "Shipping", PrinterState::Offline, false),
     ]
+}
+
+/// Read configured printers from CUPS via `lpstat -p -d`. Returns `None`
+/// when `lpstat` isn't installed or the call fails; an empty `Vec` when it
+/// runs but reports no printers. Best-effort and unprivileged.
+fn read_cups_printers() -> Option<Vec<Printer>> {
+    let which = Command::new("which")
+        .arg("lpstat")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !which {
+        return None;
+    }
+    let out = Command::new("lpstat").args(["-p", "-d"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Some(parse_lpstat(&stdout))
+}
+
+/// Parse `lpstat -p -d` output into [`Printer`]s.
+///
+/// `lpstat -p` prints one line per printer, e.g.:
+/// `printer Office_LaserJet is idle.  enabled since …`
+/// `printer Front_Desk is printing job 42.`
+/// `lpstat -d` prints `system default destination: Office_LaserJet`.
+fn parse_lpstat(stdout: &str) -> Vec<Printer> {
+    let default = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("system default destination:"))
+        .map(|s| s.trim().to_string());
+
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("printer ") else {
+            continue;
+        };
+        // `<name> is <state>.` — the name is up to " is ".
+        let Some((name, tail)) = rest.split_once(" is ") else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let lower = tail.to_ascii_lowercase();
+        let state = if lower.contains("printing") {
+            PrinterState::Printing
+        } else if lower.contains("disabled") || lower.contains("stopped") {
+            PrinterState::Paused
+        } else if lower.contains("idle") {
+            PrinterState::Ready
+        } else {
+            PrinterState::Offline
+        };
+        out.push(Printer {
+            name: name.to_string(),
+            // CUPS doesn't carry a human location in `lpstat -p`; show the
+            // connection/queue name as a stand-in.
+            location: "CUPS queue".to_string(),
+            state,
+            default: default.as_deref() == Some(name),
+        });
+    }
+    out
 }
 
 fn jobs_for_display() -> Vec<PrintJob> {
@@ -132,12 +213,7 @@ pub fn build_with(printers: &[Printer], jobs: &[PrintJob]) -> Box<dyn Widget> {
         card("Print queue", rows(job_rows))
     };
 
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .push(printer_card)
-            .push(job_card),
-    )
+    crate::widgets::cards(vec![printer_card, job_card])
 }
 
 fn printer_row(p: &Printer) -> El {
@@ -245,5 +321,29 @@ mod tests {
         let jobs = jobs_for_display();
         assert!(jobs[0].progress.is_some());
         assert!(jobs[1].progress.is_none());
+    }
+
+    #[test]
+    fn parse_lpstat_extracts_names_states_and_default() {
+        let stdout = "\
+printer Office_LaserJet is printing job 42.  enabled since Mon\n\
+printer Front_Desk is idle.  enabled since Mon\n\
+printer Old_Dot_Matrix is disabled since Tue.\n\
+system default destination: Front_Desk\n\
+";
+        let printers = parse_lpstat(stdout);
+        assert_eq!(printers.len(), 3);
+        assert_eq!(printers[0].name, "Office_LaserJet");
+        assert_eq!(printers[0].state, PrinterState::Printing);
+        assert!(!printers[0].default);
+        assert_eq!(printers[1].name, "Front_Desk");
+        assert_eq!(printers[1].state, PrinterState::Ready);
+        assert!(printers[1].default, "the default destination is flagged");
+        assert_eq!(printers[2].state, PrinterState::Paused);
+    }
+
+    #[test]
+    fn parse_lpstat_empty_yields_no_printers() {
+        assert!(parse_lpstat("no printers here\n").is_empty());
     }
 }

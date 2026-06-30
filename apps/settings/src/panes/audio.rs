@@ -18,7 +18,7 @@ use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Slider, Toggle, Widget};
+use ui::widget::{Button, Row, Slider, Toggle, Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
@@ -161,13 +161,7 @@ impl AudioPane {
             ]),
         );
 
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .push(output)
-                .push(input)
-                .push(sounds),
-        )
+        crate::widgets::cards(vec![output, input, sounds])
     }
 }
 
