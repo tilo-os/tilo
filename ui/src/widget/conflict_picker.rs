@@ -746,6 +746,18 @@ impl Widget for ConflictPicker {
         "ConflictPicker"
     }
 
+    /// Accessibility (W3): the reconciliation UI for a single conflict family.
+    /// `Role::Group` named for the family; the description names the conflict
+    /// kind so an AT can announce what choice is being asked for.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(format!("Resolve conflict: {}", self.family))
+                .with_description(format!("{:?}", self.kind)),
+        )
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("conflict_picker")
     }
@@ -801,6 +813,24 @@ mod tests {
         let mut p = ConflictPicker::new("Kanban move", kind);
         p.rect = rect;
         p
+    }
+
+    #[test]
+    fn accessibility_reports_group_role_name_and_kind() {
+        use crate::a11y::Role;
+        let kind = ConflictKind::PickOne {
+            alternatives: vec![alt("Done", "Alice"), alt("In progress", "Bob")],
+        };
+        let p = picker_at(Rect::new(0.0, 0.0, 500.0, 300.0), kind);
+        let node = Widget::accessibility(&p).expect("picker is not presentational");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Resolve conflict: Kanban move"));
+        // The description names the conflict kind (Debug form).
+        assert!(
+            node.description.as_deref().unwrap().starts_with("PickOne"),
+            "description should name the conflict kind, got {:?}",
+            node.description
+        );
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {

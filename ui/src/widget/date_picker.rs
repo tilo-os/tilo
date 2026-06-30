@@ -408,6 +408,22 @@ impl Widget for DatePicker {
     fn test_id(&self) -> Option<&str> { Some("date_picker") }
     fn get_rect(&self) -> Rect { self.rect }
     fn is_focusable(&self) -> bool { true }
+
+    /// The date picker reports [`Role::ComboBox`] — a selector whose value
+    /// is the currently-chosen date in ISO `YYYY-MM-DD` form. The grid is
+    /// rendered inline (there is no separate open/closed state), so
+    /// `expanded` is left unset.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::ComboBox)
+                .with_value(self.selected.format("%Y-%m-%d").to_string())
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 fn month_name_en(m: u32) -> &'static str {
@@ -546,6 +562,25 @@ mod tests {
 
         assert_eq!(dp.selected(), target);
         assert_eq!(*captured.borrow(), Some(target));
+    }
+
+    #[test]
+    fn accessibility_reports_combobox_role_and_selected_date_value() {
+        use crate::a11y::Role;
+        let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        let node = Widget::accessibility(&dp).expect("date picker is a selector");
+        assert_eq!(node.role, Role::ComboBox);
+        assert_eq!(node.value.as_deref(), Some("2024-06-15"));
+        assert!(node.state.focusable);
+        assert_eq!(node.state.expanded, None, "the grid is rendered inline");
+    }
+
+    #[test]
+    fn accessibility_value_tracks_new_selection() {
+        let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 1).unwrap());
+        dp.selected = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
+        let node = Widget::accessibility(&dp).unwrap();
+        assert_eq!(node.value.as_deref(), Some("2024-06-07"));
     }
 
     #[test]

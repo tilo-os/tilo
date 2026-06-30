@@ -1,4 +1,5 @@
 pub mod a11y;
+pub mod accesskit_bridge;
 pub mod app;
 pub mod color_compat;
 pub mod state;

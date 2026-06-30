@@ -2079,6 +2079,23 @@ impl Widget for BlockEditor {
         self.is_focused
     }
 
+    /// The editor is the document root: it reports [`Role::Document`] with
+    /// `multiline` set. Its block contents are not surfaced as a `value`
+    /// (a screen reader walks the per-block subtree instead, and dumping
+    /// the whole document text here would be redundant + unbounded).
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Document)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    multiline: true,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty || self.blocks.iter().any(|b| b.line.is_focused())
     }
@@ -2149,6 +2166,28 @@ impl BlockEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Accessibility -----------------------------------------------
+
+    #[test]
+    fn accessibility_reports_multiline_document_role() {
+        use crate::a11y::Role;
+        let ed = BlockEditor::new();
+        let node = Widget::accessibility(&ed).expect("editor is a document");
+        assert_eq!(node.role, Role::Document);
+        assert!(node.state.multiline, "a document is multiline");
+        assert!(node.state.focusable);
+        assert!(!node.state.focused, "fresh editor is not focused");
+        assert_eq!(node.value, None, "the document text is not dumped into value");
+    }
+
+    #[test]
+    fn accessibility_focus_tracks_editor_focus() {
+        let mut ed = BlockEditor::new();
+        Widget::set_focus(&mut ed, true);
+        let node = Widget::accessibility(&ed).unwrap();
+        assert!(node.state.focused);
+    }
 
     // ---- CRDT backing (sync / bind / converge) -----------------------
 

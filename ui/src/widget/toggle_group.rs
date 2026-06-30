@@ -368,6 +368,28 @@ impl Widget for ToggleGroup {
     }
 
     fn is_focusable(&self) -> bool { true }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A segmented control is a Role::Group of toggle buttons. The
+        // segments aren't separate Widget children, so the group is the
+        // single accessible node and we surface the *selected* segment's
+        // label as `value` so an AT announces the current choice. The
+        // group has no intrinsic label here → name None. Segment labels
+        // are runtime strings (host-provided), not FTL keys, so no
+        // `i18n!` wrap.
+        let value = self.segments.get(self.selected).map(|s| s.label.clone());
+        Some(
+            AccessNode::new(Role::Group)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -515,5 +537,45 @@ mod tests {
             colour_tags >= 2,
             "3-segment ToggleGroup must emit >= 2 colour draw-tags for separator lines (got {colour_tags})"
         );
+    }
+
+    #[test]
+    fn accessibility_reports_group_role_and_selected_segment_label() {
+        use crate::a11y::Role;
+        let g = ToggleGroup::new(
+            vec![Segment::new("Light"), Segment::new("Dark"), Segment::new("Auto")],
+            1,
+        );
+        let node = Widget::accessibility(&g).expect("toggle group is not presentational");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name, None, "no intrinsic label on the group");
+        assert_eq!(
+            node.value.as_deref(),
+            Some("Dark"),
+            "value is the selected segment's label",
+        );
+        assert!(node.state.focusable);
+        assert!(!node.state.disabled);
+    }
+
+    #[test]
+    fn accessibility_value_tracks_selection_changes() {
+        let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let captured_clone = captured.clone();
+        let mut g = group_at(
+            vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
+            0,
+            Rect::new(0.0, 0.0, 300.0, 36.0),
+        )
+        .on_change(move |i| *captured_clone.borrow_mut() = Some(i));
+
+        // Initially the first segment is the announced value.
+        assert_eq!(Widget::accessibility(&g).unwrap().value.as_deref(), Some("a"));
+
+        // Click into segment 2 (x = 250) → value follows the new selection.
+        dispatch(&mut g, &cursor_moved(250.0, 18.0));
+        dispatch(&mut g, &mouse_press());
+        assert_eq!(g.selected(), 2);
+        assert_eq!(Widget::accessibility(&g).unwrap().value.as_deref(), Some("c"));
     }
 }
