@@ -44,6 +44,7 @@
 
 pub mod dict;
 pub mod futo;
+pub mod imclient;
 pub mod inject;
 pub mod layout;
 pub mod predict;
@@ -54,6 +55,9 @@ pub mod widget;
 
 pub use dict::{Dictionary, Entry};
 pub use futo::FutoSwipeModel;
+pub use imclient::{
+    ImEvent, ImState, ImTransition, InputMethodClient, purpose_from_wire, try_input_method,
+};
 pub use inject::{
     NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, action_symbols, build_keymap,
     default_injector,
@@ -63,4 +67,4 @@ pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
 pub use toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
-pub use widget::OskWidget;
+pub use widget::{OskWidget, input_purpose_from_name, input_purpose_name};

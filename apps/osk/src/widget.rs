@@ -156,6 +156,12 @@ pub struct OskWidget {
     /// taffy node (its intrinsic height tracks the row count). Cleared by
     /// `take_structure_dirty`.
     structure_dirty: bool,
+
+    /// Whether the keyboard is on screen. The default is `true` (the keyboard
+    /// is always visible). In the auto-show input-method mode the host sets
+    /// this `false` until a text field is focused; when hidden the widget
+    /// collapses to zero height and draws nothing, so no window space is taken.
+    visible: bool,
 }
 
 impl Default for OskWidget {
@@ -212,6 +218,7 @@ impl OskWidget {
             on_key: None,
             on_toolbar: None,
             structure_dirty: false,
+            visible: true,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
         // useful before the first keypress.
@@ -318,6 +325,29 @@ impl OskWidget {
         self.apply_purpose(purpose);
         self.showing_symbols = false;
         self.structure_dirty = true;
+    }
+
+    /// Start hidden (builder). Used by the auto-show input-method mode, where
+    /// the keyboard only appears once a text field is focused.
+    pub fn hidden(mut self) -> Self {
+        self.visible = false;
+        self
+    }
+
+    /// Show or hide the keyboard at runtime. Raises `structure_dirty` on a
+    /// change so the host rebuilds the taffy node — a hidden keyboard collapses
+    /// to zero height and gives its space back. A no-op when already in the
+    /// requested state (so it doesn't churn relayout on repeated activations).
+    pub fn set_visible(&mut self, visible: bool) {
+        if self.visible != visible {
+            self.visible = visible;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Whether the keyboard is currently on screen.
+    pub fn is_visible(&self) -> bool {
+        self.visible
     }
 
     // --- state accessors -----------------------------------------------
@@ -839,10 +869,13 @@ impl Widget for OskWidget {
         let rows = self.current_layout().row_count();
         // Toolbar + suggestion bar + key rows. The suggestion bar is always
         // reserved (it shows next-word predictions even before any swipe), so
-        // the keyboard height is stable as suggestions come and go.
-        let total_h = self.toolbar_height
-            + self.suggestion_height
-            + rows as f32 * self.target_key_height;
+        // the keyboard height is stable as suggestions come and go. A hidden
+        // keyboard takes zero height so it gives its space back entirely.
+        let total_h = if self.visible {
+            self.toolbar_height + self.suggestion_height + rows as f32 * self.target_key_height
+        } else {
+            0.0
+        };
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
@@ -900,6 +933,11 @@ impl Widget for OskWidget {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // A hidden keyboard paints nothing (and `build_layout` gave it zero
+        // height, so there is no area to fill anyway).
+        if !self.visible {
+            return;
+        }
         // Surface background.
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -1000,6 +1038,11 @@ impl Widget for OskWidget {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // A hidden keyboard occupies no area and draws nothing, so it should
+        // not consume or react to pointer events meant for the app behind it.
+        if !self.visible {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -1114,6 +1157,67 @@ impl Widget for OskWidget {
     /// rebuild the taffy node. Rising-edge: reading clears the flag.
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty)
+    }
+
+    /// Out-of-band commands from the host's input-method thread, which runs on
+    /// its own Wayland connection and can't touch this widget directly. The
+    /// host forwards focus changes here as short text commands so the keyboard
+    /// shows/hides and re-layouts in step with the focused field:
+    ///
+    /// * `osk:show` / `osk:hide` — toggle visibility (auto-show on text focus).
+    /// * `osk:purpose:<name>` — switch to the layout for an [`InputPurpose`]
+    ///   (`text`, `number`, `decimal`, `phone`, `url`, `email`, `pin`,
+    ///   `password`, `date`, `time`). An unknown name is ignored.
+    ///
+    /// Unrecognised payloads are ignored so an unrelated `External` event can't
+    /// disturb the keyboard.
+    fn on_external_event(&mut self, payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
+        match payload {
+            "osk:show" => self.set_visible(true),
+            "osk:hide" => self.set_visible(false),
+            other => {
+                if let Some(name) = other.strip_prefix("osk:purpose:")
+                    && let Some(purpose) = input_purpose_from_name(name)
+                {
+                    self.set_purpose(purpose);
+                }
+            }
+        }
+    }
+}
+
+/// Parse the canonical name of an [`InputPurpose`] (as used in the `osk:purpose:`
+/// command). Returns `None` for an unknown name so the caller can ignore it.
+pub fn input_purpose_from_name(name: &str) -> Option<InputPurpose> {
+    Some(match name {
+        "text" => InputPurpose::Text,
+        "number" => InputPurpose::Number,
+        "decimal" => InputPurpose::Decimal,
+        "phone" | "telephone" => InputPurpose::Telephone,
+        "url" => InputPurpose::Url,
+        "email" => InputPurpose::Email,
+        "pin" => InputPurpose::Pin,
+        "password" => InputPurpose::Password,
+        "date" => InputPurpose::Date,
+        "time" => InputPurpose::Time,
+        _ => return None,
+    })
+}
+
+/// The canonical name for an [`InputPurpose`], the inverse of
+/// [`input_purpose_from_name`]. Used to build the `osk:purpose:<name>` command.
+pub fn input_purpose_name(purpose: InputPurpose) -> &'static str {
+    match purpose {
+        InputPurpose::Text => "text",
+        InputPurpose::Number => "number",
+        InputPurpose::Decimal => "decimal",
+        InputPurpose::Telephone => "phone",
+        InputPurpose::Url => "url",
+        InputPurpose::Email => "email",
+        InputPurpose::Pin => "pin",
+        InputPurpose::Password => "password",
+        InputPurpose::Date => "date",
+        InputPurpose::Time => "time",
     }
 }
 
@@ -1639,5 +1743,136 @@ mod tests {
         renderer.render_png(&scene, Color::BLACK, &out);
         let bytes = std::fs::read(&out).unwrap();
         assert!(bytes.len() > 1000, "rendered a non-trivial PNG ({} bytes)", bytes.len());
+    }
+
+    // --- auto-show / visibility ---------------------------------------
+
+    #[test]
+    fn keyboard_is_visible_by_default() {
+        assert!(OskWidget::new().is_visible());
+    }
+
+    #[test]
+    fn hidden_builder_starts_invisible() {
+        assert!(!OskWidget::new().hidden().is_visible());
+    }
+
+    #[test]
+    fn hidden_keyboard_takes_zero_height() {
+        // A visible keyboard occupies its intrinsic height; a hidden one
+        // collapses to zero so the surface behind it gets its space back.
+        let mut visible = OskWidget::new();
+        lay_out(&mut visible, 720.0, 360.0);
+        assert!(visible.get_rect().height() > 0.0);
+
+        let mut hidden = OskWidget::new().hidden();
+        lay_out(&mut hidden, 720.0, 360.0);
+        assert_eq!(hidden.get_rect().height(), 0.0);
+    }
+
+    #[test]
+    fn set_visible_toggles_and_marks_structure_dirty() {
+        let mut osk = OskWidget::new().hidden();
+        assert!(!osk.is_visible());
+        osk.set_visible(true);
+        assert!(osk.is_visible());
+        assert!(osk.take_structure_dirty(), "showing relays out");
+        // Idempotent: setting the same state again is a no-op (no relayout).
+        osk.set_visible(true);
+        assert!(!osk.take_structure_dirty(), "no-op when unchanged");
+        osk.set_visible(false);
+        assert!(!osk.is_visible());
+        assert!(osk.take_structure_dirty(), "hiding relays out");
+    }
+
+    #[test]
+    fn external_show_hide_commands_drive_visibility() {
+        let mut osk = OskWidget::new().hidden();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        osk.on_external_event("osk:show", &mut doc, &root);
+        assert!(osk.is_visible());
+
+        osk.on_external_event("osk:hide", &mut doc, &root);
+        assert!(!osk.is_visible());
+    }
+
+    #[test]
+    fn external_purpose_command_switches_layout() {
+        let mut osk = OskWidget::new();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        osk.on_external_event("osk:purpose:phone", &mut doc, &root);
+        assert_eq!(osk.purpose(), InputPurpose::Telephone);
+        assert_eq!(osk.active_layout_name(), "phone");
+
+        osk.on_external_event("osk:purpose:email", &mut doc, &root);
+        assert_eq!(osk.purpose(), InputPurpose::Email);
+        assert_eq!(osk.active_layout_name(), "email");
+    }
+
+    #[test]
+    fn external_unknown_command_is_ignored() {
+        let mut osk = OskWidget::new();
+        let before = osk.purpose();
+        let visible_before = osk.is_visible();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        osk.on_external_event("osk:purpose:dvorak", &mut doc, &root); // unknown name
+        osk.on_external_event("something:else", &mut doc, &root); // unrelated payload
+        assert_eq!(osk.purpose(), before);
+        assert_eq!(osk.is_visible(), visible_before);
+    }
+
+    #[test]
+    fn input_purpose_name_round_trips() {
+        use InputPurpose::*;
+        for p in [
+            Text, Number, Decimal, Telephone, Url, Email, Pin, Password, Date, Time,
+        ] {
+            let name = input_purpose_name(p);
+            assert_eq!(
+                input_purpose_from_name(name),
+                Some(p),
+                "{p:?} should round-trip through its name {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_keyboard_ignores_pointer_events() {
+        // A hidden keyboard must not consume taps meant for the app behind it:
+        // `handle_event` returns early and `handled` stays false.
+        use winit::event::{DeviceId, Modifiers};
+        let mut osk = OskWidget::new().hidden();
+        lay_out(&mut osk, 800.0, 360.0);
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mods = Modifiers::default();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        // Aim where the 'q' key would be on a visible keyboard.
+        osk.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            NodeId::new(0),
+            &TaffyTree::new(),
+        );
+        assert!(!handled, "a hidden keyboard does not consume pointer input");
+        assert_eq!(osk.pending_text(), "");
     }
 }
