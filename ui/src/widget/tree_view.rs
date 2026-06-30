@@ -318,9 +318,9 @@ impl<T: 'static> Widget for TreeView<T> {
                 );
             }
 
-            if self.focused == Some(*id) {
+            if self.is_focused && self.focused == Some(*id) {
                 scene.stroke(
-                    &Stroke::new(1.0),
+                    &Stroke::new(2.0),
                     transform,
                     tokens.colors.border_focus,
                     None,
