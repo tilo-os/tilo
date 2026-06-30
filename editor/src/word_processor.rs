@@ -571,6 +571,62 @@ impl WordProcessor {
         }
     }
 
+    /// Insert an image block carrying `bytes` at the caret. The bytes are stored
+    /// in the content-addressed blob store and the new `image` block references
+    /// them via its `blob` attr — mirroring how the codecs build image blocks
+    /// (see `qdoc::codecs::odt`). If the caret sits mid-text, the current block is
+    /// split so the image lands *between* the text before and after the caret;
+    /// otherwise it is inserted after the caret block. The caret moves to a fresh
+    /// empty paragraph just after the image so typing continues below it.
+    ///
+    /// When the bytes decode as an image, the intrinsic pixel `width`/`height` are
+    /// recorded as attrs (matching the ODF import path); undecodable bytes still
+    /// produce a valid `image` block (the renderer/exporter draw a placeholder).
+    pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
+        self.delete_selection(state);
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        // Decode intrinsic dimensions up front (no doc borrow held), so the image
+        // block can carry width/height attrs like the ODF importer does.
+        let intrinsic = ui::widget::Image::from_encoded(bytes).ok().map(|im| im.intrinsic_size());
+
+        let block = self.caret.block.clone();
+        let offset = self.caret.offset;
+        let text = qdoc::model::block_text(state, &containers, &block).unwrap_or_default();
+        let char_count = text.chars().count();
+        // Tail after the caret moves into a new paragraph *below* the image so the
+        // split preserves the user's text around the insertion point.
+        let tail: String = text.chars().skip(offset).collect();
+
+        if let Some(ids) = self.ids.as_mut() {
+            let hash = {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let hash = dm.put_blob(bytes);
+                // Trim the caret block down to the head before the caret.
+                if offset < char_count {
+                    dm.splice_text(&block, offset, (char_count - offset) as isize, "");
+                }
+                let img = dm.insert_block(Some(&block), "image");
+                dm.set_attr(&img, "blob", hash.as_str());
+                if let Some((w, h)) = intrinsic {
+                    dm.set_attr(&img, "width", w as i64);
+                    dm.set_attr(&img, "height", h as i64);
+                }
+                // A paragraph after the image carries the split-off tail and hosts
+                // the caret so editing continues beneath the image.
+                let after = dm.insert_block(Some(&img), "paragraph");
+                if !tail.is_empty() {
+                    dm.splice_text(&after, 0, 0, &tail);
+                }
+                self.caret = Caret { block: after, offset: 0 };
+                hash
+            };
+            let _ = hash;
+        }
+        self.selection_anchor = None;
+    }
+
     /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
     fn caret_table(&self, state: &AutoCommit) -> Option<(String, Vec<(String, usize, usize)>)> {
         let containers = self.containers.as_ref()?;
@@ -1588,5 +1644,58 @@ mod tests {
         assert_eq!(snap.blocks[0].kind, "heading");
         assert_eq!(snap.blocks[0].attrs.get("level"), Some(&qdoc::AttrVal::Int(2)));
         assert_eq!(snap.blocks[0].attrs.get("align"), Some(&qdoc::AttrVal::Str("center".into())));
+    }
+
+    /// A minimal 2×3 RGB PNG (red pixels) — small enough to embed yet a real,
+    /// decodable image so intrinsic-size attrs can be asserted.
+    const TINY_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,
+        0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 159, 1,
+        140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+
+    #[test]
+    fn insert_image_bytes_round_trips_blob_and_dims() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "above");
+        wp.insert_image_bytes(&mut state, TINY_PNG);
+
+        let c = wp.containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state, &c);
+        let img = snap.blocks.iter().find(|b| b.kind == "image").expect("an image block was inserted");
+
+        // The blob attr references a blob whose bytes round-trip exactly.
+        let hash = match img.attrs.get("blob") {
+            Some(qdoc::AttrVal::Str(s)) => s.clone(),
+            other => panic!("image block missing blob attr: {other:?}"),
+        };
+        assert_eq!(snap.blobs.get(&hash).map(|b| b.as_slice()), Some(TINY_PNG), "blob bytes round-trip");
+
+        // Intrinsic pixel dimensions were recorded (mirrors the ODF import path).
+        assert_eq!(img.attrs.get("width"), Some(&qdoc::AttrVal::Int(2)));
+        assert_eq!(img.attrs.get("height"), Some(&qdoc::AttrVal::Int(3)));
+
+        // The image landed after the original text, and the caret sits in a fresh
+        // paragraph below it so typing continues beneath the image.
+        let order = wp.ordered_blocks(&state);
+        let img_pos = order.iter().position(|id| id == &img.id).unwrap();
+        assert!(img_pos >= 1, "image inserted after the original paragraph");
+        assert_eq!(wp.caret.offset, 0);
+        assert_ne!(wp.caret.block, img.id, "caret moved off the image block");
+    }
+
+    #[test]
+    fn insert_image_splits_text_around_caret() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "helloworld");
+        // caret between "hello" and "world"
+        for _ in 0..5 {
+            wp.move_left(&state);
+        }
+        wp.insert_image_bytes(&mut state, TINY_PNG);
+        let texts = wp.block_texts(&state);
+        // head paragraph, image (empty text), tail paragraph
+        assert_eq!(texts, vec!["hello".to_string(), String::new(), "world".to_string()]);
+        assert_eq!(wp.current_text(&state), "world", "caret follows the tail below the image");
     }
 }

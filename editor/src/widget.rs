@@ -98,6 +98,10 @@ enum ToolAction {
     SizeDown,
     /// The size stepper's read-only value chip (between − and +). Display-only.
     SizeShow,
+    /// Insert an image at the caret. Under the compositor an OS file-picker
+    /// portal supplies the path; standalone there is no portal, so the button is
+    /// a best-effort no-op (drag-and-drop is the primary insert path).
+    InsertImage,
     InsertTable,
     TableRowAdd,
     TableRowDel,
@@ -714,6 +718,39 @@ impl WordProcessorWidget {
     pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
         self.path = Some(path);
         self.format = Some(format);
+    }
+
+    /// Read an image file and insert it at the caret. Returns whether it inserted
+    /// (false if the file couldn't be read). The bytes are stored in the doc's
+    /// content-addressed blob store; the renderer/exporter decode them on demand.
+    fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                self.inner.insert_image_bytes(state, &bytes);
+                self.refresh_blocks(state);
+                self.modified = true;
+                self.needs_commit = true;
+                self.dirty = true;
+                true
+            }
+            Err(e) => {
+                eprintln!("word-processor: could not read image {}: {e}", path.display());
+                false
+            }
+        }
+    }
+
+    /// Toolbar "Insert image" affordance. Under the compositor an OS file-picker
+    /// portal would supply a path here; standalone there is no portal, so this is
+    /// a best-effort no-op (it logs a hint). Drag-and-drop a file onto the window
+    /// is the primary, portal-free insert path.
+    fn request_image_insert(&mut self, _state: &mut AutoCommit) {
+        // No file-picker portal is wired in the standalone binary. Rather than
+        // block on one, point the user at the working path.
+        eprintln!(
+            "word-processor: Insert image — no file-picker portal available; \
+             drag and drop an image file onto the window instead."
+        );
     }
 
     fn save(&mut self, state: &AutoCommit) {
@@ -1897,6 +1934,13 @@ impl Widget for WordProcessorWidget {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
         match event {
+            // Drag-and-drop a file onto the window inserts it as an image at the
+            // caret. This is the primary (portal-free) image-insert path.
+            WindowEvent::DroppedFile(path) => {
+                if self.insert_image_from_path(state, path) {
+                    *handled = true;
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
@@ -2403,6 +2447,7 @@ impl WordProcessorWidget {
                 self.inner.set_font_size(state, s);
             }
             ToolAction::SizeShow => {} // display-only value chip
+            ToolAction::InsertImage => self.request_image_insert(state),
             ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
             ToolAction::TableRowAdd => self.inner.table_add_row(state),
             ToolAction::TableRowDel => self.inner.table_del_row(state),
@@ -2613,6 +2658,7 @@ impl WordProcessorWidget {
             Some(WpFormat::Odt) => "ODF Text",
             Some(WpFormat::Docx) => "Word Document",
             Some(WpFormat::Markdown) => "Markdown",
+            Some(WpFormat::Pdf) => "PDF",
             None => "",
         };
         let dot = if self.modified { "●  " } else { "" };
@@ -2642,7 +2688,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
@@ -2676,6 +2722,7 @@ impl WordProcessorWidget {
         } else {
             add(ToolAction::InsertTable, "⊞ Table", 78.0, false);
         }
+        add(ToolAction::InsertImage, "🖼 Image", 80.0, false);
         add(ToolAction::ToggleStyles, "Styles", 64.0, panel_open);
         drop(add);
 
@@ -3085,5 +3132,27 @@ mod tests {
         assert!((wp2.margins.right - 44.0).abs() < 1e-6, "right margin survived reload");
         assert!((wp2.margins.bottom - 55.0).abs() < 1e-6, "bottom margin survived reload");
         assert!((wp2.margins.left - 66.0).abs() < 1e-6, "left margin survived reload");
+    }
+
+    /// Inserting an image via the model and running the full draw pipeline lays
+    /// out an `image` block and does not panic (decode → layout → draw).
+    #[test]
+    fn inserted_image_lays_out_and_draws() {
+        // A minimal 2×3 RGB PNG (matches the model-test fixture).
+        const TINY_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+            0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+            159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
+            66, 96, 130,
+        ];
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "caption above");
+        wp.model_mut().insert_image_bytes(&mut state.doc, TINY_PNG);
+        // Re-sync so the widget's block/blob caches see the new image block.
+        wp.sync(&mut state.doc, &state.root);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.laid.iter().any(|l| l.kind == "image"), "an image block was laid out");
     }
 }

@@ -63,6 +63,9 @@ pub enum WpFormat {
     Odt,
     Docx,
     Markdown,
+    /// PDF — **export only** (rendered via the `docpdf` crate). Importing PDF is
+    /// not supported and returns a clear error.
+    Pdf,
 }
 
 impl WpFormat {
@@ -71,6 +74,7 @@ impl WpFormat {
         match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
             Some("odt") => WpFormat::Odt,
             Some("docx") => WpFormat::Docx,
+            Some("pdf") => WpFormat::Pdf,
             _ => WpFormat::Markdown,
         }
     }
@@ -81,6 +85,9 @@ impl WpFormat {
             WpFormat::Odt => qdoc::OdtCodec.import(bytes, dm),
             WpFormat::Docx => qdoc::DocxCodec.import(bytes, dm),
             WpFormat::Markdown => qdoc::MarkdownCodec.import(bytes, dm),
+            WpFormat::Pdf => Err(qdoc::CodecError::Unsupported(
+                "opening PDF documents is not supported (PDF is export-only)".to_string(),
+            )),
         }
     }
 
@@ -90,6 +97,12 @@ impl WpFormat {
             WpFormat::Odt => qdoc::OdtCodec.export(dr),
             WpFormat::Docx => qdoc::DocxCodec.export(dr),
             WpFormat::Markdown => qdoc::MarkdownCodec.export(dr),
+            // PDF isn't a `FormatProvider` codec — it renders from the materialized
+            // snapshot via `docpdf`. Map its error into the shared `CodecError`.
+            WpFormat::Pdf => {
+                let snap = dr.materialize();
+                docpdf::render_pdf(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
+            }
         }
     }
 }
@@ -188,6 +201,38 @@ mod tests {
         let snap_b = ed_b.snapshot(&sb.doc);
         assert_eq!(snap_a, snap_b, "peers converge to identical documents");
         assert_eq!(snap_a.blocks.len(), 2, "both concurrent edits are present");
+    }
+
+    /// Saving to a `*.pdf` path routes through `docpdf` and writes a valid PDF
+    /// (the bytes start with the `%PDF` signature). PDF is export-only.
+    #[test]
+    fn save_document_to_pdf_writes_valid_pdf() {
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+        }
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("editor-pdf-test-{}.pdf", std::process::id()));
+        assert_eq!(WpFormat::from_path(&path), WpFormat::Pdf, ".pdf extension picks the Pdf format");
+
+        save_document(&s, &path, WpFormat::Pdf).expect("save to pdf");
+        let bytes = std::fs::read(&path).expect("read back the pdf");
+        let _ = std::fs::remove_file(&path);
+        assert!(bytes.starts_with(b"%PDF"), "output begins with the PDF signature: {:?}", &bytes[..bytes.len().min(8)]);
+    }
+
+    /// PDF import is unsupported and surfaces a clear error.
+    #[test]
+    fn pdf_import_is_unsupported() {
+        let mut s = ui::State::new();
+        let containers = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+        let err = WpFormat::Pdf.import(b"%PDF-1.7", &mut dm).unwrap_err();
+        assert!(matches!(err, qdoc::CodecError::Unsupported(_)), "got {err:?}");
     }
 
     /// The version timeline + time-travel work over a bound document.

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 ui = { path = "../ui" }
 qdoc = { path = "../qdoc" }
+docpdf = { path = "../docpdf" }
 automerge = "0.8.0"
 vello = "0.9"
 taffy = "0.10.1"
