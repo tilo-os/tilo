@@ -6,7 +6,7 @@
 //! inline marks; tabs/breaks, alignment, fonts and tables all map onto the model.
 //! Unmodeled body-level elements are captured verbatim as fidelity atoms.
 
-use super::styles::{attr_val, mark_from_rpr_child, map_jc, StyleRegistry};
+use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child, map_jc, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
@@ -57,6 +57,7 @@ pub(crate) fn parse_body(
     let mut p_style: Option<String> = None;
     let mut p_align: Option<String> = None;
     let mut p_numid: Option<String> = None;
+    let mut p_line_spacing: Option<f64> = None;
 
     // Run state. Marks are collected for the run's `w:rPr` and applied over the
     // run's text range at `</w:r>` (so later text doesn't expand the mark).
@@ -111,6 +112,13 @@ pub(crate) fn parse_body(
     macro_rules! finalize_ppr {
         () => {
             if let Some(id) = cur.clone() {
+                // Line spacing rides as a direct `line_spacing` Float attr regardless
+                // of the block kind (paragraph/heading/list_item). A direct `w:spacing`
+                // wins; otherwise inherit it from the paragraph style.
+                let line_spacing = p_line_spacing.or_else(|| p_style.as_deref().and_then(|s| reg.para_line_spacing(s)));
+                if let Some(ls) = line_spacing {
+                    doc.set_attr(&id, "line_spacing", ls);
+                }
                 let level = p_style.as_deref().and_then(|s| reg.heading_level(s));
                 if let Some(numid) = p_numid.clone() {
                     doc.set_kind(&id, "list_item");
@@ -215,6 +223,7 @@ pub(crate) fn parse_body(
                     p_style = None;
                     p_align = None;
                     p_numid = None;
+                    p_line_spacing = None;
                     cur_para_marks.clear();
                 }
                 b"w:pPr" if table_id.is_none() => in_ppr = true,
@@ -271,6 +280,12 @@ pub(crate) fn parse_body(
                 }
                 b"w:pStyle" if in_ppr => p_style = attr_val(&e, b"w:val"),
                 b"w:jc" if in_ppr => p_align = attr_val(&e, b"w:val").map(|v| map_jc(&v)),
+                // Paragraph line spacing: `<w:spacing w:line w:lineRule="auto">`.
+                b"w:spacing" if in_ppr => {
+                    if let Some(ls) = line_spacing_from_spacing(&e) {
+                        p_line_spacing = Some(ls);
+                    }
+                }
                 b"w:numId" if in_numpr => p_numid = attr_val(&e, b"w:val"),
                 b"w:tab" if in_run => append(doc, &cur, &mut cur_len, "\t"),
                 b"w:br" | b"w:cr" if in_run => append(doc, &cur, &mut cur_len, "\n"),
