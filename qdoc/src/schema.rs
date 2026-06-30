@@ -9,7 +9,26 @@ pub const KEY_SCHEMA: &str = "schema";
 pub const KEY_SCHEMA_VERSION: &str = "schema_version";
 pub const KEY_BLOCKS: &str = "blocks"; // Map<block_id, block>
 pub const KEY_STYLES: &str = "styles"; // Map<style_id, style def>
-pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, Bytes>  (preservation layer)
+// Preservation layer (the lossless fidelity store for content a codec doesn't
+// model). `preserved` is a `Map<part_name, part>`. A part is stored in one of two
+// equivalent forms:
+//   * **legacy**: a single `Bytes` scalar holding the whole part verbatim;
+//   * **segmented (Tier-4, CRDT-merge-friendly)**: a `Map<segment_id, segment>`
+//     where each `segment` is a sub-map `{ord: Bytes (fractional key), bytes:
+//     Bytes (the atom's verbatim bytes)}`. Concatenating the segments in `ord`
+//     order reproduces the part byte-for-byte. Each segment is an independent
+//     automerge object keyed by a STABLE id (structural-index + content-hash), so
+//     the same atom on two replicas maps to ONE object (it converges) and two
+//     replicas editing DIFFERENT atoms of the same part merge cleanly instead of
+//     clobbering the whole part. Same-atom concurrent edits stay last-writer-wins.
+pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, part>  (preservation layer)
+/// A preserved part's per-atom segment's fractional order key (`Bytes`), under the
+/// segment sub-map. Segments sort by this to reconstruct the part in source order.
+pub const PRESERVED_SEG_ORD: &str = "ord";
+/// A preserved part's per-atom segment's verbatim bytes (`Bytes`), under the
+/// segment sub-map. The concatenation of all segments' bytes (in `ord` order) is
+/// the original part byte-for-byte.
+pub const PRESERVED_SEG_BYTES: &str = "bytes";
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
 // Page header / footer regions. Each is a `Map<block_id, block>` with the exact

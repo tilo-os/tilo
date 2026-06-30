@@ -2162,4 +2162,108 @@ mod tests {
         assert_eq!(styles_out.matches("<style:columns").count(), 1, "exactly one style:columns: {styles_out}");
         assert!(styles_out.contains(r#"style:column-count="2""#), "count updated to 2: {styles_out}");
     }
+
+    /// Build a `.odt` whose preserved `styles.xml` holds two independent top-level
+    /// style atoms — the canonical "two unmodeled regions in one part" shape.
+    fn odt_with_two_style_atoms() -> Vec<u8> {
+        let styles_xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            "\n",
+            r#"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"><office:styles>"#,
+            r#"<style:style style:name="Quote" style:family="paragraph"><style:text-properties style:font-name="QuoteFont"/></style:style>"#,
+            r#"<style:style style:name="Caption" style:family="paragraph"><style:text-properties style:font-name="CaptionFont"/></style:style>"#,
+            r#"</office:styles></office:document-styles>"#,
+        );
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        c.write().unwrap()
+    }
+
+    /// The id + current bytes of the preserved `styles.xml` atom containing `needle`.
+    fn atom_containing(d: &Document, needle: &str) -> (String, Vec<u8>) {
+        let r = d.as_ref();
+        crate::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml")
+            .into_iter()
+            .find(|(_, b)| String::from_utf8_lossy(b).contains(needle))
+            .unwrap_or_else(|| panic!("no preserved styles.xml atom contains {needle:?}"))
+    }
+
+    /// Round-trip fidelity: a preserved multi-atom `styles.xml` re-emits verbatim
+    /// through the full import→export codec path even though it is now stored as
+    /// per-atom segments rather than one opaque blob.
+    #[test]
+    fn preserved_multi_atom_part_round_trips_verbatim() {
+        let odt = odt_with_two_style_atoms();
+        let original_styles = OdtContainer::read(&odt).unwrap().get("styles.xml").unwrap().to_vec();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        assert_eq!(
+            out.get("styles.xml").unwrap(),
+            original_styles.as_slice(),
+            "segmented styles.xml re-emits byte-for-byte"
+        );
+        // It really is stored segmented (two style atoms are addressable).
+        let r = d.as_ref();
+        assert!(
+            crate::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml").len() >= 2,
+            "styles.xml stored as multiple per-atom segments"
+        );
+    }
+
+    /// THE convergence win, through the real `.odt` codec path: two replicas import
+    /// the same document, each rewrites a DIFFERENT preserved style atom, merge —
+    /// and BOTH edits survive in the exported `styles.xml`. Under the old whole-part
+    /// `Bytes` scalar this clobbered (last-writer-wins on the entire part).
+    #[test]
+    fn different_preserved_atom_edits_converge_through_codec() {
+        let odt = odt_with_two_style_atoms();
+
+        // Replica A imports; replica B forks A (so they share atom ids).
+        let mut a = Document::new();
+        OdtCodec.import(&odt, &mut a.as_mut()).unwrap();
+        let mut b = a.fork();
+
+        // The two style atoms have the SAME stable ids on both replicas.
+        let (id_quote, quote_bytes) = atom_containing(&a, "QuoteFont");
+        let (id_caption, caption_bytes) = atom_containing(&a, "CaptionFont");
+        assert_eq!(id_quote, atom_containing(&b, "QuoteFont").0, "fork shares atom ids");
+        assert_eq!(id_caption, atom_containing(&b, "CaptionFont").0, "fork shares atom ids");
+        assert_ne!(id_quote, id_caption, "distinct atoms have distinct ids");
+
+        // A rewrites ONLY the Quote atom; B rewrites ONLY the Caption atom. Each is
+        // a read-modify-write that keeps the atom's framing (the prologue/root-open
+        // tags that ride on the first atom, the close tags on the last) — mirroring
+        // how a codec re-models one region in place.
+        let edited_quote = String::from_utf8(quote_bytes).unwrap().replace("QuoteFont", "QuoteFont-EDITED");
+        let edited_caption = String::from_utf8(caption_bytes).unwrap().replace("CaptionFont", "CaptionFont-EDITED");
+        a.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_quote, edited_quote.as_bytes());
+        b.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_caption, edited_caption.as_bytes());
+
+        // Cross-merge.
+        a.merge(&mut b);
+        b.merge(&mut a);
+
+        // Both replicas export an identical styles.xml that carries BOTH edits.
+        for (d, who) in [(&a, "A"), (&b, "B")] {
+            let exported = OdtCodec.export(d.as_ref()).unwrap();
+            let out = OdtContainer::read(&exported).unwrap();
+            let styles = String::from_utf8(out.get("styles.xml").unwrap().to_vec()).unwrap();
+            assert!(styles.contains("QuoteFont-EDITED"), "replica {who} kept A's Quote edit: {styles}");
+            assert!(styles.contains("CaptionFont-EDITED"), "replica {who} kept B's Caption edit: {styles}");
+            // Order + structure intact (Quote before Caption, root tags present).
+            assert!(
+                styles.find("QuoteFont-EDITED").unwrap() < styles.find("CaptionFont-EDITED").unwrap(),
+                "replica {who} kept atom order: {styles}"
+            );
+            assert!(styles.contains("<office:styles>") && styles.contains("</office:document-styles>"));
+        }
+        // Convergence: identical exported styles.xml on both replicas.
+        let sa = OdtContainer::read(&OdtCodec.export(a.as_ref()).unwrap()).unwrap().get("styles.xml").unwrap().to_vec();
+        let sb = OdtContainer::read(&OdtCodec.export(b.as_ref()).unwrap()).unwrap().get("styles.xml").unwrap().to_vec();
+        assert_eq!(sa, sb, "replicas converge on identical styles.xml");
+    }
 }
