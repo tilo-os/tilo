@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{a1_to_addr, Addr, CellValue};
+use crate::model::{a1_to_addr, Addr, CellFormat, CellValue, FormatCategory};
 
 // ---------------------------------------------------------------------------
 // Tokenizer
@@ -966,6 +966,184 @@ pub fn recalculate(raw: &HashMap<Addr, String>) -> HashMap<Addr, CellValue> {
     Engine::new(raw).evaluate_all()
 }
 
+// ---------------------------------------------------------------------------
+// Format propagation
+// ---------------------------------------------------------------------------
+
+/// The unit a sub-expression carries while propagating formats. We track
+/// the *category* (and the specific currency, when it's currency) rather
+/// than a full `CellFormat`, because propagation cares about the unit, not
+/// the exact rendering style.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Unit {
+    /// A bare scalar — `5`, `=2+2`, a General/Number cell. Multiplying a
+    /// scalar by a currency yields that currency (`5 * $100 = $500`).
+    Scalar,
+    /// Money in a specific currency.
+    Currency(crate::model::Currency),
+    /// A percentage value.
+    Percent,
+    /// A date serial.
+    Date(crate::model::DateStyle),
+    /// A time/duration serial.
+    Time(crate::model::TimeStyle),
+    /// Conflicting units (e.g. USD + EUR) — render plain.
+    Mixed,
+}
+
+/// Infer the display format a computed cell should adopt from the formats
+/// of the cells its formula references. Returns `None` when nothing useful
+/// can be inferred (the caller then leaves the cell's own format, defaulting
+/// to General).
+///
+/// Rules, mirroring Excel/Sheets behaviour:
+///   * `=5*B2` where B2 is currency → that currency (a scalar times money
+///     stays money). Likewise `B2/2`, `B2+B3`, `-B2`.
+///   * currency `+`/`-` currency of the **same** currency → that currency;
+///     **different** currencies → plain number (Mixed).
+///   * percent through `+`/`-`/scalar `*` → percent.
+///   * date `-` date → a duration (Number); date `+` scalar → date.
+///   * SUM/AVERAGE/MIN/MAX/etc. over a uniformly-formatted range inherit
+///     that format.
+///   * anything ambiguous → `None` (plain).
+pub fn infer_result_format(
+    body: &str,
+    formats: &HashMap<Addr, CellFormat>,
+) -> Option<CellFormat> {
+    let expr = parse(body).ok()?;
+    let unit = unit_of(&expr, formats);
+    unit_to_format(unit)
+}
+
+fn unit_to_format(unit: Unit) -> Option<CellFormat> {
+    match unit {
+        Unit::Scalar | Unit::Mixed => None,
+        Unit::Currency(c) => Some(CellFormat::Currency(c)),
+        Unit::Percent => Some(CellFormat::Percent),
+        Unit::Date(s) => Some(CellFormat::Date(s)),
+        Unit::Time(s) => Some(CellFormat::Time(s)),
+    }
+}
+
+/// The unit a cell's stored format implies.
+fn unit_of_format(fmt: CellFormat) -> Unit {
+    match fmt {
+        CellFormat::Currency(c) => Unit::Currency(c),
+        CellFormat::Percent => Unit::Percent,
+        CellFormat::Date(s) => Unit::Date(s),
+        CellFormat::Time(s) => Unit::Time(s),
+        // General/Number/Boolean/Text all behave as scalars for propagation.
+        _ => Unit::Scalar,
+    }
+}
+
+/// Recursively determine an expression's unit.
+fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
+    match expr {
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => Unit::Scalar,
+        Expr::Ref(addr) => formats.get(addr).map(|f| unit_of_format(*f)).unwrap_or(Unit::Scalar),
+        Expr::Range(_, _) => Unit::Scalar,
+        Expr::Unary(_, inner) => unit_of(inner, formats),
+        Expr::Binary(op, l, r) => {
+            let lu = unit_of(l, formats);
+            let ru = unit_of(r, formats);
+            combine(*op, lu, ru)
+        }
+        Expr::Call(name, args) => unit_of_call(name, args, formats),
+    }
+}
+
+/// Combine two operand units under a binary operator.
+fn combine(op: BinOp, l: Unit, r: Unit) -> Unit {
+    use BinOp::*;
+    // Comparisons and concat yield bare scalars/booleans/text.
+    if matches!(op, Eq | Ne | Lt | Gt | Le | Ge | Concat) {
+        return Unit::Scalar;
+    }
+    match op {
+        // Division of two equal units is a ratio → unitless (`$/$`, `%/%`).
+        Div if l == r && l != Unit::Scalar => Unit::Scalar,
+        // Multiplication/division by a scalar keeps the unit; any other
+        // pairing of two real units is ambiguous (Mixed).
+        Mul | Div | Pow => match (l, r) {
+            (Unit::Scalar, u) | (u, Unit::Scalar) => u,
+            _ => Unit::Mixed,
+        },
+        // Addition/subtraction: same unit stays; date−date becomes a
+        // duration (treated as Number → Scalar); unit ± scalar keeps unit.
+        Add | Sub => match (l, r) {
+            (a, b) if a == b => {
+                // date − date is a span of days, not a date.
+                if matches!(op, Sub) && matches!(a, Unit::Date(_)) {
+                    Unit::Scalar
+                } else {
+                    a
+                }
+            }
+            (Unit::Scalar, u) | (u, Unit::Scalar) => u,
+            _ => Unit::Mixed,
+        },
+        _ => Unit::Scalar,
+    }
+}
+
+/// The unit a function call produces. Aggregates over a range inherit the
+/// range's uniform unit; ROUND/ABS/etc. inherit their first argument.
+fn unit_of_call(name: &str, args: &[Expr], formats: &HashMap<Addr, CellFormat>) -> Unit {
+    match name {
+        // Sum-family + selection functions preserve a uniform unit.
+        "SUM" | "AVERAGE" | "MIN" | "MAX" | "MEDIAN" | "PRODUCT" | "ROUND" | "ROUNDUP"
+        | "ROUNDDOWN" | "ABS" | "FLOOR" | "CEILING" | "INT" => {
+            let mut acc: Option<Unit> = None;
+            for a in args {
+                for u in arg_units(a, formats) {
+                    acc = Some(match acc {
+                        None => u,
+                        Some(prev) if prev == u => prev,
+                        Some(Unit::Scalar) => u,
+                        Some(prev) if u == Unit::Scalar => prev,
+                        Some(_) => Unit::Mixed,
+                    });
+                }
+            }
+            acc.unwrap_or(Unit::Scalar)
+        }
+        // Counting / text / logical functions are unitless.
+        _ => Unit::Scalar,
+    }
+}
+
+/// Units contributed by a single argument — a range contributes the unit of
+/// each cell it spans.
+fn arg_units(arg: &Expr, formats: &HashMap<Addr, CellFormat>) -> Vec<Unit> {
+    match arg {
+        Expr::Range(a, b) => {
+            let (c0, c1) = (a.0.min(b.0), a.0.max(b.0));
+            let (r0, r1) = (a.1.min(b.1), a.1.max(b.1));
+            let mut out = Vec::new();
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    out.push(formats.get(&(c, r)).map(|f| unit_of_format(*f)).unwrap_or(Unit::Scalar));
+                }
+            }
+            out
+        }
+        _ => vec![unit_of(arg, formats)],
+    }
+}
+
+/// True when a category should be allowed to propagate at all (kept for
+/// callers that want to gate by category without importing `Unit`).
+pub fn category_propagates(cat: FormatCategory) -> bool {
+    matches!(
+        cat,
+        FormatCategory::Currency
+            | FormatCategory::Percent
+            | FormatCategory::Date
+            | FormatCategory::Time
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,5 +1227,123 @@ mod tests {
         ]);
         assert_eq!(val(&m, "B1"), CellValue::Number(2.0));
         assert_eq!(val(&m, "B2"), CellValue::Number(40.0));
+    }
+
+    // --- format propagation -------------------------------------------------
+
+    use crate::model::{CellFormat, Currency, DateStyle};
+
+    fn fmts(pairs: &[(&str, CellFormat)]) -> HashMap<Addr, CellFormat> {
+        pairs
+            .iter()
+            .map(|(a, f)| (a1_to_addr(a).unwrap(), *f))
+            .collect()
+    }
+
+    #[test]
+    fn scalar_times_currency_is_currency() {
+        // =5*B2 where B2 is $100 must render as currency.
+        let f = fmts(&[("B2", CellFormat::Currency(Currency::USD))]);
+        assert_eq!(
+            infer_result_format("5*B2", &f),
+            Some(CellFormat::Currency(Currency::USD))
+        );
+        // order doesn't matter
+        assert_eq!(
+            infer_result_format("B2*5", &f),
+            Some(CellFormat::Currency(Currency::USD))
+        );
+        // division by a scalar keeps the currency
+        assert_eq!(
+            infer_result_format("B2/2", &f),
+            Some(CellFormat::Currency(Currency::USD))
+        );
+    }
+
+    #[test]
+    fn currency_plus_same_currency_propagates() {
+        let f = fmts(&[
+            ("A1", CellFormat::Currency(Currency::EUR)),
+            ("A2", CellFormat::Currency(Currency::EUR)),
+        ]);
+        assert_eq!(
+            infer_result_format("A1+A2", &f),
+            Some(CellFormat::Currency(Currency::EUR))
+        );
+    }
+
+    #[test]
+    fn mixed_currencies_fall_back_to_plain() {
+        let f = fmts(&[
+            ("A1", CellFormat::Currency(Currency::USD)),
+            ("A2", CellFormat::Currency(Currency::EUR)),
+        ]);
+        // USD + EUR is unclear → plain number (None).
+        assert_eq!(infer_result_format("A1+A2", &f), None);
+        // USD * EUR is also unclear.
+        assert_eq!(infer_result_format("A1*A2", &f), None);
+    }
+
+    #[test]
+    fn percent_arithmetic_propagates() {
+        let f = fmts(&[("A1", CellFormat::Percent), ("A2", CellFormat::Percent)]);
+        assert_eq!(infer_result_format("A1+A2", &f), Some(CellFormat::Percent));
+        assert_eq!(infer_result_format("A1*2", &f), Some(CellFormat::Percent));
+    }
+
+    #[test]
+    fn sum_over_currency_range_inherits_currency() {
+        let f = fmts(&[
+            ("B2", CellFormat::Currency(Currency::GBP)),
+            ("B3", CellFormat::Currency(Currency::GBP)),
+            ("B4", CellFormat::Currency(Currency::GBP)),
+        ]);
+        assert_eq!(
+            infer_result_format("SUM(B2:B4)", &f),
+            Some(CellFormat::Currency(Currency::GBP))
+        );
+        assert_eq!(
+            infer_result_format("AVERAGE(B2:B4)", &f),
+            Some(CellFormat::Currency(Currency::GBP))
+        );
+    }
+
+    #[test]
+    fn date_minus_date_is_a_duration_not_a_date() {
+        let f = fmts(&[
+            ("A1", CellFormat::Date(DateStyle::Iso)),
+            ("A2", CellFormat::Date(DateStyle::Iso)),
+        ]);
+        // Difference of two dates is a number of days → plain (None).
+        assert_eq!(infer_result_format("A1-A2", &f), None);
+        // A date plus a scalar stays a date.
+        assert_eq!(
+            infer_result_format("A1+7", &f),
+            Some(CellFormat::Date(DateStyle::Iso))
+        );
+    }
+
+    #[test]
+    fn plain_arithmetic_has_no_format() {
+        let f = fmts(&[]);
+        assert_eq!(infer_result_format("2+3*4", &f), None);
+    }
+
+    #[test]
+    fn comparison_and_text_are_unitless() {
+        let f = fmts(&[("A1", CellFormat::Currency(Currency::USD))]);
+        assert_eq!(infer_result_format("A1>100", &f), None);
+        assert_eq!(infer_result_format("A1&\"x\"", &f), None);
+    }
+
+    #[test]
+    fn growth_ratio_is_plain_even_with_currency_operands() {
+        // (E2-B2)/B2 where E2,B2 are currency → a ratio, which is unitless.
+        let f = fmts(&[
+            ("E2", CellFormat::Currency(Currency::USD)),
+            ("B2", CellFormat::Currency(Currency::USD)),
+        ]);
+        // (currency - currency) = currency; currency / currency = Mixed→None.
+        assert_eq!(infer_result_format("(E2-B2)/B2", &f), None);
     }
 }
