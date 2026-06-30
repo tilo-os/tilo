@@ -100,6 +100,38 @@ pub enum OpClass {
     /// another `Redact`) is rejected by the validator — see
     /// [`crate::validator::ValidationError::RecursiveRedaction`].
     Redact,
+    /// Announce a new live-streamed Wayland surface for a hosted
+    /// legacy app. Payload is a
+    /// [`crate::surface_stream::SurfaceStreamStart`] encoded with
+    /// [`crate::canonical::canonical_bytes`].
+    ///
+    /// Hosting a remote-desktop surface is an authorial act — the
+    /// host is publishing live pixels of an app the channel members
+    /// will see and interact with — so the role table pins this class
+    /// to `Editor`+. A `Commenter` or `Viewer` cannot start a stream.
+    SurfaceStreamStart,
+    /// Retire a previously-announced streamed surface. Payload is a
+    /// [`crate::surface_stream::SurfaceStreamEnd`]. Same role gate as
+    /// `SurfaceStreamStart` — only the originating editor / owner may
+    /// take a stream down.
+    SurfaceStreamEnd,
+    /// One encoded video frame on an active stream. Payload is a
+    /// [`crate::surface_stream::SurfaceFrame`].
+    ///
+    /// Same role gate as the Start / End pair: emitting frames is
+    /// continuous authorship of the stream the editor opened. Routing
+    /// the frame class through the same `OpClass` machinery as every
+    /// other mutation is deliberate — the audit log, replay defence,
+    /// and attestation flow apply uniformly.
+    SurfaceFrame,
+    /// Remote pointer / keyboard event from a channel member back to
+    /// the host. Payload is a [`crate::surface_stream::RemoteInput`].
+    ///
+    /// Pinned to `Editor`+ because input injection mutates the live
+    /// app's state on the host's machine. A `Commenter` watching a
+    /// shared Inkscape session cannot drive Inkscape's cursor; they
+    /// can only watch.
+    RemoteInput,
 }
 
 /// The categorical kind of an artifact.
@@ -158,7 +190,17 @@ pub fn role_permits(role: Role, _kind: ArtifactKind, op: OpClass) -> bool {
             | OpClass::EditMeta
             | OpClass::Comment
             | OpClass::Tombstone
-            | OpClass::Restore => true,
+            | OpClass::Restore
+            // Hosting a live-streamed Wayland surface (and driving
+            // input back into it) is authorial — the editor publishes
+            // pixels and accepts remote events that mutate the live
+            // app. The role table pins all four surface-stream ops to
+            // Editor+ so a Commenter or Viewer cannot start, end,
+            // emit frames for, or inject input into a stream.
+            | OpClass::SurfaceStreamStart
+            | OpClass::SurfaceStreamEnd
+            | OpClass::SurfaceFrame
+            | OpClass::RemoteInput => true,
             // Editors mutate artifacts; they don't govern, they
             // don't issue compaction checkpoints (Phase 6 v1 pins the
             // host to the channel owner), and they don't redact.
@@ -196,6 +238,10 @@ mod tests {
                 OpClass::Govern,
                 OpClass::Compaction,
                 OpClass::Redact,
+                OpClass::SurfaceStreamStart,
+                OpClass::SurfaceStreamEnd,
+                OpClass::SurfaceFrame,
+                OpClass::RemoteInput,
             ] {
                 assert!(
                     role_permits(Role::Owner, kind, op),
@@ -253,6 +299,10 @@ mod tests {
             OpClass::Govern,
             OpClass::Compaction,
             OpClass::Redact,
+            OpClass::SurfaceStreamStart,
+            OpClass::SurfaceStreamEnd,
+            OpClass::SurfaceFrame,
+            OpClass::RemoteInput,
         ] {
             assert!(!role_permits(Role::Commenter, ArtifactKind::Note, op));
         }
@@ -275,6 +325,10 @@ mod tests {
             OpClass::Govern,
             OpClass::Compaction,
             OpClass::Redact,
+            OpClass::SurfaceStreamStart,
+            OpClass::SurfaceStreamEnd,
+            OpClass::SurfaceFrame,
+            OpClass::RemoteInput,
         ] {
             assert!(!role_permits(Role::Viewer, ArtifactKind::Kanban, op));
         }
@@ -292,8 +346,57 @@ mod tests {
             OpClass::Govern,
             OpClass::Compaction,
             OpClass::Redact,
+            OpClass::SurfaceStreamStart,
+            OpClass::SurfaceStreamEnd,
+            OpClass::SurfaceFrame,
+            OpClass::RemoteInput,
         ] {
             assert!(!role_permits(Role::Denied, ArtifactKind::File, op));
+        }
+    }
+
+    #[test]
+    fn editor_can_drive_surface_streams() {
+        // Pin the role-table decision for legacy-app remote-desktop
+        // hosting: an Editor on the channel may emit all four
+        // surface-stream op classes. Hosting a stream is authorial,
+        // and so is injecting remote input into the hosted app.
+        for kind in [
+            ArtifactKind::Note,
+            ArtifactKind::File,
+            ArtifactKind::Cluster,
+            ArtifactKind::Kanban,
+            ArtifactKind::ChatLog,
+        ] {
+            assert!(role_permits(
+                Role::Editor,
+                kind,
+                OpClass::SurfaceStreamStart
+            ));
+            assert!(role_permits(
+                Role::Editor,
+                kind,
+                OpClass::SurfaceStreamEnd
+            ));
+            assert!(role_permits(Role::Editor, kind, OpClass::SurfaceFrame));
+            assert!(role_permits(Role::Editor, kind, OpClass::RemoteInput));
+        }
+    }
+
+    #[test]
+    fn commenter_cannot_drive_surface_streams() {
+        // Sister test to `editor_can_drive_surface_streams`: a
+        // Commenter (or any sub-Editor role) cannot start, end, emit
+        // frames for, or inject input into a stream.
+        for op in [
+            OpClass::SurfaceStreamStart,
+            OpClass::SurfaceStreamEnd,
+            OpClass::SurfaceFrame,
+            OpClass::RemoteInput,
+        ] {
+            assert!(!role_permits(Role::Commenter, ArtifactKind::Cluster, op));
+            assert!(!role_permits(Role::Viewer, ArtifactKind::Cluster, op));
+            assert!(!role_permits(Role::Denied, ArtifactKind::Cluster, op));
         }
     }
 }

@@ -28,3 +28,13 @@ postcard = { version = "1", features = ["alloc"] }
 sha2 = "0.10"
 thiserror = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
+# Surface-stream frame payloads. `bytes::Bytes` lets the broker fan
+# out one underlying allocation to N peers without copying. The
+# `serde` feature gives us a length-prefixed wire shape identical to
+# the existing `serde_bytes`-encoded fields.
+bytes = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+# Property test for SurfaceFrame size correctness — see
+# `tests/surface_stream_size.rs`.
+proptest = "1"

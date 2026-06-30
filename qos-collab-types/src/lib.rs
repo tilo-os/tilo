@@ -76,6 +76,7 @@ pub mod op;
 pub mod redaction;
 pub mod role;
 pub mod space;
+pub mod surface_stream;
 pub mod validator;
 
 // Convenience re-exports so downstream callers can do
@@ -103,4 +104,8 @@ pub use redaction::{
 };
 pub use role::{ArtifactKind, OpClass, Role, role_permits};
 pub use space::{Space, SpaceId};
+pub use surface_stream::{
+    ButtonState, KeyState, KeyboardModifiers, RemoteInput, RemoteInputEvent, SurfaceFrame,
+    SurfaceId, SurfaceRole, SurfaceStreamEnd, SurfaceStreamStart, VideoCodec,
+};
 pub use validator::{ChannelState, ValidationError, validate_inbound_op};
