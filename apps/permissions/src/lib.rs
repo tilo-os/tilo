@@ -35,6 +35,7 @@
 pub mod check;
 pub mod doc;
 pub mod editor;
+pub mod identity;
 pub mod model;
 pub mod registry;
 pub mod sample;
@@ -42,6 +43,7 @@ pub mod seam;
 
 pub use check::{Resolution, Source, check, explain};
 pub use editor::{EditorTab, EditorView};
+pub use identity::{Identity, IdentitySource};
 pub use model::{
     Context, ContextId, Decision, Grant, Member, MemberId, Override, PermissionId, PermissionSet,
     Role, RoleGrant, RoleId, Scope,
@@ -64,24 +66,33 @@ pub fn app_root() -> Box<dyn Widget> {
 /// `permissions-members.png` (member role assignment + overrides).
 pub fn app_root_for_scenario(scenario: Scenario) -> Box<dyn Widget> {
     match scenario {
-        Scenario::Roles => Box::new(EditorView::from_intent(EditorIntent::roles(None))),
-        Scenario::Members => Box::new(EditorView::from_intent(EditorIntent::members(None))),
+        // Pre-seeded so the screenshot shows the populated editor (the live
+        // app seeds lazily on first sync; a static shot needs it up front).
+        Scenario::Roles => Box::new(EditorView::seeded_sample(EditorTab::Roles, 0, 0)),
+        // The SECOND visible role selected — proves role switching lands on a
+        // different role's grid.
+        Scenario::RolesSecond => Box::new(EditorView::seeded_sample(EditorTab::Roles, 1, 0)),
+        // The member view, with members bound to REAL identities.
+        Scenario::Members => Box::new(EditorView::seeded_sample(EditorTab::Members, 0, 1)),
     }
 }
 
 /// The screenshot scenarios the binary knows how to render.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scenario {
-    /// The role editor with the allow/deny/inherit grid (default).
+    /// The role editor with the allow/deny/inherit grid (default), first role.
     Roles,
-    /// The member view: role assignment + individual overrides.
+    /// The role editor with the SECOND role selected (role-switch proof).
+    RolesSecond,
+    /// The member view: real-identity members, role assignment + overrides.
     Members,
 }
 
 impl Scenario {
-    /// Pick a scenario from a `--shots` output path. A filename
-    /// containing "member" selects the members view; everything else is
-    /// the roles view. Keeps the entry point a single binary.
+    /// Pick a scenario from a `--shots` output path. A filename containing
+    /// "member" selects the members view; "second"/"role2" selects the
+    /// second-role view; everything else is the first-role view. Keeps the
+    /// entry point a single binary.
     pub fn from_shots_path(path: &std::path::Path) -> Scenario {
         let name = path
             .file_stem()
@@ -90,6 +101,8 @@ impl Scenario {
             .to_lowercase();
         if name.contains("member") {
             Scenario::Members
+        } else if name.contains("second") || name.contains("role2") {
+            Scenario::RolesSecond
         } else {
             Scenario::Roles
         }
@@ -110,6 +123,10 @@ mod tests {
         assert_eq!(
             Scenario::from_shots_path(Path::new("/out/permissions.png")),
             Scenario::Roles
+        );
+        assert_eq!(
+            Scenario::from_shots_path(Path::new("/out/permissions-second-role.png")),
+            Scenario::RolesSecond
         );
     }
 

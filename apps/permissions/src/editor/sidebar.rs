@@ -317,7 +317,14 @@ impl SidebarPane {
             RowId::Member(mid) => {
                 let Some(m) = s.set.member(mid) else { return };
                 let n = m.role_ids.len();
-                (m.display_name.clone(), format!("{} role{}", n, if n == 1 { "" } else { "s" }), None)
+                // Resolve the member's real identity (name + canonical
+                // colour dot) so the list shows actual workspace identities,
+                // matching each peer's presence colour.
+                (
+                    s.member_display_name(m),
+                    format!("{} role{}", n, if n == 1 { "" } else { "s" }),
+                    Some(s.member_color(m)),
+                )
             }
         };
         let tx = if let Some(rgb) = color {
@@ -459,7 +466,7 @@ impl Widget for SidebarPane {
                         if rr.contains(self.last_mouse) {
                             if let RowId::Role(rid) = *id {
                                 // Select then open the menu anchored at the cursor.
-                                self.shared.borrow_mut().selected_role = Some(rid);
+                                self.shared.borrow_mut().select_role(rid);
                                 self.open_menu_for(rid, self.last_mouse);
                                 *handled = true;
                                 return;
@@ -476,7 +483,12 @@ impl Widget for SidebarPane {
                         match *id {
                             RowId::Role(rid) => {
                                 let already = self.shared.borrow().selected_role == Some(rid);
-                                self.shared.borrow_mut().selected_role = Some(rid);
+                                // Route through `select_role` so the shared
+                                // revision/dirty bumps and EditorView actually
+                                // relays-out + repaints the grid for the newly
+                                // selected role. A bare assignment here was the
+                                // "clicking another role doesn't switch" bug.
+                                self.shared.borrow_mut().select_role(rid);
                                 // Every press on a role arms a potential
                                 // drag. If this press was a *second* click on
                                 // the already-selected role's name and no
@@ -488,7 +500,7 @@ impl Widget for SidebarPane {
                                 self.drag = Some(Drag { role: rid, press_y: p.y, cur_y: p.y, active: false, rename_intent });
                             }
                             RowId::Member(mid) => {
-                                self.shared.borrow_mut().selected_member = Some(mid);
+                                self.shared.borrow_mut().select_member(mid);
                             }
                         }
                         self.dirty = true;
