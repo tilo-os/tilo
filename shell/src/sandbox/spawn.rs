@@ -122,6 +122,16 @@ pub fn spawn_in_workspace_with_grants(
         None
     };
 
+    // Landlock layer (`plan/security.md` §7.1): make bwrap exec the
+    // launcher shim, which applies an in-kernel Landlock ruleset derived
+    // from this profile's binds to the app + all descendants *after* bwrap
+    // sets up the namespace, then `execvp`s the real app. This layers WITH
+    // seccomp (both filters apply) and leaves netns/`--unshare-net`
+    // untouched. Best-effort inside the shim: if Landlock is unavailable
+    // the shim logs and execs the app anyway (bwrap + seccomp + netns
+    // still apply), so launches never fail for lack of Landlock.
+    profile.landlock_shim = Some(landlock_shim_path());
+
     let argv = profile.into_argv(command);
     let mut cmd = Command::new("bwrap");
     cmd.args(&argv);
@@ -245,7 +255,20 @@ fn clone_profile(p: &SandboxProfile) -> SandboxProfile {
         wayland_socket: p.wayland_socket.clone(),
         dbus_socket: p.dbus_socket.clone(),
         net_isolated: p.net_isolated,
+        landlock_shim: p.landlock_shim.clone(),
     }
+}
+
+/// Resolve the path bwrap should exec for the Landlock shim.
+///
+/// We point at the running `shell` binary (`current_exe()`), which in
+/// production lives at `/usr/bin/shell` — and `/usr` is `--ro-bind`ed into
+/// every sandbox, so the path resolves identically inside the namespace.
+/// bwrap then runs `<shell> __sandbox-exec …` (see
+/// [`SandboxProfile::into_argv`]). The fallback covers the unlikely
+/// `current_exe()` failure with the canonical install path.
+fn landlock_shim_path() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/bin/shell"))
 }
 
 #[cfg(test)]
