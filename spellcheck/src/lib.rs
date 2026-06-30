@@ -266,6 +266,23 @@ mod tests {
     }
 
     #[test]
+    fn add_word_removes_a_word_from_check_results() {
+        let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
+        // "qos" is unknown → flagged.
+        let before = check(&dict, "the qos fox");
+        assert_eq!(before.len(), 1, "got {before:?}");
+        assert_eq!(before[0].word, "qos");
+        // Accept it into the user dictionary.
+        assert!(dict.add_word("qos"));
+        // Re-check: no longer flagged.
+        let after = check(&dict, "the qos fox");
+        assert!(
+            after.is_empty(),
+            "expected no misspellings after add_word, got {after:?}"
+        );
+    }
+
+    #[test]
     fn from_words_builds_a_usable_dictionary() {
         let dict = Dictionary::from_words(["alpha", "beta", "gamma"]);
         assert!(dict.contains("ALPHA"));
