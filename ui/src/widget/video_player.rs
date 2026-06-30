@@ -480,7 +480,7 @@ impl Widget for VideoPlayer {
         "VideoPlayer"
     }
 
-    /// Accessibility (W3): a media player surface. `Role::Group` named "Video
+    /// Accessibility: a media player surface. `Role::Group` named "Video
     /// player"; `busy` is set while playing so a screen reader can convey
     /// whether playback is active. (Per-control nodes — the play/pause button,
     /// scrub track — are painted, not child widgets, so the group is the single

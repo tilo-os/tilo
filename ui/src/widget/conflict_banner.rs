@@ -441,7 +441,7 @@ impl Widget for ConflictBanner {
         "ConflictBanner"
     }
 
-    /// Accessibility (W3): a conflict alert banner. `Role::Group` named for the
+    /// Accessibility: a conflict alert banner. `Role::Group` named for the
     /// conflict family, with the count in the description ("3 conflicts"). When
     /// the count is 0 the banner paints nothing, so it is marked `hidden` so it
     /// drops out of what an AT announces.
