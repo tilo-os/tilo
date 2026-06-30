@@ -61,19 +61,24 @@ ENV CARGO_HOME=/build/.cargo-home \
 # across rebuilds; a cache-mounted target/ isn't in any layer, so the binaries
 # are cp'd to /out (a real path) in the same RUN for the final stage to COPY.
 #
-# Two CI guards (the image builds under buildkit, not just podman/buildah):
+# Three CI guards (the image builds under buildkit, not just podman/buildah):
 #  - Drop apps/browser (Servo) from the workspace before building: it's never
 #    built here and its `libservo` dep can't resolve in a clean checkout
-#    (Cargo.lock is gitignored, so CI does a fresh resolve of ALL members even
-#    for a `-p shell` build). This sed only runs in-build; the committed
-#    Cargo.toml is untouched.
+#    (the root Cargo.lock is gitignored). This sed only runs in-build; the
+#    committed Cargo.toml is untouched.
+#  - Seed the resolve from a committed pinned lock (os/Cargo.lock.pinned, kept
+#    in sync from a known-good build): without it a fresh CI resolve picks
+#    incompatible transitive versions (e.g. ed25519-dalek vs ed25519/pkcs8).
+#    `cargo build` (not --locked) lets it adjust conservatively for submodule
+#    drift while keeping the good pins.
 #  - Brace the trailing sccache stat so a failing `cargo build` fails the RUN
-#    instead of being swallowed by `|| true` (which masked this very bug as a
+#    instead of being swallowed by `|| true` (which masked a cargo failure as a
 #    confusing downstream "COPY --from /out: not found").
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
+    && cp os/Cargo.lock.pinned Cargo.lock \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
     && mkdir -p /out \
