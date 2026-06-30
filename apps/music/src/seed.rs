@@ -154,6 +154,16 @@ pub fn sample_library() -> Library {
     }
     lib.cache.insert("tk_u3".into(), CacheState::Downloading(0.62));
 
+    // ---- Liked songs + saved albums -----------------------------------
+    // A populated "Liked Songs" + a couple saved albums so the screenshots
+    // show the like/heart affordances in their active state.
+    for id in ["tk_g1", "tk_p1", "tk_u1", "tk_h1", "tk_r3", "tk_a4"] {
+        lib.liked.insert(id.into());
+    }
+    for id in ["al_glasslight", "al_pulse"] {
+        lib.saved_albums.insert(id.into());
+    }
+
     lib
 }
 

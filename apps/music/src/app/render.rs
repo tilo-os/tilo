@@ -137,6 +137,27 @@ impl Widget for MusicApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // While the context menu is open it owns the pointer + keyboard: route
+        // the event to it, then drain any selection into the Action pipeline.
+        if self.context.is_open() {
+            let mut menu_handled = false;
+            let mut ft = None;
+            self.context.handle_event(
+                event, scale_factor, modifiers, state, _path, &mut menu_handled, &mut ft, _node_id, _taffy,
+            );
+            if self.drain_menu_selection(state) {
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+            if menu_handled || matches!(event, WindowEvent::MouseInput { state: ElementState::Pressed, .. }) {
+                // The menu consumed the click (selection / outside-dismiss).
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -152,6 +173,13 @@ impl Widget for MusicApp {
                             self.dispatch(Action::VolumeFrac(f), state);
                         }
                     }
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // Right-click opens a track's context menu where one is registered.
+                if let Some(action) = self.row_menu_at(self.mouse) {
+                    self.dispatch(action, state);
                     *handled = true;
                 }
             }
@@ -263,6 +291,40 @@ impl MusicApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        // The name-input overlay owns typing while open.
+        if self.name_prompt.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.dispatch(Action::CloseNamePrompt, state);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.name_input.pop();
+                    self.dirty = true;
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    let commit = match self.name_prompt.clone() {
+                        Some(NamePrompt::NewPlaylist) => Action::CreatePlaylist,
+                        Some(NamePrompt::Rename(id)) => Action::CommitRename(id),
+                        None => Action::None,
+                    };
+                    self.dispatch(commit, state);
+                    *handled = true;
+                }
+                _ => {
+                    if let Some(tx) = text {
+                        if !tx.is_empty() && !tx.chars().any(|c| c.is_control()) {
+                            self.name_input.push_str(tx);
+                            self.dirty = true;
+                            *handled = true;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // Search field owns typing while focused.
         if self.search_focused {
             match key {
@@ -356,8 +418,11 @@ impl MusicApp {
 
     // ---- master frame -----------------------------------------------------
 
-    fn render_frame(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    pub(super) fn render_frame(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.hits.clear();
+        self.row_menu_hits.clear();
+        // Apply any deferred `--shots` staging now that `rect` is known.
+        self.apply_shot_stage();
         self.tick();
         if let Some((_, at)) = &self.toast {
             if at.elapsed().as_secs_f32() > 2.6 {
@@ -438,6 +503,18 @@ impl MusicApp {
         }
 
         self.draw_toast(scene, t, tr, &c);
+
+        // Inline name-input overlay (create / rename playlist).
+        if self.name_prompt.is_some() {
+            self.draw_name_prompt(scene, t, tr, &c);
+        }
+
+        // The context menu paints last so it sits on top of all content.
+        if self.context.is_open() {
+            // Dimming scrim that also dismisses on click (registered as a hit).
+            self.context
+                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+        }
     }
 
     /// The hamburger (or close-chevron) toggle that summons / dismisses the
@@ -489,6 +566,21 @@ impl MusicApp {
         icon::draw(scene, t, Icon::Disc, Point::new(bx + 10.0, r.y0 + 34.0), 24.0, c.accent);
         draw_text(tr, scene, t, "Music", bx + 30.0, r.y0 + 22.0, 20.0, c.text, TextWeight::Bold, None);
 
+        // Docked-collapse affordance: a left-chevron button at the brand row's
+        // right edge, shown only when the sidebar is docked + open (so there's
+        // always a visible way to collapse it — the hamburger only reappears
+        // once collapsed). NOTE for ui promotion: NavSplit/FlapState provide
+        // the docked-collapse *state machine* but no collapse *button* or a
+        // collapsed-rail mode; this affordance is added app-locally.
+        if self.sidebar_layout() == SplitLayout::Docked && self.flap.reveal() > 0.5 {
+            let cb = Rect::new(r.x1 - 44.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 46.0);
+            let hover = self.push_hit(cb, Action::ToggleSidebar);
+            if hover {
+                fill_rrect(scene, t, cb, 8.0, c.white10);
+            }
+            icon::draw(scene, t, Icon::ChevronLeft, cb.center(), 16.0, if hover { c.text } else { c.dim });
+        }
+
         let mut y = r.y0 + 70.0;
         let nav = [
             (Icon::Home, "Home", View::Home),
@@ -496,6 +588,7 @@ impl MusicApp {
             (Icon::Songs, "Songs", View::Songs),
             (Icon::Albums, "Albums", View::Albums),
             (Icon::Artists, "Artists", View::Artists),
+            (Icon::HeartFilled, "Liked Songs", View::Liked),
             (Icon::Download, "Downloads", View::Downloads),
             (Icon::Queue, "Queue", View::Queue),
         ];
@@ -507,9 +600,9 @@ impl MusicApp {
         // Playlists header.
         y += 14.0;
         draw_text(tr, scene, t, "PLAYLISTS", r.x0 + 24.0, y, 11.0, c.dim, TextWeight::Semibold, None);
-        // New-playlist plus (decorative entry that navigates to playlists).
+        // New-playlist plus — opens the inline create prompt.
         let plus_rect = Rect::new(r.x1 - 40.0, y - 4.0, r.x1 - 16.0, y + 20.0);
-        let plus_hover = self.push_hit(plus_rect, Action::Nav(View::Playlists));
+        let plus_hover = self.push_hit(plus_rect, Action::BeginNewPlaylist);
         icon::draw(
             scene,
             t,
@@ -631,8 +724,10 @@ impl MusicApp {
             View::Artists => "Artists".into(),
             View::Playlists => "Playlists".into(),
             View::Downloads => "Downloads".into(),
+            View::Liked => "Liked Songs".into(),
             View::Search => "Search".into(),
             View::Queue => "Queue".into(),
+            View::Lyrics => "Lyrics".into(),
             View::Album(id) => self.lib.album_title(id).to_string(),
             View::Artist(id) => self.lib.artist(id).map(|a| a.name.clone()).unwrap_or_default(),
             View::Playlist(id) => self.lib.playlist(id).map(|p| p.name.clone()).unwrap_or_default(),
@@ -662,7 +757,9 @@ impl MusicApp {
                 self.draw_playlist_grid(scene, t, tr, c, body, y, &pls)
             }
             View::Downloads => self.draw_downloads(scene, t, tr, c, body, y),
+            View::Liked => self.draw_liked(scene, t, tr, c, body, y),
             View::Queue => self.draw_queue(scene, t, tr, c, body, y),
+            View::Lyrics => self.draw_lyrics(scene, t, tr, c, body, y),
             View::Search => self.draw_search(scene, t, tr, c, body, y),
             View::Album(id) => self.draw_album_detail(scene, t, tr, c, body, y, &id),
             View::Artist(id) => self.draw_artist_detail(scene, t, tr, c, body, y, &id),
@@ -735,6 +832,22 @@ impl MusicApp {
             }
             let art_rect = Rect::new(cx, cy, cx + card_w, cy + card_w);
             art::draw_album_art(scene, t, art_rect, &a.id, &a.title, tr, 12.0);
+            let saved = self.lib.is_album_saved(&a.id);
+            // Add-to-library quick toggle: always shown when saved (so the
+            // saved state reads at a glance), and on hover otherwise.
+            if hover || saved {
+                let add_c = Point::new(art_rect.x0 + 26.0, art_rect.y0 + 26.0);
+                let ah = self.push_hit(square_around(add_c, 34.0), Action::ToggleSaveAlbum(a.id.clone()));
+                scene.fill(Fill::NonZero, t, c.scrim.multiply_alpha(0.55), None, &Circle::new(add_c, 16.0));
+                icon::draw(
+                    scene,
+                    t,
+                    if saved { Icon::Downloaded } else { Icon::Plus },
+                    add_c,
+                    if saved { 15.0 } else { 16.0 },
+                    if saved { c.success } else if ah { c.text } else { c.text.multiply_alpha(0.85) },
+                );
+            }
             // Play FAB on hover.
             if hover {
                 let fab = Circle::new(Point::new(art_rect.x1 - 26.0, art_rect.y1 - 26.0), 20.0);
@@ -798,7 +911,7 @@ impl MusicApp {
 
     // ---- playlist grid ----------------------------------------------------
 
-    fn draw_playlist_grid(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, pls: &[PlaylistDisp]) -> f64 {
+    fn draw_playlist_grid(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64, pls: &[PlaylistDisp]) -> f64 {
         let pad = 28.0;
         let gap = 22.0;
         let target = 176.0;
@@ -806,6 +919,14 @@ impl MusicApp {
         let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
         let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
         let card_h = card_w + 56.0;
+
+        // "Create playlist" pill above the grid.
+        let create = Rect::new(body.x0 + pad, y, body.x0 + pad + 184.0, y + 40.0);
+        let ch = self.push_hit(create, Action::BeginNewPlaylist);
+        fill_rrect(scene, t, create, 20.0, if ch { c.accent_hover } else { c.accent });
+        icon::draw(scene, t, Icon::Plus, Point::new(create.x0 + 24.0, create.center().y), 16.0, c.bg);
+        draw_text(tr, scene, t, "New playlist", create.x0 + 44.0, vy(create.y0, 40.0, 14.0), 14.0, c.bg, TextWeight::Semibold, None);
+        y += 56.0;
 
         for (i, p) in pls.iter().enumerate() {
             let cx = body.x0 + pad + (i % cols) as f64 * (card_w + gap);
@@ -854,6 +975,13 @@ impl MusicApp {
             let rr = Rect::new(left, y, right, y + row_h);
             let is_current = self.pb.current.as_deref() == Some(tk.id.as_str());
             let hovered = self.body_hit(rr, Action::Play { queue: queue.to_vec(), index: i });
+            // Right-click anywhere on the row opens its context menu.
+            if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
+                self.push_row_menu(
+                    rr,
+                    Action::OpenTrackMenu { track: tk.id.clone(), in_playlist: None, queue_index: None },
+                );
+            }
             if hovered {
                 fill_rrect(scene, t, rr, 8.0, c.white5);
             }
@@ -882,8 +1010,24 @@ impl MusicApp {
                 draw_text(tr, scene, t, &artist, text_x, y + 28.0, 12.0, c.dim, TextWeight::Regular, None);
 
                 if show_album && right - album_x > 80.0 {
-                    let al = elide(tr, &tk.album, 13.0, TextWeight::Regular, dl_x - album_x - 16.0);
+                    let al = elide(tr, &tk.album, 13.0, TextWeight::Regular, dl_x - 48.0 - album_x - 16.0);
                     draw_text(tr, scene, t, &al, album_x, vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
+                }
+
+                // Like toggle (heart) just left of the download control.
+                let like_x = dl_x - 34.0;
+                let liked = self.lib.is_liked(&tk.id);
+                let like_rect = Rect::new(like_x - 14.0, y + row_h / 2.0 - 14.0, like_x + 14.0, y + row_h / 2.0 + 14.0);
+                let like_hover = self.push_hit(like_rect, Action::ToggleLike(tk.id.clone()));
+                if liked || like_hover || hovered {
+                    icon::draw(
+                        scene,
+                        t,
+                        if liked { Icon::HeartFilled } else { Icon::Heart },
+                        Point::new(like_x, y + row_h / 2.0),
+                        15.0,
+                        if liked { c.accent } else if like_hover { c.text } else { c.dim },
+                    );
                 }
 
                 // Download toggle.
@@ -916,6 +1060,86 @@ impl MusicApp {
         y
     }
 
+    /// Track rows for a playlist detail: like the standard table but each row
+    /// carries reorder (up/down) + remove affordances bound to the playlist,
+    /// and a right-click opens the track context menu in this playlist's
+    /// context.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_playlist_tracks(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        c: &Palette,
+        body: Rect,
+        mut y: f64,
+        rows: &[TrackDisp],
+        ids: &[String],
+        playlist_id: &str,
+    ) -> f64 {
+        let pad = 28.0;
+        let left = body.x0 + pad;
+        let right = body.x1 - pad;
+        let row_h = 52.0;
+        let n = rows.len();
+        // Right-side control cluster: up, down, remove, then duration.
+        let dur_x = right - 48.0;
+        let rm_x = dur_x - 34.0;
+        let dn_x = rm_x - 30.0;
+        let up_x = dn_x - 30.0;
+
+        if n == 0 {
+            draw_text(tr, scene, t, "This playlist is empty. Right-click a song \u{2192} Add to playlist\u{2026}", left, y + 6.0, 13.0, c.dim, TextWeight::Regular, None);
+            return y + 40.0;
+        }
+
+        for (i, tk) in rows.iter().enumerate() {
+            let rr = Rect::new(left, y, right, y + row_h);
+            let is_current = self.pb.current.as_deref() == Some(tk.id.as_str());
+            let hovered = self.body_hit(rr, Action::Play { queue: ids.to_vec(), index: i });
+            // Right-click → context menu in this playlist.
+            self.push_row_menu(
+                rr,
+                Action::OpenTrackMenu { track: tk.id.clone(), in_playlist: Some(playlist_id.to_string()), queue_index: None },
+            );
+            if hovered {
+                fill_rrect(scene, t, rr, 8.0, c.white5);
+            }
+            if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
+                let num = format!("{}", i + 1);
+                draw_text(tr, scene, t, &num, left + 8.0, vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
+                let title_col = if is_current { c.accent } else { c.text };
+                let title = elide(tr, &tk.title, 14.0, TextWeight::Medium, up_x - left - 60.0);
+                draw_text(tr, scene, t, &title, left + 36.0, y + 9.0, 14.0, title_col, TextWeight::Medium, None);
+                let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, up_x - left - 60.0);
+                draw_text(tr, scene, t, &artist, left + 36.0, y + 28.0, 12.0, c.dim, TextWeight::Regular, None);
+
+                if hovered {
+                    // Move up (disabled visually on the first row).
+                    if i > 0 {
+                        let uc = Point::new(up_x, y + row_h / 2.0);
+                        let uh = self.push_hit(square_around(uc, 26.0), Action::MovePlaylistItem { playlist: playlist_id.to_string(), from: i, to: i - 1 });
+                        draw_chevron(scene, t, uc, true, if uh { c.text } else { c.dim });
+                    }
+                    if i + 1 < n {
+                        let dc = Point::new(dn_x, y + row_h / 2.0);
+                        let dh = self.push_hit(square_around(dc, 26.0), Action::MovePlaylistItem { playlist: playlist_id.to_string(), from: i, to: i + 1 });
+                        draw_chevron(scene, t, dc, false, if dh { c.text } else { c.dim });
+                    }
+                    let rc = Point::new(rm_x, y + row_h / 2.0);
+                    let rh = self.push_hit(square_around(rc, 26.0), Action::RemoveFromPlaylist { playlist: playlist_id.to_string(), track: tk.id.clone() });
+                    draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
+                }
+
+                let dur = fmt_duration(tk.dur as u64);
+                let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
+                draw_text(tr, scene, t, &dur, dur_x + (40.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
+            }
+            y += row_h;
+        }
+        y
+    }
+
     // ---- detail pages -----------------------------------------------------
 
     fn draw_detail_header(
@@ -932,6 +1156,7 @@ impl MusicApp {
         subtitle: &str,
         queue: Vec<String>,
         circular: bool,
+        lib_button: Option<(String, bool)>,
     ) -> f64 {
         let pad = 28.0;
         let art_d = 168.0;
@@ -969,6 +1194,23 @@ impl MusicApp {
         scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(shuf, 20.0));
         icon::draw(scene, t, Icon::Shuffle, shuf.center(), 18.0, if self.pb.shuffle { c.accent } else if sh { c.text } else { c.dim });
 
+        // Optional trailing "Add to library" pill (album header). `saved`
+        // flips it to an "In Library" confirmed state.
+        if let Some((id, saved)) = lib_button {
+            let pw = 150.0;
+            let lib = Rect::new(shuf.x1 + 12.0, by, shuf.x1 + 12.0 + pw, by + 40.0);
+            let lh = self.push_hit(lib, Action::ToggleSaveAlbum(id));
+            if saved {
+                fill_rrect(scene, t, lib, 20.0, c.success.multiply_alpha(0.18));
+                icon::draw(scene, t, Icon::Downloaded, Point::new(lib.x0 + 22.0, lib.center().y), 16.0, c.success);
+                draw_text(tr, scene, t, "In Library", lib.x0 + 42.0, vy(by, 40.0, 14.0), 14.0, c.success, TextWeight::Semibold, None);
+            } else {
+                scene.stroke(&Stroke::new(1.0), t, if lh { c.text } else { c.border }, None, &rrect(lib, 20.0));
+                icon::draw(scene, t, Icon::Plus, Point::new(lib.x0 + 22.0, lib.center().y), 16.0, if lh { c.text } else { c.dim });
+                draw_text(tr, scene, t, "Add to Library", lib.x0 + 42.0, vy(by, 40.0, 14.0), 14.0, if lh { c.text } else { c.dim }, TextWeight::Semibold, None);
+            }
+        }
+
         y + art_d + 36.0
     }
 
@@ -982,7 +1224,8 @@ impl MusicApp {
             (title, artist, year, ids)
         };
         let subtitle = format!("{artist} · {year} · {} songs", ids.len());
-        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ALBUM", &title, &subtitle, ids.clone(), false);
+        let saved = self.lib.is_album_saved(id);
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ALBUM", &title, &subtitle, ids.clone(), false, Some((id.to_string(), saved)));
         let rows = self.gather_tracks(&ids);
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true)
     }
@@ -1000,7 +1243,7 @@ impl MusicApp {
             (name, genre, listeners, top_ids, albums)
         };
         let subtitle = format!("{genre} · {} monthly listeners", human_count(listeners));
-        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ARTIST", &name, &subtitle, top_ids.clone(), true);
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ARTIST", &name, &subtitle, top_ids.clone(), true, None);
 
         let mut y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
         let rows = self.gather_tracks(&top_ids);
@@ -1020,9 +1263,24 @@ impl MusicApp {
         };
         let total: u32 = self.gather_tracks(&ids).iter().map(|r| r.dur).sum();
         let subtitle = format!("{} · {} songs · {}", desc, ids.len(), fmt_duration(total as u64));
-        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "PLAYLIST", &name, &subtitle, ids.clone(), false);
+        let mut y = self.draw_detail_header(scene, t, tr, c, body, y, id, "PLAYLIST", &name, &subtitle, ids.clone(), false, None);
+
+        // Playlist management row: rename + delete (below the play/shuffle row).
+        let pad = 28.0;
+        let mx = body.x0 + pad;
+        let ren = Rect::new(mx, y - 8.0, mx + 96.0, y + 24.0);
+        let rh = self.push_hit(ren, Action::BeginRenamePlaylist(id.to_string()));
+        scene.stroke(&Stroke::new(1.0), t, if rh { c.text } else { c.border }, None, &rrect(ren, 16.0));
+        draw_text(tr, scene, t, "Rename", ren.x0 + 18.0, vy(ren.y0, 32.0, 13.0), 13.0, if rh { c.text } else { c.dim }, TextWeight::Medium, None);
+        let del = Rect::new(ren.x1 + 10.0, y - 8.0, ren.x1 + 10.0 + 90.0, y + 24.0);
+        let dh = self.push_hit(del, Action::DeletePlaylist(id.to_string()));
+        scene.stroke(&Stroke::new(1.0), t, if dh { c.accent } else { c.border }, None, &rrect(del, 16.0));
+        draw_text(tr, scene, t, "Delete", del.x0 + 18.0, vy(del.y0, 32.0, 13.0), 13.0, if dh { c.accent } else { c.dim }, TextWeight::Medium, None);
+        y += 36.0;
+
         let rows = self.gather_tracks(&ids);
-        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true)
+        // Playlist rows carry remove + reorder affordances bound to this id.
+        self.draw_playlist_tracks(scene, t, tr, c, body, y, &rows, &ids, id)
     }
 
     // ---- queue ------------------------------------------------------------
@@ -1065,18 +1323,46 @@ impl MusicApp {
         let left = body.x0 + pad;
         let right = body.x1 - pad;
         let row_h = 52.0;
+        let qlen = full_queue.len();
+        let dur_x = right - 48.0;
+        let rm_x = dur_x - 34.0;
+        let dn_x = rm_x - 30.0;
+        let up_x = dn_x - 30.0;
         for (i, tk) in rows.iter().enumerate() {
+            let abs = offset + i; // absolute queue index
             let rr = Rect::new(left, y, right, y + row_h);
-            let hovered = self.body_hit(rr, Action::Play { queue: full_queue.to_vec(), index: offset + i });
+            let hovered = self.body_hit(rr, Action::Play { queue: full_queue.to_vec(), index: abs });
+            if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
+                self.push_row_menu(
+                    rr,
+                    Action::OpenTrackMenu { track: tk.id.clone(), in_playlist: None, queue_index: Some(abs) },
+                );
+            }
             if hovered {
                 fill_rrect(scene, t, rr, 8.0, c.white5);
             }
             if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
                 draw_text(tr, scene, t, &tk.title, left + 8.0, y + 9.0, 14.0, c.text, TextWeight::Medium, None);
                 draw_text(tr, scene, t, &tk.artist, left + 8.0, y + 28.0, 12.0, c.dim, TextWeight::Regular, None);
+                // Reorder + remove on hover.
+                if hovered {
+                    if abs > offset {
+                        let uc = Point::new(up_x, y + row_h / 2.0);
+                        let uh = self.push_hit(square_around(uc, 26.0), Action::MoveQueueItem { from: abs, to: abs - 1 });
+                        draw_chevron(scene, t, uc, true, if uh { c.text } else { c.dim });
+                    }
+                    if abs + 1 < qlen {
+                        let dc = Point::new(dn_x, y + row_h / 2.0);
+                        let dh = self.push_hit(square_around(dc, 26.0), Action::MoveQueueItem { from: abs, to: abs + 1 });
+                        draw_chevron(scene, t, dc, false, if dh { c.text } else { c.dim });
+                    }
+                    let rc = Point::new(rm_x, y + row_h / 2.0);
+                    let rh = self.push_hit(square_around(rc, 26.0), Action::RemoveFromQueue(abs));
+                    draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
+                }
                 let dur = fmt_duration(tk.dur as u64);
                 let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
-                draw_text(tr, scene, t, &dur, right - dw as f64, vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
+                draw_text(tr, scene, t, &dur, dur_x + (40.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
             }
             y += row_h;
         }
@@ -1109,6 +1395,94 @@ impl MusicApp {
         }
         let rows = self.gather_tracks(&ids);
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, false)
+    }
+
+    // ---- liked songs ------------------------------------------------------
+
+    fn draw_liked(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64) -> f64 {
+        let pad = 28.0;
+        let ids = self.lib.liked_ids();
+        let total_s: u64 = ids.iter().filter_map(|id| self.lib.track(id)).map(|tk| tk.duration_s as u64).sum();
+
+        // Banner with a heart sigil.
+        let banner = Rect::new(body.x0 + pad, y + 16.0, body.x1 - pad, y + 16.0 + 88.0);
+        // A gradient-ish two-tone block (reuse album-art palette of the heart).
+        let (base, accent) = art::art_colors("liked-songs");
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rrect(banner, 14.0));
+        scene.fill(Fill::NonZero, t, base, None, &banner);
+        scene.fill(Fill::NonZero, t, accent.multiply_alpha(0.7), None, &Circle::new(Point::new(banner.x1 - 40.0, banner.y1), 80.0));
+        scene.pop_layer();
+        icon::draw(scene, t, Icon::HeartFilled, Point::new(banner.x0 + 50.0, banner.center().y), 44.0, Color::WHITE);
+        draw_text(tr, scene, t, "Liked Songs", banner.x0 + 92.0, banner.y0 + 22.0, 24.0, Color::WHITE, TextWeight::Bold, None);
+        draw_text(tr, scene, t, &format!("{} songs · {}", ids.len(), fmt_duration(total_s)), banner.x0 + 92.0, banner.y0 + 54.0, 14.0, Color::WHITE.multiply_alpha(0.85), TextWeight::Regular, None);
+        // Play-all FAB.
+        if !ids.is_empty() {
+            let fab = Circle::new(Point::new(banner.x1 - 44.0, banner.center().y), 22.0);
+            let ph = self.push_hit(square_around(fab.center, 50.0), Action::Play { queue: ids.clone(), index: 0 });
+            scene.fill(Fill::NonZero, t, if ph { c.accent_hover } else { c.accent }, None, &fab);
+            icon::draw(scene, t, Icon::Play, Point::new(fab.center.x + 1.0, fab.center.y), 18.0, c.bg);
+        }
+        y += 16.0 + 88.0 + 16.0;
+
+        if ids.is_empty() {
+            draw_text(tr, scene, t, "No liked songs yet. Tap the heart on any track.", body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
+            return y + 40.0;
+        }
+        let rows = self.gather_tracks(&ids);
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true)
+    }
+
+    // ---- lyrics -----------------------------------------------------------
+
+    fn draw_lyrics(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64) -> f64 {
+        let pad = 28.0;
+        // Resolve lyrics for the current track (cached by id).
+        self.ensure_lyrics();
+        y += 16.0;
+
+        let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
+        if let Some(tk) = &cur {
+            draw_text(tr, scene, t, &tk.title, body.x0 + pad, y, 22.0, c.text, TextWeight::Bold, None);
+            draw_text(tr, scene, t, &tk.artist, body.x0 + pad, y + 30.0, 14.0, c.dim, TextWeight::Regular, None);
+            y += 64.0;
+        } else {
+            draw_text(tr, scene, t, "Play a track to see its lyrics.", body.x0 + pad, y, 14.0, c.dim, TextWeight::Regular, None);
+            return y + 40.0;
+        }
+
+        if self.lyrics.is_empty() {
+            draw_text(tr, scene, t, "No lyrics found for this track.", body.x0 + pad, y, 14.0, c.dim, TextWeight::Regular, None);
+            let note = if cfg!(feature = "lyrics") {
+                "Fetching from lrclib\u{2026}"
+            } else {
+                "Live lyrics fetch is gated behind the `lyrics` feature; bundled samples shown when available."
+            };
+            draw_text(tr, scene, t, note, body.x0 + pad, y + 24.0, 12.0, c.dim, TextWeight::Regular, None);
+            return y + 60.0;
+        }
+
+        // Highlight the current synced line against the playhead.
+        let pos = self.playhead_ms as u64;
+        let current = if self.lyrics_synced {
+            lyrics::Lyrics { lines: self.lyrics.clone(), synced: true }.current_line(pos)
+        } else {
+            None
+        };
+
+        let line_h = 30.0;
+        for (i, line) in self.lyrics.iter().enumerate() {
+            let active = Some(i) == current;
+            let col = if active { c.accent } else if self.lyrics_synced { c.dim } else { c.text };
+            let weight = if active { TextWeight::Bold } else { TextWeight::Medium };
+            let size = if active { 17.0 } else { 15.0 };
+            let text = if line.text.is_empty() { " " } else { line.text.as_str() };
+            draw_text(tr, scene, t, text, body.x0 + pad, y, size, col, weight, Some((body.width() - 2.0 * pad) as f32));
+            y += line_h;
+        }
+        let src = if self.lyrics_synced { "Synced lyrics" } else { "Lyrics" };
+        let gated = if cfg!(feature = "lyrics") { "live fetch via lrclib" } else { "bundled sample (live fetch gated behind `lyrics`)" };
+        draw_text(tr, scene, t, &format!("{src} · {gated}"), body.x0 + pad, y + 8.0, 11.0, c.dim, TextWeight::Regular, None);
+        y + 28.0
     }
 
     // ---- search -----------------------------------------------------------
@@ -1188,7 +1562,7 @@ impl MusicApp {
 
         let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
 
-        // Left: art + title/artist.
+        // Left: art + title/artist + like + lyrics affordance.
         let lx = r.x0 + 16.0;
         if let Some(tk) = &cur {
             let art = Rect::new(lx, r.y0 + 14.0, lx + 64.0, r.y0 + 78.0);
@@ -1196,11 +1570,37 @@ impl MusicApp {
             // Clicking the art jumps to its album.
             self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
             let tx = art.x1 + 14.0;
-            let maxw = 300.0 - 64.0 - 30.0;
+            // Reserve room on the right of the title block for the heart +
+            // lyrics buttons so they never overlap the title text.
+            let heart_c = Point::new(r.x0 + 300.0 - 48.0, r.y0 + 30.0);
+            let lyr_c = Point::new(r.x0 + 300.0 - 22.0, r.y0 + 30.0);
+            let maxw = (heart_c.x - tx - 28.0).max(40.0);
             let title = elide(tr, &tk.title, 14.0, TextWeight::Semibold, maxw);
             draw_text(tr, scene, t, &title, tx, r.y0 + 26.0, 14.0, c.text, TextWeight::Semibold, None);
             let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, maxw);
             draw_text(tr, scene, t, &artist, tx, r.y0 + 48.0, 12.0, c.dim, TextWeight::Regular, None);
+
+            // Heart / like toggle next to the song name.
+            let liked = self.lib.is_liked(&tk.id);
+            let hh = self.push_hit(square_around(heart_c, 28.0), Action::ToggleLike(tk.id.clone()));
+            icon::draw(
+                scene,
+                t,
+                if liked { Icon::HeartFilled } else { Icon::Heart },
+                heart_c,
+                18.0,
+                if liked { c.accent } else if hh { c.text } else { c.dim },
+            );
+            // Lyrics shortcut.
+            let lh = self.push_hit(square_around(lyr_c, 28.0), Action::Nav(View::Lyrics));
+            icon::draw(
+                scene,
+                t,
+                Icon::Note,
+                lyr_c,
+                18.0,
+                if self.view == View::Lyrics { c.accent } else if lh { c.text } else { c.dim },
+            );
         } else {
             draw_text(tr, scene, t, "Nothing playing", lx, vy(r.y0, NOWPLAYING_H, 14.0), 14.0, c.dim, TextWeight::Regular, None);
         }
@@ -1301,6 +1701,58 @@ impl MusicApp {
         }
     }
 
+    // ---- inline name prompt (create / rename playlist) --------------------
+
+    fn draw_name_prompt(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette) {
+        let (title, commit): (&str, Action) = match self.name_prompt.clone() {
+            Some(NamePrompt::NewPlaylist) => ("New playlist", Action::CreatePlaylist),
+            Some(NamePrompt::Rename(id)) => ("Rename playlist", Action::CommitRename(id)),
+            None => return,
+        };
+        // Dim the app behind the dialog; a click on the scrim cancels.
+        scene.fill(Fill::NonZero, t, c.scrim.multiply_alpha(0.5), None, &self.rect);
+        self.push_hit(self.rect, Action::CloseNamePrompt);
+
+        let w = 420.0_f64.min(self.rect.width() - 48.0);
+        let h = 168.0;
+        let x0 = (self.rect.x0 + self.rect.x1) / 2.0 - w / 2.0;
+        let y0 = (self.rect.y0 + self.rect.y1) / 2.0 - h / 2.0;
+        let dialog = Rect::new(x0, y0, x0 + w, y0 + h);
+        fill_rrect(scene, t, dialog, 16.0, c.card);
+        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(dialog, 16.0));
+        // Block clicks inside the dialog from hitting the scrim.
+        self.push_hit(dialog, Action::None);
+
+        draw_text(tr, scene, t, title, x0 + 24.0, y0 + 22.0, 18.0, c.text, TextWeight::Bold, None);
+
+        // Text field.
+        let field = Rect::new(x0 + 24.0, y0 + 56.0, x0 + w - 24.0, y0 + 92.0);
+        fill_rrect(scene, t, field, 10.0, c.panel);
+        scene.stroke(&Stroke::new(1.5), t, c.accent, None, &rrect(field, 10.0));
+        let shown = elide(tr, &self.name_input, 15.0, TextWeight::Regular, field.width() - 28.0);
+        let col = if self.name_input.is_empty() { c.dim } else { c.text };
+        let label = if self.name_input.is_empty() { "Playlist name" } else { shown.as_str() };
+        draw_text(tr, scene, t, label, field.x0 + 14.0, vy(field.y0, 36.0, 15.0), 15.0, col, TextWeight::Regular, None);
+        // Caret.
+        let cw = tr.measure_weighted(&self.name_input, 15.0, None, TextWeight::Regular).0 as f64;
+        let cx = (field.x0 + 14.0 + cw).min(field.x1 - 12.0);
+        scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(cx, field.y0 + 9.0, cx + 1.5, field.y1 - 9.0));
+
+        // Buttons.
+        let by = y0 + h - 48.0;
+        let cancel = Rect::new(x0 + w - 24.0 - 200.0, by, x0 + w - 24.0 - 108.0, by + 36.0);
+        let ch = self.push_hit(cancel, Action::CloseNamePrompt);
+        scene.stroke(&Stroke::new(1.0), t, if ch { c.text } else { c.border }, None, &rrect(cancel, 18.0));
+        let (caw, _) = tr.measure_weighted("Cancel", 14.0, None, TextWeight::Semibold);
+        draw_text(tr, scene, t, "Cancel", cancel.center().x - caw as f64 / 2.0, vy(by, 36.0, 14.0), 14.0, if ch { c.text } else { c.dim }, TextWeight::Semibold, None);
+        let ok = Rect::new(x0 + w - 24.0 - 96.0, by, x0 + w - 24.0, by + 36.0);
+        let oh = self.push_hit(ok, commit);
+        fill_rrect(scene, t, ok, 18.0, if oh { c.accent_hover } else { c.accent });
+        let ok_label = if matches!(self.name_prompt, Some(NamePrompt::Rename(_))) { "Save" } else { "Create" };
+        let (ow, _) = tr.measure_weighted(ok_label, 14.0, None, TextWeight::Semibold);
+        draw_text(tr, scene, t, ok_label, ok.center().x - ow as f64 / 2.0, vy(by, 36.0, 14.0), 14.0, c.bg, TextWeight::Semibold, None);
+    }
+
     // ---- gather helpers (own data so draw can borrow &mut self) -----------
 
     fn gather_tracks(&self, ids: &[String]) -> Vec<TrackDisp> {
@@ -1398,6 +1850,26 @@ impl TrackDisp {
 
 fn square_around(c: Point, size: f64) -> Rect {
     Rect::new(c.x - size / 2.0, c.y - size / 2.0, c.x + size / 2.0, c.y + size / 2.0)
+}
+
+/// A small up/down chevron for reorder controls.
+fn draw_chevron(scene: &mut Scene, t: Affine, center: Point, up: bool, color: Color) {
+    let s = 5.0;
+    let dy = if up { -1.0 } else { 1.0 };
+    let mut p = vello::kurbo::BezPath::new();
+    p.move_to((center.x - s, center.y + dy * s * 0.5));
+    p.line_to((center.x, center.y - dy * s * 0.5));
+    p.line_to((center.x + s, center.y + dy * s * 0.5));
+    scene.stroke(&Stroke::new(1.6).with_caps(vello::kurbo::Cap::Round), t, color, None, &p);
+}
+
+/// A small "x" (remove) glyph.
+fn draw_x(scene: &mut Scene, t: Affine, center: Point, color: Color) {
+    let s = 5.0;
+    let a = vello::kurbo::Line::new((center.x - s, center.y - s), (center.x + s, center.y + s));
+    let b = vello::kurbo::Line::new((center.x + s, center.y - s), (center.x - s, center.y + s));
+    scene.stroke(&Stroke::new(1.6).with_caps(vello::kurbo::Cap::Round), t, color, None, &a);
+    scene.stroke(&Stroke::new(1.6).with_caps(vello::kurbo::Cap::Round), t, color, None, &b);
 }
 
 /// Theme-derived palette resolved once per frame.
