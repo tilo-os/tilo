@@ -14,6 +14,7 @@ members = [
     "apps/terminal",
     "apps/browser",
     "apps/notes",
+    "apps/osk",
     "apps/collab-broker",
     "apps/settings",
     "greeter",
