@@ -37,14 +37,14 @@
 # installs *itself* onto the disk — no network pull needed for the OS bits.
 # The target image *reference* recorded in the install (so future
 # `bootc upgrade` knows where to pull from) defaults to
-# ghcr.io/nirios/qos:latest and is overridable via $QOS_TARGET_IMGREF.
+# code.sandbox.example/qos/qos:latest and is overridable via $QOS_TARGET_IMGREF.
 set -euo pipefail
 
 # Where the installed system will look for updates (the "origin" imgref
 # baked into the deployment). NOT where the bits come from now — those come
 # from the booted image we copy to storage. Override via the environment;
 # the sudoers drop-in env_keep's this name so it survives the sudo re-exec.
-QOS_TARGET_IMGREF="${QOS_TARGET_IMGREF:-ghcr.io/nirios/qos:latest}"
+QOS_TARGET_IMGREF="${QOS_TARGET_IMGREF:-code.sandbox.example/qos/qos:latest}"
 
 # The local-storage tag `bootc image copy-to-storage` writes to by default.
 LOCAL_IMG="localhost/bootc"
@@ -103,6 +103,7 @@ HOSTNAME_VAL="qos"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
+ENCRYPT=0            # --encrypt → bootc --block-setup tpm2-luks (else direct)
 while [ $# -gt 0 ]; do
   case "$1" in
     --disk) DISK="${2:-}"; shift 2 ;;
@@ -112,6 +113,7 @@ while [ $# -gt 0 ]; do
     --timezone) TIMEZONE_VAL="${2:-}"; shift 2 ;;
     --keymap) KEYMAP_VAL="${2:-}"; shift 2 ;;
     --keyvariant) KEYVARIANT_VAL="${2:-}"; shift 2 ;;
+    --encrypt) ENCRYPT=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -126,6 +128,13 @@ case "$FILESYSTEM" in
   btrfs|ext4|xfs) : ;;
   *) die "unsupported --filesystem '$FILESYSTEM' (use btrfs, ext4 or xfs)" ;;
 esac
+
+# Encryption uses bootc `--block-setup tpm2-luks`, which binds the LUKS unlock
+# to the machine's TPM2. Refuse early (clear message) if there's no TPM2 device
+# rather than letting bootc fail partway through the install.
+if [ "$ENCRYPT" -eq 1 ] && [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
+  die "--encrypt requires a TPM2 device (/dev/tpm*), none found on this machine"
+fi
 
 # Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
@@ -210,7 +219,10 @@ bootc image copy-to-storage
 log "  -> $LOCAL_IMG"
 
 # --- 2. bootc install to-disk ------------------------------------------------
-step "Installing qOS onto $DISK (this ERASES the disk)"
+# direct = plain filesystem; tpm2-luks = TPM2-bound LUKS full-disk encryption.
+BLOCK_SETUP=direct
+[ "$ENCRYPT" -eq 1 ] && BLOCK_SETUP=tpm2-luks
+step "Installing qOS onto $DISK (this ERASES the disk; block-setup=$BLOCK_SETUP)"
 podman run --rm --privileged --pid=host --ipc=host \
   -v /var/lib/containers:/var/lib/containers \
   -v /dev:/dev \
@@ -219,6 +231,7 @@ podman run --rm --privileged --pid=host --ipc=host \
   bootc install to-disk \
     --wipe \
     --filesystem "$FILESYSTEM" \
+    --block-setup "$BLOCK_SETUP" \
     --target-imgref "$QOS_TARGET_IMGREF" \
     "$DISK"
 log "  base system installed."
