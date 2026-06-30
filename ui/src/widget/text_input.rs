@@ -1156,7 +1156,7 @@ impl TextInput {
     /// resolves to denied. Concept's every-widget convention is
     /// `bg-black/30` ≈ 0.30 × 255 ≈ 77.
     pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
-        vello::peniko::Color::from_rgba8(0, 0, 0, 77);
+        crate::tokens::colors::PERMISSION_DENIED_SCRIM;
 }
 
 #[cfg(test)]
@@ -1167,7 +1167,7 @@ mod tests {
     /// the same alpha across every widget.
     #[test]
     fn permission_denied_overlay_alpha_matches_other_widgets() {
-        let expected = vello::peniko::Color::from_rgba8(0, 0, 0, 77);
+        let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
         assert_eq!(TextInput::PERMISSION_DENIED_OVERLAY, expected);
     }
 
