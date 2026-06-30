@@ -350,6 +350,15 @@ impl Widget for ImageViewer {
         "ImageViewer"
     }
 
+    /// Accessibility (W3): the viewer presents a single image; `Role::Image`.
+    /// There is no alt-text field on the viewer (it's a pan/zoom canvas around
+    /// raw `ImageData`), so the node carries no intrinsic name — a host that
+    /// knows the source can supply one via its own wrapping `Image`.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Image))
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -375,6 +384,14 @@ mod tests {
             width: 16,
             height: 16,
         }
+    }
+
+    #[test]
+    fn accessibility_reports_image_role() {
+        use crate::a11y::Role;
+        let v = ImageViewer::new(make_image());
+        let node = Widget::accessibility(&v).expect("viewer is not presentational");
+        assert_eq!(node.role, Role::Image);
     }
 
     /// Synthesise the unsafe-but-conventional dummy `DeviceId` winit

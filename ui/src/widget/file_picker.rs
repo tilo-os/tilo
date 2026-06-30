@@ -955,6 +955,22 @@ impl Widget for FilePicker {
         "FilePicker"
     }
 
+    /// The file chooser is a modal dialog: it reports [`Role::Dialog`] with
+    /// `modal` set and its header title as the accessible name. The title is
+    /// already a final display string (set at construction), so it is used
+    /// directly.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(self.title.clone())
+                .with_state(AccessState {
+                    modal: true,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("file_picker")
     }
@@ -1080,6 +1096,17 @@ mod tests {
         fs::create_dir(root.join("nested")).unwrap();
         fs::write(root.join("nested").join("gamma.txt"), b"c").unwrap();
         (dir, root)
+    }
+
+    #[test]
+    fn accessibility_reports_modal_dialog_with_title_name() {
+        use crate::a11y::Role;
+        let (_g, root) = temp_tree();
+        let picker = FilePicker::new("Open file", &root, vec![root.clone()]);
+        let node = Widget::accessibility(&picker).expect("file picker is a dialog");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Open file"));
+        assert!(node.state.modal, "the file chooser traps focus");
     }
 
     #[test]

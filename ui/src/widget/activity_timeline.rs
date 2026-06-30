@@ -952,6 +952,19 @@ impl Widget for ActivityTimeline {
         "ActivityTimeline"
     }
 
+    /// Accessibility (W3): the timeline is a labelled list of history
+    /// entries. The accessible name is fixed ("Activity timeline"); the
+    /// description carries the count of currently-visible (post-filter)
+    /// entries so a screen reader can announce "Activity timeline, 7 items".
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Activity timeline")
+                .with_description(format!("{} entries", self.visible.len())),
+        )
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("activity_timeline")
     }
@@ -1004,6 +1017,21 @@ mod tests {
         t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
         t.set_newest_first(false); // tests use ascending order for clarity
         t
+    }
+
+    #[test]
+    fn accessibility_reports_list_role_name_and_count() {
+        use crate::a11y::Role;
+        let entries = vec![
+            entry(OpClass::Splice, "Alice", 10, 1),
+            entry(OpClass::Splice, "Bob", 20, 2),
+        ];
+        let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
+        let node = Widget::accessibility(&t).expect("timeline is not presentational");
+        assert_eq!(node.role, Role::List);
+        assert_eq!(node.name.as_deref(), Some("Activity timeline"));
+        // Both entries pass the (default, no-op) filter → "2 entries".
+        assert_eq!(node.description.as_deref(), Some("2 entries"));
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {

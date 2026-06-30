@@ -441,6 +441,23 @@ impl Widget for ConflictBanner {
         "ConflictBanner"
     }
 
+    /// Accessibility (W3): a conflict alert banner. `Role::Group` named for the
+    /// conflict family, with the count in the description ("3 conflicts"). When
+    /// the count is 0 the banner paints nothing, so it is marked `hidden` so it
+    /// drops out of what an AT announces.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(format!("{} conflicts", self.family_name))
+                .with_description(format!("{} unresolved", self.conflict_count))
+                .with_state(AccessState {
+                    hidden: self.conflict_count == 0,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("conflict_banner")
     }
@@ -478,6 +495,22 @@ mod tests {
         b.rect = rect;
         b.set_conflict_count(count);
         b
+    }
+
+    #[test]
+    fn accessibility_reports_group_role_and_hidden_when_empty() {
+        use crate::a11y::Role;
+        let b = banner_at(Rect::new(0.0, 0.0, 400.0, 40.0), 3);
+        let node = Widget::accessibility(&b).expect("banner is not presentational");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Kanban move conflicts"));
+        assert_eq!(node.description.as_deref(), Some("3 unresolved"));
+        assert!(!node.state.hidden, "a banner with conflicts is visible");
+
+        // Zero conflicts → the banner paints nothing, so it is hidden from ATs.
+        let empty = banner_at(Rect::new(0.0, 0.0, 400.0, 40.0), 0);
+        let node = Widget::accessibility(&empty).unwrap();
+        assert!(node.state.hidden, "an empty banner must be hidden");
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
