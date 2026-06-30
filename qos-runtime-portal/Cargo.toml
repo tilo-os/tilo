@@ -1,0 +1,32 @@
+[package]
+name = "qos-runtime-portal"
+version = "0.1.0"
+edition = "2024"
+
+# qOS runtime — portal foundation: env-driven service discovery and a
+# thin wrapper that lifts a connected Unix-socket file descriptor into
+# a tokio-backed Cap'n Proto RPC client. All higher-level service
+# clients (collab, fs, identity) sit on top of this crate.
+
+[lib]
+name = "qos_runtime_portal"
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
+# whole 0.26 line shares a generator + RPC ABI.
+capnp = "0.26"
+capnp-rpc = "0.26"
+# tokio 1.x. We use the runtime + net + io + macros features only;
+# heavy features like `signal` or `full` belong in the binary.
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+# nix gives us `fcntl(F_GETFD)` so we can probe whether a fd is open
+# before we hand it to tokio. 0.30 is the latest line already in the
+# workspace's lock file (transitive via shell).
+nix = { version = "0.30", features = ["fs"] }
+thiserror = "1"
+futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
