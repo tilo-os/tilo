@@ -18,7 +18,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use ui::widget::{Button, Row, Spacer, Text, Widget};
 
 use crate::widgets::{card, caption, rows, value_row, El};
 
@@ -126,13 +126,7 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .push(identity)
-            .push(transfer)
-            .push(system),
-    )
+    crate::widgets::cards(vec![identity, transfer, system])
 }
 
 fn transfer_buttons() -> El {

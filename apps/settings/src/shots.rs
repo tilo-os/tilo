@@ -83,8 +83,76 @@ impl Scenario {
     }
 }
 
+/// Map a category slug to its [`Category`], for the per-panel capture
+/// driven by the `QOS_SHOTS_PANEL` env var.
+fn category_from_slug(slug: &str) -> Option<Category> {
+    Category::ALL.iter().copied().find(|c| c.slug() == slug)
+}
+
+/// A `NetworkPane` populated with a deterministic scan list, a connected
+/// wired link, and a secure network's password prompt pre-expanded — the
+/// state the connect flow reaches after clicking "Connect" on a locked
+/// network. Used by the `netdemo` capture.
+fn network_demo_pane() -> Box<dyn Widget> {
+    use os_actions::{WifiNetworkInfo, WiredInfo};
+    let nets = vec![
+        WifiNetworkInfo { ssid: "Home_Network".into(), signal: 4, secure: true, connected: true },
+        WifiNetworkInfo { ssid: "Cafe_Guest".into(), signal: 3, secure: false, connected: false },
+        WifiNetworkInfo { ssid: "Office_5G".into(), signal: 2, secure: true, connected: false },
+    ];
+    let pane = crate::panes::network::NetworkPane::new_demo(nets)
+        .with_wired(WiredInfo {
+            connected: true,
+            device: Some("enp3s0".into()),
+            speed: Some("1000 Mb/s".into()),
+            ipv4: Some("192.168.1.42".into()),
+        })
+        .with_expanded("Office_5G");
+    Box::new(pane)
+}
+
 /// Render the scenario selected by `out`'s filename into a PNG at `out`.
+///
+/// When the `QOS_SHOTS_PANEL` env var is set to a category slug, the wide
+/// two-pane layout is rendered with that category selected instead of the
+/// default scenario — this is how the verification harness captures every
+/// panel from one binary.
 pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let fname = out
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    // `…collapsed.png` proves the docked sidebar can be hidden, reclaiming
+    // its width for the content pane.
+    if fname.contains("collapsed") {
+        let app = SettingsApp::with_selected(Category::Network)
+            .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
+            .with_sidebar_collapsed_shot();
+        return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
+    }
+
+    // `…netdemo.png` renders the Network pane with a populated scan list and
+    // an open inline password prompt, proving the connect flow's surface.
+    if fname.contains("netdemo") {
+        return render_to_path(network_demo_pane(), DEFAULT_SHOTS_VIEWPORT, out);
+    }
+
+    // Per-panel capture: a `…panel-<slug>.png` filename (or the
+    // `QOS_SHOTS_PANEL` env var) renders the wide layout on that category.
+    let panel_slug = std::env::var("QOS_SHOTS_PANEL").ok().or_else(|| {
+        let name = out.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        name.rsplit_once("panel-")
+            .map(|(_, rest)| rest.trim_end_matches(".png").to_string())
+    });
+    if let Some(slug) = panel_slug {
+        if let Some(cat) = category_from_slug(slug.trim()) {
+            let app = SettingsApp::with_selected(cat)
+                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32);
+            return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
+        }
+    }
     let scenario = Scenario::from_shots_path(out);
     render_to_path(Box::new(scenario.app()), scenario.viewport(), out)
 }

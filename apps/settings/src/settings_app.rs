@@ -37,8 +37,12 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
-use ui::widget::{Column, Container, NavSplit, Row, SplitLayout, SplitMode, Text, Widget};
+use ui::widget::{Button, Column, Container, NavSplit, Row, Spacer, SplitLayout, SplitMode, Text, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
+
+/// CRDT key the header's collapse/expand button writes `true` to. Read in
+/// [`SettingsApp::sync`], it flips [`SettingsApp::sidebar_collapsed`].
+pub const TOGGLE_SIDEBAR_KEY: &str = "settings.toggle_sidebar";
 
 /// At or above this allocated width (logical px) the sidebar docks beside the
 /// content; below it the sidebar becomes an overlay flap. Sized so a typical
@@ -60,6 +64,11 @@ pub struct SettingsApp {
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// docked/overlay layout. `None` lets `NavSplit` decide from its own rect.
     width_hint: Option<f32>,
+    /// Whether the sidebar is explicitly collapsed (hidden even when the
+    /// window is wide enough to dock it), reclaiming the space for content.
+    /// Toggled by the header's collapse button; mirrored into the document
+    /// via [`TOGGLE_SIDEBAR_KEY`] so it survives structure rebuilds.
+    sidebar_collapsed: bool,
     rect: vello::kurbo::Rect,
     /// The composed split (sidebar | content), rebuilt each `build_layout` so
     /// a category switch shows up once the host re-runs the layout pass.
@@ -79,6 +88,7 @@ impl SettingsApp {
             structure_dirty: false,
             force_sidebar_open: false,
             width_hint: None,
+            sidebar_collapsed: false,
             rect: vello::kurbo::Rect::ZERO,
             split: None,
         }
@@ -139,28 +149,66 @@ impl SettingsApp {
         self.split.as_ref().is_some_and(|s| s.is_sidebar_open())
     }
 
-    /// The header shown above the content pane: the category title + a
-    /// one-line subtitle, on a card surface.
+    /// Whether the sidebar is explicitly collapsed (hidden even when docked).
+    pub fn sidebar_collapsed(&self) -> bool {
+        self.sidebar_collapsed
+    }
+
+    /// Start with the sidebar collapsed — used by the `--shots` capture that
+    /// proves the docked sidebar can be hidden to reclaim content width.
+    pub fn with_sidebar_collapsed_shot(mut self) -> Self {
+        self.sidebar_collapsed = true;
+        self
+    }
+
+    /// The glyph the collapse button shows. When the sidebar is open it
+    /// offers to collapse (panel-left-close); when collapsed it offers to
+    /// reveal it (panel-left-open / menu).
+    fn collapse_glyph(&self) -> &'static str {
+        if self.sidebar_collapsed {
+            "\u{f035c}" // menu — "show sidebar"
+        } else {
+            "\u{f0b81}" // dock-left / "hide sidebar"
+        }
+    }
+
+    /// The header shown above the content pane: a collapse/expand toggle, the
+    /// category title, and a one-line subtitle, on a card surface.
     fn build_pane_header(&self) -> Box<dyn Widget> {
-        // Keeping the lines inside a background `Container` is what makes them
-        // draw reliably — bare text at the head of a plain column can be
-        // skipped by the cached draw path.
-        let inner = Column::new()
+        // The collapse button hides/shows the docked sidebar, reclaiming its
+        // width for content. It writes a one-shot CRDT key that `sync` reads.
+        let collapse_btn = Button::new(
+            "settings.toggle_sidebar",
+            self.collapse_glyph(),
+            Some(TOGGLE_SIDEBAR_KEY),
+        );
+
+        // Title + subtitle stacked; a small gap between them keeps the two
+        // lines from crowding (the column is block-display and ignores the
+        // toolkit gap).
+        let titles = Column::new()
             .with_no_padding()
+            .with_intrinsic_height()
             .push(Box::new(
-                Row::new().push(Box::new(
-                    Text::new(self.selected.label()).with_size(22.0),
-                )),
+                Text::new(self.selected.label()).with_size(24.0),
             ))
+            .push(crate::widgets::vgap(4.0))
             .push(Box::new(
-                Row::new().push(Box::new(
-                    Text::new(self.selected.subtitle())
-                        .with_size(12.0)
-                        .with_color(ui::Theme::dark().text_dim),
-                )),
+                Text::new(self.selected.subtitle())
+                    .with_size(12.0)
+                    .with_color(ui::Theme::dark().text_dim),
             ));
 
-        Box::new(Container::new().with_background().with_child(Box::new(inner)))
+        // Button on the left, titles to its right, vertically grouped.
+        let row = Row::new()
+            .push(Box::new(collapse_btn))
+            .push(Box::new(titles))
+            .push(Box::new(Spacer::new()));
+
+        // Keeping the content inside a background `Container` is what makes it
+        // draw reliably — bare text at the head of a plain column can be
+        // skipped by the cached draw path.
+        Box::new(Container::new().with_background().with_child(Box::new(row)))
     }
 
     /// Build the content pane: header + the selected category's body.
@@ -176,9 +224,13 @@ impl SettingsApp {
     fn build_content(&self) -> Box<dyn Widget> {
         let header = self.build_pane_header();
         let body = self.build_pane_body();
+        // A deliberate gap between the title band and the first section card
+        // so the title has breathing room (the column is block-display and
+        // ignores the toolkit's inter-child gap).
         let inner = Column::new()
             .with_intrinsic_height()
             .push(header)
+            .push(crate::widgets::vgap(20.0))
             .push(body);
         Box::new(Container::new().filling().with_child(Box::new(inner)))
     }
@@ -220,9 +272,15 @@ impl SettingsApp {
             .with_mode(SplitMode::Adaptive)
             .with_breakpoint(NAV_BREAKPOINT)
             .with_sidebar_width(sidebar::SIDEBAR_WIDTH);
-        // Open the overlay flap for shots; docked layouts open by default so
-        // this is a no-op there.
-        if self.force_sidebar_open {
+        // An explicit collapse hides the docked sidebar and reclaims its
+        // width for content. Snap (not ease) so the rebuilt split lands in
+        // the right state immediately. This takes precedence over the shots
+        // force-open below.
+        if self.sidebar_collapsed {
+            split.snap_open(false);
+        } else if self.force_sidebar_open {
+            // Open the overlay flap for shots; docked layouts open by
+            // default so this is a no-op there.
             split.snap_open(true);
         }
         split
@@ -252,7 +310,30 @@ impl Widget for SettingsApp {
             }
         }
 
+        // Sidebar collapse toggle: the header button writes
+        // `settings.toggle_sidebar = true` on click. Reading it true flips
+        // the collapse state, persists it, flags a rebuild, and clears the
+        // bit so it's a one-shot edge.
+        let toggle_pressed = matches!(
+            state.get(path, TOGGLE_SIDEBAR_KEY),
+            Ok(Some((Value::Scalar(s), _)))
+                if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
+        );
+        if toggle_pressed {
+            let _ = state.put(path, TOGGLE_SIDEBAR_KEY, automerge::ScalarValue::Boolean(false));
+            self.sidebar_collapsed = !self.sidebar_collapsed;
+            self.structure_dirty = true;
+        }
+
         if let Some(split) = &mut self.split {
+            // Re-assert a collapse every frame so a window resize (which can
+            // reset `NavSplit`'s flap preference in adaptive mode) never
+            // silently re-reveals a collapsed sidebar. When NOT collapsed we
+            // leave the flap alone so the narrow overlay's open/close (and
+            // the shots force-open) keep working.
+            if self.sidebar_collapsed && split.is_sidebar_open() {
+                split.snap_open(false);
+            }
             split.sync(state, path);
         }
     }
@@ -522,6 +603,38 @@ mod tests {
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow());
         assert!(app.sidebar_open(), "the shot flag forces the overlay flap open");
+    }
+
+    #[test]
+    fn toggle_key_collapses_then_expands_sidebar() {
+        use automerge::transaction::Transactable;
+        let mut app = SettingsApp::new();
+        layout_at(&mut app, 1200.0, 760.0);
+        assert!(!app.sidebar_collapsed(), "starts expanded");
+        assert!(app.sidebar_open(), "docked sidebar is open by default");
+
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // Simulate the header collapse button writing its key, then sync.
+        let _ = doc.put(&root, TOGGLE_SIDEBAR_KEY, true);
+        app.sync(&mut doc, &root);
+        assert!(app.sidebar_collapsed(), "first toggle collapses the sidebar");
+        assert!(
+            app.take_structure_dirty(),
+            "collapsing requests a rebuild so the content reclaims the space"
+        );
+        // Rebuild + re-layout as the host would; the collapsed split hides
+        // the sidebar.
+        layout_at(&mut app, 1200.0, 760.0);
+        assert!(!app.sidebar_open(), "collapsed docked sidebar reads as closed");
+
+        // Toggle again → expands.
+        let _ = doc.put(&root, TOGGLE_SIDEBAR_KEY, true);
+        app.sync(&mut doc, &root);
+        assert!(!app.sidebar_collapsed(), "second toggle re-expands");
+        layout_at(&mut app, 1200.0, 760.0);
+        assert!(app.sidebar_open(), "re-expanded sidebar is open again");
     }
 
     #[test]

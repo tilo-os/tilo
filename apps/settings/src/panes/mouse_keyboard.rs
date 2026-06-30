@@ -7,7 +7,7 @@
 //! the CRDT (and would be picked up by the compositor) but the panel
 //! documents the seam rather than shelling out directly.
 
-use ui::widget::{Column, Dropdown, Slider, Toggle, Widget};
+use ui::widget::{Dropdown, Slider, Toggle, Widget};
 
 use crate::widgets::{card, caption, rows, setting_row, setting_row_described};
 
@@ -80,12 +80,7 @@ pub fn build() -> Box<dyn Widget> {
         ]),
     );
 
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .push(mouse)
-            .push(keyboard),
-    )
+    crate::widgets::cards(vec![mouse, keyboard])
 }
 
 #[cfg(test)]

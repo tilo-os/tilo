@@ -19,7 +19,7 @@ use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Column, Dropdown, Widget};
+use ui::widget::{Dropdown, Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
@@ -130,13 +130,7 @@ impl RegionPane {
             )]),
         );
 
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .push(formats)
-                .push(preview)
-                .push(explainer),
-        )
+        crate::widgets::cards(vec![formats, preview, explainer])
     }
 
     /// Read a dropdown key and, if it matches a known option, return it.
