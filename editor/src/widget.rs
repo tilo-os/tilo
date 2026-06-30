@@ -89,9 +89,15 @@ enum ToolAction {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    AlignJustify,
     FontCycle,
+    /// Apply a per-run text colour (the toolbar swatch row). `None` is the
+    /// neutral/default — it clears any `color` run mark over the selection.
+    TextColor(Option<[u8; 3]>),
     SizeUp,
     SizeDown,
+    /// The size stepper's read-only value chip (between − and +). Display-only.
+    SizeShow,
     InsertTable,
     TableRowAdd,
     TableRowDel,
@@ -309,7 +315,7 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
 }
 
 /// `(font size, whole-block bold, left indent, optional bullet)`. Size is the
-/// style default; per-run `fontSize` marks override it in `block_runs`.
+/// style default; per-run `size` marks override it in `block_runs`.
 fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
 }
@@ -322,20 +328,24 @@ fn parse_family(s: &str) -> FontFamily {
     }
 }
 
-/// The `fontSize` mark value covering char `i`, if any.
+/// The font-size run mark covering char `i`, if any. The editor writes the
+/// `size` Int mark (the codec contract's character format); `fontSize` is the
+/// legacy name some imported (ODT/DOCX) documents still carry, so both resolve.
 fn char_font_size(i: usize, marks: &[MarkSpan]) -> Option<f32> {
     marks
         .iter()
-        .find(|m| m.name == "fontSize" && i >= m.start && i < m.end)
+        .find(|m| (m.name == "size" || m.name == "fontSize") && i >= m.start && i < m.end)
         .and_then(|m| m.value.as_int())
         .map(|n| n as f32)
 }
 
-/// The `fontFamily` mark value covering char `i`, if any.
+/// The font-family run mark covering char `i`, if any. The editor writes the
+/// `font` Str mark; `fontFamily` is the legacy imported-document name — both
+/// resolve so codec-imported runs keep their family.
 fn char_font_family(i: usize, marks: &[MarkSpan]) -> Option<FontFamily> {
     marks
         .iter()
-        .find(|m| m.name == "fontFamily" && i >= m.start && i < m.end)
+        .find(|m| (m.name == "font" || m.name == "fontFamily") && i >= m.start && i < m.end)
         .and_then(|m| m.value.as_str())
         .map(parse_family)
 }
@@ -1973,7 +1983,9 @@ impl Widget for WordProcessorWidget {
                     }
                 }
                 if self.pointer.y < self.rect.y0 + TOOLBAR_H {
-                    let clicked = self.toolbar.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
+                    // Reverse so the colour swatches (pushed after the chrome
+                    // buttons) win a hit-test on any overlap at a crowded edge.
+                    let clicked = self.toolbar.iter().rev().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
                     if let Some(action) = clicked {
                         self.apply_tool(state, action);
                         self.refresh_blocks(state);
@@ -2369,6 +2381,11 @@ impl WordProcessorWidget {
             ToolAction::AlignLeft => self.inner.set_align(state, "left"),
             ToolAction::AlignCenter => self.inner.set_align(state, "center"),
             ToolAction::AlignRight => self.inner.set_align(state, "right"),
+            ToolAction::AlignJustify => self.inner.set_align(state, "justify"),
+            ToolAction::TextColor(Some(c)) => self.inner.set_text_color(state, &crate::styles::color_to_hex(c)),
+            // The neutral swatch clears any per-run colour, reverting to the
+            // block's style ink.
+            ToolAction::TextColor(None) => self.inner.clear_mark(state, "color"),
             ToolAction::FontCycle => {
                 let name = match self.current_font().next() {
                     FontFamily::Sans => "sans",
@@ -2385,6 +2402,7 @@ impl WordProcessorWidget {
                 let s = ((self.current_size() - 2.0).round() as i64).max(6);
                 self.inner.set_font_size(state, s);
             }
+            ToolAction::SizeShow => {} // display-only value chip
             ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
             ToolAction::TableRowAdd => self.inner.table_add_row(state),
             ToolAction::TableRowDel => self.inner.table_del_row(state),
@@ -2642,8 +2660,11 @@ impl WordProcessorWidget {
         add(ToolAction::AlignLeft, "L", 30.0, align == "left");
         add(ToolAction::AlignCenter, "C", 30.0, align == "center");
         add(ToolAction::AlignRight, "R", 30.0, align == "right");
+        add(ToolAction::AlignJustify, "J", 30.0, align == "justify");
         add(ToolAction::FontCycle, font_label, 58.0, false);
+        // Size stepper: − / current-value / +. The value chip is display-only.
         add(ToolAction::SizeDown, "A−", 34.0, false);
+        add(ToolAction::SizeShow, &fmt_num(self.current_size()), 40.0, false);
         add(ToolAction::SizeUp, "A+", 34.0, false);
         // Contextual table section: editing controls inside a cell, else insert.
         if kind == "cell" {
@@ -2661,11 +2682,67 @@ impl WordProcessorWidget {
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
         let rects = chrome::toolbar::draw(scene, transform, tr, theme, tb, &items);
         self.toolbar = specs.into_iter().map(|(a, _)| a).zip(rects).collect();
+
+        // Per-run text-colour swatch row, appended at the right of the toolbar.
+        // The chrome toolbar only draws text buttons, so the coloured squares are
+        // painted directly here (and registered as `TextColor` click targets) —
+        // no `ui` change needed. The leading neutral swatch clears the run colour.
+        self.draw_color_swatches(scene, transform, tr, tb);
+
         // Subtle hover highlight over the button under the pointer.
         if let Some(hr) = self.hover_tool {
             let pad = Rect::new(hr.x0 - 2.0, tb.y0 + 6.0, hr.x1 + 2.0, tb.y1 - 6.0);
             scene.fill(Fill::NonZero, transform, Color::from_rgba8(0xff, 0xff, 0xff, 0x14), None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
         }
+    }
+
+    /// Draw the text-colour swatch row at the right edge of the toolbar and
+    /// register each swatch as a `TextColor` click target in `self.toolbar`.
+    /// The current run's colour gets a white selection ring. The first swatch is
+    /// the neutral/default (an `A` glyph on the surface colour) — it clears any
+    /// per-run `color` mark.
+    fn draw_color_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) {
+        let cur = self.current_text_color();
+        let cy = (tb.y0 + tb.y1) / 2.0;
+        let sw = 20.0;
+        let gap = 5.0;
+        let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
+        let total = n as f64 * sw + (n as f64 - 1.0) * gap;
+        // Right-align the strip, leaving a small margin from the toolbar's edge.
+        let mut x = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
+        let y0 = cy - sw / 2.0;
+
+        // Neutral / default swatch: surface-toned square with an "A", clears colour.
+        let nr = Rect::new(x, y0, x + sw, y0 + sw);
+        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x3a, 0x3d, 0x46), None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        if cur.is_none() {
+            scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        }
+        tr.draw_text(scene, "A", 13.0, Color::from_rgb8(0xd6, 0xd8, 0xde), transform * Affine::translate((x + 5.5, y0 + 2.0)), None);
+        self.toolbar.push((ToolAction::TextColor(None), nr));
+        x += sw + gap;
+
+        for c in STYLE_PALETTE.iter() {
+            let r = Rect::new(x, y0, x + sw, y0 + sw);
+            let col = Color::from_rgb8(c[0], c[1], c[2]);
+            scene.fill(Fill::NonZero, transform, col, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            if cur == Some(*c) {
+                scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            }
+            self.toolbar.push((ToolAction::TextColor(Some(*c)), r));
+            x += sw + gap;
+        }
+    }
+
+    /// The per-run `color` covering the font-probe position (just left of the
+    /// caret), if any — used to ring the active swatch.
+    fn current_text_color(&self) -> Option<[u8; 3]> {
+        let (b, pos) = self.font_probe()?;
+        b.marks
+            .iter()
+            .find(|m| m.name == "color" && pos >= m.start && pos < m.end)
+            .and_then(|m| m.value.as_str())
+            .and_then(parse_hex_rgb)
     }
 }
 

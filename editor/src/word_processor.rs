@@ -449,8 +449,14 @@ impl WordProcessor {
         }
     }
 
-    /// Set the font size over the selection (per-run), or the caret block.
-    pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
+    /// Set a **non-toggle** inline mark to a specific `value` over the selection
+    /// (per-run), or — with no selection — over the whole caret block. Unlike
+    /// [`toggle_mark`] (which flips a boolean on/off), this *replaces* any prior
+    /// value of the same-named mark over each range: it removes the existing mark
+    /// then re-adds it at `value`, so changing e.g. a run's size/colour/font
+    /// overwrites rather than stacking. Used for the valued character formats
+    /// (`color`, `font`, `size`).
+    pub fn set_mark_value(&mut self, state: &mut AutoCommit, name: &str, value: qdoc::document::MarkValue) {
         let ranges = self.font_ranges(state);
         let Some(containers) = self.containers.clone() else {
             return;
@@ -459,14 +465,39 @@ impl WordProcessor {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             for (b, s, e) in &ranges {
                 if s < e {
-                    dm.add_mark(b, *s, *e, "fontSize", size);
+                    dm.remove_mark(b, *s, *e, name);
+                    match &value {
+                        qdoc::document::MarkValue::Bool(v) => dm.add_mark(b, *s, *e, name, *v),
+                        qdoc::document::MarkValue::Int(n) => dm.add_mark(b, *s, *e, name, *n),
+                        qdoc::document::MarkValue::Str(st) => dm.add_mark(b, *s, *e, name, st.as_str()),
+                    }
                 }
             }
         }
     }
 
-    /// Set the font family over the selection (per-run), or the caret block.
+    /// Set the font size (pt) over the selection (per-run), or the caret block.
+    /// Stored as a `size` Int run mark (the codec contract's character format).
+    pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
+        self.set_mark_value(state, "size", qdoc::document::MarkValue::Int(size));
+    }
+
+    /// Set the font family (`sans` | `serif` | `mono`) over the selection
+    /// (per-run), or the caret block. Stored as a `font` Str run mark.
     pub fn set_font_family(&mut self, state: &mut AutoCommit, family: &str) {
+        self.set_mark_value(state, "font", qdoc::document::MarkValue::Str(family.to_string()));
+    }
+
+    /// Set the text colour (`#rrggbb`) over the selection (per-run), or the caret
+    /// block. Stored as a `color` Str run mark.
+    pub fn set_text_color(&mut self, state: &mut AutoCommit, hex: &str) {
+        self.set_mark_value(state, "color", qdoc::document::MarkValue::Str(hex.to_string()));
+    }
+
+    /// Remove a named run mark over the selection (per-run), or the caret block —
+    /// the inverse of [`set_mark_value`]. Used by the toolbar's neutral colour
+    /// swatch to clear a `color` mark (reverting to the block's style ink).
+    pub fn clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let ranges = self.font_ranges(state);
         let Some(containers) = self.containers.clone() else {
             return;
@@ -475,7 +506,7 @@ impl WordProcessor {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             for (b, s, e) in &ranges {
                 if s < e {
-                    dm.add_mark(b, *s, *e, "fontFamily", family);
+                    dm.remove_mark(b, *s, *e, name);
                 }
             }
         }
