@@ -1055,6 +1055,26 @@ impl Widget for TextInput {
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // `is_enabled()` is not overridden on TextInput (the inert flag is its
+        // own `disabled` field), so derive the a11y state from `disabled`
+        // directly. A secret (password) input never leaks its value into the
+        // a11y tree — it reports `protected` and a `None` value instead.
+        let value = (!self.secret).then(|| self.text.clone());
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: self.disabled,
+                    protected: self.secret,
+                    ..Default::default()
+                }),
+        )
+    }
+
     /// While dragging the selection or while a multi-click chain is
     /// still alive, the input wants to keep receiving cursor events
     /// even when the cursor wanders into a sibling widget. Matches
@@ -1499,6 +1519,36 @@ mod tests {
         plain.text = "hunter2".to_string();
         assert_eq!(plain.display_text(), "hunter2");
         assert_eq!(plain.display_prefix(3), "hun");
+    }
+
+    #[test]
+    fn accessibility_reports_text_input_role_and_value() {
+        use crate::a11y::Role;
+        let mut ti = TextInput::new(Vec::new());
+        ti.text = "hello".to_string();
+        let node = Widget::accessibility(&ti).unwrap();
+        assert_eq!(node.role, Role::TextInput);
+        assert_eq!(node.value.as_deref(), Some("hello"));
+        assert!(node.state.focusable, "enabled input is focusable");
+        assert!(!node.state.disabled);
+        assert!(!node.state.protected);
+    }
+
+    #[test]
+    fn accessibility_secret_input_masks_value_and_sets_protected() {
+        let mut ti = TextInput::new(Vec::new()).with_secret(true);
+        ti.text = "hunter2".to_string();
+        let node = Widget::accessibility(&ti).unwrap();
+        assert_eq!(node.value, None, "a secret value must not leak into the a11y tree");
+        assert!(node.state.protected, "secret input is marked protected");
+    }
+
+    #[test]
+    fn accessibility_disabled_input_reports_disabled_and_not_focusable() {
+        let ti = TextInput::new(Vec::new()).disabled(true);
+        let node = Widget::accessibility(&ti).unwrap();
+        assert!(node.state.disabled);
+        assert!(!node.state.focusable, "disabled input is dropped from focus order");
     }
 
     /// The fix for visual-gap "text below center" pins the text top
