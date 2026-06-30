@@ -5,9 +5,28 @@
 
 use std::time::Instant;
 
-use sysinfo::{Networks, Pid, ProcessesToUpdate, System, Users};
+use sysinfo::{Networks, Pid, ProcessesToUpdate, Signal, System, Users};
 
 use crate::model::{MonitorModel, ProcessInfo};
+
+/// Which POSIX signal a stop action dispatches. `Term` asks a process to
+/// shut down cleanly (catchable); `Kill` is the un-catchable hard stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopKind {
+    /// `SIGTERM` — polite, catchable termination request ("Stop").
+    Term,
+    /// `SIGKILL` — immediate, un-catchable kill ("Kill").
+    Kill,
+}
+
+impl StopKind {
+    fn signal(self) -> Signal {
+        match self {
+            StopKind::Term => Signal::Term,
+            StopKind::Kill => Signal::Kill,
+        }
+    }
+}
 
 pub struct Sampler {
     sys: System,
@@ -110,6 +129,7 @@ impl Sampler {
             let mem = p.memory();
             procs.push(ProcessInfo {
                 pid: pid.as_u32(),
+                ppid: p.parent().map(|pp| pp.as_u32()),
                 name,
                 user,
                 cpu: p.cpu_usage(),
@@ -125,12 +145,20 @@ impl Sampler {
         self.last = Some(now);
     }
 
-    /// Send SIGKILL to `pid`. Returns whether the signal was dispatched.
-    pub fn kill(&self, pid: u32) -> bool {
+    /// Send `kind`'s signal (SIGTERM or SIGKILL) to `pid`. Returns whether
+    /// the signal was dispatched. `SIGTERM` is the polite "Stop"; `SIGKILL`
+    /// is the hard "Kill". Both route through the real process handle.
+    pub fn signal(&self, pid: u32, kind: StopKind) -> bool {
         self.sys
             .process(Pid::from_u32(pid))
-            .map(|p| p.kill())
+            .and_then(|p| p.kill_with(kind.signal()))
             .unwrap_or(false)
+    }
+
+    /// Send SIGKILL to `pid`. Returns whether the signal was dispatched.
+    /// Thin alias over [`Self::signal`] for the hard-stop path.
+    pub fn kill(&self, pid: u32) -> bool {
+        self.signal(pid, StopKind::Kill)
     }
 }
 
