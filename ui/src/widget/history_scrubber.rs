@@ -283,10 +283,23 @@ impl HistoryScrubber {
     }
 
     /// Fire `on_restore` with the current tick's entry id.
+    ///
+    /// Phase 9: redacted entries are non-restorable — "Restore to
+    /// this version" would re-introduce content the channel owner
+    /// has explicitly removed by policy. The button itself is
+    /// suppressed in the draw path; this is the data-layer
+    /// defence-in-depth so a future keyboard-shortcut path that
+    /// forgets to gate still can't undo a redaction.
     fn invoke_restore(&mut self) {
         let Some(entry) = self.entries.get(self.current_tick) else {
             return;
         };
+        if entry.redaction.is_some() {
+            tracing::debug!(
+                "history_scrubber: refusing restore across a redaction boundary",
+            );
+            return;
+        }
         let id = entry.id;
         if let Some(cb) = self.on_restore.as_mut() {
             cb(&id);
@@ -784,6 +797,7 @@ mod tests {
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(id as u64 * 60),
             summary: format!("op {}", id),
             diff_payload: None,
+            redaction: None,
         }
     }
 

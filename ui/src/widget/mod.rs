@@ -343,7 +343,7 @@ pub mod history;
 pub mod activity_timeline;
 pub mod history_scrubber;
 pub use history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter,
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use activity_timeline::ActivityTimeline;
