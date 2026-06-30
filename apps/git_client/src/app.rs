@@ -31,7 +31,7 @@ use crate::draw;
 use crate::graph::{self, GraphLayout};
 use crate::history::HistoryView;
 use crate::model::{ChangeArea, FileChange, FileDiff, RepoModel};
-use crate::panels::{PanelsView, RemoteAction};
+use crate::panels::{BranchAction, PanelHit, PanelsView, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
 
 /// Which top-level screen is showing.
@@ -77,6 +77,15 @@ pub struct GitClientApp {
     diffs: HashMap<String, FileDiff>,
     graph_layout: GraphLayout,
 
+    /// Path the repository was opened from, when backed by a real on-disk
+    /// repo. `None` for the bundled sample (the `--shots` path), in which
+    /// case actions fall back to the in-memory model mutation so the
+    /// screenshot still demonstrates the flow. When `Some`, every action
+    /// drives `git2` against the real repo and re-reads the model.
+    repo_path: Option<std::path::PathBuf>,
+    /// Last action error, surfaced in the UI (e.g. "no identity set").
+    last_error: Option<String>,
+
     settings: Settings,
     /// Set once after the first sync seeds the settings into the doc.
     settings_seeded: bool,
@@ -104,6 +113,13 @@ pub struct GitClientApp {
 
     // --- Panels screen state ---
     hover_action: Option<RemoteAction>,
+    /// New-branch name being typed in the Panels toolbar, and whether that
+    /// input is focused. Enter creates + checks out the branch via `git2`.
+    new_branch_name: String,
+    new_branch_focused: bool,
+    /// Hit rects for the Panels "new branch" input + create button.
+    new_branch_input: Rect,
+    new_branch_button: Rect,
 
     // --- Responsive sidebar (the primary list column) ---
     /// Eased open/closed state of the primary list column, shared with every
@@ -123,7 +139,7 @@ pub struct GitClientApp {
     change_hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
     diff_hunk_buttons: Vec<diffview::HunkButton>,
     history_rows: Vec<Rect>,
-    panel_hits: Vec<Box<dyn Fn(Point) -> Option<RemoteAction>>>,
+    panel_hits: Vec<Box<dyn Fn(Point) -> Option<PanelHit>>>,
     tab_rects: Vec<(Screen, Rect)>,
 }
 
@@ -141,12 +157,38 @@ impl GitClientApp {
         let force_sample = std::env::var("GIT_CLIENT_SAMPLE")
             .map(|v| v != "0" && !v.is_empty())
             .unwrap_or(false);
-        let (model, diffs) = if force_sample {
-            crate::sample::model()
-        } else {
-            Self::load_repo().unwrap_or_else(crate::sample::model)
-        };
-        Self::from_model(model, diffs)
+        if force_sample {
+            let (model, diffs) = crate::sample::model();
+            return Self::from_model(model, diffs);
+        }
+        match Self::load_repo() {
+            Some((path, model, diffs)) => {
+                let mut app = Self::from_model(model, diffs);
+                app.repo_path = Some(path);
+                app
+            }
+            None => {
+                // No reachable repository — render the bundled sample so the
+                // app is never blank, and remember why for the status line.
+                let (model, diffs) = crate::sample::model();
+                let mut app = Self::from_model(model, diffs);
+                app.last_error = Some("Not a git repository — showing sample".to_string());
+                app
+            }
+        }
+    }
+
+    /// Open a real repository discovered from `path` and build the app
+    /// bound to it, so every action drives `git2` and re-reads. Returns
+    /// `None` when no repository is reachable. Used by the live app's
+    /// `GIT_CLIENT_REPO` path and by integration tests that need to drive
+    /// the production actions against a temp repo.
+    pub fn open_at(path: &std::path::Path) -> Option<Self> {
+        let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
+        let (model, diffs) = crate::repo::load(path)?;
+        let mut app = Self::from_model(model, diffs);
+        app.repo_path = Some(anchor);
+        Some(app)
     }
 
     /// Construct from an explicit model — used by the sample path and tests.
@@ -181,6 +223,8 @@ impl GitClientApp {
             model,
             diffs,
             graph_layout,
+            repo_path: None,
+            last_error: None,
             settings,
             settings_seeded: false,
             settings_dirty: split_forced,
@@ -198,6 +242,10 @@ impl GitClientApp {
             history_scroll: 0.0,
             detail_scroll: 0.0,
             hover_action: None,
+            new_branch_name: String::new(),
+            new_branch_focused: false,
+            new_branch_input: Rect::ZERO,
+            new_branch_button: Rect::ZERO,
             last_mouse: Point::ZERO,
             change_hits: Vec::new(),
             diff_hunk_buttons: Vec::new(),
@@ -207,11 +255,132 @@ impl GitClientApp {
         }
     }
 
-    fn load_repo() -> Option<(RepoModel, HashMap<String, FileDiff>)> {
+    // --- Test-facing drivers --------------------------------------------
+    // These expose the *production* action methods so integration tests can
+    // drive the exact code path the UI uses, then assert on the real repo.
+    // They are thin pass-throughs — no test-only logic lives behind them.
+
+    /// Drive the production "stage/unstage this file" action by path.
+    #[doc(hidden)]
+    pub fn test_toggle_stage(&mut self, area: ChangeArea, idx: usize) {
+        self.toggle_stage(area, idx);
+    }
+    /// Drive the production "stage all" action.
+    #[doc(hidden)]
+    pub fn test_stage_all(&mut self) {
+        self.stage_all();
+    }
+    /// Drive the production "unstage all" action.
+    #[doc(hidden)]
+    pub fn test_unstage_all(&mut self) {
+        self.unstage_all();
+    }
+    /// Set the commit message and drive the production commit action.
+    #[doc(hidden)]
+    pub fn test_commit(&mut self, message: &str) {
+        self.commit_message = message.to_string();
+        self.do_commit();
+    }
+    /// Drive the production per-hunk stage/unstage action for the selected file.
+    #[doc(hidden)]
+    pub fn test_stage_hunk(&mut self, hunk: usize) {
+        self.stage_hunk(hunk);
+    }
+    /// Drive the production branch action (checkout / delete / stash-apply).
+    #[doc(hidden)]
+    pub fn test_branch_action(&mut self, action: BranchAction) {
+        self.apply_branch_action(action);
+    }
+    /// Drive the production "create branch" action from a name.
+    #[doc(hidden)]
+    pub fn test_create_branch(&mut self, name: &str) {
+        self.new_branch_name = name.to_string();
+        self.create_new_branch();
+    }
+    /// Select a file in a given area + index (mirrors a list click).
+    #[doc(hidden)]
+    pub fn test_select(&mut self, area: ChangeArea, idx: usize) {
+        self.selected_change = Some((area, idx));
+    }
+    /// The current `head` shorthand from the live model.
+    #[doc(hidden)]
+    pub fn test_head(&self) -> &str {
+        &self.model.head
+    }
+    /// Counts of (staged, unstaged, untracked) entries in the live model.
+    #[doc(hidden)]
+    pub fn test_change_counts(&self) -> (usize, usize, usize) {
+        (
+            self.model.staged.len(),
+            self.model.unstaged.len(),
+            self.model.untracked.len(),
+        )
+    }
+    /// The live model's commit summaries, newest first.
+    #[doc(hidden)]
+    pub fn test_commit_summaries(&self) -> Vec<String> {
+        self.model.commits.iter().map(|c| c.summary.clone()).collect()
+    }
+    /// The live model's local + remote branch names.
+    #[doc(hidden)]
+    pub fn test_branch_names(&self) -> Vec<String> {
+        self.model.branches.iter().map(|b| b.name.clone()).collect()
+    }
+    /// The last action error message, if any.
+    #[doc(hidden)]
+    pub fn test_last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    fn load_repo() -> Option<(std::path::PathBuf, RepoModel, HashMap<String, FileDiff>)> {
         let path = std::env::var("GIT_CLIENT_REPO")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-        crate::repo::load(&path)
+        // Anchor actions on the working directory so later opens are stable
+        // even if the CWD changes; fall back to the given path when bare.
+        let anchor = crate::repo::workdir(&path).unwrap_or_else(|| path.clone());
+        let (model, diffs) = crate::repo::load(&path)?;
+        Some((anchor, model, diffs))
+    }
+
+    /// Re-read the live repository into the model after a mutation, so the
+    /// UI reflects the *actual* on-disk state (proving the op took effect).
+    /// A no-op for the sample-backed app. Preserves the selected screen and
+    /// clamps stale selections.
+    fn reload(&mut self) {
+        let Some(path) = self.repo_path.clone() else {
+            return;
+        };
+        if let Some((model, diffs)) = crate::repo::load(&path) {
+            self.model = model;
+            self.diffs = diffs;
+            self.graph_layout = graph::layout(&mut self.model.commits);
+            self.model.graph_width = self.graph_layout.lanes;
+            self.selected_change = first_change(&self.model);
+            if self.selected_commit >= self.model.commits.len() {
+                self.selected_commit = 0;
+            }
+            self.diff_scroll = 0.0;
+        }
+    }
+
+    /// Run an action and record any error for the status line. On success
+    /// the model is reloaded from disk so the render reflects reality.
+    fn run_action(&mut self, result: anyhow::Result<()>) {
+        match result {
+            Ok(()) => {
+                self.last_error = None;
+                self.reload();
+            }
+            Err(e) => {
+                self.last_error = Some(e.to_string());
+            }
+        }
+    }
+
+    /// The repo path for actions; `None` means sample-backed (no real repo).
+    fn repo(&self) -> Option<std::path::PathBuf> {
+        self.repo_path.clone()
     }
 
     // --- Responsive layout -------------------------------------------
@@ -260,10 +429,32 @@ impl GitClientApp {
 
     // --- Mutations on the model (mirror a real git op) -----------------
 
-    /// Move a file between staged and the worktree. In the live app this
-    /// would call into git2; here it updates the model so the UI reflects
-    /// the move immediately (the backend refresh would re-derive it).
+    /// Stage or unstage a single file. Against a real repo this calls
+    /// `git2` (`add` / `reset HEAD -- path`) and re-reads the model so the
+    /// list reflects the actual index. For the sample it falls back to the
+    /// in-memory move so the offscreen capture still demonstrates the flow.
     fn toggle_stage(&mut self, area: ChangeArea, idx: usize) {
+        if let Some(path) = self.repo() {
+            let list = match area {
+                ChangeArea::Staged => &self.model.staged,
+                ChangeArea::Unstaged => &self.model.unstaged,
+                ChangeArea::Untracked => &self.model.untracked,
+            };
+            let Some(file) = list.get(idx).map(|f| f.path.clone()) else { return };
+            let res = match area {
+                ChangeArea::Staged => crate::repo::unstage_file(&path, &file),
+                ChangeArea::Unstaged | ChangeArea::Untracked => {
+                    crate::repo::stage_file(&path, &file)
+                }
+            };
+            self.run_action(res);
+            return;
+        }
+        self.toggle_stage_in_memory(area, idx);
+    }
+
+    /// In-memory move used only by the sample-backed app (no repo on disk).
+    fn toggle_stage_in_memory(&mut self, area: ChangeArea, idx: usize) {
         match area {
             ChangeArea::Staged => {
                 if idx < self.model.staged.len() {
@@ -292,6 +483,11 @@ impl GitClientApp {
     }
 
     fn stage_all(&mut self) {
+        if let Some(path) = self.repo() {
+            let res = crate::repo::stage_all(&path);
+            self.run_action(res);
+            return;
+        }
         let mut moved: Vec<FileChange> = Vec::new();
         for mut f in self.model.unstaged.drain(..) {
             f.area = ChangeArea::Staged;
@@ -307,6 +503,11 @@ impl GitClientApp {
     }
 
     fn unstage_all(&mut self) {
+        if let Some(path) = self.repo() {
+            let res = crate::repo::unstage_all(&path);
+            self.run_action(res);
+            return;
+        }
         let mut moved: Vec<FileChange> = Vec::new();
         for mut f in self.model.staged.drain(..) {
             f.area = ChangeArea::Unstaged;
@@ -320,8 +521,27 @@ impl GitClientApp {
         if self.model.staged.is_empty() || self.commit_message.trim().is_empty() {
             return;
         }
-        // Synthesise a new commit at the tip so the history view reflects
-        // the action; a real backend would write the object and re-read.
+        if let Some(path) = self.repo() {
+            let msg = self.commit_message.clone();
+            let res = crate::repo::commit(&path, &msg).map(|_| ());
+            let ok = res.is_ok();
+            self.run_action(res);
+            if ok {
+                self.commit_message.clear();
+                self.msg_focused = false;
+                // Land on the History screen so the new commit is visible.
+                self.switch_screen(Screen::History);
+                self.selected_commit = 0;
+                self.history_scroll = 0.0;
+            }
+            return;
+        }
+        self.do_commit_in_memory();
+    }
+
+    /// Sample-only commit: synthesise a tip commit so the offscreen capture
+    /// shows the action's effect without a repository.
+    fn do_commit_in_memory(&mut self) {
         let staged = std::mem::take(&mut self.model.staged);
         let parent = self.model.commits.first().map(|c| c.id.clone());
         let id = format!("{:07x}", self.model.commits.len() * 0x1f7 + 0xa10);
@@ -348,7 +568,6 @@ impl GitClientApp {
             lane: 0,
             files: staged,
         };
-        // Drop the old HEAD/branch decoration on the previous tip.
         if let Some(prev) = self.model.commits.first_mut() {
             prev.refs.retain(|r| {
                 r.kind != crate::model::RefKind::Head && r.name != self.model.head
@@ -422,10 +641,16 @@ impl GitClientApp {
                 &self.model.head, Color::WHITE, theme.accent_primary, None,
             );
         }
-        // change count subtitle
-        let sub = format!("{} pending change{}", self.model.change_count(),
-            if self.model.change_count() == 1 { "" } else { "s" });
-        draw::text(scene, tr, t, &sub, 11.5, c.text_dim, title_x, bar.y0 + 30.0, Some(title_max));
+        // change count subtitle — or the last action error when present.
+        let (sub, sub_color) = match &self.last_error {
+            Some(err) => (err.clone(), c.semantic.danger),
+            None => (
+                format!("{} pending change{}", self.model.change_count(),
+                    if self.model.change_count() == 1 { "" } else { "s" }),
+                c.text_dim,
+            ),
+        };
+        draw::text(scene, tr, t, &sub, 11.5, sub_color, title_x, bar.y0 + 30.0, Some(title_max));
         let group_bg = Rect::new(tx - 6.0, tab_y, tx + total + 6.0, tab_y + tab_h);
         draw::fill_round(scene, t, group_bg, 9.0, c.surfaces.base);
         for (i, (screen, label)) in TABS.iter().enumerate() {
@@ -670,6 +895,77 @@ impl GitClientApp {
 
     fn draw_panels(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, body: Rect) {
         self.panel_hits = PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
+        // New-branch creator: a compact labelled input + button drawn in the
+        // toolbar's centre band, between the branch status (left) and the
+        // fetch/pull/push cluster (right). Only meaningful for a real repo.
+        if self.repo_path.is_some() {
+            self.draw_new_branch(scene, tr, t, theme, body);
+        } else {
+            self.new_branch_input = Rect::ZERO;
+            self.new_branch_button = Rect::ZERO;
+        }
+    }
+
+    /// Draw the new-branch input + "Create" button in the panels toolbar and
+    /// record their hit rects. The toolbar is the top 56px band of `body`.
+    fn draw_new_branch(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, body: Rect) {
+        let c = &theme.tokens.colors;
+        let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
+        // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
+        let actions_w = 300.0;
+        let btn_w = 70.0;
+        let gap = 8.0;
+        let h = 28.0;
+        let y = tb.y0 + (tb.height() - h) / 2.0;
+        let right = tb.x1 - actions_w;
+        let bx = right - btn_w;
+        let input = Rect::new((right - btn_w - gap - 180.0).max(tb.x0 + 180.0), y, bx - gap, y + h);
+        if input.width() < 60.0 {
+            // Too tight to render meaningfully — skip.
+            self.new_branch_input = Rect::ZERO;
+            self.new_branch_button = Rect::ZERO;
+            return;
+        }
+        // Input field.
+        draw::fill_round(scene, t, input, 6.0, c.surfaces.base);
+        draw::stroke_round(scene, t, input, 6.0, 1.0,
+            if self.new_branch_focused { theme.border_focus } else { c.border_standard });
+        let (txt, col) = if self.new_branch_name.is_empty() {
+            ("new branch name…", c.neutral[5])
+        } else {
+            (self.new_branch_name.as_str(), c.text_primary)
+        };
+        draw::text(scene, tr, t, txt, 12.0, col, input.x0 + 8.0, input.y0 + 6.0, Some((input.width() - 16.0) as f32));
+        if self.new_branch_focused {
+            let tw = tr.measure(&self.new_branch_name, 12.0, None).0 as f64;
+            let cx = (input.x0 + 8.0 + tw).min(input.x1 - 6.0);
+            draw::vline(scene, t, cx, input.y0 + 5.0, input.y1 - 5.0, theme.accent_primary);
+        }
+        self.new_branch_input = input;
+        // Create button.
+        let brect = Rect::new(bx, y, bx + btn_w, y + h);
+        let enabled = !self.new_branch_name.trim().is_empty();
+        draw::fill_round(scene, t, brect, 6.0, if enabled { theme.accent_primary } else { c.surface_white_10 });
+        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
+        let lw = tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium).0 as f64;
+        draw::text_weighted(scene, tr, t, "Branch", 12.0, fg, bx + (btn_w - lw) / 2.0, y + 6.0, None, TextWeight::Medium);
+        self.new_branch_button = brect;
+    }
+
+    fn create_new_branch(&mut self) {
+        let name = self.new_branch_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(path) = self.repo() {
+            let res = crate::repo::create_branch(&path, &name, None, true);
+            let ok = res.is_ok();
+            self.run_action(res);
+            if ok {
+                self.new_branch_name.clear();
+                self.new_branch_focused = false;
+            }
+        }
     }
 
     // --- Event helpers -------------------------------------------------
@@ -763,13 +1059,42 @@ impl GitClientApp {
         }
     }
 
-    /// Stage (or unstage) a single hunk. Mirrors `git add -p`; here we move
-    /// the whole file once any hunk is staged, which keeps the model
-    /// consistent for the demo while still proving the per-hunk hit-test.
-    fn stage_hunk(&mut self, _hunk: usize) {
-        if let Some((area, idx)) = self.selected_change {
-            self.toggle_stage(area, idx);
+    /// Stage (or unstage) a single hunk of the selected file. Against a real
+    /// repo this applies exactly that hunk to the index via `git2` (the
+    /// equivalent of `git add -p` / `git restore --staged -p`) and re-reads.
+    /// The `hunk` argument is the hunk's index within the file's diff, which
+    /// the diff view assigns its button to.
+    ///
+    /// The currently shown diff direction depends on which area is selected:
+    /// a staged file shows the HEAD→index diff (so a hunk action *unstages*),
+    /// an unstaged/untracked file shows the index→workdir diff (so a hunk
+    /// action *stages*). That matches `apply_hunk`'s ordering exactly.
+    fn stage_hunk(&mut self, hunk: usize) {
+        let Some((area, _)) = self.selected_change else { return };
+        if let (Some(path), Some(file)) = (self.repo(), self.current_path()) {
+            let unstage = area == ChangeArea::Staged;
+            // Map the displayed line's hunk to the Nth diff hunk for the file.
+            let local = self.local_hunk_index(&file, hunk);
+            let res = crate::repo::apply_hunk(&path, &file, local, unstage);
+            self.run_action(res);
+            return;
         }
+        // Sample fallback: move the whole file to prove the hit-test.
+        if let Some((area, idx)) = self.selected_change {
+            self.toggle_stage_in_memory(area, idx);
+        }
+    }
+
+    /// The 0-based hunk position (within the file's diff, excluding meta
+    /// "hunk 0 = file header" noise) for the diff line's `hunk` field. The
+    /// parsed `DiffLine.hunk` is already a 0-based index into the file's
+    /// `DiffHunk` list, so it maps directly; this helper exists so the
+    /// mapping is named and testable if the parser's convention shifts.
+    fn local_hunk_index(&self, file: &str, hunk: usize) -> usize {
+        // `hunk` indexes `FileDiff.hunks`; libgit2's hunk callback walks the
+        // same hunks in the same order, so they're 1:1.
+        let _ = file;
+        hunk
     }
 
     fn handle_history_click(&mut self, pos: Point) {
@@ -783,29 +1108,64 @@ impl GitClientApp {
     }
 
     fn handle_panels_click(&mut self, pos: Point) {
+        // New-branch input + create button take priority.
+        if self.new_branch_button.width() > 0.0 && self.new_branch_button.contains(pos) {
+            self.create_new_branch();
+            return;
+        }
+        if self.new_branch_input.width() > 0.0 && self.new_branch_input.contains(pos) {
+            self.new_branch_focused = true;
+            return;
+        }
+        self.new_branch_focused = false;
+        let mut hit: Option<PanelHit> = None;
         for f in &self.panel_hits {
             if let Some(action) = f(pos) {
-                self.apply_remote_action(action);
-                return;
+                hit = Some(action);
+                break;
+            }
+        }
+        match hit {
+            Some(PanelHit::Remote(a)) => self.apply_remote_action(a),
+            Some(PanelHit::Branch(a)) => self.apply_branch_action(a),
+            None => {}
+        }
+    }
+
+    /// Apply a remote action (fetch / pull / push) against the live repo via
+    /// `git2`, then re-read the model so the ahead/behind counters reflect
+    /// the real tracking state. For the sample, reconcile the counters so the
+    /// offscreen capture shows the effect.
+    fn apply_remote_action(&mut self, action: RemoteAction) {
+        if let Some(path) = self.repo() {
+            let res = match action {
+                RemoteAction::Fetch => crate::repo::fetch(&path, None).map(|_| ()),
+                RemoteAction::Pull => crate::repo::pull(&path, None),
+                RemoteAction::Push => crate::repo::push(&path, None),
+            };
+            self.run_action(res);
+            return;
+        }
+        if let Some(b) = self.model.branches.iter_mut().find(|b| b.is_head) {
+            match action {
+                RemoteAction::Fetch => {}
+                RemoteAction::Pull => b.behind = 0,
+                RemoteAction::Push => b.ahead = 0,
             }
         }
     }
 
-    /// Apply a remote action against the head branch's tracking state.
-    /// The real backend would invoke fetch/pull/push; we reconcile the
-    /// ahead/behind counters so the UI shows the effect.
-    fn apply_remote_action(&mut self, action: RemoteAction) {
-        if let Some(b) = self.model.branches.iter_mut().find(|b| b.is_head) {
-            match action {
-                RemoteAction::Fetch => { /* refresh remote refs; counters unchanged */ }
-                RemoteAction::Pull => {
-                    b.behind = 0;
-                }
-                RemoteAction::Push => {
-                    b.ahead = 0;
-                }
-            }
-        }
+    /// Apply a branch action (checkout / create / delete) or a stash apply
+    /// against the live repo, then re-read. Sample-backed apps ignore these
+    /// (the panels' branch buttons only appear for real repos).
+    fn apply_branch_action(&mut self, action: BranchAction) {
+        let Some(path) = self.repo() else { return };
+        let res = match action {
+            BranchAction::Checkout(name) => crate::repo::checkout_branch(&path, &name),
+            BranchAction::Delete(name) => crate::repo::delete_branch(&path, &name),
+            BranchAction::StashApply(i) => crate::repo::stash_apply(&path, i),
+        };
+        self.run_action(res);
     }
 
     fn scroll_active(&mut self, dy: f64, pos: Point) {
@@ -964,7 +1324,7 @@ impl Widget for GitClientApp {
                 self.hover_hunk = diffview::hunk_button_at(&self.diff_hunk_buttons, self.last_mouse);
                 self.hover_action = None;
                 for f in &self.panel_hits {
-                    if let Some(a) = f(self.last_mouse) {
+                    if let Some(PanelHit::Remote(a)) = f(self.last_mouse) {
                         self.hover_action = Some(a);
                         break;
                     }
@@ -1021,6 +1381,32 @@ impl GitClientApp {
         if ev.state != ElementState::Pressed {
             return;
         }
+        // New-branch name editing takes keys when focused.
+        if self.new_branch_focused {
+            match &ev.logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    self.new_branch_name.pop();
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.create_new_branch();
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.new_branch_focused = false;
+                    *handled = true;
+                }
+                Key::Character(s) => {
+                    // Branch names: accept the character verbatim; git will
+                    // reject illegal names and the error surfaces in the bar.
+                    self.new_branch_name.push_str(s);
+                    *handled = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Commit-message editing takes keys when focused.
         if self.msg_focused {
             match &ev.logical_key {
