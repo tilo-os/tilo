@@ -19,6 +19,7 @@ members = [
     "qos-collab-link",
     "qos-relay",
     "qos-pkg",
+    "qos-pkg-cli",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
