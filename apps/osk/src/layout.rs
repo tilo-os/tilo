@@ -73,6 +73,12 @@ impl Key {
         }
     }
 
+    /// A 1.0-wide key for a single non-letter character (digit / symbol).
+    /// Convenience for building digit grids from a row string.
+    pub fn ch_char(c: char) -> Self {
+        Self::ch(&c.to_string())
+    }
+
     /// An action / modifier key with an explicit label and weight.
     pub fn action(label: &str, action: KeyAction, width: f32) -> Self {
         Self {
@@ -219,6 +225,149 @@ impl KeyboardLayout {
         }
     }
 
+    /// A calculator-style number pad: three digit rows, then a bottom row with
+    /// `0` flanked by the minus sign and decimal point, plus Backspace and
+    /// Enter. Suited to plain number entry where a sign and decimals are
+    /// reasonable (quantities, ages, amounts).
+    pub fn numeric() -> Self {
+        Self::digit_pad(
+            "numeric",
+            vec![Key::ch("-"), Key::ch("0"), Key::ch(".")],
+        )
+    }
+
+    /// Like [`numeric`](Self::numeric) but tuned for decimal entry: the bottom
+    /// row pairs `0` with the decimal point (no minus sign) so the point is
+    /// always one tap away. Kept distinct from `numeric` so a field that only
+    /// wants non-negative decimals (prices, measurements) can pick it.
+    pub fn decimal() -> Self {
+        Self::digit_pad("decimal", vec![Key::ch("0"), Key::ch(".")])
+    }
+
+    /// A phone dialpad: the standard `1-9` grid plus a `* 0 #` bottom row, with
+    /// a `+` (for international prefixes) and Backspace on the side. No Enter —
+    /// dialing is committed by the host, not a keyboard return.
+    pub fn phone() -> Self {
+        let rows = vec![
+            "123".chars().map(Key::ch_char).collect::<Vec<_>>(),
+            "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
+            "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
+            vec![Key::ch("*"), Key::ch("0"), Key::ch("#")],
+            vec![
+                Key::ch("+"),
+                Key::action("⌫", KeyAction::Backspace, 2.0),
+            ],
+        ];
+        Self {
+            name: "phone".to_string(),
+            rows,
+        }
+    }
+
+    /// A PIN pad: digits only (`0-9`) plus Backspace and Enter. Deliberately
+    /// has no `.`, `-`, `*`, or `#` — a secret numeric code is just digits, and
+    /// extra symbols would only invite mistakes.
+    pub fn pin() -> Self {
+        Self::digit_pad("pin", vec![Key::action("⌫", KeyAction::Backspace, 1.0), Key::ch("0"), Key::action("⏎", KeyAction::Enter, 1.0)])
+    }
+
+    /// Build a numeric pad: three rows of `1-9`, a custom bottom row, and a
+    /// right-hand column of Backspace (top) and Enter (bottom) spanning the
+    /// digit rows. The bottom row carries whatever extra keys the variant wants
+    /// (a `0` plus signs/points, or the full bottom row for `pin`).
+    fn digit_pad(name: &str, bottom: Vec<Key>) -> Self {
+        // For `pin` the caller already supplies a complete bottom row including
+        // its own Backspace/Enter, so we don't append side keys there.
+        let bottom_is_complete = bottom
+            .iter()
+            .any(|k| matches!(k.action, KeyAction::Enter | KeyAction::Backspace));
+        let rows = if bottom_is_complete {
+            vec![
+                "123".chars().map(Key::ch_char).collect::<Vec<_>>(),
+                "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
+                "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
+                bottom,
+            ]
+        } else {
+            // Backspace tops the editing column; Enter commits at the bottom.
+            vec![
+                {
+                    let mut r = "123".chars().map(Key::ch_char).collect::<Vec<_>>();
+                    r.push(Key::action("⌫", KeyAction::Backspace, 1.0));
+                    r
+                },
+                "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
+                "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
+                {
+                    let mut r = bottom;
+                    r.push(Key::action("⏎", KeyAction::Enter, 1.0));
+                    r
+                },
+            ]
+        };
+        Self {
+            name: name.to_string(),
+            rows,
+        }
+    }
+
+    /// The QWERTY letters with an `@` and a `.` always on the bottom row (plus
+    /// a `.com` convenience key), so an email address can be typed without
+    /// detouring through the symbols layer.
+    pub fn email() -> Self {
+        Self::alpha_with_bottom(
+            "email",
+            &["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+            vec![
+                Key::action("?123", KeyAction::SymbolsToggle, 1.5),
+                Key::ch("@"),
+                Key::ch("."),
+                Key::action("space", KeyAction::Space, 3.5),
+                Key::ch(".com").with_width(1.5),
+                Key::action("⏎", KeyAction::Enter, 1.5),
+            ],
+        )
+    }
+
+    /// The QWERTY letters with `/`, `.`, and a `.com` key always on the bottom
+    /// row. A URL has no spaces, but the wide key stays functional (and is
+    /// relabelled `"/"` to nudge toward the path separator instead).
+    pub fn url() -> Self {
+        Self::alpha_with_bottom(
+            "url",
+            &["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+            vec![
+                Key::action("?123", KeyAction::SymbolsToggle, 1.5),
+                Key::ch("."),
+                Key::ch("/"),
+                // A URL has no spaces; the wide bar stays a working Space key
+                // but is labelled "no space" to discourage the habit.
+                Key::action("no space", KeyAction::Space, 3.5),
+                Key::ch(".com").with_width(1.5),
+                Key::action("⏎", KeyAction::Enter, 1.5),
+            ],
+        )
+    }
+
+    /// Build a letter layout (rows 0-2 + Shift/Backspace chrome as in
+    /// [`alpha`](Self::alpha)) but with a caller-supplied bottom function row,
+    /// so layouts like email/url can pin field-specific keys (`@`, `.`, `.com`)
+    /// onto it.
+    fn alpha_with_bottom(name: &str, letters: &[&str; 3], bottom: Vec<Key>) -> Self {
+        let mut rows: Vec<Vec<Key>> = Vec::new();
+        rows.push(letters[0].chars().map(Key::letter).collect());
+        rows.push(letters[1].chars().map(Key::letter).collect());
+        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5)];
+        r3.extend(letters[2].chars().map(Key::letter));
+        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5));
+        rows.push(r3);
+        rows.push(bottom);
+        Self {
+            name: name.to_string(),
+            rows,
+        }
+    }
+
     /// The symbols / numbers layer. The leading key returns to letters
     /// (`SymbolsToggle`); ships a digit row and two symbol rows.
     pub fn symbols() -> Self {
@@ -243,6 +392,82 @@ impl KeyboardLayout {
             name: "symbols".to_string(),
             rows,
         }
+    }
+}
+
+/// The kind of value a focused text field expects. The keyboard picks a
+/// layout to match, so a phone-number field shows a dialpad and a PIN field
+/// shows digits only.
+///
+/// These mirror the Wayland `text-input-unstable-v3` `content_purpose` values
+/// (`normal`, `number`, `digits` / `pin`, `phone`, `url`, `email`, `password`,
+/// `date`, `time`, …). The compositor's input-method side can map an incoming
+/// `content_purpose` straight onto these variants later. This enum carries no
+/// Wayland dependency — it is purely the OSK's own notion of field intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum InputPurpose {
+    /// Free-form text — the standard letter keyboard.
+    #[default]
+    Text,
+    /// A number with no decimal point or sign expectation beyond `-`.
+    Number,
+    /// A number where a decimal point is expected.
+    Decimal,
+    /// A telephone number (dialpad with `*` `#` `+`).
+    Telephone,
+    /// A web/URI address.
+    Url,
+    /// An email address.
+    Email,
+    /// A numeric secret code — digits only, nothing else.
+    Pin,
+    /// A password — full letter keyboard (so any character is reachable); the
+    /// host is responsible for masking the displayed value.
+    Password,
+    /// A calendar date. No date-specific layout yet, so it falls back to the
+    /// number pad.
+    Date,
+    /// A clock time. No time-specific layout yet, so it falls back to the
+    /// number pad.
+    Time,
+}
+
+impl KeyboardLayout {
+    /// The name of the built-in layout best suited to an [`InputPurpose`].
+    /// The returned name is always one the widget can register on demand (see
+    /// [`KeyboardLayout::by_name`]).
+    pub fn for_purpose(purpose: InputPurpose) -> &'static str {
+        match purpose {
+            InputPurpose::Number => "numeric",
+            InputPurpose::Decimal => "decimal",
+            InputPurpose::Telephone => "phone",
+            InputPurpose::Pin => "pin",
+            InputPurpose::Email => "email",
+            InputPurpose::Url => "url",
+            // A date/time is entered as numbers until dedicated layouts exist.
+            InputPurpose::Date | InputPurpose::Time => "numeric",
+            // Passwords need every character, so they use the full keyboard.
+            InputPurpose::Password | InputPurpose::Text => "qwerty",
+        }
+    }
+
+    /// Construct a built-in layout by its name (the names returned by
+    /// [`for_purpose`](Self::for_purpose) plus the always-present letter and
+    /// symbol layouts). Returns `None` for an unknown name so callers can fall
+    /// back rather than panic.
+    pub fn by_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "qwerty" => Self::qwerty(),
+            "azerty" => Self::azerty(),
+            "symbols" => Self::symbols(),
+            "numeric" => Self::numeric(),
+            "decimal" => Self::decimal(),
+            "phone" => Self::phone(),
+            "pin" => Self::pin(),
+            "email" => Self::email(),
+            "url" => Self::url(),
+            _ => return None,
+        })
     }
 }
 
@@ -377,6 +602,141 @@ mod tests {
         assert_eq!(ShiftState::Off.cycle(), ShiftState::Shift);
         assert_eq!(ShiftState::Shift.cycle(), ShiftState::CapsLock);
         assert_eq!(ShiftState::CapsLock.cycle(), ShiftState::Off);
+    }
+
+    // --- input-type layouts -------------------------------------------
+
+    /// All characters a layout can emit, as single-char strings.
+    fn emitted_chars(l: &KeyboardLayout) -> Vec<String> {
+        l.rows
+            .iter()
+            .flatten()
+            .filter_map(|k| match &k.action {
+                KeyAction::Char(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_action(l: &KeyboardLayout, action: &KeyAction) -> bool {
+        l.rows.iter().flatten().any(|k| &k.action == action)
+    }
+
+    fn emits(l: &KeyboardLayout, s: &str) -> bool {
+        emitted_chars(l).iter().any(|c| c == s)
+    }
+
+    fn has_any_letter(l: &KeyboardLayout) -> bool {
+        l.rows.iter().flatten().any(Key::is_letter)
+    }
+
+    #[test]
+    fn numeric_has_all_digits_backspace_no_letters() {
+        let l = KeyboardLayout::numeric();
+        for d in "0123456789".chars() {
+            assert!(emits(&l, &d.to_string()), "numeric missing digit {d}");
+        }
+        assert!(has_action(&l, &KeyAction::Backspace));
+        assert!(!has_any_letter(&l), "numeric must have no letters");
+        // A minus sign and a decimal point are reasonable for plain numbers.
+        assert!(emits(&l, "-"));
+        assert!(emits(&l, "."));
+    }
+
+    #[test]
+    fn decimal_has_point_and_no_letters() {
+        let l = KeyboardLayout::decimal();
+        assert!(emits(&l, "."), "decimal must offer the decimal point");
+        for d in "0123456789".chars() {
+            assert!(emits(&l, &d.to_string()));
+        }
+        assert!(has_action(&l, &KeyAction::Backspace));
+        assert!(!has_any_letter(&l));
+    }
+
+    #[test]
+    fn phone_is_a_dialpad() {
+        let l = KeyboardLayout::phone();
+        for d in "0123456789".chars() {
+            assert!(emits(&l, &d.to_string()), "phone missing digit {d}");
+        }
+        // Dialpad-specific keys.
+        assert!(emits(&l, "*"));
+        assert!(emits(&l, "#"));
+        assert!(emits(&l, "+"));
+        assert!(has_action(&l, &KeyAction::Backspace));
+        assert!(!has_any_letter(&l));
+    }
+
+    #[test]
+    fn pin_is_digits_only() {
+        let l = KeyboardLayout::pin();
+        for d in "0123456789".chars() {
+            assert!(emits(&l, &d.to_string()), "pin missing digit {d}");
+        }
+        assert!(has_action(&l, &KeyAction::Backspace));
+        assert!(has_action(&l, &KeyAction::Enter));
+        assert!(!has_any_letter(&l));
+        // No decimal point, sign, or dialpad symbols in a secret code.
+        for forbidden in [".", "-", "*", "#", "+"] {
+            assert!(!emits(&l, forbidden), "pin must not offer {forbidden}");
+        }
+    }
+
+    #[test]
+    fn email_has_at_and_dot_and_letters() {
+        let l = KeyboardLayout::email();
+        assert!(emits(&l, "@"), "email needs an @ key");
+        assert!(emits(&l, "."), "email needs a . key");
+        assert!(has_any_letter(&l), "email is a letter layout");
+        // The convenience key is nice-to-have but expected here.
+        assert!(emits(&l, ".com"));
+        // Still has a space (email local parts don't, but the bar stays usable).
+        assert!(has_action(&l, &KeyAction::Space));
+    }
+
+    #[test]
+    fn url_has_slash_and_dot_and_letters() {
+        let l = KeyboardLayout::url();
+        assert!(emits(&l, "/"), "url needs a / key");
+        assert!(emits(&l, "."), "url needs a . key");
+        assert!(emits(&l, ".com"));
+        assert!(has_any_letter(&l), "url is a letter layout");
+    }
+
+    #[test]
+    fn for_purpose_maps_every_variant() {
+        use InputPurpose::*;
+        let cases = [
+            (Text, "qwerty"),
+            (Number, "numeric"),
+            (Decimal, "decimal"),
+            (Telephone, "phone"),
+            (Url, "url"),
+            (Email, "email"),
+            (Pin, "pin"),
+            (Password, "qwerty"),
+            (Date, "numeric"),
+            (Time, "numeric"),
+        ];
+        for (purpose, expect) in cases {
+            assert_eq!(
+                KeyboardLayout::for_purpose(purpose),
+                expect,
+                "{purpose:?} should map to {expect}"
+            );
+            // Every name `for_purpose` returns must be constructible.
+            assert!(
+                KeyboardLayout::by_name(expect).is_some(),
+                "{expect} must be a known layout"
+            );
+        }
+    }
+
+    #[test]
+    fn by_name_rejects_unknown() {
+        assert!(KeyboardLayout::by_name("dvorak").is_none());
+        assert_eq!(KeyboardLayout::by_name("phone").unwrap().name, "phone");
     }
 
     #[test]

@@ -50,7 +50,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
+use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, InputPurpose, ShiftState, key_rects};
 use crate::predict::Predictor;
 use crate::suggest::{Suggestion, suggestion_rects};
 use crate::futo::FutoSwipeModel;
@@ -91,8 +91,13 @@ pub struct OskWidget {
     /// at least one letter layout. Adding AZERTY/QWERTZ/… is just inserting
     /// data here (see [`OskWidget::with_layout`]).
     layouts: HashMap<String, KeyboardLayout>,
-    /// Name of the active *letter* layout (e.g. `"qwerty"`).
+    /// Name of the active *letter* layout (e.g. `"qwerty"`). For non-letter
+    /// purposes (numeric/phone/pin) this holds the chosen specialised layout
+    /// name; it is what `active_layout_name` reports when symbols are not shown.
     active_letter: String,
+    /// The field intent the keyboard is currently serving. Drives which layout
+    /// is active and whether the shift/symbols affordances make sense.
+    purpose: InputPurpose,
     /// Whether the symbols layer is currently displayed instead of letters.
     showing_symbols: bool,
     /// Current shift / caps state.
@@ -175,6 +180,7 @@ impl OskWidget {
         let mut me = Self {
             layouts,
             active_letter: "qwerty".to_string(),
+            purpose: InputPurpose::Text,
             showing_symbols: false,
             shift: ShiftState::Off,
             toolbar: OskToolbarItem::default_set(),
@@ -228,6 +234,13 @@ impl OskWidget {
         if self.layouts.contains_key(name) {
             self.active_letter = name.to_string();
         }
+        self
+    }
+
+    /// Start the keyboard on the layout matching `purpose` (e.g. a dialpad for
+    /// [`InputPurpose::Telephone`]). The needed layout is registered on demand.
+    pub fn with_purpose(mut self, purpose: InputPurpose) -> Self {
+        self.apply_purpose(purpose);
         self
     }
 
@@ -295,7 +308,24 @@ impl OskWidget {
         std::mem::take(&mut self.toolbar_log)
     }
 
+    // --- runtime configuration -----------------------------------------
+
+    /// Switch the keyboard to the layout for `purpose` at runtime (the focused
+    /// field changed). Registers the layout if absent, makes it active, drops
+    /// the symbols layer, and raises `structure_dirty` so the host relays out
+    /// (the row count differs between, say, the dialpad and QWERTY).
+    pub fn set_purpose(&mut self, purpose: InputPurpose) {
+        self.apply_purpose(purpose);
+        self.showing_symbols = false;
+        self.structure_dirty = true;
+    }
+
     // --- state accessors -----------------------------------------------
+
+    /// The field intent the keyboard is currently serving.
+    pub fn purpose(&self) -> InputPurpose {
+        self.purpose
+    }
 
     pub fn shift_state(&self) -> ShiftState {
         self.shift
@@ -401,6 +431,25 @@ impl OskWidget {
     }
 
     // --- internals ------------------------------------------------------
+
+    /// Make `purpose` the active intent: pick its layout name, register that
+    /// layout on demand, set it active, and reset shift (a fresh numeric/pin
+    /// pad should not carry a stale upper-case state). Shared by the builder
+    /// [`with_purpose`](Self::with_purpose) and the runtime
+    /// [`set_purpose`](Self::set_purpose).
+    fn apply_purpose(&mut self, purpose: InputPurpose) {
+        self.purpose = purpose;
+        let name = KeyboardLayout::for_purpose(purpose);
+        if !self.layouts.contains_key(name)
+            && let Some(layout) = KeyboardLayout::by_name(name)
+        {
+            self.layouts.insert(layout.name.clone(), layout);
+        }
+        if self.layouts.contains_key(name) {
+            self.active_letter = name.to_string();
+        }
+        self.shift = ShiftState::Off;
+    }
 
     /// The layout currently on screen.
     fn current_layout(&self) -> &KeyboardLayout {
@@ -1284,6 +1333,98 @@ mod tests {
         // AZERTY row 0 starts with 'a'.
         assert!(osk.activate_label("a"));
         assert_eq!(osk.pending_text(), "a");
+    }
+
+    // --- input-type layouts via purpose --------------------------------
+
+    #[test]
+    fn set_purpose_swaps_active_layout_and_marks_dirty() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 800.0, 360.0);
+        assert_eq!(osk.active_layout_name(), "qwerty");
+        osk.set_purpose(InputPurpose::Telephone);
+        assert_eq!(osk.purpose(), InputPurpose::Telephone);
+        assert_eq!(osk.active_layout_name(), "phone");
+        assert!(osk.take_structure_dirty(), "purpose change relays out");
+    }
+
+    #[test]
+    fn with_purpose_starts_on_the_matching_layout() {
+        let osk = OskWidget::new().with_purpose(InputPurpose::Pin);
+        assert_eq!(osk.purpose(), InputPurpose::Pin);
+        assert_eq!(osk.active_layout_name(), "pin");
+    }
+
+    #[test]
+    fn numeric_purpose_types_digits_and_has_no_letters() {
+        let mut osk = OskWidget::new();
+        osk.set_purpose(InputPurpose::Number);
+        lay_out(&mut osk, 800.0, 360.0);
+        assert!(osk.activate_label("1"));
+        assert!(osk.activate_label("2"));
+        assert!(osk.activate_label("3"));
+        assert_eq!(osk.pending_text(), "123");
+        // There is no Shift key to tap on a number pad.
+        assert!(!osk.activate_label("⇧"), "no Shift on the number pad");
+    }
+
+    #[test]
+    fn switching_purpose_then_back_registers_layouts_on_demand() {
+        // qOS only preloads qwerty/azerty/symbols; the specialised layouts must
+        // be registered the first time a purpose needs them.
+        let mut osk = OskWidget::new();
+        osk.set_purpose(InputPurpose::Email);
+        lay_out(&mut osk, 800.0, 360.0);
+        assert_eq!(osk.active_layout_name(), "email");
+        assert!(osk.activate_label("@"));
+        osk.set_purpose(InputPurpose::Text);
+        lay_out(&mut osk, 800.0, 360.0);
+        assert_eq!(osk.active_layout_name(), "qwerty");
+    }
+
+    #[test]
+    fn purpose_change_clears_stale_shift() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 800.0, 360.0);
+        osk.activate_label("⇧");
+        assert_eq!(osk.shift_state(), ShiftState::Shift);
+        // Moving to a number pad must drop the now-meaningless shift state.
+        osk.set_purpose(InputPurpose::Number);
+        assert_eq!(osk.shift_state(), ShiftState::Off);
+    }
+
+    #[test]
+    fn numeric_layout_renders_offscreen() {
+        // A non-letter layout must lay out and draw without panicking even
+        // though it has no Shift / symbols affordances.
+        use ui::offscreen::OffscreenRenderer;
+        use ui::permissions::PermissionContext;
+        use vello::peniko::Color;
+
+        let mut osk = OskWidget::new().with_purpose(InputPurpose::Telephone);
+        lay_out(&mut osk, 720.0, 360.0);
+        assert!(!osk.key_geometry().is_empty(), "dialpad laid out keys");
+
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        osk.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &permission,
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("osk_dialpad.png");
+        let mut renderer = OffscreenRenderer::new(720, 360);
+        renderer.render_png(&scene, Color::BLACK, &out);
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.len() > 1000, "rendered a non-trivial PNG");
     }
 
     // --- swipe + prediction + suggestion bar -----------------------

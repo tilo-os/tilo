@@ -8,6 +8,8 @@
 //!
 //! ## Scope of this crate
 //! * Data-driven [`KeyboardLayout`]s (QWERTY, AZERTY, symbols; more are data).
+//! * Input-type layouts selected by [`InputPurpose`] — a number pad, dialpad,
+//!   PIN pad, and email/URL keyboards — so a focused field gets the right keys.
 //! * Pure, responsive geometry ([`key_rects`]).
 //! * The [`OskWidget`] — drawing, pointer input, shift/caps, symbol layer,
 //!   backspace — plus a customizable [`OskToolbarItem`] row.
@@ -56,7 +58,7 @@ pub use inject::{
     NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, action_symbols, build_keymap,
     default_injector,
 };
-pub use layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
+pub use layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
