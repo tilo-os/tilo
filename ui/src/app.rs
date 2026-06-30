@@ -472,6 +472,23 @@ impl App {
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
+                CollabEvent::ScrollbackBatch { artifact: _, ops, exhausted: _ } => {
+                    // Phase 6: apply older ops in seq order. The broker
+                    // pre-validated each envelope before sticking it in
+                    // its in-memory log; we trust the contents the same
+                    // way `SignedCRDTIncremental` does. Apps that need
+                    // a "Loading older edits…" spinner read the
+                    // `exhausted` flag separately; the toolkit's
+                    // default surface is just to apply.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv ScrollbackBatch ({} ops)", ops.len());
+                    }
+                    for envelope in ops {
+                        let _ = self.state.load_incremental(&envelope.payload);
+                    }
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                }
             }
         }
         any
