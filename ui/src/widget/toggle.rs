@@ -198,6 +198,20 @@ impl Widget for Toggle {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A toggle is a Switch: the on/off state lives in `checked`.
+        Some(
+            AccessNode::new(Role::Switch).with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                checked: Some(self.is_checked),
+                ..Default::default()
+            }),
+        )
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -261,6 +275,19 @@ mod tests {
         let t = Toggle::new("any", "path").with_enabled(false);
         assert!(!Widget::is_enabled(&t));
         assert!(Widget::is_enabled(&Toggle::new("any", "path")), "default is enabled");
+    }
+
+    #[test]
+    fn accessibility_reports_switch_role_and_checked_state() {
+        use crate::a11y::Role;
+        let mut t = Toggle::new("any", "path");
+        let off = Widget::accessibility(&t).unwrap();
+        assert_eq!(off.role, Role::Switch);
+        assert_eq!(off.state.checked, Some(false));
+
+        t.is_checked = true; // same module → set the synced on-state directly
+        let on = Widget::accessibility(&t).unwrap();
+        assert_eq!(on.state.checked, Some(true));
     }
 
     #[test]

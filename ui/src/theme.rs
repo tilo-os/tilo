@@ -94,6 +94,53 @@ impl Theme {
         t.radii.md = 0.0;
         Self::from_tokens("Solarized", t)
     }
+
+    /// High-contrast accessibility preset (workstream W2 of the a11y design).
+    ///
+    /// Maximises foreground/background contrast for low-vision users: pure
+    /// black solid surfaces under pure-white text (WCAG AAA, 21:1 — the
+    /// maximum possible), crisp white borders, and a high-visibility **yellow
+    /// focus ring** so keyboard focus is unmistakable. Because every widget
+    /// reads its colours from the passed-in [`Theme`], selecting this preset
+    /// makes the whole UI high-contrast with no per-widget changes.
+    ///
+    /// Selected when [`A11ySettings::high_contrast`](crate::a11y::A11ySettings)
+    /// is set; the shell owns theming and broadcasts the swap.
+    pub fn high_contrast() -> Self {
+        let mut t = Tokens::dark();
+        let c = &mut t.colors;
+
+        // Solid (non-translucent) surfaces — pure black so text/borders pop.
+        c.surfaces.base = Color::BLACK;
+        c.surfaces.raised = Color::BLACK;
+        c.surfaces.overlay = Color::from_rgba8(0, 0, 0, 255);
+        c.surfaces.glass = Color::from_rgba8(0, 0, 0, 255);
+        c.surfaces.glass_blur_px = 0.0;
+        c.surfaces.window_card = Color::BLACK;
+        c.surfaces.window_card_border = Color::WHITE;
+
+        // Maximal text contrast. `text_dim` stays near-white so even secondary
+        // copy clears AAA against black instead of fading to a low-contrast grey.
+        c.text_primary = Color::WHITE;
+        c.text_dim = Color::from_rgb8(230, 230, 230);
+
+        // Crisp white structure + an unmistakable yellow focus ring.
+        c.border_standard = Color::WHITE;
+        c.border_focus = Color::from_rgb8(255, 255, 0); // high-visibility yellow
+
+        // A bright, legible accent fill. Stays distinct from the yellow focus
+        // ring and keeps the white checkmark/knob it backs readable on top.
+        c.accent.stops[ACCENT_PRIMARY_IDX] = Color::from_rgb8(0, 153, 255);
+        c.accent.stops[ACCENT_HOVER_IDX] = Color::from_rgb8(64, 176, 255);
+
+        // Keep semantic colours bright enough to read on black.
+        c.semantic.success = Color::from_rgb8(0, 230, 118);
+        c.semantic.warning = Color::from_rgb8(255, 214, 0);
+        c.semantic.danger = Color::from_rgb8(255, 82, 82);
+        c.semantic.info = Color::from_rgb8(64, 196, 255);
+
+        Self::from_tokens("High Contrast", t)
+    }
 }
 
 #[cfg(test)]
@@ -128,5 +175,41 @@ mod tests {
         // ramp re-ordering trips this test first.
         assert_eq!(ACCENT_PRIMARY_IDX, 5);
         assert_eq!(ACCENT_HOVER_IDX, 4);
+    }
+
+    #[test]
+    fn high_contrast_beats_dark_on_fg_bg_contrast() {
+        use crate::a11y::contrast_ratio;
+        let dark = Theme::dark();
+        let hc = Theme::high_contrast();
+
+        let dark_ratio = contrast_ratio(dark.text_primary, dark.bg_app);
+        let hc_ratio = contrast_ratio(hc.text_primary, hc.bg_app);
+
+        assert!(
+            hc_ratio > dark_ratio,
+            "high_contrast fg/bg ({hc_ratio:.2}:1) must exceed dark ({dark_ratio:.2}:1)",
+        );
+        // It should also clear WCAG AAA (7:1) — and in fact hit the 21:1 max
+        // for pure white-on-black.
+        assert!(hc_ratio >= 7.0, "high_contrast must clear WCAG AAA, got {hc_ratio:.2}:1");
+        assert!((hc_ratio - 21.0).abs() < 0.01, "white-on-black is the 21:1 maximum");
+    }
+
+    #[test]
+    fn high_contrast_uses_a_strong_distinct_focus_ring() {
+        use crate::a11y::contrast_ratio;
+        let hc = Theme::high_contrast();
+        // The focus ring must itself be highly visible against the background.
+        assert!(
+            contrast_ratio(hc.border_focus, hc.bg_app) >= 7.0,
+            "focus ring must clear AAA against the background",
+        );
+        // …and be a different colour from the standard border so focus reads
+        // as a distinct state, not just "a border".
+        assert_ne!(
+            (hc.border_focus.r(), hc.border_focus.g(), hc.border_focus.b()),
+            (hc.border_standard.r(), hc.border_standard.g(), hc.border_standard.b()),
+        );
     }
 }
