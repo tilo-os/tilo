@@ -1,0 +1,304 @@
+//! Shell-side host for Phase 8's identity ceremony.
+//!
+//! Responsibilities:
+//!
+//! - **Persistence**: read / write `~/.config/qos/identity/primary.json`
+//!   with `0600` permissions. The on-disk format is plaintext-JSON
+//!   matching [`ui::widget::identity_flow::IdentityRecord`].
+//!   **Phase 8.5 follow-up**: wrap the blob with libsecret or
+//!   keyutils — this v1 is plaintext-on-disk with the file mode as
+//!   the only mitigation.
+//! - **First-run trigger**: at compositor boot, query the store; if
+//!   no identity exists, the compositor should display the
+//!   `IdentityFlow` widget before the desktop.
+//! - **Invite URL parsing**: a thin helper around
+//!   `InviteEnvelope::from_url` that the compositor's URL-handler
+//!   table can dispatch to when the user follows a `qos://invite/...`
+//!   link.
+//! - **Pairing-channel shim**: in v1, we ship the in-memory
+//!   `PairingHandshake` straight through. A future revision replaces
+//!   this with a libp2p direct-message channel; the public surface
+//!   is designed so apps consume the trait, not the concrete impl.
+//!
+//! The module is intentionally thin — it bridges the pure-logic
+//! `ui::widget::identity_flow` types to the shell's process. Anything
+//! cryptographic stays in `qos-threshold-identity`; anything visual
+//! stays in `ui`.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use ui::widget::identity_flow::{
+    IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
+};
+
+/// Disk-backed `IdentityStore` impl. Writes to
+/// `$XDG_CONFIG_HOME/qos/identity/primary.json` (falling back to
+/// `$HOME/.config/qos/identity/primary.json`), `0600` mode.
+///
+/// **TODO Phase 8.5:** the blob is currently plaintext JSON. Replace
+/// with a libsecret-encrypted envelope so a hostile process that
+/// reads `/proc/<pid>/maps` of the compositor doesn't trivially
+/// exfiltrate the secret share.
+pub struct DiskIdentityStore {
+    path: PathBuf,
+}
+
+impl DiskIdentityStore {
+    /// Construct using the canonical XDG-derived path. Resolves the
+    /// config dir the same way `firstboot::run` does so the boot
+    /// chain is self-consistent.
+    pub fn from_env() -> Result<Self, io::Error> {
+        let base = resolve_identity_dir()?;
+        fs::create_dir_all(&base)?;
+        // Tighten the directory perms too — the *contents* will be
+        // 0600, but a world-listable directory still leaks "identity
+        // exists" / atime. 0700 is the rest-of-XDG default.
+        #[cfg(unix)]
+        {
+            let mut perm = fs::metadata(&base)?.permissions();
+            perm.set_mode(0o700);
+            let _ = fs::set_permissions(&base, perm);
+        }
+        let path = base.join("primary.json");
+        Ok(Self { path })
+    }
+
+    /// Construct against an explicit path. Used by tests to point at
+    /// a tempdir without `$HOME` shimming.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// `true` iff a primary identity record exists on disk.
+    pub fn identity_present(&self) -> bool {
+        self.path.exists()
+    }
+}
+
+impl IdentityStore for DiskIdentityStore {
+    fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&self.path).map_err(IdentityFlowError::Io)?;
+        Ok(Some(IdentityRecord::from_json_bytes(&bytes)?))
+    }
+
+    fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
+        let bytes = record.to_json_bytes()?;
+        // Write atomically: tmp file → rename. Avoids a torn write
+        // racing with `load` if the system crashes mid-save.
+        let tmp = self.path.with_extension("json.tmp");
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(IdentityFlowError::Io)?;
+        }
+        fs::write(&tmp, &bytes).map_err(IdentityFlowError::Io)?;
+        #[cfg(unix)]
+        {
+            let mut perm = fs::metadata(&tmp).map_err(IdentityFlowError::Io)?.permissions();
+            perm.set_mode(0o600);
+            fs::set_permissions(&tmp, perm).map_err(IdentityFlowError::Io)?;
+        }
+        fs::rename(&tmp, &self.path).map_err(IdentityFlowError::Io)?;
+        Ok(())
+    }
+}
+
+/// Resolve the canonical identity directory: `<config-base>/qos/identity`.
+fn resolve_identity_dir() -> Result<PathBuf, io::Error> {
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !x.is_empty() {
+            return Ok(PathBuf::from(x).join("qos").join("identity"));
+        }
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h)
+                .join(".config")
+                .join("qos")
+                .join("identity"));
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "neither XDG_CONFIG_HOME nor HOME set",
+    ))
+}
+
+/// First-run hook: returns `true` iff the compositor should display
+/// the identity-creation ceremony before the desktop.
+///
+/// Implemented as a free function (not a method on the store) so the
+/// boot path can call it without owning the store first — the
+/// IdentityFlow widget wraps the store separately.
+pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
+    match store.load() {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(e) => {
+            tracing::warn!(
+                "identity store load failed; treating as no identity present: {e}"
+            );
+            true
+        }
+    }
+}
+
+/// Parse a `qos://invite/<base32>` URL into a full `InviteEnvelope`.
+/// Wraps `InviteEnvelope::from_url` plus the signature check so a
+/// caller doesn't need to remember both steps.
+pub fn parse_invite_url(url: &str) -> Result<InviteEnvelope, IdentityFlowError> {
+    let env = InviteEnvelope::from_url(url)?;
+    env.verify_signature()?;
+    Ok(env)
+}
+
+/// Process-wide pairing channel handle.
+///
+/// The shell instantiates one of these at boot and passes the same
+/// `Arc<PairingHandshake>` to both the screen-3 (host) and screen-4
+/// (pairer) wirings. In v1 this is the in-memory shim defined in
+/// `ui::widget::identity_flow`; a libp2p-backed impl will land in
+/// Phase 8.5.
+pub type SharedPairingChannel = Arc<PairingHandshake>;
+
+/// Make a fresh pairing channel suitable for sharing across the
+/// shell.
+pub fn new_pairing_channel() -> SharedPairingChannel {
+    Arc::new(PairingHandshake::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qos_threshold_identity::ThresholdIdentity;
+    use rand_core::OsRng;
+    use std::time::SystemTime;
+    use ui::widget::identity_flow::MemoryIdentityStore;
+
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(name: &str) -> Self {
+            let base = std::env::temp_dir();
+            let pid = std::process::id();
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = base.join(format!("qos-identity-prov-{name}-{pid}-{nonce}"));
+            fs::create_dir_all(&path).expect("tempdir");
+            Self(path)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture_record() -> IdentityRecord {
+        let mut rng = OsRng;
+        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        IdentityRecord::from_threshold_identity(
+            &id,
+            "alice",
+            [248, 113, 113],
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn save_and_load_round_trip_on_disk() {
+        let tmp = TmpDir::new("rt");
+        let store = DiskIdentityStore::at(tmp.0.join("primary.json"));
+        assert!(store.load().unwrap().is_none());
+        let rec = fixture_record();
+        store.save(&rec).unwrap();
+        assert!(store.identity_present());
+        let back = store.load().unwrap().unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn save_sets_0600_mode_on_unix() {
+        let tmp = TmpDir::new("mode");
+        let store = DiskIdentityStore::at(tmp.0.join("primary.json"));
+        store.save(&fixture_record()).unwrap();
+        #[cfg(unix)]
+        {
+            let meta = fs::metadata(store.path()).unwrap();
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
+        }
+    }
+
+    #[test]
+    fn first_run_flow_triggers_only_on_missing_identity() {
+        let store = MemoryIdentityStore::new();
+        assert!(needs_first_run_flow(&store));
+        store.save(&fixture_record()).unwrap();
+        assert!(!needs_first_run_flow(&store));
+    }
+
+    #[test]
+    fn parse_invite_url_validates_signature() {
+        use qos_collab_types::{ChannelId, Role, generate_keypair};
+        use ui::widget::identity_flow::mint_invite;
+        let (sk, pk) = generate_keypair();
+        let env = mint_invite(
+            ChannelId::new(),
+            "engineering",
+            pk,
+            &sk,
+            "Alice",
+            Role::Editor,
+            SystemTime::now() + std::time::Duration::from_secs(3600),
+        )
+        .unwrap();
+        let url = env.to_url().unwrap();
+        let back = parse_invite_url(&url).expect("valid URL must parse");
+        assert_eq!(back.channel_name, "engineering");
+    }
+
+    #[test]
+    fn parse_invite_url_rejects_garbage() {
+        let err = parse_invite_url("https://example.com").unwrap_err();
+        assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
+    }
+
+    #[test]
+    fn load_on_missing_file_returns_none() {
+        let tmp = TmpDir::new("missing");
+        let store = DiskIdentityStore::at(tmp.0.join("does-not-exist.json"));
+        assert!(store.load().unwrap().is_none());
+        assert!(!store.identity_present());
+    }
+
+    #[test]
+    fn new_pairing_channel_round_trips_a_message() {
+        use qos_threshold_identity::EnrolmentRound2;
+        let ch = new_pairing_channel();
+        let nonce = [0x55u8; 16];
+        let mac = [0x11u8; 64];
+        let reply = EnrolmentRound2 {
+            from_share_index: 2,
+            to_share_index: 1,
+            package_bytes: vec![1, 2, 3],
+        };
+        ch.publish_pairer_reply(&nonce, reply.clone(), mac);
+        let (back, tag) = ch.take_pairer_reply(&nonce).expect("must have reply");
+        assert_eq!(back.from_share_index, reply.from_share_index);
+        assert_eq!(tag, mac);
+    }
+}
