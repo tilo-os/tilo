@@ -459,7 +459,7 @@ impl Widget for PermissionPrompt {
 
     fn name(&self) -> &str { "PermissionPrompt" }
 
-    /// Accessibility (W3): a permission request is a modal, attention-demanding
+    /// Accessibility: a permission request is a modal, attention-demanding
     /// dialog. `Role::Dialog` with `modal = true`; the accessible name states
     /// what is being requested ("Camera access requested by org.gnome.gedit")
     /// so an assertive screen-reader announcement is meaningful.
