@@ -29,6 +29,12 @@ pub struct DocSnapshot {
     /// documents authored before the styles container was populated.
     #[serde(default)]
     pub styles: BTreeMap<String, BTreeMap<String, AttrVal>>,
+    /// Document properties / metadata (`title`/`author`/`subject`/`keywords`/
+    /// `created`/`modified`/`generator` → value). Round-trips through the `.odt`
+    /// `meta.xml` and `.docx` `docProps/*.xml` parts. Empty for documents with no
+    /// properties set (and absent in snapshots authored before this field existed).
+    #[serde(default)]
+    pub properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

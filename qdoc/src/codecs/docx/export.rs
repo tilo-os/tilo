@@ -29,6 +29,11 @@ const NUMBERING_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="
 const NUMBERING_OVERRIDE: &str = r#"<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#;
 const NUMBERING_REL: &str = r#"<Relationship Id="rIdQdocNum" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#;
 
+const CORE_OVERRIDE: &str = r#"<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>"#;
+const APP_OVERRIDE: &str = r#"<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>"#;
+const CORE_REL: &str = r#"<Relationship Id="rIdQdocCore" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>"#;
+const APP_REL: &str = r#"<Relationship Id="rIdQdocApp" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>"#;
+
 const STYLES_OVERRIDE: &str = r#"<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>"#;
 const STYLES_REL: &str = r#"<Relationship Id="rIdQdocStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#;
 const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -48,6 +53,10 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut had_doc_rels = false;
     let mut had_numbering = false;
     let mut had_styles_part = false;
+    let mut had_core = false;
+    let mut had_app = false;
+    let mut original_core: Option<Vec<u8>> = None;
+    let mut original_app: Option<Vec<u8>> = None;
     for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
         if let Some(name) = key.strip_prefix("docx/part/") {
             had_content_types |= name == "[Content_Types].xml";
@@ -55,11 +64,39 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             had_doc_rels |= name == "word/_rels/document.xml.rels";
             had_numbering |= name == "word/numbering.xml";
             had_styles_part |= name == "word/styles.xml";
+            if name == "docProps/core.xml" {
+                had_core = true;
+                original_core = Some(bytes.clone());
+            }
+            if name == "docProps/app.xml" {
+                had_app = true;
+                original_app = Some(bytes.clone());
+            }
             c.set(name, bytes);
         }
     }
 
     c.set("word/document.xml", document.into_bytes());
+
+    // Document properties → `docProps/core.xml` (+ `app.xml` generator). Regenerate
+    // from the canonical properties, merging unmodeled children of the preserved
+    // originals. A part newly created here needs a content-type override + a root
+    // relationship (an imported docx already has both, so only synthesised parts
+    // are wired up).
+    let wrote_core = if let Some(core_xml) = super::meta::export_core(&doc, original_core.as_deref()) {
+        c.set("docProps/core.xml", core_xml);
+        true
+    } else {
+        false
+    };
+    let wrote_app = if let Some(app_xml) = super::meta::export_app(&doc, original_app.as_deref()) {
+        c.set("docProps/app.xml", app_xml);
+        true
+    } else {
+        false
+    };
+    let need_core_wireup = wrote_core && !had_core;
+    let need_app_wireup = wrote_app && !had_app;
 
     if has_lists {
         // Ensure a numbering part exists mapping numId 1 → bullet, 2 → decimal, plus
@@ -91,31 +128,64 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if has_styles {
             ct.push_str(STYLES_OVERRIDE);
         }
+        if wrote_core {
+            ct.push_str(CORE_OVERRIDE);
+        }
+        if wrote_app {
+            ct.push_str(APP_OVERRIDE);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
     } else {
+        let mut overrides: Vec<(&str, &str)> = Vec::new();
         if has_lists && !had_numbering {
-            if let Some(ct) = c.get("[Content_Types].xml") {
-                let mut s = String::from_utf8_lossy(ct).into_owned();
-                if !s.contains("/word/numbering.xml") {
-                    inject_before(&mut s, "</Types>", NUMBERING_OVERRIDE);
-                    c.set("[Content_Types].xml", s.into_bytes());
-                }
-            }
+            overrides.push(("/word/numbering.xml", NUMBERING_OVERRIDE));
         }
         if need_styles_wireup {
+            overrides.push(("/word/styles.xml", STYLES_OVERRIDE));
+        }
+        if need_core_wireup {
+            overrides.push(("/docProps/core.xml", CORE_OVERRIDE));
+        }
+        if need_app_wireup {
+            overrides.push(("/docProps/app.xml", APP_OVERRIDE));
+        }
+        if !overrides.is_empty() {
             if let Some(ct) = c.get("[Content_Types].xml") {
                 let mut s = String::from_utf8_lossy(ct).into_owned();
-                if !s.contains("/word/styles.xml") {
-                    inject_before(&mut s, "</Types>", STYLES_OVERRIDE);
-                    c.set("[Content_Types].xml", s.into_bytes());
+                for (part, ovr) in overrides {
+                    if !s.contains(part) {
+                        inject_before(&mut s, "</Types>", ovr);
+                    }
                 }
+                c.set("[Content_Types].xml", s.into_bytes());
             }
         }
     }
 
+    // _rels/.rels — the docProps relationships live in the *root* rels (not the
+    // document's). Generate fresh when absent; otherwise inject any newly-created
+    // docProps relationships.
     if !had_root_rels {
-        c.set("_rels/.rels", ROOT_RELS.as_bytes().to_vec());
+        let mut s = ROOT_RELS.to_string();
+        if wrote_core {
+            inject_before(&mut s, "</Relationships>", CORE_REL);
+        }
+        if wrote_app {
+            inject_before(&mut s, "</Relationships>", APP_REL);
+        }
+        c.set("_rels/.rels", s.into_bytes());
+    } else if need_core_wireup || need_app_wireup {
+        if let Some(rels) = c.get("_rels/.rels") {
+            let mut s = String::from_utf8_lossy(rels).into_owned();
+            if need_core_wireup && !s.contains("Target=\"docProps/core.xml\"") {
+                inject_before(&mut s, "</Relationships>", CORE_REL);
+            }
+            if need_app_wireup && !s.contains("Target=\"docProps/app.xml\"") {
+                inject_before(&mut s, "</Relationships>", APP_REL);
+            }
+            c.set("_rels/.rels", s.into_bytes());
+        }
     }
 
     // word/_rels/document.xml.rels — needed once there's a numbering and/or a
@@ -911,6 +981,93 @@ mod tests {
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
         assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "named-style model is stable across a second round-trip");
+    }
+
+    #[test]
+    fn document_properties_roundtrip_through_docx() {
+        // Title/author/subject/keywords/dates/generator on a fresh doc must export
+        // into docProps/core.xml (+ app.xml generator) and re-import unchanged.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "body");
+        d.set_doc_prop("title", "My Title");
+        d.set_doc_prop("author", "Ada Lovelace");
+        d.set_doc_prop("subject", "Analytical Engine");
+        d.set_doc_prop("keywords", "computing, history");
+        d.set_doc_prop("created", "2020-01-02T03:04:05Z");
+        d.set_doc_prop("modified", "2021-06-07T08:09:10Z");
+        d.set_doc_prop("generator", "qdoc/1.0");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let core = std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written")).unwrap();
+        assert!(core.contains("<dc:title>My Title</dc:title>"), "title in core.xml: {core}");
+        assert!(core.contains("<dc:creator>Ada Lovelace</dc:creator>"), "creator: {core}");
+        assert!(core.contains("<dc:subject>Analytical Engine</dc:subject>"), "subject: {core}");
+        assert!(core.contains("<cp:keywords>computing, history</cp:keywords>"), "keywords: {core}");
+        assert!(core.contains("2020-01-02T03:04:05Z</dcterms:created>"), "created: {core}");
+        assert!(core.contains("2021-06-07T08:09:10Z</dcterms:modified>"), "modified: {core}");
+        let app = std::str::from_utf8(cont.get("docProps/app.xml").expect("app.xml written")).unwrap();
+        assert!(app.contains("<Application>qdoc/1.0</Application>"), "generator in app.xml: {app}");
+        // Freshly-synthesised parts are wired into content-types + the root rels.
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains("/docProps/core.xml") && ct.contains("/docProps/app.xml"), "overrides registered: {ct}");
+        let rels = std::str::from_utf8(cont.get("_rels/.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="docProps/core.xml""#) && rels.contains(r#"Target="docProps/app.xml""#), "rels registered: {rels}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let props = d2.doc_props();
+        assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
+        assert_eq!(props.get("author").map(String::as_str), Some("Ada Lovelace"));
+        assert_eq!(props.get("subject").map(String::as_str), Some("Analytical Engine"));
+        assert_eq!(props.get("keywords").map(String::as_str), Some("computing, history"));
+        assert_eq!(props.get("created").map(String::as_str), Some("2020-01-02T03:04:05Z"));
+        assert_eq!(props.get("modified").map(String::as_str), Some("2021-06-07T08:09:10Z"));
+        assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
+        assert_eq!(d2.materialize().blocks[0].text, "body");
+
+        // Idempotent across a second round-trip.
+        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(d2.doc_props(), d3.doc_props(), "properties stable across a second round-trip");
+    }
+
+    #[test]
+    fn core_xml_preserves_unmodeled_fields_and_updates_modeled() {
+        // An imported core.xml with an unmodeled field (revision) plus a title:
+        // the unmodeled field survives and the title updates on export.
+        let core = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"><dc:title>Old</dc:title><cp:revision>4</cp:revision></cp:coreProperties>"#;
+        let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
+        let mut c = DocxContainer::read(&base).unwrap();
+        c.set("docProps/core.xml", core.as_bytes().to_vec());
+        let docx = c.write().unwrap();
+
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        assert_eq!(d.doc_prop("title").as_deref(), Some("Old"), "title imported from core.xml");
+        d.set_doc_prop("title", "New");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let core_out = std::str::from_utf8(out.get("docProps/core.xml").unwrap()).unwrap();
+        assert!(core_out.contains("<dc:title>New</dc:title>"), "title updated: {core_out}");
+        assert!(!core_out.contains("<dc:title>Old</dc:title>"), "old title gone: {core_out}");
+        assert!(core_out.contains("revision>4</"), "unmodeled field preserved: {core_out}");
+    }
+
+    #[test]
+    fn no_docprops_when_no_properties_and_none_imported() {
+        // A from-scratch doc with no properties must not synthesise docProps parts.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "plain");
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        assert!(cont.get("docProps/core.xml").is_none(), "no core.xml for a doc with no properties");
+        assert!(cont.get("docProps/app.xml").is_none(), "no app.xml for a doc with no properties");
     }
 
     #[test]
