@@ -183,6 +183,20 @@ impl Document {
         crate::model::columns(&self.doc, &self.c)
     }
 
+    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`). An
+    /// empty `code` clears the setting. Round-trips through `.odt`/`.docx`. Supports
+    /// spell-check locale selection and accessibility/screen-reader language.
+    pub fn set_language(&mut self, code: &str) {
+        self.as_mut().set_language(code);
+        self.doc.commit();
+    }
+
+    /// The document default language as a BCP-47 tag, or `None` if the document
+    /// declares no default language.
+    pub fn language(&self) -> Option<String> {
+        crate::model::language(&self.doc, &self.c)
+    }
+
     pub fn blocks_in_order(&self) -> Vec<String> {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
@@ -602,6 +616,40 @@ mod tests {
     fn docsnapshot_default_is_single_column() {
         // The hand-rolled `Default` must yield one column, not the integer default 0.
         assert_eq!(crate::snapshot::DocSnapshot::default().columns, 1);
+    }
+
+    #[test]
+    fn language_default_set_clear_and_persist() {
+        let mut d = Document::new();
+        // Absent → no declared default language (backward-compatible open).
+        assert_eq!(d.language(), None, "default has no declared language");
+        assert_eq!(d.materialize().language, None);
+
+        // Set + read back, surfaced in the snapshot.
+        d.set_language("de-DE");
+        assert_eq!(d.language().as_deref(), Some("de-DE"));
+        assert_eq!(d.materialize().language.as_deref(), Some("de-DE"));
+
+        // Survives a CRDT save/load round-trip.
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.language().as_deref(), Some("de-DE"), "language survives save/load");
+
+        // An empty code clears the setting.
+        let mut d3 = Document::load(&bytes).unwrap();
+        d3.set_language("");
+        assert_eq!(d3.language(), None);
+        assert_eq!(d3.materialize().language, None);
+    }
+
+    #[test]
+    fn open_without_language_is_backward_compatible() {
+        // A document saved with no language must still open and read `None` (the
+        // `meta.language` register simply doesn't exist).
+        let mut d = Document::new();
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.language(), None);
     }
 
     #[test]

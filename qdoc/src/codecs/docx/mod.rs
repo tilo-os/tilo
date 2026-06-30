@@ -44,6 +44,10 @@ impl FormatProvider for DocxCodec {
         let mut reg = styles::StyleRegistry::default();
         if let Some(styles_xml) = container.get("word/styles.xml") {
             styles::parse_styles(styles_xml, &mut reg);
+            // Document default language: `docDefaults > rPrDefault > rPr > w:lang`.
+            if let Some(lang) = styles::doc_default_language(styles_xml) {
+                doc.set_language(&lang);
+            }
         }
         if let Some(numbering_xml) = container.get("word/numbering.xml") {
             styles::parse_numbering(numbering_xml, &mut reg);

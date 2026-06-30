@@ -180,9 +180,23 @@ pub(super) fn text_fields(e: &BytesStart) -> TextFields {
     f
 }
 
+/// Reassemble a BCP-47 tag from an ODF `fo:language` + optional `fo:country` pair
+/// (`de` + `DE` → `de-DE`; `fr` alone → `fr`). Returns `None` when no language part is
+/// present (the `none` sentinel ODF uses for "no language" yields `None` too).
+pub(super) fn reassemble_bcp47(language: Option<&str>, country: Option<&str>) -> Option<String> {
+    let lang = language.map(str::trim).filter(|s| !s.is_empty() && *s != "none")?;
+    match country.map(str::trim).filter(|s| !s.is_empty() && *s != "none") {
+        Some(c) => Some(format!("{lang}-{c}")),
+        None => Some(lang.to_string()),
+    }
+}
+
 /// Inline marks (with values) implied by a `style:text-properties` element.
 pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> {
     let mut m = Vec::new();
+    // Per-run language override is split across `fo:language` + `fo:country`; collect
+    // both, then reassemble one BCP-47 `lang` mark after the per-attribute scan.
+    let (mut fo_language, mut fo_country) = (None, None);
     for a in e.attributes().flatten() {
         let val = a.unescape_value().unwrap_or_default();
         match a.key.as_ref() {
@@ -210,8 +224,15 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
                 Some(false) => m.push(("sub".into(), MarkValue::Bool(true))),
                 None => {}
             },
+            // Per-run language override: `fo:language` (+ optional `fo:country`)
+            // reassembled into one BCP-47 `lang` mark below.
+            b"fo:language" => fo_language = Some(val.into_owned()),
+            b"fo:country" => fo_country = Some(val.into_owned()),
             _ => {}
         }
+    }
+    if let Some(code) = reassemble_bcp47(fo_language.as_deref(), fo_country.as_deref()) {
+        m.push(("lang".into(), MarkValue::Str(code)));
     }
     m
 }

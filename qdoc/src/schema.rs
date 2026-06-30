@@ -118,6 +118,22 @@ pub const META_COLUMN_GAP: &str = "column_gap"; // F64 (under meta) — inter-co
 /// The default body column count when `meta.columns` is unset (a single column).
 pub const DEFAULT_COLUMNS: u32 = 1;
 
+// Document default language. A BCP-47 language tag (`en-US`, `de-DE`, `fr`) stored
+// directly under `meta` as a `Str` register, so two replicas changing the document
+// language field-level merge rather than clobbering each other. Absent → the
+// consumer's locale default (no language declared). This is the shared contract
+// between the qdoc model and the `.odt` default-paragraph-style
+// `fo:language`/`fo:country` / `.docx` `docDefaults`→`w:rPrDefault`→`w:lang` markup.
+// Surfaced on the snapshot as `DocSnapshot.language`. Supports spell-check locale
+// selection and accessibility/screen-reader language.
+pub const META_LANGUAGE: &str = "language"; // Str (under meta) — document default BCP-47 tag
+/// The inline mark naming a per-run language override (a span in another language).
+/// Its value is a BCP-47 language tag (a `Str`, e.g. `fr` or `de-DE`). Round-trips
+/// through the `.odt` automatic-text-style `fo:language`/`fo:country` and the `.docx`
+/// `w:rPr`→`w:lang` markup. Mirrors the other valued run marks (`color`/`fontFamily`/
+/// `fontSize`). Supports per-span spell-check locale and screen-reader language.
+pub const MARK_LANG: &str = "lang"; // Str — a per-run BCP-47 language override
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so
