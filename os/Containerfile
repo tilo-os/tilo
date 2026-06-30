@@ -22,7 +22,11 @@
 
 
 # ---- Stage 1: builder ------------------------------------------------------
-FROM quay.io/fedora/fedora-bootc:44 AS builder
+# Base pinned by digest (security plan §9 — reproducibility + supply chain: a
+# tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-06-30.
+# Builder and final MUST share the SAME digest so glibc matches (the A1 reason).
+# Bump deliberately (re-resolve the tag → update both FROM lines).
+FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -93,7 +97,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
-FROM quay.io/fedora/fedora-bootc:44
+FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d
 
 # Graphics stack
 RUN dnf install -y \
@@ -288,6 +292,33 @@ COPY os/etc/locale.conf /etc/locale.conf
 COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 
 # ---------------------------------------------------------------------------
+# Kernel/userspace hardening (security plan §11 — "table stakes")
+# ---------------------------------------------------------------------------
+# Kernel args (init_on_alloc/free, lockdown=integrity, slab_nomerge, kstack
+# randomisation, page-alloc shuffle, vsyscall=none). bootc applies kargs.d at
+# install/upgrade.
+COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
+
+# hidepid on /proc + the boot self-check that ASSERTS what's actually active.
+COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
+COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
+COPY os/usr/lib/systemd/system/qos-hidepid.service /usr/lib/systemd/system/qos-hidepid.service
+RUN chmod 0755 /usr/libexec/qos-security-audit
+
+# Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
+# trusted-base daemon fs.service. Resolve the lib path at build time and bake a
+# drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
+# would fail the service. (Base daemons use the system allocator — verified no
+# jemalloc — so the preload is safe.)
+RUN dnf install -y compiler-rt && dnf clean all && \
+    scudo="$(find /usr/lib64 /usr/lib -name 'libclang_rt.scudo_standalone-x86_64.so' 2>/dev/null | head -1)" && \
+    test -n "$scudo" && \
+    mkdir -p /usr/lib/systemd/system/fs.service.d && \
+    printf '[Service]\n# Hardened allocator (security plan §11). Path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n' "$scudo" \
+      > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
+    echo "scudo wired: $scudo"
+
+# ---------------------------------------------------------------------------
 # Enable services
 # ---------------------------------------------------------------------------
 # `shell-portal.service` is `--global` enabled so it lights up for every user
@@ -308,6 +339,10 @@ RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
     systemctl enable power-profiles-daemon.service
+
+# §11 hardening services: hidepid remount + the boot security self-check.
+RUN systemctl enable qos-hidepid.service && \
+    systemctl enable qos-security-audit.service
 
 # A3: automatic bootc updates. The timer pulls + applies the image at
 # QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by
