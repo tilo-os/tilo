@@ -31,6 +31,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--probe") {
+        return run_probe();
+    }
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
         let viewport = parse_value_arg(&args, "--viewport")
@@ -72,6 +75,71 @@ fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Exercise the exact live networking stack the app uses (`net` + `api`)
+/// against the real keyless Open-Meteo endpoints and print what came back.
+/// This is the same [`weather::net::WeatherService`] the event loop drives —
+/// a standalone proof that the app fetches real data, not a mock. Invoked
+/// with `--probe`; it touches no UI and no window.
+fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use weather::model::SavedLocation;
+    use weather::net::{Request, Response, WeatherService};
+    use weather::units::Units;
+
+    let svc = WeatherService::spawn();
+    // A saved place (real coordinates) + a free-text geocode — the two live
+    // request kinds the app issues.
+    let berlin = SavedLocation::new("Berlin", "Berlin", "Germany", "DE", 52.52, 13.41, "auto");
+    svc.request(Request::Forecast {
+        location_id: berlin.id,
+        lat: berlin.latitude,
+        lon: berlin.longitude,
+        units: Units::METRIC,
+    });
+    svc.request(Request::Geocode { seq: 1, query: "Tokyo".to_string() });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut got_forecast, mut got_geocode) = (false, false);
+    while Instant::now() < deadline && !(got_forecast && got_geocode) {
+        for resp in svc.drain() {
+            match resp {
+                Response::Forecast(snap) => {
+                    got_forecast = true;
+                    println!(
+                        "probe: forecast Berlin — {:.1}°C, code {}, {} hourly pts, {} days (fetched_at={})",
+                        snap.current.temperature,
+                        snap.current.weather_code,
+                        snap.hourly.len(),
+                        snap.daily.len(),
+                        snap.fetched_at,
+                    );
+                }
+                Response::Geocode { results, .. } => {
+                    got_geocode = true;
+                    let names: Vec<String> = results
+                        .iter()
+                        .take(3)
+                        .map(|r| format!("{} ({})", r.name, r.country))
+                        .collect();
+                    println!("probe: geocode 'Tokyo' → {}", names.join(", "));
+                }
+                Response::Error(e) => println!("probe: error — {e}"),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    if got_forecast && got_geocode {
+        println!("probe: OK — live Open-Meteo fetch + parse succeeded");
+        Ok(())
+    } else {
+        Err(format!(
+            "probe: incomplete (forecast={got_forecast}, geocode={got_geocode}) — network unreachable?"
+        )
+        .into())
+    }
 }
 
 /// Parse a `WIDTHxHEIGHT` viewport spec.

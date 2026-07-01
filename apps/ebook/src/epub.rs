@@ -17,13 +17,19 @@
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use roxmltree::Document;
 use zip::ZipArchive;
 
-use crate::model::{Book, Chapter};
+use crate::model::{Book, Chapter, Cover};
 use crate::xhtml::parse_xhtml;
+
+/// Longest edge (px) we downscale a decoded cover to. The shelf shows covers
+/// no larger than ~232px tall at 2x, so 480 keeps them crisp while capping the
+/// decoded footprint of a large source JPEG.
+const COVER_MAX_EDGE: u32 = 480;
 
 type Archive = ZipArchive<Cursor<Vec<u8>>>;
 
@@ -68,6 +74,22 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
         pkg.identifier.clone()
     };
 
+    // Decode the embedded cover, if the manifest declared one. A missing or
+    // undecodable cover is not an error — the shelf falls back to a spine.
+    let cover = pkg
+        .cover_href
+        .as_deref()
+        .and_then(|href| read_entry_bytes(&mut archive, href).ok())
+        .and_then(|bytes| decode_cover(&bytes));
+
+    // Prefer the book's own subject metadata; the caller's hint is a fallback
+    // for EPUBs that omit it.
+    let subject = if pkg.subject.is_empty() {
+        subject.to_string()
+    } else {
+        pkg.subject.clone()
+    };
+
     Ok(Book {
         id,
         title: if pkg.title.is_empty() { "Untitled".into() } else { pkg.title },
@@ -76,8 +98,30 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
         description: pkg.description,
         chapters,
         cover_tint,
-        subject: subject.to_string(),
+        subject,
+        cover,
     })
+}
+
+/// Decode raster cover bytes (JPEG/PNG) into downscaled RGBA. Returns `None`
+/// on any decode failure so a broken cover never breaks the shelf.
+fn decode_cover(bytes: &[u8]) -> Option<Cover> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let scaled = if w.max(h) > COVER_MAX_EDGE {
+        let scale = COVER_MAX_EDGE as f32 / w.max(h) as f32;
+        let nw = ((w as f32 * scale).round() as u32).max(1);
+        let nh = ((h as f32 * scale).round() as u32).max(1);
+        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgba = scaled.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    Some(Cover { rgba: Arc::new(rgba.into_raw()), width, height })
 }
 
 // ---------------------------------------------------------------------------
@@ -107,15 +151,17 @@ struct OpfPackage {
     creator: String,
     publisher: String,
     description: String,
+    subject: String,
     identifier: String,
     /// Spine hrefs in reading order (resolved relative to the OPF base).
     spine: Vec<String>,
-    /// manifest id -> resolved href.
-    manifest: HashMap<String, String>,
     /// href of the EPUB3 nav document, if declared (properties="nav").
     nav_href: Option<String>,
     /// href of the NCX, if any (spine toc= idref or manifest media-type).
     ncx_href: Option<String>,
+    /// Resolved href of the cover image, from `properties="cover-image"`, the
+    /// legacy `<meta name="cover">` pointer, or a cover-named image item.
+    cover_href: Option<String>,
 }
 
 impl OpfPackage {
@@ -134,12 +180,27 @@ impl OpfPackage {
         let creator = meta_text("creator");
         let publisher = meta_text("publisher");
         let description = meta_text("description");
+        let subject = meta_text("subject");
         let identifier = meta_text("identifier");
+
+        // The legacy cover pointer: `<meta name="cover" content="item-id"/>`.
+        let cover_meta_id = doc
+            .descendants()
+            .find(|n| {
+                n.has_tag_name("meta")
+                    && n.attribute("name") == Some("cover")
+                    && n.attribute("content").is_some()
+            })
+            .and_then(|n| n.attribute("content"))
+            .map(|s| s.to_string());
 
         // Manifest: id -> (href, properties, media-type)
         let mut manifest = HashMap::new();
         let mut nav_href = None;
         let mut ncx_by_id: HashMap<String, String> = HashMap::new();
+        // Cover candidates, in descending confidence.
+        let mut cover_by_props: Option<String> = None;
+        let mut cover_by_name: Option<String> = None;
         if let Some(man) = doc
             .descendants()
             .find(|n| n.has_tag_name("manifest"))
@@ -156,12 +217,25 @@ impl OpfPackage {
                 if props.split_whitespace().any(|p| p == "nav") {
                     nav_href = Some(resolved.clone());
                 }
+                if props.split_whitespace().any(|p| p == "cover-image") {
+                    cover_by_props = Some(resolved.clone());
+                }
+                if media.starts_with("image/")
+                    && cover_by_name.is_none()
+                    && (id.to_ascii_lowercase().contains("cover")
+                        || href.to_ascii_lowercase().contains("cover"))
+                {
+                    cover_by_name = Some(resolved.clone());
+                }
                 if media == "application/x-dtbncx+xml" {
                     ncx_by_id.insert(id.clone(), resolved.clone());
                 }
                 manifest.insert(id, resolved);
             }
         }
+        let cover_href = cover_by_props
+            .or_else(|| cover_meta_id.and_then(|id| manifest.get(&id).cloned()))
+            .or(cover_by_name);
 
         // Spine: ordered idrefs -> hrefs; `toc` attr names the NCX item.
         let mut spine = Vec::new();
@@ -194,11 +268,12 @@ impl OpfPackage {
             creator,
             publisher,
             description,
+            subject,
             identifier,
             spine,
-            manifest,
             nav_href,
             ncx_href,
+            cover_href,
         })
     }
 }
@@ -312,6 +387,17 @@ fn read_entry(archive: &mut Archive, name: &str) -> Result<String> {
         .with_context(|| format!("zip entry not found: {name}"))?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)
+        .with_context(|| format!("read zip entry: {name}"))?;
+    Ok(buf)
+}
+
+/// Read a binary entry (cover images are not UTF-8).
+fn read_entry_bytes(archive: &mut Archive, name: &str) -> Result<Vec<u8>> {
+    let mut file = archive
+        .by_name(name)
+        .with_context(|| format!("zip entry not found: {name}"))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
         .with_context(|| format!("read zip entry: {name}"))?;
     Ok(buf)
 }

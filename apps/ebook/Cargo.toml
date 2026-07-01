@@ -29,3 +29,8 @@ anyhow = "1.0"
 # churn. `deflate` covers real-world epubs; our bundled sample is stored.
 zip = { version = "4.6", default-features = false, features = ["deflate"] }
 roxmltree = "0.20"
+# Real cover art: EPUBs embed a raster cover (usually JPEG, sometimes PNG).
+# We decode + downscale it once at load so the shelf shows the actual artwork
+# rather than a generated spine. Already in the workspace graph, so no new
+# compilation beyond feature unification.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
