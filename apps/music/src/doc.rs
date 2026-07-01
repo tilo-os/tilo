@@ -208,6 +208,73 @@ pub fn write_playback(doc: &mut AutoCommit, pb: &Playback) {
     let _ = doc.put(&m, "volume", pb.volume as i64);
 }
 
+/// A live (YouTube-Music) search result to merge into the library. Kept a plain
+/// owned struct so the `crate::backend` / `crate::stream` types never leak into
+/// the CRDT layer.
+#[derive(Clone, Debug)]
+pub struct LiveTrack {
+    /// Library track id (stable, e.g. `yt:<videoId>`).
+    pub track_id: String,
+    pub title: String,
+    pub artist_id: String,
+    pub artist_name: String,
+    pub album_id: String,
+    pub album_title: String,
+    pub duration_s: u32,
+    /// The YouTube video id the stream is resolved from.
+    pub yt_id: String,
+}
+
+fn get_or_create_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
+    match get_map(doc, parent, key) {
+        Some(m) => m,
+        None => doc.put_object(parent, key, ObjType::Map).expect("map"),
+    }
+}
+
+/// Merge a live search result — its artist, album and the track itself — into
+/// the library so it shows up in the UI and becomes playable (its real
+/// `yt_id` is what [`crate::backend`] resolves a stream from). Idempotent: an
+/// existing artist / album / track with the same id is left as-is, so repeated
+/// searches don't churn the document.
+pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
+    let library = get_or_create_map(doc, &ROOT, "library");
+
+    let artists = get_or_create_map(doc, &library, "artists");
+    if get_map(doc, &artists, &t.artist_id).is_none() {
+        let m = doc.put_object(&artists, t.artist_id.as_str(), ObjType::Map).expect("artist");
+        let _ = doc.put(&m, "name", t.artist_name.as_str());
+        let _ = doc.put(&m, "genre", "");
+        let _ = doc.put(&m, "monthly_listeners", 0i64);
+    }
+
+    let albums = get_or_create_map(doc, &library, "albums");
+    if get_map(doc, &albums, &t.album_id).is_none() {
+        let m = doc.put_object(&albums, t.album_id.as_str(), ObjType::Map).expect("album");
+        let _ = doc.put(&m, "title", t.album_title.as_str());
+        let _ = doc.put(&m, "artist_id", t.artist_id.as_str());
+        let _ = doc.put(&m, "year", 0i64);
+    }
+
+    let tracks = get_or_create_map(doc, &library, "tracks");
+    if get_map(doc, &tracks, &t.track_id).is_none() {
+        write_track(
+            doc,
+            &tracks,
+            &Track {
+                id: t.track_id.clone(),
+                title: t.title.clone(),
+                album_id: t.album_id.clone(),
+                artist_id: t.artist_id.clone(),
+                track_no: 0,
+                duration_s: t.duration_s,
+                yt_id: t.yt_id.clone(),
+                plays: 0,
+            },
+        );
+    }
+}
+
 /// Set the cache/download state of a single track.
 pub fn set_cache(doc: &mut AutoCommit, track_id: &str, state: CacheState) {
     let cache = match get_map(doc, &ROOT, "cache") {
@@ -570,6 +637,31 @@ mod tests {
         let after = load_library(&doc);
         assert_eq!(after.playlists.len(), before - 1);
         assert!(after.playlist("pl_focus").is_none());
+    }
+
+    #[test]
+    fn upsert_live_track_merges_and_is_idempotent() {
+        let mut doc = seeded_doc();
+        let before = load_library(&doc).total_tracks();
+        let lt = LiveTrack {
+            track_id: "yt:abc123".into(),
+            title: "Runaway".into(),
+            artist_id: "ytc_aurora".into(),
+            artist_name: "AURORA".into(),
+            album_id: "ytal_allmy".into(),
+            album_title: "All My Demons".into(),
+            duration_s: 245,
+            yt_id: "abc123".into(),
+        };
+        upsert_live_track(&mut doc, &lt);
+        upsert_live_track(&mut doc, &lt); // idempotent
+        let lib = load_library(&doc);
+        assert_eq!(lib.total_tracks(), before + 1, "one live track added, no dupes");
+        let t = lib.track("yt:abc123").expect("live track present");
+        assert_eq!(t.title, "Runaway");
+        assert_eq!(t.yt_id, "abc123", "real video id preserved for streaming");
+        assert_eq!(lib.artist_name("ytc_aurora"), "AURORA");
+        assert_eq!(lib.album_title("ytal_allmy"), "All My Demons");
     }
 
     #[test]
