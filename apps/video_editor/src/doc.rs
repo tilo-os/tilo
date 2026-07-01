@@ -21,8 +21,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
 
+use crate::media::{self, Hydration};
 use crate::model::{
-    Clip, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
+    Clip, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
 };
 
 pub struct VideoDoc;
@@ -105,6 +106,10 @@ impl VideoDoc {
         let _ = doc.put(&obj, "height", m.height as i64);
         let _ = doc.put(&obj, "fps", m.fps);
         let _ = doc.put(&obj, "palette", m.palette as i64);
+        // FUSE-media seam: the CRDT carries the workspace path + hydration
+        // state, never the bytes (see crate::media).
+        let _ = doc.put(&obj, "path", m.path.as_str());
+        let _ = doc.put(&obj, "hydration", m.hydration.as_str());
     }
 
     pub fn upsert_track(doc: &mut AutoCommit, t: &Track) {
@@ -129,6 +134,11 @@ impl VideoDoc {
         let _ = doc.put(&obj, "volume", c.volume);
         let _ = doc.put(&obj, "transition", c.transition.as_str());
         let _ = doc.put(&obj, "palette", c.palette as i64);
+        let _ = doc.put(&obj, "brightness", c.filters.brightness);
+        let _ = doc.put(&obj, "contrast", c.filters.contrast);
+        let _ = doc.put(&obj, "saturation", c.filters.saturation);
+        let _ = doc.put(&obj, "fade_in", c.fade_in);
+        let _ = doc.put(&obj, "fade_out", c.fade_out);
     }
 
     pub fn remove_clip(doc: &mut AutoCommit, id: Uuid) {
@@ -175,9 +185,12 @@ impl VideoDoc {
                 else {
                     continue;
                 };
+                let name = Self::get_str(doc, &obj, "name").unwrap_or_default();
+                let path = Self::get_str(doc, &obj, "path")
+                    .unwrap_or_else(|| crate::media::workspace_path(&name));
                 p.media.push(MediaItem {
                     id,
-                    name: Self::get_str(doc, &obj, "name").unwrap_or_default(),
+                    name,
                     kind: MediaKind::from_str(
                         &Self::get_str(doc, &obj, "kind").unwrap_or_default(),
                     ),
@@ -186,6 +199,10 @@ impl VideoDoc {
                     height: Self::get_i64(doc, &obj, "height").unwrap_or(0) as u32,
                     fps: Self::get_f64(doc, &obj, "fps").unwrap_or(30.0),
                     palette: Self::get_i64(doc, &obj, "palette").unwrap_or(0) as u8,
+                    path,
+                    hydration: crate::media::Hydration::from_str(
+                        &Self::get_str(doc, &obj, "hydration").unwrap_or_default(),
+                    ),
                 });
             }
         }
@@ -237,6 +254,13 @@ impl VideoDoc {
                         &Self::get_str(doc, &obj, "transition").unwrap_or_default(),
                     ),
                     palette: Self::get_i64(doc, &obj, "palette").unwrap_or(0) as u8,
+                    filters: Filters {
+                        brightness: Self::get_f64(doc, &obj, "brightness").unwrap_or(0.5),
+                        contrast: Self::get_f64(doc, &obj, "contrast").unwrap_or(0.5),
+                        saturation: Self::get_f64(doc, &obj, "saturation").unwrap_or(0.5),
+                    },
+                    fade_in: Self::get_f64(doc, &obj, "fade_in").unwrap_or(0.0),
+                    fade_out: Self::get_f64(doc, &obj, "fade_out").unwrap_or(0.0),
                 });
             }
         }
@@ -272,6 +296,10 @@ pub fn sample_project() -> Project {
             height: h,
             fps,
             palette: pal,
+            // Sample media lives under the workspace media prefix; the
+            // bundled sample-media/ dir hydrates these for --shots.
+            path: media::workspace_path(name),
+            hydration: Hydration::Projected,
         }
     };
 
@@ -303,7 +331,8 @@ pub fn sample_project() -> Project {
     let (v1id, v2id, a1id, a2id) = (v1.id, v2.id, a1.id, a2.id);
     p.tracks = vec![v1, v2, a1, a2];
 
-    // Helper to push a placed, pre-trimmed clip.
+    // Helper to push a placed, pre-trimmed clip with grade + fades.
+    #[allow(clippy::too_many_arguments)]
     let mut place = |track: Uuid,
                      media: Uuid,
                      start: f64,
@@ -312,7 +341,10 @@ pub fn sample_project() -> Project {
                      pal: u8,
                      opacity: f64,
                      volume: f64,
-                     transition: Transition| {
+                     transition: Transition,
+                     filters: Filters,
+                     fade_in: f64,
+                     fade_out: f64| {
         p.clips.push(Clip {
             id: Uuid::new_v4(),
             track,
@@ -324,20 +356,27 @@ pub fn sample_project() -> Project {
             volume,
             transition,
             palette: pal,
+            filters,
+            fade_in,
+            fade_out,
         });
     };
 
-    // V1 — the spine: drone open, interview body, market cutaway.
-    place(v1id, drone_id, 0.0, 2.0, 10.0, 0, 1.0, 1.0, Transition::FadeIn);
-    place(v1id, interview_id, 8.0, 5.0, 17.0, 1, 1.0, 1.0, Transition::CrossDissolve);
-    place(v1id, market_id, 20.0, 0.0, 6.0, 2, 1.0, 1.0, Transition::None);
+    let neutral = Filters::default();
+    // A graded look on the drone open: brighter, punchier contrast.
+    let graded = Filters { brightness: 0.62, contrast: 0.64, saturation: 0.58 };
+
+    // V1 — the spine: drone open (graded + fade-in), interview body, market cutaway.
+    place(v1id, drone_id, 0.0, 2.0, 10.0, 0, 1.0, 1.0, Transition::FadeIn, graded, 1.5, 0.0);
+    place(v1id, interview_id, 8.0, 5.0, 17.0, 1, 1.0, 1.0, Transition::CrossDissolve, neutral, 0.0, 0.0);
+    place(v1id, market_id, 20.0, 0.0, 6.0, 2, 1.0, 1.0, Transition::None, neutral, 0.0, 1.0);
     // V2 — overlays: logo bug, then a sunset insert that dissolves in.
-    place(v2id, logo_id, 1.0, 0.0, 4.0, 4, 0.9, 1.0, Transition::FadeIn);
-    place(v2id, sunset_id, 21.0, 0.0, 6.0, 3, 0.85, 1.0, Transition::CrossDissolve);
+    place(v2id, logo_id, 1.0, 0.0, 4.0, 4, 0.9, 1.0, Transition::FadeIn, neutral, 0.0, 0.0);
+    place(v2id, sunset_id, 21.0, 0.0, 6.0, 3, 0.85, 1.0, Transition::CrossDissolve, neutral, 0.0, 1.2);
     // A1 — narration aligned under the interview.
-    place(a1id, vo_id, 8.0, 1.5, 13.5, 5, 1.0, 1.0, Transition::None);
-    // A2 — ambient bed under the whole piece, ducked low.
-    place(a2id, pad_id, 0.0, 0.0, 28.0, 6, 1.0, 0.4, Transition::FadeIn);
+    place(a1id, vo_id, 8.0, 1.5, 13.5, 5, 1.0, 1.0, Transition::None, neutral, 0.3, 0.5);
+    // A2 — ambient bed under the whole piece, ducked low, gentle fades.
+    place(a2id, pad_id, 0.0, 0.0, 28.0, 6, 1.0, 0.4, Transition::FadeIn, neutral, 2.0, 3.0);
 
     p
 }
