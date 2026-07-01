@@ -16,11 +16,18 @@ const VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
 #[test]
 fn clicking_a_nav_tab_switches_route() {
-    // Start on the sample's default (Watch). Click the "Trending" rail item.
-    let mut h = Harness::new(TubeApp::new(), VIEWPORT);
-    assert!(
-        matches!(h.app.route_for_test(), Route::Watch(_)),
-        "sample starts on the watch page"
+    // The app boots on Home (never into a fake/placeholder video). Click the
+    // "Trending" rail item and prove the route follows. Seed the viewport so
+    // the wide layout resolves its docked rail on the first frame (as the live
+    // app does once its width lands) rather than the unknown-width overlay.
+    let mut h = Harness::new(
+        TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64),
+        VIEWPORT,
+    );
+    assert_eq!(
+        h.app.route_for_test(),
+        &Route::Home,
+        "the app boots on Home"
     );
 
     h.click_id("nav_trending");
@@ -71,6 +78,39 @@ fn palette_result_click_navigates_to_video() {
         "clicking a video result opens its watch page"
     );
     assert!(!h.app.palette_open_for_test(), "activating a result closes the palette");
+}
+
+#[test]
+fn watch_view_paints_the_decoded_frame_when_present() {
+    // With a real decoded frame in app state, the watch page must paint the
+    // live video surface (the on-screen paint path) instead of the poster.
+    // Inject a 16x16 frame for a sample video and assert the surface is laid
+    // out in the real widget tree — proof the frame reaches the screen.
+    let (fw, fh) = (16u32, 16u32);
+    let rgba = vec![210u8; (fw * fh * 4) as usize];
+    let app = TubeApp::new().with_decoded_frame_for_test("vid_donut", fw, fh, rgba);
+    let h = Harness::new(app, VIEWPORT);
+    assert!(
+        matches!(h.app.route_for_test(), Route::Watch(_)),
+        "the injected frame opens its watch page"
+    );
+    assert!(
+        h.has_id("watch_video_surface"),
+        "a decoded frame paints the live video surface, not the poster"
+    );
+}
+
+#[test]
+fn watch_view_shows_poster_without_a_frame() {
+    // The dual of the above: with no decoded frame, the watch page must NOT
+    // contain the live surface (it falls back to the poster). Proves the swap
+    // is real, not always-on.
+    let app = TubeApp::new().with_route_shot(Route::Watch("vid_donut".into()));
+    let h = Harness::new(app, VIEWPORT);
+    assert!(
+        !h.has_id("watch_video_surface"),
+        "with no decoded frame the poster stands in for the player"
+    );
 }
 
 #[test]

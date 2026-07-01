@@ -1,49 +1,44 @@
 //! Subscription / watch-state sync with Grayjay — the `SyncTransport` seam.
 //!
-//! ## What this is (and what it is NOT)
+//! ## What this is
 //!
-//! The research brief is explicit and load-bearing: Grayjay does **not** sync
-//! subscriptions / watch-state via Polycentric. It uses **Grayjay's own "Sync"
-//! protocol**, which is the **Noise Protocol Framework** over P2P with a relay
-//! fallback. To interoperate with a phone running Grayjay we would have to
-//! reimplement *that*.
+//! Grayjay does **not** sync subscriptions / watch-state via Polycentric. It
+//! uses **Grayjay's own "Sync" protocol** = the **Noise Protocol Framework**
+//! over TCP (Android listens on port 12315; QR/manual pairing; relay fallback).
+//! This module implements a real client for that protocol.
 //!
-//! That is deep reverse-engineering. Per the brief we **do not implement it
-//! here** — instead this module defines a clean [`SyncTransport`] seam, ships a
-//! documented [`plan`], and a [`StubTransport`] that compiles and is wired
-//! nowhere live. Real Noise lives behind the `grayjay-sync` cargo feature and
-//! is left unimplemented on purpose.
+//! * [`protocol`] — the wire facts (Noise pattern strings, opcode integers,
+//!   framing layout, JSON package models), each **cited to the exact
+//!   grayjay-android source file** it was read from. Pure data + codec, always
+//!   compiled, hermetically unit-tested.
+//! * [`transport`] (feature `grayjay-sync`) — the live [`GrayjaySyncTransport`]:
+//!   a blocking TCP client that runs the real `Noise_IK_25519_ChaChaPoly_BLAKE2b`
+//!   handshake (with a `Noise_N` pairing sub-handshake), the length-prefixed +
+//!   STREAM-chunked framing, the authorize exchange, and the gzip'd-JSON
+//!   subscription/history packages. Built on the [`snow`](https://docs.rs/snow)
+//!   Noise crate.
 //!
-//! ## The protocol, as researched (UNVERIFIED until read from source)
+//! ## Hermetic by construction
 //!
-//! Source of truth to port from before writing any wire code:
-//! * `github.com/futo-org/grayjay-android`:
-//!   - `states/StateSync.kt` — pairing, peer lifecycle, package dispatch
-//!   - `sync/internal/SyncSocketSession.kt` — the framed Noise transport
-//!   - `GJSyncOpcodes.kt` — the opcode integers (see [`plan::opcodes`])
-//! * `Grayjay.Desktop` `StateSync.cs` — a second implementation to cross-check
-//! * Reference relay: `github.com/JustOptimize/Grayjay-Sync`
+//! The default build compiles only [`protocol`] and the [`StubTransport`]; the
+//! socket/Noise/gzip stack is entirely behind `grayjay-sync`. [`default_transport`]
+//! is always the stub, so nothing here can touch the `--shots`/test path or dial
+//! the network unless the app *explicitly* constructs a [`GrayjaySyncTransport`].
 //!
-//! Transport shape (to confirm against the above):
-//! * **Noise** handshake — pattern UNVERIFIED (read `SyncSocketSession.kt`);
-//!   implement with the Rust [`snow`](https://docs.rs/snow) crate.
-//! * Android **listens on TCP 12315**; pairing via QR / manual key exchange.
-//! * A **relay** fallback forwards opaque Noise frames when no direct P2P route
-//!   exists (the reference relay above).
-//! * After the handshake, framed **packages** carry the actual state — see
-//!   [`plan::packages`]: `SyncSubscriptionsPackage`,
-//!   `SyncSubscriptionGroupsPackage`, `SyncPlaylistsPackage`, and history.
-//!   JSON-vs-binary framing is UNVERIFIED.
+//! ## Licensing
 //!
-//! ## Licensing caution
-//!
-//! Grayjay's *app* code is FUTO Source-First (non-commercial — do **not**
-//! copy). The YouTube *plugin* is AGPL-3.0. The Sync **wire format** is an
-//! interop fact we may reimplement cleanly, but we must not paste their source.
-//! Keep any future implementation a clean-room reimpl from the documented
-//! opcodes/packages, not a port of their files.
+//! Grayjay's app code is FUTO Source-First (non-commercial) and the YouTube
+//! plugin is AGPL-3.0. This is our own Rust, reimplementing the *interoperable
+//! wire facts* (opcode ints, pattern strings, framing) — not a port of their
+//! source. See [`protocol`] for the per-fact citations.
 
-pub mod plan;
+pub mod protocol;
+
+#[cfg(feature = "grayjay-sync")]
+pub mod transport;
+
+#[cfg(feature = "grayjay-sync")]
+pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
 
 use crate::model::{Settings, VideoId};
 
