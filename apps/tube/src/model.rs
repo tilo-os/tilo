@@ -291,6 +291,13 @@ pub struct TubeModel {
     /// Segments auto-skipped in this session — surfaced as a toast row.
     #[serde(default)]
     pub skipped_log: Vec<String>,
+    /// Whether the Ctrl+K global command palette overlay is open.
+    #[serde(default)]
+    pub palette_open: bool,
+    /// The palette's live query (separate from the top-bar search box so
+    /// opening the palette doesn't clobber an in-progress search).
+    #[serde(default)]
+    pub palette_query: String,
 }
 
 impl Default for TubeModel {
@@ -306,6 +313,8 @@ impl Default for TubeModel {
             playhead: 0.0,
             playing: false,
             skipped_log: Vec::new(),
+            palette_open: false,
+            palette_query: String::new(),
         }
     }
 }

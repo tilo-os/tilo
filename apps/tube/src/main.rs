@@ -35,7 +35,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let narrow = args.iter().any(|a| a == "--narrow");
-        let root = if narrow { tube::app_root_narrow_shot() } else { tube::app_root() };
+        let palette = args.iter().any(|a| a == "--palette");
+        let root = if palette {
+            // Open the command palette pre-seeded so the still captures the
+            // Ctrl+K overlay with live results.
+            let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
+            Box::new(tube::TubeApp::new().with_palette_open_for_test(&q)) as Box<dyn Widget>
+        } else if narrow {
+            tube::app_root_narrow_shot()
+        } else if let Some(route) = parse_route_arg(&args) {
+            tube::app_root_route_shot(route)
+        } else {
+            tube::app_root()
+        };
         render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
@@ -54,6 +66,53 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Parse `--route NAME` (or `--route=NAME`) into a starting [`tube::model::Route`]
+/// for a screen-specific shot. Recognises `home`, `trending`, `subs`/
+/// `subscriptions`, `history`, `settings`, and `search:<query>`.
+fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
+    use tube::model::Route;
+    let mut iter = args.iter().skip(1);
+    let spec = loop {
+        let arg = iter.next()?;
+        if arg == "--route" {
+            break iter.next()?.to_string();
+        }
+        if let Some(rest) = arg.strip_prefix("--route=") {
+            break rest.to_string();
+        }
+    };
+    let lower = spec.to_ascii_lowercase();
+    Some(match lower.as_str() {
+        "home" => Route::Home,
+        "trending" => Route::Trending,
+        "subs" | "subscriptions" => Route::Subscriptions,
+        "history" => Route::History,
+        "settings" => Route::Settings,
+        _ => {
+            if let Some(q) = spec.strip_prefix("search:") {
+                Route::Search(q.to_string())
+            } else {
+                Route::Search(spec)
+            }
+        }
+    })
+}
+
+/// Parse `--palette-query <q>` (or `--palette-query=<q>`) — the query to seed
+/// the command-palette shot with.
+fn parse_palette_query_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--palette-query" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--palette-query=") {
+            return Some(rest.to_string());
         }
     }
     None

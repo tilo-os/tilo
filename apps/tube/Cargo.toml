@@ -29,3 +29,18 @@ anyhow = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # blake3 used by the SponsorBlock privacy-preserving hash-prefix query.
 sha2 = "0.10"
+
+# --- live YouTube backend (off by default) ---------------------------------
+# rustypipe is a pure-Rust InnerTube client (search/channel/video/streams/
+# trending); rustypipe-botguard mints PoTokens. Both are async (tokio) and pull
+# a network stack, so they are gated behind the `live` feature: the default
+# build (and every `--shots`/test run) stays hermetic on the offline sample.
+# No ffmpeg / yt-dlp — rustypipe embeds rquickjs.
+rustypipe = { version = "0.11", optional = true }
+tokio = { version = "1", features = ["rt", "macros", "time"], optional = true }
+
+[features]
+default = []
+# Real YouTube data via rustypipe + a tokio runtime owned by the live backend.
+# `--features live` must check-compile; it is never part of the shots path.
+live = ["dep:rustypipe", "dep:tokio"]

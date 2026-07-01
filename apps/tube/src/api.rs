@@ -210,6 +210,12 @@ impl Worker {
             .name("tube-fetch".into())
             .spawn(move || {
                 let client = client();
+                // The data-source seam: offline sample by default, rustypipe
+                // under `--features live`. SponsorBlock / DeArrow keep their own
+                // direct `sponsor.ajay.app` path below (they are orthogonal to
+                // the InnerTube source). Constructing the backend can fail (live
+                // network init) — fall back to offline so the worker never dies.
+                let backend = live_backend_or_offline(&up_tx);
                 while let Ok(req) = req_rx.recv() {
                     match req {
                         Request::Branding(id) => {
@@ -234,14 +240,20 @@ impl Worker {
                                 }
                             }
                         }
-                        Request::Search { instance, query } => match search(&client, &instance, &query) {
-                            Ok(vs) => {
-                                let _ = up_tx.send(Update::SearchResults(query, vs));
+                        Request::Search { query, .. } => {
+                            // Route search through the backend seam. The offline
+                            // backend answers from the sample instantly; the live
+                            // one hits rustypipe.
+                            match backend.search(&query) {
+                                Ok(crate::backend::BackendResult::Videos(vs)) => {
+                                    let _ = up_tx.send(Update::SearchResults(query, vs));
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    let _ = up_tx.send(Update::Note(format!("Search: {e}")));
+                                }
                             }
-                            Err(e) => {
-                                let _ = up_tx.send(Update::Note(format!("Search: {e}")));
-                            }
-                        },
+                        }
                     }
                 }
             })
@@ -257,6 +269,31 @@ impl Worker {
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().collect()
     }
+}
+
+/// Construct the live rustypipe backend if the `live` feature is on and it
+/// initialises; otherwise the offline sample backend. Never panics — a failed
+/// live init degrades to offline with a status note, so the fetch worker always
+/// has a working data source.
+fn live_backend_or_offline(
+    _up_tx: &Sender<Update>,
+) -> Box<dyn crate::backend::YtBackend> {
+    #[cfg(feature = "live")]
+    {
+        use crate::backend::YtBackend; // `name()` is a trait method.
+        match crate::backend::live::RustyPipeBackend::new() {
+            Ok(b) => {
+                let _ = _up_tx.send(Update::Note(format!("Live backend: {}", b.name())));
+                return Box::new(b);
+            }
+            Err(e) => {
+                let _ = _up_tx.send(Update::Note(format!(
+                    "Live backend unavailable ({e}); using offline sample"
+                )));
+            }
+        }
+    }
+    crate::backend::default_backend()
 }
 
 #[cfg(test)]
