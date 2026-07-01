@@ -91,6 +91,18 @@ impl Forest {
             })
             .collect();
 
+        // `systemd` (PID 1 and every per-session `systemd --user`) is the
+        // ancestor of nearly everything, so nesting the whole system under it is
+        // technically correct but useless — the user just sees one "systemd"
+        // row. Treat every systemd instance as a forest boundary: its direct
+        // children (each service, the login/user session, the kthreadd
+        // kernel-thread group) surface as their own top-level roots instead of
+        // collapsing under a single giant systemd tree.
+        let is_boundary: Vec<bool> = nodes
+            .iter()
+            .map(|n| n.proc.pid == 1 || n.proc.name == "systemd")
+            .collect();
+
         let mut roots: Vec<usize> = Vec::new();
         for i in 0..nodes.len() {
             let parent = nodes[i]
@@ -100,6 +112,8 @@ impl Forest {
                 .and_then(|pp| index.get(&pp).copied())
                 .filter(|&pi| pi != i);
             match parent {
+                // A child of a systemd boundary is promoted to a top-level root.
+                Some(pi) if is_boundary[pi] => roots.push(i),
                 Some(pi) => nodes[pi].children.push(i),
                 None => roots.push(i),
             }
@@ -353,20 +367,27 @@ impl Forest {
         filtering: bool,
         out: &mut Vec<Row>,
     ) {
-        let mut row = self.row_for(i, opts);
-        row.depth = depth;
-        // Force-open a node that only survived the filter via a descendant
-        // (its own name doesn't match) so the matched child is reachable.
-        let forced_open = filtering && !self.node_matches(i, opts.filter);
-        let expanded = row.has_children
-            && (opts.expanded.contains(&row.pid) || forced_open);
-        row.expanded = expanded;
-        out.push(row);
-        if expanded {
-            let mut kids: Vec<usize> = self.visible_children(i, opts).collect();
-            self.sort_indices(&mut kids, opts);
-            for c in kids {
-                self.push_row(c, depth + 1, opts, filtering, out);
+        // Iterative pre-order DFS (explicit stack, not recursion) so a very
+        // large / deep subtree — e.g. expanding a node with thousands of
+        // descendants — can never overflow the call stack.
+        let mut stack: Vec<(usize, usize)> = vec![(i, depth)];
+        while let Some((i, depth)) = stack.pop() {
+            let mut row = self.row_for(i, opts);
+            row.depth = depth;
+            // Force-open a node that only survived the filter via a descendant
+            // (its own name doesn't match) so the matched child is reachable.
+            let forced_open = filtering && !self.node_matches(i, opts.filter);
+            let expanded = row.has_children
+                && (opts.expanded.contains(&row.pid) || forced_open);
+            row.expanded = expanded;
+            out.push(row);
+            if expanded {
+                let mut kids: Vec<usize> = self.visible_children(i, opts).collect();
+                self.sort_indices(&mut kids, opts);
+                // Push reversed so children pop (and render) in sorted order.
+                for c in kids.into_iter().rev() {
+                    stack.push((c, depth + 1));
+                }
             }
         }
     }
@@ -419,15 +440,45 @@ mod tests {
 
     #[test]
     fn forest_roots_and_orphans() {
-        // pid 99 points at a missing parent → becomes a root, not dropped.
+        // pid 1 is the init boundary, so its child is promoted to a top-level
+        // root rather than nested under init; pid 99 points at a missing parent
+        // → also a root, not dropped.
         let procs = vec![
             p(1, None, "init", 0.0, 10),
             p(2, Some(1), "child", 0.0, 10),
             p(99, Some(404), "orphan", 0.0, 10),
         ];
         let f = Forest::build(&procs);
-        assert_eq!(f.roots.len(), 2, "init + orphan are roots");
+        // init (pid 1), the promoted child (pid 2), and the orphan (pid 99).
+        assert_eq!(f.roots.len(), 3, "init + promoted child + orphan are roots");
         assert_eq!(f.nodes.len(), 3, "no process dropped");
+        let root_pids: std::collections::HashSet<u32> =
+            f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
+        assert!(root_pids.contains(&2), "a child of init is a top-level root");
+        // init keeps no children — they were all promoted.
+        let init = f.nodes.iter().find(|n| n.proc.pid == 1).unwrap();
+        assert!(init.children.is_empty(), "init does not nest the world");
+    }
+
+    #[test]
+    fn systemd_user_is_also_a_boundary() {
+        // A per-session `systemd --user` (name "systemd", not pid 1) must also
+        // be a boundary so the user's whole session doesn't collapse under it.
+        let procs = vec![
+            p(1, None, "systemd", 0.0, 10),
+            p(1000, Some(1), "systemd", 0.0, 10), // systemd --user
+            p(1200, Some(1000), "shell", 0.0, 10),
+            p(1300, Some(1200), "editor", 0.0, 10),
+        ];
+        let f = Forest::build(&procs);
+        let root_pids: std::collections::HashSet<u32> =
+            f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
+        // Both systemds are roots, and the session leader (shell) is promoted
+        // to a top-level root instead of hiding under systemd --user.
+        assert!(root_pids.contains(&1200), "shell promoted out of systemd --user");
+        // The editor stays nested under its real parent (the shell).
+        let shell = f.nodes.iter().find(|n| n.proc.pid == 1200).unwrap();
+        assert_eq!(shell.children.len(), 1, "editor stays under the shell");
     }
 
     #[test]
