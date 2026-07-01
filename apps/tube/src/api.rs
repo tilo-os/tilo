@@ -21,12 +21,14 @@
 //! to Annex-B, and [`crate::playback::Playback`] decodes it. See `--probe-play`
 //! in `main.rs` for the end-to-end proof path.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use crate::backend::{BackendResult, Query, YtBackend};
+use crate::backend::{BackendResult, Query, StreamHandle, YtBackend};
 use crate::model::{Category, Channel, Segment, Video};
 
 /// A unit of work for the background thread.
@@ -45,12 +47,21 @@ pub enum Request {
     VideoMeta(String),
     /// Fetch a channel page + its uploads.
     Channel(String),
-    /// Resolve + decode a real playable stream for a watch id. The worker
-    /// resolves the googlevideo H.264 stream, downloads a bounded prefix,
-    /// demuxes it to Annex-B and decodes it — all off the UI thread — then
-    /// publishes finished frames on the decoded-frame channel (drained via
-    /// [`Worker::poll_frames`]).
+    /// Resolve + stream a real playable video for a watch id. The worker
+    /// resolves the googlevideo H.264 stream, then a dedicated playback thread
+    /// pages through the stream's fragments, demuxes each to per-frame access
+    /// units and decodes them with a single reused decoder — all off the UI
+    /// thread — publishing a continuous sequence of frames on the decoded-frame
+    /// channel (drained via [`Worker::poll_frames`]), paced to the frame rate.
     PlayVideo(String),
+    /// Stop the current playback thread (the user left the watch page). The
+    /// worker signals the thread to finish so it stops downloading/decoding and
+    /// never leaks past the watch view.
+    StopPlayback,
+    /// Reflect the transport play/pause state onto the running playback thread.
+    /// When paused the thread holds the current frame and stops decoding ahead;
+    /// resuming continues from where it left off.
+    SetPlaying(bool),
 }
 
 /// A finished, decoded video frame produced by the worker for the watch page to
@@ -281,6 +292,11 @@ impl Worker {
                         "offline — sample data".into()
                     },
                 });
+                // The currently-streaming video, if any. Held here so a new
+                // `PlayVideo` (or a `StopPlayback` on leaving the watch page)
+                // can signal the old thread to finish before a new one starts —
+                // never two decoders running, never a leaked thread.
+                let mut playback: Option<PlaybackHandle> = None;
                 while let Ok(req) = req_rx.recv() {
                     match req {
                         Request::Branding(id) => {
@@ -361,9 +377,29 @@ impl Worker {
                             }
                         }
                         Request::PlayVideo(id) => {
-                            play_video(&live, &id, &frame_tx, &up_tx);
+                            // Tear down any prior stream first (navigating to a
+                            // new video), then start the new one.
+                            if let Some(h) = playback.take() {
+                                h.stop();
+                            }
+                            playback = start_playback(&live, id, &frame_tx, &up_tx);
+                        }
+                        Request::StopPlayback => {
+                            if let Some(h) = playback.take() {
+                                h.stop();
+                            }
+                        }
+                        Request::SetPlaying(playing) => {
+                            if let Some(h) = &playback {
+                                h.set_paused(!playing);
+                            }
                         }
                     }
+                }
+                // The request channel closed (the app dropped the Worker) — make
+                // sure the playback thread winds down too.
+                if let Some(h) = playback.take() {
+                    h.stop();
                 }
             })
             .expect("spawn tube-fetch");
@@ -386,50 +422,239 @@ impl Worker {
     }
 }
 
-/// Resolve, download, demux and decode a real stream for `id` on the worker
-/// thread, publishing the first decoded frame(s) to `frame_tx`. Every stage is
-/// off the UI thread; the UI only drains [`DecodedFrame`]s. Failures degrade to
-/// a status note and the poster stays on screen.
-fn play_video(
+/// A handle to the dedicated playback thread. Dropping it detaches; calling
+/// [`PlaybackHandle::stop`] first signals the thread to finish so it never keeps
+/// downloading/decoding after the user has moved on.
+struct PlaybackHandle {
+    /// Set to end the stream. The thread polls it between fragments and frames
+    /// and exits promptly (within one frame interval or one fragment fetch).
+    stop: Arc<AtomicBool>,
+    /// Set to hold playback (transport paused). The thread keeps the last frame
+    /// on screen and stops decoding ahead while true.
+    paused: Arc<AtomicBool>,
+    join: std::thread::JoinHandle<()>,
+}
+
+impl PlaybackHandle {
+    /// Signal the thread to finish and detach. Non-blocking: the worker's request
+    /// loop must not stall on a fragment download, so we set the flag and let the
+    /// thread wind itself down (it always observes `stop` and returns). Dropping
+    /// the `JoinHandle` detaches — the thread terminates on its own, no leak.
+    fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        drop(self.join);
+    }
+
+    fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
+    }
+}
+
+/// Resolve a real stream for `id` (on the worker thread, using the live backend)
+/// and spawn a dedicated thread that streams + decodes it continuously. Returns a
+/// [`PlaybackHandle`] the worker keeps so it can stop the thread when the user
+/// navigates away. Failures degrade to a status note (the poster stays on
+/// screen) and return `None`.
+fn start_playback(
     live: &Option<Box<dyn YtBackend>>,
-    id: &str,
+    id: String,
     frame_tx: &Sender<DecodedFrame>,
     up_tx: &Sender<Update>,
-) {
+) -> Option<PlaybackHandle> {
     let Some(backend) = live.as_ref() else {
         let _ = up_tx.send(Update::Note(
             "playback needs the live backend (build with --features live)".into(),
         ));
-        return;
+        return None;
     };
-    let handle = match backend.resolve_video_stream(id) {
+    // Resolving the player URL is a one-time network round trip; done here on the
+    // worker thread (the streaming itself then runs on its own thread so the
+    // worker stays responsive to new requests).
+    let handle = match backend.resolve_video_stream(&id) {
         Ok(h) => h,
         Err(e) => {
             let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
+            return None;
+        }
+    };
+    let _ = up_tx.send(Update::Note(format!(
+        "stream: itag {} {} {} {}x{}@{}fps",
+        handle.itag, handle.quality, handle.mime, handle.width, handle.height, handle.fps
+    )));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    let stop_t = stop.clone();
+    let paused_t = paused.clone();
+    let frame_tx = frame_tx.clone();
+    let up_tx = up_tx.clone();
+    let join = std::thread::Builder::new()
+        .name("tube-playback".into())
+        .spawn(move || {
+            stream_and_decode(handle, id, &frame_tx, &up_tx, &stop_t, &paused_t);
+        })
+        .ok()?;
+    Some(PlaybackHandle { stop, paused, join })
+}
+
+/// The continuous playback loop, run on the dedicated playback thread. Downloads
+/// the stream fragment-by-fragment, demuxes each into per-frame access units,
+/// decodes them through **one reused** decoder so inter-frames resolve against
+/// their references, and emits a [`DecodedFrame`] per picture paced to the
+/// stream's frame rate. Video only — audio is out of scope.
+fn stream_and_decode(
+    handle: StreamHandle,
+    id: String,
+    frame_tx: &Sender<DecodedFrame>,
+    up_tx: &Sender<Update>,
+    stop: &AtomicBool,
+    paused: &AtomicBool,
+) {
+    let client = crate::backend::stream::http_client();
+    let plan = match crate::backend::stream::fetch_stream_plan(&client, &handle) {
+        Ok(p) => p,
+        Err(e) => {
+            // Not a fragmented DASH stream (or the index was unreadable): fall
+            // back to the single bounded-prefix decode so at least a still frame
+            // shows rather than nothing.
+            let _ = up_tx.send(Update::Note(format!(
+                "continuous stream unavailable ({e}); decoding a single-frame prefix"
+            )));
+            decode_single_prefix(&client, &handle, &id, frame_tx, up_tx);
             return;
         }
     };
     let _ = up_tx.send(Update::Note(format!(
-        "stream: itag {} {} {}",
-        handle.itag, handle.quality, handle.mime
+        "streaming {} fragments @ {}fps ({} {}x{})",
+        plan.fragments.len(),
+        handle.fps,
+        handle.quality,
+        handle.width,
+        handle.height
     )));
-    let client = crate::backend::stream::http_client();
-    let fetched = match crate::backend::stream::fetch_h264(&client, &handle) {
-        Ok(f) => f,
-        Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("stream fetch: {e}")));
+
+    // One decoder for the whole stream — recreating it per fragment would throw
+    // away the reference frames P/B pictures decode against.
+    let mut playback = crate::playback::Playback::new();
+    let fps = (handle.fps as f64).max(1.0);
+    let start = Instant::now();
+    let mut emitted: u64 = 0;
+
+    for frag in &plan.fragments {
+        if stop.load(Ordering::SeqCst) {
             return;
         }
-    };
-    let mut playback = crate::playback::Playback::new();
-    if playback.feed(&fetched.annexb) {
-        if let Some((width, height, rgba)) = playback.latest_rgba() {
-            let _ = frame_tx.send(DecodedFrame { video: id.to_string(), width, height, rgba });
+        wait_while_paused(paused, stop);
+        if stop.load(Ordering::SeqCst) {
+            return;
         }
-    } else {
-        let _ = up_tx.send(Update::Note(
-            "stream downloaded but no frame decoded from the first fragment".into(),
-        ));
+        let bytes = match crate::backend::stream::fetch_fragment_bytes(&client, &handle, *frag) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = up_tx.send(Update::Note(format!("fragment fetch stopped: {e}")));
+                break;
+            }
+        };
+        for au in crate::backend::mp4::demux_fragment(&bytes, &plan.config) {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            wait_while_paused(paused, stop);
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            if playback.feed(&au) {
+                if let Some((width, height, rgba)) = playback.latest_rgba() {
+                    emitted += 1;
+                    if frame_tx
+                        .send(DecodedFrame { video: id.clone(), width, height, rgba })
+                        .is_err()
+                    {
+                        return; // UI gone — stop cleanly.
+                    }
+                }
+            }
+            // Pace emitted frames to real time: hold each ~1/fps from the stream
+            // start. If decoding can't keep up the target is already past and we
+            // simply run as fast as the decoder manages (honest, no fake motion).
+            let target = start + Duration::from_secs_f64(emitted as f64 / fps);
+            pace_until(target, stop);
+        }
+    }
+    // Drain any pictures still buffered in the decoder's reorder queue.
+    for (width, height, rgba) in playback.flush() {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        emitted += 1;
+        if frame_tx
+            .send(DecodedFrame { video: id.clone(), width, height, rgba })
+            .is_err()
+        {
+            return;
+        }
+        let target = start + Duration::from_secs_f64(emitted as f64 / fps);
+        pace_until(target, stop);
+    }
+    let _ = up_tx.send(Update::Note(format!(
+        "playback finished: {emitted} frames decoded"
+    )));
+}
+
+/// Single bounded-prefix fallback: download one prefix and decode a single frame
+/// (the pre-streaming behaviour) so a poster-replacement still shows when the
+/// continuous path is unavailable (e.g. a progressive/muxed stream with no sidx).
+fn decode_single_prefix(
+    client: &reqwest::blocking::Client,
+    handle: &StreamHandle,
+    id: &str,
+    frame_tx: &Sender<DecodedFrame>,
+    up_tx: &Sender<Update>,
+) {
+    match crate::backend::stream::fetch_h264(client, handle) {
+        Ok(fetched) => {
+            let mut playback = crate::playback::Playback::new();
+            if playback.feed(&fetched.annexb) {
+                if let Some((width, height, rgba)) = playback.latest_rgba() {
+                    let _ = frame_tx.send(DecodedFrame {
+                        video: id.to_string(),
+                        width,
+                        height,
+                        rgba,
+                    });
+                }
+            } else {
+                let _ = up_tx.send(Update::Note(
+                    "stream downloaded but no frame decoded from the first fragment".into(),
+                ));
+            }
+        }
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("stream fetch: {e}")));
+        }
+    }
+}
+
+/// Sleep until `target`, waking early (and returning) if `stop` is set. Sleeps in
+/// short slices so a stop is honoured within ~20 ms regardless of frame interval.
+fn pace_until(target: Instant, stop: &AtomicBool) {
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = Instant::now();
+        if now >= target {
+            return;
+        }
+        std::thread::sleep((target - now).min(Duration::from_millis(20)));
+    }
+}
+
+/// Block while the transport is paused, polling in short slices so a resume or a
+/// stop is honoured promptly. Returns immediately when not paused.
+fn wait_while_paused(paused: &AtomicBool, stop: &AtomicBool) {
+    while paused.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
