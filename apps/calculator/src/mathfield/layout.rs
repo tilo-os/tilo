@@ -409,7 +409,10 @@ fn layout_node(
         Node::Sqrt { index, radicand } => {
             let rad_steps = child_steps(steps, idx, Slot::Radicand);
             let inner = layout_row(radicand, &rad_steps, tr, size);
-            let sign_w = measure_glyph(tr, '√', size).max(size as f64 * 0.62);
+            // The radical is drawn as a vector path (see render::SqrtSign), so
+            // its width is a fixed fraction of the font size rather than the
+            // font's `√` advance — keeps the nib proportions consistent.
+            let sign_w = (size as f64 * 0.62).max(9.0);
             let over_pad = 4.0;
             let top_gap = 3.0;
             let ascent = inner.ascent + top_gap + 2.0;
