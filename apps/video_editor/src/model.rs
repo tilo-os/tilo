@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::media::{self, Hydration};
+
 pub type MediaId = Uuid;
 pub type TrackId = Uuid;
 pub type ClipId = Uuid;
@@ -18,6 +20,41 @@ pub type ClipId = Uuid;
 /// drag from collapsing a clip to a zero-width sliver that can't be
 /// grabbed again.
 pub const MIN_CLIP: f64 = 0.10;
+
+/// Per-clip colour + blend filters. All are linear, normalised so the
+/// inspector sliders run 0..1 and a fresh clip is the identity:
+///   * `brightness`/`contrast`/`saturation`: 0.5 = unchanged, 0 = none,
+///     1 = doubled. (Stored as 0..1 so one slider widget fits them all.)
+///
+/// These are render parameters only — the model stores them, the preview
+/// applies them, and they replicate field-by-field through the CRDT so two
+/// peers grading the same clip converge.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Filters {
+    pub brightness: f64,
+    pub contrast: f64,
+    pub saturation: f64,
+}
+
+impl Default for Filters {
+    fn default() -> Self {
+        // 0.5 is the neutral midpoint of every slider.
+        Self { brightness: 0.5, contrast: 0.5, saturation: 0.5 }
+    }
+}
+
+impl Filters {
+    /// Identity filters leave the frame untouched.
+    pub fn is_identity(&self) -> bool {
+        (self.brightness - 0.5).abs() < 1e-6
+            && (self.contrast - 0.5).abs() < 1e-6
+            && (self.saturation - 0.5).abs() < 1e-6
+    }
+    /// Map a 0..1 slider value to a multiplier in roughly 0..2 (0.5→1.0).
+    pub fn gain(v: f64) -> f64 {
+        (v.clamp(0.0, 1.0) * 2.0).max(0.0)
+    }
+}
 
 /// What a piece of source media is. Drives the bin icon, whether it
 /// lands on a video or audio track by default, and which inspector
@@ -135,6 +172,41 @@ pub struct MediaItem {
     /// clip body. Resolved to a real `Color` from the active theme — the
     /// model never stores raw RGB so theming stays OS-controlled.
     pub palette: u8,
+    /// Workspace-relative path to the source bytes on the P2P FUSE
+    /// (`/var/workspace/<path>`). This — not the bytes — is what the CRDT
+    /// replicates; the decode path hydrates the bytes on demand. See
+    /// [`crate::media`] for the seam.
+    pub path: String,
+    /// Whether the source bytes are hydrated locally yet. Defaults to
+    /// `Projected`; the decode path flips it to `Local` once the FUSE
+    /// resolves real bytes. View-derived, but persisted so a re-opened
+    /// project remembers what was already fetched.
+    #[serde(default = "default_hydration", with = "hydration_serde")]
+    pub hydration: Hydration,
+}
+
+fn default_hydration() -> Hydration {
+    Hydration::Projected
+}
+
+mod hydration_serde {
+    use super::Hydration;
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(h: &Hydration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(h.as_str())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hydration, D::Error> {
+        Ok(Hydration::from_str(&String::deserialize(d)?))
+    }
+}
+
+impl MediaItem {
+    /// Resolve this item's bytes through the FUSE-media seam, reporting
+    /// where they live and whether they're hydrated. The one place a
+    /// reference becomes a (possibly-local) file.
+    pub fn source(&self) -> media::MediaSource {
+        media::resolve(&self.path)
+    }
 }
 
 /// A track instance in the timeline.
@@ -165,6 +237,16 @@ pub struct Clip {
     pub volume: f64,
     pub transition: Transition,
     pub palette: u8,
+    /// Per-clip colour grade. Identity by default.
+    #[serde(default)]
+    pub filters: Filters,
+    /// Fade-in length in seconds (audio ramp / video dip from black at the
+    /// head). 0 = no fade.
+    #[serde(default)]
+    pub fade_in: f64,
+    /// Fade-out length in seconds at the tail. 0 = no fade.
+    #[serde(default)]
+    pub fade_out: f64,
 }
 
 impl Clip {
@@ -179,6 +261,29 @@ impl Clip {
     /// True if timeline time `t` falls within this clip's span.
     pub fn covers(&self, t: f64) -> bool {
         t >= self.start && t < self.end()
+    }
+
+    /// Envelope gain in 0..1 from the fade-in / fade-out ramps at timeline
+    /// time `t`. 1.0 in the clip's steady middle; ramps linearly across the
+    /// `fade_in`/`fade_out` regions. Used by both the preview (video dip)
+    /// and the (gated) audio mix.
+    pub fn envelope(&self, t: f64) -> f64 {
+        let into = t - self.start;
+        let dur = self.duration();
+        if dur <= 0.0 {
+            return 1.0;
+        }
+        let mut g: f64 = 1.0;
+        if self.fade_in > 1e-6 && into < self.fade_in {
+            g = g.min((into / self.fade_in).clamp(0.0, 1.0));
+        }
+        if self.fade_out > 1e-6 {
+            let from_end = dur - into;
+            if from_end < self.fade_out {
+                g = g.min((from_end / self.fade_out).clamp(0.0, 1.0));
+            }
+        }
+        g.clamp(0.0, 1.0)
     }
 }
 
@@ -287,6 +392,9 @@ impl Project {
             volume: 1.0,
             transition: Transition::None,
             palette: m.palette,
+            filters: Filters::default(),
+            fade_in: 0.0,
+            fade_out: 0.0,
         });
         Some(id)
     }
@@ -308,9 +416,14 @@ impl Project {
         right.in_point = split_src;
         // A head transition belongs to the new cut, not the right half.
         right.transition = Transition::None;
-        // Shorten the left half to end at the split.
+        // The fade-in stays with the head (left); the fade-out belongs to
+        // the tail (right). Each half keeps the relevant ramp only.
+        right.fade_in = 0.0;
+        // Shorten the left half to end at the split (and drop its tail fade,
+        // which now lands inside the right clip).
         if let Some(left) = self.clip_mut(id) {
             left.out_point = split_src;
+            left.fade_out = 0.0;
         }
         let new_id = right.id;
         self.clips.push(right);
@@ -356,6 +469,68 @@ impl Project {
     pub fn delete_clip(&mut self, id: ClipId) {
         self.clips.retain(|c| c.id != id);
     }
+
+    /// Delete a clip and close the gap: every later clip *on the same
+    /// track* shifts left by the deleted clip's duration, so there's no
+    /// hole where it was. Returns the ids of the clips that moved (so the
+    /// caller can replicate exactly those through the CRDT) — empty if the
+    /// clip didn't exist.
+    pub fn ripple_delete(&mut self, id: ClipId) -> Vec<ClipId> {
+        let Some(clip) = self.clip(id).cloned() else { return Vec::new() };
+        let gap = clip.duration();
+        let track = clip.track;
+        let after = clip.start;
+        self.clips.retain(|c| c.id != id);
+        let mut moved = Vec::new();
+        for c in self.clips.iter_mut() {
+            if c.track == track && c.start >= after - 1e-9 {
+                c.start = (c.start - gap).max(0.0);
+                moved.push(c.id);
+            }
+        }
+        moved
+    }
+
+    /// Candidate snap targets (seconds) a dragged clip edge should magnetise
+    /// to: the playhead, plus the start/end of every *other* clip. The
+    /// caller picks the nearest within a pixel threshold. `exclude` skips
+    /// the clip being dragged so it never snaps to itself.
+    pub fn snap_candidates(&self, exclude: ClipId, playhead: f64) -> Vec<f64> {
+        let mut out = vec![0.0, playhead];
+        for c in &self.clips {
+            if c.id == exclude {
+                continue;
+            }
+            out.push(c.start);
+            out.push(c.end());
+        }
+        out
+    }
+
+    /// Snap `t` to the nearest candidate within `tol` seconds, else return
+    /// `t` unchanged. Pure helper so the snapping is unit-testable.
+    pub fn snap_to_candidates(t: f64, candidates: &[f64], tol: f64) -> f64 {
+        let mut best: Option<(f64, f64)> = None; // (candidate, distance)
+        for &c in candidates {
+            let d = (c - t).abs();
+            if d <= tol && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                best = Some((c, d));
+            }
+        }
+        best.map(|(c, _)| c).unwrap_or(t)
+    }
+
+    /// Paste `clip` as a new independent clip starting at `start` on
+    /// `track` (the clip keeps its trim window, filters and fades). Returns
+    /// the new id. Used by copy/paste — the source clip is unchanged.
+    pub fn paste_clip(&mut self, mut clip: Clip, track: TrackId, start: f64) -> ClipId {
+        clip.id = Uuid::new_v4();
+        clip.track = track;
+        clip.start = start.max(0.0);
+        let id = clip.id;
+        self.clips.push(clip);
+        id
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +548,8 @@ mod tests {
             height: 1080,
             fps: 30.0,
             palette: 0,
+            path: media::workspace_path("src.mov"),
+            hydration: Hydration::Projected,
         };
         let mid = m.id;
         p.media.push(m);
@@ -490,5 +667,89 @@ mod tests {
         let order: Vec<&str> =
             p.display_tracks().iter().map(|t| t.name.as_str()).collect();
         assert_eq!(order, vec!["V2", "V1", "A1", "A2"]);
+    }
+
+    #[test]
+    fn ripple_delete_closes_the_gap() {
+        let (mut p, mid, tid, first) = project_with_clip();
+        // first occupies [0,20]. Place two more after it.
+        let second = p.add_clip(tid, mid, 20.0).unwrap();
+        let third = p.add_clip(tid, mid, 40.0).unwrap();
+        let first_dur = p.clip(first).unwrap().duration();
+        let moved = p.ripple_delete(first);
+        // Both later clips shifted left by the deleted duration.
+        assert!(moved.contains(&second) && moved.contains(&third));
+        assert!((p.clip(second).unwrap().start - (20.0 - first_dur)).abs() < 1e-9);
+        assert!((p.clip(third).unwrap().start - (40.0 - first_dur)).abs() < 1e-9);
+        assert_eq!(p.clips.len(), 2);
+    }
+
+    #[test]
+    fn snap_magnetises_within_tolerance_only() {
+        let (p, _m, _t, cid) = project_with_clip();
+        // Candidates include 0.0 and the clip end (20.0) and playhead 7.0.
+        let cands = p.snap_candidates(Uuid::new_v4(), 7.0);
+        // 19.9 is within 0.2 of the 20.0 clip end → snaps.
+        assert!((Project::snap_to_candidates(19.9, &cands, 0.2) - 20.0).abs() < 1e-9);
+        // 7.1 snaps to the playhead at 7.0.
+        assert!((Project::snap_to_candidates(7.1, &cands, 0.2) - 7.0).abs() < 1e-9);
+        // 12.0 is far from every candidate → unchanged.
+        assert!((Project::snap_to_candidates(12.0, &cands, 0.2) - 12.0).abs() < 1e-9);
+        // Excluding the clip removes its edges from the candidate set.
+        let excl = p.snap_candidates(cid, 7.0);
+        assert!((Project::snap_to_candidates(19.9, &excl, 0.2) - 19.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paste_clip_is_independent_of_source() {
+        let (mut p, _m, tid, cid) = project_with_clip();
+        let src = p.clip(cid).unwrap().clone();
+        let pasted = p.paste_clip(src, tid, 30.0);
+        assert_ne!(pasted, cid, "pasted clip gets a fresh id");
+        assert!((p.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
+        // Mutating the paste leaves the source clip untouched.
+        p.clip_mut(pasted).unwrap().opacity = 0.1;
+        assert!((p.clip(cid).unwrap().opacity - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fade_envelope_ramps_at_head_and_tail() {
+        let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.fade_in = 2.0;
+            c.fade_out = 4.0;
+        }
+        let c = p.clip(cid).unwrap();
+        assert!(c.envelope(0.0) < 0.01, "silent at the very head");
+        assert!((c.envelope(1.0) - 0.5).abs() < 1e-6, "half through a 2s fade-in");
+        assert!((c.envelope(10.0) - 1.0).abs() < 1e-6, "full in the middle");
+        assert!((c.envelope(18.0) - 0.5).abs() < 1e-6, "half through a 4s fade-out");
+        assert!(c.envelope(20.0) < 0.01, "silent at the tail");
+    }
+
+    #[test]
+    fn split_keeps_fade_in_on_head_and_fade_out_on_tail() {
+        let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.fade_in = 2.0;
+            c.fade_out = 3.0;
+        }
+        let right = p.split_clip(cid, 8.0).unwrap();
+        let left = p.clip(cid).unwrap();
+        let right = p.clip(right).unwrap();
+        assert!((left.fade_in - 2.0).abs() < 1e-9, "head keeps fade-in");
+        assert_eq!(left.fade_out, 0.0, "head loses tail fade");
+        assert_eq!(right.fade_in, 0.0, "tail loses head fade");
+        assert!((right.fade_out - 3.0).abs() < 1e-9, "tail keeps fade-out");
+    }
+
+    #[test]
+    fn filters_default_is_identity() {
+        assert!(Filters::default().is_identity());
+        assert!((Filters::gain(0.5) - 1.0).abs() < 1e-9, "0.5 slider = unity gain");
+        assert!(Filters::gain(0.0) < 1e-9);
+        assert!((Filters::gain(1.0) - 2.0).abs() < 1e-9);
     }
 }

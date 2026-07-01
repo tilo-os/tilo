@@ -31,4 +31,12 @@ gstreamer = { version = "0.23", optional = true }
 
 [features]
 default = []
+# Real H.264 decode for the preview canvas, via `ui::VideoPlayer` (openh264).
+# The default fleet build (and `--shots`) leaves this off so the preview shows
+# a representative composited frame without touching a decoder — the headless
+# CI box has no real media pipeline. Turning it on lets the preview decode the
+# nearest keyframe of the clip under the playhead when its bytes are hydrated.
+decode = []
+# Real encode/decode through GStreamer (export muxing). Heavier; needs the
+# gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
 gst = ["dep:gstreamer"]

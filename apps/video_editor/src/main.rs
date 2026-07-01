@@ -28,12 +28,31 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        // `--narrow` renders below the breakpoint with the bin overlay open so
-        // the collapsed-sidebar layout is captured deterministically.
+        // Point the FUSE-media seam at the bundled sample-media/ dir so the
+        // capture resolves the demo project's media to local (hydrated)
+        // sources — exercising the hydration branch without a live mount.
+        // Honour an existing override if the caller already set one.
+        if std::env::var_os("QOS_VE_MEDIA_DIR").is_none() {
+            let bundled = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media");
+            if bundled.exists() {
+                // Safety: set before any threads spawn for the one-shot render.
+                unsafe { std::env::set_var("QOS_VE_MEDIA_DIR", bundled); }
+            }
+        }
+        // Scenario selectors (deterministic single-frame captures):
+        //   --narrow             collapsed-bin overlay layout
+        //   --scenario filters   clip selected with colour filters + fades
+        //   --scenario split     timeline just after a split at the playhead
+        //   (none)               the full live editor
+        let scenario = parse_scenario_arg(&args);
         if args.iter().any(|a| a == "--narrow") {
             render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out)?;
         } else {
-            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+            match scenario.as_deref() {
+                Some("filters") => render_shot_to_png(video_editor::app_root_filters(), DEFAULT_SHOTS_VIEWPORT, &out)?,
+                Some("split") => render_shot_to_png(video_editor::app_root_split(), DEFAULT_SHOTS_VIEWPORT, &out)?,
+                _ => render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?,
+            }
         }
         return Ok(());
     }
@@ -52,6 +71,21 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// `--scenario <name>` (or `--scenario=<name>`) selects a deterministic
+/// capture scenario. Returns the lowercased name if present.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().map(|s| s.to_lowercase());
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_lowercase());
         }
     }
     None
