@@ -78,6 +78,15 @@ pub struct TubeApp {
     /// resize and trigger a rebuild that re-seeds the split + drops a stale
     /// user preference.
     last_nav_overlay: Option<bool>,
+
+    /// Whether this instance should reach out to the live data backend. Set by
+    /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
+    /// offscreen path leaves it off so every screenshot stays hermetic on the
+    /// bundled sample (no worker thread, no network).
+    online: bool,
+    /// Guards the one-shot startup fetch (home/trending) so we kick it off
+    /// exactly once, on the first `sync`, rather than every frame.
+    kicked_off: bool,
 }
 
 impl Default for TubeApp {
@@ -102,7 +111,20 @@ impl TubeApp {
             sidebar_open: None,
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
+            online: false,
+            kicked_off: false,
         }
+    }
+
+    /// Opt this instance into live data. The live binary calls this; the
+    /// `--shots`/offscreen renderer and the interaction tests do not, so they
+    /// stay fully offline and deterministic. When online, the first `sync`
+    /// spawns the fetch worker and requests the home/trending feed; if the
+    /// network is unreachable (or the `live` feature is off) the worker reports
+    /// "offline — sample data" and the bundled catalogue stays on screen.
+    pub fn online(mut self) -> Self {
+        self.online = true;
+        self
     }
 
     /// `--shots` builder: render at the narrow breakpoint with the navigation
@@ -301,11 +323,13 @@ impl TubeApp {
                 self.model.playhead = 0.0;
                 self.model.playing = true;
                 self.dismiss_overlay_rail();
-                self.request(Request::Branding(id));
+                self.request(Request::Branding(id.clone()));
+                self.request_live(Request::VideoMeta(id));
             }
             Action::OpenChannel(id) => {
-                self.model.route = Route::Channel(id);
+                self.model.route = Route::Channel(id.clone());
                 self.dismiss_overlay_rail();
+                self.request_live(Request::Channel(id));
             }
             Action::ToggleSubscribe(id) => {
                 self.model.toggle_subscribe(&id);
@@ -365,9 +389,11 @@ impl TubeApp {
                     self.model.route = Route::Watch(id.clone());
                     self.model.playhead = 0.0;
                     self.model.playing = true;
-                    self.request(Request::Branding(id));
+                    self.request(Request::Branding(id.clone()));
+                    self.request_live(Request::VideoMeta(id));
                 } else if let Some(id) = SearchHit::parse_channel_link(&link) {
-                    self.model.route = Route::Channel(id);
+                    self.model.route = Route::Channel(id.clone());
+                    self.request_live(Request::Channel(id));
                 }
                 self.model.palette_open = false;
                 self.dismiss_overlay_rail();
@@ -396,6 +422,16 @@ impl TubeApp {
         }
         if let Some(w) = &self.worker {
             w.request(req);
+        }
+    }
+
+    /// Request live InnerTube data (feed / video detail / channel), but only
+    /// when this instance is online. The offline `--shots` and test paths call
+    /// through the same navigation code, so gating here keeps them from ever
+    /// spawning the worker or reaching the network.
+    fn request_live(&mut self, req: Request) {
+        if self.online {
+            self.request(req);
         }
     }
 
@@ -429,13 +465,51 @@ impl TubeApp {
                 }
                 Update::SearchResults(query, vids) => {
                     if !vids.is_empty() {
-                        // Merge new videos that we don't already have.
+                        // Record the backend's exact ordered result set for this
+                        // query (so the search screen renders it verbatim), and
+                        // fold the videos + uploader stubs into the catalogue.
+                        let ids: Vec<String> = vids.iter().map(|v| v.id.clone()).collect();
                         for nv in vids {
-                            if !self.model.videos.iter().any(|v| v.id == nv.id) {
-                                self.model.videos.push(nv);
-                            }
+                            self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
+                            self.model.upsert_video(nv);
                         }
+                        self.model.search_hits_query = query.clone();
+                        self.model.search_hits = ids;
                         self.model.route = Route::Search(query);
+                        changed = true;
+                    }
+                }
+                Update::Feed(vids) => {
+                    // Real home/trending catalogue — replace the sample wholesale.
+                    self.model.adopt_live_catalogue(vids, "live (rustypipe)");
+                    changed = true;
+                }
+                Update::VideoMeta { video, related } => {
+                    let id = video.id.clone();
+                    self.model.ensure_channel_stub(&video.channel_id, &video.channel_name);
+                    self.model.upsert_video(*video);
+                    let ids: Vec<String> = related.iter().map(|v| v.id.clone()).collect();
+                    for rv in related {
+                        self.model.ensure_channel_stub(&rv.channel_id, &rv.channel_name);
+                        self.model.upsert_video(rv);
+                    }
+                    if !ids.is_empty() {
+                        self.model.related_of = id;
+                        self.model.related_hits = ids;
+                    }
+                    changed = true;
+                }
+                Update::ChannelPage { channel, uploads } => {
+                    self.model.upsert_channel(*channel);
+                    for uv in uploads {
+                        self.model.ensure_channel_stub(&uv.channel_id, &uv.channel_name);
+                        self.model.upsert_video(uv);
+                    }
+                    changed = true;
+                }
+                Update::Status { live, label } => {
+                    if self.model.data_source.live != live || self.model.data_source.label != label {
+                        self.model.data_source = crate::model::DataSource { live, label };
                         changed = true;
                     }
                 }
@@ -510,6 +584,13 @@ impl Widget for TubeApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.ensure_search_obj(state, path);
         self.adopt_or_seed(state, path);
+        // First live frame: spawn the fetch worker and pull the home/trending
+        // feed. One-shot (guarded) and online-only, so the offscreen path never
+        // reaches here with `online` set.
+        if self.online && !self.kicked_off {
+            self.kicked_off = true;
+            self.request_live(Request::Feed);
+        }
         // Reflect the live palette-query text into the model so the overlay
         // filters as the user types. Only adopt the CRDT text once the user has
         // actually typed (non-empty), so a pre-seeded query (tests / a future

@@ -409,6 +409,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
     let status = Flex::row()
         .gap(8.0)
         .align(Align::Center)
+        .push(data_source_pill(theme, model))
         .push(status_pill(theme, IconKind::Shield, "SponsorBlock", model.settings.sponsorblock_enabled))
         .push(status_pill(theme, IconKind::Sparkle, "DeArrow", model.settings.dearrow_enabled));
 
@@ -465,6 +466,36 @@ fn status_pill(theme: &Theme, kind: IconKind, label: &str, on: bool) -> Flex {
             border: None,
         })
         .push(icon(kind, 14.0, fg))
+        .push(text_c(label, 12.0, fg))
+}
+
+/// Live-vs-sample provenance pill. A green dot + "Live" once the rustypipe
+/// backend has actually returned real data; a dim "Sample" (or "Connecting…")
+/// otherwise, so the user always knows whether the catalogue on screen is real
+/// YouTube data or the bundled offline sample.
+fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
+    let live = model.data_source.live;
+    let (dot, fg, label) = if live {
+        (theme.tokens.colors.semantic.success, theme.text_primary, "Live")
+    } else if model.data_source.label.contains("connect") {
+        (theme.tokens.colors.semantic.warning, theme.text_dim, "Connecting…")
+    } else {
+        (theme.text_dim, theme.text_dim, "Sample")
+    };
+    Flex::row()
+        .gap(6.0)
+        .pad_xy(10.0, 6.0)
+        .align(Align::Center)
+        .surface(Surface {
+            fill: Some(subtle_fill(theme)),
+            radius: theme.tokens.radii.full as f64,
+            border: None,
+        })
+        .push(Flex::row().fixed(8.0, 8.0).surface(Surface {
+            fill: Some(dot),
+            radius: 4.0,
+            border: None,
+        }))
         .push(text_c(label, 12.0, fg))
 }
 
@@ -611,7 +642,7 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable 
 }
 
 pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, query: &str) -> Scrollable {
-    let results = model.search(query);
+    let results = model.search_display(query);
     let cards: Vec<Flex> = results.iter().map(|v| video_card(model, theme, bus, v)).collect();
     let header = format!("{} results", cards.len());
     let col = Flex::col()
@@ -832,7 +863,7 @@ pub fn watch(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> Scr
             .push(spring())
             .push(autoplay_toggle(model, theme, bus)),
     );
-    for r in model.related(id).into_iter().take(6) {
+    for r in model.related_display(id).into_iter().take(6) {
         up = up.push(compact_card(model, theme, bus, r));
     }
 

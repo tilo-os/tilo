@@ -23,15 +23,25 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::model::{Category, Segment, Video};
+use crate::backend::{BackendResult, Query, YtBackend};
+use crate::model::{Category, Channel, Segment, Video};
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum Request {
     /// Fetch SponsorBlock + DeArrow data for a video being opened.
     Branding(String),
-    /// Run an Invidious search.
+    /// Run a search through the data-source backend.
     Search { instance: String, query: String },
+    /// Fetch the home / trending catalogue. Only a *live* backend answers this
+    /// — the offline "feed" is just the sample already on screen, so a failed
+    /// or absent live backend leaves the bundled catalogue untouched.
+    Feed,
+    /// Fetch full metadata + real "up next" recommendations for a video the
+    /// user just opened.
+    VideoMeta(String),
+    /// Fetch a channel page + its uploads.
+    Channel(String),
 }
 
 /// A result folded back into the model on the UI thread.
@@ -44,6 +54,23 @@ pub enum Update {
         has_thumbnail: bool,
     },
     SearchResults(String, Vec<Video>),
+    /// Live home/trending catalogue — replaces the on-screen set.
+    Feed(Vec<Video>),
+    /// Live video detail + its real recommendations.
+    VideoMeta {
+        video: Box<Video>,
+        related: Vec<Video>,
+    },
+    /// Live channel page + uploads.
+    ChannelPage {
+        channel: Box<Channel>,
+        uploads: Vec<Video>,
+    },
+    /// Which data source is currently answering (drives the top-bar pill).
+    Status {
+        live: bool,
+        label: String,
+    },
     /// Non-fatal note surfaced in the status log.
     Note(String),
 }
@@ -210,12 +237,24 @@ impl Worker {
             .name("tube-fetch".into())
             .spawn(move || {
                 let client = client();
-                // The data-source seam: offline sample by default, rustypipe
-                // under `--features live`. SponsorBlock / DeArrow keep their own
-                // direct `sponsor.ajay.app` path below (they are orthogonal to
-                // the InnerTube source). Constructing the backend can fail (live
-                // network init) — fall back to offline so the worker never dies.
-                let backend = live_backend_or_offline(&up_tx);
+                // The data-source seam. The offline sample is always available
+                // as a fallback; the live rustypipe backend is present only
+                // under `--features live` *and* if it constructed. SponsorBlock /
+                // DeArrow keep their own direct `sponsor.ajay.app` path (they are
+                // orthogonal to the InnerTube source).
+                let offline = crate::backend::default_backend();
+                let live = try_live_backend(&up_tx);
+                // Announce the starting posture honestly: even with a live
+                // backend constructed we don't claim "live" until a real fetch
+                // returns, because construction doesn't touch the network.
+                let _ = up_tx.send(Update::Status {
+                    live: false,
+                    label: if live.is_some() {
+                        "connecting…".into()
+                    } else {
+                        "offline — sample data".into()
+                    },
+                });
                 while let Ok(req) = req_rx.recv() {
                     match req {
                         Request::Branding(id) => {
@@ -241,17 +280,59 @@ impl Worker {
                             }
                         }
                         Request::Search { query, .. } => {
-                            // Route search through the backend seam. The offline
-                            // backend answers from the sample instantly; the live
-                            // one hits rustypipe.
-                            match backend.search(&query) {
-                                Ok(crate::backend::BackendResult::Videos(vs)) => {
-                                    let _ = up_tx.send(Update::SearchResults(query, vs));
+                            // Live first, then fall back to the offline sample so
+                            // search always returns something usable.
+                            if let Some((BackendResult::Videos(vs), used_live)) =
+                                fetch(&live, offline.as_ref(), Query::Search(query.clone()), true, &up_tx)
+                            {
+                                send_status(&up_tx, used_live);
+                                let _ = up_tx.send(Update::SearchResults(query, vs));
+                            }
+                        }
+                        Request::Feed => {
+                            // Live only: an offline feed is the sample already on
+                            // screen, so a missing/failed live backend just marks
+                            // the source offline and leaves the catalogue as-is.
+                            //
+                            // Primary source is the real trending browse. YouTube
+                            // currently rejects rustypipe 0.11's `FEtrending`
+                            // params ("invalid argument"), so when that fails we
+                            // compose a live home from a handful of broad topic
+                            // searches instead — still real data, no sample.
+                            let feed = match fetch(&live, offline.as_ref(), Query::Trending, false, &up_tx) {
+                                Some((BackendResult::Videos(vs), true)) if !vs.is_empty() => Some(vs),
+                                _ => live_home_from_search(&live, &up_tx),
+                            };
+                            match feed {
+                                Some(vs) if !vs.is_empty() => {
+                                    let _ = up_tx.send(Update::Feed(vs));
+                                    send_status(&up_tx, true);
                                 }
-                                Ok(_) => {}
-                                Err(e) => {
-                                    let _ = up_tx.send(Update::Note(format!("Search: {e}")));
-                                }
+                                _ => send_status(&up_tx, false),
+                            }
+                        }
+                        Request::VideoMeta(id) => {
+                            // Real "up next" comes off the detail response; fetch
+                            // it alongside the metadata (live only — the sample
+                            // already carries full detail for its own ids).
+                            let related =
+                                match fetch(&live, offline.as_ref(), Query::Related(id.clone()), false, &up_tx) {
+                                    Some((BackendResult::Videos(r), _)) => r,
+                                    _ => Vec::new(),
+                                };
+                            if let Some((BackendResult::Video(v), used_live)) =
+                                fetch(&live, offline.as_ref(), Query::Video(id.clone()), false, &up_tx)
+                            {
+                                send_status(&up_tx, used_live);
+                                let _ = up_tx.send(Update::VideoMeta { video: v, related });
+                            }
+                        }
+                        Request::Channel(id) => {
+                            if let Some((BackendResult::Channel { channel, uploads }, used_live)) =
+                                fetch(&live, offline.as_ref(), Query::Channel(id), false, &up_tx)
+                            {
+                                send_status(&up_tx, used_live);
+                                let _ = up_tx.send(Update::ChannelPage { channel, uploads });
                             }
                         }
                     }
@@ -271,29 +352,94 @@ impl Worker {
     }
 }
 
-/// Construct the live rustypipe backend if the `live` feature is on and it
-/// initialises; otherwise the offline sample backend. Never panics — a failed
-/// live init degrades to offline with a status note, so the fetch worker always
-/// has a working data source.
-fn live_backend_or_offline(
-    _up_tx: &Sender<Update>,
-) -> Box<dyn crate::backend::YtBackend> {
-    #[cfg(feature = "live")]
-    {
-        use crate::backend::YtBackend; // `name()` is a trait method.
-        match crate::backend::live::RustyPipeBackend::new() {
-            Ok(b) => {
-                let _ = _up_tx.send(Update::Note(format!("Live backend: {}", b.name())));
-                return Box::new(b);
-            }
+/// Construct the live rustypipe backend when the `live` feature is on and it
+/// initialises. Returns `None` in the default build or on a construction error
+/// (the worker then serves the offline sample). Never panics.
+#[cfg(feature = "live")]
+fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+    match crate::backend::live::RustyPipeBackend::new() {
+        Ok(b) => {
+            let _ = up_tx.send(Update::Note(format!("live backend ready: {}", b.name())));
+            Some(Box::new(b))
+        }
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!(
+                "live backend unavailable ({e}); using offline sample"
+            )));
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "live"))]
+fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+    None
+}
+
+/// Run `query` against the live backend first (when present); on a live error,
+/// optionally fall back to the offline sample. Returns the result together with
+/// whether the *live* backend produced it — that boolean drives the on-screen
+/// "Live" vs "Sample" status. Live errors are surfaced as a status note.
+fn fetch(
+    live: &Option<Box<dyn YtBackend>>,
+    offline: &dyn YtBackend,
+    query: Query,
+    fallback: bool,
+    up_tx: &Sender<Update>,
+) -> Option<(BackendResult, bool)> {
+    if let Some(b) = live {
+        match b.run(query.clone()) {
+            Ok(r) => return Some((r, true)),
             Err(e) => {
-                let _ = _up_tx.send(Update::Note(format!(
-                    "Live backend unavailable ({e}); using offline sample"
-                )));
+                let _ = up_tx.send(Update::Note(format!("live {query:?}: {e}")));
             }
         }
     }
-    crate::backend::default_backend()
+    if fallback {
+        if let Ok(r) = offline.run(query) {
+            return Some((r, false));
+        }
+    }
+    None
+}
+
+/// Compose a live home feed from a few broad topic searches, interleaved for
+/// variety. Used as a fallback for the Home/Trending catalogue when YouTube
+/// rejects rustypipe's dedicated trending browse. Returns `None` when there is
+/// no live backend (offline / default build) so the caller keeps the sample.
+fn live_home_from_search(
+    live: &Option<Box<dyn YtBackend>>,
+    up_tx: &Sender<Update>,
+) -> Option<Vec<Video>> {
+    let backend = live.as_ref()?;
+    const SEEDS: [&str; 3] = ["technology", "science", "music"];
+    let mut lists: Vec<Vec<Video>> = Vec::new();
+    for seed in SEEDS {
+        match backend.search(seed) {
+            Ok(BackendResult::Videos(vs)) if !vs.is_empty() => lists.push(vs),
+            Ok(_) => {}
+            Err(e) => {
+                let _ = up_tx.send(Update::Note(format!("home seed {seed:?}: {e}")));
+            }
+        }
+    }
+    if lists.is_empty() {
+        return None;
+    }
+    let _ = up_tx.send(Update::Note(
+        "trending unavailable — composed live home from topic searches".into(),
+    ));
+    Some(crate::recommend::interleave_newest_first(lists))
+}
+
+/// Broadcast which data source just answered so the UI pill reflects reality.
+fn send_status(up_tx: &Sender<Update>, live: bool) {
+    let label = if live {
+        "live (rustypipe)"
+    } else {
+        "offline — sample data"
+    };
+    let _ = up_tx.send(Update::Status { live, label: label.into() });
 }
 
 #[cfg(test)]

@@ -377,5 +377,14 @@ pub fn model() -> TubeModel {
         ],
         palette_open: false,
         palette_query: String::new(),
+        // The bundled catalogue is, by definition, the offline sample.
+        data_source: crate::model::DataSource {
+            live: false,
+            label: "offline — sample data".into(),
+        },
+        search_hits_query: String::new(),
+        search_hits: Vec::new(),
+        related_of: String::new(),
+        related_hits: Vec::new(),
     }
 }
