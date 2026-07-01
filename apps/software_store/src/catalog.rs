@@ -143,7 +143,9 @@ pub fn sample_catalog() -> Vec<AppEntry> {
                 ),
                 vec![
                     Compat::info("Runs fully inside the cluster sandbox"),
-                    Compat::info("Requests broad filesystem access — review before granting"),
+                    // A caution, not a clean pass — surfaced with the warning
+                    // affordance so "review before granting" reads as one.
+                    Compat::warn("Requests broad filesystem access — review before granting"),
                 ],
             ),
             41_200_000,
