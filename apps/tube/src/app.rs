@@ -353,15 +353,24 @@ impl TubeApp {
         if !self.online {
             return;
         }
-        let Route::Watch(id) = self.model.route.clone() else {
-            return;
-        };
-        if self.playing_id.as_deref() == Some(id.as_str()) {
-            return;
+        match self.model.route.clone() {
+            Route::Watch(id) => {
+                if self.playing_id.as_deref() == Some(id.as_str()) {
+                    return;
+                }
+                self.playing_id = Some(id.clone());
+                self.current_frame = None;
+                self.request_live(Request::PlayVideo(id));
+            }
+            // Left the watch page: stop the worker's playback thread so it isn't
+            // still downloading/decoding a video the user is no longer watching.
+            _ => {
+                if self.playing_id.take().is_some() {
+                    self.current_frame = None;
+                    self.request_live(Request::StopPlayback);
+                }
+            }
         }
-        self.playing_id = Some(id.clone());
-        self.current_frame = None;
-        self.request_live(Request::PlayVideo(id));
     }
 
     /// Resolve the current watch video's duration, if any.
@@ -452,6 +461,11 @@ impl TubeApp {
             }
             Action::TogglePlay => {
                 self.model.playing = !self.model.playing;
+                // Reflect the transport state onto the live playback thread so a
+                // pause actually holds the video (not just the playhead).
+                if matches!(&self.model.route, Route::Watch(_)) {
+                    self.request_live(Request::SetPlaying(self.model.playing));
+                }
             }
             Action::ToggleCategory(c) => {
                 self.model.settings.toggle_category(c);
@@ -974,6 +988,23 @@ impl Widget for TubeApp {
     fn needs_idle_sync(&self) -> bool {
         // Keep syncing while a fetch is outstanding so results fold in.
         self.worker.is_some()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // While a watch video is streaming, keep the event loop pumping redraws
+        // so the worker's decoded frames drain and the picture MOVES. winit's
+        // default `Wait` only wakes on input, so without this the video would
+        // freeze on the first frame until the next unrelated event. The redraws
+        // are vsync-throttled by the renderer, so this paces to the display, not
+        // a hot spin.
+        let streaming = self.online
+            && matches!(&self.model.route, Route::Watch(id) if self.playing_id.as_deref() == Some(id.as_str()));
+        streaming
+            || self
+                .root_child
+                .as_ref()
+                .map(|c| c.needs_animation_frame())
+                .unwrap_or(false)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

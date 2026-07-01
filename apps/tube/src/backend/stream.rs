@@ -1,5 +1,5 @@
 //! Fetch a real playable H.264 byte range for a [`StreamHandle`] and demux it
-//! into Annex-B NAL units ready for [`ui::widget::VideoPlayer`].
+//! into Annex-B NAL units ready for [`crate::playback::Playback`].
 //!
 //! This is the network half of playback: given a resolved googlevideo stream
 //! URL (see [`crate::backend::YtBackend::resolve_video_stream`]), it downloads
@@ -20,7 +20,7 @@ use crate::backend::StreamHandle;
 /// Outcome of downloading + demuxing a stream prefix.
 #[derive(Clone, Debug)]
 pub struct FetchedStream {
-    /// Annex-B H.264 (`[SPS][PPS][NAL…]`) ready for `VideoPlayer::feed_frame`.
+    /// Annex-B H.264 (`[SPS][PPS][NAL…]`) ready for `Playback::feed`.
     pub annexb: Vec<u8>,
     /// Bytes actually downloaded from googlevideo.
     pub downloaded: usize,
@@ -107,6 +107,129 @@ pub fn fetch_h264(
         pps_count: demuxed.pps_count,
         http_status,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Continuous streaming
+//
+// `fetch_h264` above pulls one bounded prefix and decodes a single frame. Moving
+// video needs the whole timeline: download the init segment + `sidx` once to
+// learn every fragment's byte range, then page through the fragments on demand.
+// Each fragment is self-contained (`moof`+`mdat`), so it can be demuxed into its
+// per-frame access units ([`mp4::demux_fragment`]) and fed to a single reused
+// decoder as playback advances.
+// ---------------------------------------------------------------------------
+
+/// A plan for streaming an adaptive DASH video: the decoder config from the init
+/// segment plus the inclusive byte range of every media fragment, in playback
+/// order. Produced by [`fetch_stream_plan`]; consumed fragment-by-fragment.
+#[derive(Clone, Debug)]
+pub struct StreamPlan {
+    /// SPS/PPS + NAL length size from the init segment's `avcC`.
+    pub config: mp4::H264Config,
+    /// Inclusive `(start, end)` byte range of each media fragment.
+    pub fragments: Vec<(u64, u64)>,
+    /// Bytes downloaded to build the plan (init segment + `sidx`).
+    pub head_bytes: usize,
+    /// Per-fragment duration in `sidx` timescale ticks, aligned with `fragments`.
+    pub durations: Vec<u32>,
+    /// `sidx` timescale (ticks per second).
+    pub timescale: u32,
+}
+
+/// googlevideo caps a single `range=` span at ~1 MiB. Fragments larger than this
+/// (rare at 144p/240p) are fetched as contiguous sub-requests and concatenated.
+const RANGE_CAP: u64 = 900_000;
+
+/// Download an inclusive `[start, end]` byte range of the stream, replaying the
+/// per-stream User-Agent googlevideo validates against.
+fn download_range(
+    client: &reqwest::blocking::Client,
+    handle: &StreamHandle,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>, String> {
+    let url = with_range(&handle.url, start, end);
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, &handle.user_agent)
+        .send()
+        .map_err(|e| format!("range GET failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("range GET returned HTTP {}", resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("reading range body: {e}"))?;
+    Ok(bytes.to_vec())
+}
+
+/// Download the init segment (`ftyp`+`moov`) and the segment index (`sidx`) and
+/// build a [`StreamPlan`]. Requires an adaptive stream carrying an `index_range`
+/// (the `sidx` location); errors otherwise so the caller can fall back to the
+/// single bounded-prefix decode.
+pub fn fetch_stream_plan(
+    client: &reqwest::blocking::Client,
+    handle: &StreamHandle,
+) -> Result<StreamPlan, String> {
+    let index = handle
+        .index_range
+        .ok_or("stream has no index_range (sidx); not a fragmented DASH stream")?;
+    // One request from byte 0 to the end of the sidx captures ftyp+moov (with the
+    // avcC) AND the sidx together — a few tens of KiB, well under the range cap.
+    let head = download_range(client, handle, 0, index.1)?;
+    if head.is_empty() {
+        return Err("init/sidx download was empty".into());
+    }
+    let config = mp4::parse_init(&head).ok_or("no avcC in init segment")?;
+    let sidx = mp4::parse_sidx(&head).ok_or("no/invalid sidx in index range")?;
+
+    let mut fragments = Vec::with_capacity(sidx.sizes.len());
+    let mut durations = Vec::with_capacity(sidx.sizes.len());
+    // The first fragment begins just after the sidx box, offset by `first_offset`.
+    let mut cursor = index.1 + 1 + sidx.first_offset;
+    for (size, dur) in sidx.sizes.iter().zip(sidx.durations.iter()) {
+        if *size == 0 {
+            continue;
+        }
+        let start = cursor;
+        let end = cursor + *size as u64 - 1;
+        fragments.push((start, end));
+        durations.push(*dur);
+        cursor = end + 1;
+    }
+    if fragments.is_empty() {
+        return Err("sidx listed no media fragments".into());
+    }
+    Ok(StreamPlan {
+        config,
+        fragments,
+        head_bytes: head.len(),
+        durations,
+        timescale: sidx.timescale.max(1),
+    })
+}
+
+/// Download one media fragment by its (inclusive) byte range, sub-splitting into
+/// contiguous requests when the span exceeds the server's per-request cap.
+pub fn fetch_fragment_bytes(
+    client: &reqwest::blocking::Client,
+    handle: &StreamHandle,
+    (start, end): (u64, u64),
+) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut s = start;
+    while s <= end {
+        let e = (s + RANGE_CAP - 1).min(end);
+        let chunk = download_range(client, handle, s, e)?;
+        if chunk.is_empty() {
+            break;
+        }
+        out.extend_from_slice(&chunk);
+        s = e + 1;
+    }
+    if out.is_empty() {
+        return Err("fragment download was empty".into());
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
