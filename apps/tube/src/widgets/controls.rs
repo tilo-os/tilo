@@ -136,24 +136,29 @@ impl Icon {
                 line(scene, &[(0.5, 0.3), (0.5, 0.5), (0.68, 0.6)], false);
             }
             IconKind::Settings => {
-                scene.stroke(
-                    &stroke,
-                    transform,
-                    self.color,
-                    None,
-                    &Circle::new(u(0.5, 0.5), b.width() * 0.18),
-                );
+                // A gear: a body ring + a hollow centre + short trapezoidal
+                // teeth straddling the rim (NOT long radial rays, which read
+                // as a sun).
+                let c = u(0.5, 0.5);
+                let r_body = b.width() * 0.26;
+                let r_tooth = b.width() * 0.40;
                 let n = 8;
+                let half = 0.20_f64; // angular half-width of each tooth (rad)
                 for k in 0..n {
                     let a = std::f64::consts::TAU * k as f64 / n as f64;
-                    let c = u(0.5, 0.5);
-                    let r0 = b.width() * 0.3;
-                    let r1 = b.width() * 0.46;
+                    let pt = |ang: f64, r: f64| {
+                        Point::new(c.x + ang.cos() * r, c.y + ang.sin() * r)
+                    };
                     let mut p = BezPath::new();
-                    p.move_to(Point::new(c.x + a.cos() * r0, c.y + a.sin() * r0));
-                    p.line_to(Point::new(c.x + a.cos() * r1, c.y + a.sin() * r1));
-                    scene.stroke(&stroke, transform, self.color, None, &p);
+                    p.move_to(pt(a - half, r_body));
+                    p.line_to(pt(a - half, r_tooth));
+                    p.line_to(pt(a + half, r_tooth));
+                    p.line_to(pt(a + half, r_body));
+                    p.close_path();
+                    scene.fill(Fill::NonZero, transform, self.color, None, &p);
                 }
+                scene.stroke(&stroke, transform, self.color, None, &Circle::new(c, r_body));
+                scene.stroke(&stroke, transform, self.color, None, &Circle::new(c, b.width() * 0.11));
             }
             IconKind::Search => {
                 scene.stroke(
