@@ -61,6 +61,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         }
         // A "Refresh all" mid-flight: the per-feed progress strip + bar.
         "refresh" => app.force_refresh_in_progress(),
+        // Long feed titles to verify the sidebar elides to a single line with a
+        // fade instead of wrapping into the next row.
+        "long-titles" => app.stage_long_sidebar_titles(),
         _ => {}
     }
     Box::new(app)
