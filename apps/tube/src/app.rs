@@ -35,6 +35,7 @@ use crate::widgets::Flex;
 
 const STATE_KEY: &str = "tube_state";
 const SEARCH_KEY: &str = "search_query";
+const PALETTE_KEY: &str = "palette_query";
 const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 /// Below this allocated width (logical px) the navigation rail stops sitting
@@ -58,6 +59,9 @@ pub struct TubeApp {
     structure_dirty: bool,
     seeded: bool,
     search_obj: Option<ObjId>,
+    /// CRDT Text object backing the Ctrl+K palette query, read live each
+    /// `sync` so the results filter as the user types.
+    palette_obj: Option<ObjId>,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -94,6 +98,7 @@ impl TubeApp {
             structure_dirty: false,
             seeded: false,
             search_obj: None,
+            palette_obj: None,
             sidebar_open: None,
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
@@ -106,6 +111,39 @@ impl TubeApp {
     pub fn with_open_sidebar_shot(mut self) -> Self {
         self.force_sidebar_open_shot = true;
         self
+    }
+
+    /// `--shots` builder: start on a specific [`Route`] so each screen can be
+    /// captured for self-inspection (e.g. the selected-nav-item / selected-chip
+    /// contrast). Pure presentation override — the live app starts from the
+    /// sample/persisted route instead. If the route is a search, the query is
+    /// mirrored so the search header + active chip resolve.
+    pub fn with_route_shot(mut self, route: Route) -> Self {
+        if let Route::Search(q) = &route {
+            self.model.search_query = q.clone();
+        }
+        self.model.route = route;
+        self
+    }
+
+    /// Test/shots hook: start with the Ctrl+K command palette already open, and
+    /// optionally pre-seed its query. Used by headless click-tests (which can't
+    /// synthesise the Ctrl+K key event — winit's `KeyEvent` is not constructible
+    /// outside the crate) and by the palette `--shots`.
+    pub fn with_palette_open_for_test(mut self, query: &str) -> Self {
+        self.model.palette_open = true;
+        self.model.palette_query = query.to_string();
+        self
+    }
+
+    /// Test accessor: the current route (read-only).
+    pub fn route_for_test(&self) -> &Route {
+        &self.model.route
+    }
+
+    /// Test accessor: whether the command palette is open.
+    pub fn palette_open_for_test(&self) -> bool {
+        self.model.palette_open
     }
 
     fn build_shell_themed(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -152,13 +190,18 @@ impl TubeApp {
         };
         split.snap_open(open);
 
-        Box::new(
-            Flex::col()
-                .fill_w()
-                .fill_h()
-                .push(screens::top_bar(m, theme, bus))
-                .push(split),
-        )
+        let mut root = Flex::col()
+            .fill_w()
+            .fill_h()
+            .push(screens::top_bar(m, theme, bus))
+            .push(split);
+
+        // The Ctrl+K command palette overlays the whole shell when open.
+        if let Some(palette) = screens::command_palette(m, theme, bus) {
+            root = root.push(palette.overlay());
+        }
+
+        Box::new(root)
     }
 
     /// Whether the navigation rail is collapsed to an overlay flap at the
@@ -309,6 +352,26 @@ impl TubeApp {
                 self.model.skipped_log.insert(0, "Liked (stored locally)".into());
                 self.model.skipped_log.truncate(8);
             }
+            Action::OpenPalette => {
+                self.model.palette_open = true;
+            }
+            Action::ClosePalette => {
+                self.model.palette_open = false;
+            }
+            Action::ActivateHit(link) => {
+                use crate::search_type::SearchHit;
+                if let Some(id) = SearchHit::parse_watch_link(&link) {
+                    self.model.record_watch(&id);
+                    self.model.route = Route::Watch(id.clone());
+                    self.model.playhead = 0.0;
+                    self.model.playing = true;
+                    self.request(Request::Branding(id));
+                } else if let Some(id) = SearchHit::parse_channel_link(&link) {
+                    self.model.route = Route::Channel(id);
+                }
+                self.model.palette_open = false;
+                self.dismiss_overlay_rail();
+            }
         }
         true
     }
@@ -393,17 +456,36 @@ impl TubeApp {
     }
 
     fn ensure_search_obj(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.search_obj.is_some() {
-            return;
-        }
-        match state.get(root, SEARCH_KEY) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => self.search_obj = Some(id),
-            _ => {
-                if let Ok(id) = state.put_object(root, SEARCH_KEY, ObjType::Text) {
-                    self.search_obj = Some(id);
+        if self.search_obj.is_none() {
+            match state.get(root, SEARCH_KEY) {
+                Ok(Some((Value::Object(ObjType::Text), id))) => self.search_obj = Some(id),
+                _ => {
+                    if let Ok(id) = state.put_object(root, SEARCH_KEY, ObjType::Text) {
+                        self.search_obj = Some(id);
+                    }
                 }
             }
         }
+        if self.palette_obj.is_none() {
+            match state.get(root, PALETTE_KEY) {
+                Ok(Some((Value::Object(ObjType::Text), id))) => self.palette_obj = Some(id),
+                _ => {
+                    if let Ok(id) = state.put_object(root, PALETTE_KEY, ObjType::Text) {
+                        self.palette_obj = Some(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read the live palette-query text out of its bound CRDT object.
+    fn read_palette(&self, state: &AutoCommit) -> String {
+        if let Some(obj) = &self.palette_obj {
+            if let Ok(t) = state.text(obj) {
+                return t;
+            }
+        }
+        String::new()
     }
 
     /// First-sync: adopt persisted state if present, else seed ours.
@@ -428,6 +510,18 @@ impl Widget for TubeApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.ensure_search_obj(state, path);
         self.adopt_or_seed(state, path);
+        // Reflect the live palette-query text into the model so the overlay
+        // filters as the user types. Only adopt the CRDT text once the user has
+        // actually typed (non-empty), so a pre-seeded query (tests / a future
+        // "search this" deep-link) isn't clobbered by the empty text object on
+        // the first frame before the bound input has written anything.
+        if self.model.palette_open {
+            let live = self.read_palette(state);
+            if !live.is_empty() && live != self.model.palette_query {
+                self.model.palette_query = live;
+                self.structure_dirty = true;
+            }
+        }
         if let Some(c) = &mut self.root_child {
             c.sync(state, path);
         }
@@ -529,6 +623,32 @@ impl Widget for TubeApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Ctrl+K toggles the global command palette, regardless of focus. This
+        // is intercepted before children so a focused text field can't swallow
+        // it. `Ctrl+K` opens; a second `Ctrl+K` (or Esc, below) closes.
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(c),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            if modifiers.state().control_key() && c.eq_ignore_ascii_case("k") {
+                action::push(
+                    &self.bus,
+                    if self.model.palette_open {
+                        Action::ClosePalette
+                    } else {
+                        Action::OpenPalette
+                    },
+                );
+                *handled = true;
+            }
+        }
+
         // Enter submits a search regardless of which field has focus.
         if let WindowEvent::KeyboardInput {
             event:
@@ -563,7 +683,11 @@ impl Widget for TubeApp {
             ..
         } = event
         {
-            if self.nav_is_overlay() && self.sidebar_currently_open() {
+            // Esc closes the command palette first (it's the topmost overlay).
+            if self.model.palette_open {
+                action::push(&self.bus, Action::ClosePalette);
+                *handled = true;
+            } else if self.nav_is_overlay() && self.sidebar_currently_open() {
                 self.sidebar_open = Some(false);
             }
         }

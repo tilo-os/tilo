@@ -375,5 +375,7 @@ pub fn model() -> TubeModel {
             "Skipped Sponsor (24:00–26:10)".into(),
             "Skipped Interaction reminder (9:00–9:12)".into(),
         ],
+        palette_open: false,
+        palette_query: String::new(),
     }
 }
