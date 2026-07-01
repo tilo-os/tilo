@@ -876,6 +876,44 @@ struct AppHandler {
     render: Option<RenderThreadHandle>,
 }
 
+impl AppHandler {
+    /// Lazily initialise the wgpu surface + renderer and spawn the render
+    /// worker. Called once, from the first `RedrawRequested`, so the heavy
+    /// blocking GPU init runs AFTER the winit event loop has processed the
+    /// initial `configure` and wired the seat — not inline in `resumed`,
+    /// where it would starve those first events and race first-launch focus.
+    fn init_render(&mut self, window: &Arc<Window>) {
+        let size = window.inner_size();
+        let mut render_cx = RenderContext::new();
+        let surface = pollster::block_on(render_cx.create_surface(
+            window.clone(),
+            size.width.max(1),
+            size.height.max(1),
+            vello::wgpu::PresentMode::AutoVsync,
+        ))
+        .unwrap();
+        let device_handle = &render_cx.devices[surface.dev_id];
+        // vello 0.9's `create_surface` builds the blitter pipeline against
+        // the format it chose; flipping to the sRGB suffix here would
+        // panic on the format mismatch in the first blit.
+        surface.surface.configure(&device_handle.device, &surface.config);
+        let renderer = Renderer::new(
+            &device_handle.device,
+            RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::all(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        // Hand the wgpu state off to the render worker. After this point
+        // the main thread doesn't touch the surface, renderer, or
+        // render_cx — every GPU call happens on the `ui-render` thread.
+        self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+    }
+}
+
 impl ApplicationHandler<UserEvent> for AppHandler {
     /// External-input translator: every variant becomes the WindowEvent
     /// winit would have delivered, then routes back through
@@ -945,47 +983,42 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.window.is_some() {
             return;
         }
-        let window_attributes = Window::default_attributes()
+        let mut window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
+            // Draw a normal, draggable title bar (winit's sctk-adwaita CSD)
+            // on compositors that don't provide server-side decorations —
+            // e.g. GNOME/mutter. Explicit even though it's the winit
+            // default, so the intent is unmistakable.
+            .with_decorations(true)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+        // Give the xdg-toplevel a real app_id. Without one the app_id is
+        // the empty string, and mutter keys window identity, focus /
+        // xdg-activation, and its decoration policy off the app_id — an
+        // empty id is the concrete difference from every GTK / other
+        // Wayland app (all of which come up focused + decorated). Wayland
+        // only; a no-op on other winit backends.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            window_attributes = window_attributes.with_name("org.qos.app", "");
+        }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-
-        let mut render_cx = RenderContext::new();
-        let surface = pollster::block_on(render_cx.create_surface(
-            window.clone(),
-            window.inner_size().width,
-            window.inner_size().height,
-            vello::wgpu::PresentMode::AutoVsync,
-        ))
-        .unwrap();
-        let device_handle = &render_cx.devices[surface.dev_id];
-        // vello 0.9's `create_surface` builds the blitter pipeline against
-        // the format it chose; flipping to the sRGB suffix here would
-        // panic on the format mismatch in the first blit.
-        surface.surface.configure(&device_handle.device, &surface.config);
-        let renderer = Renderer::new(
-            &device_handle.device,
-            RendererOptions {
-                use_cpu: false,
-                antialiasing_support: vello::AaSupport::all(),
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .unwrap();
 
         // Mark the freshly-built taffy tree dirty so the very first
         // `RedrawRequested` re-runs layout against the actual window
         // size and scale factor.
         self.app.layout_dirty = true;
+        // Drive the first frame. GPU init (create_surface / renderer /
+        // render-worker spawn) is DEFERRED to that first `RedrawRequested`
+        // — see `init_render` + `window_event`. Doing the ~50 ms
+        // `pollster::block_on` surface+device init inline here would block
+        // the winit Wayland event loop during `resumed`, starving the
+        // initial xdg `configure` and the wl_seat wiring; on mutter that
+        // intermittently left the toplevel unfocused with dead input on
+        // first launch ("works on the second try"). Deferring lets the
+        // event loop complete the configure + seat handshake first.
         window.request_redraw();
-
         self.window = Some(window);
-        // Hand the wgpu state off to the render worker. After this
-        // point, the main thread doesn't touch the surface, renderer,
-        // or render_cx — every GPU call happens on the `ui-render`
-        // thread.
-        self.render = Some(spawn_render_thread(render_cx, surface, renderer));
     }
 
     /// Winit calls this once on event-loop teardown. We use it to
@@ -1027,6 +1060,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                // Deferred one-time GPU init on the first frame (see
+                // `init_render`): the surface + renderer are built here,
+                // after the event loop has processed the initial configure
+                // and wired the seat, rather than inline in `resumed`.
+                if self.render.is_none() {
+                    self.init_render(&window);
+                }
                 let Some(render) = self.render.as_mut() else {
                     return;
                 };
