@@ -400,7 +400,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                 .grow(1.0)
                 .push_if(
                     model.search_query.is_empty(),
-                    dim(theme, "Search privacy-respecting videos", 14.0),
+                    dim(theme, "Search", 14.0),
                 )
                 .push_if(!model.search_query.is_empty(), search_input),
         )
@@ -429,17 +429,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             Flex::row()
                 .gap(8.0)
                 .align(Align::Center)
-                .push(text_c("Tube", 22.0, theme.text_primary))
-                .push(
-                    Flex::row()
-                        .pad_xy(7.0, 3.0)
-                        .surface(Surface {
-                            fill: Some(theme.tokens.colors.semantic.success.with_alpha(0.18)),
-                            radius: theme.tokens.radii.full as f64,
-                            border: None,
-                        })
-                        .push(text_c("no ads", 11.0, theme.tokens.colors.semantic.success)),
-                ),
+                .push(text_c("Tube", 22.0, theme.text_primary)),
         )
         .push(search)
         .push(status)
@@ -1110,11 +1100,9 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
 
     let privacy = settings_card(
         theme,
-        "Privacy & source",
+        "Source",
         vec![
             setting_row(theme, "Invidious instance", &s.invidious_instance, icon(IconKind::Chevron, 16.0, theme.text_dim)),
-            setting_row(theme, "No ads, no tracking", "Tube never loads Google's player, cookies or ad SDKs.",
-                icon(IconKind::Shield, 18.0, theme.tokens.colors.semantic.success)),
         ],
     );
 
@@ -1124,7 +1112,7 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
             .max_w(820.0)
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, IconKind::Settings, "Settings", "Stored in the document CRDT"))
+            .push(section_header(theme, IconKind::Settings, "Settings", ""))
             .push(playback)
             .push(sponsorblock)
             .push(dearrow)
