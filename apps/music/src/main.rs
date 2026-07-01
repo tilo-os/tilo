@@ -59,12 +59,33 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Headless per-frame benchmark: render a view offscreen N times and report
+    // the layout+draw cost distribution. Reproducible + display-free.
+    if let Some(pos) = args.iter().position(|a| a == "--bench") {
+        let n: usize = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(300);
+        let viewport = parse_value_arg(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        return run_bench(n, viewport);
+    }
+
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        render_shot_to_png(music::app_root_for_shot(&scenario), viewport, &out)?;
+        // `--live` captures the real screen: fetch live Home/artist/album content
+        // + real cover art off-thread, wait for it to settle, then render.
+        let live = args.iter().any(|a| a == "--live")
+            || std::env::var("QOS_MUSIC_LIVE").map(|v| !v.is_empty()).unwrap_or(false);
+        if live {
+            let play = parse_value_arg(&args, "--play")
+                .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
+                .filter(|s| !s.is_empty());
+            render_live_shot_to_png(viewport, &out, play.as_deref())?;
+        } else {
+            render_shot_to_png(music::app_root_for_shot(&scenario), viewport, &out)?;
+        }
         return Ok(());
     }
 
@@ -129,7 +150,60 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Best-effort decode proof (only with the `audio` feature / GStreamer).
     probe_decode(&stream.url);
 
-    println!("\nprobe OK — search + stream resolution are real.");
+    // Real Home content (charts / new releases / top artists) with cover art.
+    println!("\n== real Home content (YouTube-Music charts) ==");
+    match backend.home() {
+        Ok(home) => {
+            for section in &home.sections {
+                println!("   [{}] ({} items)", section.title, section.items.len());
+                for it in section.items.iter().take(3) {
+                    let art = if it.cover_url.is_empty() { "no-cover" } else { "cover\u{2713}" };
+                    println!("        \u{2022} {}  \u{2014}  {}   [{art}]", it.title, it.subtitle);
+                }
+            }
+        }
+        Err(e) => println!("   home unavailable: {e}"),
+    }
+
+    // Real artist page for the top hit's artist (proves the artist endpoint +
+    // yields a channel id usable for `QOS_MUSIC_VIEW=artist:<id>`).
+    if let Some(aid) = top.artist_id.clone() {
+        println!("\n== real artist page ==  (channel id: {aid})");
+        match backend.artist(&aid) {
+            Ok(page) => {
+                println!(
+                    "   {}  \u{2014}  {} subscribers, {} top songs, {} albums",
+                    page.name,
+                    page.subscriber_count,
+                    page.tracks.len(),
+                    page.albums.len()
+                );
+                if let Some(t) = page.tracks.first() {
+                    println!("   top song: {} [{}]", t.title, t.video_id);
+                }
+                if let Some(a) = page.albums.first() {
+                    println!("   album: {} ({})", a.title, a.year);
+                }
+            }
+            Err(e) => println!("   artist page unavailable: {e}"),
+        }
+    }
+
+    // Real album page (ordered track list) for the top hit's album.
+    if let Some(alid) = top.album_id.clone() {
+        println!("\n== real album page ==  (album id: {alid})");
+        match backend.album(&alid) {
+            Ok(al) => {
+                println!("   {} \u{2014} {} ({}), {} tracks", al.title, al.artist_name, al.year, al.tracks.len());
+                for tk in al.tracks.iter().take(3) {
+                    println!("        {}. {} [{}]", tk.title, tk.artist, tk.video_id);
+                }
+            }
+            Err(e) => println!("   album page unavailable: {e}"),
+        }
+    }
+
+    println!("\nprobe OK — search + stream + home + artist + album are real.");
     Ok(())
 }
 
@@ -296,71 +370,200 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
+/// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
+/// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
+/// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
+fn run_bench(n: usize, viewport: (u32, u32)) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Instant;
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    let mut tr = TextRenderer::new();
+    let mut widget = music::app_root_for_shot(""); // offline sample, hermetic
+    let mut state = ui::State::new();
+
+    // Warm up (first frame builds text-shape caches etc.).
+    let _ = render_widget_frame(widget.as_mut(), &mut state, viewport, &mut tr, &theme, &presence, &permission);
+
+    let mut samples = Vec::with_capacity(n);
+    for _ in 0..n {
+        let t0 = Instant::now();
+        let _ = render_widget_frame(widget.as_mut(), &mut state, viewport, &mut tr, &theme, &presence, &permission);
+        samples.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let sum: f64 = samples.iter().sum();
+    let avg = sum / n as f64;
+    let p50 = samples[n / 2];
+    let p95 = samples[(n as f64 * 0.95) as usize];
+    let max = *samples.last().unwrap();
+    let view = std::env::var("QOS_MUSIC_VIEW").unwrap_or_else(|_| "home".into());
+    let nocache = std::env::var("QOS_MUSIC_NOCACHE").is_ok();
+    println!(
+        "bench view={view} nocache={nocache} frames={n} @ {}x{} :  avg={avg:.3}ms  p50={p50:.3}ms  p95={p95:.3}ms  max={max:.3}ms",
+        viewport.0, viewport.1
+    );
+    Ok(())
+}
+
+/// Run one offscreen frame against `widget` and return the drawn Vello scene.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+fn render_widget_frame(
+    widget: &mut dyn Widget,
+    state: &mut ui::State,
+    viewport: (u32, u32),
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permission: &PermissionContext,
+) -> Scene {
+    let (w, h) = viewport;
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+
+    widget.sync(&mut state.doc, &state.root);
+
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .expect("shot root");
+
+    {
+        let measure_map = node_map.clone();
+        let tr = &mut *text_renderer;
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("shot layout");
+    }
+    widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    let mut scene = Scene::new();
+    widget.draw_with_presence(&mut scene, Affine::IDENTITY, text_renderer, theme, presence, permission);
+    scene
+}
+
+/// Write a rendered scene out as a PNG.
+fn write_scene_png(scene: &Scene, viewport: (u32, u32), out: &std::path::Path) {
+    let (w, h) = viewport;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(scene, Color::TRANSPARENT, out);
+    println!("music: wrote shot to {}", out.display());
+}
+
+/// Hermetic single-frame shot (offline sample library).
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
     let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
+    let scene = render_widget_frame(
+        widget.as_mut(),
+        &mut state,
+        viewport,
         &mut text_renderer,
         &theme,
         &presence,
         &permission,
     );
+    write_scene_png(&scene, viewport, out);
+    Ok(())
+}
 
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
+/// Live shot: build the real Music app, let its background worker + image cache
+/// fetch real Home/artist/album content and real cover art off-thread, wait for
+/// it to settle, then capture the frame. Optionally stage a real now-playing
+/// track (`--play "<query>"`) for a lyrics / now-playing capture.
+fn render_live_shot_to_png(
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    play: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    let mut tr = TextRenderer::new();
+    let mut app = music::live_shot_app();
+    let mut state = ui::State::new();
+
+    let mut frame = |app: &mut music::MusicApp, state: &mut ui::State| {
+        render_widget_frame(app, state, viewport, &mut tr, &theme, &presence, &permission)
+    };
+
+    if let Some(q) = play {
+        // Stage a real playing track for a lyrics / now-playing capture.
+        for _ in 0..3 {
+            let _ = frame(&mut app, &mut state);
+        }
+        app.shot_begin_search(q);
+        for _ in 0..200 {
+            let _ = frame(&mut app, &mut state);
+            if app.shot_has_results() {
+                app.shot_play_top_result(&mut state.doc);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        for _ in 0..200 {
+            let _ = frame(&mut app, &mut state);
+            if app.images_idle() && app.shot_lyrics_ready() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
+    } else {
+        // Browse views (Home / Artist / Album / Search): pump until the content
+        // and its cover art settle.
+        let mut stable = 0;
+        // Cap the wait (~13s) so a failed/geo-blocked fetch still renders rather
+        // than hanging; a successful fetch settles far sooner.
+        for _ in 0..160 {
+            let _ = frame(&mut app, &mut state);
+            let idle = app.images_idle() && app.is_content_loaded_for_shot();
+            if idle {
+                stable += 1;
+            } else {
+                stable = 0;
+            }
+            let done = (stable >= 3 && app.any_art_requested()) || stable >= 14;
+            if done && app.is_content_loaded_for_shot() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
     }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("music: wrote shot to {}", out.display());
+
+    let scene = frame(&mut app, &mut state);
+    write_scene_png(&scene, viewport, out);
     Ok(())
 }
