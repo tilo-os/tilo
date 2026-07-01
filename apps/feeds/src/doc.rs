@@ -442,3 +442,4 @@ mod tests {
         assert!(loaded.articles[0].read, "A's read flag survived merge");
     }
 }
+
