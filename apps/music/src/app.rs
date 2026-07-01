@@ -28,12 +28,14 @@ use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::art;
 use crate::audio::AudioEngine;
-use crate::doc;
+use crate::backend::TrackHit;
+use crate::doc::{self, LiveTrack};
 use crate::icon::{self, Icon};
 use crate::lyrics::{self, LyricsLine};
-use crate::model::{fmt_duration, CacheState, Library, Playback, RepeatMode};
+use crate::model::{fmt_duration, Album, Artist, CacheState, Library, Playback, RepeatMode, Track};
 use crate::seed;
 use crate::source::Source;
+use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 
 const SIDEBAR_W: f64 = 236.0;
 const NOWPLAYING_H: f64 = 92.0;
@@ -147,6 +149,30 @@ pub struct MusicApp {
     source: Source,
     #[allow(dead_code)]
     audio: AudioEngine,
+
+    /// The non-blocking streaming worker (real YouTube-Music search + audio
+    /// resolution). Spawned lazily on the first Play / search — never during
+    /// `--shots` — so the screenshot path stays hermetic. `None` until then.
+    worker: Option<StreamWorker>,
+    /// Which data source the worker bound to ("offline (bundled library)" or
+    /// "youtube-music (live)"), for the now-playing status line.
+    backend_name: String,
+    /// Whether the bound backend can actually stream from YouTube.
+    backend_live: bool,
+    /// Real search results merged in-memory (rendered by the Search view and
+    /// re-injected into the library snapshot each frame so they stay visible
+    /// across a `sync` that reloads the catalog from the document).
+    live_hits: Vec<LiveTrack>,
+    /// A live search query awaiting results (drives animation frames + a
+    /// "searching…" affordance). `None` when idle.
+    live_search_pending: Option<String>,
+    /// The most recent live search's `(query, ordered track ids)`, so the
+    /// Search view can render real YouTube-Music hits in ranking order even
+    /// when a multi-word query wouldn't substring-match the local index.
+    live_results: Option<(String, Vec<String>)>,
+    /// Count of in-flight stream resolutions (keeps redraws flowing until the
+    /// resolved URL lands and can be handed to the audio engine).
+    resolve_in_flight: usize,
 
     seeded: bool,
     /// Whether the initial playback snapshot has been adopted from the
@@ -264,6 +290,13 @@ impl MusicApp {
             search_focused: false,
             source: Source::default(),
             audio: AudioEngine::new(),
+            worker: None,
+            backend_name: "offline (bundled library)".to_string(),
+            backend_live: false,
+            live_hits: Vec::new(),
+            live_search_pending: None,
+            live_results: None,
+            resolve_in_flight: 0,
             seeded: false,
             playback_loaded: false,
             bound_track: None,
@@ -532,8 +565,9 @@ impl MusicApp {
             Action::Play { queue, index } => {
                 self.pb.queue = queue;
                 self.play_index(index);
-                if let Some(id) = &self.pb.current {
-                    self.start_stream(id.clone());
+                if let Some(id) = self.pb.current.clone() {
+                    self.persist_live_track(&id, state);
+                    self.start_stream(id);
                 }
                 self.persist_playback(state);
             }
@@ -549,6 +583,7 @@ impl MusicApp {
             Action::Next => {
                 self.advance(false);
                 if let Some(id) = self.pb.current.clone() {
+                    self.persist_live_track(&id, state);
                     self.start_stream(id);
                 }
                 self.persist_playback(state);
@@ -556,6 +591,7 @@ impl MusicApp {
             Action::Prev => {
                 self.previous();
                 if let Some(id) = self.pb.current.clone() {
+                    self.persist_live_track(&id, state);
                     self.start_stream(id);
                 }
                 self.persist_playback(state);
@@ -730,23 +766,186 @@ impl MusicApp {
         }
     }
 
-    /// Resolve a track's stream URL (offline: stub) and hand it to the audio
-    /// engine. Real audio only sounds with the `audio` + `streaming`
-    /// features; offline this records intent and stays silent.
+    /// Resolve a track's stream URL and hand it to the audio engine.
+    ///
+    /// **Live tracks** (real YouTube-Music results, keyed `yt:<videoId>`) are
+    /// resolved on the [`crate::stream`] worker thread — the UI never blocks on
+    /// the network. The resolved googlevideo URL is handed to the audio engine
+    /// when it lands, in [`Self::drain_worker`]. Non-live sample tracks (and
+    /// builds without the `live` feature) fall back to the legacy Piped
+    /// resolver, or stay silent with the local playhead advancing offline.
     fn start_stream(&mut self, track_id: String) {
-        if let Some(t) = self.lib.track(&track_id) {
-            match self.source.resolve_best(&t.yt_id) {
-                Ok(stream) => {
-                    self.audio.load(&stream.url);
-                    if self.pb.playing {
-                        self.audio.play();
-                    }
-                }
-                Err(_offline) => {
-                    // Offline / no streaming feature: keep the transport
-                    // state moving via the local playhead; no audio output.
+        let Some(t) = self.lib.track(&track_id) else { return };
+        let yt_id = t.yt_id.clone();
+
+        if is_live_track(&track_id) {
+            self.ensure_worker();
+            if let Some(w) = &self.worker {
+                // Stop the previous stream while the next one resolves so two
+                // tracks never overlap on a fast skip.
+                self.audio.pause();
+                w.request(StreamRequest::Resolve {
+                    track_id: track_id.clone(),
+                    video_id: yt_id,
+                });
+                self.resolve_in_flight += 1;
+                return;
+            }
+        }
+
+        // Fallback path (legacy Piped/Invidious `streaming` feature; offline it
+        // returns an error and we stay silent, advancing the local playhead).
+        match self.source.resolve_best(&yt_id) {
+            Ok(stream) => {
+                self.audio.load(&stream.url);
+                if self.pb.playing {
+                    self.audio.play();
                 }
             }
+            Err(_offline) => {}
+        }
+    }
+
+    /// Ensure the background streaming worker exists. Spawned lazily on the
+    /// first Play / search (an input event) — never during `--shots`.
+    fn ensure_worker(&mut self) {
+        if self.worker.is_none() {
+            self.worker = Some(StreamWorker::spawn());
+        }
+    }
+
+    /// Fire a real YouTube-Music search for the current query on the worker.
+    /// No-op offline builds still spawn the worker (which reports the offline
+    /// backend); the UI keeps showing the local library either way.
+    fn request_live_search(&mut self) {
+        let q = self.search_query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        self.ensure_worker();
+        if let Some(w) = &self.worker {
+            w.request(StreamRequest::Search(q.clone()));
+            self.live_search_pending = Some(q);
+        }
+    }
+
+    /// Persist a live track (and its artist/album) into the document when it is
+    /// actually played, so it joins the user's library permanently and syncs
+    /// across devices. No-op for sample tracks.
+    fn persist_live_track(&mut self, track_id: &str, state: &mut AutoCommit) {
+        if !is_live_track(track_id) {
+            return;
+        }
+        if let Some(lt) = self.live_hits.iter().find(|h| h.track_id == track_id) {
+            let lt = lt.clone();
+            doc::upsert_live_track(state, &lt);
+        }
+    }
+
+    /// Drain the worker's updates (once per frame). Applies resolved streams to
+    /// the audio engine, folds real search hits into the in-memory library and
+    /// records the bound backend. Needs no document handle — search results are
+    /// merged into the document lazily when a track is *played*.
+    fn drain_worker(&mut self) {
+        let updates = match &self.worker {
+            Some(w) => w.poll(),
+            None => return,
+        };
+        for up in updates {
+            match up {
+                StreamUpdate::Backend { name, live } => {
+                    self.backend_live = live;
+                    self.backend_name = name.clone();
+                    if live {
+                        self.toast = Some((format!("Streaming from {name}"), Instant::now()));
+                    }
+                }
+                StreamUpdate::SearchResults { query, hits } => {
+                    if self.live_search_pending.as_deref() == Some(query.as_str()) {
+                        self.live_search_pending = None;
+                    }
+                    let n = hits.len();
+                    let mut ordered = Vec::with_capacity(n);
+                    for hit in &hits {
+                        let lt = hit_to_live(hit);
+                        ordered.push(lt.track_id.clone());
+                        if !self.live_hits.iter().any(|h| h.track_id == lt.track_id) {
+                            self.live_hits.push(lt);
+                        }
+                    }
+                    self.live_results = Some((query.clone(), ordered));
+                    self.inject_live_hits();
+                    self.toast = Some((
+                        format!("Found {n} song{} for \u{201c}{query}\u{201d}", if n == 1 { "" } else { "s" }),
+                        Instant::now(),
+                    ));
+                }
+                StreamUpdate::Resolved { track_id, stream } => {
+                    self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
+                    // Only adopt it if it's still the current track (the user
+                    // may have skipped while it resolved).
+                    if self.pb.current.as_deref() == Some(track_id.as_str()) {
+                        self.audio.load(&stream.url);
+                        if self.pb.playing {
+                            self.audio.play();
+                        }
+                        self.toast = Some((
+                            format!(
+                                "Streaming {} \u{00b7} {} kbps",
+                                stream.format,
+                                stream.bitrate / 1000
+                            ),
+                            Instant::now(),
+                        ));
+                    }
+                }
+                StreamUpdate::ResolveFailed { track_id, error } => {
+                    self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
+                    if self.pb.current.as_deref() == Some(track_id.as_str()) {
+                        self.toast = Some((format!("Can\u{2019}t stream: {error}"), Instant::now()));
+                    }
+                }
+                StreamUpdate::Note(_) => {}
+            }
+        }
+    }
+
+    /// Re-inject the accumulated live search hits into the in-memory library
+    /// snapshot. Idempotent; runs each frame so live tracks survive a `sync`
+    /// that reloads the catalog from the document.
+    fn inject_live_hits(&mut self) {
+        for lt in &self.live_hits {
+            self.lib
+                .artists
+                .entry(lt.artist_id.clone())
+                .or_insert_with(|| Artist {
+                    id: lt.artist_id.clone(),
+                    name: lt.artist_name.clone(),
+                    genre: String::new(),
+                    monthly_listeners: 0,
+                });
+            self.lib
+                .albums
+                .entry(lt.album_id.clone())
+                .or_insert_with(|| Album {
+                    id: lt.album_id.clone(),
+                    title: lt.album_title.clone(),
+                    artist_id: lt.artist_id.clone(),
+                    year: 0,
+                });
+            self.lib
+                .tracks
+                .entry(lt.track_id.clone())
+                .or_insert_with(|| Track {
+                    id: lt.track_id.clone(),
+                    title: lt.title.clone(),
+                    album_id: lt.album_id.clone(),
+                    artist_id: lt.artist_id.clone(),
+                    track_no: 0,
+                    duration_s: lt.duration_s,
+                    yt_id: lt.yt_id.clone(),
+                    plays: 0,
+                });
         }
     }
 
@@ -1106,6 +1305,55 @@ fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w
         "\u{2026}".to_string()
     } else {
         format!("{s}\u{2026}")
+    }
+}
+
+/// Library-id prefix marking a track that came from a live YouTube-Music
+/// search (its `yt_id` is a real video id we can resolve a stream from). Sample
+/// tracks use `tk_…` ids and never match.
+const LIVE_TRACK_PREFIX: &str = "yt:";
+
+/// Whether a track id refers to a real (streamable) YouTube-Music track.
+fn is_live_track(track_id: &str) -> bool {
+    track_id.starts_with(LIVE_TRACK_PREFIX)
+}
+
+/// Lowercase-alnum slug for synthesising a stable id when the source omits one.
+fn slug(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// Convert a real search hit into a library-mergeable [`LiveTrack`], minting
+/// stable ids where YouTube didn't supply them.
+fn hit_to_live(hit: &TrackHit) -> LiveTrack {
+    let artist_id = hit
+        .artist_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("yta:{}", slug(&hit.artist)));
+    let album_title = hit.album.clone().unwrap_or_else(|| "Single".to_string());
+    let album_id = hit
+        .album_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("ytal:{}_{}", slug(&hit.artist), slug(&album_title)));
+    LiveTrack {
+        track_id: format!("{LIVE_TRACK_PREFIX}{}", hit.video_id),
+        title: hit.title.clone(),
+        artist_id,
+        artist_name: hit.artist.clone(),
+        album_id,
+        album_title,
+        duration_s: hit.duration_s,
+        yt_id: hit.video_id.clone(),
     }
 }
 
@@ -1482,6 +1730,68 @@ mod tests {
         // Volume changes hit the engine.
         app.dispatch(Action::VolumeFrac(0.5), &mut doc);
         assert!((app.audio.volume() - 0.5).abs() < 1e-6, "volume reaches the audio engine");
+    }
+
+    // ---- 8. real live streaming (network; `--features live` only) ---------
+
+    /// End-to-end through the *real app widget*: submit a YouTube-Music search,
+    /// let the worker return real hits, then play the top hit and confirm the
+    /// app resolved + loaded a real `googlevideo.com` audio URL into the engine.
+    /// Network-dependent, so gated behind the `live` feature.
+    #[cfg(feature = "live")]
+    #[test]
+    fn live_search_and_stream_resolve_through_the_app() {
+        use std::time::Duration;
+        let (mut app, mut doc) = app_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        // Submit a real search (spawns the worker + sends the request).
+        app.search_query = "aurora runaway".into();
+        app.request_live_search();
+        assert!(app.worker.is_some(), "search spawned the streaming worker");
+
+        // Pump until real results land (bounded ~8s).
+        let mut ids = Vec::new();
+        for _ in 0..800 {
+            app.drain_worker();
+            if let Some((q, r)) = &app.live_results {
+                if q == "aurora runaway" && !r.is_empty() {
+                    ids = r.clone();
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!ids.is_empty(), "live search returned real tracks into the app");
+
+        // The top result is a real, injected, streamable library track.
+        let first = ids[0].clone();
+        app.inject_live_hits();
+        assert!(super::is_live_track(&first), "live track keyed `yt:<videoId>`");
+        assert!(app.lib.track(&first).is_some(), "live track merged into the library");
+
+        // Play it → the app requests a stream resolution on the worker.
+        app.dispatch(Action::Play { queue: vec![first.clone()], index: 0 }, &mut doc);
+        assert_eq!(app.pb.current.as_deref(), Some(first.as_str()));
+        assert!(app.resolve_in_flight >= 1, "play requested a stream resolve");
+
+        // Pump until the resolved URL is loaded into the audio engine.
+        let mut loaded_url = None;
+        for _ in 0..1000 {
+            app.drain_worker();
+            if let Some(uri) = app.audio.current_uri() {
+                if uri.contains("googlevideo.com") {
+                    loaded_url = Some(uri.to_string());
+                    break;
+                }
+            }
+            if app.resolve_in_flight == 0 && app.audio.current_uri().is_none() {
+                break; // resolve finished without a URL — fail below
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let url = loaded_url.expect("app resolved + loaded a real googlevideo audio URL");
+        assert!(url.contains("googlevideo.com") && url.contains("itag="));
     }
 
     // ---- 9. lyrics --------------------------------------------------------
