@@ -12,6 +12,7 @@
 pub mod app;
 pub mod doc;
 pub mod frame;
+pub mod library;
 pub mod model;
 pub mod paint;
 pub mod scan;
@@ -23,7 +24,14 @@ pub use app::CameraApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app: the library is backed by real files on disk and the
+/// viewfinder needs a real camera.
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(CameraApp::new())
+    Box::new(CameraApp::disk())
+}
+
+/// Build the hermetic app used by `--shots` and integration harnesses:
+/// self-contained sample content, no disk or device access.
+pub fn shots_root() -> Box<dyn Widget> {
+    Box::new(CameraApp::sample())
 }

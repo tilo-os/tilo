@@ -9,7 +9,8 @@
 //!   * `--viewport WxH`     — override the desktop viewport (e.g. the narrow
 //!                            560x720 responsive layout).
 //!   * `--scenario NAME`    — snap a specific surface into view for the frame:
-//!                            `file`, `format`, `docsettings`, `editing`.
+//!                            `file`, `format`, `docsettings`, `editing`,
+//!                            `summary`, `multiselect`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
 //! persistence, so a screenshot shows real formulas without ever touching the
@@ -49,6 +50,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("docsettings") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_doc_settings()),
             Some("editing") => Box::new(|a: &mut sheets::SheetsApp| a.shots_begin_edit()),
             Some("summary") => Box::new(|a: &mut sheets::SheetsApp| a.shots_select_summary_range()),
+            Some("multiselect") => Box::new(|a: &mut sheets::SheetsApp| a.shots_multi_select()),
             _ => Box::new(|_: &mut sheets::SheetsApp| {}),
         };
         render_shot_to_png(app, viewport, &out, setup)?;

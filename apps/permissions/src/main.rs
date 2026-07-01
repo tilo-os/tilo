@@ -28,13 +28,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The output filename selects the scenario: `permissions.png`
         // renders the role editor, `permissions-members.png` the member
         // view. This keeps `app_root()` the single live-loop entry point
-        // while letting one binary produce both screenshots.
+        // while letting one binary produce both screenshots. A `--viewport
+        // WxH` arg overrides the default desktop viewport so the same binary
+        // can capture the narrow, overlay-sidebar responsive layout.
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let scenario = permissions::Scenario::from_shots_path(&out);
-        render_shot_to_png(
-            permissions::app_root_for_scenario(scenario),
-            DEFAULT_SHOTS_VIEWPORT,
-            &out,
-        )?;
+        // `--open-sidebar` reveals the narrow overlay flap for the capture so
+        // a static frame can show the responsive sidebar in its open state.
+        let root: Box<dyn Widget> = if args.iter().any(|a| a == "--live") {
+            // The exact live entry point: real system registry, empty set,
+            // no fabricated seeding — captures the fresh-workspace empty state.
+            permissions::app_root()
+        } else if args.iter().any(|a| a == "--open-sidebar") {
+            Box::new(permissions::app_view_for_scenario(scenario).shots_open_sidebar())
+        } else {
+            permissions::app_root_for_scenario(scenario)
+        };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 
@@ -42,6 +52,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, permissions::app_root());
     app.run();
     Ok(())
+}
+
+/// Parse `--viewport WxH` (e.g. `--viewport 560x720`) for `--shots`.
+/// Shots-only; the live app always sizes to its window.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let spec = if arg == "--viewport" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--viewport=")
+        };
+        if let Some(spec) = spec {
+            let (w, h) = spec.split_once(['x', 'X'])?;
+            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
+        }
+    }
+    None
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

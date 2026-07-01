@@ -19,14 +19,14 @@ use std::collections::HashSet;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{
-    AnnoKind, Annotation, Block, Page, Signature, Swatch, MARGIN, PAGE_H, PAGE_W,
+    AnnoKind, Annotation, Block, Page, Signature, Swatch, MARGIN, PAGE_W,
 };
 
 pub fn ink() -> Color {
@@ -82,9 +82,9 @@ fn body_spec(block: &Block, theme: &Theme) -> Option<Spec> {
     })
 }
 
-/// The drawn screen rect for the page card.
-pub fn page_card_rect(origin: Point, scale: f64) -> Rect {
-    Rect::new(origin.x, origin.y, origin.x + PAGE_W * scale, origin.y + PAGE_H * scale)
+/// The drawn screen rect for the page card at the given page size (points).
+pub fn page_card_rect(origin: Point, scale: f64, page_w: f64, page_h: f64) -> Rect {
+    Rect::new(origin.x, origin.y, origin.x + page_w * scale, origin.y + page_h * scale)
 }
 
 /// One laid-out line of body text, in **page-point** space (origin =
@@ -172,13 +172,16 @@ pub fn draw_page(
     page: &Page,
     origin: Point,
     scale: f64,
+    page_w: f64,
+    page_h: f64,
+    raster: Option<&PenikoImage>,
     matched_blocks: &HashSet<usize>,
     active_block: Option<usize>,
     annotations: &[Annotation],
     signatures: &[Signature],
     selected_anno: Option<&str>,
 ) {
-    let card = page_card_rect(origin, scale);
+    let card = page_card_rect(origin, scale, page_w, page_h);
 
     // Soft drop shadow (two offset translucent slabs).
     for (off, a) in [(7.0, 22u8), (3.0, 30u8)] {
@@ -191,8 +194,29 @@ pub fn draw_page(
     // Clip content to the paper.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
+    // Raster backend: paint the page bitmap (pdfium output) scaled to fill the
+    // card width, then let the shared markup overlay draw on top.
+    if let Some(img) = raster {
+        if img.width > 0 && img.height > 0 {
+            let sx = card.width() / img.width as f64;
+            let img_tf = base
+                * Affine::translate((card.x0, card.y0))
+                * Affine::scale_non_uniform(sx, sx);
+            scene.draw_image(img, img_tf);
+        }
+        for a in annotations.iter().filter(|a| a.page == page.number) {
+            draw_annotation(scene, tr, theme, base, a, origin, scale, selected_anno == Some(a.id.as_str()));
+        }
+        for s in signatures.iter().filter(|s| s.page == page.number) {
+            draw_signature(scene, tr, theme, base, s, origin, scale);
+        }
+        scene.pop_layer();
+        scene.stroke(&Stroke::new(1.0), base, Color::from_rgb8(203, 213, 225), None, &card_rr);
+        return;
+    }
+
     let content_x = origin.x + MARGIN * scale;
-    let content_w = (PAGE_W - 2.0 * MARGIN) * scale;
+    let content_w = (page_w - 2.0 * MARGIN) * scale;
     let mut y = origin.y; // running screen-space top
 
     for (bi, block) in page.blocks.iter().enumerate() {
@@ -482,19 +506,46 @@ fn draw_signature_glyph(scene: &mut Scene, base: Affine, color: Color, area: Rec
 // Thumbnails — abstract bar representation (fast, readable at small size)
 // ----------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_thumbnail(
     scene: &mut Scene,
     theme: &Theme,
     base: Affine,
     page: &Page,
     rect: Rect,
+    page_w: f64,
+    raster: Option<&PenikoImage>,
     is_current: bool,
     has_markup: bool,
 ) {
-    scene.fill(Fill::NonZero, base, paper(theme), None, &RoundedRect::from_rect(rect, 2.0));
-    let scale = rect.width() / PAGE_W;
+    let rr = RoundedRect::from_rect(rect, 2.0);
+    scene.fill(Fill::NonZero, base, paper(theme), None, &rr);
+
+    // Raster backend: paint the real page miniature.
+    if let Some(img) = raster {
+        if img.width > 0 && img.height > 0 {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
+            let sx = rect.width() / img.width as f64;
+            let tf = base
+                * Affine::translate((rect.x0, rect.y0))
+                * Affine::scale_non_uniform(sx, sx);
+            scene.draw_image(img, tf);
+            scene.pop_layer();
+        }
+        let border = if is_current { theme.accent_primary } else { theme.tokens.colors.border_standard };
+        let stroke_w = if is_current { 2.0 } else { 1.0 };
+        scene.stroke(&Stroke::new(stroke_w), base, border, None, &rr);
+        if has_markup {
+            let d = 5.0;
+            let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
+            scene.fill(Fill::NonZero, base, theme.tokens.colors.semantic.warning, None, &dot);
+        }
+        return;
+    }
+
+    let scale = rect.width() / page_w;
     let cx = rect.x0 + MARGIN * scale;
-    let cw = (PAGE_W - 2.0 * MARGIN) * scale;
+    let cw = (page_w - 2.0 * MARGIN) * scale;
     let mut y = rect.y0;
     let line_col = Color::from_rgb8(203, 213, 225);
     let head_col = Color::from_rgb8(100, 116, 139);
@@ -571,7 +622,7 @@ mod tests {
             // Bands sit within the page's text column and below the top.
             assert!(l.x >= MARGIN - 0.5, "line left {} inside margin", l.x);
             assert!(l.x_end <= PAGE_W - MARGIN + 0.5, "line right {} inside margin", l.x_end);
-            assert!(l.y >= 0.0 && l.y + l.h <= PAGE_H, "line within page height");
+            assert!(l.y >= 0.0 && l.y + l.h <= crate::model::PAGE_H, "line within page height");
             assert!(l.h > 0.0);
         }
     }

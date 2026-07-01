@@ -54,6 +54,36 @@ impl EditState {
     }
 }
 
+/// One rectangular selection range: an `anchor` corner and the moving
+/// `active` corner. A single-cell range has them equal. The full selection
+/// is a list of these — Excel/Calc-style discontiguous multi-selection —
+/// where the last range is the live one that keyboard/drag extend.
+#[derive(Clone, Copy, PartialEq)]
+struct SelRange {
+    anchor: Addr,
+    active: Addr,
+}
+
+impl SelRange {
+    /// Normalized inclusive bounds `(c0, r0, c1, r1)` with `top_left <= bottom_right`.
+    fn bounds(&self) -> (u32, u32, u32, u32) {
+        (
+            self.anchor.0.min(self.active.0),
+            self.anchor.1.min(self.active.1),
+            self.anchor.0.max(self.active.0),
+            self.anchor.1.max(self.active.1),
+        )
+    }
+    fn spans_col(&self, c: u32) -> bool {
+        let (c0, _, c1, _) = self.bounds();
+        c >= c0 && c <= c1
+    }
+    fn spans_row(&self, r: u32) -> bool {
+        let (_, r0, _, r1) = self.bounds();
+        r >= r0 && r <= r1
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ResizeTarget {
     Col(u32),
@@ -80,9 +110,14 @@ pub struct Grid {
     /// Rebuilt only when sizes or the logical extent change.
     col_x: Vec<f64>,
     row_y: Vec<f64>,
-    /// Selection anchor + active cell. A single-cell selection has them equal.
+    /// The live selection range's anchor + active cell. A single-cell
+    /// selection has them equal. `active` is the cell keyboard nav moves and
+    /// the formula bar reflects; it always stays visible within the selection.
     anchor: Addr,
     active: Addr,
+    /// Committed discontiguous ranges added via Ctrl+click / Ctrl+drag. The
+    /// full selection is these plus the live `anchor..active` range.
+    extra_ranges: Vec<SelRange>,
     edit: Option<EditState>,
     values: HashMap<Addr, CellValue>,
     raw: HashMap<Addr, String>,
@@ -107,6 +142,7 @@ impl Grid {
             row_y: Vec::new(),
             anchor: (0, 0),
             active: (0, 0),
+            extra_ranges: Vec::new(),
             edit: None,
             values: HashMap::new(),
             raw: HashMap::new(),
@@ -189,6 +225,7 @@ impl Grid {
     /// (winit's `DeviceId` has no public constructor).
     #[cfg(test)]
     pub(crate) fn set_selection(&mut self, anchor: Addr, active: Addr) {
+        self.extra_ranges.clear();
         self.anchor = anchor;
         self.active = active;
     }
@@ -202,6 +239,7 @@ impl Grid {
             self.n_rows = nr;
             self.rebuild_geom();
         }
+        self.extra_ranges.clear();
         self.anchor = addr;
         self.active = addr;
         self.edit = None;
@@ -209,8 +247,8 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Select a rectangular range (anchor..active). Used by the app's shots
-    /// hooks to present a multi-cell selection without synthesizing drags.
+    /// Select a rectangular range (anchor..active), replacing any existing
+    /// selection. Used by paste (to select what landed) and the shots hooks.
     pub fn select_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -221,6 +259,28 @@ impl Grid {
             self.n_rows = nr;
             self.rebuild_geom();
         }
+        self.extra_ranges.clear();
+        self.anchor = anchor;
+        self.active = active;
+        self.edit = None;
+        self.ensure_visible();
+        self.dirty = true;
+    }
+
+    /// Add a discontiguous rectangular range to the current selection,
+    /// keeping the existing one(s). The new range becomes the live one.
+    /// Drives the multi-range shots hook (Ctrl+drag equivalent).
+    pub fn add_range_public(&mut self, anchor: Addr, active: Addr) {
+        let (nc, nr) = (
+            self.n_cols.max(anchor.0.max(active.0) + 4),
+            self.n_rows.max(anchor.1.max(active.1) + 8),
+        );
+        if nc != self.n_cols || nr != self.n_rows {
+            self.n_cols = nc;
+            self.n_rows = nr;
+            self.rebuild_geom();
+        }
+        self.extra_ranges.push(self.current_range());
         self.anchor = anchor;
         self.active = active;
         self.edit = None;
@@ -248,26 +308,82 @@ impl Grid {
         self.raw.get(&self.active).cloned().unwrap_or_default()
     }
 
-    /// Every cell in the current selection rectangle.
+    /// The live (in-progress / most-recent) selection range.
+    fn current_range(&self) -> SelRange {
+        SelRange { anchor: self.anchor, active: self.active }
+    }
+
+    /// Every selection range: the committed discontiguous ones plus the live
+    /// `anchor..active`. The live range is always last.
+    fn all_ranges(&self) -> Vec<SelRange> {
+        let mut v = self.extra_ranges.clone();
+        v.push(self.current_range());
+        v
+    }
+
+    /// True when more than one discontiguous range is selected. Copy widens
+    /// its status hint and the name box shows a cell count in this case.
+    pub fn is_multi_range(&self) -> bool {
+        !self.extra_ranges.is_empty()
+    }
+
+    /// Whether column `c` intersects any selected range (drives the header
+    /// highlight — a column header lights up when it holds a selected cell).
+    fn col_in_selection(&self, c: u32) -> bool {
+        self.current_range().spans_col(c)
+            || self.extra_ranges.iter().any(|rg| rg.spans_col(c))
+    }
+    fn row_in_selection(&self, r: u32) -> bool {
+        self.current_range().spans_row(r)
+            || self.extra_ranges.iter().any(|rg| rg.spans_row(r))
+    }
+
+    /// Every cell across all selected ranges, de-duplicated so overlapping
+    /// ranges don't double-apply a format or double-count a sum. Copy, fill,
+    /// formatting, delete, and the status-bar summary all operate over this.
     pub fn selected_cells(&self) -> Vec<Addr> {
-        let (c0, c1) = (self.anchor.0.min(self.active.0), self.anchor.0.max(self.active.0));
-        let (r0, r1) = (self.anchor.1.min(self.active.1), self.anchor.1.max(self.active.1));
+        // Fast path: a single contiguous range can't overlap itself, so the
+        // common case (which runs every interaction frame via the status-bar
+        // summary) skips the dedup set entirely.
+        if self.extra_ranges.is_empty() {
+            let (c0, r0, c1, r1) = self.current_range().bounds();
+            let mut out =
+                Vec::with_capacity(((c1 - c0 + 1) as usize) * ((r1 - r0 + 1) as usize));
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    out.push((c, r));
+                }
+            }
+            return out;
+        }
+        // Discontiguous selection: dedup across possibly-overlapping ranges.
+        let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
-        for r in r0..=r1 {
-            for c in c0..=c1 {
-                out.push((c, r));
+        for range in self.all_ranges() {
+            let (c0, r0, c1, r1) = range.bounds();
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    if seen.insert((c, r)) {
+                        out.push((c, r));
+                    }
+                }
             }
         }
         out
     }
 
-    /// The selection rectangle as `(top_left, bottom_right)`, inclusive and
-    /// normalized so `top_left <= bottom_right` on both axes.
+    /// The bounding box over every selected range, as `(top_left,
+    /// bottom_right)`, inclusive and normalized. Drives copy/cut and fill.
     pub fn selection_bounds(&self) -> (Addr, Addr) {
-        let c0 = self.anchor.0.min(self.active.0);
-        let c1 = self.anchor.0.max(self.active.0);
-        let r0 = self.anchor.1.min(self.active.1);
-        let r1 = self.anchor.1.max(self.active.1);
+        let mut ranges = self.all_ranges().into_iter();
+        let (mut c0, mut r0, mut c1, mut r1) = ranges.next().map(|r| r.bounds()).unwrap_or_default();
+        for range in ranges {
+            let (a, b, cc, d) = range.bounds();
+            c0 = c0.min(a);
+            r0 = r0.min(b);
+            c1 = c1.max(cc);
+            r1 = r1.max(d);
+        }
         ((c0, r0), (c1, r1))
     }
 
@@ -304,6 +420,7 @@ impl Grid {
                 c1 = c1.max(c);
                 r1 = r1.max(r);
             }
+            self.extra_ranges.clear();
             // Keep the active cell at the top-left so the view doesn't jump to
             // the bottom-right corner of a large used range.
             self.anchor = (c1, r1);
@@ -316,8 +433,12 @@ impl Grid {
         }
     }
 
-    /// A1-style label for the selection (`B2` or `B2:D5`).
+    /// A1-style label for the selection (`B2`, `B2:D5`, or an `N cells` count
+    /// for a discontiguous multi-range selection — like the name box in Excel).
     pub fn selection_label(&self) -> String {
+        if !self.extra_ranges.is_empty() {
+            return format!("{} cells", self.selected_cells().len());
+        }
         if self.anchor == self.active {
             addr_to_a1(self.active.0, self.active.1)
         } else {
@@ -549,6 +670,10 @@ impl Grid {
     }
 
     fn move_active(&mut self, dc: i32, dr: i32, extend: bool) {
+        // Keyboard navigation collapses a discontiguous multi-selection back to
+        // the live range (Shift+arrow extends it; a bare arrow resets it),
+        // matching desktop spreadsheets.
+        self.extra_ranges.clear();
         let nc = (self.active.0 as i32 + dc).clamp(0, self.n_cols as i32 - 1) as u32;
         let nr = (self.active.1 as i32 + dr).clamp(0, self.n_rows as i32 - 1) as u32;
         self.active = (nc, nr);
@@ -568,8 +693,10 @@ impl Grid {
         self.dirty = true;
     }
 
-    /// Returns true if the press was consumed by the grid.
-    pub fn pointer_down(&mut self, p: Point, shift: bool, out: &mut Vec<GridCmd>) -> bool {
+    /// Handle a left-press. `shift` extends the live range from its anchor;
+    /// `ctrl` starts a new discontiguous range (Ctrl+click / Ctrl+drag),
+    /// keeping the existing selection. Returns true if consumed by the grid.
+    pub fn pointer_down(&mut self, p: Point, shift: bool, ctrl: bool, out: &mut Vec<GridCmd>) -> bool {
         self.last_cursor = p;
         if !self.rect.contains(p) {
             return false;
@@ -587,32 +714,63 @@ impl Grid {
             self.resize = Some(ResizeDrag { target, origin_px, origin_size });
             return true;
         }
-        // Column header click → select the whole column.
+        // Column header click → select the whole column (Ctrl adds it, Shift
+        // extends the column span from the current anchor).
         if p.y >= self.rect.y0 && p.y < self.grid_y0() && p.x >= self.grid_x0() {
             if let Some((c, _)) = self.cell_at(Point::new(p.x, self.grid_y0() + 1.0)) {
                 self.commit_edit(out);
-                self.anchor = (c, self.n_rows.saturating_sub(1));
+                let bottom = self.n_rows.saturating_sub(1);
+                if ctrl {
+                    self.extra_ranges.push(self.current_range());
+                    self.anchor = (c, bottom);
+                } else if shift {
+                    self.anchor = (self.anchor.0, bottom);
+                } else {
+                    self.extra_ranges.clear();
+                    self.anchor = (c, bottom);
+                }
                 self.active = (c, 0);
+                self.selecting = true;
                 self.dirty = true;
                 return true;
             }
         }
-        // Row header click → select whole row.
+        // Row header click → select whole row (Ctrl adds, Shift extends).
         if p.x >= self.rect.x0 && p.x < self.grid_x0() && p.y >= self.grid_y0() {
             if let Some((_, r)) = self.cell_at(Point::new(self.grid_x0() + 1.0, p.y)) {
                 self.commit_edit(out);
-                self.anchor = (self.n_cols.saturating_sub(1), r);
+                let right = self.n_cols.saturating_sub(1);
+                if ctrl {
+                    self.extra_ranges.push(self.current_range());
+                    self.anchor = (right, r);
+                } else if shift {
+                    self.anchor = (right, self.anchor.1);
+                } else {
+                    self.extra_ranges.clear();
+                    self.anchor = (right, r);
+                }
                 self.active = (0, r);
+                self.selecting = true;
                 self.dirty = true;
                 return true;
             }
         }
-        // Body click → select / extend.
+        // Body click → select / extend / add.
         if let Some(addr) = self.cell_at(p) {
             self.commit_edit(out);
-            self.active = addr;
-            if !shift {
+            if ctrl {
+                // Commit the live range and start a fresh one at the clicked
+                // cell; a subsequent drag grows it into a new rectangle.
+                self.extra_ranges.push(self.current_range());
                 self.anchor = addr;
+                self.active = addr;
+            } else if shift {
+                // Extend the live range; keep its anchor and any other ranges.
+                self.active = addr;
+            } else {
+                self.extra_ranges.clear();
+                self.anchor = addr;
+                self.active = addr;
             }
             self.selecting = true;
             self.dirty = true;
@@ -658,6 +816,7 @@ impl Grid {
     pub fn double_click(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
         let _ = out;
         if let Some(addr) = self.cell_at(p) {
+            self.extra_ranges.clear();
             self.active = addr;
             self.anchor = addr;
             self.begin_edit(None);
@@ -717,6 +876,7 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::Home) => {
+                self.extra_ranges.clear();
                 self.active.0 = 0;
                 if !shift {
                     self.anchor = self.active;
@@ -875,13 +1035,20 @@ impl Grid {
         // Body background.
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &self.rect);
 
-        // Selection rectangle (translucent accent fill) under the cells.
-        let sel = self.selection_screen_rect();
-        if let Some(sr) = sel {
-            let clipped = intersect(sr, body);
-            if let Some(cr) = clipped {
-                let fill = Color::from_rgba8(99, 102, 241, 38);
-                scene.fill(Fill::NonZero, transform, fill, None, &cr);
+        // Selection ranges (translucent accent fill) under the cells. Every
+        // discontiguous range paints; overlaps just deepen slightly. Iterate
+        // without allocating a ranges vector on the per-frame draw path.
+        let fill = Color::from_rgba8(99, 102, 241, 38);
+        for range in self
+            .extra_ranges
+            .iter()
+            .copied()
+            .chain(std::iter::once(self.current_range()))
+        {
+            if let Some(sr) = self.range_screen_rect(range) {
+                if let Some(cr) = intersect(sr, body) {
+                    scene.fill(Fill::NonZero, transform, fill, None, &cr);
+                }
             }
         }
 
@@ -983,9 +1150,10 @@ impl Grid {
         }
     }
 
-    fn selection_screen_rect(&self) -> Option<Rect> {
-        let (c0, c1) = (self.anchor.0.min(self.active.0), self.anchor.0.max(self.active.0));
-        let (r0, r1) = (self.anchor.1.min(self.active.1), self.anchor.1.max(self.active.1));
+    /// Absolute screen rect spanning one selection range (may lie off-body;
+    /// the caller clips it). `None` never happens but keeps the call site tidy.
+    fn range_screen_rect(&self, range: SelRange) -> Option<Rect> {
+        let (c0, r0, c1, r1) = range.bounds();
         let tl = self.cell_screen_rect(c0, r0);
         let br = self.cell_screen_rect(c1, r1);
         Some(Rect::new(tl.x0, tl.y0, br.x1, br.y1))
@@ -1029,8 +1197,6 @@ impl Grid {
     ) {
         let colors = &theme.tokens.colors;
         let size = theme.tokens.typography.scale.sm;
-        let (sc0, sc1) = (self.anchor.0.min(self.active.0), self.anchor.0.max(self.active.0));
-        let (sr0, sr1) = (self.anchor.1.min(self.active.1), self.anchor.1.max(self.active.1));
 
         // Column header strip.
         let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
@@ -1040,7 +1206,7 @@ impl Grid {
             let cell = self.cell_screen_rect(c, 0);
             let hx = cell.x0;
             let hrect = Rect::new(hx, self.rect.y0, hx + self.col_w(c), self.grid_y0());
-            let selected = c >= sc0 && c <= sc1;
+            let selected = self.col_in_selection(c);
             if selected {
                 scene.fill(Fill::NonZero, transform, colors.accent[5].with_alpha_factor(0.30), None, &hrect);
             }
@@ -1069,7 +1235,7 @@ impl Grid {
             let cell = self.cell_screen_rect(0, r);
             let hy = cell.y0;
             let hrect = Rect::new(self.rect.x0, hy, self.grid_x0(), hy + self.row_h(r));
-            let selected = r >= sr0 && r <= sr1;
+            let selected = self.row_in_selection(r);
             if selected {
                 scene.fill(Fill::NonZero, transform, colors.accent[5].with_alpha_factor(0.30), None, &hrect);
             }
@@ -1298,5 +1464,110 @@ mod tests {
         let body_right = g.body_rect().x1;
         let right = g.editor_right_extent((10, 0), DEFAULT_COL_W * 50.0, body_right);
         assert!(right <= body_right + 0.5, "right={right} body_right={body_right}");
+    }
+
+    /// The screen point at the centre of a cell — where a click would land.
+    fn cell_point(g: &Grid, c: u32, r: u32) -> Point {
+        g.cell_screen_rect(c, r).center()
+    }
+
+    #[test]
+    fn drag_selects_a_rectangular_range() {
+        // Press on B2, move to D5 with the button held, release. This is the
+        // exact `pointer_down`/`pointer_move`/`pointer_up` path `handle_event`
+        // drives on a live left-drag.
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        assert!(g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out));
+        // Live update on each move while the button is held.
+        g.pointer_move(cell_point(&g, 2, 3));
+        assert_eq!(g.selection_bounds(), ((1, 1), (2, 3)), "mid-drag extent");
+        g.pointer_move(cell_point(&g, 3, 4));
+        g.pointer_up();
+        assert_eq!(g.selection_bounds(), ((1, 1), (3, 4)));
+        assert_eq!(g.active(), (3, 4));
+        assert!(!g.is_multi_range());
+    }
+
+    #[test]
+    fn shift_click_extends_from_anchor() {
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
+        g.pointer_up();
+        // Shift+click D4: anchor stays at B2, range grows to B2:D4.
+        g.pointer_down(cell_point(&g, 3, 3), true, false, &mut out);
+        g.pointer_up();
+        assert_eq!(g.selection_bounds(), ((1, 1), (3, 3)));
+        assert!(!g.is_multi_range());
+    }
+
+    #[test]
+    fn ctrl_click_adds_a_discontiguous_range() {
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        // First range: drag B2:C3.
+        g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
+        g.pointer_move(cell_point(&g, 2, 2));
+        g.pointer_up();
+        // Ctrl+click F6 → adds a second, single-cell range; F6 becomes active.
+        g.pointer_down(cell_point(&g, 5, 5), false, true, &mut out);
+        g.pointer_up();
+        assert!(g.is_multi_range());
+        assert_eq!(g.active(), (5, 5));
+        let cells = g.selected_cells();
+        assert!(cells.contains(&(1, 1)) && cells.contains(&(2, 2)), "first range kept");
+        assert!(cells.contains(&(5, 5)), "second range added");
+        assert!(!cells.contains(&(3, 3)), "gap between ranges not selected");
+    }
+
+    #[test]
+    fn ctrl_drag_adds_a_second_rectangle() {
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        // First range: a single cell B2.
+        g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
+        g.pointer_up();
+        // Ctrl+drag F6→G8 adds a new rectangle while keeping B2.
+        g.pointer_down(cell_point(&g, 5, 5), false, true, &mut out);
+        g.pointer_move(cell_point(&g, 6, 7));
+        g.pointer_up();
+        assert!(g.is_multi_range());
+        let cells = g.selected_cells();
+        assert!(cells.contains(&(1, 1)), "original cell kept");
+        for c in 5..=6 {
+            for r in 5..=7 {
+                assert!(cells.contains(&(c, r)), "added rectangle covers ({c},{r})");
+            }
+        }
+    }
+
+    #[test]
+    fn arrow_key_collapses_multi_selection() {
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
+        g.pointer_up();
+        g.pointer_down(cell_point(&g, 5, 5), false, true, &mut out);
+        g.pointer_up();
+        assert!(g.is_multi_range());
+        // A bare arrow key drops the extra ranges back to a single active cell.
+        g.move_active(1, 0, false);
+        assert!(!g.is_multi_range());
+        assert_eq!(g.selected_cells(), vec![(6, 5)]);
+    }
+
+    #[test]
+    fn header_highlight_tracks_selected_columns_and_rows() {
+        let mut g = grid_with(&[]);
+        g.select_range_public((2, 3), (4, 5)); // C4:E6
+        assert!(g.col_in_selection(2) && g.col_in_selection(4));
+        assert!(!g.col_in_selection(1) && !g.col_in_selection(5));
+        assert!(g.row_in_selection(3) && g.row_in_selection(5));
+        assert!(!g.row_in_selection(2) && !g.row_in_selection(6));
+        // A discontiguous range lights up its columns/rows too.
+        g.add_range_public((7, 8), (7, 8)); // H9
+        assert!(g.col_in_selection(7) && g.row_in_selection(8));
+        assert!(g.col_in_selection(2), "original range headers stay lit");
     }
 }

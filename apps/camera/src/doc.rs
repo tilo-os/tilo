@@ -4,21 +4,25 @@
 //!
 //! ```text
 //! root
-//! ├── "screen"   (Str)   # camera | scanner | gallery | settings
-//! ├── "mode"     (Str)   # photo | video  (camera capture sub-mode)
-//! ├── "facing"   (Str)   # back | front | wide
-//! ├── "settings" (Map)   # scalar settings (see Settings)
-//! └── "captures" (List)  # [ { id, kind, ts, w, h, dur_ms, label, favorite, facing, scene } ]
+//! ├── "screen"    (Str)   # camera | scanner | gallery | settings
+//! ├── "mode"      (Str)   # photo | video  (camera capture sub-mode)
+//! ├── "facing"    (Str)   # back | front | wide
+//! ├── "settings"  (Map)   # scalar settings (see Settings)
+//! ├── "favorites" (Map)   # { <file name>: true } — starred library items
+//! └── "scans"     (List)  # [ { raw, ts } ] newest-first scan history
 //! ```
 //!
-//! All state the UI persists / collaborates on lives here. The widget keeps
-//! only render caches. Mirrors the notes app's `doc.rs` pattern.
+//! The photo/video *pixels* are ordinary files on disk (see
+//! [`crate::library`]) — the CRDT only holds the collaborative metadata:
+//! which items are favorited, the scan history, and capture preferences.
+
+use std::collections::HashSet;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use crate::model::{
-    Capture, CaptureKind, Facing, CaptureMode, PhotoFormat, Resolution, Screen, Settings, Timer,
+    Facing, CaptureMode, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
 };
 
 // ---- scalar helpers --------------------------------------------------
@@ -141,139 +145,103 @@ pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
     let _ = doc.put(&m, "default_facing", s.default_facing.as_str());
 }
 
-// ---- captures --------------------------------------------------------
+// ---- favorites -------------------------------------------------------
 
-fn captures_list(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
-    match list_at(doc, root, "captures") {
-        Some(l) => l,
-        None => doc.put_object(root, "captures", ObjType::List).expect("captures list"),
+/// The set of favorited library item ids (file names).
+pub fn read_favorites(doc: &AutoCommit, root: &ObjId) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let Some(m) = map_at(doc, root, "favorites") else { return set };
+    for key in doc.keys(&m) {
+        if get_bool(doc, &m, &key).unwrap_or(false) {
+            set.insert(key);
+        }
+    }
+    set
+}
+
+/// Star / unstar a library item by id. Unstarring removes the key so the
+/// favorites map does not accumulate tombstoned `false`s.
+pub fn set_favorite(doc: &mut AutoCommit, root: &ObjId, id: &str, on: bool) {
+    let m = match map_at(doc, root, "favorites") {
+        Some(m) => m,
+        None => doc.put_object(root, "favorites", ObjType::Map).expect("favorites map"),
+    };
+    if on {
+        let _ = doc.put(&m, id, true);
+    } else {
+        let _ = doc.delete(&m, id);
     }
 }
 
-pub fn read_captures(doc: &AutoCommit, root: &ObjId) -> Vec<Capture> {
-    let Some(list) = list_at(doc, root, "captures") else { return Vec::new() };
+// ---- scan history ----------------------------------------------------
+
+const MAX_SCANS: usize = 24;
+
+/// Read the scan history, newest first.
+pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
+    let Some(list) = list_at(doc, root, "scans") else { return Vec::new() };
     let n = doc.length(&list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else { continue };
-        let id = get_str(doc, &m, "id").unwrap_or_default();
-        if id.is_empty() {
+        let raw = get_str(doc, &m, "raw").unwrap_or_default();
+        if raw.is_empty() {
             continue;
         }
-        out.push(Capture {
-            id,
-            kind: CaptureKind::from_str(&get_str(doc, &m, "kind").unwrap_or_default()),
-            ts: get_int(doc, &m, "ts").unwrap_or(0),
-            w: get_int(doc, &m, "w").unwrap_or(0) as u32,
-            h: get_int(doc, &m, "h").unwrap_or(0) as u32,
-            dur_ms: get_int(doc, &m, "dur_ms").unwrap_or(0),
-            label: get_str(doc, &m, "label").unwrap_or_default(),
-            favorite: get_bool(doc, &m, "favorite").unwrap_or(false),
-            facing: Facing::from_str(&get_str(doc, &m, "facing").unwrap_or_default()),
-            scene: get_int(doc, &m, "scene").unwrap_or(0) as u8,
-        });
+        out.push(ScanEntry { raw, ts: get_int(doc, &m, "ts").unwrap_or(0) });
     }
     out
 }
 
-pub fn push_capture(doc: &mut AutoCommit, root: &ObjId, c: &Capture) {
-    let list = captures_list(doc, root);
-    // Newest first.
-    let m = doc.insert_object(&list, 0, ObjType::Map).expect("insert capture map");
-    let _ = doc.put(&m, "id", c.id.as_str());
-    let _ = doc.put(&m, "kind", c.kind.as_str());
-    let _ = doc.put(&m, "ts", c.ts);
-    let _ = doc.put(&m, "w", c.w as i64);
-    let _ = doc.put(&m, "h", c.h as i64);
-    let _ = doc.put(&m, "dur_ms", c.dur_ms);
-    let _ = doc.put(&m, "label", c.label.as_str());
-    let _ = doc.put(&m, "favorite", c.favorite);
-    let _ = doc.put(&m, "facing", c.facing.as_str());
-    let _ = doc.put(&m, "scene", c.scene as i64);
-}
-
-fn capture_index(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
-    let n = doc.length(list);
-    for i in 0..n {
-        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(list, i) {
-            if get_str(doc, &m, "id").as_deref() == Some(id) {
-                return Some(i);
+/// Record a scanned code at the front of the history. Re-scanning the same
+/// payload moves it to the front rather than duplicating; the list is capped.
+pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
+    let list = match list_at(doc, root, "scans") {
+        Some(l) => l,
+        None => doc.put_object(root, "scans", ObjType::List).expect("scans list"),
+    };
+    // Drop any existing entry with the same payload.
+    let n = doc.length(&list);
+    for i in (0..n).rev() {
+        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
+            if get_str(doc, &m, "raw").as_deref() == Some(raw) {
+                let _ = doc.delete(&list, i);
             }
         }
     }
-    None
-}
-
-pub fn toggle_favorite(doc: &mut AutoCommit, root: &ObjId, id: &str) {
-    let list = captures_list(doc, root);
-    if let Some(i) = capture_index(doc, &list, id) {
-        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-            let cur = get_bool(doc, &m, "favorite").unwrap_or(false);
-            let _ = doc.put(&m, "favorite", !cur);
-        }
-    }
-}
-
-pub fn delete_capture(doc: &mut AutoCommit, root: &ObjId, id: &str) {
-    let list = captures_list(doc, root);
-    if let Some(i) = capture_index(doc, &list, id) {
-        let _ = doc.delete(&list, i);
-    }
-}
-
-pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
-    let m = match map_at(doc, root, "last_scan") {
-        Some(m) => m,
-        None => doc.put_object(root, "last_scan", ObjType::Map).expect("scan map"),
-    };
+    let m = doc.insert_object(&list, 0, ObjType::Map).expect("insert scan");
     let _ = doc.put(&m, "raw", raw);
     let _ = doc.put(&m, "ts", ts);
+    // Trim the tail beyond the cap.
+    while doc.length(&list) > MAX_SCANS {
+        let _ = doc.delete(&list, doc.length(&list) - 1);
+    }
 }
 
-// ---- seeding ---------------------------------------------------------
+// ---- first-run defaults ----------------------------------------------
 
 /// True once the doc has been initialised by this app.
 pub fn is_seeded(doc: &AutoCommit, root: &ObjId) -> bool {
     get_str(doc, root, "screen").is_some()
 }
 
-/// Seed default settings + a populated sample gallery + the initial screen
-/// on first run (empty doc). Idempotent: a no-op once seeded.
-pub fn seed(doc: &mut AutoCommit, root: &ObjId, samples: &[Capture], initial: Screen) {
+/// Write capture preferences + the initial screen on first run (empty doc).
+/// No sample content is fabricated — the library starts empty and reflects
+/// whatever is actually on disk. Idempotent: a no-op once initialised.
+pub fn init_defaults(doc: &mut AutoCommit, root: &ObjId, initial: Screen) {
     if is_seeded(doc, root) {
         return;
     }
     write_screen(doc, root, initial);
     write_mode(doc, root, CaptureMode::Photo);
     write_facing(doc, root, Facing::Back);
-    let settings = Settings::default();
-    write_settings(doc, root, &settings);
-    // `push_capture` inserts at index 0 (newest-on-top). Seed oldest first
-    // so the first sample (most recent) lands on top after all pushes.
-    for c in samples.iter().rev() {
-        push_capture(doc, root, c);
-    }
+    write_settings(doc, root, &Settings::default());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::ROOT;
-
-    fn sample(id: &str, fav: bool) -> Capture {
-        Capture {
-            id: id.into(),
-            kind: CaptureKind::Photo,
-            ts: 1_700_000_000,
-            w: 4032,
-            h: 3024,
-            dur_ms: 0,
-            label: "Sample".into(),
-            favorite: fav,
-            facing: Facing::Back,
-            scene: 1,
-        }
-    }
 
     #[test]
     fn settings_round_trip() {
@@ -290,40 +258,53 @@ mod tests {
     }
 
     #[test]
-    fn captures_round_trip_newest_first() {
+    fn favorites_star_and_unstar() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
-        push_capture(&mut doc, &root, &sample("a", false));
-        push_capture(&mut doc, &root, &sample("b", true));
-        let caps = read_captures(&doc, &root);
-        assert_eq!(caps.len(), 2);
-        // b was pushed last and inserted at index 0 => newest first.
-        assert_eq!(caps[0].id, "b");
-        assert_eq!(caps[1].id, "a");
+        assert!(read_favorites(&doc, &root).is_empty());
+        set_favorite(&mut doc, &root, "IMG_a.png", true);
+        set_favorite(&mut doc, &root, "IMG_b.png", true);
+        let favs = read_favorites(&doc, &root);
+        assert!(favs.contains("IMG_a.png") && favs.contains("IMG_b.png"));
+        set_favorite(&mut doc, &root, "IMG_a.png", false);
+        let favs = read_favorites(&doc, &root);
+        assert!(!favs.contains("IMG_a.png"));
+        assert!(favs.contains("IMG_b.png"));
     }
 
     #[test]
-    fn toggle_and_delete_capture() {
+    fn scans_are_newest_first_deduped_and_capped() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
-        push_capture(&mut doc, &root, &sample("a", false));
-        toggle_favorite(&mut doc, &root, "a");
-        assert!(read_captures(&doc, &root)[0].favorite);
-        delete_capture(&mut doc, &root, "a");
-        assert!(read_captures(&doc, &root).is_empty());
+        record_scan(&mut doc, &root, "https://a", 100);
+        record_scan(&mut doc, &root, "https://b", 200);
+        // Re-scanning "a" moves it to the front, not a duplicate.
+        record_scan(&mut doc, &root, "https://a", 300);
+        let scans = read_scans(&doc, &root);
+        assert_eq!(scans.len(), 2);
+        assert_eq!(scans[0].raw, "https://a");
+        assert_eq!(scans[0].ts, 300);
+        assert_eq!(scans[1].raw, "https://b");
+        // Cap is enforced.
+        for i in 0..(MAX_SCANS + 10) {
+            record_scan(&mut doc, &root, &format!("code-{i}"), i as i64);
+        }
+        assert!(read_scans(&doc, &root).len() <= MAX_SCANS);
     }
 
     #[test]
-    fn seed_is_idempotent() {
+    fn init_defaults_is_idempotent_and_seeds_no_content() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
         assert!(!is_seeded(&doc, &root));
-        seed(&mut doc, &root, &[sample("a", false)], Screen::Scanner);
+        init_defaults(&mut doc, &root, Screen::Scanner);
         assert!(is_seeded(&doc, &root));
         assert_eq!(read_screen(&doc, &root), Screen::Scanner);
-        // Second seed must not duplicate.
-        seed(&mut doc, &root, &[sample("b", false)], Screen::Camera);
-        assert_eq!(read_captures(&doc, &root).len(), 1);
+        // No fabricated library content.
+        assert!(read_favorites(&doc, &root).is_empty());
+        assert!(read_scans(&doc, &root).is_empty());
+        // Second init must not change the persisted screen.
+        init_defaults(&mut doc, &root, Screen::Camera);
         assert_eq!(read_screen(&doc, &root), Screen::Scanner);
     }
 }

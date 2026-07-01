@@ -1,21 +1,15 @@
 //! Pure data model for the PDF viewer.
 //!
 //! Nothing here touches the CRDT, taffy, vello or winit — it's the
-//! plain-Rust core: the rendered document (synthetic but real text so
-//! search and selection operate on genuine content), the annotation /
-//! comment / signature value types, the tool enum, and the pure search
-//! routine. Everything is unit-testable in isolation.
+//! plain-Rust core: the page model, the annotation / comment / signature
+//! value types, the tool enum, and the pure search routine. Everything is
+//! unit-testable in isolation.
 //!
-//! ## Page rendering backend
-//!
-//! Real PDF rasterisation (pdfium / mupdf) needs a native library that
-//! is not guaranteed to be present in the build sandbox, so the slice
-//! ships a pure-Rust page model: each [`Page`] is a list of [`Block`]s
-//! that the renderer lays out with the toolkit's `cosmic-text` engine
-//! into honest, selectable, searchable text. The geometry below is
-//! expressed in PDF points (1pt = 1px at 100% zoom) so a real raster
-//! backend can be slotted behind the same [`Page`] coordinate space
-//! later — see the crate-level docs for the followup.
+//! A [`Page`] is a list of [`Block`]s in PDF points (1pt = 1px at 100% zoom).
+//! For a loaded PDF the blocks hold the document's extracted text (text
+//! backend) or are empty placeholders whose pixels come from pdfium (raster
+//! backend); [`sample_document`] is the bundled demonstration used by the
+//! screenshot harness and tests.
 
 use uuid::Uuid;
 
@@ -78,6 +72,12 @@ pub struct Document {
     pub subject: String,
     pub pages: Vec<Page>,
     pub outline: Vec<OutlineItem>,
+    /// Uniform page geometry, in PDF points. For a loaded PDF this is the
+    /// first page's media box; for the bundled reader model it is US-Letter.
+    /// Pages stack uniformly against this card size (the common case where a
+    /// document has one page size throughout).
+    pub page_w: f64,
+    pub page_h: f64,
 }
 
 impl Document {
@@ -89,6 +89,97 @@ impl Document {
     pub fn page(&self, number: usize) -> Option<&Page> {
         self.pages.iter().find(|p| p.number == number)
     }
+
+    /// Build a document from text already extracted from a real PDF, one
+    /// string per page. Paragraphs are split on blank lines; a short leading
+    /// line is promoted to a heading so the reflow keeps some structure.
+    /// The content is genuine — search, selection and markup all run against
+    /// the source PDF's own words.
+    pub fn from_text_pages(title: &str, author: &str, page_texts: &[String]) -> Self {
+        let mut pages = Vec::with_capacity(page_texts.len());
+        for (i, raw) in page_texts.iter().enumerate() {
+            pages.push(Page { number: i + 1, blocks: blocks_from_text(raw) });
+        }
+        if pages.is_empty() {
+            pages.push(Page { number: 1, blocks: vec![Block::Body(String::new())] });
+        }
+        Document {
+            title: title.to_string(),
+            author: author.to_string(),
+            subject: String::new(),
+            pages,
+            outline: Vec::new(),
+            page_w: PAGE_W,
+            page_h: PAGE_H,
+        }
+    }
+
+    /// An empty document with `count` blank pages of the given size, used for
+    /// the raster backend where page pixels come from pdfium rather than the
+    /// text model.
+    pub fn blank_pages(title: &str, author: &str, count: usize, page_w: f64, page_h: f64) -> Self {
+        let count = count.max(1);
+        let pages = (1..=count).map(|n| Page { number: n, blocks: Vec::new() }).collect();
+        Document {
+            title: title.to_string(),
+            author: author.to_string(),
+            subject: String::new(),
+            pages,
+            outline: Vec::new(),
+            page_w,
+            page_h,
+        }
+    }
+}
+
+/// Split one page's extracted text into typographic blocks. Blank lines
+/// separate paragraphs; the lines inside a paragraph are joined with spaces
+/// (PDF text extraction hard-wraps at the original column). A single short
+/// paragraph that reads like a heading is rendered as one.
+fn blocks_from_text(raw: &str) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let mut para: Vec<String> = Vec::new();
+    let mut first_para = true;
+    let flush = |blocks: &mut Vec<Block>, para: &mut Vec<String>, first: &mut bool| {
+        if para.is_empty() {
+            return;
+        }
+        let joined = para.join(" ");
+        let text = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+        para.clear();
+        if text.is_empty() {
+            return;
+        }
+        // A short, single-line-ish leading paragraph with no terminal
+        // punctuation reads as a title/heading.
+        let looks_heading = text.chars().count() <= 64
+            && !text.ends_with('.')
+            && !text.ends_with(',')
+            && !text.ends_with(';');
+        if *first && looks_heading {
+            blocks.push(Block::Title(text));
+        } else if looks_heading && text.chars().count() <= 48 {
+            blocks.push(Block::H2(text));
+        } else {
+            blocks.push(Block::Body(text));
+        }
+        if !blocks.is_empty() {
+            *first = false;
+        }
+        blocks.push(Block::Spacer(6.0));
+    };
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            flush(&mut blocks, &mut para, &mut first_para);
+        } else {
+            para.push(line.trim().to_string());
+        }
+    }
+    flush(&mut blocks, &mut para, &mut first_para);
+    if blocks.is_empty() {
+        blocks.push(Block::Body(String::new()));
+    }
+    blocks
 }
 
 // ----------------------------------------------------------------------
@@ -563,6 +654,8 @@ selected automatically if the new one fails its health check."),
         subject: "Architecture specification".into(),
         pages,
         outline,
+        page_w: PAGE_W,
+        page_h: PAGE_H,
     }
 }
 
@@ -614,6 +707,8 @@ mod tests {
             subject: "s".into(),
             pages: vec![Page { number: 1, blocks: vec![Block::Body("aaaa".into())] }],
             outline: vec![],
+        page_w: PAGE_W,
+        page_h: PAGE_H,
         };
         let hits = search(&d, "aa", SearchOptions::default());
         // "aaaa" -> matches at 0 and 2 (non-overlapping stepping).
@@ -633,6 +728,8 @@ mod tests {
                 blocks: vec![Block::Body("The qOS shell. the OS.".into())],
             }],
             outline: vec![],
+        page_w: PAGE_W,
+        page_h: PAGE_H,
         };
         let insensitive = search(&d, "the", SearchOptions { case_sensitive: false, ..Default::default() });
         assert_eq!(insensitive.len(), 2, "case-insensitive matches both 'The' and 'the'");
@@ -652,6 +749,8 @@ mod tests {
                 blocks: vec![Block::Body("ink is thinking and ink.".into())],
             }],
             outline: vec![],
+        page_w: PAGE_W,
+        page_h: PAGE_H,
         };
         let any = search(&d, "ink", SearchOptions::default());
         assert_eq!(any.len(), 3, "substring search finds 'ink' three times");

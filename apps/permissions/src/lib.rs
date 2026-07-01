@@ -53,11 +53,14 @@ pub use seam::{EditorIntent, open_editor};
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree — the single integration
-/// point used by both the live event loop and the `--shots` offscreen
-/// renderer. Opens the full editor on its Roles tab.
+/// Build and return the app's root widget tree — the live event loop's
+/// entry point. Opens the editor on its Roles tab against the **real OS
+/// system-permission registry**, with an empty authored set: a fresh
+/// workspace has no roles or members until the user creates them or the
+/// synced document brings them in. No sample content is fabricated here —
+/// that path is reserved for [`app_root_for_scenario`] (`--shots`/tests).
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(EditorView::from_intent(EditorIntent::roles(None)))
+    Box::new(EditorView::from_intent(EditorIntent::roles(None)).with_registry(sample::system_registry()))
 }
 
 /// Build the root widget for a named `--shots` scenario. `main.rs`
@@ -65,15 +68,22 @@ pub fn app_root() -> Box<dyn Widget> {
 /// produce both `permissions.png` (roles editor) and
 /// `permissions-members.png` (member role assignment + overrides).
 pub fn app_root_for_scenario(scenario: Scenario) -> Box<dyn Widget> {
+    Box::new(app_view_for_scenario(scenario))
+}
+
+/// The concrete [`EditorView`] for a `--shots` scenario, pre-seeded with the
+/// sample set. Returned unboxed so `main.rs` can chain shots-only hooks
+/// (e.g. [`EditorView::shots_open_sidebar`]) before boxing.
+pub fn app_view_for_scenario(scenario: Scenario) -> EditorView {
     match scenario {
         // Pre-seeded so the screenshot shows the populated editor (the live
-        // app seeds lazily on first sync; a static shot needs it up front).
-        Scenario::Roles => Box::new(EditorView::seeded_sample(EditorTab::Roles, 0, 0)),
+        // app never fabricates content; a static shot needs it up front).
+        Scenario::Roles => EditorView::seeded_sample(EditorTab::Roles, 0, 0),
         // The SECOND visible role selected — proves role switching lands on a
         // different role's grid.
-        Scenario::RolesSecond => Box::new(EditorView::seeded_sample(EditorTab::Roles, 1, 0)),
+        Scenario::RolesSecond => EditorView::seeded_sample(EditorTab::Roles, 1, 0),
         // The member view, with members bound to REAL identities.
-        Scenario::Members => Box::new(EditorView::seeded_sample(EditorTab::Members, 0, 1)),
+        Scenario::Members => EditorView::seeded_sample(EditorTab::Members, 0, 1),
     }
 }
 

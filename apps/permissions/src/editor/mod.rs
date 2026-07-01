@@ -64,11 +64,22 @@ pub struct EditorView {
     tab_roles: Rect,
     tab_members: Rect,
     new_item: Rect,
+    /// Hamburger toggle for the overlay sidebar. Non-empty only in the
+    /// narrow (overlay) layout, where the roles/members list is a closed
+    /// flap and needs an explicit affordance to open it.
+    menu_btn: Rect,
+    /// Whether the current width resolves to the narrow overlay layout —
+    /// re-derived from the allocated width every layout pass so a resize
+    /// between breakpoints reflows the tab bar (and shows/hides the toggle).
+    overlay: bool,
 
     last_mouse: Point,
     seeded: bool,
     dirty: bool,
     relayout: bool,
+    /// `--shots`-only: force the overlay flap open so a single static frame
+    /// can capture the revealed narrow sidebar. Never set by the live loop.
+    force_open_sidebar: bool,
 }
 
 impl Default for EditorView {
@@ -99,11 +110,21 @@ impl EditorView {
             tab_roles: Rect::ZERO,
             tab_members: Rect::ZERO,
             new_item: Rect::ZERO,
+            menu_btn: Rect::ZERO,
+            overlay: false,
             last_mouse: Point::ZERO,
             seeded: false,
             dirty: true,
             relayout: true,
+            force_open_sidebar: false,
         }
+    }
+
+    /// `--shots`-only: open the overlay flap for the captured frame so the
+    /// narrow revealed sidebar is visible. Has no effect on the live app.
+    pub fn shots_open_sidebar(mut self) -> Self {
+        self.force_open_sidebar = true;
+        self
     }
 
     /// Build an editor pre-seeded with the sample set + identity model and a
@@ -197,9 +218,24 @@ impl EditorView {
     fn layout(&mut self) {
         let r = self.rect;
         let tab_y = r.y0 + 10.0;
-        self.tab_roles = Rect::new(r.x0 + PAD, tab_y, r.x0 + PAD + 96.0, tab_y + 32.0);
+        // Re-derive the responsive mode from the CURRENT width every pass so
+        // a resize across the breakpoint reflows: the split occupies the full
+        // width below the tab bar, so its docked/overlay choice keys on the
+        // same width the toggle does.
+        self.overlay = r.width() < BREAKPOINT;
+        let mut x = r.x0 + PAD;
+        if self.overlay {
+            self.menu_btn = Rect::new(x, tab_y, x + 40.0, tab_y + 32.0);
+            x = self.menu_btn.x1 + 10.0;
+        } else {
+            self.menu_btn = Rect::ZERO;
+        }
+        self.tab_roles = Rect::new(x, tab_y, x + 96.0, tab_y + 32.0);
         self.tab_members = Rect::new(self.tab_roles.x1 + 8.0, tab_y, self.tab_roles.x1 + 8.0 + 112.0, tab_y + 32.0);
-        self.new_item = Rect::new(r.x1 - PAD - 132.0, tab_y, r.x1 - PAD, tab_y + 32.0);
+        // "+ New Member" is wider than "+ New Role"; size the button to the
+        // active label so it never clips at the narrow width.
+        let new_w = if self.shared.borrow().tab == EditorTab::Members { 148.0 } else { 120.0 };
+        self.new_item = Rect::new(r.x1 - PAD - new_w, tab_y, r.x1 - PAD, tab_y + 32.0);
     }
 
     fn draw_tabbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -207,6 +243,12 @@ impl EditorView {
         let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + TABBAR_H);
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
         scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &Line::new((bar.x0, bar.y1), (bar.x1, bar.y1)));
+
+        // Overlay layout: a hamburger reveals the roles/members flap (it is
+        // closed by default when narrow). Highlighted while the flap is open.
+        if self.overlay {
+            draw::menu_button(scene, t, theme, self.menu_btn, self.split.is_sidebar_open());
+        }
 
         let tab = self.shared.borrow().tab;
         seg_button(scene, t, tr, theme, self.tab_roles, "Roles", tab == EditorTab::Roles);
@@ -239,15 +281,15 @@ impl EditorView {
 impl Widget for EditorView {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
+            // Load whatever the synced/persisted document holds. A fresh
+            // workspace's document is empty, so the editor opens empty (with
+            // its "no roles yet" guidance) rather than inventing roles — the
+            // authored set only ever comes from real user edits or a peer's
+            // synced state. `--shots`/tests take the pre-seeded path instead.
             let existing = PermissionsDoc::read(state);
             {
                 let mut s = self.shared.borrow_mut();
-                if existing.roles.is_empty() && existing.members.is_empty() {
-                    s.set = sample::sample_set();
-                    PermissionsDoc::write(state, &s.set);
-                } else {
-                    s.set = existing;
-                }
+                s.set = existing;
                 s.ensure_selection();
             }
             self.seeded = true;
@@ -276,23 +318,39 @@ impl Widget for EditorView {
         );
         self.layout();
 
-        // The split occupies everything below the tab bar. Build a tiny
-        // inner taffy node sized to that band and lay the split into it.
+        // The split occupies everything below the tab bar. The live App loop
+        // drives no reveal animation for a split rebuilt each frame, so the
+        // flap is snapped to its resolved open state. Snapping AFTER the
+        // children are placed would leave them one frame behind the reveal —
+        // and since a toggle triggers only a single relayout, a freshly
+        // opened overlay would get stuck off-screen. So lay the split out,
+        // read the resolved state, snap, and (only when the snap actually
+        // moved the reveal) lay it out once more so the sidebar's rects match
+        // the reveal on this same frame. Steady-state frames settle in one pass.
         let split_rect = Rect::new(self.rect.x0, self.rect.y0 + TABBAR_H, self.rect.x1, self.rect.y1);
-        let mut inner: TaffyTree<()> = TaffyTree::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let snode = self.split.build_layout(&mut inner, &Theme::dark(), &mut map);
-        let _ = inner.compute_layout(
-            snode,
-            Size {
-                width: taffy::AvailableSpace::Definite(split_rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(split_rect.height() as f32),
-            },
-        );
-        self.split.apply_layout(&inner, snode, Point::new(split_rect.x0, split_rect.y0));
-        // No reveal animation is driven by the live App loop for a split
-        // rebuilt each frame, so snap to the resolved open state.
-        self.split.snap_open(self.split.is_sidebar_open());
+        if self.force_open_sidebar {
+            self.split.open_sidebar();
+        }
+        for _ in 0..2 {
+            let mut inner: TaffyTree<()> = TaffyTree::new();
+            let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let snode = self.split.build_layout(&mut inner, &Theme::dark(), &mut map);
+            let _ = inner.compute_layout(
+                snode,
+                Size {
+                    width: taffy::AvailableSpace::Definite(split_rect.width() as f32),
+                    height: taffy::AvailableSpace::Definite(split_rect.height() as f32),
+                },
+            );
+            self.split.apply_layout(&inner, snode, Point::new(split_rect.x0, split_rect.y0));
+            let desired = self.split.is_sidebar_open();
+            let target = if desired { 1.0 } else { 0.0 };
+            let settled = (self.split.flap().reveal() - target).abs() < 1e-6;
+            self.split.snap_open(desired);
+            if settled {
+                break;
+            }
+        }
 
         self.relayout = false;
     }
@@ -324,6 +382,13 @@ impl Widget for EditorView {
         // Tab bar clicks first.
         if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
             let p = self.last_mouse;
+            if self.overlay && self.menu_btn.contains(p) {
+                self.split.toggle_sidebar();
+                self.dirty = true;
+                self.relayout = true;
+                *handled = true;
+                return;
+            }
             if self.tab_roles.contains(p) {
                 self.shared.borrow_mut().select_tab(EditorTab::Roles);
                 self.dirty = true;
@@ -353,7 +418,25 @@ impl Widget for EditorView {
         }
 
         // Everything below the tab bar → the split (and its two panes).
+        // Capture the selection so we can auto-dismiss the overlay flap once
+        // the user picks a row from it (Adwaita master-detail behaviour: the
+        // list slides away to reveal the chosen role/member).
+        let sel_before = {
+            let s = self.shared.borrow();
+            (s.selected_role, s.selected_member)
+        };
         self.split.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+        if self.overlay && self.split.is_sidebar_open() {
+            let sel_after = {
+                let s = self.shared.borrow();
+                (s.selected_role, s.selected_member)
+            };
+            if sel_after != sel_before {
+                self.split.close_sidebar();
+                self.relayout = true;
+                self.dirty = true;
+            }
+        }
 
         // Any pane mutation marks the shared state dirty / pending; flush
         // and propagate the redraw/relayout signal up. We read BOTH the
@@ -444,7 +527,10 @@ mod tests {
 
     impl Harness {
         fn new(w: f64, h: f64) -> Self {
-            let mut h_ = Harness { view: EditorView::new(), doc: AutoCommit::new(), w, h };
+            // The live app starts empty; these interaction tests need a
+            // populated editor, so seed the sample set the same way `--shots`
+            // does (seeded_sample marks the view so sync won't reset it).
+            let mut h_ = Harness { view: EditorView::seeded_sample(EditorTab::Roles, 0, 0), doc: AutoCommit::new(), w, h };
             h_.frame();
             h_
         }
@@ -510,13 +596,30 @@ mod tests {
         }
     }
 
+    /// The real-not-mock contract: a fresh workspace document seeds NOTHING.
+    /// The live app must never fabricate roles/members on first sync — the
+    /// authored set only comes from real edits or a peer's synced state.
     #[test]
-    fn seeds_sample_set_on_first_sync() {
+    fn fresh_doc_seeds_no_fabricated_content() {
         let mut v = EditorView::new();
         let mut doc = AutoCommit::new();
         v.sync(&mut doc, &ROOT);
-        assert!(!v.set().roles.is_empty(), "sample roles seeded");
-        assert!(v.shared.borrow().selected_role.is_some(), "a role auto-selected");
+        assert!(v.set().roles.is_empty(), "no roles are fabricated on first launch");
+        assert!(v.set().members.is_empty(), "no members are fabricated on first launch");
+        assert!(v.shared.borrow().selected_role.is_none(), "nothing to auto-select in an empty set");
+    }
+
+    /// The complement: when the document already holds a set (persisted, or
+    /// synced from a peer), sync loads that REAL state instead of starting
+    /// empty. Proves the seam reads live data, not a hard-coded fixture.
+    #[test]
+    fn sync_loads_persisted_set_from_the_document() {
+        let mut doc = AutoCommit::new();
+        PermissionsDoc::write(&mut doc, &sample::sample_set());
+        let mut v = EditorView::new();
+        v.sync(&mut doc, &ROOT);
+        assert!(!v.set().roles.is_empty(), "sync loads the roles already in the document");
+        assert!(v.shared.borrow().selected_role.is_some(), "a loaded role auto-selects");
     }
 
     /// THE BUG: clicking a different role in the sidebar must switch the
@@ -572,6 +675,78 @@ mod tests {
         // Narrow → overlay sidebar.
         let mut v2 = EditorView::new();
         drive_frame(&mut v2, 520, 880);
+    }
+
+    /// Drive a full left-click at `p` through the REAL top-level event path
+    /// (cursor-move, press, release) against a bare EditorView.
+    fn editor_click(v: &mut EditorView, p: Point) {
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut ft = None;
+        let empty = TaffyTree::new();
+        for ev in [
+            WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: winit::dpi::PhysicalPosition::new(p.x, p.y) },
+            WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
+            WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Released, button: MouseButton::Left },
+        ] {
+            v.handle_event(&ev, 1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut ft, NodeId::new(0), &empty);
+        }
+    }
+
+    /// The responsive breakpoint MUST be re-derived from the CURRENT width
+    /// every layout pass. Render ONE instance wide, then narrow, then wide —
+    /// the tab-bar toggle and the docked/overlay mode must follow the resize,
+    /// never freeze at the first frame's value.
+    #[test]
+    fn resizing_between_breakpoints_reflows_the_toggle() {
+        let mut v = EditorView::seeded_sample(EditorTab::Roles, 0, 0);
+        drive_frame(&mut v, 1280, 800);
+        assert_eq!(v.split.layout_mode(), ui::widget::SplitLayout::Docked);
+        assert!(!v.overlay, "wide layout docks the sidebar");
+        assert_eq!(v.menu_btn, Rect::ZERO, "no overlay toggle when docked");
+
+        drive_frame(&mut v, 560, 800);
+        assert_eq!(v.split.layout_mode(), ui::widget::SplitLayout::Overlay);
+        assert!(v.overlay, "narrow re-derives to overlay from the NEW width, not a cached mode");
+        assert!(v.menu_btn.width() > 0.0, "overlay exposes a toggle to open the flap");
+
+        drive_frame(&mut v, 1280, 800);
+        assert!(!v.overlay, "resizing back to wide re-docks");
+        assert_eq!(v.menu_btn, Rect::ZERO);
+    }
+
+    /// On narrow the roles/members list is a closed flap; the hamburger is the
+    /// only way to reach it, so it must actually open the flap.
+    #[test]
+    fn hamburger_opens_the_overlay_flap() {
+        let mut v = EditorView::seeded_sample(EditorTab::Roles, 0, 0);
+        drive_frame(&mut v, 560, 800);
+        assert!(!v.split.is_sidebar_open(), "overlay flap starts closed");
+        let btn = v.menu_btn.center();
+        editor_click(&mut v, btn);
+        assert!(v.split.is_sidebar_open(), "the hamburger opened the roles/members flap");
+    }
+
+    /// The full narrow master-detail flow: open the flap, pick a different
+    /// row, and the flap dismisses itself to reveal that row's detail.
+    #[test]
+    fn selecting_a_row_dismisses_the_overlay_flap() {
+        let mut v = EditorView::seeded_sample(EditorTab::Roles, 0, 0);
+        drive_frame(&mut v, 560, 800);
+        let start = v.shared.borrow().selected_role;
+        // Open the flap.
+        let btn = v.menu_btn.center();
+        editor_click(&mut v, btn);
+        assert!(v.split.is_sidebar_open(), "hamburger opened the flap");
+        drive_frame(&mut v, 560, 800); // settle the open flap + lay out its rows
+
+        // Click the SECOND role row inside the overlay sidebar (flush-left,
+        // TABBAR_H + sidebar HEADER_H + body pad, second ROW_H, dot region).
+        let row1_y = TABBAR_H + 56.0 + 8.0 + 52.0 + 23.0;
+        editor_click(&mut v, Point::new(16.0, row1_y));
+        let now = v.shared.borrow().selected_role;
+        assert!(now.is_some() && now != start, "clicking a different row changed the selection");
+        assert!(!v.split.is_sidebar_open(), "selecting a row auto-dismissed the overlay flap");
     }
 
     #[test]
