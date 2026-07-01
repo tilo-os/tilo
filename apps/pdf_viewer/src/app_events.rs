@@ -33,11 +33,18 @@ impl PdfApp {
 
     fn toggle_sidebar(&mut self) {
         self.show_sidebar = !self.show_sidebar;
+        // On a narrow window the panels are mutually-exclusive overlays.
+        if self.show_sidebar && self.overlay_mode {
+            self.show_rail = false;
+        }
         self.reflow();
     }
 
     fn toggle_rail(&mut self) {
         self.show_rail = !self.show_rail;
+        if self.show_rail && self.overlay_mode {
+            self.show_sidebar = false;
+        }
         self.reflow();
     }
 
@@ -99,6 +106,9 @@ impl PdfApp {
             return None;
         }
         let lay = self.toolbar_layout();
+        if lay.open.contains(p) {
+            return Some(ToolbarHit::Open);
+        }
         for (t, r) in &lay.tools {
             if r.contains(p) {
                 return Some(ToolbarHit::Tool(*t));
@@ -168,6 +178,7 @@ impl PdfApp {
             }
             ToolbarHit::ToggleRail => self.toggle_rail(),
             ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
+            ToolbarHit::Open => self.open_file_dialog(Self::open_start_dir()),
         }
     }
 
@@ -216,6 +227,20 @@ impl PdfApp {
                     self.selected_anno = c.anno_id.clone();
                     self.go_to_page(page);
                 }
+            }
+            SidebarHit::EditComment(id) => {
+                if let Some(c) = self.comments.iter().find(|c| c.id == id) {
+                    let body = c.body.clone();
+                    self.selected_anno = c.anno_id.clone();
+                    self.begin_edit(EditTarget::CommentBody(id), body);
+                }
+            }
+            SidebarHit::ReplyField(id) => {
+                self.begin_edit(EditTarget::Reply(id), String::new());
+            }
+            SidebarHit::EditSigner => {
+                let cur = self.signer_name.clone();
+                self.begin_edit(EditTarget::Signer, cur);
             }
             SidebarHit::Resolve(id) => {
                 let cur = self
@@ -278,6 +303,13 @@ impl PdfApp {
     fn apply_canvas_press(&mut self, p: Point, state: &mut AutoCommit) -> bool {
         if !self.canvas_rect.contains(p) {
             return false;
+        }
+        // Empty state: the only affordance is the centred "Open a PDF…" button.
+        if !self.has_document {
+            if self.empty_open_button_rect().contains(p) {
+                self.open_file_dialog(Self::open_start_dir());
+            }
+            return true;
         }
         match self.hit_page(p) {
             Some((page, pt)) => match self.tool {
@@ -407,6 +439,23 @@ impl PdfApp {
                 ..
             } => {
                 let p = self.last_mouse;
+                // The file browser is modal — it intercepts the click before
+                // any chrome behind it.
+                if self.open_dialog.is_some() {
+                    self.apply_open_dialog(p, state);
+                    *handled = true;
+                    return;
+                }
+                // A click inside the active inline editor keeps focus; a click
+                // anywhere else commits the edit first, then falls through so
+                // the click still performs its normal action.
+                if self.editing.is_some() {
+                    if self.edit_rect.contains(p) {
+                        *handled = true;
+                        return;
+                    }
+                    self.commit_edit(state);
+                }
                 // An open context menu intercepts the next click.
                 if self.context_menu.is_some() {
                     let menu = self.context_menu.clone().unwrap();
@@ -448,6 +497,15 @@ impl PdfApp {
                     }
                 }
                 if self.apply_rail(p) {
+                    *handled = true;
+                    return;
+                }
+                // On a narrow window a click on the scrim (canvas area not
+                // covered by an open overlay panel) dismisses the panels.
+                if self.overlay_mode && (self.show_rail || self.show_sidebar) && self.canvas_rect.contains(p) {
+                    self.show_rail = false;
+                    self.show_sidebar = false;
+                    self.reflow();
                     *handled = true;
                     return;
                 }
@@ -503,6 +561,17 @@ impl PdfApp {
                 let mods = modifiers.state();
                 let ctrl = mods.control_key() || mods.super_key();
 
+                // Wheel over the open file browser scrolls its list.
+                if let Some(d) = self.open_dialog.as_mut() {
+                    if d.panel_rect.contains(p) {
+                        let max = (d.content_h - d.list_rect.height()).max(0.0);
+                        d.scroll = (d.scroll - raw_y).clamp(0.0, max);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+
                 // Wheel over the sidebar scrolls its list.
                 if self.show_sidebar && self.sidebar_rect.contains(p) {
                     // (sidebar_max_scroll needs the text renderer, so just
@@ -555,6 +624,43 @@ impl PdfApp {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
+        // The file browser is modal: Escape dismisses it, everything else is
+        // swallowed so page navigation doesn't fire behind it.
+        if self.open_dialog.is_some() {
+            if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
+                self.open_dialog = None;
+                self.dirty = true;
+            }
+            *handled = true;
+            return;
+        }
+
+        // While an inline text field is focused it owns the keyboard, so tool
+        // hotkeys and page navigation don't fire mid-sentence.
+        if self.editing.is_some() {
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => self.cancel_edit(),
+                Key::Named(NamedKey::Enter) => self.commit_edit(state),
+                Key::Named(NamedKey::Backspace) => self.edit_backspace(),
+                Key::Named(NamedKey::Space) => self.edit_insert(" "),
+                Key::Named(NamedKey::ArrowLeft) => self.edit_move(-1),
+                Key::Named(NamedKey::ArrowRight) => self.edit_move(1),
+                Key::Named(NamedKey::Home) => self.edit_home_end(false),
+                Key::Named(NamedKey::End) => self.edit_home_end(true),
+                Key::Character(c) => {
+                    if ctrl {
+                        // Leave app-level Ctrl chords (copy/paste land here
+                        // later) alone; only plain typing edits the field.
+                    } else {
+                        self.edit_insert(c.as_str());
+                    }
+                }
+                _ => {}
+            }
+            *handled = true;
+            return;
+        }
+
         // While the search strip is open it owns the keyboard.
         if self.search_active {
             match &key_event.logical_key {
@@ -593,6 +699,11 @@ impl PdfApp {
         if ctrl {
             if let Key::Character(c) = &key_event.logical_key {
                 match c.as_str() {
+                    "o" | "O" => {
+                        self.open_file_dialog(Self::open_start_dir());
+                        *handled = true;
+                        return;
+                    }
                     "f" | "F" => {
                         self.open_search();
                         *handled = true;
@@ -741,7 +852,7 @@ mod event_tests {
     use super::*;
 
     fn app() -> (PdfApp, ui::State) {
-        let mut app = PdfApp::new();
+        let mut app = PdfApp::sample();
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -801,7 +912,8 @@ mod event_tests {
         let theme = ui::theme::Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
         app.sidebar_tab = SidebarTab::Comments;
-        let hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mut er = Rect::ZERO;
+        let hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
         app.sidebar_hits = hits;
         // Find a resolve chip and click its centre.
         let chip = app
@@ -829,7 +941,8 @@ mod event_tests {
 
         // Comments tab: click a comment's delete (×) and confirm removal.
         app.sidebar_tab = SidebarTab::Comments;
-        app.sidebar_hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mut er = Rect::ZERO;
+        app.sidebar_hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
         let del = app.sidebar_hits.iter().find_map(|(h, r)| match h {
             SidebarHit::DeleteComment(id) => Some((id.clone(), *r)),
             _ => None,
@@ -845,7 +958,8 @@ mod event_tests {
         // Signatures tab: click a signature's delete (×).
         app.sidebar_tab = SidebarTab::Signatures;
         let mut scene2 = vello::Scene::new();
-        app.sidebar_hits = app.draw_sidebar(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        let mut er2 = Rect::ZERO;
+        app.sidebar_hits = app.draw_sidebar(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &mut er2);
         let dels = app.sidebar_hits.iter().find_map(|(h, r)| match h {
             SidebarHit::DeleteSignature(id) => Some((id.clone(), *r)),
             _ => None,
@@ -872,7 +986,8 @@ mod event_tests {
             app.sidebar_tab = tab;
             let mut scene = vello::Scene::new();
             app.prepare_sidebar_scroll(&mut tr);
-            let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let mut er = Rect::ZERO;
+            let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
             let shits = app.draw_search(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             assert!(
                 shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleWholeWord))
@@ -880,6 +995,301 @@ mod event_tests {
                 "search strip exposes both option toggles"
             );
         }
+    }
+
+    /// Synthesise the opaque dummy `DeviceId` winit uses in tests. It has no
+    /// public constructor; a zeroed value is the sentinel every backend uses
+    /// and the convention across this workspace's widget tests.
+    fn dummy_device_id() -> winit::event::DeviceId {
+        // SAFETY: DeviceId wraps a platform integer; zero is the "no device"
+        // sentinel and carries no validity requirements.
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn highlight_drag_through_real_event_path_adds_annotation() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.recompute_zoom();
+        app.clamp_scroll();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Arm the Highlight tool by clicking its real toolbar button.
+        let lay = app.toolbar_layout();
+        let (_, hb) = lay.tools.iter().find(|(t, _)| *t == Tool::Highlight).unwrap();
+        let btn = ((hb.x0 + hb.x1) / 2.0, (hb.y0 + hb.y1) / 2.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(app.tool, Tool::Highlight, "clicking the toolbar arms the tool");
+
+        // Drag across page one to lay down a highlight.
+        let origin = app.page_origins()[0];
+        let p0 = (origin.x + 80.0 * app.zoom, origin.y + 200.0 * app.zoom);
+        let p1 = (origin.x + 320.0 * app.zoom, origin.y + 214.0 * app.zoom);
+        let before = app.annotations.len();
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p0.0, p0.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p1.0, p1.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
+
+        assert!(app.annotations.len() > before, "a highlight drag through handle_event adds an annotation");
+        assert!(app.commit_pending, "the new highlight is a committed CRDT action");
+        assert!(PdfDoc::list_annotations(&st.doc).len() > before, "and it landed in the shared document");
+    }
+
+    /// Build a real `WindowEvent::KeyboardInput` for `key`. winit's
+    /// `KeyEventExtra` is `pub(crate)`, so we zero the struct and set the
+    /// public fields — the same trick the terminal + modal_dialog tests use.
+    fn key_event(key: winit::keyboard::Key) -> winit::event::WindowEvent {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = key;
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: dummy_device_id(), event: ev, is_synthetic: false }
+    }
+
+    #[test]
+    fn note_type_and_commit_writes_body_through_real_event_path() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.recompute_zoom();
+        app.clamp_scroll();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Arm the Note tool via its real toolbar button.
+        let lay = app.toolbar_layout();
+        let (_, nb) = lay.tools.iter().find(|(t, _)| *t == Tool::Note).unwrap();
+        let btn = ((nb.x0 + nb.x1) / 2.0, (nb.y0 + nb.y1) / 2.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(app.tool, Tool::Note, "clicking the toolbar arms the note tool");
+
+        // Click a page to drop the note; the caret should land in its thread.
+        let origin = app.page_origins()[0];
+        let click = (origin.x + 200.0 * app.zoom, origin.y + 260.0 * app.zoom);
+        let comments_before = app.comments.len();
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(click.0, click.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(app.comments.len(), comments_before + 1, "placing a note opens a new thread");
+        assert!(matches!(&app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))), "the note's body is focused for typing");
+
+        // Type a real sentence through the keyboard event path.
+        for ch in "Relay path".chars() {
+            let ev = if ch == ' ' {
+                key_event(Key::Named(NamedKey::Space))
+            } else {
+                key_event(Key::Character(ch.to_string().into()))
+            };
+            feed(&mut app, &mut st, &ev);
+        }
+        // Enter commits the edit.
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::Enter)));
+
+        assert!(app.editing.is_none(), "Enter commits and closes the editor");
+        let saved = PdfDoc::list_comments(&st.doc);
+        assert!(
+            saved.iter().any(|c| c.body == "Relay path"),
+            "the typed comment body landed in the shared document: {:?}",
+            saved.iter().map(|c| c.body.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn empty_note_is_discarded_on_commit() {
+        // Placing a note then committing without typing must not litter an
+        // empty marker + thread.
+        let (mut app, mut st) = app();
+        let a0 = app.annotations.len();
+        let c0 = app.comments.len();
+        app.create_note(&mut st.doc, 1, (120.0, 200.0));
+        assert_eq!(app.comments.len(), c0 + 1);
+        assert!(app.editing.is_some());
+        app.commit_edit(&mut st.doc); // committed empty
+        assert_eq!(app.comments.len(), c0, "empty note thread removed");
+        assert_eq!(app.annotations.len(), a0, "and its page marker removed");
+    }
+
+    #[test]
+    fn editing_comment_captures_focus_rect_on_draw() {
+        let (mut app, _st) = app();
+        app.sidebar_tab = SidebarTab::Comments;
+        let body = app.comments[0].body.clone();
+        let cid = app.comments[0].id.clone();
+        app.begin_edit(EditTarget::CommentBody(cid), body);
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        app.prepare_sidebar_scroll(&mut tr);
+        let mut scene = vello::Scene::new();
+        let mut er = Rect::ZERO;
+        let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+        assert!(er.area() > 1.0, "the focused comment field's rect is captured");
+        // A click inside that rect must keep the edit alive; outside commits.
+        assert!(app.edit_rect.area() < 1.0, "edit_rect is only set by draw_all, not draw_sidebar");
+    }
+
+    #[test]
+    fn reply_composer_appends_through_editor() {
+        let (mut app, mut st) = app();
+        // Pick a seeded comment and compose a reply into it.
+        let cid = app.comments[0].id.clone();
+        let replies_before = app.comments[0].replies.len();
+        app.begin_edit(EditTarget::Reply(cid.clone()), String::new());
+        app.edit_insert("Looks good");
+        app.commit_edit(&mut st.doc);
+        let after = app.comments.iter().find(|c| c.id == cid).unwrap();
+        assert_eq!(after.replies.len(), replies_before + 1, "reply landed in the thread");
+        assert_eq!(after.replies.last().unwrap().body, "Looks good");
+    }
+
+    #[test]
+    fn open_dialog_loads_a_real_pdf_through_event_path() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+
+        let mut app = PdfApp::empty();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        assert!(!app.has_document, "empty app starts with no document");
+
+        // Open the in-app browser on the crate's fixtures directory.
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
+        app.open_file_dialog(dir);
+        assert!(app.open_dialog.is_some());
+
+        // One draw pass captures the row hit-rects.
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        app.draw_open_dialog(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        // Locate the sample.pdf row and take its centre.
+        let row = {
+            let d = app.open_dialog.as_ref().unwrap();
+            let i = d
+                .entries
+                .iter()
+                .position(|e| e.name == "sample.pdf")
+                .expect("sample.pdf is listed in fixtures");
+            d.row_hits.iter().find(|(ri, _)| *ri == i).map(|(_, r)| *r).unwrap()
+        };
+        let p = Point::new((row.x0 + row.x1) / 2.0, (row.y0 + row.y1) / 2.0);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p.x, p.y) },
+            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+        );
+        app.handle_event(
+            &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+        );
+
+        assert!(app.has_document, "clicking the PDF row loads a real document");
+        assert_eq!(app.doc_name, "sample.pdf");
+        assert!(app.open_dialog.is_none(), "the picker closes after loading");
+        assert!(app.doc.page_count() >= 1, "the loaded document has pages");
+    }
+
+    #[test]
+    fn open_button_opens_the_browser_and_escape_closes_it() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut app = PdfApp::empty();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.recompute_zoom();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Click the toolbar Open (folder) button.
+        let open = app.toolbar_layout().open;
+        let c = ((open.x0 + open.x1) / 2.0, (open.y0 + open.y1) / 2.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(c.0, c.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert!(app.open_dialog.is_some(), "the folder button opens the file browser");
+
+        // Escape dismisses it.
+        let ev = key_event(Key::Named(NamedKey::Escape));
+        feed(&mut app, &mut st, &ev);
+        assert!(app.open_dialog.is_none(), "Escape closes the browser");
+    }
+
+    #[test]
+    fn idle_app_requests_no_animation_frames() {
+        use ui::Widget as _;
+        // A freshly synced viewer with the pointer at its default (0,0) — which
+        // sits inside the toolbar rect but over no button — must not ask for
+        // animation frames, or the loop would spin at ~60Hz while idle.
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.recompute_zoom();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        // resolve_tooltip runs inside the draw; drive it directly.
+        app.resolve_tooltip();
+        assert!(!app.needs_animation_frame(), "idle app must settle to zero animation frames");
+        let _ = (&theme, &mut tr);
     }
 
     #[test]

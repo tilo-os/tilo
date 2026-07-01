@@ -23,3 +23,7 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+# Real PDF page rasterisation via a dynamically-loaded pdfium; falls back to
+# pure-Rust text extraction when the native library is not present.
+pdfium-render = "0.8.37"
+pdf-extract = "0.7.12"

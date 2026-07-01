@@ -10,9 +10,10 @@
 //! appsink`; frames are pulled on a worker thread and handed to the UI as
 //! RGBA buffers it can wrap in `ui::widget::Image`.
 //!
-//! TODO(live): wire the worker's frames into `CameraApp` via
-//! `Widget::on_external_event` (the App requests a redraw + re-sync after
-//! dispatch), and surface device-permission failures as an in-app prompt.
+//! `CameraApp::poll_camera` drains this receiver each sync and forwards the
+//! newest frame to the viewfinder / capture path via
+//! `CameraApp::push_camera_frame`. Device-open failure leaves the app in its
+//! honest "camera unavailable" state rather than faking a feed.
 
 #![cfg(feature = "live-capture")]
 
