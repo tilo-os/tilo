@@ -150,6 +150,17 @@ impl CalcModel {
         ];
         m.active_fn = 0;
         m.memory = 42.0;
+        // Shot-only: a single long function so the headless screenshot can show
+        // a formula that overflows the fixed-height field and scrolls within it
+        // (caret kept in view at the end) rather than resizing the row.
+        if std::env::var_os("QOS_CALC_LONG_DEMO").is_some() {
+            m.mode = Mode::Graph2d;
+            m.funcs = vec![PlotFn {
+                expr: "sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)".into(),
+                visible: true,
+            }];
+            m.active_fn = 0;
+        }
         m
     }
 

@@ -307,6 +307,28 @@ impl CalculatorApp {
     }
 
     fn on_wheel(&mut self, step: f64) {
+        // Scrolling over a math editor scrolls its (clipped) content — the axis
+        // that actually overflows moves; the other is clamped to a no-op.
+        match self.model.mode {
+            Mode::Graph2d => {
+                if let Some(i) = self.g2.field_at(self.mouse) {
+                    self.g2.sync_fields(&self.model);
+                    if let Some(f) = self.g2.active_field_mut(i) {
+                        f.scroll_by(-step * 24.0, -step * 24.0);
+                    }
+                    return;
+                }
+            }
+            Mode::Graph3d => {
+                if self.g3.expr_contains(self.mouse) {
+                    self.g3.sync_field(&self.model);
+                    self.g3.field_mut().scroll_by(-step * 24.0, -step * 24.0);
+                    return;
+                }
+            }
+            Mode::Calc => {}
+        }
+
         let factor = (1.0 + step * 0.12).clamp(0.4, 2.5);
         match self.model.mode {
             // Scroll the history list when the pointer is over it. This is
@@ -452,6 +474,34 @@ impl CalculatorApp {
 impl Default for CalculatorApp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Bench/test accessors used by the headless interaction bench (`--bench-clicks`)
+/// and regression tests. Not used by the live app.
+impl CalculatorApp {
+    #[doc(hidden)]
+    pub fn bench_seg_center(&self, i: usize) -> Point {
+        self.seg_rects[i].center()
+    }
+
+    /// Screen-space center of the Calc keypad key labelled `label`, after the
+    /// current layout. `None` if the key is absent or the pad isn't laid out.
+    #[doc(hidden)]
+    pub fn bench_calc_key_center(&self, label: &str) -> Option<Point> {
+        let i = self.calc.key_index_for_label(label)?;
+        self.calc.key_center(i)
+    }
+
+    /// Current calculator expression length, in characters.
+    #[doc(hidden)]
+    pub fn bench_expr_len(&self) -> usize {
+        self.model.expr.chars().count()
+    }
+
+    #[doc(hidden)]
+    pub fn bench_mode_is_calc(&self) -> bool {
+        self.model.mode == Mode::Calc
     }
 }
 

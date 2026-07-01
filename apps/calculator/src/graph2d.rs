@@ -153,7 +153,9 @@ impl Graph2dScreen {
             // `QOS_CALC_SELECTION_DEMO` instead seeds a selection band, for the
             // drag-selection screenshot.
             if let Some(field) = self.fields.get_mut(model.active_fn) {
-                if std::env::var_os("QOS_CALC_SELECTION_DEMO").is_some() {
+                if std::env::var_os("QOS_CALC_LONG_DEMO").is_some() {
+                    field.park_caret_at_end();
+                } else if std::env::var_os("QOS_CALC_SELECTION_DEMO").is_some() {
                     field.park_demo_selection();
                 } else {
                     field.park_caret_in_structure();
