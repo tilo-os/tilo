@@ -79,17 +79,31 @@ impl RustyPipeBackend {
     /// Construct with an explicit PoToken provider. The provider's capability
     /// selects whether rustypipe's botguard path is enabled.
     pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        // A multi-thread runtime (not current-thread): rustypipe fires internal
+        // `tokio::spawn`/blocking work (visitor-data prefetch, the botguard
+        // subprocess) that a single-threaded runtime can deadlock on.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         let potoken_desc = bind_potoken(provider.as_ref());
-        let mut builder = RustyPipe::builder();
-        if !provider.can_stream() {
-            builder = builder.no_botguard();
-        }
-        let rp = builder
-            .build()
+        let can_stream = provider.can_stream();
+        // Build the client *inside* the runtime so anything rustypipe wires up
+        // at construction (the reqwest pool, cache tasks) has a reactor.
+        let rp = rt
+            .block_on(async {
+                // `no_reporter()`: rustypipe's default reporter writes a
+                // `rustypipe_reports/*.json` file into the process cwd on every
+                // parser warning. A shipped app must not litter the working
+                // directory, so disable it (warnings still degrade gracefully —
+                // core fields are extracted regardless).
+                let mut builder = RustyPipe::builder().no_reporter();
+                if !can_stream {
+                    builder = builder.no_botguard();
+                }
+                builder.build()
+            })
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
         Ok(Self { rp, rt, potoken_desc })
     }
