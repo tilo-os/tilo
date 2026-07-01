@@ -1316,13 +1316,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 let t_send_us = t_frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
                 if let Some(_start) = t_frame_start {
+                    // Attribute the draw phase: how much of it was
+                    // cosmic-text shaping (and how many labels hit vs.
+                    // missed the shaped-glyph cache) vs. Vello scene
+                    // encoding. On a static frame this should read
+                    // `shape=0us hit=N miss=0` — every label reused.
+                    let (shape_hits, shape_misses, shape_ns) =
+                        app.text_renderer.take_shape_stats();
                     eprintln!(
-                        "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us send_to_worker={:>5}us",
+                        "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                         t_send_us,
                         if t_relayout_branch { "Y" } else { "n" },
                         t_compute_us,
                         t_apply_us,
                         t_draw_us,
+                        shape_ns / 1000,
+                        shape_hits,
+                        shape_misses,
                         t_send_us,
                     );
                 }
