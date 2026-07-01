@@ -10,8 +10,17 @@
 //!                  ("our own library layer"), with mutation helpers
 //!                  (create/rename/delete playlist, reorder/remove tracks,
 //!                  toggle like / saved album).
-//!   * [`source`] — YouTube-Music streaming via a Piped/Invidious audio
-//!                  endpoint (network gated behind the `streaming` feature).
+//!   * [`backend`]— the **swappable** YouTube-Music data source: a
+//!                  [`backend::MusicBackend`] trait with an offline sample impl
+//!                  (default) and a real rustypipe InnerTube impl (`live`
+//!                  feature) that does real song search and resolves a
+//!                  directly-playable audio-stream URL. PoToken is a seam
+//!                  ([`backend::potoken`]).
+//!   * [`stream`] — the non-blocking worker driving [`backend`] off the UI
+//!                  thread (search + stream-resolution requests in, results
+//!                  drained per-frame).
+//!   * [`source`] — legacy Piped/Invidious audio endpoint (network gated behind
+//!                  the `streaming` feature); superseded by [`backend`]/`live`.
 //!   * [`audio`]  — GStreamer `playbin` output + live position query (gated
 //!                  behind `audio`; the playhead tracks the real pipeline).
 //!   * [`lyrics`] — synced-or-plain lyrics: an LRC parser + a bundled sample
@@ -38,6 +47,7 @@
 pub mod app;
 pub mod art;
 pub mod audio;
+pub mod backend;
 pub mod doc;
 pub mod icon;
 pub mod lyrics;
@@ -46,6 +56,7 @@ pub mod relay;
 pub mod seed;
 pub mod source;
 pub mod storage;
+pub mod stream;
 pub mod sync;
 
 pub use app::{MusicApp, View};

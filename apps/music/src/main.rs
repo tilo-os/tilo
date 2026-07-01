@@ -32,6 +32,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // Probe mode: prove the live path end-to-end from the terminal — run a real
+    // YouTube-Music search, resolve a real audio stream URL for the top hit and
+    // (best-effort) HTTP-verify + decode it. Gated behind `--features live`.
+    if let Some(pos) = args.iter().position(|a| a == "--probe") {
+        // Join all trailing args so an unquoted multi-word query
+        // (`--probe aurora runaway`) is still taken as one search.
+        let query = args[pos + 1..].join(" ");
+        let query = if query.trim().is_empty() { "aurora runaway".to_string() } else { query };
+        return run_probe(&query);
+    }
+
     // Headless relay mode: a home server runs the library document + sync
     // transport with no GUI; clients sync to it. Live iroh transport is gated
     // behind the `p2p` feature (the relay still runs on the loopback transport
@@ -61,6 +72,194 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, music::app_root());
     app.run();
     Ok(())
+}
+
+/// Prove the live streaming path from the terminal. Real search + real audio
+/// stream resolution + an independent HTTP byte-check. Requires `--features
+/// live`; the default build prints how to enable it (never fakes a result).
+#[cfg(feature = "live")]
+fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use music::backend::MusicBackend;
+
+    println!("music --probe: live YouTube-Music backend (rustypipe InnerTube)\n");
+
+    let backend = music::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("backend init failed: {e}"))?;
+    println!("backend: {} (live={})\n", backend.name(), backend.is_live());
+
+    println!("== real search: {query:?} ==");
+    let hits = backend
+        .search_tracks(query)
+        .map_err(|e| format!("search failed (network / API): {e}"))?;
+    if hits.is_empty() {
+        return Err("search returned zero results — cannot prove the path".into());
+    }
+    for (i, h) in hits.iter().take(10).enumerate() {
+        let (m, s) = (h.duration_s / 60, h.duration_s % 60);
+        println!(
+            "  {:>2}. {}  —  {}   [{}]   {m}:{s:02}",
+            i + 1,
+            h.title,
+            h.artist,
+            h.video_id
+        );
+    }
+
+    let top = &hits[0];
+    println!("\n== resolve a real audio stream for the top hit ==");
+    println!("   {} — {}  ({})", top.title, top.artist, top.video_id);
+    let stream = backend
+        .resolve_audio(&top.video_id)
+        .map_err(|e| format!("stream resolution failed: {e}"))?;
+    let mib = stream.size_bytes as f64 / (1024.0 * 1024.0);
+    println!(
+        "   itag={}  codec={}  container={}  ~{} kbps",
+        stream.itag,
+        stream.codec,
+        stream.format,
+        stream.bitrate / 1000
+    );
+    println!("   mime: {}", stream.mime);
+    println!("   API content-length: {} bytes ({mib:.2} MiB)", stream.size_bytes);
+    println!("   URL: {}", stream.url);
+
+    // Independent proof the URL actually serves audio bytes.
+    verify_stream_http(&stream.url)?;
+
+    // Best-effort decode proof (only with the `audio` feature / GStreamer).
+    probe_decode(&stream.url);
+
+    println!("\nprobe OK — search + stream resolution are real.");
+    Ok(())
+}
+
+/// Range-GET the resolved stream URL to prove it serves real media bytes.
+#[cfg(feature = "live")]
+fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n== independent HTTP verification (Range GET first 64 KiB) ==");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?;
+    let resp = client
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-65535")
+        .send()?;
+    let status = resp.status();
+    let content_range = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = resp.bytes()?;
+    println!("   HTTP {status}");
+    if let Some(ct) = content_type {
+        println!("   Content-Type: {ct}");
+    }
+    if let Some(cr) = content_range {
+        println!("   Content-Range: {cr}");
+    }
+    let sig: String = bytes.iter().take(12).map(|b| format!("{b:02x} ")).collect();
+    println!("   received {} bytes; first 12: {}", bytes.len(), sig.trim_end());
+    if !status.is_success() || bytes.is_empty() {
+        return Err(format!("stream URL did not serve bytes (HTTP {status})").into());
+    }
+    println!("   -> the resolved URL serves real audio bytes.");
+    Ok(())
+}
+
+/// Best-effort GStreamer decode of the resolved stream to a fake sink (no
+/// speakers needed). Only compiled with the `audio` feature; on missing codec
+/// plugins it reports honestly rather than claiming audio it didn't produce.
+#[cfg(all(feature = "live", feature = "audio"))]
+fn probe_decode(url: &str) {
+    use gstreamer::prelude::*;
+    println!("\n== GStreamer decode check (audio -> fakesink) ==");
+    if gstreamer::init().is_err() {
+        println!("   [decode] gstreamer init failed — skipping");
+        return;
+    }
+    // Report any plugins this pipeline needs but the environment lacks, so a
+    // failure is explained concretely rather than hand-waved.
+    let need = ["souphttpsrc", "curlhttpsrc", "qtdemux", "avdec_aac", "faad"];
+    let missing: Vec<&str> = need
+        .iter()
+        .copied()
+        .filter(|n| gstreamer::ElementFactory::find(n).is_none())
+        .collect();
+    let no_http = gstreamer::ElementFactory::find("souphttpsrc").is_none()
+        && gstreamer::ElementFactory::find("curlhttpsrc").is_none();
+    let no_aac = gstreamer::ElementFactory::find("avdec_aac").is_none()
+        && gstreamer::ElementFactory::find("faad").is_none();
+    if !missing.is_empty() {
+        println!("   [decode] missing GStreamer plugins: {}", missing.join(", "));
+    }
+    let Ok(playbin) = gstreamer::ElementFactory::make("playbin").build() else {
+        println!("   [decode] no playbin element — skipping");
+        return;
+    };
+    playbin.set_property("uri", url);
+    if let Ok(fake) = gstreamer::ElementFactory::make("fakesink").build() {
+        playbin.set_property("audio-sink", &fake);
+    }
+    if playbin.set_state(gstreamer::State::Playing).is_err() {
+        if no_http {
+            println!(
+                "   [decode] pipeline can't start — no HTTP source plugin (souphttpsrc/\
+                 curlhttpsrc) in this env, so GStreamer can't fetch the URL. The resolve + \
+                 HTTP-byte proof above still hold."
+            );
+        } else if no_aac {
+            println!(
+                "   [decode] pipeline can't start — no AAC decoder (avdec_aac/faad) in this \
+                 env. The resolve + HTTP-byte proof above still hold."
+            );
+        } else {
+            println!("   [decode] could not start pipeline — skipping");
+        }
+        return;
+    }
+    let mut max_ms = 0u64;
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Some(p) = playbin.query_position::<gstreamer::ClockTime>() {
+            max_ms = max_ms.max(p.mseconds());
+        }
+        if max_ms > 500 {
+            break;
+        }
+    }
+    let _ = playbin.set_state(gstreamer::State::Null);
+    if max_ms > 0 {
+        println!("   [decode] pipeline PLAYING, decoded to {max_ms} ms — real audio decodes here.");
+    } else {
+        println!(
+            "   [decode] pipeline did not advance (likely a missing AAC/Opus GStreamer plugin \
+             in this env); the resolve + HTTP-byte proof above still hold."
+        );
+    }
+}
+
+#[cfg(all(feature = "live", not(feature = "audio")))]
+fn probe_decode(_url: &str) {
+    println!(
+        "\n== GStreamer decode check ==\n   skipped (build with `--features live,audio` to \
+         decode the resolved stream here)."
+    );
+}
+
+/// Without the `live` feature the probe cannot run — say so honestly.
+#[cfg(not(feature = "live"))]
+fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!(
+        "music --probe needs the `live` feature (real YouTube-Music backend).\n\
+         Rebuild with:  qos-build run -p music --features live -- --probe \"aurora runaway\""
+    );
+    std::process::exit(2);
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

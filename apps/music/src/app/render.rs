@@ -253,7 +253,14 @@ impl Widget for MusicApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.pb.playing || self.toast.is_some()
+        // Keep frames flowing while playing / a toast fades, and — crucially —
+        // while the streaming worker has an in-flight search or stream
+        // resolution, so its result is drained (and applied to the audio
+        // engine) promptly without waiting for the next input event.
+        self.pb.playing
+            || self.toast.is_some()
+            || self.live_search_pending.is_some()
+            || self.resolve_in_flight > 0
     }
 
     fn needs_redraw(&self) -> bool {
@@ -338,6 +345,9 @@ impl MusicApp {
                     *handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
+                    // Submit a real YouTube-Music search (live builds); the
+                    // local library search stays visible until results land.
+                    self.request_live_search();
                     self.search_focused = false;
                     *handled = true;
                 }
@@ -421,6 +431,11 @@ impl MusicApp {
     pub(super) fn render_frame(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.hits.clear();
         self.row_menu_hits.clear();
+        // Fold in any streaming-worker results (resolved stream URLs → audio
+        // engine, real search hits → library), then keep live search results
+        // visible after a `sync` reloaded the catalog from the document.
+        self.drain_worker();
+        self.inject_live_hits();
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
@@ -1521,11 +1536,48 @@ impl MusicApp {
             return y + rows as f64 * (tile_h + gap);
         }
 
+        // Real YouTube-Music hits for this exact query (ranked order), if the
+        // live worker has returned any. Rendered first, above the local index.
+        let live_ids: Vec<String> = self
+            .live_results
+            .as_ref()
+            .filter(|(lq, _)| lq.trim() == q.trim())
+            .map(|(_, ids)| ids.clone())
+            .unwrap_or_default();
+        let searching = self.live_search_pending.as_deref() == Some(q.trim());
+
         let res = self.lib.search(&q);
-        if res.is_empty() {
+        if res.is_empty() && live_ids.is_empty() {
             y += 24.0;
-            draw_text(tr, scene, t, &format!("No results for \u{201c}{}\u{201d}", q), body.x0 + pad, y, 15.0, c.dim, TextWeight::Regular, None);
-            return y + 40.0;
+            let msg = if searching {
+                format!("Searching YouTube Music for \u{201c}{}\u{201d}\u{2026}", q)
+            } else {
+                format!("No results for \u{201c}{}\u{201d}", q)
+            };
+            draw_text(tr, scene, t, &msg, body.x0 + pad, y, 15.0, c.dim, TextWeight::Regular, None);
+            let hint = if self.backend_live {
+                "Press Enter to search YouTube Music"
+            } else if searching {
+                ""
+            } else {
+                "Press Enter to search YouTube Music (needs the `live` build)"
+            };
+            if !hint.is_empty() {
+                draw_text(tr, scene, t, hint, body.x0 + pad, y + 24.0, 12.0, c.dim, TextWeight::Regular, None);
+            }
+            return y + 56.0;
+        }
+
+        if !live_ids.is_empty() {
+            let label = if self.backend_live { "Songs \u{00b7} YouTube Music" } else { "Songs \u{00b7} streaming" };
+            y = self.section_label(scene, t, tr, c, body, y + 8.0, label);
+            let rows = self.gather_tracks(&live_ids);
+            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &live_ids, true, true);
+            y += 8.0;
+        } else if searching {
+            y += 8.0;
+            draw_text(tr, scene, t, "Searching YouTube Music\u{2026}", body.x0 + pad, y + 8.0, 13.0, c.dim, TextWeight::Regular, None);
+            y += 28.0;
         }
 
         // Artists row.
