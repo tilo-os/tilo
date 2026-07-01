@@ -36,8 +36,15 @@ sha2 = "0.10"
 # a network stack, so they are gated behind the `live` feature: the default
 # build (and every `--shots`/test run) stays hermetic on the offline sample.
 # No ffmpeg / yt-dlp — rustypipe embeds rquickjs.
-rustypipe = { version = "0.11", optional = true }
-tokio = { version = "1", features = ["rt", "macros", "time"], optional = true }
+#
+# rustls (webpki roots) rather than rustypipe's default native-tls: the
+# distrobox build image has no OpenSSL, and it keeps the TLS stack identical to
+# the `reqwest` above (one rustls, no openssl-sys). webpki-roots bundles the
+# Mozilla CA set so YouTube's chain verifies with zero system trust store.
+rustypipe = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls-webpki-roots"] }
+# `rt-multi-thread` so the live backend's runtime can drive rustypipe's internal
+# `tokio::spawn` (visitor-data prefetch) — a current-thread runtime cannot.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
 
 [features]
 default = []

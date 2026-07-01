@@ -248,6 +248,24 @@ impl Settings {
     }
 }
 
+/// Where the catalogue currently on screen came from. Drives the top-bar
+/// status pill ("Live" vs "Sample") so the user always knows whether they are
+/// looking at real YouTube data or the bundled offline sample.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DataSource {
+    /// True once a live backend has actually returned real data this session.
+    pub live: bool,
+    /// Short human label for the pill (e.g. "offline — sample data",
+    /// "live (rustypipe)", "connecting…").
+    pub label: String,
+}
+
+impl Default for DataSource {
+    fn default() -> Self {
+        Self { live: false, label: "sample data".into() }
+    }
+}
+
 /// Which screen the app is showing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Route {
@@ -298,6 +316,25 @@ pub struct TubeModel {
     /// opening the palette doesn't clobber an in-progress search).
     #[serde(default)]
     pub palette_query: String,
+    /// Provenance of the on-screen catalogue (sample vs live).
+    #[serde(default)]
+    pub data_source: DataSource,
+    /// The query whose live results are held in [`search_hits`]. Lets the
+    /// search screen render the backend's exact ordered result set (which a
+    /// local substring filter would otherwise mangle for multi-word queries)
+    /// while still falling back to the local filter when there are no live
+    /// hits.
+    #[serde(default)]
+    pub search_hits_query: String,
+    /// Ordered video ids returned by the live backend for [`search_hits_query`].
+    #[serde(default)]
+    pub search_hits: Vec<VideoId>,
+    /// The video whose live "up next" list is held in [`related_hits`].
+    #[serde(default)]
+    pub related_of: VideoId,
+    /// Ordered related-video ids returned by the live backend for [`related_of`].
+    #[serde(default)]
+    pub related_hits: Vec<VideoId>,
 }
 
 impl Default for TubeModel {
@@ -315,6 +352,11 @@ impl Default for TubeModel {
             skipped_log: Vec::new(),
             palette_open: false,
             palette_query: String::new(),
+            data_source: DataSource::default(),
+            search_hits_query: String::new(),
+            search_hits: Vec::new(),
+            related_of: String::new(),
+            related_hits: Vec::new(),
         }
     }
 }
@@ -366,6 +408,70 @@ impl TubeModel {
             .collect()
     }
 
+    /// Insert or update a video by id, preserving any SponsorBlock segments /
+    /// comments already fetched for it (a fresh list item carries neither).
+    pub fn upsert_video(&mut self, v: Video) {
+        if let Some(slot) = self.videos.iter_mut().find(|x| x.id == v.id) {
+            let keep_sponsor = std::mem::take(&mut slot.sponsor);
+            let keep_comments = std::mem::take(&mut slot.comments);
+            let keep_dearrow = slot.dearrow_title.take();
+            *slot = v;
+            if slot.sponsor.is_empty() {
+                slot.sponsor = keep_sponsor;
+            }
+            if slot.comments.is_empty() {
+                slot.comments = keep_comments;
+            }
+            if slot.dearrow_title.is_none() {
+                slot.dearrow_title = keep_dearrow;
+            }
+        } else {
+            self.videos.push(v);
+        }
+    }
+
+    /// Insert or replace a channel by id.
+    pub fn upsert_channel(&mut self, c: Channel) {
+        if let Some(slot) = self.channels.iter_mut().find(|x| x.id == c.id) {
+            *slot = c;
+        } else {
+            self.channels.push(c);
+        }
+    }
+
+    /// Make sure a minimal channel entry exists so avatars, subscribe and the
+    /// channel page have at least a name to show for a video's uploader (live
+    /// feed items reference channels we haven't fetched a full page for yet).
+    pub fn ensure_channel_stub(&mut self, id: &str, name: &str) {
+        if id.is_empty() || self.channels.iter().any(|c| c.id == id) {
+            return;
+        }
+        self.channels.push(Channel {
+            id: id.to_string(),
+            name: name.to_string(),
+            handle: id.to_string(),
+            subscribers: 0,
+            verified: false,
+            description: String::new(),
+            seed: id.to_string(),
+        });
+    }
+
+    /// Replace the whole catalogue with a freshly-fetched live set, marking the
+    /// data source live and synthesising channel stubs for its uploaders.
+    pub fn adopt_live_catalogue(&mut self, videos: Vec<Video>, label: impl Into<String>) {
+        for v in &videos {
+            self.ensure_channel_stub(&v.channel_id, &v.channel_name);
+        }
+        self.videos = videos;
+        // Stale local ordering hints no longer apply to the new catalogue.
+        self.search_hits.clear();
+        self.search_hits_query.clear();
+        self.related_hits.clear();
+        self.related_of.clear();
+        self.data_source = DataSource { live: true, label: label.into() };
+    }
+
     /// Simple case-insensitive title/channel search.
     pub fn search(&self, q: &str) -> Vec<&Video> {
         let q = q.trim().to_lowercase();
@@ -380,6 +486,34 @@ impl TubeModel {
                     || v.category.to_lowercase().contains(&q)
             })
             .collect()
+    }
+
+    /// Results to render for `query`: the backend's exact ordered live hits
+    /// when we have them for this query, otherwise the local substring filter
+    /// (offline / before a live response lands).
+    pub fn search_display(&self, query: &str) -> Vec<&Video> {
+        if self.search_hits_query == query && !self.search_hits.is_empty() {
+            let hits: Vec<&Video> =
+                self.search_hits.iter().filter_map(|id| self.video(id)).collect();
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+        self.search(query)
+    }
+
+    /// "Up next" list to render for a watch page: the backend's real
+    /// recommendations when we have them for this video, otherwise the local
+    /// same-category heuristic.
+    pub fn related_display(&self, id: &str) -> Vec<&Video> {
+        if self.related_of == id && !self.related_hits.is_empty() {
+            let hits: Vec<&Video> =
+                self.related_hits.iter().filter_map(|rid| self.video(rid)).collect();
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+        self.related(id)
     }
 
     /// "Up next" suggestions for a watch page: same category first, then
