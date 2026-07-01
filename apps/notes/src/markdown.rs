@@ -320,6 +320,8 @@ pub fn serialize_inline(text: &InlineText) -> String {
             Mark::Italic => "*",
             Mark::Code => "`",
             Mark::Link(_) => "[[",
+            Mark::Underline => "__",
+            Mark::Strikethrough => "~~",
         }
     }
     fn close_marker(mark: &Mark) -> &'static str {
@@ -328,16 +330,20 @@ pub fn serialize_inline(text: &InlineText) -> String {
             Mark::Italic => "*",
             Mark::Code => "`",
             Mark::Link(_) => "]]",
+            Mark::Underline => "__",
+            Mark::Strikethrough => "~~",
         }
     }
     // Sort marks for deterministic emission: by start ascending, then
-    // by priority (Bold < Italic < Code < Link).
+    // by priority (Bold < Italic < Underline < Strikethrough < Code < Link).
     fn priority(m: &Mark) -> u8 {
         match m {
             Mark::Bold => 0,
             Mark::Italic => 1,
-            Mark::Code => 2,
-            Mark::Link(_) => 3,
+            Mark::Underline => 2,
+            Mark::Strikethrough => 3,
+            Mark::Code => 4,
+            Mark::Link(_) => 5,
         }
     }
     let mut marks = text.marks.clone();

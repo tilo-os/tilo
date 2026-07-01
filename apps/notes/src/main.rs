@@ -11,10 +11,26 @@
 //! ```
 
 use notes::NotesApp;
+use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
 use ui::presence::PresenceKey;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+
+    // Headless snapshot mode: `--shots <file.png>` (optionally with
+    // `--viewport WxH`) renders one offscreen frame and exits, so the
+    // whole UI can be reviewed without a window.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(out) = parse_flag(&args, "--shots") {
+        let viewport = parse_flag(&args, "--viewport")
+            .and_then(|v| shots::parse_viewport(&v))
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        // `--scenario drawer` opens the narrow-mode page drawer so the
+        // overlay can be reviewed in the snapshot.
+        let open_drawer = parse_flag(&args, "--scenario").as_deref() == Some("drawer");
+        shots::render_to_path(viewport, std::path::Path::new(&out), open_drawer)?;
+        return Ok(());
+    }
 
     // Per-peer identity. The same id drives (a) the Automerge actor so
     // two instances are distinct CRDT authors, (b) the broker's presence
@@ -42,4 +58,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     app.run();
     Ok(())
+}
+
+/// Read `--name value` or `--name=value` out of `args`. Returns the
+/// value string if present.
+fn parse_flag(args: &[String], name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == name {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }

@@ -174,64 +174,58 @@ fn walk_inline(node: Node, style: Style, b: &mut SpanBuilder) {
 }
 
 /// Accumulates spans while normalising whitespace across text-node boundaries.
+///
+/// Whitespace within a same-style run stays as a single literal space; a break
+/// at a *style* boundary is lifted onto the next span's `space_before` flag
+/// (leaving the span text trimmed). This keeps runs clean — `.` after `</em>`
+/// hugs the emphasised word instead of picking up a spurious gap.
 #[derive(Default)]
 struct SpanBuilder {
     spans: Vec<Span>,
-    /// Whether the previous emitted char was whitespace (for collapsing).
+    /// A word break is pending (collapsing any run of whitespace to one).
     pending_space: bool,
+    /// Any non-whitespace has been emitted (suppresses a leading block space).
     started: bool,
 }
 
 impl SpanBuilder {
     fn push_text(&mut self, raw: &str, style: Style) {
-        let mut buf = String::new();
         for ch in raw.chars() {
             if ch.is_whitespace() {
-                // Collapse any run of whitespace to a single deferred space,
-                // but never at the very start of the block.
-                if self.started || !buf.is_empty() {
+                if self.started {
                     self.pending_space = true;
                 }
-            } else {
+                continue;
+            }
+            let same_style = self.spans.last().is_some_and(|l| {
+                l.bold == style.bold && l.italic == style.italic && l.code == style.code
+            });
+            if same_style {
+                // Continuation of the current run: a pending break is an
+                // internal space (word separation within one style).
+                let last = self.spans.last_mut().unwrap();
                 if self.pending_space {
-                    buf.push(' ');
+                    last.text.push(' ');
                     self.pending_space = false;
                 }
-                buf.push(ch);
-                self.started = true;
+                last.text.push(ch);
+            } else {
+                // New run: the pending break becomes its `space_before` flag.
+                let space_before = self.pending_space;
+                self.pending_space = false;
+                self.spans.push(Span {
+                    text: ch.to_string(),
+                    bold: style.bold,
+                    italic: style.italic,
+                    code: style.code,
+                    space_before,
+                });
             }
+            self.started = true;
         }
-        if buf.is_empty() {
-            return;
-        }
-        // Merge with the previous span when style matches.
-        if let Some(last) = self.spans.last_mut() {
-            if last.bold == style.bold
-                && last.italic == style.italic
-                && last.code == style.code
-            {
-                last.text.push_str(&buf);
-                return;
-            }
-        }
-        self.spans.push(Span {
-            text: buf,
-            bold: style.bold,
-            italic: style.italic,
-            code: style.code,
-        });
     }
 
-    fn finish(mut self) -> Vec<Span> {
-        // Trim trailing whitespace off the last span.
-        if let Some(last) = self.spans.last_mut() {
-            while last.text.ends_with(' ') {
-                last.text.pop();
-            }
-            if last.text.is_empty() {
-                self.spans.pop();
-            }
-        }
+    fn finish(self) -> Vec<Span> {
         self.spans
     }
 }
