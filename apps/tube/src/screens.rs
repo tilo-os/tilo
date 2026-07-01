@@ -527,7 +527,7 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
             .pad(24.0)
             .gap(18.0)
             .push(chip_bar(model, theme, bus))
-            .push(section_header(theme, IconKind::Fire, "Trending now", "Reordered by you — no algorithm tricks"))
+            .push(section_header(theme, IconKind::Fire, "Trending", ""))
             .push(grid(cards)),
     )
 }
