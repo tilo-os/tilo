@@ -16,10 +16,15 @@
 pub mod action;
 pub mod api;
 pub mod app;
+pub mod backend;
+pub mod contrast;
 pub mod model;
 pub mod playback;
+pub mod recommend;
 pub mod sample;
 pub mod screens;
+pub mod search_type;
+pub mod sync;
 pub mod util;
 pub mod widgets;
 
@@ -38,4 +43,13 @@ pub fn app_root() -> Box<dyn Widget> {
 /// width. Identical to [`app_root`] apart from that one shots-only flag.
 pub fn app_root_narrow_shot() -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_open_sidebar_shot())
+}
+
+/// `--shots` variant that starts on a named [`model::Route`], so each screen
+/// (home / trending / search / settings / …) can be captured for visual
+/// self-inspection — in particular the selected-nav-item and selected-chip
+/// contrast. Shots-only; the live app derives its route from sample/persisted
+/// state.
+pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
+    Box::new(TubeApp::new().with_route_shot(route))
 }

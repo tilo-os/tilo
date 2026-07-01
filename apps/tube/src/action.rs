@@ -34,6 +34,14 @@ pub enum Action {
     /// Flip the navigation sidebar (the hamburger toggle). Only has a visible
     /// effect on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,
+    /// Open the Ctrl+K global command palette overlay.
+    OpenPalette,
+    /// Close the command palette.
+    ClosePalette,
+    /// Activate a palette deep-link hit (`tube://watch/<id>` or
+    /// `tube://channel/<id>`) — routes to the right screen and closes the
+    /// palette.
+    ActivateHit(String),
 }
 
 /// Named boolean settings the settings page can flip.

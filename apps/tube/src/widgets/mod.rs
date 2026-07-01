@@ -72,10 +72,44 @@ pub fn chip_surface(theme: &Theme, active: bool) -> Surface {
             border: None,
         }
     } else {
-        Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[7]),
-            radius: theme.tokens.radii.full as f64,
-            border: None,
-        }
+        subtle_surface(theme)
+    }
+}
+
+/// The colour of a *resting* subtle surface — icon buttons, inactive chips,
+/// the small veneer panels that float on the base background.
+///
+/// The neutral ramp runs darkest→lightest, so the high stops (`[6]`..`[8]`,
+/// slate-400..slate-200) are near-*white*. Using them as a fill on the dark
+/// base painted a bright box that no dark-theme foreground could read on top of
+/// (white-on-slate-200 ≈ 1.2:1). `[2]` is a genuine one-step-up surface in both
+/// themes (slate-800 in dark, light-grey in light), keeping `text_primary` and
+/// `text_dim` readable. Centralised here so every veneer stays theme-correct.
+pub fn subtle_fill(theme: &Theme) -> Color {
+    theme.tokens.colors.neutral.stops[2]
+}
+
+/// The hover/active step of a subtle surface — one ramp step toward the
+/// foreground from [`subtle_fill`], so a hover is visible while text stays
+/// readable.
+pub fn hover_fill(theme: &Theme) -> Color {
+    theme.tokens.colors.neutral.stops[3]
+}
+
+/// A resting subtle [`Surface`] with a full pill radius.
+pub fn subtle_surface(theme: &Theme) -> Surface {
+    Surface {
+        fill: Some(subtle_fill(theme)),
+        radius: theme.tokens.radii.full as f64,
+        border: None,
+    }
+}
+
+/// A hover [`Surface`] with a full pill radius.
+pub fn hover_pill_surface(theme: &Theme) -> Surface {
+    Surface {
+        fill: Some(hover_fill(theme)),
+        radius: theme.tokens.radii.full as f64,
+        border: None,
     }
 }
