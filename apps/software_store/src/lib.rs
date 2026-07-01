@@ -56,7 +56,9 @@ pub mod worker;
 
 pub use app::SoftwareStore;
 pub use flatpakref::FlatpakRef;
-pub use model::{AppEntry, Catalog, Category, InstallState, QosAppModel};
+pub use model::{
+    AppEntry, Catalog, Category, InstallPhase, InstallState, QosAppModel, UpdateProgress,
+};
 pub use worker::{Request, Worker, WorkerMsg};
 
 /// Build and return the app's root widget tree.
