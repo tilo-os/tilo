@@ -479,3 +479,135 @@ fn parse_to_linear_is_idempotent_for_normalized_forms() {
         assert_eq!(model::to_linear(&model::parse(s)), s, "round trip {s}");
     }
 }
+
+// -- bounded field + scrolling ----------------------------------------------
+
+/// A formula longer than the field must scroll horizontally so the caret stays
+/// visible while typing — the field itself never grows.
+#[test]
+fn long_formula_scrolls_horizontally_to_keep_caret_visible() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key as WKey, NamedKey};
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("").with_size(20.0);
+    let rect = Rect::new(10.0, 5.0, 210.0, 45.0); // fixed 200 x 40 field
+    f.set_rect(rect, &mut tr);
+    let mods = Modifiers::default();
+
+    // Type a long run, re-laying out after each keystroke like the live app.
+    for _ in 0..60 {
+        f.handle_key(&WKey::Character("9".into()), &mods);
+        f.set_rect(rect, &mut tr);
+    }
+
+    assert!(f.overflows(), "a formula wider than the field must scroll, not resize it");
+    assert!(f.scroll.x > 0.0, "typing off the right edge must scroll right");
+
+    // The caret (at the end) is on-screen inside the field rect.
+    let steps = f.editor.caret.steps.clone();
+    let off = f.editor.caret.offset;
+    let gap = super::render::caret_gap(f.layout.as_ref().unwrap(), &steps, off).unwrap();
+    let caret_x = f.content_origin().x + gap.x;
+    assert!(
+        caret_x >= rect.x0 - 0.5 && caret_x <= rect.x1 + 0.5,
+        "caret x={caret_x:.1} is outside the field [{}, {}]",
+        rect.x0,
+        rect.x1
+    );
+
+    // Jumping home scrolls back so the start is visible again.
+    f.handle_key(&WKey::Named(NamedKey::Home), &mods);
+    f.set_rect(rect, &mut tr);
+    assert_eq!(f.scroll.x, 0.0, "Home must reveal the start of the formula");
+    let gap0 = super::render::caret_gap(f.layout.as_ref().unwrap(), &[], 0).unwrap();
+    let caret_x0 = f.content_origin().x + gap0.x;
+    assert!(
+        caret_x0 >= rect.x0 - 0.5 && caret_x0 <= rect.x1 + 0.5,
+        "start caret x={caret_x0:.1} outside the field",
+    );
+}
+
+/// A formula taller than the field (a fraction) stays bounded to the field
+/// rect and scrolls vertically instead of resizing the row — the exact bug the
+/// user reported ("formulas resizing vertically with the height of the
+/// formula").
+#[test]
+fn tall_formula_is_bounded_not_resized() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("(x^2+1)/(x-3)").with_size(20.0);
+    let rect = Rect::new(0.0, 0.0, 240.0, 30.0); // deliberately shorter than a fraction
+    f.set_rect(rect, &mut tr);
+
+    let content_h = f.layout.as_ref().unwrap().height;
+    assert!(
+        content_h > rect.height(),
+        "test fixture must be taller than the field ({content_h:.1} vs {:.1})",
+        rect.height()
+    );
+    assert!(f.overflows(), "a taller-than-field formula must scroll, not grow the field");
+    // The field rect the caller gave is never mutated by content.
+    assert_eq!(f.rect.height(), 30.0, "the field height must stay fixed");
+
+    // The caret band is kept within the field vertically.
+    let steps = f.editor.caret.steps.clone();
+    let off = f.editor.caret.offset;
+    if let Some(g) = super::render::caret_gap(f.layout.as_ref().unwrap(), &steps, off) {
+        let oy = f.content_origin().y;
+        assert!(
+            oy + g.top >= rect.y0 - 0.5 && oy + g.bottom <= rect.y1 + 0.5,
+            "caret band {:.1}..{:.1} escaped the field [{}, {}]",
+            oy + g.top,
+            oy + g.bottom,
+            rect.y0,
+            rect.y1
+        );
+    }
+}
+
+/// A short formula that fits is unchanged: no scroll, content left-aligned and
+/// vertically centered exactly as before the scroll support was added.
+#[test]
+fn short_formula_does_not_scroll() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("x+1").with_size(20.0);
+    let rect = Rect::new(10.0, 5.0, 310.0, 45.0);
+    f.set_rect(rect, &mut tr);
+    assert!(!f.overflows(), "a short formula must not overflow");
+    assert_eq!(f.scroll.x, 0.0);
+    assert_eq!(f.scroll.y, 0.0);
+    // Left-padded origin, unchanged from the original centered behaviour.
+    assert!((f.content_origin().x - (rect.x0 + 4.0)).abs() < 1e-9);
+}
+
+/// The wheel scrolls a long field, and scrolling is clamped to the content.
+#[test]
+fn wheel_scrolls_within_bounds() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("1234567890123456789012345678901234567890").with_size(20.0);
+    let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
+    f.set_rect(rect, &mut tr);
+    assert!(f.overflows());
+    let (max_x, _) = f.scroll_bounds();
+    // Over-scroll right: clamps to the max, never past the content.
+    f.scroll_by(10_000.0, 0.0);
+    assert!((f.scroll.x - max_x).abs() < 1e-9, "over-scroll must clamp to max");
+    // Over-scroll left: clamps to 0.
+    f.scroll_by(-10_000.0, 0.0);
+    assert_eq!(f.scroll.x, 0.0);
+}
