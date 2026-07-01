@@ -260,6 +260,14 @@ impl SheetsApp {
         self.grid.select_range_public((1, 1), (1, 5));
     }
 
+    /// Shots hook: build a discontiguous multi-range selection (the Jan column
+    /// body plus the Q1 Total column) so the frame shows two separate
+    /// highlighted rectangles with lit row/column headers.
+    pub fn shots_multi_select(&mut self) {
+        self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
+        self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
+    }
+
     /// The document's effective locale (per-doc overrides over global).
     fn locale(&self) -> EffectiveLocale {
         EffectiveLocale::resolve(&self.global.locale, &self.doc_settings)
@@ -477,7 +485,11 @@ impl SheetsApp {
         ui::clipboard_copy(&tsv);
         self.clipboard = Some(ClipboardGrid { src: (c0, r0), cells, cut, tsv });
         let verb = if cut { "Cut" } else { "Copied" };
-        self.status = format!("{verb} {}", self.grid.selection_label());
+        self.status = if self.grid.is_multi_range() {
+            format!("{verb} bounding range {}", crate::model::addr_to_a1(c0, r0))
+        } else {
+            format!("{verb} {}", self.grid.selection_label())
+        };
         self.dirty = true;
     }
 
@@ -601,6 +613,56 @@ impl SheetsApp {
         self.needs_commit = true;
         self.reload(doc);
         self.status = format!("Inserted {formula}");
+    }
+
+    /// Fill the top row of the selection downward through every row in the
+    /// selection's bounding box — Excel's Ctrl+D. Each source cell's raw input
+    /// and format copy down, with relative formula references shifted per row.
+    fn fill_down(&mut self, doc: &mut AutoCommit) {
+        let mut out = Vec::new();
+        self.grid.flush_edit(&mut out);
+        self.apply_cmds(doc, out);
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        if r1 <= r0 {
+            self.status = "Select two or more rows to fill down".into();
+            return;
+        }
+        for c in c0..=c1 {
+            let src_raw = self.grid.cell_raw_at((c, r0));
+            let src_fmt = self.grid.cell_fmt_at((c, r0));
+            for r in (r0 + 1)..=r1 {
+                let out_raw = shift_formula_refs(&src_raw, 0, (r - r0) as i64);
+                SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, r), &out_raw);
+                SheetsDoc::set_cell_format(doc, self.active_sheet, (c, r), src_fmt);
+            }
+        }
+        self.needs_commit = true;
+        self.reload(doc);
+        self.status = format!("Filled down {}", self.grid.selection_label());
+    }
+
+    /// Fill the left column of the selection rightward — Excel's Ctrl+R.
+    fn fill_right(&mut self, doc: &mut AutoCommit) {
+        let mut out = Vec::new();
+        self.grid.flush_edit(&mut out);
+        self.apply_cmds(doc, out);
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        if c1 <= c0 {
+            self.status = "Select two or more columns to fill right".into();
+            return;
+        }
+        for r in r0..=r1 {
+            let src_raw = self.grid.cell_raw_at((c0, r));
+            let src_fmt = self.grid.cell_fmt_at((c0, r));
+            for c in (c0 + 1)..=c1 {
+                let out_raw = shift_formula_refs(&src_raw, (c - c0) as i64, 0);
+                SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, r), &out_raw);
+                SheetsDoc::set_cell_format(doc, self.active_sheet, (c, r), src_fmt);
+            }
+        }
+        self.needs_commit = true;
+        self.reload(doc);
+        self.status = format!("Filled right {}", self.grid.selection_label());
     }
 
     /// Import the most recently modified `.csv` file from the shared Sheets
@@ -1918,7 +1980,9 @@ impl Widget for SheetsApp {
                     self.last_press = None;
                 } else {
                     let shift = modifiers.state().shift_key();
-                    let consumed = self.grid.pointer_down(p, shift, &mut out);
+                    let ctrl =
+                        modifiers.state().control_key() || modifiers.state().super_key();
+                    let consumed = self.grid.pointer_down(p, shift, ctrl, &mut out);
                     if consumed {
                         self.last_press = cell.map(|c| (now, c));
                     }
@@ -2001,6 +2065,18 @@ impl Widget for SheetsApp {
                                 }
                                 "a" | "A" => {
                                     self.grid.select_used_range();
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                "d" | "D" => {
+                                    self.fill_down(state);
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                "r" | "R" => {
+                                    self.fill_right(state);
                                     *handled = true;
                                     self.dirty = true;
                                     return;
@@ -2300,6 +2376,50 @@ mod tests {
         assert_eq!(app.format_of_active(), CellFormat::Percent);
     }
 
+    /// Format applied over a discontiguous multi-range selection reaches every
+    /// cell in *both* ranges — the real `apply_format` → `selected_cells` path.
+    #[test]
+    fn format_applies_across_a_multi_range_selection() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_range_public((1, 1), (1, 2)); // B2:B3
+        app.grid.add_range_public((3, 1), (3, 2)); // D2:D3 (discontiguous)
+        app.apply_format(&mut doc, CellFormat::Percent);
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+        for a in [(1, 1), (1, 2), (3, 1), (3, 2)] {
+            assert_eq!(snap.fmt.get(&a).copied(), Some(CellFormat::Percent), "cell {a:?}");
+        }
+        // The gap column between the two ranges is untouched (still currency).
+        assert!(matches!(snap.fmt.get(&(2, 1)), Some(CellFormat::Currency(_))));
+    }
+
+    /// Fill-down copies the top cell of the selection down, shifting relative
+    /// formula references per row — the real Ctrl+D path.
+    #[test]
+    fn fill_down_copies_and_shifts_formulas() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_range_public((4, 1), (4, 3)); // E2:E4, E2 = =SUM(B2:D2)
+        app.fill_down(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 2)), "=SUM(B3:D3)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 3)), "=SUM(B4:D4)");
+        // E3 recomputes against row 3's operands: 460 + 510 + ... etc > 0.
+        match value_at(&app, (4, 2)) {
+            Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
+            other => panic!("expected numeric fill result, got {other:?}"),
+        }
+    }
+
+    /// The status-bar summary counts numeric cells across *all* ranges of a
+    /// discontiguous selection.
+    #[test]
+    fn selection_summary_spans_multiple_ranges() {
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_range_public((1, 1), (1, 2)); // B2:B3 = 1200, 420
+        app.grid.add_range_public((2, 1), (2, 2)); // C2:C3 = 1200, 460
+        let s = app.selection_summary().expect("numeric multi-range selection");
+        assert_eq!(s.count, 4);
+        assert!((s.sum - (1200.0 + 420.0 + 1200.0 + 460.0)).abs() < 1e-6, "sum={}", s.sum);
+    }
+
     #[test]
     fn selection_summary_sums_real_values() {
         let (mut app, _doc) = seeded_app();
@@ -2370,6 +2490,32 @@ mod tests {
         );
         // A plain literal is returned unchanged.
         assert_eq!(shift_formula_refs("1200", 3, 3), "1200");
+    }
+
+    /// The layout is re-derived from the current rect on every pass, so a
+    /// resize between widths reflows rather than freezing at the first size.
+    /// Drives the production `relayout` on one instance at two widths.
+    #[test]
+    fn layout_reflows_on_resize() {
+        let (mut app, _doc) = seeded_app();
+
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        let wide_grid_w = app.grid_rect.width();
+        let wide_field_x1 = app.formula_field_rect.x1;
+        assert!((app.grid_rect.x1 - 1280.0).abs() < 0.5, "wide grid tracks rect");
+
+        // Simulate a resize to the narrow viewport on the SAME instance.
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+        assert!((app.grid_rect.x1 - 560.0).abs() < 0.5, "narrow grid tracks the new rect");
+        assert!(app.grid_rect.width() < wide_grid_w, "grid reflowed narrower");
+        assert!(app.formula_field_rect.x1 < wide_field_x1, "formula field reflowed");
+
+        // And back to wide — proves it isn't a one-way latch.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        assert!((app.grid_rect.width() - wide_grid_w).abs() < 0.5, "reflows back to wide");
     }
 
     #[test]

@@ -286,6 +286,19 @@ impl SidebarPane {
             let rr = Rect::new(self.rect.x0 + 8.0, drag.cur_y - h / 2.0, self.rect.x1 - 8.0, drag.cur_y + h / 2.0);
             self.draw_row(scene, t, tr, theme, RowId::Role(drag.role), rr);
         }
+        // Empty-state guidance — a fresh workspace has no authored roles or
+        // members until the user creates them (nothing is fabricated).
+        if ids.is_empty() {
+            let (line1, line2) = match tab {
+                EditorTab::Roles => ("No roles yet", "Create one with \u{201c}+ New Role\u{201d} above."),
+                EditorTab::Members => ("No members yet", "Add one with \u{201c}+ New Member\u{201d} above."),
+            };
+            let bx = self.rect.x0 + PAD;
+            let by = self.rect.y0 + HEADER_H + 24.0;
+            let w = Some((self.rect.width() - PAD * 2.0) as f32);
+            tr.draw_text_weighted(scene, line1, sz.body + 1.0, c.text_primary, t * Affine::translate((bx, by)), w, TextWeight::Medium);
+            tr.draw_text(scene, line2, sz.secondary, c.text_dim, t * Affine::translate((bx, by + sz.body as f64 + 10.0)), w);
+        }
         scene.pop_layer();
 
         // Inline rename field on top of its row.

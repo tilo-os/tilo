@@ -302,6 +302,11 @@ impl FrameBuf {
     }
 }
 
+/// BT.601 luma of an RGBA frame — the greyscale buffer the QR detector wants.
+pub fn luma(buf: &FrameBuf) -> Vec<u8> {
+    to_luma(buf)
+}
+
 /// BT.601 luma of an RGBA buffer.
 fn to_luma(buf: &FrameBuf) -> Vec<u8> {
     let n = (buf.w * buf.h) as usize;

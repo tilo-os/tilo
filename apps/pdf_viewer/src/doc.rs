@@ -115,6 +115,19 @@ impl PdfDoc {
         let _ = doc.put(&m, "seeded", true);
     }
 
+    /// Drop every annotation, comment and signature. Used when a different
+    /// file is opened in place so one document's markup never bleeds onto the
+    /// next (annotations are keyed by page number, which is only meaningful
+    /// within a single document).
+    pub fn clear_all(doc: &mut AutoCommit) {
+        for key in ["annotations", "comments", "signatures"] {
+            let list = Self::list(doc, key);
+            while doc.length(&list) > 0 {
+                let _ = doc.delete(&list, 0);
+            }
+        }
+    }
+
     // ---- annotations ------------------------------------------------
 
     fn points_to_str(points: &[(f64, f64)]) -> String {
@@ -324,6 +337,17 @@ impl PdfDoc {
         }
     }
 
+    /// Replace a comment's body text. Used by the inline editor when the user
+    /// types into a note or comment thread.
+    pub fn set_comment_body(doc: &mut AutoCommit, id: &str, body: &str) {
+        let list = Self::list(doc, "comments");
+        if let Some(i) = Self::index_of(doc, &list, id) {
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
+                let _ = doc.put(&m, "body", body);
+            }
+        }
+    }
+
     pub fn delete_comment(doc: &mut AutoCommit, id: &str) {
         let list = Self::list(doc, "comments");
         if let Some(i) = Self::index_of(doc, &list, id) {
@@ -493,9 +517,11 @@ mod tests {
 
         PdfDoc::add_reply(&mut doc, &cid, &Reply { author: "Carol".into(), body: "Agreed.".into() });
         PdfDoc::set_comment_resolved(&mut doc, &cid, true);
+        PdfDoc::set_comment_body(&mut doc, &cid, "Edited: confirmed accurate.");
         let got = PdfDoc::list_comments(&doc);
         assert_eq!(got[0].replies.len(), 2);
         assert!(got[0].resolved);
+        assert_eq!(got[0].body, "Edited: confirmed accurate.");
     }
 
     #[test]

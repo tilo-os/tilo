@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -52,6 +52,12 @@ const ZOOM_MIN: f64 = 0.25;
 const ZOOM_MAX: f64 = 6.0;
 /// A drag shorter than this (in screen px) is treated as a click, not a pan.
 const PAN_SLOP: f64 = 4.0;
+/// Below this window width the rail + sidebar become closed-by-default
+/// overlays drawn over a full-width canvas instead of reserving columns.
+const OVERLAY_BREAKPOINT: f64 = 900.0;
+/// Rasterise pages at this multiple of their on-screen size so they stay
+/// crisp when the compositor scales the surface (and when zooming in a notch).
+const RASTER_SS: f64 = 2.0;
 /// How close (page points) a highlight drag must come to a text line before
 /// it snaps to text instead of falling back to a free-form rectangle.
 const SNAP_NEAR: f64 = 18.0;
@@ -116,6 +122,34 @@ enum ToolbarHit {
     Search,
     ToggleSidebar,
     ToggleRail,
+    Open,
+}
+
+/// One row in the in-app file browser: a sub-directory to descend into or a
+/// `.pdf` file to open.
+#[derive(Clone)]
+struct OpenEntry {
+    name: String,
+    path: std::path::PathBuf,
+    is_dir: bool,
+}
+
+/// The in-app "Open a PDF" browser. Lists the real sub-directories and PDF
+/// files of `dir`; picking a folder descends, picking a file loads it in
+/// place. Hit rects are captured during draw so a click lands on the row the
+/// pixel shows.
+struct OpenDialog {
+    dir: std::path::PathBuf,
+    entries: Vec<OpenEntry>,
+    /// A human-readable reason the directory couldn't be listed, if any.
+    error: Option<String>,
+    scroll: f64,
+    row_hits: Vec<(usize, Rect)>,
+    up_rect: Rect,
+    close_rect: Rect,
+    panel_rect: Rect,
+    list_rect: Rect,
+    content_h: f64,
 }
 
 #[derive(Clone)]
@@ -123,9 +157,12 @@ enum SidebarHit {
     Tab(SidebarTab),
     Outline(usize),
     Comment(String),
+    EditComment(String),
+    ReplyField(String),
     Resolve(String),
     DeleteComment(String),
     AddSignature,
+    EditSigner,
     SigJump(usize),
     DeleteSignature(String),
 }
@@ -136,8 +173,44 @@ enum SearchHit {
     ToggleCaseSensitive,
 }
 
+/// What the inline text editor is currently writing into. All three write
+/// durable text: a comment/note body and a thread reply land in the shared
+/// CRDT; the signer name is the local per-peer identity used for new
+/// signatures.
+#[derive(Clone, PartialEq)]
+enum EditTarget {
+    CommentBody(String),
+    Reply(String),
+    Signer,
+}
+
+/// A live inline text edit. The buffer is local until committed so a burst
+/// of keystrokes is a single undo step rather than one per character.
+#[derive(Clone)]
+struct Editing {
+    target: EditTarget,
+    buffer: String,
+    /// Caret position as a byte offset into `buffer`.
+    caret: usize,
+}
+
 pub struct PdfApp {
     doc: Document,
+    /// Real page rasteriser (pdfium). `None` means the text backend is in use
+    /// (or no document is open).
+    raster: Option<crate::source::Rasterizer>,
+    /// False until a real file has been loaded — drives the empty state.
+    has_document: bool,
+    /// The opened file's display name, shown in the chrome.
+    doc_name: String,
+    /// A human-readable reason the last open failed, if any.
+    load_error: Option<String>,
+    /// Seed demonstration markup on first sync. Only ever set on the
+    /// screenshot / test path, never for a real document.
+    seed_sample: bool,
+    /// Screenshot-only: drop the caret into the first comment on the first
+    /// sync so a still frame can show the inline editor. Never set at runtime.
+    shots_edit_first_comment: bool,
 
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -161,6 +234,8 @@ pub struct PdfApp {
     show_rail: bool,
     rail_w: f64,
     selected_anno: Option<String>,
+    /// Active inline text edit (comment body, thread reply, or signer name).
+    editing: Option<Editing>,
     /// The signature whose sidebar row is highlighted/selected (so placing a
     /// signature lands the user on the new entry).
     selected_sig: Option<String>,
@@ -200,9 +275,24 @@ pub struct PdfApp {
     // anchored to is tracked alongside it.
     tooltip: Tooltip,
     tooltip_anchor: Rect,
-    /// One-shot: on the first laid-out frame, hover a toolbar tool and reveal
-    /// its tooltip so the default view (live + screenshot) shows the feature.
-    demo_pending: bool,
+    /// True only while the pointer sits on a toolbar button and the reveal
+    /// timer is still counting down. Drives `needs_animation_frame`, so an
+    /// idle window (no hover in progress) settles to zero frames instead of
+    /// spinning forever.
+    tooltip_pending: bool,
+
+    /// The in-app file browser, shown when the user asks to open a document
+    /// from within the reader (toolbar folder button, Ctrl+O, or the empty
+    /// state's Open button). `None` when no picker is on screen.
+    open_dialog: Option<OpenDialog>,
+
+    /// When the window is too narrow to reserve space for the side panels,
+    /// the rail + sidebar become closed-by-default overlays drawn over the
+    /// canvas. Recomputed from the window width each layout.
+    overlay_mode: bool,
+    /// Tracks overlay-mode transitions so panels can auto-close on the way in
+    /// and the sidebar can reopen on the way back to a wide window.
+    prev_overlay: Option<bool>,
 
     // Region rects (computed in apply_layout).
     toolbar_rect: Rect,
@@ -215,16 +305,86 @@ pub struct PdfApp {
     // Sidebar + search content hit-targets, captured during draw.
     sidebar_hits: Vec<(SidebarHit, Rect)>,
     search_hits: Vec<(SearchHit, Rect)>,
+    /// Screen rect of the active inline editor, captured during draw so a
+    /// click inside it keeps focus while a click outside commits.
+    edit_rect: Rect,
 }
 
 impl PdfApp {
+    /// Open a real PDF from `path`, rasterising via pdfium when available and
+    /// falling back to pure-Rust text extraction. A failure lands in the empty
+    /// state with the error surfaced, rather than crashing.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Self {
+        let path = path.as_ref();
+        match crate::source::open(path) {
+            Ok(loaded) => {
+                let mut app = Self::build(loaded.doc, false);
+                app.raster = loaded.raster;
+                app.has_document = true;
+                app.doc_name = loaded.name;
+                app
+            }
+            Err(e) => {
+                let mut app = Self::empty();
+                app.load_error = Some(format!("Could not open {}: {e}", path.display()));
+                app
+            }
+        }
+    }
+
+    /// The no-document state: a clean "open a PDF" surface, no fabricated
+    /// content.
+    pub fn empty() -> Self {
+        Self::build(model::Document::blank_pages("", "", 1, PAGE_W, PAGE_H), false)
+    }
+
+    /// The bundled demonstration document with example markup seeded on first
+    /// sync. Used only by the screenshot harness and tests.
+    pub fn sample() -> Self {
+        let mut app = Self::build(model::sample_document(), true);
+        app.has_document = true;
+        app.doc_name = "qOS Technical Overview.pdf".to_string();
+        app.signer_name = "Alice Daskju".to_string();
+        app
+    }
+
+    /// Screenshot-only: the sample document with the first comment already in
+    /// edit mode, so a still frame captures the inline editor (caret + focus
+    /// ring). Only reachable from the shots harness.
+    pub fn sample_editing() -> Self {
+        let mut app = Self::sample();
+        app.shots_edit_first_comment = true;
+        app
+    }
+
+    /// Back-compat constructor: the empty state.
     pub fn new() -> Self {
+        Self::empty()
+    }
+
+    /// Screenshot-only: the empty state with the in-app file browser open on
+    /// the bundled fixtures directory, so a still frame shows the picker with a
+    /// real, openable document listed. Never reached at runtime.
+    pub fn open_dialog_demo() -> Self {
+        let mut app = Self::empty();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
+        app.open_file_dialog(dir);
+        app
+    }
+
+    fn build(doc: Document, seed_sample: bool) -> Self {
         let author = std::env::var("QUICK_APP_ID")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "You".to_string());
         Self {
-            doc: model::sample_document(),
+            doc,
+            raster: None,
+            has_document: false,
+            doc_name: String::new(),
+            load_error: None,
+            seed_sample,
+            shots_edit_first_comment: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
@@ -235,17 +395,18 @@ impl PdfApp {
             scroll_y: 0.0,
             scroll_x: 0.0,
             current_page: 1,
-            tool: Tool::Highlight,
+            tool: Tool::Select,
             swatch: Swatch::Yellow,
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
             show_rail: true,
             rail_w: RAIL_W,
             selected_anno: None,
+            editing: None,
             selected_sig: None,
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
-            signer_name: "Alice Daskju".to_string(),
+            signer_name: author.clone(),
             author,
             search_active: false,
             query: String::new(),
@@ -264,7 +425,10 @@ impl PdfApp {
             text_lines: std::collections::HashMap::new(),
             tooltip: Tooltip::new("").with_delay(Duration::from_millis(350)),
             tooltip_anchor: Rect::ZERO,
-            demo_pending: true,
+            tooltip_pending: false,
+            open_dialog: None,
+            overlay_mode: false,
+            prev_overlay: None,
             toolbar_rect: Rect::ZERO,
             search_rect: Rect::ZERO,
             rail_rect: Rect::ZERO,
@@ -273,6 +437,7 @@ impl PdfApp {
             status_rect: Rect::ZERO,
             sidebar_hits: Vec::new(),
             search_hits: Vec::new(),
+            edit_rect: Rect::ZERO,
         }
     }
 
@@ -281,9 +446,9 @@ impl PdfApp {
     fn seed(&mut self, state: &mut AutoCommit) {
         PdfDoc::set_meta(state, &self.doc.title, &self.doc.author);
 
-        // A highlight over the abstract, an ink emphasis loop, a sticky
-        // note, and a placed review signature — all on page 1 so the
-        // default screenshot is rich.
+        // A highlight over the abstract, an ink emphasis loop circling the
+        // pull-quote, a sticky note, and a placed review signature — all on
+        // page 1 so the default screenshot is rich.
         let highlight = Annotation {
             id: Annotation::new_id(),
             page: 1,
@@ -301,7 +466,7 @@ impl PdfApp {
         let ink = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink { points: ink_loop(360.0, 470.0, 150.0, 26.0) },
+            kind: AnnoKind::Ink { points: ink_loop(300.0, 430.0, 232.0, 30.0) },
             color: Swatch::Pink,
             author: "Alice".into(),
         };
@@ -374,15 +539,12 @@ impl PdfApp {
             },
         );
 
-        // Demo view-state for the first frame (live + screenshot): zoom past
-        // fit so horizontal panning is exercisable (the h-scrollbar appears),
-        // land on the note's comment with the Comments rail revealed on it,
-        // and arm the marker.
-        self.fit = FitMode::Custom(1.6);
+        // Land the demonstration view on the note's comment thread so the
+        // screenshot shows the review workflow; zoom stays at fit-page so no
+        // content is clipped.
         self.selected_anno = Some(note_id);
         self.sidebar_tab = SidebarTab::Comments;
         self.sidebar_reveal = Some(focus_comment);
-        self.tool = Tool::Highlight;
     }
 
     fn reload(&mut self, state: &AutoCommit) {
@@ -395,6 +557,46 @@ impl PdfApp {
 
     fn rail_width(&self) -> f64 {
         if self.show_rail { self.rail_w.clamp(RAIL_W_MIN, RAIL_W_MAX) } else { 0.0 }
+    }
+
+    /// The document's uniform page size, in PDF points.
+    fn pw(&self) -> f64 {
+        self.doc.page_w
+    }
+    fn ph(&self) -> f64 {
+        self.doc.page_h
+    }
+
+    /// Snap panel open/closed state to the current window width. On a wide
+    /// window the panels dock and reserve space; on a narrow one they collapse
+    /// to closed overlays. Only the *transition* forces state, so the user's
+    /// explicit toggles within a size class are respected.
+    fn reconcile_overlay(&mut self) {
+        let overlay = self.rect.width() < OVERLAY_BREAKPOINT;
+        self.overlay_mode = overlay;
+        if self.prev_overlay != Some(overlay) {
+            self.show_sidebar = !overlay;
+            self.show_rail = !overlay;
+            self.prev_overlay = Some(overlay);
+        }
+        // The empty state has nothing to fill the panels with.
+        if !self.has_document {
+            self.show_sidebar = false;
+            self.show_rail = false;
+        }
+    }
+
+    /// The sidebar's drawn width — narrower on cramped overlay windows so it
+    /// always leaves a strip of canvas to tap on to dismiss it.
+    fn sidebar_width(&self) -> f64 {
+        if !self.show_sidebar {
+            return 0.0;
+        }
+        if self.overlay_mode {
+            SIDEBAR_W.min((self.rect.width() - 56.0).max(200.0))
+        } else {
+            SIDEBAR_W
+        }
     }
 
     fn recompute_regions(&mut self) {
@@ -410,37 +612,42 @@ impl PdfApp {
         }
         let mid_bottom = r.y1 - STATUS_H;
         let rail_w = self.rail_width();
+        let sidebar_w = self.sidebar_width();
         self.rail_rect = Rect::new(r.x0, mid_top, r.x0 + rail_w, mid_bottom);
-        let sidebar_w = if self.show_sidebar { SIDEBAR_W } else { 0.0 };
         self.sidebar_rect = Rect::new(r.x1 - sidebar_w, mid_top, r.x1, mid_bottom);
-        self.canvas_rect = Rect::new(r.x0 + rail_w, mid_top, r.x1 - sidebar_w, mid_bottom);
+        if self.overlay_mode {
+            // Panels float; the canvas spans the whole mid strip beneath them.
+            self.canvas_rect = Rect::new(r.x0, mid_top, r.x1, mid_bottom);
+        } else {
+            self.canvas_rect = Rect::new(r.x0 + rail_w, mid_top, r.x1 - sidebar_w, mid_bottom);
+        }
     }
 
     fn recompute_zoom(&mut self) {
         let cw = self.canvas_rect.width();
         let ch = self.canvas_rect.height();
         self.zoom = match self.fit {
-            FitMode::Page => ((cw - 2.0 * SIDE_PAD) / PAGE_W)
-                .min((ch - 2.0 * CANVAS_TOPPAD) / PAGE_H)
+            FitMode::Page => ((cw - 2.0 * SIDE_PAD) / self.pw())
+                .min((ch - 2.0 * CANVAS_TOPPAD) / self.ph())
                 .clamp(ZOOM_MIN, ZOOM_MAX),
-            FitMode::Width => ((cw - 2.0 * SIDE_PAD) / PAGE_W).clamp(ZOOM_MIN, ZOOM_MAX),
+            FitMode::Width => ((cw - 2.0 * SIDE_PAD) / self.pw()).clamp(ZOOM_MIN, ZOOM_MAX),
             FitMode::Custom(z) => z.clamp(ZOOM_MIN, ZOOM_MAX),
         };
     }
 
     fn page_step(&self) -> f64 {
-        PAGE_H * self.zoom + PAGE_GAP
+        self.ph() * self.zoom + PAGE_GAP
     }
 
     fn content_height(&self) -> f64 {
         let n = self.doc.page_count() as f64;
-        n * PAGE_H * self.zoom + (n - 1.0).max(0.0) * PAGE_GAP + 2.0 * CANVAS_TOPPAD
+        n * self.ph() * self.zoom + (n - 1.0).max(0.0) * PAGE_GAP + 2.0 * CANVAS_TOPPAD
     }
 
     /// Full width the zoomed page occupies, plus side padding. When this
     /// exceeds the canvas width the user can pan horizontally to reach it.
     fn content_width(&self) -> f64 {
-        PAGE_W * self.zoom + 2.0 * SIDE_PAD
+        self.pw() * self.zoom + 2.0 * SIDE_PAD
     }
 
     fn max_scroll(&self) -> f64 {
@@ -466,7 +673,7 @@ impl PdfApp {
     /// horizontally it is centred; once it overflows it is left-anchored and
     /// shifted by `scroll_x` so panning can reach the full zoomed width.
     fn page_origins(&self) -> Vec<Point> {
-        let pagew = PAGE_W * self.zoom;
+        let pagew = self.pw() * self.zoom;
         let x = if self.is_overflowing_x() {
             self.canvas_rect.x0 + SIDE_PAD - self.scroll_x
         } else {
@@ -483,8 +690,8 @@ impl PdfApp {
 
     /// Map a screen point to (page-number, page-point) if it lands on a page.
     fn hit_page(&self, p: Point) -> Option<(usize, (f64, f64))> {
-        let pagew = PAGE_W * self.zoom;
-        let pageh = PAGE_H * self.zoom;
+        let pagew = self.pw() * self.zoom;
+        let pageh = self.ph() * self.zoom;
         for (i, origin) in self.page_origins().iter().enumerate() {
             let card = Rect::new(origin.x, origin.y, origin.x + pagew, origin.y + pageh);
             if card.contains(p) {
@@ -668,7 +875,7 @@ impl PdfApp {
                 anno_id: Some(anno_id.clone()),
                 page,
                 author: self.author.clone(),
-                body: "New note — type your comment.".into(),
+                body: String::new(),
                 created: self.created_counter,
                 resolved: false,
                 replies: vec![],
@@ -676,10 +883,123 @@ impl PdfApp {
         );
         self.selected_anno = Some(anno_id);
         self.selected_sig = None;
-        // Open the Comments rail and scroll the brand-new thread into view.
-        self.focus_sidebar(SidebarTab::Comments, comment_id);
+        // Open the Comments rail, scroll the brand-new thread into view, and
+        // drop the caret straight into it so the user just types.
+        self.focus_sidebar(SidebarTab::Comments, comment_id.clone());
         self.commit_pending = true;
         self.reload(state);
+        self.begin_edit(EditTarget::CommentBody(comment_id), String::new());
+        self.dirty = true;
+    }
+
+    // ---- inline text editing ----------------------------------------
+
+    /// Start editing `target`, seeding the buffer with its current text and
+    /// dropping the caret at the end. Any in-flight edit is dropped without
+    /// committing — callers that need to preserve it commit first.
+    fn begin_edit(&mut self, target: EditTarget, initial: String) {
+        let caret = initial.len();
+        self.editing = Some(Editing { target, buffer: initial, caret });
+        self.dirty = true;
+    }
+
+    /// Whether `target` is the edit currently in progress.
+    fn is_editing(&self, target: &EditTarget) -> bool {
+        self.editing.as_ref().map(|e| &e.target == target).unwrap_or(false)
+    }
+
+    fn edit_insert(&mut self, s: &str) {
+        if let Some(e) = self.editing.as_mut() {
+            let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
+            if filtered.is_empty() {
+                return;
+            }
+            e.buffer.insert_str(e.caret, &filtered);
+            e.caret += filtered.len();
+            self.dirty = true;
+        }
+    }
+
+    fn edit_backspace(&mut self) {
+        if let Some(e) = self.editing.as_mut() {
+            if e.caret == 0 {
+                return;
+            }
+            // Remove the char boundary immediately before the caret.
+            let prev = e.buffer[..e.caret]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            e.buffer.replace_range(prev..e.caret, "");
+            e.caret = prev;
+            self.dirty = true;
+        }
+    }
+
+    fn edit_move(&mut self, dir: isize) {
+        if let Some(e) = self.editing.as_mut() {
+            if dir < 0 {
+                e.caret = e.buffer[..e.caret].char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+            } else if e.caret < e.buffer.len() {
+                let next = e.buffer[e.caret..].char_indices().nth(1).map(|(i, _)| e.caret + i).unwrap_or(e.buffer.len());
+                e.caret = next;
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn edit_home_end(&mut self, end: bool) {
+        if let Some(e) = self.editing.as_mut() {
+            e.caret = if end { e.buffer.len() } else { 0 };
+            self.dirty = true;
+        }
+    }
+
+    /// Write the active edit's buffer to its durable home and clear the edit.
+    /// An emptied comment body (with no replies) removes the note entirely so
+    /// an abandoned marker never litters the page.
+    fn commit_edit(&mut self, state: &mut AutoCommit) {
+        let Some(e) = self.editing.take() else { return };
+        match e.target {
+            EditTarget::CommentBody(id) => {
+                let trimmed = e.buffer.trim();
+                let has_replies = self
+                    .comments
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| !c.replies.is_empty())
+                    .unwrap_or(false);
+                if trimmed.is_empty() && !has_replies {
+                    self.delete_target(&DeleteTarget::Comment(id), state);
+                    return;
+                }
+                PdfDoc::set_comment_body(state, &id, e.buffer.trim_end());
+                self.commit_pending = true;
+                self.reload(state);
+            }
+            EditTarget::Reply(id) => {
+                let body = e.buffer.trim();
+                if !body.is_empty() {
+                    PdfDoc::add_reply(
+                        state,
+                        &id,
+                        &Reply { author: self.author.clone(), body: body.to_string() },
+                    );
+                    self.commit_pending = true;
+                    self.reload(state);
+                }
+            }
+            EditTarget::Signer => {
+                let name = e.buffer.trim();
+                self.signer_name = if name.is_empty() { self.author.clone() } else { name.to_string() };
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn cancel_edit(&mut self) {
+        self.editing = None;
         self.dirty = true;
     }
 
@@ -699,8 +1019,8 @@ impl PdfApp {
         let w = 218.0;
         let h = 74.0;
         let rect = PtRect::new(
-            (pt.0 - w / 2.0).clamp(MARGIN, PAGE_W - MARGIN - w),
-            (pt.1 - h / 2.0).clamp(MARGIN, PAGE_H - MARGIN - h),
+            (pt.0 - w / 2.0).clamp(MARGIN, self.pw() - MARGIN - w),
+            (pt.1 - h / 2.0).clamp(MARGIN, self.ph() - MARGIN - h),
             w,
             h,
         );
@@ -782,7 +1102,7 @@ impl PdfApp {
         let left0 = if was_overflow {
             canvas.x0 + SIDE_PAD - self.scroll_x
         } else {
-            canvas.x0 + ((canvas.width() - PAGE_W * old_zoom) / 2.0).max(SIDE_PAD * 0.5)
+            canvas.x0 + ((canvas.width() - self.pw() * old_zoom) / 2.0).max(SIDE_PAD * 0.5)
         };
         let doc_x = (focal.x - left0) / old_zoom;
 
@@ -892,6 +1212,182 @@ impl PdfApp {
         }
         None
     }
+
+    // ---- in-app file open -------------------------------------------
+
+    /// Where the file browser starts. Prefers an explicit override, then the
+    /// qOS workspace mount, then the user's home, then the process directory —
+    /// each only if it is a readable directory.
+    fn open_start_dir() -> std::path::PathBuf {
+        use std::path::PathBuf;
+        let candidates = [
+            std::env::var_os("QOS_PDF_OPEN_DIR").map(PathBuf::from),
+            Some(PathBuf::from("/var/workspace")),
+            std::env::var_os("HOME").map(PathBuf::from),
+        ];
+        for cand in candidates.into_iter().flatten() {
+            if cand.is_dir() {
+                return cand;
+            }
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
+    /// List the sub-directories and `.pdf` files of `dir`, folders first then
+    /// files, each alphabetically. Hidden entries are skipped. Any read error
+    /// is returned so the dialog can surface it rather than showing a blank.
+    fn scan_dir(dir: &std::path::Path) -> (Vec<OpenEntry>, Option<String>) {
+        let mut entries = Vec::new();
+        let rd = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) => return (entries, Some(format!("Can't open this folder: {e}"))),
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = ent.path();
+            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                entries.push(OpenEntry { name, path, is_dir: true });
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("pdf"))
+                .unwrap_or(false)
+            {
+                entries.push(OpenEntry { name, path, is_dir: false });
+            }
+        }
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        (entries, None)
+    }
+
+    /// Show the file browser rooted at `dir` (scanned immediately).
+    fn open_file_dialog(&mut self, dir: std::path::PathBuf) {
+        let (entries, error) = Self::scan_dir(&dir);
+        self.open_dialog = Some(OpenDialog {
+            dir,
+            entries,
+            error,
+            scroll: 0.0,
+            row_hits: Vec::new(),
+            up_rect: Rect::ZERO,
+            close_rect: Rect::ZERO,
+            panel_rect: Rect::ZERO,
+            list_rect: Rect::ZERO,
+            content_h: 0.0,
+        });
+        self.dirty = true;
+    }
+
+    /// Descend into (or climb out of) `dir` within the open browser.
+    fn browse_to(&mut self, dir: std::path::PathBuf) {
+        let (entries, error) = Self::scan_dir(&dir);
+        if let Some(d) = self.open_dialog.as_mut() {
+            d.dir = dir;
+            d.entries = entries;
+            d.error = error;
+            d.scroll = 0.0;
+        }
+        self.dirty = true;
+    }
+
+    /// Load a real PDF from `path` into the running reader, replacing whatever
+    /// was open. On success the view resets to page one at fit-page and the
+    /// prior document's markup is cleared; on failure the empty state surfaces
+    /// the reason. The picker closes either way.
+    fn load_path(&mut self, path: &std::path::Path, state: &mut AutoCommit) {
+        match crate::source::open(path) {
+            Ok(loaded) => {
+                self.doc = loaded.doc;
+                self.raster = loaded.raster;
+                self.has_document = true;
+                self.doc_name = loaded.name;
+                self.load_error = None;
+                PdfDoc::clear_all(state);
+                self.reload(state);
+                self.commit_pending = true;
+                // Reset per-peer view state for the fresh document.
+                self.fit = FitMode::Page;
+                self.zoom = 0.85;
+                self.scroll_x = 0.0;
+                self.scroll_y = 0.0;
+                self.current_page = 1;
+                self.selected_anno = None;
+                self.selected_sig = None;
+                self.editing = None;
+                self.close_search();
+                self.query.clear();
+                self.matches.clear();
+                self.text_lines.clear();
+                self.prev_overlay = None; // re-derive panel docking for the new doc
+                self.recompute_regions();
+                self.recompute_zoom();
+                self.clamp_scroll();
+            }
+            Err(e) => {
+                self.has_document = false;
+                self.load_error = Some(format!("Could not open {}: {e}", path.display()));
+            }
+        }
+        self.open_dialog = None;
+        self.dirty = true;
+    }
+
+    /// The centred "Open a PDF…" button drawn on the empty state. Pure so the
+    /// draw and the click handler agree on its rect.
+    fn empty_open_button_rect(&self) -> Rect {
+        let canvas = self.canvas_rect;
+        let cx = (canvas.x0 + canvas.x1) / 2.0;
+        let cy = (canvas.y0 + canvas.y1) / 2.0;
+        let w = 150.0;
+        let h = 38.0;
+        Rect::new(cx - w / 2.0, cy + 78.0, cx + w / 2.0, cy + 78.0 + h)
+    }
+
+    /// Route a click while the file browser is open. Returns `true` if the
+    /// dialog consumed the click (which is always — it is modal).
+    fn apply_open_dialog(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+        // Copy out everything the click needs so the immutable borrow of
+        // `open_dialog` is released before we mutate `self`.
+        let Some(d) = self.open_dialog.as_ref() else { return false };
+        let (close, panel, up) = (d.close_rect, d.panel_rect, d.up_rect);
+        let parent = d.dir.parent().map(|pp| pp.to_path_buf());
+        let picked = d
+            .row_hits
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .and_then(|(i, _)| d.entries.get(*i))
+            .cloned();
+
+        // Outside the panel, or on the close button: dismiss.
+        if close.contains(p) || !panel.contains(p) {
+            self.open_dialog = None;
+            self.dirty = true;
+            return true;
+        }
+        if up.area() > 1.0 && up.contains(p) {
+            if let Some(parent) = parent {
+                self.browse_to(parent);
+            }
+            return true;
+        }
+        // A row: descend into a folder or open a file.
+        if let Some(entry) = picked {
+            if entry.is_dir {
+                self.browse_to(entry.path);
+            } else {
+                self.load_path(&entry.path, state);
+            }
+        }
+        true
+    }
 }
 
 impl Default for PdfApp {
@@ -918,12 +1414,24 @@ include!("app_events.rs");
 impl Widget for PdfApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
-            if !PdfDoc::is_seeded(state) {
+            // Demonstration markup is seeded only on the screenshot / test
+            // path; a real document opens with whatever markup the shared
+            // CRDT already holds and never fabricates content.
+            if self.seed_sample && !PdfDoc::is_seeded(state) {
                 self.seed(state);
             }
             self.seeded = true;
         }
         self.reload(state);
+
+        // Screenshot hook (never set at runtime): focus the first comment.
+        if self.shots_edit_first_comment {
+            if let Some(c) = self.comments.first() {
+                let (id, body) = (c.id.clone(), c.body.clone());
+                self.begin_edit(EditTarget::CommentBody(id), body);
+            }
+            self.shots_edit_first_comment = false;
+        }
     }
 
     fn build_layout(
@@ -953,25 +1461,11 @@ impl Widget for PdfApp {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        self.reconcile_overlay();
         self.recompute_regions();
         self.recompute_zoom();
         self.clamp_scroll();
         self.current_page = self.nearest_page();
-
-        // First laid-out frame: hover the active tool so its tooltip shows in
-        // the default view. Cleared after one shot; live hover takes over.
-        if self.demo_pending && self.toolbar_rect.area() > 1.0 {
-            self.demo_pending = false;
-            let lay = self.toolbar_layout();
-            if let Some((_, r)) = lay.tools.iter().find(|(t, _)| *t == self.tool) {
-                self.last_mouse = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
-                let label = format!("{}  ({})", self.tool.label(), self.tool.hotkey());
-                self.tooltip = Tooltip::new(label).with_delay(Duration::from_millis(350));
-                // Seed past the delay so the popover is visible immediately.
-                self.tooltip.on_hover_enter(Duration::from_millis(400));
-                self.tooltip_anchor = *r;
-            }
-        }
     }
 
     fn draw(
@@ -1025,9 +1519,13 @@ impl Widget for PdfApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep ticking while a toolbar button is hovered so the tooltip can
-        // cross its reveal delay, and while the tooltip is showing.
-        self.toolbar_rect.contains(self.last_mouse) || self.tooltip.is_visible()
+        // Tick only while a hover is genuinely counting toward the tooltip's
+        // reveal delay. Once the tooltip is shown (or the pointer isn't over a
+        // button at all) no further frames are needed, so an idle window
+        // settles to zero frames instead of redrawing forever. The pointer
+        // leaving a button arrives as a real event, which repaints and clears
+        // the popover on its own.
+        self.tooltip_pending
     }
 
     fn mark_drawn(&mut self) {
@@ -1053,7 +1551,7 @@ mod tests {
     use super::*;
 
     fn app_with_state() -> (PdfApp, ui::State) {
-        let mut app = PdfApp::new();
+        let mut app = PdfApp::sample();
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
         // Give it a viewport so geometry is meaningful.
@@ -1357,6 +1855,36 @@ mod tests {
         app.rail_w = 999.0;
         app.recompute_regions();
         assert!((app.rail_width() - RAIL_W_MAX).abs() < 1e-6, "rail width clamps to max");
+    }
+
+    #[test]
+    fn responsive_mode_reflows_on_resize_not_cached() {
+        // Prove the breakpoint is re-derived from the *current* width on every
+        // layout pass: the same instance must reflow when resized between size
+        // classes, not stay frozen at whatever it launched as.
+        let (mut app, _st) = app_with_state(); // starts wide (1280)
+        app.reconcile_overlay();
+        app.recompute_regions();
+        assert!(!app.overlay_mode, "wide window docks panels");
+        assert!(app.show_sidebar && app.show_rail, "docked panels are visible when wide");
+        // Wide: the canvas leaves room for the rail + sidebar columns.
+        assert!(app.canvas_rect.width() < app.rect.width() - 100.0, "docked panels reserve columns");
+
+        // Shrink below the overlay breakpoint — panels must collapse to closed
+        // overlays and the canvas must span the whole (smaller) window.
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.reconcile_overlay();
+        app.recompute_regions();
+        assert!(app.overlay_mode, "narrow window switches to overlay mode");
+        assert!(!app.show_sidebar && !app.show_rail, "narrow window auto-closes the panels");
+        assert!((app.canvas_rect.width() - app.rect.width()).abs() < 1.0, "canvas spans the full width in overlay mode");
+
+        // Grow back to wide — panels re-dock.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.reconcile_overlay();
+        app.recompute_regions();
+        assert!(!app.overlay_mode, "returning to wide re-docks");
+        assert!(app.show_sidebar && app.show_rail, "panels come back when wide again");
     }
 
     #[test]

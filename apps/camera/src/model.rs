@@ -5,6 +5,8 @@
 //! [`crate::app`]. Keeping the model pure makes it unit-testable without a
 //! GPU or an event loop.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// Top-level screen / mode the app is showing.
@@ -82,7 +84,9 @@ impl Facing {
     pub const ALL: [Facing; 3] = [Facing::Back, Facing::Front, Facing::Wide];
     pub fn label(self) -> &'static str {
         match self {
-            Facing::Back => "Back",
+            // "Rear" rather than "Back" so the lens selector never reads as a
+            // navigational back button.
+            Facing::Back => "Rear",
             Facing::Front => "Front",
             Facing::Wide => "Ultra-wide",
         }
@@ -286,30 +290,45 @@ impl CaptureKind {
     }
 }
 
-/// One stored capture's metadata. The pixels are regenerated procedurally
-/// from `scene` so the gallery is populated without bundling binary
-/// thumbnails — see [`crate::frame::thumbnail`].
+/// One item in the library.
+///
+/// A capture is backed by a real file on disk (`path` is `Some`) whose
+/// pixels are decoded for the thumbnail/preview. The hermetic screenshot
+/// and test path uses `path = None`, in which case the thumbnail is
+/// synthesized procedurally from `scene` so no binary assets are bundled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capture {
+    /// Stable identity — the file name for disk-backed items.
     pub id: String,
     pub kind: CaptureKind,
-    /// Unix epoch seconds.
+    /// Unix epoch seconds (file mtime for disk-backed items).
     pub ts: i64,
     pub w: u32,
     pub h: u32,
-    /// Video duration in milliseconds (0 for photos).
+    /// Video duration in milliseconds (0 for photos / unknown).
     pub dur_ms: i64,
     pub label: String,
     pub favorite: bool,
     pub facing: Facing,
-    /// Procedural scene seed used to regenerate the thumbnail.
+    /// Procedural scene seed for the sample/hermetic path only.
     pub scene: u8,
+    /// Absolute path to the backing file, when disk-backed.
+    pub path: Option<PathBuf>,
 }
 
 impl Capture {
     pub fn is_video(&self) -> bool {
         matches!(self.kind, CaptureKind::Video)
     }
+}
+
+/// One entry in the scan history — the raw decoded text plus when it was
+/// seen. The [`CodeKind`] and display summary are derived on demand via
+/// [`classify`], so only the ground-truth payload is persisted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanEntry {
+    pub raw: String,
+    pub ts: i64,
 }
 
 /// Gallery filter chip.
@@ -585,6 +604,7 @@ mod tests {
             favorite: true,
             facing: Facing::Back,
             scene: 0,
+            path: None,
         };
         assert!(GalleryFilter::All.matches(&photo));
         assert!(GalleryFilter::Photos.matches(&photo));

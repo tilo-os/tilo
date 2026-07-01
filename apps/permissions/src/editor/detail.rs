@@ -338,7 +338,7 @@ impl DetailPane {
         // peer the collaboration roster knows), not the member's frozen
         // label. An avatar chip (initials on the identity colour) stands in
         // for the absent avatar image, matching that peer's presence colour.
-        let (disp_name, ident_color, initials, ident_sub) = {
+        let (disp_name, ident_color, initials, linked) = {
             let s = self.shared.borrow();
             let name = s.member_display_name(&member);
             let color = s.member_color(&member);
@@ -348,11 +348,7 @@ impl DetailPane {
                 .and_then(|id| s.identities.get(id))
                 .map(|i| i.initials())
                 .unwrap_or_else(|| crate::identity::Identity::new("", &name).initials());
-            let sub = match &member.identity_id {
-                Some(id) => format!("identity: {id}"),
-                None => "unlinked member".to_string(),
-            };
-            (name, color, inits, sub)
+            (name, color, inits, member.identity_id.is_some())
         };
         // Avatar chip.
         let av = Rect::new(area.x0 + PAD, area.y0 + 14.0, area.x0 + PAD + 34.0, area.y0 + 48.0);
@@ -363,9 +359,13 @@ impl DetailPane {
         let name_x = av.x1 + 12.0;
         tr.draw_text_weighted(scene, &disp_name, sz.title, c.text_primary, t * Affine::translate((name_x, area.y0 + 12.0)), None, TextWeight::Bold);
         let role_names: Vec<String> = self.shared.borrow().set.roles_of(&member).iter().map(|r| r.name.clone()).collect();
-        let roles_sub = if role_names.is_empty() { "no roles".to_string() } else { role_names.join(", ") };
-        let sub = format!("{ident_sub}  \u{00b7}  {roles_sub}");
-        tr.draw_text(scene, &sub, sz.secondary, c.text_dim, t * Affine::translate((name_x, area.y0 + 14.0 + sz.title as f64 + 2.0)), Some((area.width() - (name_x - area.x0) - PAD) as f32));
+        let roles_sub = if role_names.is_empty() { "No roles".to_string() } else { role_names.join(", ") };
+        // The member's roles are the meaningful sub-line; an unlinked member
+        // (not yet bound to a workspace identity) is flagged, but the raw
+        // identity id is never surfaced as chrome.
+        let sub = if linked { roles_sub } else { format!("Unlinked  \u{00b7}  {roles_sub}") };
+        let sub = tr.elide_to_width(&sub, sz.secondary, (area.width() - (name_x - area.x0) - PAD).max(0.0) as f32);
+        tr.draw_text(scene, &sub, sz.secondary, c.text_dim, t * Affine::translate((name_x, area.y0 + 14.0 + sz.title as f64 + 2.0)), None);
 
         self.draw_context_chip(scene, t, tr, theme);
 
@@ -414,10 +414,17 @@ impl DetailPane {
             tr.draw_text_weighted(scene, &scope.label().to_uppercase(), sz.caption, theme.accent_primary, t * Affine::translate((x0, y + 12.0)), None, TextWeight::Semibold);
             seg_caption(scene, t, tr, theme, seg_x, y + 10.0);
             y += 32.0;
+            let text_w = (seg_x - x0 - 12.0).max(0.0) as f32;
             for d in list {
                 let g = value_of(&d.id);
-                tr.draw_text(scene, &d.label, sz.body, c.text_primary, t * Affine::translate((x0, y + 3.0)), Some((seg_x - x0 - 12.0) as f32));
-                tr.draw_text(scene, &d.description, sz.secondary, c.text_dim, t * Affine::translate((x0, y + 3.0 + sz.body as f64 + 3.0)), Some((seg_x - x0 - 12.0) as f32));
+                // Keep each field to a single line so a fixed-height row never
+                // overlaps the next one when the content pane narrows — the
+                // full text is a hover/wider-layout affordance, the elided
+                // form the compact one.
+                let label = tr.elide_to_width_weighted(&d.label, sz.body, text_w, TextWeight::Regular);
+                tr.draw_text(scene, &label, sz.body, c.text_primary, t * Affine::translate((x0, y + 3.0)), None);
+                let desc = tr.elide_to_width(&d.description, sz.secondary, text_w);
+                tr.draw_text(scene, &desc, sz.secondary, c.text_dim, t * Affine::translate((x0, y + 3.0 + sz.body as f64 + 3.0)), None);
                 tri_state(scene, t, tr, theme, seg_x, y, g, GRID_ROW_H);
                 y += GRID_ROW_H;
             }
@@ -462,7 +469,8 @@ impl DetailPane {
                 let Some(y) = cell_y(&d.id) else { continue };
                 let ov = member.override_for(&d.id, ctx);
                 let res = explain(&s.registry, &s.set, member, &d.id, ctx);
-                tr.draw_text(scene, &d.label, sz.body, c.text_primary, t * Affine::translate((x0, y + 4.0)), Some((seg_x - x0 - 100.0) as f32));
+                let label = tr.elide_to_width_weighted(&d.label, sz.body, (seg_x - x0 - 100.0).max(0.0) as f32, TextWeight::Regular);
+                tr.draw_text(scene, &label, sz.body, c.text_primary, t * Affine::translate((x0, y + 4.0)), None);
                 effective_badge(scene, t, tr, theme, Point::new(seg_x - 96.0, y + 6.0), res.decision, &res.source);
                 tri_state(scene, t, tr, theme, seg_x, y, ov, GRID_ROW_H);
             }
