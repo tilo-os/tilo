@@ -12,9 +12,12 @@ use crate::action::{Action, ActionBus, SettingFlag};
 use crate::model::{Category, Route, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
-    card_surface, chip_surface, dim, divider, gap, spring, text, text_c, Align, Flex, Icon,
-    IconKind, IntoElement, Justify, Len, SeekBar, Surface, Switch, Thumbnail,
+    card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
+    subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, IntoElement, Justify,
+    Len, SeekBar, Surface, Switch, Thumbnail,
 };
+
+use crate::contrast::SelectedStyle;
 
 const CARD_W: f32 = 300.0;
 const THUMB_H: f32 = 169.0;
@@ -22,6 +25,48 @@ const THUMB_H: f32 = 169.0;
 /// Width of the navigation rail (logical px). Shared with the responsive
 /// split so the docked rail and the overlay flap are exactly this wide.
 pub const NAV_RAIL_W: f64 = 86.0;
+
+// ---------------------------------------------------------------------------
+// selected / active state styling (the contrast seam)
+// ---------------------------------------------------------------------------
+//
+// Every "this control is selected/active" surface routes through one of these
+// helpers so its label/icon foreground is chosen to *contrast its own
+// highlight* rather than hard-coded. Previously selected tabs painted a
+// bright highlight (slate-200, or an accent wash) and then drew bright-grey /
+// bright-blue / white text on top — 3.4–3.6:1, below the readable floor. Each
+// helper returns a [`SelectedStyle`] (`bg` + guaranteed-contrasting `fg`); the
+// `selected_*_test` cases assert every one clears WCAG AA.
+
+/// Filled-accent selected style: a saturated accent background (chips, the
+/// filled "Subscribe" pill) with a foreground that reads on it.
+///
+/// We fill with [`Theme::accent_hover`] (one ramp step off the primary)
+/// rather than `accent_primary`: the primary is a mid-tone that sits right on
+/// the 4.5:1 knife-edge (white 4.47 / black 4.70), so the foreground choice is
+/// ambiguous and the margin is fragile. The hover step gives the seam's
+/// foreground comfortable headroom in both themes (white ≈ 6.3:1 dark, black
+/// ≈ 8.3:1 light) while still reading unmistakably as "accent / selected".
+pub fn selected_accent_fill(theme: &Theme) -> SelectedStyle {
+    SelectedStyle::on(theme.accent_hover)
+}
+
+/// Selected nav-rail item. The active item gets a strong accent fill (so it
+/// reads as "you are here") with a contrasting icon + label, instead of the
+/// old accent-coloured glyphs floating on a near-white slate-200 chip.
+pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
+    SelectedStyle::on(theme.accent_hover)
+}
+
+/// "On" status pill (SponsorBlock / DeArrow indicators in the top bar). The
+/// old design put accent-blue text on a translucent accent wash (3.4:1). We
+/// keep the recognisable accent tint but strengthen it into an opaque fill and
+/// contrast the foreground against the result.
+pub fn status_pill_on(theme: &Theme) -> SelectedStyle {
+    // accent[3] (indigo-700 in dark) is dark enough that white text gets ~7.9:1
+    // while still reading as the accent family.
+    SelectedStyle::on(theme.tokens.colors.accent.stops[3])
+}
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -58,13 +103,19 @@ fn pill(
     action: Action,
     filled: bool,
 ) -> Flex {
-    let (bg, fg, border) = if filled {
-        (Some(theme.accent_primary), Color::WHITE, None)
+    // Filled = accent fill with a contrast-checked foreground; outlined = a
+    // subtle dark veneer with primary text. The old outlined pill filled with a
+    // near-white neutral stop (slate-300) under `text_primary`, which is WHITE
+    // in the dark theme — ~1.3:1, invisible.
+    let (bg, fg, border, hover_bg) = if filled {
+        let sel = selected_accent_fill(theme);
+        (Some(sel.bg), sel.fg, None, theme.accent_hover)
     } else {
         (
-            Some(theme.tokens.colors.neutral.stops[7]),
+            Some(subtle_fill(theme)),
             theme.text_primary,
             Some((1.0, theme.border_standard)),
+            hover_fill(theme),
         )
     };
     let mut row = Flex::row().gap(8.0).pad_xy(16.0, 9.0).align(Align::Center);
@@ -78,11 +129,7 @@ fn pill(
             border,
         })
         .hover_surface(Surface {
-            fill: Some(if filled {
-                theme.accent_hover
-            } else {
-                theme.tokens.colors.neutral.stops[6]
-            }),
+            fill: Some(hover_bg),
             radius: theme.tokens.radii.full as f64,
             border,
         })
@@ -96,16 +143,8 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: IconKind, action: Action) -
         .justify(Justify::Center)
         .align(Align::Center)
         .push(icon(kind, 20.0, theme.text_primary))
-        .surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
-            radius: theme.tokens.radii.full as f64,
-            border: None,
-        })
-        .hover_surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[6]),
-            radius: theme.tokens.radii.full as f64,
-            border: None,
-        })
+        .surface(subtle_surface(theme))
+        .hover_surface(hover_pill_surface(theme))
         .on_click(bus, action)
 }
 
@@ -121,11 +160,7 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .align(Align::Center)
         .push(icon(IconKind::Menu, 20.0, theme.text_primary))
         .surface(Surface { fill: None, radius: theme.tokens.radii.full as f64, border: None })
-        .hover_surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
-            radius: theme.tokens.radii.full as f64,
-            border: None,
-        })
+        .hover_surface(hover_pill_surface(theme))
         .on_click(bus, Action::ToggleSidebar)
 }
 
@@ -194,7 +229,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) -> F
         .gap(9.0)
         .pad(6.0)
         .hover_surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
+            fill: Some(hover_fill(theme)),
             radius: theme.tokens.radii.lg as f64,
             border: None,
         })
@@ -219,7 +254,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) ->
         .pad(6.0)
         .align(Align::Start)
         .hover_surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
+            fill: Some(hover_fill(theme)),
             radius: theme.tokens.radii.md as f64,
             border: None,
         })
@@ -256,28 +291,49 @@ fn grid(cards: Vec<Flex>) -> Flex {
 // ---------------------------------------------------------------------------
 
 fn nav_item(theme: &Theme, bus: &ActionBus, kind: IconKind, label: &str, route: Route, active: bool) -> Flex {
-    let fg = if active { theme.accent_primary } else { theme.text_dim };
-    let surface = if active {
+    // Active item: a solid accent fill with a foreground chosen to contrast it
+    // (so the selected destination reads clearly), instead of accent-coloured
+    // glyphs floating on a near-white slate-200 chip (3.6:1, unreadable).
+    let (fg, surface) = if active {
+        let sel = selected_nav_item(theme);
+        (
+            sel.fg,
+            Surface {
+                fill: Some(sel.bg),
+                radius: theme.tokens.radii.lg as f64,
+                border: None,
+            },
+        )
+    } else {
+        (
+            theme.text_dim,
+            Surface { fill: None, radius: theme.tokens.radii.lg as f64, border: None },
+        )
+    };
+    // Inactive items get a subtle neutral hover veneer; the active item already
+    // owns the strong accent fill, so it keeps it on hover (no flash to a
+    // bright neutral chip under the cursor).
+    let hover = if active {
+        surface
+    } else {
         Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
+            fill: Some(hover_fill(theme)),
             radius: theme.tokens.radii.lg as f64,
             border: None,
         }
-    } else {
-        Surface { fill: None, radius: theme.tokens.radii.lg as f64, border: None }
     };
+    // Stable, addressable id so headless click-tests can target a nav item by
+    // name (e.g. "nav_home"). Derived from the label, lowercased.
+    let id = format!("nav_{}", label.to_lowercase());
     Flex::col()
+        .id(&id)
         .fill_w()
         .gap(4.0)
         .pad_xy(4.0, 8.0)
         .align(Align::Center)
         .justify(Justify::Center)
         .surface(surface)
-        .hover_surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
-            radius: theme.tokens.radii.lg as f64,
-            border: None,
-        })
+        .hover_surface(hover)
         .on_click(bus, Action::Navigate(route))
         .push(icon(kind, 22.0, fg))
         .push(text_c(label, 11.0, fg))
@@ -334,7 +390,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .pad_xy(14.0, 0.0)
         .align(Align::Center)
         .surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
+            fill: Some(subtle_fill(theme)),
             radius: theme.tokens.radii.full as f64,
             border: Some((1.0, theme.border_standard)),
         })
@@ -390,10 +446,14 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
 }
 
 fn status_pill(theme: &Theme, kind: IconKind, label: &str, on: bool) -> Flex {
+    // ON: an opaque accent-family fill with a contrast-checked foreground
+    // (was indigo-500 text on a translucent indigo wash — 3.4:1). OFF: a subtle
+    // dark veneer with dim text (was dim text on a near-white slate-200 chip).
     let (fg, bg) = if on {
-        (theme.accent_primary, theme.tokens.colors.accent.stops[1].with_alpha(0.4))
+        let sel = status_pill_on(theme);
+        (sel.fg, sel.bg)
     } else {
-        (theme.text_dim, theme.tokens.colors.neutral.stops[8])
+        (theme.text_dim, subtle_fill(theme))
     };
     Flex::row()
         .gap(6.0)
@@ -413,16 +473,27 @@ fn status_pill(theme: &Theme, kind: IconKind, label: &str, on: bool) -> Flex {
 // ---------------------------------------------------------------------------
 
 fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: bool) -> Flex {
-    let fg = if active { Color::WHITE } else { theme.text_primary };
+    // The selected chip is the headline contrast fix: it used WHITE text on the
+    // accent fill (breaks in the light theme, where it would want black) — now
+    // the foreground is chosen against the accent via the seam. Inactive chips
+    // get primary text on a subtle dark veneer.
+    let sel = selected_accent_fill(theme);
+    let (fg, resting, hover_bg) = if active {
+        // Active: accent fill + seam-chosen foreground. Hover goes one ramp
+        // step darker (indigo-700) so the active chip still gives feedback.
+        (sel.fg, Surface {
+            fill: Some(sel.bg),
+            radius: theme.tokens.radii.full as f64,
+            border: None,
+        }, theme.tokens.colors.accent.stops[3])
+    } else {
+        (theme.text_primary, chip_surface(theme, false), hover_fill(theme))
+    };
     Flex::row()
         .pad_xy(14.0, 7.0)
-        .surface(chip_surface(theme, active))
+        .surface(resting)
         .hover_surface(Surface {
-            fill: Some(if active {
-                theme.accent_hover
-            } else {
-                theme.tokens.colors.neutral.stops[6]
-            }),
+            fill: Some(hover_bg),
             radius: theme.tokens.radii.full as f64,
             border: None,
         })
@@ -487,7 +558,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrol
                     .align(Align::Center)
                     .pad(6.0)
                     .hover_surface(Surface {
-                        fill: Some(theme.tokens.colors.neutral.stops[8]),
+                        fill: Some(hover_fill(theme)),
                         radius: theme.tokens.radii.lg as f64,
                         border: None,
                     })
@@ -783,7 +854,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .pad_xy(10.0, 6.0)
         .align(Align::Center)
         .surface(Surface {
-            fill: Some(theme.tokens.colors.neutral.stops[8]),
+            fill: Some(subtle_fill(theme)),
             radius: theme.tokens.radii.md as f64,
             border: Some((1.0, theme.border_standard)),
         })
@@ -834,7 +905,7 @@ fn sponsor_summary(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video)
                     .pad_xy(9.0, 5.0)
                     .align(Align::Center)
                     .surface(Surface {
-                        fill: Some(theme.tokens.colors.neutral.stops[8]),
+                        fill: Some(subtle_fill(theme)),
                         radius: theme.tokens.radii.full as f64,
                         border: None,
                     })
@@ -863,7 +934,7 @@ fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
             Flex::row()
                 .pad_xy(6.0, 2.0)
                 .surface(Surface {
-                    fill: Some(theme.tokens.colors.neutral.stops[8]),
+                    fill: Some(subtle_fill(theme)),
                     radius: 4.0,
                     border: None,
                 })
@@ -1028,4 +1099,207 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
             .push(dearrow)
             .push(privacy),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+K command palette
+// ---------------------------------------------------------------------------
+
+/// One result row in the command palette.
+fn palette_row(theme: &Theme, bus: &ActionBus, hit: &crate::search_type::SearchHit, index: usize) -> Flex {
+    use crate::search_type::CHANNEL_TYPE_ID;
+    let is_channel = hit.type_id == CHANNEL_TYPE_ID;
+    let kind = if is_channel { IconKind::Subscriptions } else { IconKind::Play };
+    let meta = if is_channel {
+        format!("Channel · {}", hit.creator)
+    } else {
+        format!("{} · {}", hit.creator, clock(hit.length_secs as f64))
+    };
+    Flex::row()
+        .id(&format!("palette_row_{index}"))
+        .fill_w()
+        .gap(12.0)
+        .pad_xy(12.0, 9.0)
+        .align(Align::Center)
+        .hover_surface(Surface {
+            fill: Some(hover_fill(theme)),
+            radius: theme.tokens.radii.md as f64,
+            border: None,
+        })
+        .on_click(bus, Action::ActivateHit(hit.deep_link.clone()))
+        .push(
+            Flex::row()
+                .fixed(34.0, 34.0)
+                .justify(Justify::Center)
+                .align(Align::Center)
+                .surface(subtle_surface(theme))
+                .push(icon(kind, 16.0, theme.text_dim)),
+        )
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(2.0)
+                .push(text(&hit.title, 14.0))
+                .push(dim(theme, &meta, 12.0)),
+        )
+        .push(icon(IconKind::Chevron, 14.0, theme.text_dim))
+}
+
+/// The Ctrl+K global command palette overlay. Renders a dimming scrim (click to
+/// close) with a centred card: a bound query field + live-filtered results
+/// drawn from the [`crate::search_type`] provider seam (so it shares the exact
+/// contract the coming global-search framework will use). Returns `None` when
+/// the palette is closed so the caller can skip it entirely.
+pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Option<Flex> {
+    if !model.palette_open {
+        return None;
+    }
+
+    let backend = crate::backend::offline::OfflineBackend::with_model(model.clone());
+    let provider =
+        crate::search_type::VideoSearchProvider::new(&backend, model.settings.dearrow_enabled);
+    let hits = crate::search_type::palette_hits(&provider, model, &model.palette_query);
+
+    let input = TextInput::new(vec![])
+        .with_id("palette_input")
+        .with_on_change_path("palette_query")
+        .with_plain_chrome()
+        .with_font_size(16.0);
+
+    let field = Flex::row()
+        .fill_w()
+        .h(Len::Px(46.0))
+        .gap(10.0)
+        .pad_xy(14.0, 0.0)
+        .align(Align::Center)
+        .surface(Surface {
+            fill: Some(subtle_fill(theme)),
+            radius: theme.tokens.radii.md as f64,
+            border: Some((1.0, theme.border_focus)),
+        })
+        .push(icon(IconKind::Search, 18.0, theme.accent_primary))
+        .push(
+            Flex::row()
+                .grow(1.0)
+                .push_if(
+                    model.palette_query.is_empty(),
+                    dim(theme, "Search videos and channels…", 15.0),
+                )
+                .push_if(!model.palette_query.is_empty(), input),
+        )
+        .push(
+            Flex::row()
+                .pad_xy(7.0, 3.0)
+                .surface(subtle_surface(theme))
+                .push(text_c("Ctrl K", 11.0, theme.text_dim)),
+        );
+
+    let mut list = Flex::col().fill_w().gap(2.0);
+    if model.palette_query.trim().is_empty() {
+        list = list.push(
+            Flex::col()
+                .fill_w()
+                .pad(20.0)
+                .align(Align::Center)
+                .push(dim(theme, "Type to search across Tube", 13.0)),
+        );
+    } else if hits.is_empty() {
+        list = list.push(
+            Flex::col()
+                .fill_w()
+                .pad(20.0)
+                .align(Align::Center)
+                .push(dim(theme, "No matches", 13.0)),
+        );
+    } else {
+        for (i, h) in hits.iter().take(8).enumerate() {
+            list = list.push(palette_row(theme, bus, h, i));
+        }
+    }
+
+    let card = Flex::col()
+        .id("palette_card")
+        .w(Len::Px(560.0))
+        .gap(10.0)
+        .pad(14.0)
+        .surface(Surface {
+            fill: Some(theme.tokens.colors.surfaces.raised),
+            radius: theme.tokens.radii.lg as f64,
+            border: Some((1.0, theme.border_standard)),
+        })
+        // Swallow clicks on the card chrome so they don't reach the scrim and
+        // close the palette. `OpenPalette` is idempotent (already open).
+        .on_click(bus, Action::OpenPalette)
+        .push(field)
+        .push(divider(theme))
+        .push(list);
+
+    // Full-bleed scrim; clicking it (outside the card) closes the palette.
+    Some(
+        Flex::col()
+            .id("palette_scrim")
+            .fill_w()
+            .fill_h()
+            .align(Align::Center)
+            .justify(Justify::Start)
+            .pad_each(0.0, 96.0, 0.0, 0.0)
+            .surface(Surface {
+                fill: Some(Color::from_rgba8(0, 0, 0, 140)),
+                radius: 0.0,
+                border: None,
+            })
+            .on_click(bus, Action::ClosePalette)
+            .push(card),
+    )
+}
+
+#[cfg(test)]
+mod selected_contrast_tests {
+    //! Every selected / active chrome state must place a foreground that
+    //! clears the WCAG AA body-text floor (4.5:1) on its own highlight.
+    //! These assert on the exact `SelectedStyle` the screens paint with, in
+    //! BOTH the dark and light themes (the bug was theme-asymmetric: white
+    //! text broke in light, accent-on-bright broke in dark).
+    use super::*;
+    use crate::contrast::AA_BODY;
+
+    fn themes() -> Vec<(&'static str, Theme)> {
+        vec![("dark", Theme::dark()), ("light", Theme::light())]
+    }
+
+    #[test]
+    fn selected_accent_fill_is_readable() {
+        for (name, t) in themes() {
+            let s = selected_accent_fill(&t);
+            assert!(
+                s.ratio() >= AA_BODY,
+                "[{name}] selected chip/pill contrast {:.2} < {AA_BODY}",
+                s.ratio()
+            );
+        }
+    }
+
+    #[test]
+    fn selected_nav_item_is_readable() {
+        for (name, t) in themes() {
+            let s = selected_nav_item(&t);
+            assert!(
+                s.ratio() >= AA_BODY,
+                "[{name}] selected nav-item contrast {:.2} < {AA_BODY}",
+                s.ratio()
+            );
+        }
+    }
+
+    #[test]
+    fn status_pill_on_is_readable() {
+        for (name, t) in themes() {
+            let s = status_pill_on(&t);
+            assert!(
+                s.ratio() >= AA_BODY,
+                "[{name}] on status-pill contrast {:.2} < {AA_BODY}",
+                s.ratio()
+            );
+        }
+    }
 }

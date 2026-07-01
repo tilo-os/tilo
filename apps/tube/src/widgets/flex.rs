@@ -113,6 +113,10 @@ pub struct Flex {
     shrink: f32,
     block: bool,
     clip: bool,
+    /// When set, this box is absolutely positioned filling its containing
+    /// block (inset 0 on all sides) so it stacks *over* its siblings — used for
+    /// the command-palette overlay on top of the shell.
+    overlay: bool,
 
     surface: Option<Surface>,
     hover_surface: Option<Surface>,
@@ -148,6 +152,7 @@ impl Flex {
             shrink: 0.0,
             block: false,
             clip: false,
+            overlay: false,
             surface: None,
             hover_surface: None,
             bus: None,
@@ -258,6 +263,15 @@ impl Flex {
         self
     }
 
+    /// Make this box an absolutely-positioned overlay filling its containing
+    /// block (inset 0), so it stacks on top of its siblings. The containing
+    /// block is the nearest positioned ancestor — the shell root sets itself
+    /// `position: relative` implicitly by being the flex parent.
+    pub fn overlay(mut self) -> Self {
+        self.overlay = true;
+        self
+    }
+
     pub fn surface(mut self, s: Surface) -> Self {
         self.surface = Some(s);
         self
@@ -330,6 +344,23 @@ impl Widget for Flex {
                 taffy::Display::Block
             } else {
                 taffy::Display::Flex
+            },
+            position: if self.overlay {
+                taffy::Position::Absolute
+            } else {
+                taffy::Position::Relative
+            },
+            // Absolute + inset 0 => fill the containing block, stacking over
+            // in-flow siblings.
+            inset: if self.overlay {
+                taffy::Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                }
+            } else {
+                taffy::Rect::auto()
             },
             flex_direction: match self.axis {
                 Axis::Row => taffy::FlexDirection::Row,
@@ -555,7 +586,10 @@ impl Widget for Flex {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.children.iter().any(|c| c.wants_pointer_capture())
+        // An overlay captures all pointer events so it behaves modally — the
+        // parent routes exclusively to it, keeping clicks off the shell beneath
+        // (e.g. the top-bar menu button under the command-palette scrim).
+        self.overlay || self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
     fn needs_redraw(&self) -> bool {
