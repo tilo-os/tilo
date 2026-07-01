@@ -132,23 +132,68 @@ pub fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
     live_fetch(meta)
 }
 
-/// The live LRCLIB fetch. Without the `lyrics` feature this is a stub that
-/// documents the request it *would* make and returns `None` (the worker
-/// treats this as "no lyrics available right now").
-#[cfg(not(feature = "lyrics"))]
+/// The live LRCLIB fetch. Without an HTTP stack (`lyrics` or `live` feature —
+/// both pull `reqwest`) this is a stub that documents the request it *would*
+/// make and returns `None` (the worker treats this as "no lyrics right now").
+#[cfg(not(any(feature = "lyrics", feature = "live")))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
-    // TODO(lyrics): enable the `lyrics` feature to GET `lrclib_url(meta)` and
-    // parse `syncedLyrics` / `plainLyrics`. Bundled lyrics cover the seed
-    // library so the view is populated offline.
     let _ = lrclib_url(meta);
     None
 }
 
-#[cfg(feature = "lyrics")]
+/// Real synced-or-plain lyrics from LRCLIB. Compiled whenever an HTTP stack is
+/// available (`lyrics` or the `live` build), so `--features live,audio` fetches
+/// real lyrics for the playing track.
+#[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
-    let url = lrclib_url(meta);
-    let body = reqwest::blocking::get(&url).ok()?.text().ok()?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("qOS-Music (https://qos)")
+        .build()
+        .ok()?;
+    // 1. Exact match by track/artist/album/duration.
+    if let Some(l) = lrclib_from_object(&client, &lrclib_url(meta)) {
+        return Some(l);
+    }
+    // 2. Fuzzy search fallback — YouTube durations rarely match LRCLIB's to the
+    //    second, so `/api/get` frequently 404s. `/api/search` returns candidates
+    //    (best first); take the first with real synced (then plain) lyrics.
+    lrclib_from_search(&client, meta)
+}
+
+/// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
+/// synced over plain. `None` on a 404 / empty record.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn lrclib_from_object(client: &reqwest::blocking::Client, url: &str) -> Option<Lyrics> {
+    let body = client.get(url).send().ok()?.text().ok()?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    lyrics_from_record(&json)
+}
+
+/// Search LRCLIB by track + artist and return the best candidate's lyrics.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> Option<Lyrics> {
+    let url = lrclib_search_url(meta);
+    let body = client.get(&url).send().ok()?.text().ok()?;
+    let arr: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let list = arr.as_array()?;
+    // Prefer the first candidate carrying synced lyrics; else the first plain.
+    for rec in list {
+        if rec.get("syncedLyrics").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false) {
+            return lyrics_from_record(rec);
+        }
+    }
+    for rec in list {
+        if let Some(l) = lyrics_from_record(rec) {
+            return Some(l);
+        }
+    }
+    None
+}
+
+/// Extract synced-then-plain lyrics from one LRCLIB JSON record.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
     if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str()) {
         if !synced.trim().is_empty() {
             return Some(parse_lrc(synced));
@@ -160,6 +205,29 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
         }
     }
     None
+}
+
+/// Build the LRCLIB `/api/search?track_name=…&artist_name=…` URL.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn lrclib_search_url(meta: &TrackMeta) -> String {
+    fn enc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
+                b' ' => out.push_str("%20"),
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+    format!(
+        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+        enc(&meta.title),
+        enc(&meta.artist),
+    )
 }
 
 /// Build the LRCLIB `/api/get` request URL for a track. Always compiled so the
