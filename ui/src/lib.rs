@@ -19,12 +19,14 @@ pub mod animation;
 pub mod overlay;
 pub mod icons;
 pub mod offscreen;
+pub mod image_store;
 pub mod render_thread;
 
 pub use app::App;
 pub use color_compat::ColorCompat;
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
+pub use image_store::{Fetcher, ImageStore};
 pub use caps_lock::CapsLockEstimate;
 
 pub use widget::{Widget, Element};

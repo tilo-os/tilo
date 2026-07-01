@@ -109,6 +109,13 @@ pub struct App {
     /// skipped by `apply_layout`.
     structure_dirty: bool,
     needs_sync: bool,
+    /// Physical window size the most recent `RedrawRequested` frame was
+    /// built at. `about_to_wait` compares the live `inner_size()` against
+    /// this to catch an allocation change that arrived without a `Resized`
+    /// event (a compositor reconfigure, or a resize that coalesced away)
+    /// and reflow responsive layouts on the next tick instead of waiting
+    /// on stray input. `None` until the first frame is drawn.
+    last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
@@ -189,6 +196,7 @@ impl App {
             layout_dirty: true,
             structure_dirty: false,
             needs_sync: true,
+            last_frame_size: None,
             theme: Theme::dark(),
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
@@ -1064,6 +1072,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let width = inner.width;
                 let height = inner.height;
                 let scale_factor = window.scale_factor() as f32;
+                // Record the size this frame is built at so `about_to_wait`
+                // can notice a later allocation change (a resize that never
+                // produced a `Resized` event, or one that coalesced) and
+                // reflow without waiting on stray input.
+                app.last_frame_size = Some(inner);
 
                 if app.needs_sync {
                     app.root_widget.sync(&mut app.state.doc, &app.state.root);
@@ -1682,22 +1695,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // While collaborating, tick the loop at ~60 Hz so the collab
-        // socket is drained promptly. winit's default `Wait` only wakes on
-        // local input, so a remote peer's edits/presence (which aren't a
-        // winit event source) would otherwise sit unread for seconds until
-        // the local user happens to move the mouse. Non-collab apps keep
-        // the default event-driven `Wait` (no idle wakeups).
-        if self.app.collab_manager.is_connected() {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
-            ));
-        }
-
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
         let app = &mut self.app;
+
+        // Reflow on an allocation change even when no other input arrives.
+        // The event-driven loop only re-runs layout on a user event or a
+        // `Resized`, so a compositor reconfigure that changes `inner_size()`
+        // without delivering `Resized` (or a resize that coalesced away)
+        // would leave responsive content sized to the previous frame until
+        // the user happens to move the mouse. Compare against the size the
+        // last frame was built at and, only when it actually differs, mark
+        // layout dirty and request one redraw — the redraw refreshes
+        // `last_frame_size`, so this self-coalesces to a single reflow per
+        // distinct size rather than a per-tick repaint.
+        if let Some(prev) = app.last_frame_size {
+            if window.inner_size() != prev {
+                app.layout_dirty = true;
+                window.request_redraw();
+            }
+        }
         // Drain every pending CollabEvent into PresenceCtx /
         // state.collab via the single shared dispatch. If any event
         // came through, kick a redraw so the freshly-stamped remote
@@ -1746,14 +1764,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        // Pump the animation loop: while any widget reports an
-        // in-flight frame-driven transition (e.g. the shell's
-        // overview crossfade), keep scheduling redraws so the
-        // animation progresses until it settles. Without this,
-        // a single post-click redraw renders the first eased
-        // frame at t≈0 and then stalls — the overview would
-        // appear to "not work" because the fade never plays.
-        if app.root_widget.needs_animation_frame() {
+        // Pump the animation / async-work loop: the root reports it needs
+        // another frame either because a widget is mid-transition (e.g. the
+        // shell's overview crossfade) or because it has a background worker
+        // — a network fetch, a file load — whose result it folds in on the
+        // next `sync`. Give it that sync opportunity and a redraw so the
+        // fresh state surfaces this frame; without the sync, a worker that
+        // delivered into the CRDT/state would stay invisible until unrelated
+        // input arrived. The bounded `WaitUntil` chosen at the end of this
+        // method keeps waking the loop at ~60 Hz while `needs_frame` holds,
+        // so results drain promptly, then it drops back to `Wait` the moment
+        // the widget stops asking — no idle spin.
+        let needs_frame = app.root_widget.needs_animation_frame();
+        if needs_frame {
+            app.needs_sync = true;
             window.request_redraw();
         }
 
@@ -1767,6 +1791,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if let Some(tick) = app.frame_tick.as_mut() {
             tick(&mut app.presence_ctx);
             window.request_redraw();
+        }
+
+        // Choose the loop's idle cadence for this wakeup. The steady state —
+        // nothing animating, no collab socket, no pending async work — is
+        // event-driven `Wait`: the loop sleeps until real input arrives and
+        // burns no CPU, so the `QUICK_UI_PERF` idle frame count stays ~0.
+        // We escalate to a bounded ~60 Hz `WaitUntil` tick only while there
+        // is work that no winit event will surface on its own: a live collab
+        // socket whose peer edits/presence must be drained, or a root that
+        // still needs another frame (animation or async worker). Dropping
+        // straight back to `Wait` the instant both clear is what keeps an
+        // idle app from spinning.
+        if app.collab_manager.is_connected() || needs_frame {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
