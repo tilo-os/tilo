@@ -15,7 +15,9 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 
-use crate::backend::{preferred_backend, ResolvedStream, TrackHit};
+use crate::backend::{
+    preferred_backend, AlbumPage, ArtistPage, HomeContent, ResolvedStream, TrackHit,
+};
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -26,6 +28,12 @@ pub enum StreamRequest {
     /// app's library id, echoed back so the result can be correlated with the
     /// track that is (still) current when it lands.
     Resolve { track_id: String, video_id: String },
+    /// Fetch the real Home page (charts / new releases / top artists).
+    Home,
+    /// Fetch a real artist page by YouTube channel id.
+    Artist(String),
+    /// Fetch a real album's track list by YouTube album id.
+    Album(String),
 }
 
 /// A result folded back into the app on the UI thread.
@@ -39,6 +47,12 @@ pub enum StreamUpdate {
     Resolved { track_id: String, stream: Box<ResolvedStream> },
     /// A resolve attempt failed (offline, geo-blocked, PoToken-gated, …).
     ResolveFailed { track_id: String, error: String },
+    /// The real Home page landed.
+    Home { content: Box<HomeContent> },
+    /// A real artist page landed.
+    Artist { page: Box<ArtistPage> },
+    /// A real album page landed.
+    Album { page: Box<AlbumPage> },
     /// A non-fatal note for the status log / a toast.
     Note(String),
 }
@@ -97,6 +111,31 @@ impl StreamWorker {
                                 }
                             }
                         }
+                        StreamRequest::Home => match backend.home() {
+                            Ok(content) => {
+                                let _ = up_tx
+                                    .send(StreamUpdate::Home { content: Box::new(content) });
+                            }
+                            Err(e) => {
+                                let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
+                            }
+                        },
+                        StreamRequest::Artist(id) => match backend.artist(&id) {
+                            Ok(page) => {
+                                let _ = up_tx.send(StreamUpdate::Artist { page: Box::new(page) });
+                            }
+                            Err(e) => {
+                                let _ = up_tx.send(StreamUpdate::Note(format!("artist: {e}")));
+                            }
+                        },
+                        StreamRequest::Album(id) => match backend.album(&id) {
+                            Ok(page) => {
+                                let _ = up_tx.send(StreamUpdate::Album { page: Box::new(page) });
+                            }
+                            Err(e) => {
+                                let _ = up_tx.send(StreamUpdate::Note(format!("album: {e}")));
+                            }
+                        },
                     }
                 }
             })

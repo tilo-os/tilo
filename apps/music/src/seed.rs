@@ -167,23 +167,21 @@ pub fn sample_library() -> Library {
     lib
 }
 
-/// Default playback used when seeding a fresh document: a now-playing track
-/// partway through, a populated queue, so the screenshot shows the
-/// now-playing bar in a realistic state.
-pub fn sample_playback(lib: &Library) -> Playback {
-    let queue: Vec<String> = lib
-        .playlist("pl_drive")
-        .map(|p| p.track_ids.clone())
-        .unwrap_or_default();
-    let current = queue.first().cloned();
+/// Default playback used when seeding a fresh document: **idle**.
+///
+/// Nothing is loaded and nothing is playing until the user starts something.
+/// The app must never claim to be playing a track the user didn't choose — a
+/// fresh launch shows "Nothing playing" in the transport bar, not a fabricated
+/// now-playing state.
+pub fn sample_playback(_lib: &Library) -> Playback {
     Playback {
-        current,
-        queue,
+        current: None,
+        queue: Vec::new(),
         queue_index: 0,
-        playing: true,
-        position_ms: 78_000,
+        playing: false,
+        position_ms: 0,
         shuffle: false,
-        repeat: RepeatMode::All,
+        repeat: RepeatMode::Off,
         volume: 76,
     }
 }

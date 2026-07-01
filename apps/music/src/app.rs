@@ -8,7 +8,7 @@
 //! snapshot each frame and every mutation writes back to the document so the
 //! library + play-state replicate across devices.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,14 +25,17 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::ImageStore;
 
 use crate::art;
 use crate::audio::AudioEngine;
-use crate::backend::TrackHit;
+use crate::backend::{
+    AlbumPage, ArtistPage, HomeContent, HomeItem, HomeItemKind, HomeSection, TrackHit,
+};
 use crate::doc::{self, LiveTrack};
 use crate::icon::{self, Icon};
-use crate::lyrics::{self, LyricsLine};
-use crate::model::{fmt_duration, Album, Artist, CacheState, Library, Playback, RepeatMode, Track};
+use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
+use crate::model::{fmt_duration, Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track};
 use crate::seed;
 use crate::source::Source;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
@@ -258,6 +261,43 @@ pub struct MusicApp {
     /// A deferred `--shots` staging action, applied once on the first `sync`
     /// after the library has loaded (the catalog is empty at construction).
     shot_stage: Option<ShotStage>,
+
+    // ---- real artwork + live content -------------------------------------
+    /// Async remote-image cache: real album/artist/playlist covers fetched off
+    /// the UI thread, decoded to GPU textures and painted. See [`ui::ImageStore`].
+    images: ImageStore,
+    /// Entity id (album / artist / playlist / track) → best cover URL, folded
+    /// in from live search/home/artist results and re-applied each frame.
+    art_urls: HashMap<String, String>,
+    /// The real YouTube-Music Home page (charts / new releases / top artists),
+    /// once fetched. `None` offline / before it lands → the sample home shows.
+    home: Option<HomeContent>,
+    home_requested: bool,
+    /// Real artist pages keyed by channel id, and the set already requested.
+    artist_pages: HashMap<String, ArtistPage>,
+    artist_requested: HashSet<String>,
+    /// Real album pages keyed by album id, and the set already requested.
+    album_pages: HashMap<String, AlbumPage>,
+    album_requested: HashSet<String>,
+    /// Whether this instance may touch the network (spawn the worker, fetch
+    /// covers). False for the hermetic `--shots`/test path so a headless render
+    /// never opens a socket; the live-shots pre-warm flips it on.
+    allow_network: bool,
+
+    // ---- lyrics fetch ----------------------------------------------------
+    /// Async lyrics worker (LRCLIB). Spawned lazily; results fold into `lyrics`.
+    lyrics_worker: Option<LyricsWorker>,
+    /// The track id a lyrics fetch is in flight for (dedupes requests).
+    lyrics_pending_for: Option<String>,
+
+    // ---- search performance ----------------------------------------------
+    /// Memoised local search results for the last query, so the Search view
+    /// doesn't re-scan the whole library every frame while typing.
+    search_cache: Option<(String, SearchResults)>,
+    /// Wall-clock of the last search keystroke, for debouncing the live query.
+    search_edit_at: Option<Instant>,
+    /// The last query actually dispatched to the live worker (dedupe debounce).
+    live_query_sent: Option<String>,
 }
 
 /// A deferred `--shots` staging action (see [`MusicApp::app_root_for_shot`]).
@@ -281,6 +321,9 @@ impl MusicApp {
         // Optional initial-view override, used by `--shots` to capture
         // screens other than Home (e.g. `QOS_MUSIC_VIEW=album:al_glasslight`).
         let (view, query) = Self::parse_initial_view();
+        // A preset search query (`QOS_MUSIC_VIEW=search:…`) arms the debounce so
+        // the live-shot loop dispatches it after the usual idle beat.
+        let preset_search_at = (!query.is_empty()).then(Instant::now);
         Self {
             lib: Library::default(),
             pb: Playback::default(),
@@ -330,7 +373,87 @@ impl MusicApp {
             lyrics_for: None,
             lyrics_synced: false,
             shot_stage: None,
+            images: ImageStore::new(image_fetcher()),
+            art_urls: HashMap::new(),
+            home: None,
+            home_requested: false,
+            artist_pages: HashMap::new(),
+            artist_requested: HashSet::new(),
+            album_pages: HashMap::new(),
+            album_requested: HashSet::new(),
+            allow_network: true,
+            lyrics_worker: None,
+            lyrics_pending_for: None,
+            search_cache: None,
+            search_edit_at: preset_search_at,
+            live_query_sent: None,
         }
+    }
+
+    /// Disable all network use for a hermetic headless render (`--shots` /
+    /// tests): no worker thread, no cover fetches. The offline sample + gradient
+    /// placeholders render deterministically.
+    pub fn set_offline_for_shot(&mut self) {
+        self.allow_network = false;
+    }
+
+    /// Whether every live fetch this frame needs has settled — used by the
+    /// live-shots pre-warm to know when the real covers + content are in.
+    pub fn is_settled_for_shot(&self) -> bool {
+        self.images.is_idle()
+            && self.live_search_pending.is_none()
+            && (self.home.is_some() || !matches!(self.view, View::Home))
+    }
+
+    /// Whether the async image cache has no fetch/decode in flight.
+    pub fn images_idle(&self) -> bool {
+        self.images.is_idle()
+    }
+
+    /// Whether at least one cover URL has been discovered (so the pre-warm knows
+    /// real artwork exists to wait for).
+    pub fn any_art_requested(&self) -> bool {
+        !self.art_urls.is_empty()
+    }
+
+    /// Whether the browse content for the current view has loaded (real Home /
+    /// artist / album data), so a live shot doesn't capture a loading state.
+    pub fn is_content_loaded_for_shot(&self) -> bool {
+        match &self.view {
+            View::Home => self.home.is_some(),
+            View::Artist(id) => self.artist_pages.contains_key(id) || !is_live_id(id),
+            View::Album(id) => self.album_pages.contains_key(id) || !is_live_album_id(id),
+            View::Search => self.live_results.is_some(),
+            _ => true,
+        }
+    }
+
+    /// Kick off a real search (keeping the current view), for staging a
+    /// lyrics/now-playing live shot. Idempotent per query.
+    pub fn shot_begin_search(&mut self, query: &str) {
+        self.search_query = query.to_string();
+        self.request_live_search();
+    }
+
+    /// Whether a live search has returned results.
+    pub fn shot_has_results(&self) -> bool {
+        self.live_results.as_ref().map(|(_, ids)| !ids.is_empty()).unwrap_or(false)
+    }
+
+    /// Whether lyrics for the current track have settled (loaded or confirmed
+    /// absent), for the live lyrics shot.
+    pub fn shot_lyrics_ready(&self) -> bool {
+        !self.lyrics.is_empty() || (self.lyrics_for.is_some() && self.lyrics_pending_for.is_none())
+    }
+
+    /// After results land, play the top live hit — for a live lyrics/now-playing
+    /// shot. No-op if there are no results yet.
+    pub fn shot_play_top_result(&mut self, state: &mut AutoCommit) -> bool {
+        let Some((_, ids)) = self.live_results.clone() else { return false };
+        let Some(first) = ids.first().cloned() else { return false };
+        self.inject_live_hits();
+        self.dispatch(Action::Play { queue: vec![first], index: 0 }, state);
+        true
     }
 
     fn parse_initial_view() -> (View, String) {
@@ -825,7 +948,9 @@ impl MusicApp {
         self.ensure_worker();
         if let Some(w) = &self.worker {
             w.request(StreamRequest::Search(q.clone()));
+            self.live_query_sent = Some(q.clone());
             self.live_search_pending = Some(q);
+            self.search_edit_at = None;
         }
     }
 
@@ -868,6 +993,8 @@ impl MusicApp {
                     let mut ordered = Vec::with_capacity(n);
                     for hit in &hits {
                         let lt = hit_to_live(hit);
+                        self.record_cover(&lt.album_id, &hit.cover_url);
+                        self.record_cover(&lt.track_id, &hit.cover_url);
                         ordered.push(lt.track_id.clone());
                         if !self.live_hits.iter().any(|h| h.track_id == lt.track_id) {
                             self.live_hits.push(lt);
@@ -879,6 +1006,18 @@ impl MusicApp {
                         format!("Found {n} song{} for \u{201c}{query}\u{201d}", if n == 1 { "" } else { "s" }),
                         Instant::now(),
                     ));
+                }
+                StreamUpdate::Home { content } => {
+                    self.absorb_home(&content);
+                    self.home = Some(*content);
+                }
+                StreamUpdate::Artist { page } => {
+                    self.absorb_artist(&page);
+                    self.artist_pages.insert(page.id.clone(), *page);
+                }
+                StreamUpdate::Album { page } => {
+                    self.absorb_album(&page);
+                    self.album_pages.insert(page.id.clone(), *page);
                 }
                 StreamUpdate::Resolved { track_id, stream } => {
                     self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
@@ -946,6 +1085,113 @@ impl MusicApp {
                     yt_id: lt.yt_id.clone(),
                     plays: 0,
                 });
+        }
+    }
+
+    /// Remember the best cover URL for an entity id (album / artist / track /
+    /// playlist). Empty ids/urls are ignored.
+    fn record_cover(&mut self, id: &str, url: &str) {
+        if id.is_empty() || url.is_empty() {
+            return;
+        }
+        self.art_urls.entry(id.to_string()).or_insert_with(|| url.to_string());
+    }
+
+    /// Fold a batch of real track hits into the playable library (as live
+    /// tracks) and record their covers. Idempotent.
+    fn absorb_tracks(&mut self, hits: &[TrackHit]) {
+        for hit in hits {
+            let lt = hit_to_live(hit);
+            self.record_cover(&lt.album_id, &hit.cover_url);
+            self.record_cover(&lt.track_id, &hit.cover_url);
+            if !self.live_hits.iter().any(|h| h.track_id == lt.track_id) {
+                self.live_hits.push(lt);
+            }
+        }
+        self.inject_live_hits();
+    }
+
+    /// Fold real Home content into the app: chart tracks become playable live
+    /// tracks; every tile's cover URL is recorded for the async image cache.
+    fn absorb_home(&mut self, content: &HomeContent) {
+        for section in &content.sections {
+            for item in &section.items {
+                self.record_cover(&item.id, &item.cover_url);
+                if item.kind == crate::backend::HomeItemKind::Track {
+                    let hit = home_item_to_hit(item);
+                    self.absorb_tracks(&[hit]);
+                }
+            }
+        }
+    }
+
+    /// Fold a real artist page: its top tracks become playable, and the covers
+    /// of its tracks + albums are recorded.
+    fn absorb_artist(&mut self, page: &ArtistPage) {
+        self.absorb_tracks(&page.tracks);
+        for al in &page.albums {
+            self.record_cover(&al.id, &al.cover_url);
+        }
+        // The artist-page endpoint returns a wide banner, not a square avatar.
+        // Use it (cover-cropped to the circle) as a fallback when we don't
+        // already have a proper avatar recorded from a home/search tile.
+        self.record_cover(&page.id, &page.header_url);
+    }
+
+    /// Fold a real album page: its tracks become playable + covered.
+    fn absorb_album(&mut self, page: &AlbumPage) {
+        self.absorb_tracks(&page.tracks);
+        self.record_cover(&page.id, &page.cover_url);
+    }
+
+    /// The decoded cover image for an entity id, if one has loaded. Requests an
+    /// async fetch+decode on first sight; returns `None` (placeholder) until it
+    /// lands.
+    fn art_image(&self, id: &str) -> Option<vello::peniko::ImageData> {
+        let url = self.art_urls.get(id)?;
+        self.images.get(url)
+    }
+
+    /// Whether any cover fetch/decode is still in flight (keeps frames flowing).
+    fn images_pending(&self) -> bool {
+        self.images.pending() > 0
+    }
+
+    // ---- live content requests -------------------------------------------
+
+    /// Request the real Home page once, when networking is allowed.
+    fn ensure_home(&mut self) {
+        if self.home_requested || !self.allow_network {
+            return;
+        }
+        self.ensure_worker();
+        if let Some(w) = &self.worker {
+            w.request(StreamRequest::Home);
+            self.home_requested = true;
+        }
+    }
+
+    /// Request a real artist page for a channel id (once each).
+    fn ensure_artist(&mut self, id: &str) {
+        if !self.allow_network || !is_live_id(id) || self.artist_requested.contains(id) {
+            return;
+        }
+        self.ensure_worker();
+        if let Some(w) = &self.worker {
+            w.request(StreamRequest::Artist(id.to_string()));
+            self.artist_requested.insert(id.to_string());
+        }
+    }
+
+    /// Request a real album page for an album id (once each).
+    fn ensure_album(&mut self, id: &str) {
+        if !self.allow_network || !is_live_album_id(id) || self.album_requested.contains(id) {
+            return;
+        }
+        self.ensure_worker();
+        if let Some(w) = &self.worker {
+            w.request(StreamRequest::Album(id.to_string()));
+            self.album_requested.insert(id.to_string());
         }
     }
 
@@ -1241,19 +1487,90 @@ impl MusicApp {
         self.lyrics_for = cur.clone();
         self.lyrics.clear();
         self.lyrics_synced = false;
+        self.lyrics_pending_for = None;
         let Some(id) = cur else { return };
         let Some(track) = self.lib.track(&id).cloned() else { return };
-        let meta = lyrics::TrackMeta {
+        // Bundled sample lyrics (seed tracks) resolve instantly + offline.
+        if let Some(l) = lyrics::bundled::for_track(&id) {
+            self.lyrics = l.lines;
+            self.lyrics_synced = l.synced;
+            return;
+        }
+        // Otherwise fetch the real synced lyrics from LRCLIB off-thread.
+        if !self.allow_network {
+            return;
+        }
+        let meta = TrackMeta {
             track_id: id.clone(),
             title: track.title.clone(),
             artist: self.lib.artist_name(&track.artist_id).to_string(),
             album: self.lib.album_title(&track.album_id).to_string(),
             duration_s: track.duration_s,
         };
-        if let Some(resolved) = lyrics::resolve(&meta) {
-            self.lyrics = resolved.lines;
-            self.lyrics_synced = resolved.synced;
+        let w = self.lyrics_worker.get_or_insert_with(LyricsWorker::new);
+        w.request(meta);
+        self.lyrics_pending_for = Some(id);
+    }
+
+    /// Adopt any lyrics the async LRCLIB worker resolved for the current track.
+    fn poll_lyrics(&mut self) {
+        let mut got = Vec::new();
+        if let Some(w) = &self.lyrics_worker {
+            while let Some(r) = w.poll() {
+                got.push(r);
+            }
         }
+        for (id, l) in got {
+            if self.pb.current.as_deref() == Some(id.as_str()) {
+                self.lyrics = l.lines;
+                self.lyrics_synced = l.synced;
+                self.lyrics_for = Some(id.clone());
+            }
+            if self.lyrics_pending_for.as_deref() == Some(id.as_str()) {
+                self.lyrics_pending_for = None;
+            }
+        }
+    }
+
+    // ---- search (debounced + memoised) -----------------------------------
+
+    /// Memoised local-library search: recomputes only when the query changes,
+    /// so typing doesn't re-scan the whole catalog every frame.
+    fn local_search_cached(&mut self, q: &str) -> SearchResults {
+        // `QOS_MUSIC_NOCACHE=1` forces the pre-memoisation behaviour (re-scan
+        // every frame) so the search-cache win can be measured head-to-head.
+        // Read once (not per frame).
+        use std::sync::OnceLock;
+        static NOCACHE: OnceLock<bool> = OnceLock::new();
+        let nocache = *NOCACHE
+            .get_or_init(|| std::env::var("QOS_MUSIC_NOCACHE").map(|v| !v.is_empty()).unwrap_or(false));
+        if !nocache {
+            if let Some((cached_q, res)) = &self.search_cache {
+                if cached_q == q {
+                    return res.clone();
+                }
+            }
+        }
+        let res = self.lib.search(q);
+        self.search_cache = Some((q.to_string(), res.clone()));
+        res
+    }
+
+    /// Debounced live search: fire a real YouTube-Music query a short beat after
+    /// the user stops typing, so keystrokes stay smooth and we don't spam the
+    /// API. Enter still fires immediately (via [`Self::request_live_search`]).
+    fn maybe_dispatch_live_search(&mut self) {
+        const DEBOUNCE_MS: u128 = 350;
+        let Some(edited) = self.search_edit_at else { return };
+        if edited.elapsed().as_millis() < DEBOUNCE_MS {
+            return;
+        }
+        self.search_edit_at = None;
+        let q = self.search_query.trim().to_string();
+        if q.len() < 2 || self.live_query_sent.as_deref() == Some(q.as_str()) {
+            return;
+        }
+        self.request_live_search();
     }
 }
 
@@ -1318,6 +1635,32 @@ fn is_live_track(track_id: &str) -> bool {
     track_id.starts_with(LIVE_TRACK_PREFIX)
 }
 
+/// Whether an id looks like a real YouTube channel id (artist page fetchable).
+fn is_live_id(id: &str) -> bool {
+    id.starts_with("UC")
+}
+
+/// Whether an id looks like a real YouTube-Music album/playlist browse id.
+fn is_live_album_id(id: &str) -> bool {
+    id.starts_with("MPRE") || id.starts_with("OLAK")
+}
+
+/// Convert a Home track tile into a [`TrackHit`] so it flows through the same
+/// live-track merge path as a search hit.
+fn home_item_to_hit(item: &HomeItem) -> TrackHit {
+    let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
+    TrackHit {
+        video_id: item.video_id.clone(),
+        title: item.title.clone(),
+        artist: item.artist_name.clone(),
+        artist_id: opt(&item.artist_id),
+        album: opt(&item.album_title),
+        album_id: opt(&item.album_id),
+        duration_s: item.duration_s,
+        cover_url: item.cover_url.clone(),
+    }
+}
+
 /// Lowercase-alnum slug for synthesising a stable id when the source omits one.
 fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1355,6 +1698,40 @@ fn hit_to_live(hit: &TrackHit) -> LiveTrack {
         duration_s: hit.duration_s,
         yt_id: hit.video_id.clone(),
     }
+}
+
+/// The transport the [`ImageStore`] uses to fetch cover bytes. Real HTTP under
+/// the `live` build (a shared blocking `reqwest` client with a connection
+/// pool); a no-op otherwise, so non-network builds never open a socket and the
+/// hermetic `--shots` path stays offline.
+#[cfg(feature = "live")]
+fn image_fetcher() -> ui::Fetcher {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    Arc::new(|url: &str| {
+        let client = CLIENT.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(12))
+                .user_agent("Mozilla/5.0 (qOS Music)")
+                .build()
+                .unwrap_or_default()
+        });
+        let resp = client.get(url).send().ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = resp.bytes().ok()?;
+        // Covers are small; reject empty or absurd payloads.
+        if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+            return None;
+        }
+        Some(bytes.to_vec())
+    })
+}
+
+#[cfg(not(feature = "live"))]
+fn image_fetcher() -> ui::Fetcher {
+    Arc::new(|_url: &str| None)
 }
 
 mod render;
@@ -1401,7 +1778,9 @@ mod tests {
     fn seeds_and_loads_library() {
         let (app, _doc) = app_with_doc();
         assert!(app.lib.total_tracks() >= 20);
-        assert!(app.pb.current.is_some());
+        // A fresh launch is idle: nothing is playing until the user starts it.
+        assert!(app.pb.current.is_none(), "no fabricated now-playing track on startup");
+        assert!(!app.pb.playing, "transport is not playing on startup");
     }
 
     #[test]

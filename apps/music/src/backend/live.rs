@@ -22,11 +22,14 @@
 #![cfg(feature = "live")]
 
 use rustypipe::client::RustyPipe;
-use rustypipe::model::{AudioCodec, AudioFormat, AudioStream, TrackItem};
+use rustypipe::model::{
+    AlbumItem, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, Thumbnail, TrackItem,
+};
 
 use crate::backend::potoken::{NullPoToken, PoTokenProvider};
 use crate::backend::{
-    BackendError, MusicBackend, ResolveOutcome, ResolvedStream, SearchOutcome, TrackHit,
+    AlbumPage, ArtistAlbum, ArtistPage, BackendError, HomeContent, HomeItem, HomeItemKind,
+    HomeSection, MusicBackend, ResolveOutcome, ResolvedStream, SearchOutcome, TrackHit,
 };
 
 /// The live rustypipe-backed data source.
@@ -103,6 +106,7 @@ fn map_track_item(it: TrackItem) -> TrackHit {
         Some(al) => (Some(al.name), Some(al.id)),
         None => (None, None),
     };
+    let cover_url = cover_url(&it.cover, 300);
     TrackHit {
         video_id: it.id,
         title: it.name,
@@ -111,6 +115,110 @@ fn map_track_item(it: TrackItem) -> TrackHit {
         album,
         album_id,
         duration_s: it.duration.unwrap_or(0),
+        cover_url,
+    }
+}
+
+/// Display name for a list of artists (falls back to VA / Unknown).
+fn artists_name(artists: &[ArtistId], by_va: bool) -> String {
+    if let Some(a) = artists.first() {
+        a.name.clone()
+    } else if by_va {
+        "Various Artists".to_string()
+    } else {
+        "Unknown Artist".to_string()
+    }
+}
+
+/// Pick the best cover thumbnail and normalise it to roughly `px` pixels.
+/// Empty when the item carries no artwork.
+fn cover_url(thumbs: &[Thumbnail], px: u32) -> String {
+    let Some(t) = thumbs.iter().max_by_key(|t| t.width * t.height) else {
+        return String::new();
+    };
+    resize_google_thumb(&t.url, px)
+}
+
+/// YouTube's image CDN encodes the requested size in a trailing `=w{W}-h{H}-…`
+/// segment (lh3/yt3/googleusercontent hosts). Rewriting it fetches a
+/// right-sized JPEG (`-rj`) instead of a 60px avatar or a 1200px original —
+/// smaller downloads, sharp tiles. URLs without that segment (e.g.
+/// `i.ytimg.com/vi/<id>/hqdefault.jpg`) are returned unchanged.
+fn resize_google_thumb(url: &str, px: u32) -> String {
+    if let Some(eq) = url.rfind('=') {
+        let tail = &url[eq + 1..];
+        if tail.starts_with('w') || tail.starts_with('s') {
+            return format!("{}=w{px}-h{px}-l90-rj", &url[..eq]);
+        }
+    }
+    url.to_string()
+}
+
+fn track_home_item(it: TrackItem) -> HomeItem {
+    let hit = map_track_item(it);
+    HomeItem {
+        id: hit.video_id.clone(),
+        title: hit.title,
+        subtitle: hit.artist.clone(),
+        cover_url: hit.cover_url,
+        kind: HomeItemKind::Track,
+        video_id: hit.video_id,
+        artist_id: hit.artist_id.unwrap_or_default(),
+        artist_name: hit.artist,
+        album_id: hit.album_id.unwrap_or_default(),
+        album_title: hit.album.unwrap_or_default(),
+        duration_s: hit.duration_s,
+    }
+}
+
+fn album_home_item(a: AlbumItem) -> HomeItem {
+    let artist = artists_name(&a.artists, a.by_va);
+    let subtitle = match a.year {
+        Some(y) => format!("{artist} \u{00b7} {y}"),
+        None => artist.clone(),
+    };
+    HomeItem {
+        id: a.id,
+        title: a.name,
+        subtitle,
+        cover_url: cover_url(&a.cover, 300),
+        kind: HomeItemKind::Album,
+        video_id: String::new(),
+        artist_id: a.artist_id.unwrap_or_default(),
+        artist_name: artist,
+        album_id: String::new(),
+        album_title: String::new(),
+        duration_s: 0,
+    }
+}
+
+fn artist_home_item(a: ArtistItem) -> HomeItem {
+    let subtitle = match a.subscriber_count {
+        Some(n) => format!("{} subscribers", human_count(n)),
+        None => "Artist".to_string(),
+    };
+    HomeItem {
+        id: a.id,
+        title: a.name,
+        subtitle,
+        cover_url: cover_url(&a.avatar, 240),
+        kind: HomeItemKind::Artist,
+        video_id: String::new(),
+        artist_id: String::new(),
+        artist_name: String::new(),
+        album_id: String::new(),
+        album_title: String::new(),
+        duration_s: 0,
+    }
+}
+
+fn human_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
     }
 }
 
@@ -191,5 +299,90 @@ impl MusicBackend for RustyPipeBackend {
         let best = best_audio(&player.audio_streams)
             .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
         Ok(map_stream(video_id, best))
+    }
+
+    fn home(&self) -> Result<HomeContent, BackendError> {
+        let q = self.rp.query();
+        // Charts drive the primary sections (top + trending songs, top artists,
+        // genre playlists); new albums come from a second endpoint. Both are
+        // real YouTube-Music browse responses.
+        let charts = self
+            .block(async { q.music_charts(None).await })
+            .map_err(|e| BackendError(format!("music charts: {e}")))?;
+        let new_albums = self
+            .block(async { q.music_new_albums().await })
+            .unwrap_or_default();
+
+        let mut sections = Vec::new();
+        let take_tracks = |v: Vec<TrackItem>, n: usize| {
+            v.into_iter().take(n).map(track_home_item).collect::<Vec<_>>()
+        };
+        let top = take_tracks(charts.top_tracks, 12);
+        if !top.is_empty() {
+            sections.push(HomeSection { title: "Top songs today".into(), items: top });
+        }
+        let new_items: Vec<HomeItem> = new_albums.into_iter().take(12).map(album_home_item).collect();
+        if !new_items.is_empty() {
+            sections.push(HomeSection { title: "New releases".into(), items: new_items });
+        }
+        let trending = take_tracks(charts.trending_tracks, 12);
+        if !trending.is_empty() {
+            sections.push(HomeSection { title: "Trending".into(), items: trending });
+        }
+        let artists: Vec<HomeItem> = charts.artists.into_iter().take(12).map(artist_home_item).collect();
+        if !artists.is_empty() {
+            sections.push(HomeSection { title: "Top artists".into(), items: artists });
+        }
+
+        if sections.is_empty() {
+            return Err(BackendError("home content was empty".into()));
+        }
+        Ok(HomeContent { sections })
+    }
+
+    fn artist(&self, artist_id: &str) -> Result<ArtistPage, BackendError> {
+        let q = self.rp.query();
+        let a = self
+            .block(async { q.music_artist(artist_id, false).await })
+            .map_err(|e| BackendError(format!("music artist: {e}")))?;
+        let tracks = a.tracks.into_iter().map(map_track_item).collect();
+        let albums = a
+            .albums
+            .into_iter()
+            .map(|al| ArtistAlbum {
+                title: al.name,
+                year: al.year.unwrap_or(0) as u32,
+                cover_url: cover_url(&al.cover, 300),
+                id: al.id,
+            })
+            .collect();
+        Ok(ArtistPage {
+            id: a.id,
+            name: a.name,
+            subscriber_count: a.subscriber_count.unwrap_or(0),
+            description: a.description.unwrap_or_default(),
+            header_url: cover_url(&a.header_image, 600),
+            tracks,
+            albums,
+        })
+    }
+
+    fn album(&self, album_id: &str) -> Result<AlbumPage, BackendError> {
+        let q = self.rp.query();
+        let al = self
+            .block(async { q.music_album(album_id).await })
+            .map_err(|e| BackendError(format!("music album: {e}")))?;
+        let artist_name = artists_name(&al.artists, al.by_va);
+        let cover = cover_url(&al.cover, 400);
+        let tracks = al.tracks.into_iter().map(map_track_item).collect();
+        Ok(AlbumPage {
+            id: al.id,
+            title: al.name,
+            artist_id: al.artist_id.unwrap_or_default(),
+            artist_name,
+            year: al.year.unwrap_or(0) as u32,
+            cover_url: cover,
+            tracks,
+        })
     }
 }
