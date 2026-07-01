@@ -406,12 +406,13 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         )
         .push(icon_button(theme, bus, IconKind::Search, Action::SubmitSearch));
 
+    // Only surface the data-source indicator when we're NOT on live data
+    // (connecting or offline) — in the normal live case the top bar stays clean.
+    // SponsorBlock / DeArrow are settings, not top-bar toggles; they live in Settings.
     let status = Flex::row()
         .gap(8.0)
         .align(Align::Center)
-        .push(data_source_pill(theme, model))
-        .push(status_pill(theme, IconKind::Shield, "SponsorBlock", model.settings.sponsorblock_enabled))
-        .push(status_pill(theme, IconKind::Sparkle, "DeArrow", model.settings.dearrow_enabled));
+        .push_if(!model.data_source.live, data_source_pill(theme, model));
 
     Flex::row()
         .fill_w()
@@ -436,29 +437,6 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .push(avatar("You", 36.0))
 }
 
-fn status_pill(theme: &Theme, kind: IconKind, label: &str, on: bool) -> Flex {
-    // ON: an opaque accent-family fill with a contrast-checked foreground
-    // (was indigo-500 text on a translucent indigo wash — 3.4:1). OFF: a subtle
-    // dark veneer with dim text (was dim text on a near-white slate-200 chip).
-    let (fg, bg) = if on {
-        let sel = status_pill_on(theme);
-        (sel.fg, sel.bg)
-    } else {
-        (theme.text_dim, subtle_fill(theme))
-    };
-    Flex::row()
-        .gap(6.0)
-        .pad_xy(10.0, 6.0)
-        .align(Align::Center)
-        .surface(Surface {
-            fill: Some(bg),
-            radius: theme.tokens.radii.full as f64,
-            border: None,
-        })
-        .push(icon(kind, 14.0, fg))
-        .push(text_c(label, 12.0, fg))
-}
-
 /// Live-vs-sample provenance pill. A green dot + "Live" once the rustypipe
 /// backend has actually returned real data; a dim "Sample" (or "Connecting…")
 /// otherwise, so the user always knows whether the catalogue on screen is real
@@ -470,7 +448,7 @@ fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
     } else if model.data_source.label.contains("connect") {
         (theme.tokens.colors.semantic.warning, theme.text_dim, "Connecting…")
     } else {
-        (theme.text_dim, theme.text_dim, "Sample")
+        (theme.text_dim, theme.text_dim, "Offline")
     };
     Flex::row()
         .gap(6.0)
