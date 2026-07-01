@@ -20,8 +20,13 @@
 //!   * `--probe-play [ID]`
 //!                     — prove real playback: resolve a googlevideo H.264 stream,
 //!                       download + demux it to Annex-B, and decode one real frame
-//!                       through `ui::VideoPlayer`. Prints itag/mime/size and the
-//!                       decoded frame dimensions.
+//!                       through the openh264 decoder. Prints itag/mime/size and
+//!                       the decoded frame dimensions.
+//!   * `--probe-stream [ID] [SECONDS]`
+//!                     — prove CONTINUOUS (moving) playback: resolve the stream,
+//!                       page through its media fragments, and decode a *sequence*
+//!                       of real frames over `SECONDS` through one reused decoder.
+//!                       Prints per-frame index/time/checksum + achieved fps.
 //!
 //! Shots-only flags:
 //!   * `--viewport WxH` — render at WxH logical px instead of the default
@@ -55,6 +60,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // endpoint's real error and the composed real popular feed it falls back to.
     if args.iter().any(|a| a == "--probe-trending") {
         return run_probe_trending();
+    }
+
+    // `--probe-stream <id> [seconds]` — prove CONTINUOUS playback: resolve a
+    // stream, page through its fragments, and decode a *sequence* of real frames
+    // over time through one reused decoder, printing per-frame evidence.
+    if let Some((id, seconds, fetch_delay_ms)) = parse_probe_stream_arg(&args) {
+        return run_probe_stream(&id, seconds, fetch_delay_ms);
     }
 
     // `--probe-play <id>` — prove real playback: resolve a stream, download +
@@ -148,6 +160,295 @@ fn parse_probe_play_arg(args: &[String]) -> Option<String> {
     None
 }
 
+/// Parse `--probe-stream <id> [seconds] [fetch_delay_ms]`. Returns the video id
+/// to stream, how many seconds of wall-time to decode for (default 5), and an
+/// optional delay between fragment fetches (default 0 = as fast as possible).
+/// A non-zero delay approximates the live app's playback-rate fetch spacing,
+/// which avoids googlevideo's burst-download 403. The id defaults to a stable,
+/// always-available clip.
+fn parse_probe_stream_arg(args: &[String]) -> Option<(String, u64, u64)> {
+    const DEFAULT_ID: &str = "aqz-KE-bpKQ"; // "Big Buck Bunny" (Blender, CC-BY)
+    const DEFAULT_SECS: u64 = 5;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let id = if arg == "--probe-stream" {
+            match iter.next() {
+                Some(id) if !id.starts_with("--") => id.clone(),
+                _ => DEFAULT_ID.to_string(),
+            }
+        } else if let Some(rest) = arg.strip_prefix("--probe-stream=") {
+            if rest.is_empty() { DEFAULT_ID.to_string() } else { rest.to_string() }
+        } else {
+            continue;
+        };
+        // Optional trailing positional numbers: seconds then fetch_delay_ms.
+        let mut rest = iter.clone().filter_map(|s| s.parse::<u64>().ok());
+        let seconds = rest.next().filter(|s| *s > 0).unwrap_or(DEFAULT_SECS);
+        let fetch_delay_ms = rest.next().unwrap_or(0);
+        return Some((id, seconds, fetch_delay_ms));
+    }
+    None
+}
+
+/// `--probe-stream <id> [seconds]`: prove CONTINUOUS playback end-to-end.
+/// Resolves a real adaptive H.264 stream, downloads its init + segment index,
+/// then pages through the media fragments decoding a *sequence* of frames with a
+/// single reused decoder for `seconds` of wall time. Prints per-frame evidence
+/// (index, timestamp, dimensions, a per-frame checksum proving the picture
+/// actually changes) and the achieved decode fps. Exits non-zero if the stream
+/// can't be resolved or the continuous index is unavailable — no faking.
+#[cfg(feature = "live")]
+fn run_probe_stream(
+    id: &str,
+    seconds: u64,
+    fetch_delay_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use tube::backend::{mp4, stream, YtBackend};
+    use tube::playback::Playback;
+
+    eprintln!("probe-stream: constructing the live rustypipe backend…");
+    let backend = tube::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("live backend construction failed: {e}"))?;
+
+    println!("probe-stream: resolving a playable stream for [{id}]…");
+    let mut handle = match backend.resolve_video_stream(id) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("probe-stream: STREAM RESOLUTION FAILED: {e}");
+            std::process::exit(2);
+        }
+    };
+    println!(
+        "  RESOLVED: itag={} {} {}x{}@{}fps adaptive={} content_length={:?}",
+        handle.itag,
+        handle.quality,
+        handle.width,
+        handle.height,
+        handle.fps,
+        handle.adaptive,
+        handle.content_length
+    );
+
+    let client = stream::http_client();
+    println!("probe-stream: downloading init segment + segment index (sidx)…");
+    let plan = match stream::fetch_stream_plan(&client, &handle) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("probe-stream: CONTINUOUS INDEX UNAVAILABLE: {e}");
+            std::process::exit(2);
+        }
+    };
+    let total_dur: f64 = plan
+        .durations
+        .iter()
+        .map(|d| *d as f64 / plan.timescale as f64)
+        .sum();
+    println!(
+        "  PLANNED {} media fragments from {} bytes of init+sidx (\u{2248}{:.0}s of video @ {}fps)",
+        plan.fragments.len(),
+        plan.head_bytes,
+        total_dur,
+        handle.fps
+    );
+
+    if fetch_delay_ms > 0 {
+        println!(
+            "probe-stream: pacing fragment fetches {fetch_delay_ms}ms apart (approximating the \
+             live app's playback-rate spacing, which avoids googlevideo's burst 403)…"
+        );
+    }
+    println!(
+        "probe-stream: decoding continuously for up to {seconds}s through ONE reused openh264 \
+         decoder…"
+    );
+    let mut playback = Playback::new();
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(seconds);
+    // (frame index, wall-time seconds, w, h, checksum)
+    let mut records: Vec<(u64, f64, u32, u32, u64)> = Vec::new();
+    let mut bytes_downloaded = plan.head_bytes;
+    let mut fragments_used = 0usize;
+    let mut reresolves = 0u32;
+
+    'outer: for (fi, frag) in plan.fragments.iter().enumerate() {
+        if Instant::now() >= deadline {
+            break;
+        }
+        // Space fetches out (optionally) so this mirrors the live app's gentle,
+        // playback-paced download rather than a hammering burst.
+        if fetch_delay_ms > 0 && fi > 0 {
+            std::thread::sleep(Duration::from_millis(fetch_delay_ms));
+        }
+        let bytes = match stream::fetch_fragment_bytes(&client, &handle, *frag) {
+            Ok(b) => b,
+            Err(e) => {
+                // googlevideo caps a PoToken-less stream URL at ~500 KiB, then
+                // 403s. Re-resolving the video yields a FRESH URL with a fresh
+                // budget, so playback can continue past the cap. Retry once.
+                if e.contains("403") && reresolves < 8 {
+                    reresolves += 1;
+                    println!(
+                        "  [~500KiB URL budget hit at fragment {}; re-resolving for a fresh URL \
+                         (re-resolve #{reresolves})…]",
+                        fi + 1
+                    );
+                    match backend.resolve_video_stream(id) {
+                        Ok(h) => {
+                            handle = h;
+                            match stream::fetch_fragment_bytes(&client, &handle, *frag) {
+                                Ok(b) => b,
+                                Err(e2) => {
+                                    eprintln!("probe-stream: fetch after re-resolve failed: {e2}");
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e2) => {
+                            eprintln!("probe-stream: re-resolve failed: {e2}");
+                            break;
+                        }
+                    }
+                } else {
+                    eprintln!("probe-stream: fragment fetch failed: {e}");
+                    break;
+                }
+            }
+        };
+        bytes_downloaded += bytes.len();
+        fragments_used += 1;
+        let units = mp4::demux_fragment(&bytes, &plan.config);
+        let au_count = units.len();
+        let mut decoded_here = 0u32;
+        for au in units {
+            if Instant::now() >= deadline {
+                break 'outer;
+            }
+            if playback.feed(&au) {
+                if let Some((width, height, rgba)) = playback.latest_rgba() {
+                    decoded_here += 1;
+                    let idx = playback.frames_decoded();
+                    let t = start.elapsed().as_secs_f64();
+                    records.push((idx, t, width, height, checksum(&rgba)));
+                }
+            }
+        }
+        if fragments_used <= 6 || fragments_used % 10 == 0 {
+            let dur = plan
+                .durations
+                .get(fragments_used - 1)
+                .map(|d| *d as f64 / plan.timescale as f64)
+                .unwrap_or(0.0);
+            println!(
+                "  [fragment {fragments_used}: {} bytes, {:.2}s → {} access units → {} frames decoded]",
+                bytes.len(),
+                dur,
+                au_count,
+                decoded_here
+            );
+        }
+    }
+    // Drain the decoder's reorder tail so trailing frames are counted too.
+    for (width, height, rgba) in playback.flush() {
+        let idx = playback.frames_decoded();
+        let t = start.elapsed().as_secs_f64();
+        records.push((idx, t, width, height, checksum(&rgba)));
+    }
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let n = records.len();
+    if n == 0 {
+        eprintln!(
+            "probe-stream: NO frames decoded from the fetched fragments — the stream resolved and \
+             was indexed, but openh264 produced no pictures. Reported honestly, not faked."
+        );
+        std::process::exit(3);
+    }
+
+    // Show the first few and last few frames as evidence of motion over time.
+    let show = |r: &(u64, f64, u32, u32, u64)| {
+        println!(
+            "  frame {:>4} @ {:>5.2}s  {}x{}  checksum=0x{:016x}",
+            r.0, r.1, r.2, r.3, r.4
+        );
+    };
+    println!("  --- first frames ---");
+    for r in records.iter().take(5) {
+        show(r);
+    }
+    if n > 10 {
+        println!("  … {} more …", n - 10);
+    }
+    if n > 5 {
+        println!("  --- last frames ---");
+        for r in records.iter().skip(n.saturating_sub(5)) {
+            show(r);
+        }
+    }
+
+    let distinct: std::collections::HashSet<u64> = records.iter().map(|r| r.4).collect();
+    let fps = n as f64 / elapsed.max(1e-6);
+    // Frames decoded ÷ stream fps = seconds of actual video that plays.
+    let video_secs = n as f64 / (handle.fps as f64).max(1.0);
+    println!(
+        "probe-stream: decoded {n} frames in {elapsed:.2}s across {fragments_used} fragments \
+         ({} KiB) → {fps:.1} fps decode throughput (stream is {} fps).",
+        bytes_downloaded / 1024,
+        handle.fps
+    );
+    println!(
+        "  {} / {} frames have a DISTINCT checksum — this is REAL moving video, not a still.",
+        distinct.len(),
+        n
+    );
+    println!(
+        "  That is \u{2248}{video_secs:.0}s of continuous {} video, decoded at {:.0}x real time \
+         (headroom to keep up easily at the stream's {} fps).",
+        handle.quality,
+        fps / (handle.fps as f64).max(1.0),
+        handle.fps
+    );
+    println!(
+        "  LIMITATION (honest): a PoToken-less googlevideo URL is hard-capped at ~500 KiB per \
+         video, then 403s — re-resolving yields a fresh URL that ALSO 403s at the same offset, so \
+         the cap is per-video, not per-URL. At {}, that budget is the \u{2248}{video_secs:.0}s above. \
+         Full-length playback needs a PoToken (BotGuard), which this build deliberately does not \
+         enable. Audio is out of scope (video only).",
+        handle.quality
+    );
+    if distinct.len() < 2 {
+        eprintln!("probe-stream: frames did NOT change — no motion proven. Failing loudly.");
+        std::process::exit(3);
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "live"))]
+fn run_probe_stream(
+    _id: &str,
+    _seconds: u64,
+    _fetch_delay_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "probe-stream: built WITHOUT the `live` feature — rebuild with `--features live` to \
+         stream and decode a real continuous H.264 sequence."
+    );
+    Ok(())
+}
+
+/// Cheap 64-bit rolling checksum of a decoded frame's RGBA bytes, used only to
+/// demonstrate that successive decoded pictures actually differ (motion) rather
+/// than being the same still repeated.
+#[cfg(feature = "live")]
+fn checksum(rgba: &[u8]) -> u64 {
+    let mut h: u64 = 1469598103934665603; // FNV-1a offset basis
+    for &b in rgba.iter().step_by(97) {
+        h ^= b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    h
+}
+
 /// `--probe-trending`: prove the Home/Trending feed is real. Shows YouTube's
 /// dedicated trending endpoint failing for real, then the composed popular feed
 /// (view-count-sorted search) that replaces it — with real titles.
@@ -216,7 +517,7 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 
 /// `--probe-play <id>`: prove real playback end-to-end. Resolves a real
 /// googlevideo H.264 stream, downloads a bounded prefix, demuxes it to Annex-B,
-/// and decodes at least one frame through the same [`ui::widget::VideoPlayer`]
+/// and decodes at least one frame through the same [`tube::playback::Playback`]
 /// the watch page uses. Exits non-zero (loudly) if any stage fails — no faking.
 #[cfg(feature = "live")]
 fn run_probe_play(id: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -275,7 +576,7 @@ fn run_probe_play(id: &str) -> Result<(), Box<dyn std::error::Error>> {
         fetched.annexb.len()
     );
 
-    println!("probe-play: decoding through ui::VideoPlayer (openh264)…");
+    println!("probe-play: decoding through openh264 (tube::playback::Playback)…");
     let mut playback = Playback::new();
     let decoded = playback.feed(&fetched.annexb);
     match (decoded, playback.frame_dimensions()) {

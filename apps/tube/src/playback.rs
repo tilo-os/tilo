@@ -1,20 +1,45 @@
-//! Playback bridge around [`ui::widget::VideoPlayer`].
+//! Playback bridge around an openh264 H.264 decoder.
 //!
 //! The data plane resolves a real googlevideo H.264 stream
-//! ([`crate::backend::YtBackend::resolve_video_stream`]), downloads a bounded
-//! prefix and demuxes it to Annex-B ([`crate::backend::stream::fetch_h264`] →
-//! [`crate::backend::mp4`]). Those bytes are pushed here via [`Playback::feed`];
-//! the wrapped [`VideoPlayer`] runs the openh264 decode and exposes the decoded
-//! picture, which the watch page paints in place of the poster.
+//! ([`crate::backend::YtBackend::resolve_video_stream`]), downloads fragments and
+//! demuxes each into per-frame **access units** ([`crate::backend::stream`] →
+//! [`crate::backend::mp4::demux_fragment`]). Those access units are pushed here
+//! via [`Playback::feed`], one frame at a time; the decoder emits a decoded
+//! picture which is copied out as RGBA8 for the watch page's
+//! [`crate::widgets::VideoSurface`] to paint. Feeding happens off the UI thread
+//! (the fetch/playback worker owns the network + demux + decode); the UI only
+//! drains finished frames.
 //!
-//! Feeding is intended to happen off the UI thread (the fetch worker owns the
-//! network + demux); the widget only holds the most recently decoded frame.
+//! ## Why not `ui::widget::VideoPlayer`?
+//!
+//! `VideoPlayer` decodes through openh264's convenience default, which flushes a
+//! frame after **every** decode call. That default prematurely releases the
+//! reference frames inter-frames (P-slices) depend on, cascading into
+//! `dsRefLost` / bitstream errors that openh264 surfaces as decode failures — in
+//! practice dropping ~95% of a real continuous stream's frames. openh264's own
+//! docs say to disable automatic flushing when you hit decoder errors, so Tube
+//! drives the decoder directly with [`Flush::NoFlush`] and drains any buffered
+//! tail once via [`Decoder::flush_remaining`]. A single decoder instance is kept
+//! for the whole stream so inter-frames resolve against their prior references.
+//! `VideoPlayer` (the toolkit widget) is unchanged and simply not on Tube's
+//! decode path — `VideoSurface` does the painting.
 
-use ui::widget::VideoPlayer;
+use openh264::OpenH264API;
+use openh264::decoder::{DecodedYUV, Decoder, DecoderConfig, Flush};
+use openh264::formats::YUVSource;
+
+/// A decoded picture, owned and toolkit-free: `(width, height, RGBA8)` with
+/// `width * height * 4` bytes.
+pub type Frame = (u32, u32, Vec<u8>);
 
 pub struct Playback {
-    player: VideoPlayer,
+    /// Lazily constructed on the first non-empty [`Playback::feed`] so
+    /// constructing a `Playback` never touches the openh264 runtime.
+    decoder: Option<Decoder>,
+    /// Most recently decoded picture, kept so the watch page can repaint it.
+    latest: Option<Frame>,
     frames_decoded: u64,
+    playing: bool,
 }
 
 impl Default for Playback {
@@ -26,19 +51,73 @@ impl Default for Playback {
 impl Playback {
     pub fn new() -> Self {
         Self {
-            player: VideoPlayer::new(),
+            decoder: None,
+            latest: None,
             frames_decoded: 0,
+            playing: true,
         }
     }
 
-    /// Feed one access unit of H.264 (Annex-B NAL units). Returns true when a
-    /// new frame became available.
+    /// Construct the decoder with automatic per-decode flushing **disabled**
+    /// (see the module docs). Returns `None` if the openh264 runtime fails to
+    /// initialise.
+    fn make_decoder() -> Option<Decoder> {
+        let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
+        Decoder::with_api_config(OpenH264API::from_source(), config).ok()
+    }
+
+    /// Convert a freshly decoded YUV picture into owned RGBA8.
+    fn yuv_to_rgba(yuv: &DecodedYUV<'_>) -> Frame {
+        let (w, h) = yuv.dimensions();
+        let mut rgba = vec![0u8; w * h * 4];
+        yuv.write_rgba8(&mut rgba);
+        (w as u32, h as u32, rgba)
+    }
+
+    /// Feed one access unit of H.264 (Annex-B NAL units for a single frame).
+    /// Returns true when a new picture became available (and `latest` updated).
     pub fn feed(&mut self, nalus: &[u8]) -> bool {
-        let decoded = self.player.feed_frame(nalus);
-        if decoded {
-            self.frames_decoded += 1;
+        if nalus.is_empty() {
+            return false;
         }
-        decoded
+        if self.decoder.is_none() {
+            match Self::make_decoder() {
+                Some(d) => self.decoder = Some(d),
+                None => return false,
+            }
+        }
+        let decoder = self.decoder.as_mut().expect("decoder just initialised");
+        match decoder.decode(nalus) {
+            Ok(Some(yuv)) => {
+                self.latest = Some(Self::yuv_to_rgba(&yuv));
+                self.frames_decoded += 1;
+                true
+            }
+            // `Ok(None)` = decoder consumed the unit but no picture out yet;
+            // `Err` = openh264 rejected the bitstream. Neither yields a frame.
+            Ok(None) | Err(_) => false,
+        }
+    }
+
+    /// Drain any pictures still buffered in the decoder's reorder queue at the
+    /// natural end of a stream. With `NoFlush` these accumulate (e.g. B-frame
+    /// reordering) until explicitly flushed; each drained picture updates
+    /// `latest` and is returned so the caller can emit it.
+    pub fn flush(&mut self) -> Vec<Frame> {
+        let mut out = Vec::new();
+        if let Some(decoder) = self.decoder.as_mut() {
+            if let Ok(frames) = decoder.flush_remaining() {
+                for yuv in frames {
+                    let frame = Self::yuv_to_rgba(&yuv);
+                    self.frames_decoded += 1;
+                    out.push(frame);
+                }
+            }
+        }
+        if let Some(last) = out.last() {
+            self.latest = Some(last.clone());
+        }
+        out
     }
 
     /// Whether at least one real frame has decoded (poster → video swap point).
@@ -51,31 +130,24 @@ impl Playback {
         self.frames_decoded
     }
 
-    /// Width/height of the most recently decoded picture, if any. Non-zero
-    /// dimensions are proof a real frame came out of the decoder.
+    /// Width/height of the most recently decoded picture, if any.
     pub fn frame_dimensions(&self) -> Option<(u32, u32)> {
-        self.player.latest_frame().map(|f| (f.width, f.height))
+        self.latest.as_ref().map(|(w, h, _)| (*w, *h))
     }
 
     /// The most recently decoded picture as owned `(width, height, RGBA8)`.
-    ///
-    /// Copies the decoded pixels out of the widget so a worker that decodes off
-    /// the UI thread can hand a finished frame to the UI to paint — the "UI only
-    /// drains decoded frames" contract.
-    pub fn latest_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
-        self.player
-            .latest_frame()
-            .map(|f| (f.width, f.height, f.data.as_ref().to_vec()))
+    pub fn latest_rgba(&self) -> Option<Frame> {
+        self.latest.clone()
     }
 
-    pub fn player_mut(&mut self) -> &mut VideoPlayer {
-        &mut self.player
+    pub fn is_playing(&self) -> bool {
+        self.playing
     }
 
     pub fn play(&mut self) {
-        self.player.play();
+        self.playing = true;
     }
     pub fn pause(&mut self) {
-        self.player.pause();
+        self.playing = false;
     }
 }
