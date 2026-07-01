@@ -85,6 +85,9 @@ pub fn app_root() -> Box<dyn Widget> {
 ///   the caret sits at the field start (not at the end of the placeholder).
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new();
+    // Hermetic: a headless shot never spawns a worker or fetches covers, so the
+    // frame is deterministic and offline (bundled sample + placeholder tiles).
+    app.set_offline_for_shot();
     match scenario {
         "sidebar" => app.snap_sidebar(true),
         "collapsed" => app.snap_sidebar(false),
@@ -94,4 +97,11 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         _ => {}
     }
     Box::new(app)
+}
+
+/// Build a Music app for a **live** screenshot: networking stays enabled so the
+/// warm-up loop in the binary can fetch real Home/artist/album content + real
+/// cover art before capturing the frame. `QOS_MUSIC_VIEW` picks the screen.
+pub fn live_shot_app() -> MusicApp {
+    MusicApp::new()
 }

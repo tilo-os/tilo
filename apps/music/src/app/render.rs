@@ -261,6 +261,10 @@ impl Widget for MusicApp {
             || self.toast.is_some()
             || self.live_search_pending.is_some()
             || self.resolve_in_flight > 0
+            || self.images_pending()
+            || self.lyrics_pending_for.is_some()
+            || self.search_edit_at.is_some()
+            || (self.home_requested && self.home.is_none())
     }
 
     fn needs_redraw(&self) -> bool {
@@ -341,6 +345,7 @@ impl MusicApp {
                 }
                 Key::Named(NamedKey::Backspace) => {
                     self.search_query.pop();
+                    self.search_edit_at = Some(Instant::now());
                     self.dirty = true;
                     *handled = true;
                 }
@@ -355,6 +360,9 @@ impl MusicApp {
                     if let Some(t) = text {
                         if !t.is_empty() && !t.chars().any(|c| c.is_control()) {
                             self.search_query.push_str(t);
+                            // Debounce: a real query fires a short beat after
+                            // the last keystroke (see `maybe_dispatch_live_search`).
+                            self.search_edit_at = Some(Instant::now());
                             self.dirty = true;
                             *handled = true;
                         }
@@ -426,6 +434,64 @@ impl MusicApp {
         }
     }
 
+    // ---- artwork ----------------------------------------------------------
+
+    /// Paint an entity's real cover art (album / track / playlist) if it has
+    /// loaded into the async image cache, else a procedural placeholder tile.
+    /// `id` keys the cover cache; `label` seeds the placeholder's initials.
+    fn draw_cover(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        rect: Rect,
+        id: &str,
+        label: &str,
+        tr: &mut TextRenderer,
+        radius: f64,
+    ) {
+        if let Some(img) = self.art_image(id) {
+            ui::image_store::paint_image_cover(scene, t, rect, &img, radius);
+        } else {
+            art::draw_album_art(scene, t, rect, id, label, tr, radius);
+        }
+    }
+
+    /// Paint a circular artist avatar — the real image clipped to a circle if
+    /// loaded, else the procedural two-tone circle with initials.
+    fn draw_avatar(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        center: Point,
+        radius: f64,
+        id: &str,
+        label: &str,
+        tr: &mut TextRenderer,
+        c: &Palette,
+    ) {
+        if let Some(img) = self.art_image(id) {
+            let circle = Circle::new(center, radius);
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &circle);
+            let r = Rect::new(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
+            ui::image_store::paint_image_cover(scene, t, r, &img, 0.0);
+            scene.pop_layer();
+        } else {
+            let (base, accent) = art::art_colors(id);
+            scene.fill(Fill::NonZero, t, base, None, &Circle::new(center, radius));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                accent.multiply_alpha(0.8),
+                None,
+                &Circle::new(Point::new(center.x - radius * 0.24, center.y - radius * 0.24), radius * 0.68),
+            );
+            let initials = art::initials(label);
+            let sz = (radius * 0.6) as f32;
+            let (tw, th) = tr.measure_weighted(&initials, sz, None, TextWeight::Bold);
+            draw_text(tr, scene, t, &initials, center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0, sz, c.text.multiply_alpha(0.95), TextWeight::Bold, None);
+        }
+    }
+
     // ---- master frame -----------------------------------------------------
 
     pub(super) fn render_frame(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -436,6 +502,8 @@ impl MusicApp {
         // visible after a `sync` reloaded the catalog from the document.
         self.drain_worker();
         self.inject_live_hits();
+        self.poll_lyrics();
+        self.maybe_dispatch_live_search();
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
@@ -747,8 +815,17 @@ impl MusicApp {
             View::Search => "Search".into(),
             View::Queue => "Queue".into(),
             View::Lyrics => "Lyrics".into(),
-            View::Album(id) => self.lib.album_title(id).to_string(),
-            View::Artist(id) => self.lib.artist(id).map(|a| a.name.clone()).unwrap_or_default(),
+            View::Album(id) => self
+                .album_pages
+                .get(id)
+                .map(|p| p.title.clone())
+                .unwrap_or_else(|| self.lib.album_title(id).to_string()),
+            View::Artist(id) => self
+                .artist_pages
+                .get(id)
+                .map(|p| p.name.clone())
+                .or_else(|| self.lib.artist(id).map(|a| a.name.clone()))
+                .unwrap_or_else(|| "Artist".to_string()),
             View::Playlist(id) => self.lib.playlist(id).map(|p| p.name.clone()).unwrap_or_default(),
         }
     }
@@ -787,10 +864,30 @@ impl MusicApp {
     }
 
     fn draw_home(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64) -> f64 {
+        // Kick off the real Home fetch (charts / new releases / top artists).
+        self.ensure_home();
         let pad = 28.0;
         y += 20.0;
         draw_text(tr, scene, t, "Good evening", body.x0 + pad, y, 28.0, c.text, TextWeight::Bold, None);
         y += 46.0;
+
+        // Real YouTube-Music content when it has landed.
+        if self.home.is_some() {
+            let home = self.home.take().unwrap();
+            for section in &home.sections {
+                y = self.section_label(scene, t, tr, c, body, y, &section.title);
+                y = self.draw_home_section(scene, t, tr, c, body, y, section);
+                y += 14.0;
+            }
+            self.home = Some(home);
+            return y;
+        }
+
+        // Fallback (offline, or while the live fetch is in flight): the bundled
+        // sample library, with an honest status line when a real fetch is pending.
+        if self.home_requested {
+            draw_text(tr, scene, t, "Loading charts from YouTube Music\u{2026}", body.x0 + pad, y - 16.0, 13.0, c.dim, TextWeight::Regular, None);
+        }
 
         // Quick-pick tiles: a mix of playlists rendered as wide chips.
         let pls = self.gather_playlists();
@@ -804,7 +901,7 @@ impl MusicApp {
             let chip = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
             let hover = self.push_hit(chip, Action::Nav(View::Playlist(p.id.clone())));
             fill_rrect(scene, t, chip, 10.0, if hover { c.card_hover } else { c.card });
-            art::draw_album_art(scene, t, Rect::new(cx, cy, cx + chip_h, cy + chip_h), &p.id, &p.name, tr, 10.0);
+            self.draw_cover(scene, t, Rect::new(cx, cy, cx + chip_h, cy + chip_h), &p.id, &p.name, tr, 10.0);
             let name = elide(tr, &p.name, 15.0, TextWeight::Semibold, chip_w - chip_h - 24.0);
             draw_text(tr, scene, t, &name, cx + chip_h + 14.0, vy(cy, chip_h, 15.0), 15.0, c.text, TextWeight::Semibold, None);
         }
@@ -830,6 +927,81 @@ impl MusicApp {
         y + 36.0
     }
 
+    /// Draw one real Home section as a responsive grid of cover tiles. Track
+    /// tiles play (queueing the whole section), album/artist tiles navigate to
+    /// the real detail page.
+    fn draw_home_section(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, section: &HomeSection) -> f64 {
+        let pad = 28.0;
+        let gap = 20.0;
+        let target = 168.0;
+        let avail = body.width() - 2.0 * pad;
+        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
+        let card_h = card_w + 52.0;
+
+        // Library ids for the track queue (a chart section plays as a queue).
+        let track_ids: Vec<String> = section
+            .items
+            .iter()
+            .filter(|it| it.kind == HomeItemKind::Track)
+            .map(|it| format!("yt:{}", it.video_id))
+            .collect();
+        let mut ti = 0usize;
+
+        for (i, item) in section.items.iter().enumerate() {
+            let cx = body.x0 + pad + (i % cols) as f64 * (card_w + gap);
+            let cy = y + (i / cols) as f64 * (card_h + gap);
+            let art_rect = Rect::new(cx, cy, cx + card_w, cy + card_w);
+            let title_centered = item.kind == HomeItemKind::Artist;
+
+            match item.kind {
+                HomeItemKind::Track => {
+                    let lib_id = format!("yt:{}", item.video_id);
+                    let idx = ti;
+                    ti += 1;
+                    let hover = self.push_hit(art_rect, Action::Play { queue: track_ids.clone(), index: idx });
+                    self.draw_cover(scene, t, art_rect, &lib_id, &item.title, tr, 12.0);
+                    if hover {
+                        let fab = Circle::new(Point::new(art_rect.x1 - 24.0, art_rect.y1 - 24.0), 18.0);
+                        scene.fill(Fill::NonZero, t, c.accent, None, &fab);
+                        icon::draw(scene, t, Icon::Play, Point::new(fab.center.x + 1.0, fab.center.y), 14.0, c.bg);
+                    }
+                }
+                HomeItemKind::Album => {
+                    let card = Rect::new(cx, cy, cx + card_w, cy + card_h);
+                    let hover = self.push_hit(card, Action::Nav(View::Album(item.id.clone())));
+                    self.draw_cover(scene, t, art_rect, &item.id, &item.title, tr, 12.0);
+                    if hover {
+                        let fab = Circle::new(Point::new(art_rect.x1 - 24.0, art_rect.y1 - 24.0), 18.0);
+                        scene.fill(Fill::NonZero, t, c.accent, None, &fab);
+                        icon::draw(scene, t, Icon::Play, Point::new(fab.center.x + 1.0, fab.center.y), 14.0, c.bg);
+                    }
+                }
+                HomeItemKind::Artist => {
+                    self.push_hit(Rect::new(cx, cy, cx + card_w, cy + card_h), Action::Nav(View::Artist(item.id.clone())));
+                    let center = Point::new(cx + card_w / 2.0, cy + card_w / 2.0);
+                    self.draw_avatar(scene, t, center, card_w / 2.0, &item.id, &item.title, tr, c);
+                }
+                HomeItemKind::Playlist => {}
+            }
+
+            // Title + subtitle beneath the tile.
+            let title = elide(tr, &item.title, 14.0, TextWeight::Semibold, card_w);
+            let sub = elide(tr, &item.subtitle, 12.0, TextWeight::Regular, card_w);
+            if title_centered {
+                let (tw, _) = tr.measure_weighted(&title, 14.0, None, TextWeight::Semibold);
+                let (sw, _) = tr.measure_weighted(&sub, 12.0, None, TextWeight::Regular);
+                draw_text(tr, scene, t, &title, cx + (card_w - tw as f64) / 2.0, cy + card_w + 8.0, 14.0, c.text, TextWeight::Semibold, None);
+                draw_text(tr, scene, t, &sub, cx + (card_w - sw as f64) / 2.0, cy + card_w + 28.0, 12.0, c.dim, TextWeight::Regular, None);
+            } else {
+                draw_text(tr, scene, t, &title, cx, cy + card_w + 8.0, 14.0, c.text, TextWeight::Semibold, None);
+                draw_text(tr, scene, t, &sub, cx, cy + card_w + 28.0, 12.0, c.dim, TextWeight::Regular, None);
+            }
+        }
+        let rows = section.items.len().div_ceil(cols).max(1);
+        y + rows as f64 * (card_h + gap)
+    }
+
     // ---- album grid -------------------------------------------------------
 
     fn draw_album_grid(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, albums: &[AlbumDisp]) -> f64 {
@@ -850,7 +1022,7 @@ impl MusicApp {
                 fill_rrect(scene, t, card.inflate(8.0, 8.0), 14.0, c.card_hover);
             }
             let art_rect = Rect::new(cx, cy, cx + card_w, cy + card_w);
-            art::draw_album_art(scene, t, art_rect, &a.id, &a.title, tr, 12.0);
+            self.draw_cover(scene, t, art_rect, &a.id, &a.title, tr, 12.0);
             let saved = self.lib.is_album_saved(&a.id);
             // Add-to-library quick toggle: always shown when saved (so the
             // saved state reads at a glance), and on hover otherwise.
@@ -905,16 +1077,10 @@ impl MusicApp {
             if hover {
                 fill_rrect(scene, t, card.inflate(8.0, 8.0), 14.0, c.card_hover);
             }
-            // Circular avatar.
+            // Circular avatar (real image if loaded, else procedural).
             let d = card_w;
             let center = Point::new(cx + d / 2.0, cy + d / 2.0);
-            let (base, accent) = art::art_colors(&a.id);
-            scene.fill(Fill::NonZero, t, base, None, &Circle::new(center, d / 2.0));
-            scene.fill(Fill::NonZero, t, accent.multiply_alpha(0.8), None, &Circle::new(Point::new(center.x - d * 0.12, center.y - d * 0.12), d * 0.34));
-            let initials = art::initials(&a.name);
-            let sz = (d * 0.3) as f32;
-            let (tw, th) = tr.measure_weighted(&initials, sz, None, TextWeight::Bold);
-            draw_text(tr, scene, t, &initials, center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0, sz, c.text.multiply_alpha(0.95), TextWeight::Bold, None);
+            self.draw_avatar(scene, t, center, d / 2.0, &a.id, &a.name, tr, c);
 
             let name = elide(tr, &a.name, 14.0, TextWeight::Semibold, card_w);
             let (nw, _) = tr.measure_weighted(&name, 14.0, None, TextWeight::Semibold);
@@ -956,7 +1122,7 @@ impl MusicApp {
                 fill_rrect(scene, t, card.inflate(8.0, 8.0), 14.0, c.card_hover);
             }
             let art_rect = Rect::new(cx, cy, cx + card_w, cy + card_w);
-            art::draw_album_art(scene, t, art_rect, &p.id, &p.name, tr, 12.0);
+            self.draw_cover(scene, t, art_rect, &p.id, &p.name, tr, 12.0);
             icon::draw(scene, t, Icon::Playlist, Point::new(art_rect.x0 + 26.0, art_rect.y0 + 26.0), 22.0, c.text.multiply_alpha(0.85));
             let title = elide(tr, &p.name, 14.0, TextWeight::Semibold, card_w);
             draw_text(tr, scene, t, &title, cx, cy + card_w + 8.0, 14.0, c.text, TextWeight::Semibold, None);
@@ -1069,10 +1235,12 @@ impl MusicApp {
                     }
                 }
 
-                // Duration.
-                let dur = fmt_duration(tk.dur as u64);
-                let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
-                draw_text(tr, scene, t, &dur, dur_x + (48.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
+                // Duration (hidden when unknown — some live sources omit it).
+                if tk.dur > 0 {
+                    let dur = fmt_duration(tk.dur as u64);
+                    let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
+                    draw_text(tr, scene, t, &dur, dur_x + (48.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
+                }
             }
             y += row_h;
         }
@@ -1183,15 +1351,9 @@ impl MusicApp {
         let ay = y + 12.0;
         if circular {
             let center = Point::new(ax + art_d / 2.0, ay + art_d / 2.0);
-            let (base, accent) = art::art_colors(seed);
-            scene.fill(Fill::NonZero, t, base, None, &Circle::new(center, art_d / 2.0));
-            scene.fill(Fill::NonZero, t, accent.multiply_alpha(0.8), None, &Circle::new(Point::new(center.x - 20.0, center.y - 20.0), art_d * 0.32));
-            let initials = art::initials(title);
-            let sz = (art_d * 0.3) as f32;
-            let (tw, th) = tr.measure_weighted(&initials, sz, None, TextWeight::Bold);
-            draw_text(tr, scene, t, &initials, center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0, sz, c.text, TextWeight::Bold, None);
+            self.draw_avatar(scene, t, center, art_d / 2.0, seed, title, tr, c);
         } else {
-            art::draw_album_art(scene, t, Rect::new(ax, ay, ax + art_d, ay + art_d), seed, title, tr, 14.0);
+            self.draw_cover(scene, t, Rect::new(ax, ay, ax + art_d, ay + art_d), seed, title, tr, 14.0);
         }
 
         let tx = ax + art_d + 28.0;
@@ -1234,6 +1396,16 @@ impl MusicApp {
     }
 
     fn draw_album_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, id: &str) -> f64 {
+        // Real YouTube-Music album (its ordered track list) when available.
+        self.ensure_album(id);
+        if let Some(page) = self.album_pages.remove(id) {
+            let r = self.draw_album_detail_live(scene, t, tr, c, body, y, &page);
+            self.album_pages.insert(id.to_string(), page);
+            return r;
+        }
+        if is_live_album_id(id) && !self.lib.albums.contains_key(id) {
+            return self.draw_loading_detail(scene, t, tr, c, body, y, "ALBUM", id);
+        }
         let (title, artist, year, ids) = {
             let al = self.lib.album(id);
             let title = al.map(|a| a.title.clone()).unwrap_or_default();
@@ -1249,7 +1421,41 @@ impl MusicApp {
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true)
     }
 
+    /// Album detail rendered straight from a real [`AlbumPage`].
+    fn draw_album_detail_live(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, page: &AlbumPage) -> f64 {
+        let ids: Vec<String> = page.tracks.iter().map(|h| format!("yt:{}", h.video_id)).collect();
+        let year = if page.year > 0 { format!(" \u{00b7} {}", page.year) } else { String::new() };
+        let subtitle = format!("{}{year} \u{00b7} {} songs", page.artist_name, ids.len());
+        let saved = self.lib.is_album_saved(&page.id);
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ALBUM", &page.title, &subtitle, ids.clone(), false, Some((page.id.clone(), saved)));
+        let rows = self.gather_tracks(&ids);
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true)
+    }
+
+    /// A placeholder header shown while a real album/artist page is loading.
+    fn draw_loading_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64, kind: &str, id: &str) -> f64 {
+        let pad = 28.0;
+        y += 12.0;
+        let art = Rect::new(body.x0 + pad, y, body.x0 + pad + 168.0, y + 168.0);
+        fill_rrect(scene, t, art, 14.0, c.card);
+        let tx = art.x1 + 28.0;
+        draw_text(tr, scene, t, kind, tx, y + 8.0, 12.0, c.dim, TextWeight::Semibold, None);
+        draw_text(tr, scene, t, "Loading from YouTube Music\u{2026}", tx, y + 40.0, 22.0, c.text, TextWeight::Bold, None);
+        let _ = id;
+        y + 168.0 + 36.0
+    }
+
     fn draw_artist_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, id: &str) -> f64 {
+        // Real YouTube-Music artist page (top songs, albums, subscribers).
+        self.ensure_artist(id);
+        if let Some(page) = self.artist_pages.remove(id) {
+            let r = self.draw_artist_detail_live(scene, t, tr, c, body, y, &page);
+            self.artist_pages.insert(id.to_string(), page);
+            return r;
+        }
+        if is_live_id(id) && !self.lib.artists.contains_key(id) {
+            return self.draw_loading_detail(scene, t, tr, c, body, y, "ARTIST", id);
+        }
         let (name, genre, listeners, top_ids, albums) = {
             let ar = self.lib.artist(id);
             let name = ar.map(|a| a.name.clone()).unwrap_or_default();
@@ -1270,6 +1476,45 @@ impl MusicApp {
         y += 12.0;
         y = self.section_label(scene, t, tr, c, body, y, "Albums");
         self.draw_album_grid(scene, t, tr, c, body, y, &albums)
+    }
+
+    /// Artist detail rendered straight from a real [`ArtistPage`].
+    fn draw_artist_detail_live(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, page: &ArtistPage) -> f64 {
+        let pad = 28.0;
+        let subtitle = if page.subscriber_count > 0 {
+            format!("{} subscribers", human_count(page.subscriber_count))
+        } else {
+            "Artist".to_string()
+        };
+        let top_ids: Vec<String> = page.tracks.iter().map(|h| format!("yt:{}", h.video_id)).collect();
+        let mut y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ARTIST", &page.name, &subtitle, top_ids.clone(), true, None);
+
+        if !page.description.is_empty() {
+            let line = elide(tr, &page.description, 13.0, TextWeight::Regular, body.width() - 2.0 * pad);
+            draw_text(tr, scene, t, &line, body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, Some((body.width() - 2.0 * pad) as f32));
+            y += 28.0;
+        }
+
+        y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
+        let rows = self.gather_tracks(&top_ids);
+        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true);
+        y += 12.0;
+        if !page.albums.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y, "Albums");
+            let albums: Vec<AlbumDisp> = page
+                .albums
+                .iter()
+                .map(|al| AlbumDisp {
+                    id: al.id.clone(),
+                    title: al.title.clone(),
+                    artist: page.name.clone(),
+                    year: al.year,
+                    queue: Vec::new(),
+                })
+                .collect();
+            y = self.draw_album_grid(scene, t, tr, c, body, y, &albums);
+        }
+        y
     }
 
     fn draw_playlist_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, id: &str) -> f64 {
@@ -1314,7 +1559,7 @@ impl MusicApp {
             if let Some(tk) = row.first() {
                 let rr = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
                 fill_rrect(scene, t, rr, 10.0, c.accent.multiply_alpha(0.12));
-                art::draw_album_art(scene, t, Rect::new(rr.x0 + 8.0, rr.y0 + 8.0, rr.x0 + 56.0, rr.y0 + 56.0), &tk.album_seed(), &tk.title, tr, 8.0);
+                self.draw_cover(scene, t, Rect::new(rr.x0 + 8.0, rr.y0 + 8.0, rr.x0 + 56.0, rr.y0 + 56.0), &tk.cover_id(), &tk.title, tr, 8.0);
                 draw_text(tr, scene, t, &tk.title, rr.x0 + 68.0, rr.y0 + 14.0, 15.0, c.accent, TextWeight::Semibold, None);
                 draw_text(tr, scene, t, &tk.artist, rr.x0 + 68.0, rr.y0 + 36.0, 13.0, c.dim, TextWeight::Regular, None);
                 y += 80.0;
@@ -1546,7 +1791,7 @@ impl MusicApp {
             .unwrap_or_default();
         let searching = self.live_search_pending.as_deref() == Some(q.trim());
 
-        let res = self.lib.search(&q);
+        let res = self.local_search_cached(q.trim());
         if res.is_empty() && live_ids.is_empty() {
             y += 24.0;
             let msg = if searching {
@@ -1616,13 +1861,22 @@ impl MusicApp {
         scene.fill(Fill::NonZero, t, c.panel, None, &r);
         scene.fill(Fill::NonZero, t, c.border, None, &Rect::new(r.x0, r.y0, r.x1, r.y0 + 1.0));
 
+        // Narrow windows can't fit the full transport (art + title + 5 transport
+        // buttons + scrubber + queue + volume) without overlap. Below this width
+        // the bar collapses to art + title + prev/play/next, with a full-width
+        // progress line along the top edge.
+        if r.width() < 720.0 {
+            self.draw_nowplaying_compact(scene, t, tr, c, r);
+            return;
+        }
+
         let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
 
         // Left: art + title/artist + like + lyrics affordance.
         let lx = r.x0 + 16.0;
         if let Some(tk) = &cur {
             let art = Rect::new(lx, r.y0 + 14.0, lx + 64.0, r.y0 + 78.0);
-            art::draw_album_art(scene, t, art, &tk.album_seed(), &tk.title, tr, 8.0);
+            self.draw_cover(scene, t, art, &tk.cover_id(), &tk.title, tr, 8.0);
             // Clicking the art jumps to its album.
             self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
             let tx = art.x1 + 14.0;
@@ -1740,6 +1994,58 @@ impl MusicApp {
             fill_rrect(scene, t, Rect::new(vbar_x0, vbar_y - 2.0, vfill, vbar_y + 2.0), 2.0, c.accent);
         }
         scene.fill(Fill::NonZero, t, c.text, None, &Circle::new(Point::new(vfill, vbar_y), 5.0));
+    }
+
+    /// Compact now-playing transport for narrow windows: art + title on the
+    /// left, prev/play/next on the right, a full-width progress line (also the
+    /// scrubber) along the top edge. Volume + queue are dropped (reachable from
+    /// the sidebar) so nothing overlaps.
+    fn draw_nowplaying_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
+        let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
+
+        // Progress line = the top 3px strip; the whole strip is the scrubber.
+        let dur = self.current_duration_ms();
+        let pos = self.playhead_ms.min(dur as f64).max(0.0);
+        let frac = if dur > 0 { pos / dur as f64 } else { 0.0 };
+        scene.fill(Fill::NonZero, t, c.white10, None, &Rect::new(r.x0, r.y0, r.x1, r.y0 + 3.0));
+        if frac > 0.0 {
+            scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(r.x0, r.y0, r.x0 + r.width() * frac, r.y0 + 3.0));
+        }
+        self.scrubber_rect = Rect::new(r.x0, r.y0 - 4.0, r.x1, r.y0 + 10.0);
+        self.volume_rect = Rect::ZERO;
+
+        let controls_w = 132.0;
+        let lx = r.x0 + 14.0;
+        if let Some(tk) = &cur {
+            let art = Rect::new(lx, r.y0 + 16.0, lx + 60.0, r.y0 + 76.0);
+            self.draw_cover(scene, t, art, &tk.cover_id(), &tk.title, tr, 8.0);
+            self.push_hit(art, Action::Nav(View::Lyrics));
+            let tx = art.x1 + 12.0;
+            let maxw = (r.x1 - controls_w - tx - 10.0).max(40.0);
+            let title = elide(tr, &tk.title, 14.0, TextWeight::Semibold, maxw);
+            draw_text(tr, scene, t, &title, tx, r.y0 + 28.0, 14.0, c.text, TextWeight::Semibold, None);
+            let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, maxw);
+            draw_text(tr, scene, t, &artist, tx, r.y0 + 50.0, 12.0, c.dim, TextWeight::Regular, None);
+        } else {
+            draw_text(tr, scene, t, "Nothing playing", lx, vy(r.y0, NOWPLAYING_H, 14.0), 14.0, c.dim, TextWeight::Regular, None);
+        }
+
+        let cy = r.y0 + NOWPLAYING_H / 2.0 + 2.0;
+        let px = r.x1 - controls_w;
+        let prev_c = Point::new(px + 18.0, cy);
+        let pv = self.push_hit(square_around(prev_c, 32.0), Action::Prev);
+        icon::draw(scene, t, Icon::Prev, prev_c, 18.0, if pv { c.text } else { c.dim_strong });
+        let play_c = Point::new(px + 62.0, cy);
+        let pl = self.push_hit(square_around(play_c, 42.0), Action::TogglePlay);
+        scene.fill(Fill::NonZero, t, if pl { c.text } else { c.text.multiply_alpha(0.94) }, None, &Circle::new(play_c, 20.0));
+        if self.pb.playing {
+            icon::draw(scene, t, Icon::Pause, play_c, 16.0, c.panel);
+        } else {
+            icon::draw(scene, t, Icon::Play, Point::new(play_c.x + 1.0, play_c.y), 16.0, c.panel);
+        }
+        let next_c = Point::new(px + 106.0, cy);
+        let nx = self.push_hit(square_around(next_c, 32.0), Action::Next);
+        icon::draw(scene, t, Icon::Next, next_c, 18.0, if nx { c.text } else { c.dim_strong });
     }
 
     // ---- toast ------------------------------------------------------------
@@ -1899,8 +2205,15 @@ impl MusicApp {
 impl TrackDisp {
     /// Seed for procedural art — keyed to the album id so an album's tracks
     /// share a cover with the grid/detail art.
+    #[allow(dead_code)]
     fn album_seed(&self) -> String {
         self.album_id.clone()
+    }
+
+    /// Cover-cache key for this track: the track id (live results record a
+    /// per-track cover) falling back to album art via the placeholder.
+    fn cover_id(&self) -> String {
+        self.id.clone()
     }
 }
 

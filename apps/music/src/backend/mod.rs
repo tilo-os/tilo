@@ -52,6 +52,92 @@ pub struct TrackHit {
     pub album_id: Option<String>,
     /// Track length in whole seconds (0 when the source omits it).
     pub duration_s: u32,
+    /// Real album-cover thumbnail URL (YouTube image CDN), best-size pick.
+    /// Empty when the source omits it (offline sample) — the UI then falls
+    /// back to a procedural placeholder tile.
+    pub cover_url: String,
+}
+
+/// What a [`HomeItem`] represents, so the UI can route a click and pick the
+/// right tile shape (artists render as circles).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomeItemKind {
+    Track,
+    Album,
+    Artist,
+    Playlist,
+}
+
+/// One tile on the real Home page (a chart track, a new album, a top artist, a
+/// mood playlist). Toolkit-free so it crosses the worker boundary.
+#[derive(Clone, Debug)]
+pub struct HomeItem {
+    /// Entity id: album id / artist channel id / playlist id. For a track it's
+    /// the library id the app mints; [`Self::video_id`] carries the stream key.
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub cover_url: String,
+    pub kind: HomeItemKind,
+    // Track-only correlation so a chart track can be played + merged.
+    pub video_id: String,
+    pub artist_id: String,
+    pub artist_name: String,
+    pub album_id: String,
+    pub album_title: String,
+    pub duration_s: u32,
+}
+
+/// A titled row of tiles on the Home page.
+#[derive(Clone, Debug)]
+pub struct HomeSection {
+    pub title: String,
+    pub items: Vec<HomeItem>,
+}
+
+/// Real YouTube-Music home/charts content: a handful of titled sections.
+#[derive(Clone, Debug, Default)]
+pub struct HomeContent {
+    pub sections: Vec<HomeSection>,
+}
+
+impl HomeContent {
+    pub fn is_empty(&self) -> bool {
+        self.sections.iter().all(|s| s.items.is_empty())
+    }
+}
+
+/// One album on an artist page.
+#[derive(Clone, Debug)]
+pub struct ArtistAlbum {
+    pub id: String,
+    pub title: String,
+    pub year: u32,
+    pub cover_url: String,
+}
+
+/// A real YouTube-Music artist page: top songs, albums, subscriber count.
+#[derive(Clone, Debug, Default)]
+pub struct ArtistPage {
+    pub id: String,
+    pub name: String,
+    pub subscriber_count: u64,
+    pub description: String,
+    pub header_url: String,
+    pub tracks: Vec<TrackHit>,
+    pub albums: Vec<ArtistAlbum>,
+}
+
+/// A real YouTube-Music album (or single/EP): its ordered tracks + cover.
+#[derive(Clone, Debug, Default)]
+pub struct AlbumPage {
+    pub id: String,
+    pub title: String,
+    pub artist_id: String,
+    pub artist_name: String,
+    pub year: u32,
+    pub cover_url: String,
+    pub tracks: Vec<TrackHit>,
 }
 
 /// A resolved, directly-playable audio stream — what actually gets handed to
@@ -115,6 +201,24 @@ pub trait MusicBackend: Send + Sync {
     /// Resolve a video id to a directly-playable audio stream. Offline errors;
     /// live returns a real googlevideo media URL.
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome;
+
+    /// Fetch the real Home page: charts, trending, new releases, top artists —
+    /// with real cover art URLs. Offline returns an error (the app then shows
+    /// the bundled sample home).
+    fn home(&self) -> Result<HomeContent, BackendError> {
+        Err(BackendError("home content needs the live backend".into()))
+    }
+
+    /// Fetch a real artist page (top songs, albums, subscriber count). Offline
+    /// errors.
+    fn artist(&self, _artist_id: &str) -> Result<ArtistPage, BackendError> {
+        Err(BackendError("artist pages need the live backend".into()))
+    }
+
+    /// Fetch a real album's ordered track list + cover. Offline errors.
+    fn album(&self, _album_id: &str) -> Result<AlbumPage, BackendError> {
+        Err(BackendError("album pages need the live backend".into()))
+    }
 }
 
 /// The default backend for any build: the offline sample. The live backend is
