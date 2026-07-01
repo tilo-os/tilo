@@ -28,7 +28,7 @@ use ui::theme::Theme;
 use ui::widget::{NavSplit, SplitMode, Widget};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
-use crate::api::{Request, Update, Worker};
+use crate::api::{DecodedFrame, Request, Update, Worker};
 use crate::model::{Route, TubeModel};
 use crate::screens;
 use crate::widgets::Flex;
@@ -78,6 +78,13 @@ pub struct TubeApp {
     /// resize and trigger a rebuild that re-seeds the split + drops a stale
     /// user preference.
     last_nav_overlay: Option<bool>,
+    /// The docked/overlay resolution the *current* widget tree was seeded
+    /// with. The first `build_layout` runs before any width is known (rect
+    /// ZERO ⇒ overlay assumed), so once the true width lands in
+    /// `apply_layout` we compare against this and rebuild if the seed was
+    /// wrong — a wide window re-seeds its rail open on the next frame instead
+    /// of being stuck on the unknown-width default.
+    built_overlay: Option<bool>,
 
     /// Whether this instance should reach out to the live data backend. Set by
     /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
@@ -87,6 +94,17 @@ pub struct TubeApp {
     /// Guards the one-shot startup fetch (home/trending) so we kick it off
     /// exactly once, on the first `sync`, rather than every frame.
     kicked_off: bool,
+
+    /// The watch id we have already asked the worker to play, so a
+    /// [`Request::PlayVideo`] is sent exactly once per watch-open (not every
+    /// frame). Cleared implicitly by opening a *different* video.
+    playing_id: Option<String>,
+    /// The most recent real decoded frame for the currently-open video. The
+    /// worker decodes off the UI thread and hands finished RGBA here via
+    /// [`Worker::poll_frames`]; the watch page paints it in place of the poster.
+    /// `None` until the first frame lands (poster shows), and dropped when a
+    /// different video opens so a stale picture never bleeds across videos.
+    current_frame: Option<DecodedFrame>,
 }
 
 impl Default for TubeApp {
@@ -111,8 +129,11 @@ impl TubeApp {
             sidebar_open: None,
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
+            built_overlay: None,
             online: false,
             kicked_off: false,
+            playing_id: None,
+            current_frame: None,
         }
     }
 
@@ -132,6 +153,18 @@ impl TubeApp {
     /// collapsed-sidebar state. The live app never calls this.
     pub fn with_open_sidebar_shot(mut self) -> Self {
         self.force_sidebar_open_shot = true;
+        self
+    }
+
+    /// `--shots` builder: record the render viewport up front so the single
+    /// offscreen frame resolves the docked-vs-overlay layout — and thus the
+    /// rail's default open/closed state and the width-driven watch player —
+    /// from the true width instead of the unknown-width fallback. Without this
+    /// the one-and-only build would seed the split from a ZERO width. The live
+    /// app never calls it; it learns its width from `apply_layout` each frame.
+    pub fn with_viewport(mut self, w: f64, h: f64) -> Self {
+        self.rect = Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0));
+        self.last_nav_overlay = Some(self.nav_is_overlay());
         self
     }
 
@@ -158,6 +191,28 @@ impl TubeApp {
         self
     }
 
+    /// Test/shots hook: open a video's watch page with a real decoded frame
+    /// already in hand, so a headless test can prove the watch view paints the
+    /// live-frame path ([`crate::widgets::VideoSurface`]) instead of the poster
+    /// — without a network or a decoder. Mirrors exactly what the worker's
+    /// `poll_frames` drain does on the live path.
+    pub fn with_decoded_frame_for_test(
+        mut self,
+        video: &str,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Self {
+        self.model.route = Route::Watch(video.to_string());
+        self.current_frame = Some(DecodedFrame {
+            video: video.to_string(),
+            width,
+            height,
+            rgba,
+        });
+        self
+    }
+
     /// Test accessor: the current route (read-only).
     pub fn route_for_test(&self) -> &Route {
         &self.model.route
@@ -177,12 +232,20 @@ impl TubeApp {
             Route::Subscriptions => screens::subscriptions(m, theme, bus),
             Route::History => screens::history(m, theme, bus),
             Route::Settings => screens::settings(m, theme, bus),
-            Route::Watch(id) => screens::watch(m, theme, bus, id),
+            Route::Watch(id) => {
+                screens::watch(m, theme, bus, id, self.content_width(), self.frame_for(id))
+            }
             Route::Channel(id) => screens::channel(m, theme, bus, id),
             Route::Search(q) => screens::search(m, theme, bus, q),
         };
 
-        let content_area = Flex::col().grow(1.0).fill_h().clip().push(content);
+        // `fill_w` pins the content pane to a *definite* width (the split lays
+        // each pane out in its own tree, so without this the column would size
+        // to its max-content and the card grid inside would never learn a line
+        // width to wrap against — cards would overflow and clip). With a
+        // definite width the wrapping grid reflows to fewer columns as the
+        // window narrows.
+        let content_area = Flex::col().grow(1.0).fill_w().fill_h().clip().push(content);
 
         // The navigation rail and the content share the body via a responsive
         // split: docked beside the content on a wide window, collapsed into an
@@ -232,10 +295,29 @@ impl TubeApp {
     /// the same way the live split does.
     fn nav_is_overlay(&self) -> bool {
         let w = self.rect.width();
-        // Width 0 = first build, before the first `apply_layout`. Assume the
-        // desktop (docked) default so a wide window's rail isn't hidden for a
-        // frame; a narrow window self-corrects on its first laid-out frame.
-        w > 0.0 && w < NAV_BREAKPOINT
+        // Width 0 = first build, before the first `apply_layout`. Default to
+        // the overlay (narrow) resolution so the rail starts CLOSED when the
+        // width is not yet known — never assume the wide layout and flash the
+        // flap open over the content. A real width self-corrects on its first
+        // laid-out frame: a wide window rebuilds once the true width lands (see
+        // `built_overlay` in `apply_layout`).
+        w <= 0.0 || w < NAV_BREAKPOINT
+    }
+
+    /// Logical width available to the screen content, i.e. the split's content
+    /// pane. In overlay mode the flap draws over the content, so the content
+    /// spans the full width; docked, an open rail insets the content by
+    /// [`screens::NAV_RAIL_W`]. Used to size the width-driven watch player and
+    /// pick the watch page's one-vs-two-column arrangement.
+    fn content_width(&self) -> f64 {
+        let w = self.rect.width();
+        if self.nav_is_overlay() {
+            w
+        } else if self.sidebar_currently_open() {
+            (w - screens::NAV_RAIL_W).max(0.0)
+        } else {
+            w
+        }
     }
 
     /// Resolve whether the rail is currently shown, given the session
@@ -252,6 +334,34 @@ impl TubeApp {
         if self.nav_is_overlay() {
             self.sidebar_open = Some(false);
         }
+    }
+
+    /// The decoded frame to paint for `id`, if the latest one we hold belongs
+    /// to it. Guards against a late frame for a since-closed video painting on
+    /// the wrong page.
+    fn frame_for(&self, id: &str) -> Option<&DecodedFrame> {
+        self.current_frame.as_ref().filter(|f| f.video == id)
+    }
+
+    /// If the current route is a watch page we haven't started playing yet, ask
+    /// the worker to resolve + decode a real stream for it — exactly once per
+    /// watch-open. Online-only, so the offline `--shots`/test paths never spawn
+    /// the worker or reach the network. Opening a *different* video re-arms this
+    /// and drops the previous video's frame so the poster shows until the new
+    /// stream decodes.
+    fn ensure_playback(&mut self) {
+        if !self.online {
+            return;
+        }
+        let Route::Watch(id) = self.model.route.clone() else {
+            return;
+        };
+        if self.playing_id.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        self.playing_id = Some(id.clone());
+        self.current_frame = None;
+        self.request_live(Request::PlayVideo(id));
     }
 
     /// Resolve the current watch video's duration, if any.
@@ -442,7 +552,11 @@ impl TubeApp {
             return false;
         };
         let updates = worker.poll();
-        if updates.is_empty() {
+        // Drain any decoded video frames the worker finished this tick. Kept
+        // separate from `Update`s: frames are raw RGBA that must not enter the
+        // CRDT model (they'd bloat the document and don't replicate).
+        let frames = worker.poll_frames();
+        if updates.is_empty() && frames.is_empty() {
             return false;
         }
         let mut changed = false;
@@ -520,6 +634,19 @@ impl TubeApp {
                 }
             }
         }
+        // Adopt the newest decoded frame for the currently-open video. A frame
+        // for a different (since-closed) video is dropped. Setting it flags a
+        // change so the tree rebuilds and the watch page repaints the picture.
+        let watch_id = match &self.model.route {
+            Route::Watch(id) => Some(id.clone()),
+            _ => None,
+        };
+        for f in frames {
+            if watch_id.as_deref() == Some(f.video.as_str()) {
+                self.current_frame = Some(f);
+                changed = true;
+            }
+        }
         changed
     }
 
@@ -591,6 +718,9 @@ impl Widget for TubeApp {
             self.kicked_off = true;
             self.request_live(Request::Feed);
         }
+        // A persisted/boot route that is already a watch page starts playing on
+        // the first live sync (guarded so it fires once).
+        self.ensure_playback();
         // Reflect the live palette-query text into the model so the overlay
         // filters as the user types. Only adopt the CRDT text once the user has
         // actually typed (non-empty), so a pre-seeded query (tests / a future
@@ -614,6 +744,10 @@ impl Widget for TubeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Remember which layout resolution this tree was seeded with, so a
+        // later `apply_layout` at the true width can detect a wrong seed (the
+        // first build runs before any width is known) and rebuild once.
+        self.built_overlay = Some(self.nav_is_overlay());
         let shell = self.build_shell_themed(theme);
         self.root_child = Some(shell);
         let node = self
@@ -648,6 +782,15 @@ impl Widget for TubeApp {
                 self.structure_dirty = true;
             }
             self.last_nav_overlay = Some(overlay);
+            // The first build ran before the width was known and seeded the
+            // tree from the unknown-width (overlay) default. Now that the true
+            // width has landed, rebuild if the resolved layout differs from
+            // what the current tree was built with — this re-seeds a wide
+            // window's rail open. It converges in one frame (the rebuilt tree
+            // is seeded from the now-known width) and never loops.
+            if self.built_overlay != Some(overlay) {
+                self.structure_dirty = true;
+            }
         }
     }
 
@@ -779,7 +922,10 @@ impl Widget for TubeApp {
         for a in actions {
             changed |= self.apply(a, state, path);
         }
-        // Fold any ready worker results.
+        // If a just-applied action opened a watch page, kick off real playback
+        // (resolve + decode) for it — once. No-op off the watch route / offline.
+        self.ensure_playback();
+        // Fold any ready worker results (live data + decoded frames).
         changed |= self.pump();
 
         if changed {
@@ -940,6 +1086,35 @@ mod tests {
         assert!(!at_width(1280.0).nav_is_overlay(), "wide window docks the rail");
         assert!(at_width(NAV_BREAKPOINT).nav_is_overlay() == false, "breakpoint is inclusive → docked");
         assert!(at_width(NAV_BREAKPOINT - 1.0).nav_is_overlay(), "below breakpoint overlays the rail");
+    }
+
+    #[test]
+    fn fresh_unknown_width_defaults_closed() {
+        // Before the first laid-out frame the width is unknown (rect ZERO).
+        // The rail must NOT assume the wide/docked layout and flash open over
+        // the content — it defaults to the overlay resolution (closed).
+        let app = TubeApp::new();
+        assert_eq!(app.rect.width(), 0.0, "a fresh app has no measured width yet");
+        assert!(app.nav_is_overlay(), "unknown width resolves to overlay, not docked");
+        assert!(
+            !app.sidebar_currently_open(),
+            "with the width unknown the rail defaults closed (never assume wide)"
+        );
+    }
+
+    #[test]
+    fn shot_viewport_seeds_layout_before_first_frame() {
+        // The `--shots` viewport hint lets the single offscreen frame resolve
+        // the layout from the true width up front: wide docks + opens, narrow
+        // overlays + closes.
+        assert!(
+            TubeApp::new().with_viewport(1280.0, 720.0).sidebar_currently_open(),
+            "a wide shot viewport docks and opens the rail"
+        );
+        assert!(
+            !TubeApp::new().with_viewport(560.0, 720.0).sidebar_currently_open(),
+            "a narrow shot viewport overlays and closes the rail"
+        );
     }
 
     #[test]
