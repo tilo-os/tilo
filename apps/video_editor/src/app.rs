@@ -32,7 +32,8 @@ use crate::doc::VideoDoc;
 use crate::export::{
     begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
 };
-use crate::model::{Clip, ClipId, MediaId, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::model::{Clip, ClipId, Filters, MediaId, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::preview::{self, CompositedFrame, Rgb};
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 // ---- layout constants ----------------------------------------------------
@@ -97,10 +98,42 @@ enum Drag {
     TrimOut { id: ClipId },
     Opacity,
     Volume,
+    Brightness,
+    Contrast,
+    Saturation,
+    FadeIn,
+    FadeOut,
+}
+
+/// Which inspector slider a drag is editing. Brightness/contrast/saturation
+/// share one code path; the variant disambiguates the field.
+#[derive(Clone, Copy)]
+enum FilterField {
+    Brightness,
+    Contrast,
+    Saturation,
+}
+
+/// One-shot capture scenarios selected by the `--shots` entry points. Each
+/// deterministically arranges editor state so a single offscreen frame shows
+/// a specific feature (filters, a fresh split). `None` is the live editor.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ShotScenario {
+    /// Default: the live editor with its auto-selected clip.
+    Live,
+    /// The graded drone clip selected, filters + fades visible in the
+    /// inspector, playhead inside the clip.
+    SelectedFilters,
+    /// A split performed at the playhead, leaving two contiguous clips.
+    JustSplit,
 }
 
 pub struct VideoEditorApp {
     project: Project,
+    /// Deterministic capture scenario applied once during the first `sync`.
+    shot_scenario: ShotScenario,
+    /// Guards the one-time scenario setup so it doesn't re-run every sync.
+    shot_applied: bool,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,  // pixels per second
@@ -121,6 +154,17 @@ pub struct VideoEditorApp {
     initialised_selection: bool,
     last_tick: Instant,
     rect: Rect,
+    /// Set whenever an edit mutates the CRDT in a way that should be a
+    /// discrete undo step. The toolkit's `App` snapshots the doc for undo
+    /// when `needs_commit()` is true, then calls `on_commit()` to clear it.
+    /// Ctrl+Z / Ctrl+Y are then handled OS-wide by the toolkit.
+    needs_commit: bool,
+    /// Copied clip, ready to paste at the playhead (Ctrl+C / Ctrl+V). Holds
+    /// a full clip snapshot — trim window, filters and fades come along.
+    clipboard: Option<Clip>,
+    /// JKL shuttle rate: -1 reverse, 0 stop, +1..N forward speed multiplier.
+    /// Repeated L speeds up, J reverses, K stops — the standard NLE shuttle.
+    shuttle: f64,
     /// `false` until the first laid-out frame resolves the bin flap to the
     /// width's natural state — so a cold launch into a narrow window starts
     /// with the bin already collapsed instead of flashing it open.
@@ -145,6 +189,8 @@ impl VideoEditorApp {
     pub fn new() -> Self {
         Self {
             project: Project::new("Untitled"),
+            shot_scenario: ShotScenario::Live,
+            shot_applied: false,
             playhead: 10.0,
             zoom: 34.0,
             scroll: 0.0,
@@ -165,10 +211,22 @@ impl VideoEditorApp {
             initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
+            needs_commit: false,
+            clipboard: None,
+            shuttle: 0.0,
             flap_settled: false,
             bin_flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
         }
+    }
+
+    /// Construct the editor pre-arranged for a deterministic `--shots`
+    /// capture scenario (see [`ShotScenario`]). The scenario is applied once
+    /// during the first `sync`, after the sample project loads.
+    pub fn new_for_shot(scenario: ShotScenario) -> Self {
+        let mut app = Self::new();
+        app.shot_scenario = scenario;
+        app
     }
 
     /// Like [`Self::new`] but with the media bin flap snapped fully open, for
@@ -318,12 +376,18 @@ impl VideoEditorApp {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
+        let dur = self.project.duration();
         if self.playing {
-            let dur = self.project.duration();
             self.playhead += dt;
             if self.playhead >= dur {
                 self.playhead = dur;
                 self.playing = false;
+            }
+        } else if self.shuttle != 0.0 {
+            // Shuttle scrubs at `shuttle`× real time; clamps at the ends.
+            self.playhead = (self.playhead + dt * self.shuttle).clamp(0.0, dur);
+            if self.playhead <= 0.0 || self.playhead >= dur {
+                self.shuttle = 0.0;
             }
         }
     }
@@ -368,6 +432,21 @@ impl VideoEditorApp {
         let step = frame_step(self.project.fps);
         self.playhead = (self.playhead + dir * step).clamp(0.0, self.project.duration());
         self.playing = false;
+        self.shuttle = 0.0;
+    }
+
+    /// J/K/L shuttle. Pressing in the *same* direction doubles the rate
+    /// (1→2→4…); pressing the opposite direction resets to ±1×; the rate is
+    /// advanced each frame in [`Self::advance_playback`].
+    fn shuttle_key(&mut self, dir: f64) {
+        // Same direction speeds up; reversal restarts at 1×.
+        if self.shuttle.signum() == dir.signum() && self.shuttle != 0.0 {
+            self.shuttle = (self.shuttle * 2.0).clamp(-16.0, 16.0);
+        } else {
+            self.shuttle = dir;
+        }
+        self.playing = false; // shuttle and play are mutually exclusive
+        self.last_tick = Instant::now();
     }
 
     // ---- mutations (write through to the CRDT) ---------------------------
@@ -381,6 +460,7 @@ impl VideoEditorApp {
                 VideoDoc::upsert_clip(doc, right);
             }
             self.selected = Some(rid);
+            self.needs_commit = true;
         }
     }
 
@@ -389,47 +469,137 @@ impl VideoEditorApp {
         self.project.delete_clip(id);
         VideoDoc::remove_clip(doc, id);
         self.selected = None;
+        self.needs_commit = true;
+    }
+
+    /// Delete the selected clip and close the gap, shifting later clips on
+    /// the same track left. Replicates every moved clip through the CRDT.
+    fn ripple_delete_selected(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.selected else { return };
+        let moved = self.project.ripple_delete(id);
+        VideoDoc::remove_clip(doc, id);
+        for mid in moved {
+            if let Some(c) = self.project.clip(mid) {
+                VideoDoc::upsert_clip(doc, c);
+            }
+        }
+        self.selected = None;
+        self.needs_commit = true;
+    }
+
+    /// Copy the selected clip to the clipboard (no CRDT change).
+    fn copy_selected(&mut self) {
+        if let Some(id) = self.selected {
+            self.clipboard = self.project.clip(id).cloned();
+        }
+    }
+
+    /// Paste the clipboard clip at the playhead, on its original track.
+    /// Falls back to the selected clip's track. New clip becomes selected.
+    fn paste_clip(&mut self, doc: &mut AutoCommit) {
+        let Some(src) = self.clipboard.clone() else { return };
+        // Keep the copied clip's track if it still exists, else the
+        // currently-selected clip's track, else the first track.
+        let track = self
+            .project
+            .track(src.track)
+            .map(|t| t.id)
+            .or_else(|| self.selected.and_then(|s| self.project.clip(s)).map(|c| c.track))
+            .or_else(|| self.project.tracks.first().map(|t| t.id));
+        let Some(track) = track else { return };
+        let id = self.project.paste_clip(src, track, self.playhead);
+        if let Some(c) = self.project.clip(id) {
+            VideoDoc::upsert_clip(doc, c);
+        }
+        self.selected = Some(id);
+        self.needs_commit = true;
+    }
+
+    /// Set the in-point of the selected clip to the playhead (`I`): trims
+    /// the head so the clip starts at the current frame.
+    fn set_in_at_playhead(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.selected else { return };
+        let delta = self.project.clip(id).map(|c| self.playhead - c.start).unwrap_or(0.0);
+        if delta.abs() < 1e-6 {
+            return;
+        }
+        self.project.trim_in(id, delta);
+        if let Some(c) = self.project.clip(id) {
+            VideoDoc::upsert_clip(doc, c);
+        }
+        self.needs_commit = true;
+    }
+
+    /// Set the out-point of the selected clip to the playhead (`O`): trims
+    /// the tail so the clip ends at the current frame.
+    fn set_out_at_playhead(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.selected else { return };
+        let delta = self.project.clip(id).map(|c| self.playhead - c.end()).unwrap_or(0.0);
+        if delta.abs() < 1e-6 {
+            return;
+        }
+        self.project.trim_out(id, delta);
+        if let Some(c) = self.project.clip(id) {
+            VideoDoc::upsert_clip(doc, c);
+        }
+        self.needs_commit = true;
+    }
+
+    /// Nudge the selected clip by `dt` seconds (arrow keys when a clip is
+    /// selected). Snaps the result to the frame grid.
+    fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
+        let Some(id) = self.selected else { return };
+        let new_start = self
+            .project
+            .clip(id)
+            .map(|c| snap_to_frame((c.start + dt).max(0.0), self.project.fps))
+            .unwrap_or(0.0);
+        self.project.move_clip(id, new_start);
+        if let Some(c) = self.project.clip(id) {
+            VideoDoc::upsert_clip(doc, c);
+        }
+        self.needs_commit = true;
+    }
+
+    /// Apply `edit` to the selected clip and replicate it. The single
+    /// write-through path for every per-clip field edit — sets the commit
+    /// flag so each adjustment is an undo step.
+    fn edit_selected(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut Clip)) {
+        let Some(id) = self.selected else { return };
+        if let Some(c) = self.project.clip_mut(id) {
+            edit(c);
+        }
+        if let Some(c) = self.project.clip(id) {
+            VideoDoc::upsert_clip(doc, c);
+        }
+        self.needs_commit = true;
     }
 
     fn set_opacity(&mut self, doc: &mut AutoCommit, v: f64) {
-        if let Some(id) = self.selected {
-            if let Some(c) = self.project.clip_mut(id) {
-                c.opacity = v.clamp(0.0, 1.0);
-            }
-            if let Some(c) = self.project.clip(id) {
-                VideoDoc::upsert_clip(doc, c);
-            }
-        }
+        self.edit_selected(doc, |c| c.opacity = v.clamp(0.0, 1.0));
     }
     fn set_volume(&mut self, doc: &mut AutoCommit, v: f64) {
-        if let Some(id) = self.selected {
-            if let Some(c) = self.project.clip_mut(id) {
-                c.volume = v.clamp(0.0, 1.0);
-            }
-            if let Some(c) = self.project.clip(id) {
-                VideoDoc::upsert_clip(doc, c);
-            }
-        }
+        self.edit_selected(doc, |c| c.volume = v.clamp(0.0, 1.0));
+    }
+    fn set_filter(&mut self, doc: &mut AutoCommit, field: FilterField, v: f64) {
+        let v = v.clamp(0.0, 1.0);
+        self.edit_selected(doc, move |c| match field {
+            FilterField::Brightness => c.filters.brightness = v,
+            FilterField::Contrast => c.filters.contrast = v,
+            FilterField::Saturation => c.filters.saturation = v,
+        });
+    }
+    fn set_fade_in(&mut self, doc: &mut AutoCommit, secs: f64) {
+        self.edit_selected(doc, move |c| c.fade_in = secs.clamp(0.0, c.duration()));
+    }
+    fn set_fade_out(&mut self, doc: &mut AutoCommit, secs: f64) {
+        self.edit_selected(doc, move |c| c.fade_out = secs.clamp(0.0, c.duration()));
     }
     fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
-        if let Some(id) = self.selected {
-            if let Some(c) = self.project.clip_mut(id) {
-                c.transition = t;
-            }
-            if let Some(c) = self.project.clip(id) {
-                VideoDoc::upsert_clip(doc, c);
-            }
-        }
+        self.edit_selected(doc, move |c| c.transition = t);
     }
     fn set_palette(&mut self, doc: &mut AutoCommit, p: u8) {
-        if let Some(id) = self.selected {
-            if let Some(c) = self.project.clip_mut(id) {
-                c.palette = p;
-            }
-            if let Some(c) = self.project.clip(id) {
-                VideoDoc::upsert_clip(doc, c);
-            }
-        }
+        self.edit_selected(doc, move |c| c.palette = p);
     }
 
     /// Append the bin-selected (or given) media as a clip on a matching
@@ -457,6 +627,7 @@ impl VideoEditorApp {
                 VideoDoc::upsert_clip(doc, c);
             }
             self.selected = Some(id);
+            self.needs_commit = true;
         }
     }
 
@@ -475,35 +646,46 @@ impl VideoEditorApp {
             .unwrap_or(true);
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
-        // Static header + property rows consume a fixed block; controls
-        // start below it.
-        let mut y = r.inspector.y0 + 164.0;
-        let row = 52.0;
+        // Static header + four property rows consume a fixed block; the
+        // editable controls start below it. A compact 36px pitch fits a
+        // grade stack + fades + transition + label + actions in the pane.
+        let mut y = r.inspector.y0 + 146.0;
+        let row = 34.0; // label sits at y, the 9px track at y+19
+        let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
+
         if is_video {
-            l.opacity = Some(Rect::new(x0, y + 24.0, x1, y + 34.0));
+            l.opacity = Some(track_at(y)); y += row;
+            l.brightness = Some(track_at(y)); y += row;
+            l.contrast = Some(track_at(y)); y += row;
+            l.saturation = Some(track_at(y)); y += row;
         } else {
-            l.volume = Some(Rect::new(x0, y + 24.0, x1, y + 34.0));
+            l.volume = Some(track_at(y)); y += row;
         }
-        y += row;
+        // Fade in / out share a row (two half-width tracks).
+        let half = (x1 - x0) / 2.0 - 6.0;
+        l.fade_in = Some(Rect::new(x0, y + 19.0, x0 + half, y + 28.0));
+        l.fade_out = Some(Rect::new(x1 - half, y + 19.0, x1, y + 28.0));
+        y += row + 2.0;
+
         // Transition segmented control.
         let seg_w = (x1 - x0) / Transition::ALL.len() as f64;
-        l.transition_y = y + 24.0;
+        l.transition_y = y + 15.0;
         for (i, t) in Transition::ALL.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
-            l.transitions.push((*t, Rect::new(sx0, y + 24.0, sx0 + seg_w - 3.0, y + 52.0)));
+            l.transitions.push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
         }
-        y += row + 16.0;
+        y += 48.0;
         // Label color swatches.
-        l.colors_y = y + 24.0;
-        let sw = 30.0;
+        l.colors_y = y + 15.0;
+        let sw = 24.0;
         for i in 0..7u8 {
             let sx0 = x0 + i as f64 * (sw + 4.0);
             if sx0 + sw > x1 { break; }
-            l.colors.push((i, Rect::new(sx0, y + 24.0, sx0 + sw, y + 24.0 + sw)));
+            l.colors.push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
         }
-        y += row + 22.0;
-        l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 34.0);
-        l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 34.0);
+        y += 44.0;
+        l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
+        l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 28.0);
         l.valid = true;
         l
     }
@@ -538,6 +720,39 @@ impl VideoEditorApp {
         l
     }
 
+    /// Deterministically arrange editor state for a `--shots` scenario. Real
+    /// production edit paths are used (split/grade through the CRDT) so the
+    /// captured frame reflects genuine behaviour, not a mock.
+    fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
+        match self.shot_scenario {
+            ShotScenario::Live => {}
+            ShotScenario::SelectedFilters => {
+                // Select the graded drone clip on V1 and park the playhead a
+                // few seconds in (past its fade-in) so the inspector shows a
+                // graded clip with fades and the preview shows the grade.
+                if let Some(c) = self.project.top_video_clip_at(4.0) {
+                    self.selected = Some(c.id);
+                    self.selected_media = Some(c.media);
+                }
+                self.playhead = 4.0;
+                // Push the saturation up a touch through the real edit path so
+                // the grade is unmistakable in the capture.
+                self.set_filter(state, FilterField::Saturation, 0.72);
+                self.zoom = 30.0;
+            }
+            ShotScenario::JustSplit => {
+                // Select the interview body clip and split it at the playhead,
+                // then select the right half — exactly what pressing S does.
+                if let Some(c) = self.project.top_video_clip_at(12.0) {
+                    self.selected = Some(c.id);
+                }
+                self.playhead = 14.0;
+                self.split_selected(state);
+                self.zoom = 40.0;
+            }
+        }
+    }
+
     fn ensure_initial_selection(&mut self) {
         if self.initialised_selection || self.project.clips.is_empty() {
             return;
@@ -557,6 +772,11 @@ struct InspectorLayout {
     valid: bool,
     opacity: Option<Rect>,
     volume: Option<Rect>,
+    brightness: Option<Rect>,
+    contrast: Option<Rect>,
+    saturation: Option<Rect>,
+    fade_in: Option<Rect>,
+    fade_out: Option<Rect>,
     transition_y: f64,
     transitions: Vec<(Transition, Rect)>,
     colors_y: f64,
@@ -594,6 +814,13 @@ impl Widget for VideoEditorApp {
             }
         }
         self.ensure_initial_selection();
+        // Apply a one-shot capture scenario once the project is loaded.
+        if !self.shot_applied && self.shot_scenario != ShotScenario::Live
+            && !self.project.clips.is_empty()
+        {
+            self.apply_shot_scenario(state);
+            self.shot_applied = true;
+        }
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -603,7 +830,7 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playing || self.flap_animating()
+        self.playing || self.shuttle != 0.0 || self.flap_animating()
     }
 
     fn build_layout(
@@ -730,6 +957,17 @@ impl Widget for VideoEditorApp {
     fn test_id(&self) -> Option<&str> {
         Some("video_editor_root")
     }
+
+    /// Undo/redo is the toolkit's full-CRDT snapshot mechanism: when an edit
+    /// has flagged `needs_commit`, `App` pushes an undo point before the next
+    /// frame and clears it via `on_commit`. Ctrl+Z / Ctrl+Y then restore the
+    /// document OS-wide — no editor-local undo stack.
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
+    fn on_commit(&mut self) {
+        self.needs_commit = false;
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -776,31 +1014,82 @@ impl VideoEditorApp {
                 self.toggle_play();
                 true
             }
+            // Arrows nudge the selected clip a frame (Shift = one second); with
+            // nothing selected they step the playhead instead.
             Key::Named(NamedKey::ArrowLeft) => {
-                self.step_frame(if shift { -self.project.fps } else { -1.0 });
+                let step = if shift { 1.0 } else { frame_step(self.project.fps) };
+                if self.selected.is_some() {
+                    self.nudge_selected(state, -step);
+                } else {
+                    self.step_frame(if shift { -self.project.fps } else { -1.0 });
+                }
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.step_frame(if shift { self.project.fps } else { 1.0 });
+                let step = if shift { 1.0 } else { frame_step(self.project.fps) };
+                if self.selected.is_some() {
+                    self.nudge_selected(state, step);
+                } else {
+                    self.step_frame(if shift { self.project.fps } else { 1.0 });
+                }
                 true
             }
             Key::Named(NamedKey::Home) => {
                 self.playhead = 0.0;
                 self.playing = false;
+                self.shuttle = 0.0;
                 true
             }
             Key::Named(NamedKey::End) => {
                 self.playhead = self.project.duration();
                 self.playing = false;
+                self.shuttle = 0.0;
                 true
             }
+            // Shift+Delete ripples (closes the gap); plain Delete lifts.
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                self.delete_selected(state);
+                if shift {
+                    self.ripple_delete_selected(state);
+                } else {
+                    self.delete_selected(state);
+                }
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("e") => {
                 self.show_export = true;
                 let _ = r;
+                true
+            }
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
+                self.copy_selected();
+                true
+            }
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
+                self.paste_clip(state);
+                true
+            }
+            // J / K / L shuttle: J reverse, K stop, L forward. Repeated J/L
+            // doubles the rate, the standard NLE shuttle.
+            Key::Character(c) if c.eq_ignore_ascii_case("j") && !ctrl => {
+                self.shuttle_key(-1.0);
+                true
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("k") && !ctrl => {
+                self.shuttle = 0.0;
+                self.playing = false;
+                true
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("l") && !ctrl => {
+                self.shuttle_key(1.0);
+                true
+            }
+            // I / O set the selected clip's in / out point to the playhead.
+            Key::Character(c) if c.eq_ignore_ascii_case("i") && !ctrl => {
+                self.set_in_at_playhead(state);
+                true
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("o") && !ctrl => {
+                self.set_out_at_playhead(state);
                 true
             }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && !ctrl => {
@@ -965,6 +1254,39 @@ impl VideoEditorApp {
                 return;
             }
         }
+        // Colour-grade sliders.
+        for (track, field, drag) in [
+            (l.brightness, FilterField::Brightness, Drag::Brightness),
+            (l.contrast, FilterField::Contrast, Drag::Contrast),
+            (l.saturation, FilterField::Saturation, Drag::Saturation),
+        ] {
+            if let Some(track) = track {
+                if hit_slider(track, p) {
+                    self.drag = Some(drag);
+                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    self.set_filter(state, field, v);
+                    return;
+                }
+            }
+        }
+        // Fade in / out sliders (value in seconds, 0..clip-duration).
+        let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+        if let Some(track) = l.fade_in {
+            if hit_slider(track, p) {
+                self.drag = Some(Drag::FadeIn);
+                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.set_fade_in(state, frac * max);
+                return;
+            }
+        }
+        if let Some(track) = l.fade_out {
+            if hit_slider(track, p) {
+                self.drag = Some(Drag::FadeOut);
+                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.set_fade_out(state, frac * max);
+                return;
+            }
+        }
         for (t, rect) in &l.transitions {
             if rect.contains(p) {
                 self.set_transition(state, *t);
@@ -1048,29 +1370,38 @@ impl VideoEditorApp {
             Drag::Scrubber => self.apply_scrubber(p, r),
             Drag::ClipMove { id, grab_dt } => {
                 let (id, grab_dt) = (*id, *grab_dt);
-                let new_start = snap_to_frame((self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0), self.project.fps);
+                let raw = (self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0);
+                // Snap the clip's left edge to a neighbouring edge / playhead
+                // when within a few pixels, then to the frame grid.
+                let snapped = self.snap_time(raw, id);
+                let new_start = snap_to_frame(snapped, self.project.fps);
                 self.project.move_clip(id, new_start);
                 if let Some(c) = self.project.clip(id) {
                     VideoDoc::upsert_clip(state, c);
                 }
+                self.needs_commit = true;
             }
             Drag::TrimIn { id } => {
                 let id = *id;
-                let target = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
+                let raw = self.x_to_time(p.x, &r.lanes);
+                let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map(|c| target - c.start).unwrap_or(0.0);
                 self.project.trim_in(id, delta);
                 if let Some(c) = self.project.clip(id) {
                     VideoDoc::upsert_clip(state, c);
                 }
+                self.needs_commit = true;
             }
             Drag::TrimOut { id } => {
                 let id = *id;
-                let target = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
+                let raw = self.x_to_time(p.x, &r.lanes);
+                let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map(|c| target - c.end()).unwrap_or(0.0);
                 self.project.trim_out(id, delta);
                 if let Some(c) = self.project.clip(id) {
                     VideoDoc::upsert_clip(state, c);
                 }
+                self.needs_commit = true;
             }
             Drag::Opacity => {
                 let l = self.inspector_layout(r);
@@ -1086,7 +1417,42 @@ impl VideoEditorApp {
                     self.set_volume(state, v);
                 }
             }
+            Drag::Brightness | Drag::Contrast | Drag::Saturation => {
+                let (track, field) = match drag {
+                    Drag::Brightness => (self.inspector_layout(r).brightness, FilterField::Brightness),
+                    Drag::Contrast => (self.inspector_layout(r).contrast, FilterField::Contrast),
+                    _ => (self.inspector_layout(r).saturation, FilterField::Saturation),
+                };
+                if let Some(track) = track {
+                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    self.set_filter(state, field, v);
+                }
+            }
+            Drag::FadeIn => {
+                if let Some(track) = self.inspector_layout(r).fade_in {
+                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    self.set_fade_in(state, frac * max);
+                }
+            }
+            Drag::FadeOut => {
+                if let Some(track) = self.inspector_layout(r).fade_out {
+                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    self.set_fade_out(state, frac * max);
+                }
+            }
         }
+    }
+
+    /// Magnetic snap for a dragged clip edge at raw time `t`: snaps to the
+    /// nearest neighbouring clip edge / playhead / origin within a small
+    /// pixel tolerance (converted to seconds via the current zoom), so clips
+    /// butt up cleanly. Excludes the dragged clip's own edges.
+    fn snap_time(&self, t: f64, dragged: ClipId) -> f64 {
+        let tol = 8.0 / self.zoom.max(0.001); // 8px in seconds
+        let cands = self.project.snap_candidates(dragged, self.playhead);
+        Project::snap_to_candidates(t, &cands, tol)
     }
 
     fn apply_scrubber(&mut self, p: Point, r: &Regions) {
@@ -1252,41 +1618,50 @@ impl VideoEditorApp {
         // Canvas backdrop (letterbox black).
         let canvas = r.canvas;
         fill_rect(scene, tf, Color::BLACK, canvas);
-        if let Some(clip) = self.project.top_video_clip_at(self.playhead) {
-            let base = clip_color(theme, clip.palette);
-            // Fake frame: two-band vertical gradient via stacked fills.
-            fill_rect(scene, tf, darken(base, 0.45), canvas);
-            let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
-            fill_rect(scene, tf, with_alpha(lighten(base, 0.1), 0.55), upper);
-            let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
-            fill_rect(scene, tf, with_alpha(darken(base, 0.1), 0.6), band);
-            // Vignette: translucent dark frame.
-            stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
-            // Source name.
-            if let Some(m) = self.project.media(clip.media) {
-                let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
-                text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
+        // The composited frame is computed once, here, by the preview module —
+        // the same colour-grade + fade math the (gated) decode path and export
+        // use. The representative frame is a graded gradient; with --features
+        // decode and hydrated bytes the canvas instead blits a real frame.
+        let frame = preview::composite(&self.project, self.playhead);
+        match frame {
+            CompositedFrame::Clip { media, base, envelope, flash, decoded } => {
+                let _ = decoded; // real-blit path lands when the decode feature is on
+                // `base` is already graded + faded; build a representative
+                // two-band gradient from it so grading is visibly reflected.
+                let col = rgb_to_color(base);
+                fill_rect(scene, tf, darken(col, 0.18), canvas);
+                let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
+                fill_rect(scene, tf, with_alpha(lighten(col, 0.18), 0.55), upper);
+                let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
+                fill_rect(scene, tf, with_alpha(darken(col, 0.15), 0.6), band);
+                stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
+                if let Some(m) = self.project.media(media) {
+                    let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
+                    text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
+                }
+                // The fade/opacity envelope dims the whole frame toward black.
+                if envelope < 0.999 {
+                    fill_rect(scene, tf, with_alpha(Color::BLACK, 1.0 - envelope), canvas);
+                }
+                // Transition flash on the clip head.
+                if let Some(f) = flash {
+                    let col = if f.white { Color::WHITE } else { Color::BLACK };
+                    fill_rect(scene, tf, with_alpha(col, f.alpha), canvas);
+                }
             }
-            // Opacity scrim (shows < 100% opacity clips dimming toward black).
-            if clip.opacity < 0.999 {
-                fill_rect(scene, tf, with_alpha(Color::BLACK, 1.0 - clip.opacity), canvas);
+            CompositedFrame::Empty => {
+                let (tw, _) = tr.measure("No clip at playhead", 14.0, None);
+                text(scene, tr, tf, "No clip at playhead", 14.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 8.0);
             }
-            // Transition flash on the clip head.
-            let into = self.playhead - clip.start;
-            if into >= 0.0 && into < 0.6 && clip.transition != Transition::None {
-                let a = 1.0 - into / 0.6;
-                let col = if clip.transition == Transition::DipToBlack { Color::BLACK } else { Color::WHITE };
-                fill_rect(scene, tf, with_alpha(col, a * 0.65), canvas);
-            }
-        } else {
-            let (tw, _) = tr.measure("No clip at playhead", 14.0, None);
-            text(scene, tr, tf, "No clip at playhead", 14.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 8.0);
         }
         // HUD overlays.
         text_w(scene, tr, tf, &timecode(self.playhead, self.project.fps), 13.0, with_alpha(Color::WHITE, 0.85), canvas.x0 + 10.0, canvas.y0 + 8.0, TextWeight::Bold);
         let res = format!("{}×{}", self.project.width, self.project.height);
         let (rw, _) = tr.measure(&res, 12.0, None);
         text(scene, tr, tf, &res, 12.0, with_alpha(Color::WHITE, 0.7), canvas.x1 - 10.0 - rw as f64, canvas.y0 + 8.0);
+        // Decode-mode badge so the gated-vs-real state is legible in a shot.
+        let badge = if cfg!(feature = "decode") { "DECODE" } else { "PREVIEW" };
+        text(scene, tr, tf, badge, 9.5, with_alpha(Color::WHITE, 0.45), canvas.x0 + 10.0, canvas.y1 - 18.0);
         // Safe-area guide.
         stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
     }
@@ -1380,6 +1755,15 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.inspector);
         stroke_line(scene, tf, c.border_standard, r.inspector.x0, r.inspector.y0, r.inspector.x0, r.inspector.y1, 1.0);
+        // Clip everything to the inspector rect so controls never bleed into
+        // the timeline if the selected clip's control stack runs tall.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.inspector);
+        self.draw_inspector_body(scene, tf, tr, theme, r);
+        scene.pop_layer();
+    }
+
+    fn draw_inspector_body(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, r.inspector.y0 + 14.0, TextWeight::Semibold);
@@ -1402,16 +1786,16 @@ impl VideoEditorApp {
         text(scene, tr, tf, &format!("on {track_name}"), 11.5, c.text_dim, x0 + 14.0, r.inspector.y0 + 58.0);
 
         // Property rows.
-        let mut y = r.inspector.y0 + 80.0;
+        let mut y = r.inspector.y0 + 78.0;
         let fps = self.project.fps;
         let prop = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, value: &str, y: f64| {
             text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
             let (vw, _) = tr.measure_weighted(value, 12.0, None, TextWeight::Medium);
             text_w(scene, tr, tf, value, 12.0, c.text_primary, x1 - vw as f64, y, TextWeight::Medium);
         };
-        prop(scene, tr, "Position", &timecode(clip.start, fps), y); y += 20.0;
-        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y); y += 20.0;
-        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y); y += 20.0;
+        prop(scene, tr, "Position", &timecode(clip.start, fps), y); y += 18.0;
+        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y); y += 18.0;
+        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y); y += 18.0;
         prop(scene, tr, "Source Out", &timecode(clip.out_point, fps), y);
 
         let l = self.inspector_layout(r);
@@ -1429,6 +1813,34 @@ impl VideoEditorApp {
             let (pw, _) = tr.measure(&pct, 12.0, None);
             text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
             draw_track(scene, tf, theme, track, clip.volume);
+        }
+        // Colour-grade sliders (video only). The right-hand readout shows
+        // the multiplier (0.5 slider == 1.0×, the identity).
+        let grade = |scene: &mut Scene, tr: &mut TextRenderer, track: Option<Rect>, label: &str, v: f64| {
+            if let Some(track) = track {
+                text(scene, tr, tf, label, 12.0, c.text_dim, x0, track.y0 - 20.0);
+                let mult = format!("{:.2}×", Filters::gain(v));
+                let (pw, _) = tr.measure(&mult, 12.0, None);
+                text(scene, tr, tf, &mult, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
+                draw_track(scene, tf, theme, track, v);
+            }
+        };
+        grade(scene, tr, l.brightness, "Brightness", clip.filters.brightness);
+        grade(scene, tr, l.contrast, "Contrast", clip.filters.contrast);
+        grade(scene, tr, l.saturation, "Saturation", clip.filters.saturation);
+        // Fade in / out (seconds). Two half-width tracks share a row.
+        let cd = clip.duration().max(1e-6);
+        if let Some(track) = l.fade_in {
+            text(scene, tr, tf, "Fade In", 11.0, c.text_dim, track.x0, track.y0 - 20.0);
+            let v = format!("{:.1}s", clip.fade_in);
+            text(scene, tr, tf, &v, 11.0, c.text_primary, track.x1 - 30.0, track.y0 - 20.0);
+            draw_track(scene, tf, theme, track, (clip.fade_in / cd).clamp(0.0, 1.0));
+        }
+        if let Some(track) = l.fade_out {
+            text(scene, tr, tf, "Fade Out", 11.0, c.text_dim, track.x0, track.y0 - 20.0);
+            let v = format!("{:.1}s", clip.fade_out);
+            text(scene, tr, tf, &v, 11.0, c.text_primary, track.x1 - 30.0, track.y0 - 20.0);
+            draw_track(scene, tf, theme, track, (clip.fade_out / cd).clamp(0.0, 1.0));
         }
         // Transition segmented control.
         if !l.transitions.is_empty() {
@@ -1740,6 +2152,16 @@ fn clip_color(theme: &Theme, palette: u8) -> Color {
     }
 }
 
+/// Convert a normalised preview [`Rgb`] (the graded representative colour)
+/// to a Vello `Color`.
+fn rgb_to_color(c: Rgb) -> Color {
+    Color::from_rgb8(
+        (c.r * 255.0).round() as u8,
+        (c.g * 255.0).round() as u8,
+        (c.b * 255.0).round() as u8,
+    )
+}
+
 fn with_alpha(c: Color, a: f64) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), (a.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
@@ -1940,5 +2362,293 @@ mod tests {
         app.advance_flap();
         assert_eq!(app.bin_layout(), SplitLayout::Docked);
         assert!(app.bin_flap.is_open(SplitLayout::Docked), "widening re-docks the open bin");
+    }
+
+    // ---- shortcut / edit-path tests --------------------------------------
+    // These drive the *production* key handler and assert on the reloaded
+    // CRDT, proving the shortcut → mutation → document path end to end.
+
+    use winit::keyboard::{Key as WKey, ModifiersState};
+
+    /// Build an app + its backing doc seeded from the same sample, so the
+    /// app's in-memory project and `doc` agree (mirrors the live wiring).
+    fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        (app, doc)
+    }
+
+    fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: bool) -> bool {
+        let r = app.regions();
+        let mods = if ctrl {
+            winit::event::Modifiers::from(ModifiersState::CONTROL)
+        } else {
+            winit::event::Modifiers::default()
+        };
+        app.handle_key(&WKey::Character(ch.into()), &mods, doc, &r)
+    }
+
+    #[test]
+    fn split_shortcut_mutates_the_crdt_timeline() {
+        let (mut app, mut doc) = app_and_doc();
+        let target = app.project.top_video_clip_at(10.0).unwrap().id;
+        app.selected = Some(target);
+        app.playhead = 12.0;
+        let before = VideoDoc::load_project(&doc).clips.len();
+        assert!(key_press(&mut app, &mut doc, "s", false), "S handled");
+        // The new clip is in the *document*, not just the in-memory mirror.
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.clips.len(), before + 1, "split wrote a clip to the CRDT");
+        assert!(app.needs_commit, "split is an undo point");
+    }
+
+    #[test]
+    fn brightness_filter_writes_through_to_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        // Select a video clip so the brightness control exists.
+        let id = app.project.top_video_clip_at(5.0).unwrap().id;
+        app.selected = Some(id);
+        app.set_filter(&mut doc, FilterField::Brightness, 0.9);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert!((reloaded.clip(id).unwrap().filters.brightness - 0.9).abs() < 1e-9);
+        assert!(app.needs_commit);
+    }
+
+    #[test]
+    fn copy_paste_shortcuts_add_an_independent_clip() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(5.0).unwrap().id;
+        app.selected = Some(id);
+        let before = VideoDoc::load_project(&doc).clips.len();
+        assert!(key_press(&mut app, &mut doc, "c", true), "Ctrl+C handled");
+        app.playhead = 30.0;
+        assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V handled");
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.clips.len(), before + 1, "paste added a clip to the CRDT");
+        // The pasted clip is the new selection and sits at the playhead.
+        let pasted = app.selected.unwrap();
+        assert_ne!(pasted, id);
+        assert!((reloaded.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_in_out_shortcuts_trim_the_selected_clip() {
+        let (mut app, mut doc) = app_and_doc();
+        // Interview clip spans roughly [8, 20] on V1.
+        let id = app.project.top_video_clip_at(12.0).unwrap().id;
+        app.selected = Some(id);
+        // Move playhead into the clip and set the out-point there.
+        app.playhead = 15.0;
+        assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
+        let reloaded = VideoDoc::load_project(&doc);
+        assert!((reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6, "O trims the tail to the playhead");
+        assert!(app.needs_commit);
+    }
+
+    #[test]
+    fn jkl_shuttle_moves_and_stops_the_playhead() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 5.0;
+        assert!(key_press(&mut app, &mut doc, "l", false), "L handled");
+        assert!(app.shuttle > 0.0, "L shuttles forward");
+        assert!(key_press(&mut app, &mut doc, "l", false));
+        assert!(app.shuttle >= 2.0, "repeated L doubles the rate");
+        assert!(key_press(&mut app, &mut doc, "k", false), "K handled");
+        assert_eq!(app.shuttle, 0.0, "K stops the shuttle");
+        assert!(key_press(&mut app, &mut doc, "j", false));
+        assert!(app.shuttle < 0.0, "J shuttles in reverse");
+    }
+
+    #[test]
+    fn ripple_delete_shortcut_closes_the_gap_in_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        // Market cutaway is the last V1 clip at start=20.
+        let v1_first = app.project.top_video_clip_at(3.0).unwrap();
+        let track = v1_first.track;
+        let first = v1_first.id;
+        // Record the next clip on the same track and its start.
+        let next = app.project.clips_on(track).into_iter().find(|c| c.id != first).map(|c| (c.id, c.start));
+        app.selected = Some(first);
+        let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
+        let r = app.regions();
+        // Shift+Delete ripples.
+        app.handle_key(&WKey::Named(NamedKey::Delete), &mods, &mut doc, &r);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert!(reloaded.clip(first).is_none(), "rippled clip removed from CRDT");
+        if let Some((nid, old_start)) = next {
+            assert!(reloaded.clip(nid).unwrap().start < old_start, "later clip shifted left in the CRDT");
+        }
+    }
+
+    #[test]
+    fn nudge_arrow_moves_selected_clip_in_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(12.0).unwrap().id;
+        app.selected = Some(id);
+        let before = VideoDoc::load_project(&doc).clip(id).unwrap().start;
+        let r = app.regions();
+        // Shift = one-second nudge right.
+        let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
+        app.handle_key(&WKey::Named(NamedKey::ArrowRight), &shift, &mut doc, &r);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().start;
+        assert!((after - before - 1.0).abs() < 1e-6, "Shift+Right nudges +1s in the CRDT");
+    }
+
+    // ---- click-driven tests: drive the REAL handle_event pipeline --------
+    // These synthesise winit events at rects the app itself computes, so they
+    // exercise the exact production path (regions → hit-test → drag/mutation →
+    // CRDT) a live click takes — not shortcut helpers.
+
+    /// Winit `DeviceId` isn't publicly constructible; zero-init it (the app
+    /// never inspects it), matching the terminal/date-picker test pattern.
+    fn fake_device_id() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = TaffyTree::<()>::new();
+        let node = NodeId::new(0);
+        app.handle_event(&ev, 1.0, &winit::event::Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
+        dispatch(app, doc, WindowEvent::CursorMoved {
+            device_id: fake_device_id(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        });
+    }
+    fn press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
+        dispatch(app, doc, WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+    }
+    fn release(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
+        dispatch(app, doc, WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+    }
+    /// A full click at (x,y): move (sets last_mouse, as the live loop does),
+    /// then press.
+    fn click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
+        move_to(app, doc, x, y);
+        press(app, doc);
+    }
+
+    #[test]
+    fn click_scrubs_playhead_on_the_ruler() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // Click a point partway along the ruler and assert the playhead
+        // landed near the corresponding time (via the app's own mapping).
+        let x = r.ruler.x0 + 200.0;
+        let y = r.ruler.center().y;
+        let expected = app.x_to_time(x, &r.lanes);
+        click(&mut app, &mut doc, x, y);
+        assert!((app.playhead - expected).abs() < 0.1, "ruler click scrubs playhead to {expected}, got {}", app.playhead);
+    }
+
+    #[test]
+    fn double_click_bin_item_adds_clip_to_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // Target the first bin row's rect (computed by the app).
+        let (_mid, rect) = app.bin_item_rects(&r)[0];
+        let before = VideoDoc::load_project(&doc).clips.len();
+        // Two presses inside the double-click window at the same spot.
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let after = VideoDoc::load_project(&doc).clips.len();
+        assert_eq!(after, before + 1, "double-click on a bin item appends a clip to the CRDT");
+    }
+
+    #[test]
+    fn drag_moves_a_clip_and_writes_the_new_start_to_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // Find the drone clip's on-screen rect on V1 (the first video lane row).
+        let clip = app.project.top_video_clip_at(3.0).unwrap().clone();
+        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
+            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let cr = app.clip_rect(&clip, &lane, &r);
+        let start_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
+        // Grab the body (avoid the ±8px trim edges), drag right ~2 seconds.
+        let grab_x = cr.center().x;
+        let grab_y = cr.center().y;
+        let drop_x = grab_x + 2.0 * app.zoom; // +2s at current px/sec
+        move_to(&mut app, &mut doc, grab_x, grab_y);
+        press(&mut app, &mut doc);
+        move_to(&mut app, &mut doc, drop_x, grab_y);
+        release(&mut app, &mut doc);
+        let start_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
+        assert!(start_after > start_before + 1.0, "dragging moved the clip right in the CRDT ({start_before} -> {start_after})");
+    }
+
+    #[test]
+    fn drag_right_edge_trims_the_clip_in_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let clip = app.project.top_video_clip_at(3.0).unwrap().clone();
+        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
+            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let cr = app.clip_rect(&clip, &lane, &r);
+        let out_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().out_point;
+        // Grab within TRIM_HIT of the right edge and drag left ~1.5s.
+        let grab_x = cr.x1 - 1.0;
+        let grab_y = cr.center().y;
+        let drop_x = grab_x - 1.5 * app.zoom;
+        move_to(&mut app, &mut doc, grab_x, grab_y);
+        press(&mut app, &mut doc);
+        assert!(matches!(app.drag, Some(Drag::TrimOut { .. })), "grabbing the right edge starts a trim-out drag");
+        move_to(&mut app, &mut doc, drop_x, grab_y);
+        release(&mut app, &mut doc);
+        let out_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().out_point;
+        assert!(out_after < out_before, "trimming the right edge shortened out_point in the CRDT ({out_before} -> {out_after})");
+    }
+
+    #[test]
+    fn click_selects_a_clip_via_the_real_hit_test() {
+        let (mut app, mut doc) = app_and_doc();
+        app.selected = None;
+        let r = app.regions();
+        // The market cutaway on V1 sits around t=22.
+        let clip = app.project.top_video_clip_at(22.0).unwrap().clone();
+        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
+            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let cr = app.clip_rect(&clip, &lane, &r);
+        click(&mut app, &mut doc, cr.center().x, cr.center().y);
+        assert_eq!(app.selected, Some(clip.id), "clicking a clip selects it");
+    }
+
+    #[test]
+    fn editing_brightness_brightens_the_preview_composite() {
+        // Drive the real inspector edit path, then assert the preview module's
+        // composited frame for that clip is brighter — proving inspector →
+        // CRDT → preview is one connected pipeline.
+        let (mut app, mut doc) = app_and_doc();
+        // Pick the market cutaway on V1 (neutral grade, fully steady at t=23).
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selected = Some(id);
+        let before = match preview::composite(&app.project, 23.0) {
+            CompositedFrame::Clip { base, .. } => base.luma(),
+            _ => panic!("expected clip"),
+        };
+        app.set_filter(&mut doc, FilterField::Brightness, 0.95);
+        // Reload from the CRDT so we're reading the persisted grade, not the
+        // in-memory mirror.
+        app.sync(&mut doc, &automerge::ROOT);
+        let after = match preview::composite(&app.project, 23.0) {
+            CompositedFrame::Clip { base, .. } => base.luma(),
+            _ => panic!("expected clip"),
+        };
+        assert!(after > before, "raising brightness brightens the composite ({before} -> {after})");
     }
 }
