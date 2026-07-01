@@ -46,8 +46,33 @@ rustypipe = { version = "0.11", optional = true, default-features = false, featu
 # `tokio::spawn` (visitor-data prefetch) — a current-thread runtime cannot.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
 
+# --- Grayjay device sync (Noise Protocol Framework) — off by default --------
+# Real interop with a phone/desktop running Grayjay's "Sync" feature. The wire
+# protocol is the Noise Protocol Framework over TCP (Android listens on 12315),
+# reimplemented clean-room from the OPEN grayjay-android sources (see
+# `src/sync/protocol.rs` for per-fact citations). `snow` is the Rust Noise
+# implementation; its default resolver is pure-Rust (x25519-dalek /
+# chacha20poly1305 / blake2) so it needs no OpenSSL — matching the rest of tube.
+# `flate2` handles the ContentEncoding.Gzip that Grayjay uses for DATA payloads;
+# `base64` decodes the standard/url-safe device public keys in the pairing blob.
+# All three are gated behind `grayjay-sync`: the default build (and every
+# `--shots`/hermetic test run) never pulls in a network/Noise/socket stack.
+snow = { version = "0.9", optional = true }
+flate2 = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+# Encoding-level assertions in the video-surface test: prove a decoded frame
+# actually emits an IMAGE draw command into the scene (mirrors ui's own
+# VideoPlayer paint test). Same version as the `vello` above.
+vello_encoding = "0.9"
+
 [features]
 default = []
 # Real YouTube data via rustypipe + a tokio runtime owned by the live backend.
 # `--features live` must check-compile; it is never part of the shots path.
 live = ["dep:rustypipe", "dep:tokio"]
+# Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
+# the live `GrayjaySyncTransport`; the default build keeps only the deterministic
+# `StubTransport`, so nothing here can touch the hermetic path.
+grayjay-sync = ["dep:snow", "dep:flate2", "dep:base64"]

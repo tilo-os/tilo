@@ -14,13 +14,26 @@ use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
     subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, IntoElement, Justify,
-    Len, SeekBar, Surface, Switch, Thumbnail,
+    Len, SeekBar, Surface, Switch, Thumbnail, VideoSurface,
 };
 
 use crate::contrast::SelectedStyle;
 
 const CARD_W: f32 = 300.0;
 const THUMB_H: f32 = 169.0;
+
+// --- watch page responsive geometry (logical px) ---
+/// Outer padding around the watch content.
+const WATCH_PAD: f64 = 20.0;
+/// Fixed width of the "Up next" rail when it sits beside the player.
+const UP_NEXT_W: f64 = 360.0;
+/// Gap between the player column and the "Up next" rail (or their stack).
+const WATCH_COL_GAP: f64 = 24.0;
+/// Content-column width at/above which the player + "Up next" sit side by
+/// side; below it the rail stacks under the player so neither is squeezed.
+const WATCH_TWO_COL_MIN: f64 = 900.0;
+/// Cap on the 16:9 player height so it never dominates a tall, wide window.
+const PLAYER_MAX_H: f64 = 480.0;
 
 /// Width of the navigation rail (logical px). Shared with the responsive
 /// split so the docked rail and the overlay flap are exactly this wide.
@@ -709,17 +722,47 @@ fn empty_state(theme: &Theme, title: &str, body: &str) -> Flex {
 // watch page
 // ---------------------------------------------------------------------------
 
-pub fn watch(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> Scrollable {
+pub fn watch(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    id: &str,
+    content_w: f64,
+    frame: Option<&crate::api::DecodedFrame>,
+) -> Scrollable {
     let Some(v) = model.video(id) else {
         return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Video unavailable", "")));
     };
     let dearrow = model.settings.dearrow_enabled;
 
-    // Player surface (poster). Real H.264 playback feeds a ui::VideoPlayer
-    // here via the live worker — see playback.rs.
-    let player = Flex::col()
-        .fill_w()
-        .push(Thumbnail::new(&v.seed, v.duration).height(430.0).hero().live(v.live));
+    // Responsive watch geometry. Below `WATCH_TWO_COL_MIN` the "Up next" rail
+    // stacks under the player instead of sitting beside it, so neither column
+    // is squeezed on a narrow window. The player is a 16:9 surface derived from
+    // its column's width and capped so it never dominates a tall window.
+    let inner = (content_w - WATCH_PAD * 2.0).max(0.0);
+    let two_col = inner >= WATCH_TWO_COL_MIN;
+    let player_col_w = if two_col {
+        (inner - WATCH_COL_GAP - UP_NEXT_W).max(0.0)
+    } else {
+        inner
+    };
+    let player_h = ((player_col_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
+
+    // Player surface. Once the live worker decodes a real H.264 frame for this
+    // video (drained from `Worker::poll_frames`, see api.rs / app.rs), we paint
+    // that RGBA picture cover-fit into the player rect; until then — and always
+    // on the offline `--shots`/test path — we show the deterministic poster.
+    // Height tracks the column width at a 16:9 ratio so the player fits the
+    // content column at every window size instead of being a fixed box.
+    let player = if let Some(f) = frame {
+        Flex::col()
+            .fill_w()
+            .push(VideoSurface::new(f.rgba.clone(), f.width, f.height, player_h))
+    } else {
+        Flex::col()
+            .fill_w()
+            .push(Thumbnail::new(&v.seed, v.duration).height(player_h).hero().live(v.live))
+    };
 
     let enabled: Vec<bool> = v
         .sponsor
@@ -808,7 +851,6 @@ pub fn watch(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> Scr
     }
 
     let left = Flex::col()
-        .grow(1.0)
         .gap(14.0)
         .push(player)
         .push(Flex::col().fill_w().gap(8.0).push(seek).push(transport))
@@ -821,7 +863,7 @@ pub fn watch(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> Scr
         .push(divider(theme))
         .push(comments);
 
-    let mut up = Flex::col().w(Len::Px(360.0)).gap(10.0);
+    let mut up = Flex::col().fill_w().gap(10.0);
     up = up.push(
         Flex::row()
             .fill_w()
@@ -835,16 +877,24 @@ pub fn watch(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> Scr
         up = up.push(compact_card(model, theme, bus, r));
     }
 
-    scroll(
-        Flex::col().fill_w().pad(20.0).push(
-            Flex::row()
-                .fill_w()
-                .gap(24.0)
-                .align(Align::Start)
-                .push(left)
-                .push(up),
-        ),
-    )
+    // Wide: player column grows beside a fixed-width "Up next" rail. Narrow:
+    // the rail stacks below the player so both keep a readable width.
+    let body = if two_col {
+        Flex::row()
+            .fill_w()
+            .gap(WATCH_COL_GAP as f32)
+            .align(Align::Start)
+            .push(left.grow(1.0))
+            .push(up.w(Len::Px(UP_NEXT_W as f32)))
+    } else {
+        Flex::col()
+            .fill_w()
+            .gap(WATCH_COL_GAP as f32)
+            .push(left.fill_w())
+            .push(up)
+    };
+
+    scroll(Flex::col().fill_w().pad(WATCH_PAD as f32).push(body))
 }
 
 fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {

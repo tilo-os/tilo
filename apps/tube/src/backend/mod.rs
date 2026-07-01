@@ -32,8 +32,10 @@
 //! uploads across subscribed channels), [`YtBackend::trending`], and
 //! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
 
+pub mod mp4;
 pub mod offline;
 pub mod potoken;
+pub mod stream;
 
 #[cfg(feature = "live")]
 pub mod live;
@@ -82,6 +84,45 @@ impl std::error::Error for BackendError {}
 
 pub type BackendOutcome = Result<BackendResult, BackendError>;
 
+/// A resolved, directly-playable video stream: enough of a real googlevideo
+/// media URL (plus its container shape) to download and decode from.
+///
+/// Produced by [`YtBackend::resolve_video_stream`]; consumed by
+/// [`crate::backend::stream::fetch_h264`]. Kept toolkit-free so it can cross the
+/// worker boundary.
+#[derive(Clone, Debug)]
+pub struct StreamHandle {
+    /// Direct media URL (signature/nsig already applied by the backend).
+    pub url: String,
+    /// User-Agent the media request must carry. googlevideo validates the UA
+    /// against the client that minted the URL (iOS/TV), returning 403 on a
+    /// mismatch, so the backend records the exact UA to replay here.
+    pub user_agent: String,
+    /// YouTube format id (itag) — e.g. 160 = 144p H.264, 18 = 360p muxed.
+    pub itag: u32,
+    /// Full MIME string, e.g. `video/mp4; codecs="avc1.4d400c"`.
+    pub mime: String,
+    /// True when the stream is H.264 (avc1) — the only codec Tube can decode.
+    pub is_avc: bool,
+    /// True when the container is MP4 (ISO-BMFF).
+    pub is_mp4: bool,
+    /// True for an adaptive, video-only DASH stream (safe to walk its `mdat` as
+    /// a pure run of video NAL units). False for a progressive/muxed stream.
+    pub adaptive: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u8,
+    /// YouTube quality label, e.g. "144p".
+    pub quality: String,
+    /// Total content length in bytes, if the backend reported one.
+    pub content_length: Option<u64>,
+    /// DASH init-segment byte range (`ftyp`+`moov`), if present.
+    pub init_range: Option<(u64, u64)>,
+    /// DASH index (`sidx`) byte range, if present. The first media fragment
+    /// begins just after `index_range.1`.
+    pub index_range: Option<(u64, u64)>,
+}
+
 /// The data-source seam. One trait, two worlds (offline sample / live
 /// rustypipe). Methods are intentionally coarse-grained — one per screen need
 /// — so a backend can batch the underlying InnerTube calls however it likes.
@@ -107,6 +148,24 @@ pub trait YtBackend: Send + Sync {
 
     /// Region trending.
     fn trending(&self) -> BackendOutcome;
+
+    /// Popular recent videos matching `query`, used to compose a real "popular"
+    /// home feed when YouTube's dedicated trending browse is unavailable. The
+    /// default is a plain [`search`](YtBackend::search); a live backend can
+    /// override it with a view-count-sorted, recent-upload filter so the feed is
+    /// genuinely "popular" rather than arbitrary.
+    fn popular_search(&self, query: &str) -> BackendOutcome {
+        self.search(query)
+    }
+
+    /// Resolve a real, directly-playable video stream for `id`.
+    ///
+    /// The default errors — only a backend that can reach YouTube's player
+    /// endpoint (the live one) can produce a stream. The UI degrades to a poster
+    /// when this fails.
+    fn resolve_video_stream(&self, _id: &str) -> Result<StreamHandle, BackendError> {
+        Err(BackendError("this backend cannot resolve video streams".into()))
+    }
 
     /// Fan-out the latest uploads across `channel_ids` (the subscriptions
     /// feed). The default implementation pulls each channel's uploads via
