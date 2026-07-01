@@ -364,6 +364,100 @@ impl InstallState {
     }
 }
 
+/// The phase a single in-flight install / update is in, derived purely
+/// from its 0.0..=1.0 progress. A real Flatpak transaction *downloads* the
+/// objects first, then *installs* (deploys) them; we split the bar at 0.6
+/// so the Updates view can show which step each app is on without needing
+/// a second progress channel from the worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallPhase {
+    /// Queued, not yet started (progress ~0, not the active item).
+    Queued,
+    /// Fetching the objects from the remote.
+    Downloading,
+    /// Deploying / committing the fetched objects.
+    Installing,
+}
+
+impl InstallPhase {
+    /// The boundary between the download and install phases, as a fraction
+    /// of total progress. Below this the app is downloading; at or above it
+    /// the app is installing.
+    pub const DEPLOY_AT: f64 = 0.6;
+
+    /// Derive the phase from a 0.0..=1.0 progress value. `queued` marks an
+    /// app that is enqueued but not yet the active (progressing) item, so a
+    /// 0%-progress queued app reads as "Queued" rather than "Downloading".
+    pub fn from_progress(p: f64, queued: bool) -> Self {
+        if queued {
+            InstallPhase::Queued
+        } else if p < Self::DEPLOY_AT {
+            InstallPhase::Downloading
+        } else {
+            InstallPhase::Installing
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InstallPhase::Queued => "Queued",
+            InstallPhase::Downloading => "Downloading",
+            InstallPhase::Installing => "Installing",
+        }
+    }
+}
+
+/// A summary of an in-progress update / install batch, derived for the
+/// Updates view's overall status line. Pure: built from the per-app
+/// counts the UI already has, so it is unit-testable without a renderer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UpdateProgress {
+    /// Apps enqueued but not yet started.
+    pub queued: usize,
+    /// Apps actively downloading or installing right now.
+    pub active: usize,
+    /// Apps finished in this batch.
+    pub done: usize,
+    /// Mean progress across queued+active+done, 0.0..=1.0 (done counts as
+    /// 1.0, queued as 0.0). Used for the overall bar.
+    pub overall: f64,
+}
+
+impl UpdateProgress {
+    /// Total apps participating in the batch.
+    pub fn total(&self) -> usize {
+        self.queued + self.active + self.done
+    }
+
+    /// `true` while any app is queued or active — i.e. the batch is still
+    /// running and the overall status line / bar should show.
+    pub fn in_flight(&self) -> bool {
+        self.queued + self.active > 0
+    }
+
+    /// A short human-readable overall status, e.g.
+    /// `Updating 2 of 5 · 1 queued` or `All updates complete`.
+    pub fn status_line(&self) -> String {
+        if self.total() == 0 {
+            return String::new();
+        }
+        if !self.in_flight() {
+            return if self.done == 1 {
+                "Update complete".into()
+            } else {
+                format!("{} updates complete", self.done)
+            };
+        }
+        let finished = self.done;
+        let total = self.total();
+        let mut s = format!("Updating {} of {}", (finished + self.active).min(total), total);
+        if self.queued > 0 {
+            s.push_str(&format!(" · {} queued", self.queued));
+        }
+        s
+    }
+}
+
 /// The immutable catalog plus the pure queries the UI runs against it.
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
@@ -529,5 +623,37 @@ mod tests {
         assert_eq!(a.size_label(), "512 MiB");
         a.size_mib = 2048.0;
         assert_eq!(a.size_label(), "2.0 GiB");
+    }
+
+    #[test]
+    fn install_phase_splits_at_deploy_boundary() {
+        // A queued app reads as Queued regardless of (zero) progress.
+        assert_eq!(InstallPhase::from_progress(0.0, true), InstallPhase::Queued);
+        // Below the boundary → downloading; at/above → installing.
+        assert_eq!(InstallPhase::from_progress(0.0, false), InstallPhase::Downloading);
+        assert_eq!(InstallPhase::from_progress(0.59, false), InstallPhase::Downloading);
+        assert_eq!(InstallPhase::from_progress(0.6, false), InstallPhase::Installing);
+        assert_eq!(InstallPhase::from_progress(0.95, false), InstallPhase::Installing);
+    }
+
+    #[test]
+    fn update_progress_status_line_reflects_batch() {
+        // Mid-batch: 1 done, 1 active, 2 queued of 4.
+        let p = UpdateProgress { queued: 2, active: 1, done: 1, overall: 0.4 };
+        assert!(p.in_flight());
+        assert_eq!(p.total(), 4);
+        assert_eq!(p.status_line(), "Updating 2 of 4 · 2 queued");
+
+        // Active only, nothing queued.
+        let p = UpdateProgress { queued: 0, active: 2, done: 0, overall: 0.3 };
+        assert_eq!(p.status_line(), "Updating 2 of 2");
+
+        // Finished batch.
+        let p = UpdateProgress { queued: 0, active: 0, done: 3, overall: 1.0 };
+        assert!(!p.in_flight());
+        assert_eq!(p.status_line(), "3 updates complete");
+
+        // Empty batch → empty line.
+        assert_eq!(UpdateProgress::default().status_line(), "");
     }
 }
