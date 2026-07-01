@@ -38,6 +38,12 @@ pub struct MathField {
     rect: Rect,
     /// Cached layout from the last draw, in content-local coords.
     layout: Option<Layout>,
+    /// Signature `(linear form, base size)` the cached [`Self::layout`] was
+    /// built from. Layout is rect-independent (content-local coords), so it
+    /// only needs rebuilding when the formula content or the font size
+    /// changes — not on every frame, pan, hover, or caret move. This is what
+    /// keeps typing from re-shaping the whole formula each frame.
+    layout_sig: Option<(String, f32)>,
     base_size: f32,
     /// Whether a drag-select is in progress.
     dragging: bool,
@@ -50,6 +56,7 @@ impl MathField {
             source: linear.to_string(),
             rect: Rect::ZERO,
             layout: None,
+            layout_sig: None,
             base_size: layout::BASE_SIZE,
             dragging: false,
         }
@@ -103,7 +110,15 @@ impl MathField {
     }
 
     fn relayout(&mut self, tr: &mut TextRenderer) {
+        // Rebuild only when the content or size actually changed. The linear
+        // form is a faithful signature of the (canonical) tree the editor
+        // builds, and is far cheaper to compute than a full measure+box pass.
+        let sig = (self.editor.to_linear(), self.base_size);
+        if self.layout.is_some() && self.layout_sig.as_ref() == Some(&sig) {
+            return;
+        }
         self.layout = Some(layout::layout(&self.editor.expr.root, tr, self.base_size));
+        self.layout_sig = Some(sig);
     }
 
     /// Origin (top-left) where content is drawn: vertically centered in rect,

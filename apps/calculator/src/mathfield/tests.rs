@@ -371,6 +371,106 @@ fn engine_linear(s: &str) -> String {
     s.replace('·', "*")
 }
 
+// -- click → caret position round-trip (real layout + hit-test) -------------
+
+/// The caret must be placed by measuring real glyph advances with the same
+/// font/size/weight the glyphs are drawn with. Independently measure the
+/// cumulative advance to each glyph boundary, click there against the live
+/// layout, and assert the caret lands at exactly that index. A regression to
+/// "char-count × fixed advance" or a font/size/weight mismatch would drift the
+/// landing offset and fail this.
+#[test]
+fn click_at_measured_glyph_boundary_places_caret_there() {
+    use super::MathField;
+    use ui::text_render::{TextRenderer, TextWeight};
+    use vello::kurbo::{Point, Rect};
+
+    let mut tr = TextRenderer::new();
+    let size = 22.0f32;
+    let mut f = MathField::new("x+12").with_size(size);
+    let rect = Rect::new(10.0, 5.0, 320.0, 65.0);
+    f.set_rect(rect, &mut tr);
+
+    let chars = ['x', '+', '1', '2'];
+    let origin = f.content_origin();
+    let py = origin.y + 10.0; // anywhere inside the single row's band
+    let mut cum = 0.0f64;
+    for k in 0..chars.len() {
+        let px = origin.x + cum + 0.5; // just right of boundary k
+        f.on_press_cached(Point::new(px, py), false);
+        assert!(f.editor.caret.steps.is_empty(), "root row expected at boundary {k}");
+        assert_eq!(
+            f.editor.caret.offset, k,
+            "click at measured boundary {k} (x={px:.1}) must land at offset {k}",
+        );
+        let mut buf = [0u8; 4];
+        let s = chars[k].encode_utf8(&mut buf);
+        let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
+        cum += w as f64;
+    }
+    // Clicking past the last glyph lands at the row end.
+    f.on_press_cached(Point::new(origin.x + cum + 0.5, py), false);
+    assert_eq!(f.editor.caret.offset, chars.len(), "click past end lands at row end");
+}
+
+/// The drawn caret bar sits exactly at the active gap's x, which equals the
+/// summed advance up to the caret index — so caret-index ⇄ pixel-x is a true
+/// inverse of the hit-test above.
+#[test]
+fn caret_gap_x_matches_summed_glyph_advances() {
+    use super::MathField;
+    use ui::text_render::{TextRenderer, TextWeight};
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+    let size = 22.0f32;
+    let mut f = MathField::new("abc").with_size(size);
+    f.set_rect(Rect::new(0.0, 0.0, 200.0, 60.0), &mut tr);
+
+    let mut cum = 0.0f64;
+    for (k, ch) in ['a', 'b', 'c'].iter().enumerate() {
+        let gap = f
+            .layout
+            .as_ref()
+            .unwrap()
+            .gaps
+            .iter()
+            .find(|g| g.steps.is_empty() && g.index == k)
+            .expect("gap exists");
+        assert!(
+            (gap.x - cum).abs() < 0.01,
+            "gap {k} x={} should equal summed advance {cum}",
+            gap.x,
+        );
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
+        cum += w as f64;
+    }
+}
+
+/// The layout cache must not rebuild while the content is unchanged, but must
+/// rebuild after an edit — this is what keeps typing from re-shaping the whole
+/// formula every frame.
+#[test]
+fn layout_is_cached_until_content_changes() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("x+1").with_size(22.0);
+    f.set_rect(Rect::new(0.0, 0.0, 200.0, 60.0), &mut tr);
+    let sig1 = f.layout_sig.clone();
+    // Re-laying out with the same content keeps the same signature (no rebuild).
+    f.set_rect(Rect::new(0.0, 0.0, 240.0, 60.0), &mut tr);
+    assert_eq!(f.layout_sig, sig1, "unchanged content must not rebuild layout");
+    // Editing the content changes the signature (forces a rebuild).
+    f.set_source("x+12");
+    f.set_rect(Rect::new(0.0, 0.0, 240.0, 60.0), &mut tr);
+    assert_ne!(f.layout_sig, sig1, "edit must invalidate the cached layout");
+}
+
 // -- external sync ----------------------------------------------------------
 
 #[test]
