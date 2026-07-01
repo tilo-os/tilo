@@ -13,6 +13,15 @@
 //!                       for `Q` (default "rust programming") + trending, print
 //!                       what came back, and exit. Proof that live fetch works;
 //!                       requires `--features live` to do anything real.
+//!   * `--probe-trending`
+//!                     — prove the Home/Trending feed: show YouTube's retired
+//!                       dedicated endpoint failing for real, then the composed
+//!                       real "popular" feed (view-count-sorted search).
+//!   * `--probe-play [ID]`
+//!                     — prove real playback: resolve a googlevideo H.264 stream,
+//!                       download + demux it to Annex-B, and decode one real frame
+//!                       through `ui::VideoPlayer`. Prints itag/mime/size and the
+//!                       decoded frame dimensions.
 //!
 //! Shots-only flags:
 //!   * `--viewport WxH` — render at WxH logical px instead of the default
@@ -42,6 +51,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // `--probe-trending` — prove the real Home/Trending feed: show the dedicated
+    // endpoint's real error and the composed real popular feed it falls back to.
+    if args.iter().any(|a| a == "--probe-trending") {
+        return run_probe_trending();
+    }
+
+    // `--probe-play <id>` — prove real playback: resolve a stream, download +
+    // demux it, and decode at least one real H.264 frame.
+    if let Some(id) = parse_probe_play_arg(&args) {
+        return run_probe_play(&id);
+    }
+
     // `--probe [query]` — prove the live backend actually fetches real data.
     if let Some(query) = parse_probe_arg(&args) {
         return run_probe(&query);
@@ -49,21 +70,34 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let (vw, vh) = viewport;
         let narrow = args.iter().any(|a| a == "--narrow");
         let palette = args.iter().any(|a| a == "--palette");
-        let root = if palette {
+        // `--frame-demo`: open a watch page with a synthetic decoded frame
+        // already in hand, so the still captures the real on-screen paint path
+        // (VideoSurface, cover-fit) rather than the poster — a visual companion
+        // to `--probe-play` (which proves the *decode*) for eyeballing the paint
+        // geometry without a network or a live decoder.
+        let frame_demo = args.iter().any(|a| a == "--frame-demo");
+        // Seed the app with the render viewport so the single offscreen frame
+        // resolves the responsive layout (rail default, grid columns, watch
+        // player size) from the true width instead of the unknown-width
+        // fallback. Shots-only — the live event loop below is untouched.
+        let mut app = tube::TubeApp::new().with_viewport(vw as f64, vh as f64);
+        if palette {
             // Open the command palette pre-seeded so the still captures the
             // Ctrl+K overlay with live results.
             let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
-            Box::new(tube::TubeApp::new().with_palette_open_for_test(&q)) as Box<dyn Widget>
+            app = app.with_palette_open_for_test(&q);
+        } else if frame_demo {
+            let (fw, fh, rgba) = demo_frame();
+            app = app.with_decoded_frame_for_test("vid_donut", fw, fh, rgba);
         } else if narrow {
-            tube::app_root_narrow_shot()
+            app = app.with_open_sidebar_shot();
         } else if let Some(route) = parse_route_arg(&args) {
-            tube::app_root_route_shot(route)
-        } else {
-            tube::app_root()
-        };
-        render_shot_to_png(root, viewport, &out)?;
+            app = app.with_route_shot(route);
+        }
+        render_shot_to_png(Box::new(app) as Box<dyn Widget>, viewport, &out)?;
         return Ok(());
     }
 
@@ -93,6 +127,186 @@ fn parse_probe_arg(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Parse `--probe-play <id>` / `--probe-play=<id>`. Returns the video id to
+/// resolve + decode. Defaults to a stable, always-available clip.
+fn parse_probe_play_arg(args: &[String]) -> Option<String> {
+    const DEFAULT_ID: &str = "aqz-KE-bpKQ"; // "Big Buck Bunny" (Blender, CC-BY)
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--probe-play" {
+            return Some(match iter.next() {
+                Some(id) if !id.starts_with("--") => id.clone(),
+                _ => DEFAULT_ID.to_string(),
+            });
+        }
+        if let Some(rest) = arg.strip_prefix("--probe-play=") {
+            return Some(if rest.is_empty() { DEFAULT_ID.to_string() } else { rest.to_string() });
+        }
+    }
+    None
+}
+
+/// `--probe-trending`: prove the Home/Trending feed is real. Shows YouTube's
+/// dedicated trending endpoint failing for real, then the composed popular feed
+/// (view-count-sorted search) that replaces it — with real titles.
+#[cfg(feature = "live")]
+fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
+    use tube::backend::{BackendResult, YtBackend};
+
+    eprintln!("probe-trending: constructing the live rustypipe backend…");
+    let backend = tube::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("live backend construction failed: {e}"))?;
+
+    println!("probe-trending: calling the dedicated trending endpoint (FEtrending)…");
+    match backend.trending() {
+        Ok(BackendResult::Videos(vs)) if !vs.is_empty() => {
+            println!("  REAL trending returned {} videos:", vs.len());
+            for (i, v) in vs.iter().take(15).enumerate() {
+                println!("  {:>2}. [{}] {} — {}", i + 1, v.id, v.title, v.channel_name);
+            }
+            return Ok(());
+        }
+        Ok(_) => println!("  dedicated endpoint returned EMPTY (no error, no videos)."),
+        Err(e) => println!("  dedicated endpoint FAILED (as expected, it is retired): {e}"),
+    }
+
+    println!(
+        "\nprobe-trending: composing a REAL popular feed via view-count-sorted, \
+         last-week search…"
+    );
+    const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
+    let mut total = 0usize;
+    for seed in SEEDS {
+        match backend.popular_search(seed) {
+            Ok(BackendResult::Videos(vs)) if !vs.is_empty() => {
+                total += vs.len();
+                println!(
+                    "  {seed:>10}: {} popular videos; top: [{}] {} ({} views)",
+                    vs.len(),
+                    vs[0].id,
+                    vs[0].title,
+                    vs[0].views
+                );
+            }
+            Ok(_) => println!("  {seed:>10}: empty"),
+            Err(e) => eprintln!("  {seed:>10}: FAILED: {e}"),
+        }
+    }
+    if total == 0 {
+        eprintln!("probe-trending: no popular results at all — network/parse failure.");
+        std::process::exit(2);
+    }
+    println!(
+        "probe-trending: composed feed draws on {total} real popular videos across {} topics.",
+        SEEDS.len()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "live"))]
+fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "probe-trending: built WITHOUT the `live` feature — rebuild with \
+         `--features live` to hit real YouTube."
+    );
+    Ok(())
+}
+
+/// `--probe-play <id>`: prove real playback end-to-end. Resolves a real
+/// googlevideo H.264 stream, downloads a bounded prefix, demuxes it to Annex-B,
+/// and decodes at least one frame through the same [`ui::widget::VideoPlayer`]
+/// the watch page uses. Exits non-zero (loudly) if any stage fails — no faking.
+#[cfg(feature = "live")]
+fn run_probe_play(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use tube::backend::{stream, YtBackend};
+    use tube::playback::Playback;
+
+    eprintln!("probe-play: constructing the live rustypipe backend…");
+    let backend = tube::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("live backend construction failed: {e}"))?;
+
+    println!("probe-play: resolving a playable stream for [{id}] via player()…");
+    let handle = match backend.resolve_video_stream(id) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("probe-play: STREAM RESOLUTION FAILED: {e}");
+            std::process::exit(2);
+        }
+    };
+    println!(
+        "  RESOLVED stream: itag={} mime={:?} quality={} {}x{}@{}fps adaptive={} \
+         content_length={:?}",
+        handle.itag,
+        handle.mime,
+        handle.quality,
+        handle.width,
+        handle.height,
+        handle.fps,
+        handle.adaptive,
+        handle.content_length
+    );
+    println!(
+        "  init_range={:?} index_range={:?} ua={:?}\n  url(host)={}",
+        handle.init_range,
+        handle.index_range,
+        handle.user_agent,
+        handle.url.split('?').next().unwrap_or("<url>")
+    );
+
+    println!("probe-play: downloading a bounded prefix + demuxing to Annex-B H.264…");
+    let client = stream::http_client();
+    let fetched = match stream::fetch_h264(&client, &handle) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("probe-play: DOWNLOAD/DEMUX FAILED: {e}");
+            std::process::exit(2);
+        }
+    };
+    println!(
+        "  downloaded {} bytes (HTTP {}); demuxed {} SPS + {} PPS + {} frame NAL units \
+         → {} Annex-B bytes",
+        fetched.downloaded,
+        fetched.http_status,
+        fetched.sps_count,
+        fetched.pps_count,
+        fetched.nalu_count,
+        fetched.annexb.len()
+    );
+
+    println!("probe-play: decoding through ui::VideoPlayer (openh264)…");
+    let mut playback = Playback::new();
+    let decoded = playback.feed(&fetched.annexb);
+    match (decoded, playback.frame_dimensions()) {
+        (true, Some((w, h))) if w > 0 && h > 0 => {
+            println!(
+                "  ✅ REAL frame decoded: {}x{} px, frames_decoded={}",
+                w,
+                h,
+                playback.frames_decoded()
+            );
+            Ok(())
+        }
+        _ => {
+            eprintln!(
+                "probe-play: openh264 did not emit a frame from the fetched bitstream \
+                 (decoded={decoded}, dims={:?}). The stream resolved and demuxed, but no \
+                 picture came out — reported honestly, not faked.",
+                playback.frame_dimensions()
+            );
+            std::process::exit(3);
+        }
+    }
+}
+
+#[cfg(not(feature = "live"))]
+fn run_probe_play(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "probe-play: built WITHOUT the `live` feature — rebuild with \
+         `--features live` to resolve and decode a real stream."
+    );
+    Ok(())
 }
 
 /// The real proof: construct the live backend, hit YouTube, print what came
@@ -204,6 +418,37 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// A synthetic RGBA frame for `--frame-demo`: a deliberately SQUARE (200×200)
+/// source with four coloured quadrants and a centred white cross. Painted
+/// cover-fit into the 16:9 player it must fill the full width undistorted and
+/// crop the top+bottom of the square — so the still visibly proves cover-fit
+/// (crop, not stretch) and the rounded-corner clip. Not a real decode: the real
+/// decode is proven by `--probe-play` / the tests; this only exercises the
+/// on-screen paint geometry.
+fn demo_frame() -> (u32, u32, Vec<u8>) {
+    let (w, h) = (200u32, 200u32);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let cx = (x as i32 - 100).abs();
+            let cy = (y as i32 - 100).abs();
+            let (r, g, b) = if cx < 6 || cy < 6 {
+                (255, 255, 255) // centred cross
+            } else if x < 100 && y < 100 {
+                (0xE5, 0x3E, 0x3E) // TL red
+            } else if y < 100 {
+                (0x3E, 0xC5, 0x6B) // TR green
+            } else if x < 100 {
+                (0x3E, 0x7B, 0xE5) // BL blue
+            } else {
+                (0xE5, 0xC7, 0x3E) // BR amber
+            };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    (w, h, rgba)
+}
+
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -219,7 +464,8 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 
 /// Parse `--route NAME` (or `--route=NAME`) into a starting [`tube::model::Route`]
 /// for a screen-specific shot. Recognises `home`, `trending`, `subs`/
-/// `subscriptions`, `history`, `settings`, and `search:<query>`.
+/// `subscriptions`, `history`, `settings`, `watch:<video_id>`, and
+/// `search:<query>`.
 fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
     use tube::model::Route;
     let mut iter = args.iter().skip(1);
@@ -240,7 +486,9 @@ fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
         "history" => Route::History,
         "settings" => Route::Settings,
         _ => {
-            if let Some(q) = spec.strip_prefix("search:") {
+            if let Some(id) = spec.strip_prefix("watch:") {
+                Route::Watch(id.to_string())
+            } else if let Some(q) = spec.strip_prefix("search:") {
                 Route::Search(q.to_string())
             } else {
                 Route::Search(spec)

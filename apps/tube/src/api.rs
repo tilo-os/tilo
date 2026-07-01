@@ -15,8 +15,11 @@
 //!                 `GET https://sponsor.ajay.app/api/skipSegments/{prefix}`
 //!   * DeArrow     `GET https://sponsor.ajay.app/api/branding/{prefix}`
 //!
-//! TODO(live): wire the H.264 DASH stream URLs from the Invidious
-//! `videos` response into `playback::Playback` / `ui::VideoPlayer`.
+//! Real video playback resolves through the backend seam, not Invidious:
+//! [`crate::backend::YtBackend::resolve_video_stream`] hands back a googlevideo
+//! H.264 stream, [`crate::backend::stream::fetch_h264`] downloads + demuxes it
+//! to Annex-B, and [`crate::playback::Playback`] decodes it. See `--probe-play`
+//! in `main.rs` for the end-to-end proof path.
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -42,6 +45,27 @@ pub enum Request {
     VideoMeta(String),
     /// Fetch a channel page + its uploads.
     Channel(String),
+    /// Resolve + decode a real playable stream for a watch id. The worker
+    /// resolves the googlevideo H.264 stream, downloads a bounded prefix,
+    /// demuxes it to Annex-B and decodes it — all off the UI thread — then
+    /// publishes finished frames on the decoded-frame channel (drained via
+    /// [`Worker::poll_frames`]).
+    PlayVideo(String),
+}
+
+/// A finished, decoded video frame produced by the worker for the watch page to
+/// paint. Toolkit-free (`RGBA8` bytes) so it crosses the worker boundary without
+/// pulling render types into the data layer. The UI drains these; it does not
+/// decode.
+#[derive(Clone, Debug)]
+pub struct DecodedFrame {
+    /// The watch id this frame belongs to (so a late frame for a since-closed
+    /// video can be dropped).
+    pub video: String,
+    pub width: u32,
+    pub height: u32,
+    /// Tightly-packed RGBA8, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
 }
 
 /// A result folded back into the model on the UI thread.
@@ -227,12 +251,14 @@ pub fn search(
 pub struct Worker {
     tx: Sender<Request>,
     rx: Receiver<Update>,
+    frame_rx: Receiver<DecodedFrame>,
 }
 
 impl Worker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<Update>();
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel::<DecodedFrame>();
         std::thread::Builder::new()
             .name("tube-fetch".into())
             .spawn(move || {
@@ -294,19 +320,18 @@ impl Worker {
                             // screen, so a missing/failed live backend just marks
                             // the source offline and leaves the catalogue as-is.
                             //
-                            // Primary source is the real trending browse. YouTube
-                            // currently rejects rustypipe 0.11's `FEtrending`
-                            // params ("invalid argument"), so when that fails we
-                            // compose a live home from a handful of broad topic
-                            // searches instead — still real data, no sample.
-                            let feed = match fetch(&live, offline.as_ref(), Query::Trending, false, &up_tx) {
-                                Some((BackendResult::Videos(vs), true)) if !vs.is_empty() => Some(vs),
-                                _ => live_home_from_search(&live, &up_tx),
-                            };
-                            match feed {
-                                Some(vs) if !vs.is_empty() => {
+                            // First choice is YouTube's dedicated trending browse.
+                            // That endpoint (`FEtrending`) has been retired and now
+                            // answers HTTP 400 "Request contains an invalid
+                            // argument."; there is no no-login browse that returns a
+                            // general trending feed. When it fails we compose a real
+                            // "popular right now" feed from view-count-sorted,
+                            // last-week search across broad topics — genuine YouTube
+                            // data, never the offline sample.
+                            match feed_trending(&live, offline.as_ref(), &up_tx) {
+                                Some((vs, label)) if !vs.is_empty() => {
                                     let _ = up_tx.send(Update::Feed(vs));
-                                    send_status(&up_tx, true);
+                                    let _ = up_tx.send(Update::Status { live: true, label });
                                 }
                                 _ => send_status(&up_tx, false),
                             }
@@ -335,11 +360,14 @@ impl Worker {
                                 let _ = up_tx.send(Update::ChannelPage { channel, uploads });
                             }
                         }
+                        Request::PlayVideo(id) => {
+                            play_video(&live, &id, &frame_tx, &up_tx);
+                        }
                     }
                 }
             })
             .expect("spawn tube-fetch");
-        Self { tx: req_tx, rx: up_rx }
+        Self { tx: req_tx, rx: up_rx, frame_rx }
     }
 
     pub fn request(&self, req: Request) {
@@ -349,6 +377,59 @@ impl Worker {
     /// Non-blocking drain of any results ready this frame.
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().collect()
+    }
+
+    /// Non-blocking drain of any decoded video frames ready this frame. The
+    /// watch page paints these; decoding already happened on the worker.
+    pub fn poll_frames(&self) -> Vec<DecodedFrame> {
+        self.frame_rx.try_iter().collect()
+    }
+}
+
+/// Resolve, download, demux and decode a real stream for `id` on the worker
+/// thread, publishing the first decoded frame(s) to `frame_tx`. Every stage is
+/// off the UI thread; the UI only drains [`DecodedFrame`]s. Failures degrade to
+/// a status note and the poster stays on screen.
+fn play_video(
+    live: &Option<Box<dyn YtBackend>>,
+    id: &str,
+    frame_tx: &Sender<DecodedFrame>,
+    up_tx: &Sender<Update>,
+) {
+    let Some(backend) = live.as_ref() else {
+        let _ = up_tx.send(Update::Note(
+            "playback needs the live backend (build with --features live)".into(),
+        ));
+        return;
+    };
+    let handle = match backend.resolve_video_stream(id) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
+            return;
+        }
+    };
+    let _ = up_tx.send(Update::Note(format!(
+        "stream: itag {} {} {}",
+        handle.itag, handle.quality, handle.mime
+    )));
+    let client = crate::backend::stream::http_client();
+    let fetched = match crate::backend::stream::fetch_h264(&client, &handle) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("stream fetch: {e}")));
+            return;
+        }
+    };
+    let mut playback = crate::playback::Playback::new();
+    if playback.feed(&fetched.annexb) {
+        if let Some((width, height, rgba)) = playback.latest_rgba() {
+            let _ = frame_tx.send(DecodedFrame { video: id.to_string(), width, height, rgba });
+        }
+    } else {
+        let _ = up_tx.send(Update::Note(
+            "stream downloaded but no frame decoded from the first fragment".into(),
+        ));
     }
 }
 
@@ -403,33 +484,71 @@ fn fetch(
     None
 }
 
-/// Compose a live home feed from a few broad topic searches, interleaved for
-/// variety. Used as a fallback for the Home/Trending catalogue when YouTube
-/// rejects rustypipe's dedicated trending browse. Returns `None` when there is
-/// no live backend (offline / default build) so the caller keeps the sample.
-fn live_home_from_search(
+/// Resolve the Home/Trending catalogue from real data, returning the videos and
+/// the honest status-pill label. Tries YouTube's dedicated trending browse
+/// first; on failure (the endpoint has been retired) composes a real "popular
+/// right now" feed. Returns `None` only when there is no live data at all
+/// (offline / default build) so the caller keeps the bundled sample.
+fn feed_trending(
+    live: &Option<Box<dyn YtBackend>>,
+    offline: &dyn YtBackend,
+    up_tx: &Sender<Update>,
+) -> Option<(Vec<Video>, String)> {
+    // Dedicated endpoint first. `fetch` surfaces the real error as a status note
+    // (e.g. "live Trending: trending: http status 400"), so the failure of the
+    // retired endpoint is visible rather than silently swallowed.
+    if let Some((BackendResult::Videos(vs), true)) =
+        fetch(live, offline, Query::Trending, false, up_tx)
+    {
+        if !vs.is_empty() {
+            return Some((vs, "live · trending".into()));
+        }
+    }
+    live_popular_feed(live, up_tx).map(|vs| (vs, "live · popular".into()))
+}
+
+/// Compose a real "popular right now" home feed: for each broad topic, ask the
+/// backend for the most-viewed videos uploaded in the last week, then
+/// round-robin interleave for variety and de-duplicate. Every video is genuine
+/// YouTube data (view-count-sorted search), not the offline sample. Returns
+/// `None` when there is no live backend so the caller keeps the sample.
+fn live_popular_feed(
     live: &Option<Box<dyn YtBackend>>,
     up_tx: &Sender<Update>,
 ) -> Option<Vec<Video>> {
     let backend = live.as_ref()?;
-    const SEEDS: [&str; 3] = ["technology", "science", "music"];
+    // Broad, evergreen topics so the union approximates a general popular feed
+    // rather than one niche.
+    const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
     let mut lists: Vec<Vec<Video>> = Vec::new();
     for seed in SEEDS {
-        match backend.search(seed) {
+        match backend.popular_search(seed) {
             Ok(BackendResult::Videos(vs)) if !vs.is_empty() => lists.push(vs),
             Ok(_) => {}
             Err(e) => {
-                let _ = up_tx.send(Update::Note(format!("home seed {seed:?}: {e}")));
+                let _ = up_tx.send(Update::Note(format!("popular seed {seed:?}: {e}")));
             }
         }
     }
     if lists.is_empty() {
         return None;
     }
-    let _ = up_tx.send(Update::Note(
-        "trending unavailable — composed live home from topic searches".into(),
-    ));
-    Some(crate::recommend::interleave_newest_first(lists))
+    let interleaved = crate::recommend::interleave_newest_first(lists);
+    let deduped = dedup_by_id(interleaved);
+    let _ = up_tx.send(Update::Note(format!(
+        "dedicated trending endpoint retired — composed real popular feed \
+         ({} videos, view-sorted across {} topics)",
+        deduped.len(),
+        SEEDS.len()
+    )));
+    Some(deduped)
+}
+
+/// Drop duplicate videos (same id) while preserving first-seen order — the
+/// popular seeds overlap, so the union needs a dedup pass.
+fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
+    let mut seen = std::collections::HashSet::new();
+    videos.into_iter().filter(|v| seen.insert(v.id.clone())).collect()
 }
 
 /// Broadcast which data source just answered so the UI pill reflects reality.
