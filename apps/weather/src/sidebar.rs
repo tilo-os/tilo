@@ -108,6 +108,12 @@ impl SidebarState {
             if self.last_mode.is_some() {
                 // Crossed the breakpoint — return to auto behaviour.
                 self.user_open = None;
+            } else {
+                // First mode ever resolved (the real width is only known
+                // after layout). Snap the reveal to this mode's resting
+                // state so a narrow-first window opens already-collapsed
+                // instead of flashing the rail open then animating it shut.
+                self.reveal = if self.is_open(mode) { 1.0 } else { 0.0 };
             }
             self.last_mode = Some(mode);
         }

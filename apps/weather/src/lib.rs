@@ -22,13 +22,17 @@
 //!   with swipe⇔menu action parity.
 //! - [`app`] — the root [`WeatherApp`] widget that composes it all.
 //!
-//! ## `--shots` vs. live
-//! The offscreen screenshot path renders one frame with no event loop and
-//! no async runtime, so it can't await a network fetch. [`WeatherApp`] is
-//! therefore seeded with [`sample`] data and spawns its network worker
-//! lazily on the first input event — which `--shots` never delivers. The
-//! screenshot is thus fully populated and offline; the live binary fetches
-//! real data and overwrites the sample snapshots in place.
+//! ## `--shots`/tests vs. live
+//! The offscreen screenshot path renders one frame with no event loop and no
+//! async runtime, so it can't await a network fetch. [`WeatherApp::new`] is
+//! therefore seeded with fully-populated [`sample`] snapshots and never
+//! touches the network, so a screenshot is honest and offline.
+//!
+//! The live binary uses [`WeatherApp::live`]: it keeps the default saved
+//! places (real coordinates) but drops the synthesized snapshots and fetches
+//! each place's **real** Open-Meteo forecast on the very first frame — with
+//! no user interaction — showing a brief loading state until the data lands.
+//! It never displays invented readings.
 
 pub mod api;
 pub mod app;
@@ -50,7 +54,7 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree. Single integration point
 /// used by both the live event loop and the `--shots` offscreen renderer.
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(WeatherApp::new())
+    Box::new(WeatherApp::live())
 }
 
 /// Like [`app_root`] but seeded with a named interaction scenario for a

@@ -1,24 +1,157 @@
-//! Library loader: the primary book comes from a real bundled `.epub`
-//! (parsed via the ZIP container reader); two companion volumes are authored
-//! as embedded XHTML and lowered through the same chapter parser, so every
-//! book on the shelf is genuinely openable and reflowable.
+//! Library sourcing.
+//!
+//! At runtime the shelf is the reader's *own* books: every `.epub` found under
+//! their library directories is parsed by the real container reader. When no
+//! books are present yet, a single bundled EPUB ships as a starter so the app
+//! opens onto a genuine reading page instead of a blank shelf.
+//!
+//! The multi-book **sample** library (bundled EPUB + two authored volumes) is
+//! reserved for the hermetic `--shots`/test path, so screenshots exercise a
+//! populated shelf without fabricating content into a real user's library.
+
+use std::path::{Path, PathBuf};
 
 use crate::epub::parse_epub;
 use crate::model::{Book, Chapter};
 use crate::xhtml::parse_xhtml;
 
-/// The bundled EPUB, parsed by the real container reader.
+/// The bundled EPUB, parsed by the real container reader. Ships as the starter
+/// book so a first-run library is never empty.
 const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 
-/// Build the full library.
+/// Environment override (`:`-separated absolute paths) for the directories
+/// scanned for `.epub` files. Lets the OS point the reader at a synced library
+/// (e.g. a `/var/workspace` share) and lets tests pin a fixture directory.
+const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
+
+/// The runtime library: the reader's real `.epub` files, discovered on disk.
+/// Falls back to the bundled starter book when none are found, so the reader is
+/// usable out of the box without pretending the user owns books they don't.
 pub fn load_library() -> Vec<Book> {
-    let mut books = Vec::new();
-
-    match parse_epub(SAMPLE_EPUB, 5, "Fable") {
-        Ok(b) => books.push(b),
-        Err(e) => tracing::error!(error = %e, "ebook: failed to parse bundled epub"),
+    let mut books = discover_epubs(&library_roots());
+    if books.is_empty() {
+        if let Some(b) = bundled_sample() {
+            books.push(b);
+        }
     }
+    books
+}
 
+/// Parse the bundled starter EPUB. `None` only if the embedded asset ever fails
+/// to parse (a build-time invariant, not a runtime condition).
+pub fn bundled_sample() -> Option<Book> {
+    match parse_epub(SAMPLE_EPUB, 5, "Fable") {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::error!(error = %e, "ebook: failed to parse bundled epub");
+            None
+        }
+    }
+}
+
+/// Open a single `.epub` file by path — the entry point used when the OS hands
+/// the reader a book to open (file association / "Open with").
+pub fn open_epub_path(path: &Path) -> Option<Book> {
+    let bytes = std::fs::read(path).ok()?;
+    match parse_epub(&bytes, 5, "EPUB") {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "ebook: failed to open epub");
+            None
+        }
+    }
+}
+
+/// The directories scanned for the user's books. The `EBOOK_LIBRARY_DIR`
+/// override wins outright; otherwise a small set of conventional locations
+/// (including the qOS P2P workspace) is probed.
+fn library_roots() -> Vec<PathBuf> {
+    if let Ok(v) = std::env::var(LIBRARY_DIR_ENV) {
+        return v
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
+    let mut roots = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        roots.push(home.join("Books"));
+        roots.push(home.join("Documents"));
+        roots.push(home.join("Downloads"));
+    }
+    roots.push(PathBuf::from("/var/workspace"));
+    roots.push(PathBuf::from("/var/workspace/Books"));
+    roots
+}
+
+/// Walk each root (shallow — two levels) collecting `.epub` files, parse them,
+/// and return the books sorted by title. Unreadable files are skipped.
+fn discover_epubs(roots: &[PathBuf]) -> Vec<Book> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        collect_epubs(root, 2, &mut paths);
+        if paths.len() >= MAX_LIBRARY {
+            break;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths.truncate(MAX_LIBRARY);
+
+    let mut books: Vec<Book> = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        match parse_epub(&bytes, i, "EPUB") {
+            Ok(b) => books.push(b),
+            Err(e) => tracing::warn!(error = %e, path = %path.display(), "ebook: skipping epub"),
+        }
+    }
+    books.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    books
+}
+
+/// Upper bound on discovered books, so a pathological directory can't stall
+/// startup parsing thousands of files.
+const MAX_LIBRARY: usize = 80;
+
+/// Recursively (bounded `depth`) collect `*.epub` file paths under `dir`.
+fn collect_epubs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if out.len() >= MAX_LIBRARY {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            if depth > 0 {
+                collect_epubs(&path, depth - 1, out);
+            }
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+        {
+            out.push(path);
+        }
+        if out.len() >= MAX_LIBRARY {
+            return;
+        }
+    }
+}
+
+// ===========================================================================
+// Sample library — hermetic `--shots` / test content only.
+// ===========================================================================
+
+/// The multi-book sample library used by the headless renderer and tests. Never
+/// shown to a real user; it exists so screenshots have a populated shelf.
+pub fn load_sample_library() -> Vec<Book> {
+    let mut books = Vec::new();
+    if let Some(b) = bundled_sample() {
+        books.push(b);
+    }
     books.push(authored(
         "book:field-notes",
         "Field Notes on Quiet Machines",
@@ -37,7 +170,6 @@ pub fn load_library() -> Vec<Book> {
         "Correspondence",
         TIDEGLASS,
     ));
-
     books
 }
 
@@ -68,6 +200,7 @@ fn authored(
         chapters,
         cover_tint: tint,
         subject: subject.to_string(),
+        cover: None,
     }
 }
 

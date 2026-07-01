@@ -20,14 +20,17 @@
 //! events (it has no child-widget tree) and renders it each frame.
 //!
 //! ## The `--shots` / live split
-//! `--shots` renders exactly one offscreen frame with no event loop and no
-//! Tokio runtime, so it can't await a network fetch. The widget is therefore
-//! seeded with bundled [`crate::sample`] data and renders that immediately.
-//! The background [`crate::net::WeatherService`] is spawned **lazily on the
-//! first real input event** — which `--shots` never delivers — so a
-//! screenshot is fully populated and completely offline, while the live
-//! binary fetches real Open-Meteo data and overwrites the sample snapshots
-//! in place.
+//! `--shots` (and the tests) construct [`WeatherApp::new`]: seeded with
+//! bundled [`crate::sample`] snapshots, `live == false`, so the background
+//! [`crate::net::WeatherService`] is never spawned and the frame is fully
+//! populated and completely offline.
+//!
+//! The live binary constructs [`WeatherApp::live`]: the same default places
+//! (real coordinates) but with the synthesized snapshots dropped. It spawns
+//! the network worker and fires a real Open-Meteo fetch for every place on
+//! the **first frame** (from `sync`, no input required), showing a brief
+//! loading state until the real forecasts land. It never renders invented
+//! readings.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -36,7 +39,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Brush, Color, Fill, Gradient};
+use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::Widget;
@@ -63,6 +66,16 @@ const PAD: f64 = 28.0;
 const RP: f64 = 20.0; // rail inner padding
 const CHIP_H: f64 = 62.0; // saved-place chip height
 const CHIP_GAP: f64 = 8.0;
+/// Natural heights of the scrollable content sections. The body is a fixed
+/// vertical stack of these; when the window is shorter than their sum the
+/// content scrolls (the header stays pinned) rather than crushing rows into
+/// each other.
+const HERO_H: f64 = 168.0;
+const TILE_H: f64 = 78.0;
+const TILE_MIN_W: f64 = 118.0; // narrowest a metric tile may get before wrapping
+const CHART_H: f64 = 152.0;
+const DAY_ROW_H: f64 = 42.0;
+const SECTION_GAP: f64 = 12.0;
 /// How long a recently-typed query stays "fresh" before we fire a geocode.
 /// Short enough to feel instant, long enough to coalesce fast typing into a
 /// single request.
@@ -100,6 +113,17 @@ pub struct WeatherApp {
 
     // Sidebar (Adwaita flap).
     sidebar: SidebarState,
+
+    // Vertical scroll of the content body (the pinned header excluded). The
+    // max is recomputed each draw from the section stack vs. the viewport.
+    scroll: f64,
+    max_scroll: f64,
+
+    /// True only for the real event-loop binary. Gates the background network
+    /// worker so the hermetic `--shots`/test path never touches the network
+    /// and never fires a live fetch. The live app fetches real data on its
+    /// first frame; `--shots` renders bundled sample data offline.
+    live: bool,
 
     // Saved-place direct manipulation.
     press: Option<PointerPress>,
@@ -142,6 +166,9 @@ impl WeatherApp {
             last_mouse: Point::ZERO,
             hotspots: Vec::new(),
             sidebar: SidebarState::default(),
+            scroll: 0.0,
+            max_scroll: 0.0,
+            live: false,
             press: None,
             menu: None,
             drop_index: None,
@@ -156,16 +183,39 @@ impl WeatherApp {
             inflight: 0,
             geocode_inflight: false,
             last_request_at: Instant::now(),
-            status: "Sample data — live updates on launch".to_string(),
+            status: String::new(),
             seeded_doc: false,
             pending_doc_write: false,
         }
     }
 
+    /// The real event-loop configuration: identical to [`Self::new`] but with
+    /// live networking armed and the bundled sample *snapshots* dropped, so
+    /// the first frame shows real saved places in a loading state and their
+    /// actual Open-Meteo forecasts land moments later — never fabricated
+    /// readings. The default locations (real coordinates) are kept as a
+    /// populated first run; their weather is always fetched live.
+    pub fn live() -> Self {
+        let mut app = Self::new();
+        app.live = true;
+        // Discard the synthesized readings — the live binary must never
+        // display invented temperatures. Real fetches fill these in.
+        app.model.snapshots.clear();
+        app.status = "Loading…".to_string();
+        app
+    }
+
     /// Spawn the network worker (idempotent) and queue an initial forecast
-    /// refresh for every saved location. Called from the first input event,
-    /// so `--shots` (which delivers none) stays fully offline.
+    /// refresh for every saved location. Fired from the first frame (`sync`)
+    /// on the live binary and, defensively, from the first input event, so
+    /// `--shots` (live == false, no events) stays fully offline.
     fn ensure_service(&mut self) {
+        // Networking is exclusive to the live binary. The `--shots`/test
+        // configuration (`live == false`) never spawns a worker, so those
+        // paths are fully offline and deterministic.
+        if !self.live {
+            return;
+        }
         if self.service.is_none() {
             self.service = Some(WeatherService::spawn());
         }
@@ -228,7 +278,7 @@ impl WeatherApp {
         if key.is_empty() {
             self.search_results.clear();
             self.pending_query_at = None;
-            self.status = "Sample data — live updates on launch".to_string();
+            self.status.clear();
             return;
         }
         // Instant feedback from the cache, if we've seen this query.
@@ -868,8 +918,11 @@ impl WeatherApp {
             hot.push(Hotspot { rect: seg, action: Action::SetWind(*unit) });
         }
 
-        // Status line.
-        text_left(scene, tr, &self.status, x, rail.y1 - 22.0, 11.0, TextWeight::Regular, c.text_dim);
+        // Status line (only when there's something meaningful to report —
+        // an in-flight fetch, a fresh update, or an offline error).
+        if !self.status.is_empty() {
+            text_left(scene, tr, &self.status, x, rail.y1 - 22.0, 11.0, TextWeight::Regular, c.text_dim);
+        }
     }
 
     /// Draw the open per-entry context menu at its anchor and register a
@@ -925,7 +978,7 @@ impl WeatherApp {
     }
 
     fn draw_main(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -933,122 +986,137 @@ impl WeatherApp {
         content: Rect,
     ) {
         let c = &theme.tokens.colors;
-        let main = content;
         // When the toggle button is shown (rail not fully docked-open) the
         // header is nudged right so the title clears the button.
         let toggle_inset = if self.show_toggle() { 46.0 } else { 0.0 };
-        let mx = main.x0 + PAD + toggle_inset;
-        let mw = main.width() - 2.0 * PAD - toggle_inset;
-        let right = main.x1 - PAD;
+        let mx = content.x0 + PAD + toggle_inset;
+        let mw = (content.width() - 2.0 * PAD - toggle_inset).max(140.0);
+        let right = content.x1 - PAD;
         let accent = self.accent(theme);
 
         let Some(loc) = self.model.selected_location().cloned() else {
-            text_left(scene, tr, "No location selected", mx, main.y0 + PAD, 18.0, TextWeight::Medium, c.text_dim);
+            text_left(scene, tr, "No saved places", mx, content.y0 + PAD, 18.0, TextWeight::Medium, c.text_dim);
             return;
         };
-        let snap = match self.model.selected_snapshot() {
-            Some(s) => s.clone(),
-            None => {
-                text_left(scene, tr, "Loading…", mx, main.y0 + PAD, 18.0, TextWeight::Medium, c.text_dim);
-                return;
-            }
+        let snap_opt = self.model.selected_snapshot().cloned();
+
+        // ---- Pinned header (never scrolls) ----
+        let hy = content.y0 + PAD;
+        text_left(scene, tr, &loc.name, mx, hy, 26.0, TextWeight::Bold, c.text_primary);
+        text_left(scene, tr, &loc.subtitle(), mx, hy + 32.0, 13.0, TextWeight::Regular, c.text_dim);
+        if let Some(snap) = &snap_opt {
+            let cur = &snap.current;
+            let date_str = fmt_date(&cur.time);
+            text_right(scene, tr, &date_str, right, hy + 2.0, 14.0, TextWeight::Medium, c.text_primary);
+            let time_str = hhmm(&cur.time);
+            text_right(scene, tr, &format!("Local time {time_str}"), right, hy + 24.0, 12.0, TextWeight::Regular, c.text_dim);
+            // Day / night pill.
+            let pill_label = if cur.is_day { "Daytime" } else { "Night" };
+            let (plw, _) = tr.measure(pill_label, 11.0, None);
+            let pill_w = plw as f64 + 34.0;
+            let pill = Rect::new(right - pill_w, hy + 44.0, right, hy + 44.0 + 22.0);
+            let pill_shape = RoundedRect::from_rect(pill, 11.0);
+            scene.fill(Fill::NonZero, t, lerp_color(c.surfaces.base, accent, 0.25), None, &pill_shape);
+            let dotc = if cur.is_day { c.semantic.warning } else { c.neutral[8] };
+            scene.fill(Fill::NonZero, t, dotc, None, &Circle::new(Point::new(pill.x0 + 13.0, (pill.y0 + pill.y1) / 2.0), 5.0));
+            text_left(scene, tr, pill_label, pill.x0 + 24.0, (pill.y0 + pill.y1) / 2.0 - 7.0, 11.0, TextWeight::Semibold, c.text_primary);
+        }
+
+        let body_top = hy + 74.0;
+        // Hairline under the pinned header.
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.border_standard.with_alpha_factor(0.6),
+            None,
+            &Rect::new(mx, body_top - 10.0, right, body_top - 9.0),
+        );
+
+        // Loading state: real saved place, forecast not yet fetched.
+        let Some(snap) = snap_opt else {
+            self.max_scroll = 0.0;
+            text_left(scene, tr, "Fetching current conditions…", mx, body_top + 24.0, 15.0, TextWeight::Medium, c.text_dim);
+            return;
         };
         let units = self.model.units;
         let cur = &snap.current;
 
-        // ---- Header ----
-        let mut y = main.y0 + PAD;
-        text_left(scene, tr, &loc.name, mx, y, 28.0, TextWeight::Bold, c.text_primary);
-        text_left(scene, tr, &loc.subtitle(), mx, y + 36.0, 13.0, TextWeight::Regular, c.text_dim);
-        // Right: date + time + day/night pill.
-        let date_str = fmt_date(&cur.time);
-        text_right(scene, tr, &date_str, right, y + 2.0, 14.0, TextWeight::Medium, c.text_primary);
-        let time_str = hhmm(&cur.time);
-        text_right(scene, tr, &format!("Local time {time_str}"), right, y + 26.0, 12.0, TextWeight::Regular, c.text_dim);
-        // Day / night pill.
-        let pill_label = if cur.is_day { "Daytime" } else { "Night" };
-        let (plw, _) = tr.measure(pill_label, 11.0, None);
-        let pill_w = plw as f64 + 34.0;
-        let pill = Rect::new(right - pill_w, y + 44.0, right, y + 44.0 + 22.0);
-        let pill_shape = RoundedRect::from_rect(pill, 11.0);
-        scene.fill(Fill::NonZero, t, lerp_color(c.surfaces.base, accent, 0.25), None, &pill_shape);
-        // Tiny sun/moon dot.
-        let dotc = if cur.is_day { c.semantic.warning } else { c.neutral[8] };
-        scene.fill(Fill::NonZero, t, dotc, None, &Circle::new(Point::new(pill.x0 + 13.0, (pill.y0 + pill.y1) / 2.0), 5.0));
-        text_left(scene, tr, pill_label, pill.x0 + 24.0, (pill.y0 + pill.y1) / 2.0 - 7.0, 11.0, TextWeight::Semibold, c.text_primary);
+        // ---- Measure the scrollable body so we can clamp the scroll offset
+        //      and clip. The body is a fixed vertical stack; on short windows
+        //      it scrolls instead of crushing rows together. ----
+        let gap = 12.0;
+        let cols = tile_columns(mw);
+        let tile_rows = 5usize.div_ceil(cols);
+        let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
+        let n_days = snap.daily.len().max(1);
+        let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
+        let body_h = HERO_H
+            + SECTION_GAP
+            + tiles_block_h
+            + SECTION_GAP
+            + CHART_H
+            + SECTION_GAP
+            + days_block_h;
+        let view_h = (content.y1 - PAD) - body_top;
+        self.max_scroll = (body_h - view_h).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
 
-        // Clear the stacked header (name/subtitle on the left; date/time/pill
-        // on the right reach ~y+66) before the hero card starts.
-        y += 78.0;
+        // Clip the scrolling body to the viewport below the pinned header.
+        let clip = Rect::new(content.x0, body_top - 8.0, content.x1, content.y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        let mut y = body_top - self.scroll;
 
         // ---- Hero card ----
-        let hero_h = 176.0;
-        let hero = Rect::new(mx, y, mx + mw, y + hero_h);
+        let hero = Rect::new(mx, y, mx + mw, y + HERO_H);
         card(scene, t, hero, theme);
-        // Big icon.
         let sky = Sky::from_code(cur.weather_code);
         icon::draw_icon(
             scene,
             t,
             sky,
             cur.is_day,
-            Rect::new(hero.x0 + 26.0, hero.y0 + 40.0, hero.x0 + 122.0, hero.y0 + 136.0),
+            Rect::new(hero.x0 + 24.0, hero.y0 + 36.0, hero.x0 + 116.0, hero.y0 + 128.0),
             theme,
         );
-        // Temperature.
         let temp = snap.temp_in(cur.temperature, units).round() as i64;
         let temp_str = format!("{temp}");
-        let temp_x = hero.x0 + 140.0;
+        let temp_x = hero.x0 + 132.0;
         tr.draw_text_weighted(
             scene,
             &temp_str,
-            76.0,
+            72.0,
             c.text_primary,
-            t * Affine::translate((temp_x, hero.y0 + 34.0)),
+            t * Affine::translate((temp_x, hero.y0 + 30.0)),
             None,
             TextWeight::Bold,
         );
-        let (tnw, _) = tr.measure_weighted(&temp_str, 76.0, None, TextWeight::Bold);
-        text_left(
-            scene,
-            tr,
-            units.degree_glyph(),
-            temp_x + tnw as f64 + 4.0,
-            hero.y0 + 44.0,
-            34.0,
-            TextWeight::Regular,
-            c.text_dim,
-        );
-        // Condition + feels-like.
+        let (tnw, _) = tr.measure_weighted(&temp_str, 72.0, None, TextWeight::Bold);
+        text_left(scene, tr, units.degree_glyph(), temp_x + tnw as f64 + 4.0, hero.y0 + 40.0, 32.0, TextWeight::Regular, c.text_dim);
         let cond = Sky::label(cur.weather_code);
-        text_left(scene, tr, cond, temp_x + 2.0, hero.y0 + 120.0, 20.0, TextWeight::Semibold, c.text_primary);
+        text_left(scene, tr, cond, temp_x + 2.0, hero.y0 + 114.0, 19.0, TextWeight::Semibold, c.text_primary);
         let feels = snap.temp_in(cur.apparent, units).round() as i64;
-        text_left(
-            scene,
-            tr,
-            &format!("Feels like {feels}{}", units.temp_suffix()),
-            temp_x + 2.0,
-            hero.y0 + 148.0,
-            13.0,
-            TextWeight::Regular,
-            c.text_dim,
-        );
+        text_left(scene, tr, &format!("Feels like {feels}{}", units.temp_suffix()), temp_x + 2.0, hero.y0 + 140.0, 13.0, TextWeight::Regular, c.text_dim);
 
-        // Right side of hero: sunrise / sunset mini-panel.
+        // Right of hero: the sunrise→sunset arc when there's room, else a
+        // compact two-line sunrise/sunset readout that always fits.
         if let Some(today) = snap.daily.first() {
-            let panel_x = hero.x1 - 230.0;
             let sr = hhmm(&today.sunrise);
             let ss = hhmm(&today.sunset);
-            self.draw_sun_arc(scene, t, tr, theme, Rect::new(panel_x, hero.y0 + 24.0, hero.x1 - 24.0, hero.y0 + hero_h - 24.0), &sr, &ss, cur.is_day);
+            if mw >= 560.0 {
+                self.draw_sun_arc(scene, t, tr, theme, Rect::new(hero.x1 - 226.0, hero.y0 + 22.0, hero.x1 - 22.0, hero.y0 + HERO_H - 22.0), &sr, &ss, cur.is_day);
+            } else {
+                let sx = hero.x1 - 18.0;
+                text_right(scene, tr, "Sunrise", sx, hero.y0 + HERO_H - 60.0, 10.0, TextWeight::Semibold, c.text_dim);
+                text_right(scene, tr, &sr, sx, hero.y0 + HERO_H - 46.0, 14.0, TextWeight::Medium, c.text_primary);
+                text_right(scene, tr, "Sunset", sx, hero.y0 + HERO_H - 26.0, 10.0, TextWeight::Semibold, c.text_dim);
+                text_right(scene, tr, &ss, sx, hero.y0 + HERO_H - 12.0, 14.0, TextWeight::Medium, c.text_primary);
+            }
         }
 
-        y += hero_h + 12.0;
+        y += HERO_H + SECTION_GAP;
 
-        // ---- Metric tiles ----
-        let tiles_h = 82.0;
-        let gap = 12.0;
-        let cols = 5.0;
-        let tw = (mw - (cols - 1.0) * gap) / cols;
+        // ---- Metric tiles (wrap to fewer columns on narrow windows) ----
+        let tw = (mw - (cols as f64 - 1.0) * gap) / cols as f64;
         let wind = snap.wind_in(cur.wind_speed, units).round() as i64;
         let tiles: [(&str, String, String); 5] = [
             ("WIND", format!("{wind}"), format!("{} {}", units::compass(cur.wind_direction), units.wind_suffix())),
@@ -1058,19 +1126,21 @@ impl WeatherApp {
             ("UV INDEX", format!("{}", cur.uv_index.round() as i64), uv_word(cur.uv_index).to_string()),
         ];
         for (i, (label, value, sub)) in tiles.iter().enumerate() {
-            let tx = mx + i as f64 * (tw + gap);
-            let tile = Rect::new(tx, y, tx + tw, y + tiles_h);
+            let col = i % cols;
+            let row = i / cols;
+            let tx = mx + col as f64 * (tw + gap);
+            let ty = y + row as f64 * (TILE_H + gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + TILE_H);
             card(scene, t, tile, theme);
             text_left(scene, tr, label, tile.x0 + 12.0, tile.y0 + 12.0, 10.0, TextWeight::Semibold, c.text_dim);
-            text_left(scene, tr, value, tile.x0 + 12.0, tile.y0 + 32.0, 26.0, TextWeight::Bold, c.text_primary);
-            text_left(scene, tr, sub, tile.x0 + 12.0, tile.y0 + tiles_h - 22.0, 11.0, TextWeight::Regular, c.text_dim);
+            text_left(scene, tr, value, tile.x0 + 12.0, tile.y0 + 30.0, 25.0, TextWeight::Bold, c.text_primary);
+            text_left(scene, tr, sub, tile.x0 + 12.0, tile.y0 + TILE_H - 22.0, 11.0, TextWeight::Regular, c.text_dim);
         }
 
-        y += tiles_h + 12.0;
+        y += tiles_block_h + SECTION_GAP;
 
         // ---- Hourly chart ----
-        let hourly_h = 168.0;
-        let hcard = Rect::new(mx, y, mx + mw, y + hourly_h);
+        let hcard = Rect::new(mx, y, mx + mw, y + CHART_H);
         card(scene, t, hcard, theme);
         text_left(scene, tr, "Next 24 hours", hcard.x0 + 16.0, hcard.y0 + 12.0, 14.0, TextWeight::Semibold, c.text_primary);
         let points: Vec<ChartPoint> = snap
@@ -1087,7 +1157,7 @@ impl WeatherApp {
         chart::draw_temp_curve(
             scene,
             t,
-            Rect::new(hcard.x0 + 20.0, hcard.y0 + 36.0, hcard.x1 - 20.0, hcard.y1 - 10.0),
+            Rect::new(hcard.x0 + 20.0, hcard.y0 + 34.0, hcard.x1 - 20.0, hcard.y1 - 8.0),
             &points,
             accent,
             theme,
@@ -1095,10 +1165,10 @@ impl WeatherApp {
             "°",
         );
 
-        y += hourly_h + 12.0;
+        y += CHART_H + SECTION_GAP;
 
         // ---- 7-day forecast ----
-        let dcard = Rect::new(mx, y, mx + mw, main.y1 - PAD);
+        let dcard = Rect::new(mx, y, mx + mw, y + days_block_h);
         card(scene, t, dcard, theme);
         text_left(scene, tr, "7-day forecast", dcard.x0 + 16.0, dcard.y0 + 12.0, 14.0, TextWeight::Semibold, c.text_primary);
 
@@ -1113,52 +1183,58 @@ impl WeatherApp {
             wmin -= 1.0;
         }
 
+        // Responsive row geometry: day + icon on the left; a right cluster of
+        // low°, range bar, high° that is always present; condition text and a
+        // precipitation chance fill in from the left only when there's room.
+        let inner_l = dcard.x0 + 18.0;
+        let inner_r = dcard.x1 - 16.0;
+        let dw = inner_r - inner_l;
+        let hi_w = 42.0;
+        let bar_w = (dw * 0.22).clamp(56.0, 120.0);
+        let bar_x1 = inner_r - hi_w;
+        let bar_x0 = bar_x1 - bar_w;
+        let lo_x = bar_x0 - 10.0; // right edge of the low° label
+        let precip_right = lo_x - 44.0;
+        let precip_left = precip_right - 46.0;
+        let show_precip = dw >= 300.0;
+        let icon_l_x = inner_l + 92.0; // day-name column clears "Tomorrow"
+        let icon_r_x = icon_l_x + 28.0;
+        let cond_x = icon_r_x + 10.0;
+        let cond_limit = if show_precip { precip_left - 10.0 } else { lo_x - 44.0 };
+        let show_cond = (cond_limit - cond_x) >= 96.0;
+
         let rows_top = dcard.y0 + 40.0;
-        let rows_area = (dcard.y1 - 12.0) - rows_top;
-        let row_h = rows_area / snap.daily.len().max(1) as f64;
         for (i, d) in snap.daily.iter().enumerate() {
-            let ry = rows_top + i as f64 * row_h;
-            let cy = ry + row_h / 2.0;
+            let ry = rows_top + i as f64 * DAY_ROW_H;
+            let cy = ry + DAY_ROW_H / 2.0;
             if i > 0 {
                 scene.fill(
                     Fill::NonZero,
                     t,
                     c.border_standard.with_alpha_factor(0.5),
                     None,
-                    &Rect::new(dcard.x0 + 16.0, ry, dcard.x1 - 16.0, ry + 1.0),
+                    &Rect::new(inner_l, ry, inner_r, ry + 1.0),
                 );
             }
-            // Day name.
             let day_label = match i {
                 0 => "Today".to_string(),
                 1 => "Tomorrow".to_string(),
                 _ => weekday(&d.date),
             };
-            text_left(scene, tr, &day_label, dcard.x0 + 18.0, cy - 8.0, 14.0, TextWeight::Medium, c.text_primary);
-            // Icon.
+            text_left(scene, tr, &day_label, inner_l, cy - 8.0, 14.0, TextWeight::Medium, c.text_primary);
             let dsky = Sky::from_code(d.weather_code);
-            icon::draw_icon(
-                scene,
-                t,
-                dsky,
-                true,
-                Rect::new(dcard.x0 + 120.0, cy - 14.0, dcard.x0 + 148.0, cy + 14.0),
-                theme,
-            );
-            // Condition text.
-            text_left(scene, tr, Sky::label(d.weather_code), dcard.x0 + 158.0, cy - 7.0, 13.0, TextWeight::Regular, c.text_dim);
-            // Precip probability with a drop.
-            let prec = format!("{}%", d.precip_probability.round() as i64);
-            let pdx = dcard.x1 - 360.0;
-            scene.fill(Fill::NonZero, t, c.semantic.info, None, &Circle::new(Point::new(pdx, cy), 3.0));
-            text_left(scene, tr, &prec, pdx + 8.0, cy - 7.0, 12.0, TextWeight::Medium, c.semantic.info);
-
+            icon::draw_icon(scene, t, dsky, true, Rect::new(icon_l_x, cy - 14.0, icon_r_x, cy + 14.0), theme);
+            if show_cond {
+                text_left(scene, tr, Sky::label(d.weather_code), cond_x, cy - 7.0, 13.0, TextWeight::Regular, c.text_dim);
+            }
+            if show_precip {
+                scene.fill(Fill::NonZero, t, c.semantic.info, None, &Circle::new(Point::new(precip_left, cy), 3.0));
+                text_left(scene, tr, &format!("{}%", d.precip_probability.round() as i64), precip_left + 8.0, cy - 7.0, 12.0, TextWeight::Medium, c.semantic.info);
+            }
             // Range bar.
             let lo = snap.temp_in(d.temp_min, units).round() as i64;
             let hi = snap.temp_in(d.temp_max, units).round() as i64;
-            let bar_x0 = dcard.x1 - 210.0;
-            let bar_x1 = dcard.x1 - 70.0;
-            text_right(scene, tr, &format!("{lo}°"), bar_x0 - 10.0, cy - 8.0, 14.0, TextWeight::Medium, c.text_dim);
+            text_right(scene, tr, &format!("{lo}°"), lo_x, cy - 8.0, 14.0, TextWeight::Medium, c.text_dim);
             let track = RoundedRect::new(bar_x0, cy - 3.0, bar_x1, cy + 3.0, 3.0);
             scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
             let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
@@ -1166,12 +1242,24 @@ impl WeatherApp {
             let seg_x0 = bar_x0 + f0 * (bar_x1 - bar_x0);
             let seg_x1 = bar_x0 + f1 * (bar_x1 - bar_x0);
             let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
-            let cold = c.semantic.info;
-            let warm = c.semantic.warning;
             let grad = Gradient::new_linear(Point::new(bar_x0, cy), Point::new(bar_x1, cy))
-                .with_stops([(0.0_f32, cold), (1.0_f32, warm)]);
+                .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
             scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
-            text_left(scene, tr, &format!("{hi}°"), bar_x1 + 10.0, cy - 8.0, 14.0, TextWeight::Semibold, c.text_primary);
+            text_left(scene, tr, &format!("{hi}°"), bar_x1 + 8.0, cy - 8.0, 14.0, TextWeight::Semibold, c.text_primary);
+        }
+
+        scene.pop_layer();
+
+        // Slim scroll indicator on the content's right edge when scrollable.
+        if self.max_scroll > 1.0 {
+            let tx = content.x1 - 6.0;
+            let track_top = body_top + 2.0;
+            let track_bot = content.y1 - 6.0;
+            let track_h = track_bot - track_top;
+            let thumb_h = (track_h * (view_h / body_h)).clamp(28.0, track_h);
+            let thumb_y = track_top + (self.scroll / self.max_scroll) * (track_h - thumb_h);
+            scene.fill(Fill::NonZero, t, c.neutral[2].with_alpha_factor(0.6), None, &RoundedRect::new(tx, track_top, tx + 3.0, track_bot, 1.5));
+            scene.fill(Fill::NonZero, t, c.text_dim.with_alpha_factor(0.7), None, &RoundedRect::new(tx, thumb_y, tx + 3.0, thumb_y + thumb_h, 1.5));
         }
     }
 
@@ -1300,6 +1388,7 @@ impl WeatherApp {
         match action {
             Action::SelectLocation(i) => {
                 self.model.select(i);
+                self.scroll = 0.0; // a new place starts at the top
                 self.refresh_selected();
                 // In overlay mode, picking a place closes the flap (Adwaita).
                 if self.sidebar_mode() == SidebarMode::Overlay {
@@ -1330,6 +1419,7 @@ impl WeatherApp {
             Action::PickResult(i) => {
                 if let Some(loc) = self.search_results.get(i).cloned() {
                     self.model.add_location(loc);
+                    self.scroll = 0.0;
                     self.refresh_selected();
                     self.search_focused = false;
                     self.search_query.clear();
@@ -1368,6 +1458,8 @@ impl WeatherApp {
     ///   drop surface.
     /// * `"overlay"` — a narrow-window flap opened over the content with its
     ///   dimming scrim (best paired with a narrow viewport).
+    /// * `"scrolled"` — content parked at the bottom so a short window
+    ///   captures the full 7-day forecast.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "drag" => {
@@ -1386,6 +1478,12 @@ impl WeatherApp {
                 // widths during layout, so this shows the scrim + float.
                 self.sidebar.toggle(SidebarMode::Overlay);
                 self.last_mouse = Point::new(150.0, 250.0);
+            }
+            "scrolled" => {
+                // Park the content scrolled to the bottom so a short-window
+                // screenshot captures the 7-day forecast (`draw` clamps this
+                // to the real max for the resolved size).
+                self.scroll = f64::MAX;
             }
             _ => {}
         }
@@ -1418,11 +1516,22 @@ impl Widget for WeatherApp {
                 WeatherDoc::write_model(state, &self.model);
             }
             self.seeded_doc = true;
+
+            // Kick off real forecasts on the very first frame of the live
+            // binary so actual conditions land without any user interaction.
+            // The hermetic `--shots`/test path (`live == false`) never spawns
+            // the worker and stays fully offline on sample data.
+            if self.live {
+                self.ensure_service();
+            }
         }
 
         // Fold in any network results that landed since the last frame and
-        // persist the freshest snapshot.
-        if self.poll_service() && self.pending_doc_write {
+        // persist the freshest snapshot. `draw` also polls the worker, so by
+        // the time `sync` runs the queue may already be drained — persist off
+        // the flag, not off this poll's return value.
+        self.poll_service();
+        if self.pending_doc_write {
             WeatherDoc::write_model(state, &self.model);
             self.pending_doc_write = false;
         }
@@ -1502,7 +1611,7 @@ impl Widget for WeatherApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        use winit::event::{ElementState, KeyEvent, MouseButton};
+        use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
         use winit::keyboard::{Key, NamedKey};
 
         // Spawn the network worker + initial fetch on the first input.
@@ -1511,6 +1620,21 @@ impl Widget for WeatherApp {
         let mut model_changed = false;
 
         match event {
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Scroll the content body. When a revealed rail is under the
+                // cursor we leave the wheel to it (its own list is short and
+                // never scrolls), so pointing at the forecast is what scrolls.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                let over_rail =
+                    self.sidebar.reveal() > 0.01 && self.last_mouse.x < self.rail_rect().x1;
+                if !over_rail && self.max_scroll > 0.0 {
+                    self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
+                    *handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // Advance an in-progress press (classify click/reorder/swipe).
@@ -1643,12 +1767,14 @@ impl Widget for WeatherApp {
                     match logical_key {
                         Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
                             self.model.select_relative(-1);
+                            self.scroll = 0.0;
                             self.refresh_selected();
                             model_changed = true;
                             *handled = true;
                         }
                         Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
                             self.model.select_relative(1);
+                            self.scroll = 0.0;
                             self.refresh_selected();
                             model_changed = true;
                             *handled = true;
@@ -1765,6 +1891,13 @@ impl WeatherApp {
 // Free helpers
 // =====================================================================
 
+/// How many columns the five metric tiles wrap into for an available width,
+/// so each tile stays at least [`TILE_MIN_W`] wide. Always 2..=5.
+fn tile_columns(mw: f64) -> usize {
+    let gap = 12.0;
+    (((mw + gap) / (TILE_MIN_W + gap)).floor() as usize).clamp(2, 5)
+}
+
 fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
     let c = &theme.tokens.colors;
     let shape = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
@@ -1869,5 +2002,168 @@ fn uv_word(uv: f64) -> &'static str {
         6..=7 => "High",
         8..=10 => "Very high",
         _ => "Extreme",
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    //! Drive the real `handle_event` path with synthesized winit events —
+    //! the same code the live event loop runs — and assert the model/view
+    //! actually changed. The app is built with `WeatherApp::new()` so
+    //! `live == false`: networking never spawns and the tests are offline
+    //! and deterministic.
+    use super::*;
+    use crate::units::TempUnit;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{
+        DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    };
+
+    fn synth_device() -> DeviceId {
+        // `DeviceId` is opaque; this is the workspace's established test
+        // scaffolding pattern (see the shell integration tests).
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// A laid-out, freshly-drawn app ready to receive real events.
+    struct Harness {
+        app: WeatherApp,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        state: ui::State,
+        theme: Theme,
+        tr: TextRenderer,
+    }
+
+    impl Harness {
+        fn new(w: f64, h: f64) -> Self {
+            let mut app = WeatherApp::new();
+            app.rect = Rect::new(0.0, 0.0, w, h);
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+            let mut harness = Self {
+                app,
+                taffy,
+                node,
+                state: ui::State::new(),
+                theme,
+                tr: TextRenderer::new(),
+            };
+            harness.redraw();
+            harness
+        }
+
+        /// Run a real draw pass so `self.hotspots` + `self.max_scroll` reflect
+        /// the current state (exactly what the event handler hit-tests against).
+        fn redraw(&mut self) {
+            let presence = PresenceCtx::empty();
+            let mut scene = Scene::new();
+            self.app
+                .draw(&mut scene, Affine::IDENTITY, &mut self.tr, &self.theme, &presence);
+        }
+
+        fn dispatch(&mut self, ev: WindowEvent) {
+            let mods = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+        }
+
+        fn move_to(&mut self, x: f64, y: f64) {
+            self.dispatch(WindowEvent::CursorMoved {
+                device_id: synth_device(),
+                position: PhysicalPosition::new(x, y),
+            });
+        }
+
+        fn click(&mut self, x: f64, y: f64) {
+            self.move_to(x, y);
+            self.dispatch(WindowEvent::MouseInput {
+                device_id: synth_device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            });
+            self.dispatch(WindowEvent::MouseInput {
+                device_id: synth_device(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            });
+        }
+    }
+
+    #[test]
+    fn clicking_a_saved_place_selects_it() {
+        let mut h = Harness::new(1280.0, 720.0);
+        assert_eq!(h.app.model.selected, 0);
+        let top = h.app.saved_places_top();
+        let cy = top + (CHIP_H + CHIP_GAP) + CHIP_H / 2.0; // 2nd chip centre
+        h.click(150.0, cy);
+        assert_eq!(h.app.model.selected, 1, "clicking the 2nd chip selects it");
+    }
+
+    #[test]
+    fn clicking_fahrenheit_switches_the_unit() {
+        let mut h = Harness::new(1280.0, 720.0);
+        assert_eq!(h.app.model.units.temp, TempUnit::Celsius);
+        let rail = h.app.rail_rect();
+        let x = rail.x0 + RP;
+        let w = RAIL_W - 2.0 * RP;
+        let half = (w - 6.0) / 2.0;
+        let base_y = rail.y1 - 96.0;
+        let seg_cx = x + (half + 6.0) + half / 2.0; // the °F segment
+        let seg_cy = base_y + 15.0;
+        h.click(seg_cx, seg_cy);
+        assert_eq!(
+            h.app.model.units.temp,
+            TempUnit::Fahrenheit,
+            "clicking °F flips the temperature unit"
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_the_forecast_body() {
+        let mut h = Harness::new(1280.0, 720.0);
+        assert!(h.app.max_scroll > 0.0, "sample content is taller than 720px");
+        assert_eq!(h.app.scroll, 0.0);
+        h.move_to(700.0, 400.0); // over the content, not the docked rail
+        h.dispatch(WindowEvent::MouseWheel {
+            device_id: synth_device(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        });
+        assert!(h.app.scroll > 0.0, "wheel scrolls the forecast body down");
+    }
+
+    #[test]
+    fn live_starts_without_fabricated_snapshots() {
+        let live = WeatherApp::live();
+        assert!(live.live);
+        assert!(
+            !live.model.locations.is_empty(),
+            "keeps default saved places (real coordinates)"
+        );
+        assert!(
+            live.model.snapshots.is_empty(),
+            "the live path never shows invented readings on startup"
+        );
+        // The sample/`--shots` constructor stays fully populated offline.
+        let sample = WeatherApp::new();
+        assert!(!sample.model.snapshots.is_empty());
     }
 }

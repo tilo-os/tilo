@@ -13,12 +13,25 @@
 //!    is an **anchor** (which document, where) plus a **payload** (what kind,
 //!    what colour, what note). See [`Annotation`] for the anchoring contract.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // ===========================================================================
 // Book content
 // ===========================================================================
+
+/// Decoded, downscaled cover artwork extracted from an EPUB. Held behind an
+/// `Arc` so a [`Book`] stays cheap to clone and the pixels are decoded exactly
+/// once (at load), never per frame. `rgba` is tightly packed 8-bit RGBA of
+/// `width * height` pixels.
+#[derive(Clone, Debug)]
+pub struct Cover {
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+}
 
 /// One reflowable book: ordered chapters (the EPUB spine) plus metadata.
 #[derive(Clone, Debug, Default)]
@@ -35,6 +48,9 @@ pub struct Book {
     pub cover_tint: usize,
     /// Short subject line shown on the cover, e.g. "Fable".
     pub subject: String,
+    /// Real cover artwork decoded from the EPUB, when it carries one. `None`
+    /// falls back to a generated spine tinted by [`Self::cover_tint`].
+    pub cover: Option<Cover>,
 }
 
 impl Book {
@@ -96,7 +112,16 @@ impl Block {
     }
 
     pub fn plain_text(&self) -> String {
-        self.spans().iter().map(|s| s.text.as_str()).collect()
+        // Spans are trimmed; a word break at a style boundary is carried by the
+        // next span's `space_before` flag, so re-insert those spaces here.
+        let mut out = String::new();
+        for (i, s) in self.spans().iter().enumerate() {
+            if i > 0 && s.space_before {
+                out.push(' ');
+            }
+            out.push_str(&s.text);
+        }
+        out
     }
 
     pub fn is_separator(&self) -> bool {
@@ -105,17 +130,26 @@ impl Block {
 }
 
 /// An inline run with uniform styling. The smallest unit the renderer paints.
+///
+/// Span text is *trimmed* at style boundaries: the whitespace that separated
+/// this run from the previous one is not stored in `text` but recorded in
+/// `space_before`, so `"burning <em>for</em>."` yields a `for` run with a
+/// leading space and a `.` run with none. The layout and `plain_text` both
+/// consult `space_before` to decide whether to insert a gap.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
+    /// Whether a word break separated this run from the previous one. Ignored
+    /// for the first run of a block (it starts the line).
+    pub space_before: bool,
 }
 
 impl Span {
     pub fn plain(text: impl Into<String>) -> Self {
-        Self { text: text.into(), bold: false, italic: false, code: false }
+        Self { text: text.into(), bold: false, italic: false, code: false, space_before: false }
     }
 }
 
@@ -430,7 +464,7 @@ mod tests {
         let b = Block::Paragraph {
             spans: vec![
                 Span::plain("Hello "),
-                Span { text: "world".into(), bold: true, italic: false, code: false },
+                Span { text: "world".into(), bold: true, italic: false, code: false, space_before: false },
             ],
         };
         assert_eq!(b.plain_text(), "Hello world");

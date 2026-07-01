@@ -74,6 +74,12 @@ pub struct Grid {
     row_heights: HashMap<u32, f64>,
     n_cols: u32,
     n_rows: u32,
+    /// Prefix sums of column/row extents so `col_left`/`row_top` are O(1)
+    /// instead of a per-cell accumulate loop. `col_x[c]` is the content-space
+    /// x of column `c`'s left edge; `col_x[n_cols]` is the total width.
+    /// Rebuilt only when sizes or the logical extent change.
+    col_x: Vec<f64>,
+    row_y: Vec<f64>,
     /// Selection anchor + active cell. A single-cell selection has them equal.
     anchor: Addr,
     active: Addr,
@@ -89,7 +95,7 @@ pub struct Grid {
 
 impl Grid {
     pub fn new() -> Self {
-        Self {
+        let mut g = Self {
             rect: Rect::ZERO,
             scroll_x: 0.0,
             scroll_y: 0.0,
@@ -97,6 +103,8 @@ impl Grid {
             row_heights: HashMap::new(),
             n_cols: 48,
             n_rows: 200,
+            col_x: Vec::new(),
+            row_y: Vec::new(),
             anchor: (0, 0),
             active: (0, 0),
             edit: None,
@@ -107,6 +115,30 @@ impl Grid {
             resize: None,
             selecting: false,
             dirty: true,
+        };
+        g.rebuild_geom();
+        g
+    }
+
+    /// Recompute the column/row offset prefix sums. Cheap (a single pass over
+    /// the logical extent) and only called when a size or the extent changes,
+    /// so per-frame geometry lookups stay O(1).
+    fn rebuild_geom(&mut self) {
+        self.col_x.clear();
+        self.col_x.reserve(self.n_cols as usize + 1);
+        let mut x = 0.0;
+        self.col_x.push(0.0);
+        for c in 0..self.n_cols {
+            x += self.col_w(c);
+            self.col_x.push(x);
+        }
+        self.row_y.clear();
+        self.row_y.reserve(self.n_rows as usize + 1);
+        let mut y = 0.0;
+        self.row_y.push(0.0);
+        for r in 0..self.n_rows {
+            y += self.row_h(r);
+            self.row_y.push(y);
         }
     }
 
@@ -121,13 +153,20 @@ impl Grid {
         values: HashMap<Addr, CellValue>,
     ) {
         // Grow the logical extent so headers cover all populated cells.
+        let (mut nc, mut nr) = (self.n_cols, self.n_rows);
         for &(c, r) in raw.keys() {
-            self.n_cols = self.n_cols.max(c + 4);
-            self.n_rows = self.n_rows.max(r + 8);
+            nc = nc.max(c + 4);
+            nr = nr.max(r + 8);
         }
+        let grew = nc != self.n_cols || nr != self.n_rows;
+        self.n_cols = nc;
+        self.n_rows = nr;
         self.raw = raw;
         self.fmt = fmt;
         self.values = values;
+        if grew {
+            self.rebuild_geom();
+        }
         self.dirty = true;
     }
 
@@ -145,13 +184,45 @@ impl Grid {
         self.active
     }
 
+    /// Set the selection rectangle directly. Used by the app's tests to drive
+    /// the real selection-summary path without synthesizing pointer events
+    /// (winit's `DeviceId` has no public constructor).
+    #[cfg(test)]
+    pub(crate) fn set_selection(&mut self, anchor: Addr, active: Addr) {
+        self.anchor = anchor;
+        self.active = active;
+    }
+
     /// Collapse the selection onto a single cell (used on sheet switch and
     /// for the seeded screenshot selection).
     pub fn select_only(&mut self, addr: Addr) {
-        self.n_cols = self.n_cols.max(addr.0 + 4);
-        self.n_rows = self.n_rows.max(addr.1 + 8);
+        let (nc, nr) = (self.n_cols.max(addr.0 + 4), self.n_rows.max(addr.1 + 8));
+        if nc != self.n_cols || nr != self.n_rows {
+            self.n_cols = nc;
+            self.n_rows = nr;
+            self.rebuild_geom();
+        }
         self.anchor = addr;
         self.active = addr;
+        self.edit = None;
+        self.ensure_visible();
+        self.dirty = true;
+    }
+
+    /// Select a rectangular range (anchor..active). Used by the app's shots
+    /// hooks to present a multi-cell selection without synthesizing drags.
+    pub fn select_range_public(&mut self, anchor: Addr, active: Addr) {
+        let (nc, nr) = (
+            self.n_cols.max(anchor.0.max(active.0) + 4),
+            self.n_rows.max(anchor.1.max(active.1) + 8),
+        );
+        if nc != self.n_cols || nr != self.n_rows {
+            self.n_cols = nc;
+            self.n_rows = nr;
+            self.rebuild_geom();
+        }
+        self.anchor = anchor;
+        self.active = active;
         self.edit = None;
         self.ensure_visible();
         self.dirty = true;
@@ -190,6 +261,61 @@ impl Grid {
         out
     }
 
+    /// The selection rectangle as `(top_left, bottom_right)`, inclusive and
+    /// normalized so `top_left <= bottom_right` on both axes.
+    pub fn selection_bounds(&self) -> (Addr, Addr) {
+        let c0 = self.anchor.0.min(self.active.0);
+        let c1 = self.anchor.0.max(self.active.0);
+        let r0 = self.anchor.1.min(self.active.1);
+        let r1 = self.anchor.1.max(self.active.1);
+        ((c0, r0), (c1, r1))
+    }
+
+    /// The stored raw input for a cell (empty when unset). Used by copy/cut.
+    pub fn cell_raw_at(&self, addr: Addr) -> String {
+        self.raw.get(&addr).cloned().unwrap_or_default()
+    }
+
+    /// The effective format for a cell (the propagated/explicit one the app
+    /// pushed in via `set_data`). Used by copy so paste can restore it.
+    pub fn cell_fmt_at(&self, addr: Addr) -> CellFormat {
+        self.fmt.get(&addr).copied().unwrap_or_default()
+    }
+
+    /// The computed value for a cell, if any. Used to build the plain-text
+    /// clipboard payload (what other apps paste as).
+    pub fn cell_value_at(&self, addr: Addr) -> Option<CellValue> {
+        self.values.get(&addr).cloned()
+    }
+
+    /// Select the populated data range (the bounding box of every non-empty
+    /// cell), collapsing onto A1 when the sheet is empty. Drives Ctrl+A.
+    pub fn select_used_range(&mut self) {
+        let mut it = self
+            .raw
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(a, _)| *a);
+        if let Some(first) = it.next() {
+            let (mut c0, mut r0, mut c1, mut r1) = (first.0, first.1, first.0, first.1);
+            for (c, r) in it {
+                c0 = c0.min(c);
+                r0 = r0.min(r);
+                c1 = c1.max(c);
+                r1 = r1.max(r);
+            }
+            // Keep the active cell at the top-left so the view doesn't jump to
+            // the bottom-right corner of a large used range.
+            self.anchor = (c1, r1);
+            self.active = (c0, r0);
+            self.edit = None;
+            self.ensure_visible();
+            self.dirty = true;
+        } else {
+            self.select_only((0, 0));
+        }
+    }
+
     /// A1-style label for the selection (`B2` or `B2:D5`).
     pub fn selection_label(&self) -> String {
         if self.anchor == self.active {
@@ -210,20 +336,25 @@ impl Grid {
         self.row_heights.get(&r).copied().unwrap_or(DEFAULT_ROW_H)
     }
 
-    /// Content-space x (before scroll) of column `c`'s left edge.
+    /// Content-space x (before scroll) of column `c`'s left edge. O(1) via
+    /// the cached prefix sums, with a defensive fallback past the last index.
     fn col_left(&self, c: u32) -> f64 {
-        let mut x = 0.0;
-        for i in 0..c {
-            x += self.col_w(i);
+        match self.col_x.get(c as usize) {
+            Some(&x) => x,
+            None => {
+                let last = self.col_x.last().copied().unwrap_or(0.0);
+                last + (c.saturating_sub(self.n_cols)) as f64 * DEFAULT_COL_W
+            }
         }
-        x
     }
     fn row_top(&self, r: u32) -> f64 {
-        let mut y = 0.0;
-        for i in 0..r {
-            y += self.row_h(i);
+        match self.row_y.get(r as usize) {
+            Some(&y) => y,
+            None => {
+                let last = self.row_y.last().copied().unwrap_or(0.0);
+                last + (r.saturating_sub(self.n_rows)) as f64 * DEFAULT_ROW_H
+            }
         }
-        y
     }
 
     fn body_rect(&self) -> Rect {
@@ -345,10 +476,10 @@ impl Grid {
     }
 
     fn total_width(&self) -> f64 {
-        (0..self.n_cols).map(|c| self.col_w(c)).sum()
+        self.col_x.last().copied().unwrap_or(0.0)
     }
     fn total_height(&self) -> f64 {
-        (0..self.n_rows).map(|r| self.row_h(r)).sum()
+        self.row_y.last().copied().unwrap_or(0.0)
     }
 
     /// True once the grid has a usable layout rect (post `apply_layout`).
@@ -503,6 +634,7 @@ impl Grid {
                     self.row_heights.insert(r, h);
                 }
             }
+            self.rebuild_geom();
             self.dirty = true;
             return true;
         }

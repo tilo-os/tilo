@@ -35,6 +35,12 @@ pub fn app_root() -> Box<dyn ui::widget::Widget> {
     Box::new(BooksApp::new())
 }
 
+/// Build the reader opened directly on the `.epub` at `path` — the entry point
+/// the OS uses when the reader is the handler for a book file.
+pub fn app_root_for_path(path: &std::path::Path) -> Box<dyn ui::widget::Widget> {
+    Box::new(BooksApp::open_path(path))
+}
+
 /// Like [`app_root`] but staged with a named scenario for the headless
 /// `--shots` renderer (which captures one settled frame and can't drive live
 /// input). See [`BooksApp::seed_shot_scenario`]. An empty/unknown name yields

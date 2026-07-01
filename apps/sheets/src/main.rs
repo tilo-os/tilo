@@ -4,6 +4,16 @@
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
+//!
+//! Shots flags:
+//!   * `--viewport WxH`     — override the desktop viewport (e.g. the narrow
+//!                            560x720 responsive layout).
+//!   * `--scenario NAME`    — snap a specific surface into view for the frame:
+//!                            `file`, `format`, `docsettings`, `editing`.
+//!
+//! The shots path always seeds the sample workbook and disables on-disk
+//! persistence, so a screenshot shows real formulas without ever touching the
+//! user's stored data.
 
 use std::collections::HashMap;
 
@@ -25,7 +35,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(sheets::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let scenario = parse_scenario_arg(&args);
+
+        let mut app = sheets::SheetsApp::new();
+        app.shots_mode();
+        // The scenario hook runs after the document is seeded (in
+        // `render_shot_to_png`, post-`sync`), because opening a menu / starting
+        // an edit operates on the live state.
+        let setup: Box<dyn FnOnce(&mut sheets::SheetsApp)> = match scenario.as_deref() {
+            Some("file") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_file_menu()),
+            Some("format") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_format_menu()),
+            Some("docsettings") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_doc_settings()),
+            Some("editing") => Box::new(|a: &mut sheets::SheetsApp| a.shots_begin_edit()),
+            Some("summary") => Box::new(|a: &mut sheets::SheetsApp| a.shots_select_summary_range()),
+            _ => Box::new(|_: &mut sheets::SheetsApp| {}),
+        };
+        render_shot_to_png(app, viewport, &out, setup)?;
         return Ok(());
     }
 
@@ -33,6 +59,38 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, sheets::app_root());
     app.run();
     Ok(())
+}
+
+/// Parse `--viewport WxH` (e.g. `--viewport 560x720`) for `--shots`.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let spec = if arg == "--viewport" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--viewport=")
+        };
+        if let Some(spec) = spec {
+            let (w, h) = spec.split_once(['x', 'X'])?;
+            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
+        }
+    }
+    None
+}
+
+/// Parse `--scenario NAME` for `--shots`, selecting which surface to snap into
+/// view for the captured frame.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
@@ -48,12 +106,13 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
+/// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    mut app: sheets::SheetsApp,
     viewport: (u32, u32),
     out: &std::path::Path,
+    setup: Box<dyn FnOnce(&mut sheets::SheetsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
@@ -64,7 +123,10 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
+    app.sync(&mut state.doc, &state.root);
+    // Apply the scenario hook now that the document is seeded.
+    setup(&mut app);
+    let widget: &mut dyn Widget = &mut app;
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(

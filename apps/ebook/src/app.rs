@@ -28,9 +28,12 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{
+    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
+    ImageFormat as ImageFmt,
+};
+use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::{TextRenderer, TextWeight};
@@ -49,6 +52,12 @@ use crate::reader_theme::ReaderPalette;
 
 const TOP_BAR: f64 = 54.0;
 const BOTTOM_BAR: f64 = 58.0;
+
+/// Pixels one wheel-line notch maps to, matching the toolkit's other scroll
+/// surfaces so a mouse wheel feels consistent across apps.
+const WHEEL_LINE_PX: f64 = 48.0;
+/// Accumulated reader wheel travel (px) that commits to one page turn.
+const TURN_STEP_PX: f64 = 40.0;
 const TOC_W: f64 = 244.0;
 const NOTES_W: f64 = 326.0;
 const PAGE_MAX_W: f64 = 680.0;
@@ -65,7 +74,7 @@ const TOC_BREAKPOINT: f64 = 760.0;
 const NOTES_BREAKPOINT: f64 = 1040.0;
 
 /// Which screen is showing. Per-peer, never persisted.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
     Library,
     Reader,
@@ -88,6 +97,8 @@ enum Action {
     GotoChapter(usize),
     ToggleToc,
     ToggleNotes,
+    /// Toggle the reading-settings (type + page) popover above the bottom bar.
+    ToggleTypePopover,
     /// Dismiss any open overlay flap (scrim tap on a narrow window).
     DismissOverlay,
     /// Absorb a click without acting — used to stop a tap on an overlay rail's
@@ -144,6 +155,21 @@ pub struct BooksApp {
     notes_flap: FlapState,
     selected_block: Option<usize>,
     hi_color: HiColor,
+    /// Vertical scroll offset of the library shelf (logical px). The shelf can
+    /// hold far more books than fit on screen, so it scrolls; this is the
+    /// current offset, clamped each frame to `shelf_max_scroll`.
+    shelf_scroll: f64,
+    /// Last-known maximum shelf scroll, computed during `draw_library` where the
+    /// column count + row heights are known, and read back by the wheel handler
+    /// (which runs before the next layout) to clamp the offset.
+    shelf_max_scroll: f64,
+    /// Accumulated wheel delta in the reader, so a trackpad's many small pixel
+    /// deltas coalesce into whole page turns instead of flipping wildly.
+    turn_accum: f64,
+    /// Reading-settings popover (text size / spacing / typeface / page tint),
+    /// summoned from the bottom bar. Keeps those controls out of the always-on
+    /// chrome so the bar stays readable at every width.
+    type_popover: bool,
     cursor: Point,
     /// First block index visible on the current page (for bookmark targeting).
     page_top_block: usize,
@@ -162,9 +188,21 @@ pub struct BooksApp {
     last_persisted: Option<(usize, usize)>,
     cur_page_count: usize,
     seeded: bool,
+    /// Sample-content mode: only the hermetic `--shots`/test path sets this. It
+    /// swaps in the multi-book sample library and seeds demo annotations so a
+    /// screenshot shows a lived-in reader. A real user is never seeded.
+    demo: bool,
+    /// Last resolved layout mode per rail, so a breakpoint crossing (or the
+    /// first real width) settles the flap instantly instead of animating a
+    /// gratuitous slide on launch/resize.
+    settled_toc: Option<SplitLayout>,
+    settled_notes: Option<SplitLayout>,
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
+    /// Decoded cover artwork lifted into GPU-ready image handles, keyed by book
+    /// id and built lazily on first shelf draw (never per frame).
+    cover_cache: HashMap<String, PenikoImage>,
 
     // --- per-frame hit regions --------------------------------------------
     hits: Vec<Hit>,
@@ -172,21 +210,30 @@ pub struct BooksApp {
 
 impl BooksApp {
     pub fn new() -> Self {
-        let library = load_library();
+        Self::with_library(load_library())
+    }
+
+    fn with_library(library: Vec<Book>) -> Self {
+        // Open straight into the reader when there is a book to read (the first
+        // one on the shelf); otherwise land on the library so an empty shelf
+        // shows its guidance rather than a blank page.
+        let view = if library.is_empty() { View::Library } else { View::Reader };
         Self {
             library,
             rect: Rect::ZERO,
             dirty: true,
-            // Default to the reader on the bundled book: the money shot is a
-            // real reading page with chrome, and the library is one click away.
-            view: View::Reader,
+            view,
             book_idx: 0,
             chapter: 0,
             page: 0,
             toc_flap: FlapState::open_when_docked(),
             notes_flap: FlapState::open_when_docked(),
-            selected_block: Some(2),
+            selected_block: None,
             hi_color: HiColor::Yellow,
+            shelf_scroll: 0.0,
+            shelf_max_scroll: 0.0,
+            turn_accum: 0.0,
+            type_popover: false,
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
@@ -199,8 +246,22 @@ impl BooksApp {
             last_persisted: None,
             cur_page_count: 1,
             seeded: false,
+            demo: false,
+            settled_toc: None,
+            settled_notes: None,
             layout: None,
+            cover_cache: HashMap::new(),
             hits: Vec::new(),
+        }
+    }
+
+    /// Build the reader pointed at a single opened `.epub` (OS file
+    /// association). Falls back to the normal library if the file can't be
+    /// parsed, so a bad hand-off still opens something usable.
+    pub fn open_path(path: &std::path::Path) -> Self {
+        match crate::content::open_epub_path(path) {
+            Some(book) => Self::with_library(vec![book]),
+            None => Self::new(),
         }
     }
 
@@ -238,14 +299,26 @@ impl BooksApp {
         self.notes_flap.is_open(self.notes_layout())
     }
 
-    /// Reconcile both flaps with the current width (drop a stale user
-    /// preference when the window crosses a breakpoint) and advance their
-    /// eased reveal. Returns true while either is still animating. Called once
-    /// per frame from `draw` so a resize returns to the auto behaviour.
+    /// Reconcile both flaps with the current width. On the first real width and
+    /// on every breakpoint crossing the flap is *settled* (snapped) to its mode
+    /// default, so launch and resize never play a gratuitous slide — animation
+    /// is reserved for explicit user toggles within one layout mode. Called
+    /// each frame from `apply_layout`/`draw`, so a resize returns to auto.
     fn reconcile_flaps(&mut self) {
-        let (tl, nl) = (self.toc_layout(), self.notes_layout());
-        self.toc_flap.reconcile(tl);
-        self.notes_flap.reconcile(nl);
+        let tl = self.toc_layout();
+        if self.settled_toc != Some(tl) {
+            self.toc_flap.reconcile(tl);
+            let open = self.toc_flap.is_open(tl);
+            self.toc_flap.snap(open);
+            self.settled_toc = Some(tl);
+        }
+        let nl = self.notes_layout();
+        if self.settled_notes != Some(nl) {
+            self.notes_flap.reconcile(nl);
+            let open = self.notes_flap.is_open(nl);
+            self.notes_flap.snap(open);
+            self.settled_notes = Some(nl);
+        }
     }
 
     /// True while either rail's eased reveal is still settling toward its
@@ -256,18 +329,64 @@ impl BooksApp {
     }
 
     /// Stage a named interaction state for the single-frame `--shots`
-    /// renderer (which can't reach these states through live input). The
-    /// flaps are *snapped* (no animation) so the captured frame is settled.
+    /// renderer (which can't reach these states through live input). This is
+    /// the ONLY place sample content enters the app: it swaps in the multi-book
+    /// sample library and marks the app as demo so `sync` seeds demo
+    /// annotations. Flaps are *snapped* (no animation) so the frame is settled.
     ///
     /// Recognised scenarios:
-    /// * `narrow` — summon the contents rail as an overlay flap over the page
-    ///   behind a scrim, the state a narrow window shows after the hamburger.
+    /// * `library` — the shelf, showing several sample books.
+    /// * `library-scrolled` — the shelf scrolled to the bottom (exercises the
+    ///   scroll offset, top-bar clip, and indicator).
+    /// * `narrow`  — the contents rail summoned as an overlay flap over the
+    ///   page behind a scrim (the narrow-window layout).
+    /// * `type`    — the reading-settings popover open above the bottom bar.
+    /// * `select`  — a paragraph selected, floating the selection toolbar.
+    /// * anything else — the reader on the first sample book (clean page).
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
-        if scenario == "narrow" {
-            // Open the contents rail; the annotations rail stays closed so the
-            // scrimmed overlay flap reads clearly against the page.
-            self.toc_flap.snap(true);
-            self.notes_flap.snap(false);
+        // The shelf/read scenarios render the *real* disk-discovered library
+        // (used to verify discovery + cover decoding + a clean first-open with
+        // no fabricated marks), so they deliberately do not enter demo mode.
+        if scenario == "shelf" {
+            self.view = View::Library;
+            return;
+        }
+        if scenario == "read" {
+            self.view = View::Reader;
+            return;
+        }
+        self.demo = true;
+        self.library = crate::content::load_sample_library();
+        self.book_idx = 0;
+        self.chapter = 0;
+        self.page = 0;
+        match scenario {
+            "library" => self.view = View::Library,
+            "select" => {
+                // A selected paragraph so the shot exercises the floating
+                // selection toolbar (swatches + Note) over the page.
+                self.view = View::Reader;
+                self.selected_block = Some(2);
+            }
+            "library-scrolled" => {
+                // Scrolled to the bottom of an overflowing shelf so the shot
+                // exercises the scroll offset, the clip under the top bar, and
+                // the indicator. The large value clamps to the real max in draw.
+                self.view = View::Library;
+                self.shelf_scroll = 5000.0;
+            }
+            "narrow" => {
+                self.view = View::Reader;
+                // Contents rail open as an overlay flap; annotations closed so
+                // the scrimmed flap reads clearly against the page.
+                self.toc_flap.snap(true);
+                self.notes_flap.snap(false);
+            }
+            "type" => {
+                self.view = View::Reader;
+                self.type_popover = true;
+            }
+            _ => self.view = View::Reader,
         }
     }
 
@@ -275,18 +394,16 @@ impl BooksApp {
     // CRDT <-> cache plumbing
     // ======================================================================
 
-    /// Seed sensible first-run content so a brand-new document opens onto a
-    /// living page (a bookmark, two highlights, and a typed note) instead of a
-    /// blank one. Guarded so a returning reader is never re-seeded.
+    /// Seed the demo library's annotations so a `--shots` frame shows a
+    /// lived-in reader (a bookmark, two highlights, and a typed note). This runs
+    /// ONLY in demo mode — a real user's document is never populated with
+    /// fabricated content; they start with a clean book and their own marks.
     fn seed_if_needed(&mut self, doc: &mut AutoCommit) {
-        if self.seeded {
+        if self.seeded || !self.demo {
             return;
         }
         self.seeded = true;
 
-        if !BooksDoc::has_settings(doc) {
-            BooksDoc::write_settings(doc, &Settings::default());
-        }
         if !BooksDoc::list_annotations(doc).is_empty() {
             return;
         }
@@ -400,6 +517,7 @@ impl BooksApp {
             Action::Back => {
                 self.view = View::Library;
                 self.composing = None;
+                self.type_popover = false;
             }
             Action::NextPage => {
                 let pc = self.cur_page_count.max(1);
@@ -436,7 +554,11 @@ impl BooksApp {
                 let layout = self.notes_layout();
                 self.notes_flap.toggle(layout);
             }
+            Action::ToggleTypePopover => {
+                self.type_popover = !self.type_popover;
+            }
             Action::DismissOverlay => {
+                self.type_popover = false;
                 if self.toc_layout() == SplitLayout::Overlay && self.toc_open() {
                     self.toc_flap.close();
                 }
@@ -742,6 +864,20 @@ impl Widget for BooksApp {
                     *handled = true;
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // A line notch is one page/row; a trackpad's pixel deltas are
+                // summed so a flick is a controlled turn, not a stampede.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (-*y as f64) * WHEEL_LINE_PX,
+                    MouseScrollDelta::PixelDelta(p) => -p.y,
+                };
+                if self.handle_wheel(dy, doc) {
+                    self.refresh_from_doc(doc);
+                    self.persist_progress(doc);
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
             _ => {}
         }
     }
@@ -830,12 +966,15 @@ impl BooksApp {
                 true
             }
             Key::Named(NamedKey::Escape) => {
-                // Esc first dismisses an open overlay flap (narrow window);
-                // only when none is floating does it leave the book.
+                // Esc peels back one layer at a time: the reading-settings
+                // popover, then an open overlay flap (narrow window), and only
+                // when nothing is floating does it leave the book.
                 let toc_overlay = self.toc_layout() == SplitLayout::Overlay && self.toc_open();
                 let notes_overlay =
                     self.notes_layout() == SplitLayout::Overlay && self.notes_open();
-                if toc_overlay || notes_overlay {
+                if self.type_popover {
+                    self.type_popover = false;
+                } else if toc_overlay || notes_overlay {
                     self.dispatch(Action::DismissOverlay, doc);
                 } else {
                     self.dispatch(Action::Back, doc);
@@ -867,6 +1006,54 @@ impl BooksApp {
                 }
             }
             _ => false,
+        }
+    }
+
+    /// Wheel / trackpad handling. In the reader a downward scroll turns forward
+    /// and an upward scroll turns back, accumulated so a trackpad flick advances
+    /// a sensible number of pages. On the shelf it scrolls the grid so a library
+    /// taller than the window is fully reachable. Returns `true` when consumed.
+    fn handle_wheel(&mut self, dy: f64, doc: &mut AutoCommit) -> bool {
+        if dy == 0.0 {
+            return false;
+        }
+        match self.view {
+            View::Library => {
+                let before = self.shelf_scroll;
+                self.shelf_scroll = (self.shelf_scroll + dy).clamp(0.0, self.shelf_max_scroll);
+                self.shelf_scroll != before
+            }
+            View::Reader => {
+                // A page fills the viewport, so the wheel turns pages rather than
+                // scrolling within one. Suppressed while a modal surface (the
+                // reading-settings popover or an in-progress note) owns input.
+                if self.type_popover || self.composing.is_some() {
+                    return false;
+                }
+                self.turn_accum += dy;
+                let mut turned = false;
+                while self.turn_accum >= TURN_STEP_PX {
+                    self.turn_accum -= TURN_STEP_PX;
+                    let before = (self.chapter, self.page);
+                    self.dispatch(Action::NextPage, doc);
+                    if (self.chapter, self.page) == before {
+                        self.turn_accum = 0.0; // at the end — stop coasting
+                        break;
+                    }
+                    turned = true;
+                }
+                while self.turn_accum <= -TURN_STEP_PX {
+                    self.turn_accum += TURN_STEP_PX;
+                    let before = (self.chapter, self.page);
+                    self.dispatch(Action::PrevPage, doc);
+                    if (self.chapter, self.page) == before {
+                        self.turn_accum = 0.0; // at the very start
+                        break;
+                    }
+                    turned = true;
+                }
+                turned
+            }
         }
     }
 }
@@ -1002,8 +1189,10 @@ impl BooksApp {
             None,
             TextWeight::Bold,
         );
-        let total_annos: usize = self.shelf_annos.values().sum();
-        let sub = format!("{} books · {} annotations", lib.len(), total_annos);
+        let sub = match lib.len() {
+            1 => "1 book".to_string(),
+            n => format!("{n} books"),
+        };
         let (sw, _) = tr.measure(&sub, 13.0, None);
         tr.draw_text(
             scene,
@@ -1013,6 +1202,35 @@ impl BooksApp {
             t * Affine::translate((r.x1 - 28.0 - sw as f64, r.y0 + 19.0)),
             None,
         );
+
+        // --- empty shelf --------------------------------------------------
+        if lib.is_empty() {
+            let cx = (r.x0 + r.x1) / 2.0;
+            let cy = (r.y0 + TOP_BAR + r.y1) / 2.0;
+            let head = "No books yet";
+            let (hw, _) = tr.measure_weighted(head, 18.0, None, TextWeight::Semibold);
+            tr.draw_text_weighted(
+                scene,
+                head,
+                18.0,
+                c.text_primary,
+                t * Affine::translate((cx - hw as f64 / 2.0, cy - 24.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            let hint = "Add .epub files to your Books folder to see them here.";
+            let (tw2, _) = tr.measure(hint, 13.0, None);
+            tr.draw_text(
+                scene,
+                hint,
+                13.0,
+                c.text_dim,
+                t * Affine::translate((cx - tw2 as f64 / 2.0, cy + 4.0)),
+                None,
+            );
+            self.library = lib;
+            return;
+        }
 
         // --- grid ---------------------------------------------------------
         let margin = 40.0;
@@ -1026,15 +1244,74 @@ impl BooksApp {
         let start_x = r.x0 + (r.width() - grid_w) / 2.0;
         let start_y = r.y0 + TOP_BAR + 36.0;
 
+        // The shelf can hold more books than fit, so it scrolls. Work out the
+        // total content height and clamp the offset to what's reachable.
+        let rows = lib.len().div_ceil(cols);
+        let row_pitch = card_h + gap;
+        let content_h = if rows == 0 {
+            0.0
+        } else {
+            (rows as f64 - 1.0) * row_pitch + card_h + 40.0
+        };
+        let visible_h = (r.y1 - start_y).max(0.0);
+        self.shelf_max_scroll = (content_h - visible_h).max(0.0);
+        self.shelf_scroll = self.shelf_scroll.clamp(0.0, self.shelf_max_scroll);
+        let scroll = self.shelf_scroll;
+
+        // Clip the scrolling body to below the top bar so cards slide under it
+        // rather than over it, then offset every card by the scroll.
+        let body = Rect::new(r.x0, r.y0 + TOP_BAR + 1.0, r.x1, r.y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
         for (i, book) in lib.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
             let x = start_x + col as f64 * (card_w + gap);
-            let y = start_y + row as f64 * (card_h + gap);
+            let y = start_y + row as f64 * row_pitch - scroll;
+            // Cull rows fully outside the viewport (keeps a huge shelf cheap).
+            if y > r.y1 || y + card_h + 84.0 < r.y0 + TOP_BAR {
+                continue;
+            }
             self.draw_book_card(scene, t, tr, theme, book, i, x, y, card_w, cover_h);
+        }
+        scene.pop_layer();
+
+        // Scroll indicator, only when there's something to scroll to.
+        if self.shelf_max_scroll > 1.0 {
+            let track_x = r.x1 - 9.0;
+            let track_y0 = r.y0 + TOP_BAR + 10.0;
+            let track_y1 = r.y1 - 10.0;
+            let track_h = (track_y1 - track_y0).max(1.0);
+            let thumb_h = (track_h * visible_h / content_h).clamp(28.0, track_h);
+            let frac = scroll / self.shelf_max_scroll;
+            let thumb_y = track_y0 + frac * (track_h - thumb_h);
+            let thumb = Rect::new(track_x, thumb_y, track_x + 4.0, thumb_y + thumb_h);
+            paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
         }
 
         self.library = lib;
+    }
+
+    /// Resolve a book's decoded cover into a cached, GPU-ready image handle.
+    /// Built once per book id; subsequent frames clone the cached handle (an
+    /// `Arc` bump), so no decoding or allocation happens on the draw path.
+    fn cover_image(&mut self, book: &Book) -> Option<PenikoImage> {
+        if let Some(img) = self.cover_cache.get(&book.id) {
+            return Some(img.clone());
+        }
+        let cover = book.cover.as_ref()?;
+        let expected = (cover.width as usize) * (cover.height as usize) * 4;
+        if cover.rgba.len() != expected {
+            return None;
+        }
+        let img = PenikoImage {
+            data: Blob::new(cover.rgba.clone()),
+            format: ImageFmt::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: cover.width,
+            height: cover.height,
+        };
+        self.cover_cache.insert(book.id.clone(), img.clone());
+        Some(img)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1055,54 +1332,63 @@ impl BooksApp {
         let cover = Rect::new(x, y, x + w, y + cover_h);
         let hover = self.is_hover(Rect::new(x, y, x + w, y + cover_h + 78.0));
 
-        // Drop shadow + cover.
+        // Drop shadow.
         let shadow = Rect::new(x + 3.0, y + 6.0, x + w + 3.0, y + cover_h + 6.0);
         paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 60));
-        let (spine, ink) = cover_colors(theme, book.cover_tint);
-        paint::fill_round(scene, t, cover, 12.0, spine);
-        // a darker foot for depth
-        let foot = Rect::new(x, y + cover_h * 0.72, x + w, y + cover_h);
-        paint::fill_round(scene, t, foot, 12.0, Color::from_rgba8(0, 0, 0, 38));
+
+        // Real cover art when the EPUB carries one; otherwise a generated spine
+        // built from theme hues + the title/author set in type.
+        if let Some(img) = self.cover_image(book) {
+            blit_cover(scene, t, img, cover, 12.0);
+            // Faint inner edge to seat the art against the shelf.
+            paint::stroke_round(scene, t, cover, 12.0, Color::from_rgba8(0, 0, 0, 40), 1.0);
+        } else {
+            let (spine, ink) = cover_colors(theme, book.cover_tint);
+            paint::fill_round(scene, t, cover, 12.0, spine);
+            // a darker foot for depth
+            let foot = Rect::new(x, y + cover_h * 0.72, x + w, y + cover_h);
+            paint::fill_round(scene, t, foot, 12.0, Color::from_rgba8(0, 0, 0, 38));
+
+            // subject pill + spark.
+            if !book.subject.is_empty() {
+                let psize = 11.0;
+                let (pw, _) = tr.measure(&book.subject, psize, None);
+                let pill = Rect::new(x + 16.0, y + 16.0, x + 16.0 + pw as f64 + 18.0, y + 16.0 + 20.0);
+                paint::fill_round(scene, t, pill, 10.0, ink.with_alpha_factor(0.16));
+                tr.draw_text(
+                    scene,
+                    &book.subject,
+                    psize,
+                    ink,
+                    t * Affine::translate((x + 25.0, y + 20.0)),
+                    None,
+                );
+            }
+            paint::spark(scene, t, Point::new(x + w - 26.0, y + 26.0), 7.0, ink.with_alpha_factor(0.8), 1.6);
+
+            // title (wrapped) + author.
+            let title_w = w - 32.0;
+            tr.draw_text_weighted(
+                scene,
+                &book.title,
+                19.0,
+                ink,
+                t * Affine::translate((x + 16.0, y + cover_h * 0.40)),
+                Some(title_w as f32),
+                TextWeight::Bold,
+            );
+            tr.draw_text(
+                scene,
+                &book.author,
+                13.0,
+                ink.with_alpha_factor(0.82),
+                t * Affine::translate((x + 16.0, y + cover_h - 30.0)),
+                Some(title_w as f32),
+            );
+        }
         if hover {
             paint::stroke_round(scene, t, cover, 12.0, theme.border_focus, 2.0);
         }
-
-        // subject pill + spark.
-        if !book.subject.is_empty() {
-            let psize = 11.0;
-            let (pw, _) = tr.measure(&book.subject, psize, None);
-            let pill = Rect::new(x + 16.0, y + 16.0, x + 16.0 + pw as f64 + 18.0, y + 16.0 + 20.0);
-            paint::fill_round(scene, t, pill, 10.0, ink.with_alpha_factor(0.16));
-            tr.draw_text(
-                scene,
-                &book.subject,
-                psize,
-                ink,
-                t * Affine::translate((x + 25.0, y + 20.0)),
-                None,
-            );
-        }
-        paint::spark(scene, t, Point::new(x + w - 26.0, y + 26.0), 7.0, ink.with_alpha_factor(0.8), 1.6);
-
-        // title (wrapped) + author.
-        let title_w = w - 32.0;
-        tr.draw_text_weighted(
-            scene,
-            &book.title,
-            19.0,
-            ink,
-            t * Affine::translate((x + 16.0, y + cover_h * 0.40)),
-            Some(title_w as f32),
-            TextWeight::Bold,
-        );
-        tr.draw_text(
-            scene,
-            &book.author,
-            13.0,
-            ink.with_alpha_factor(0.82),
-            t * Affine::translate((x + 16.0, y + cover_h - 30.0)),
-            Some(title_w as f32),
-        );
 
         // --- under-cover meta: progress + counts -------------------------
         let frac = self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0);
@@ -1144,10 +1430,13 @@ impl BooksApp {
             );
         }
 
-        self.push_hit(
-            Rect::new(x, y, x + w, meta_y + 70.0),
-            Action::OpenBook(idx),
-        );
+        // Clamp the click target to the scrolling body so a card sliding under
+        // the top bar can't capture clicks up in the header.
+        let hit_top = y.max(self.rect.y0 + TOP_BAR);
+        let hit_bot = (meta_y + 70.0).min(self.rect.y1);
+        if hit_bot > hit_top {
+            self.push_hit(Rect::new(x, hit_top, x + w, hit_bot), Action::OpenBook(idx));
+        }
     }
 }
 
@@ -1279,6 +1568,9 @@ impl BooksApp {
 
         // ---- highlight bands + margin glyphs (behind text) --------------
         let chapter = self.chapter;
+        // Screen-y of the selected block's top, if it is on this page — used to
+        // anchor the floating selection toolbar.
+        let mut sel_anchor: Option<f64> = None;
         for b in &layout.blocks {
             let visible: Vec<&crate::paginate::LaidLine> = b
                 .lines
@@ -1301,6 +1593,7 @@ impl BooksApp {
                 );
                 paint::fill_round(scene, t, sel, 6.0, theme.accent_primary.with_alpha_factor(0.10));
                 paint::stroke_round(scene, t, sel, 6.0, theme.accent_primary.with_alpha_factor(0.55), 1.2);
+                sel_anchor = Some(by0);
             }
 
             for a in annos.iter().filter(|a| a.chapter == chapter && a.block == b.index) {
@@ -1461,12 +1754,103 @@ impl BooksApp {
         // bookmark state + the notes drawer both consult `self.annotations`)
         self.annotations = annos;
 
-        // ---- chrome: top bar, bottom bar, drawers -----------------------
+        // ---- chrome: top bar, bottom bar, selection HUD, drawers --------
         self.draw_reader_topbar(scene, t, tr, theme, &lib, &c);
-        self.draw_reader_bottombar(scene, t, tr, theme, &c);
+        self.draw_reader_bottombar(scene, t, tr, theme, &c, nchap.max(1));
+        // Floating selection toolbar over the page (under any overlay rail).
+        self.draw_selection_hud(scene, t, tr, theme, &c, paper_x, paper_w, body_y0, sel_anchor);
         self.draw_rails(scene, t, tr, theme, &lib, body_y0, body_y1, &c);
+        // Reading-settings popover floats above everything.
+        self.draw_type_popover(scene, t, tr, theme, &c);
 
         self.library = lib;
+    }
+
+    /// A floating, contextual toolbar shown while a paragraph is selected:
+    /// five highlight colours (a tap highlights the selection in that colour)
+    /// and a Note action. Reachable at any width — this is how highlighting
+    /// works when the annotations rail is collapsed on a narrow window.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_selection_hud(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        paper_x: f64,
+        paper_w: f64,
+        body_y0: f64,
+        anchor_y: Option<f64>,
+    ) {
+        if self.view != View::Reader || self.selected_block.is_none() {
+            return;
+        }
+        let r = self.rect;
+
+        let pad = 12.0;
+        let dot_r = 9.0;
+        let dot_gap = 10.0;
+        let hud_h = 42.0;
+        let dots_w = HiColor::ALL.len() as f64 * (dot_r * 2.0) + (HiColor::ALL.len() as f64 - 1.0) * dot_gap;
+        // "Note" action pill.
+        let (nw, _) = tr.measure_weighted("Note", 13.0, None, TextWeight::Medium);
+        let note_w = nw as f64 + 24.0;
+        let sep_w = 13.0;
+        let hud_w = pad * 2.0 + dots_w + sep_w + note_w;
+
+        let cx = paper_x + paper_w / 2.0;
+        let hud_x = (cx - hud_w / 2.0).clamp(r.x0 + 8.0, r.x1 - 8.0 - hud_w);
+        // Prefer floating just above the selected block; drop below if that
+        // would collide with the top bar; fall back to the page top.
+        let hud_y = match anchor_y {
+            Some(ay) if ay - hud_h - 12.0 >= body_y0 + 6.0 => ay - hud_h - 12.0,
+            Some(ay) => ay + 30.0,
+            None => body_y0 + 12.0,
+        };
+        let hud = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + hud_h);
+
+        // Shadow + body.
+        let shadow = Rect::new(hud.x0 - 1.0, hud.y0 + 3.0, hud.x1 + 1.0, hud.y1 + 5.0);
+        paint::fill_round(scene, t, shadow, hud_h / 2.0, Color::from_rgba8(0, 0, 0, 70));
+        paint::fill_round(scene, t, hud, hud_h / 2.0, c.surfaces.raised);
+        paint::stroke_round(scene, t, hud, hud_h / 2.0, c.border_standard, 1.0);
+        // Swallow taps on the bar body so they don't fall through to the page.
+        self.push_hit(hud, Action::Swallow);
+
+        let cyc = hud_y + hud_h / 2.0;
+        let mut x = hud_x + pad + dot_r;
+        for col in HiColor::ALL {
+            let center = Point::new(x, cyc);
+            let rect = Rect::new(center.x - dot_r, center.y - dot_r, center.x + dot_r, center.y + dot_r);
+            paint::circle(scene, t, center, dot_r, ReaderPalette::highlight_swatch(col));
+            if self.hi_color == col {
+                paint::stroke_round(scene, t, rect.inflate(2.5, 2.5), dot_r + 2.5, theme.text_primary, 1.8);
+            } else if self.is_hover(rect) {
+                paint::stroke_round(scene, t, rect.inflate(2.5, 2.5), dot_r + 2.5, c.border_standard, 1.2);
+            }
+            self.push_hit(rect.inflate(3.0, 3.0), Action::SetColor(col));
+            x += dot_r * 2.0 + dot_gap;
+        }
+        // Divider between the swatches and the Note action.
+        let dots_end = hud_x + pad + dots_w;
+        let div_x = dots_end + sep_w / 2.0;
+        paint::line(scene, t, Point::new(div_x, cyc - 10.0), Point::new(div_x, cyc + 10.0), c.border_standard, 1.0);
+        // Note pill.
+        let note_x = dots_end + sep_w;
+        let note_rect = Rect::new(note_x, cyc - 14.0, note_x + note_w, cyc + 14.0);
+        let note_hover = self.is_hover(note_rect);
+        paint::fill_round(scene, t, note_rect, 14.0, if note_hover { theme.bg_hover } else { c.surfaces.overlay });
+        tr.draw_text_weighted(
+            scene,
+            "Note",
+            13.0,
+            c.text_primary,
+            t * Affine::translate((note_x + 12.0, cyc - 7.0)),
+            None,
+            TextWeight::Medium,
+        );
+        self.push_hit(note_rect, Action::AddNote);
     }
 
     /// Paint the contents + annotations rails. Each rail is either docked
@@ -1562,31 +1946,41 @@ impl BooksApp {
         let toc_active = self.toc_open();
         self.icon_button(scene, t, theme, x, cy, s, Ico::Toc, toc_active, Action::ToggleToc);
 
-        // centre: title + author
+        // centre: title (+ author, when it fits). The title is clamped to the
+        // gap between the left controls and the right controls and ellipsised
+        // rather than allowed to collide with either cluster on a narrow window.
         if let Some(book) = lib.get(self.book_idx) {
-            let title = &book.title;
-            let (tw, _) = tr.measure_weighted(title, 16.0, None, TextWeight::Semibold);
-            let auth = format!("  ·  {}", book.author);
+            let left_bound = x + s + 12.0;
+            let right_bound = r.x1 - 14.0 - s - 6.0 - s - 12.0;
+            let avail = (right_bound - left_bound).max(40.0);
+
+            let auth = format!("   {}", book.author);
             let (aw, _) = tr.measure(&auth, 13.0, None);
-            let total = tw as f64 + aw as f64;
-            let cx = (r.x0 + r.x1) / 2.0 - total / 2.0;
+            let full_title = ellipsize(tr, &book.title, 16.0, TextWeight::Semibold, avail);
+            let (tw, _) = tr.measure_weighted(&full_title, 16.0, None, TextWeight::Semibold);
+            // Only show the author if title + author both fit comfortably.
+            let show_author = tw as f64 + aw as f64 <= avail && book.title == full_title;
+            let total = if show_author { tw as f64 + aw as f64 } else { tw as f64 };
+            let cx = ((left_bound + right_bound) / 2.0 - total / 2.0).max(left_bound);
             tr.draw_text_weighted(
                 scene,
-                title,
+                &full_title,
                 16.0,
                 c.text_primary,
                 t * Affine::translate((cx, r.y0 + 17.0)),
                 None,
                 TextWeight::Semibold,
             );
-            tr.draw_text(
-                scene,
-                &auth,
-                13.0,
-                c.text_dim,
-                t * Affine::translate((cx + tw as f64, r.y0 + 18.5)),
-                None,
-            );
+            if show_author {
+                tr.draw_text(
+                    scene,
+                    &auth,
+                    13.0,
+                    c.text_dim,
+                    t * Affine::translate((cx + tw as f64, r.y0 + 18.5)),
+                    None,
+                );
+            }
         }
 
         // right: bookmark toggle + notes toggle
@@ -1610,6 +2004,10 @@ impl BooksApp {
         );
     }
 
+    /// The bottom bar carries only page navigation and one "Aa" button that
+    /// opens the reading-settings popover. Keeping the type/spacing/theme
+    /// controls out of the always-on chrome is what lets the bar stay clean and
+    /// non-overflowing from 1280 all the way down to 560px.
     #[allow(clippy::too_many_arguments)]
     fn draw_reader_bottombar(
         &mut self,
@@ -1618,6 +2016,7 @@ impl BooksApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         c: &ui::tokens::colors::Colors,
+        nchap: usize,
     ) {
         let r = self.rect;
         let y0 = r.y1 - BOTTOM_BAR;
@@ -1627,11 +2026,9 @@ impl BooksApp {
 
         let s = 34.0;
         let cy = y0 + (BOTTOM_BAR - s) / 2.0;
-        let pill_h = 30.0;
-        let pill_y = y0 + (BOTTOM_BAR - pill_h) / 2.0;
         let mut x = r.x0 + 18.0;
 
-        // page nav
+        // --- left: page navigation ---------------------------------------
         x += self.icon_button(scene, t, theme, x, cy, s, Ico::Prev, false, Action::PrevPage) + 2.0;
         let pg = format!("{} / {}", self.page + 1, self.cur_page_count.max(1));
         let (pw, _) = tr.measure_weighted(&pg, 13.0, None, TextWeight::Medium);
@@ -1644,60 +2041,164 @@ impl BooksApp {
             None,
             TextWeight::Medium,
         );
-        x += pw as f64 + 14.0;
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::Next, false, Action::NextPage) + 22.0;
+        x += pw as f64 + 12.0;
+        x += self.icon_button(scene, t, theme, x, cy, s, Ico::Next, false, Action::NextPage);
 
-        // typography group
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::MinusI, false, Action::FontDec) + 2.0;
+        // Chapter locator, only when there is comfortable room for it.
+        let loc = format!("Chapter {} of {}", self.chapter + 1, nchap.max(1));
+        let (lw, _) = tr.measure(&loc, 12.0, None);
+
+        // --- right: reading-settings ("Aa") ------------------------------
+        let pill_h = 30.0;
+        let pill_y = y0 + (BOTTOM_BAR - pill_h) / 2.0;
+        let (aw, _) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
+        let aa_w = aw as f64 + 26.0;
+        let aa_x = r.x1 - 18.0 - aa_w;
+        let aa_rect = Rect::new(aa_x, pill_y, aa_x + aa_w, pill_y + pill_h);
+        let aa_active = self.type_popover;
+        let aa_hover = self.is_hover(aa_rect);
+        let aa_bg = if aa_active {
+            theme.accent_primary
+        } else if aa_hover {
+            theme.bg_hover
+        } else {
+            c.surfaces.overlay
+        };
+        paint::fill_round(scene, t, aa_rect, pill_h / 2.0, aa_bg);
+        let aa_ink = if aa_active { Color::from_rgb8(248, 248, 252) } else { c.text_primary };
+        tr.draw_text_weighted(
+            scene,
+            "Aa",
+            15.0,
+            aa_ink,
+            t * Affine::translate((aa_x + 13.0, pill_y + 6.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        self.push_hit(aa_rect, Action::ToggleTypePopover);
+
+        // Draw the chapter locator centred in the gap between the nav cluster
+        // and the Aa button, but only if it fits without crowding either.
+        let gap_start = x + 20.0;
+        let gap_end = aa_x - 20.0;
+        if gap_end - gap_start > lw as f64 {
+            let lx = (gap_start + gap_end) / 2.0 - lw as f64 / 2.0;
+            tr.draw_text(scene, &loc, 12.0, c.text_dim, t * Affine::translate((lx, cy + 9.0)), None);
+        }
+    }
+
+    /// The reading-settings popover summoned by the bottom bar's "Aa" button:
+    /// text size, line spacing, typeface, and page tint. A full-surface scrim
+    /// behind it makes any tap-away dismiss it. Drawn last so it floats on top.
+    fn draw_type_popover(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+    ) {
+        if !self.type_popover {
+            return;
+        }
+        let r = self.rect;
+        // Tap-away scrim (very light — this is a small utility popover).
+        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(0.18);
+        scene.fill(Fill::NonZero, t, scrim, None, &r);
+        self.push_hit(r, Action::DismissOverlay);
+
+        let pad = 16.0;
+        let row_h = 34.0;
+        let panel_w = 300.0_f64.min(r.width() - 24.0);
+        let panel_h = pad * 2.0 + row_h * 4.0 + 10.0 * 3.0 + 22.0 * 2.0;
+        let bar_top = r.y1 - BOTTOM_BAR;
+        let px1 = (r.x1 - 18.0).min(r.x1 - 12.0);
+        let px0 = (px1 - panel_w).max(r.x0 + 12.0);
+        let py1 = bar_top - 10.0;
+        let py0 = py1 - panel_h;
+        let panel = Rect::new(px0, py0, px1, py1);
+        // Body panel (its own tap-swallow so clicks inside don't dismiss).
+        paint::fill_round(scene, t, panel, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        paint::stroke_round(scene, t, panel, theme.tokens.radii.lg as f64, c.border_standard, 1.0);
+        self.push_hit(panel, Action::Swallow);
+
+        let ix0 = px0 + pad;
+        let ix1 = px1 - pad;
+        let mut y = py0 + pad;
+
+        // Text size stepper.
         let fs = format!("{}%", (self.settings.font_scale * 100.0).round() as i32);
-        let (fsw, _) = tr.measure(&fs, 12.0, None);
-        tr.draw_text(scene, &fs, 12.0, c.text_dim, t * Affine::translate((x + 4.0, cy + 9.0)), None);
-        x += fsw as f64 + 8.0;
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::PlusI, false, Action::FontInc) + 12.0;
-        x += self.pill(scene, t, tr, theme, x, pill_y, pill_h, self.settings.font.label(), 12.0, false, Some(Action::CycleFont)) + 8.0;
+        self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Text size", &fs, Action::FontDec, Action::FontInc);
+        y += row_h + 10.0;
+        // Line spacing stepper.
+        let ls = format!("{:.1}", self.settings.line_spacing);
+        self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Line spacing", &ls, Action::SpacingDec, Action::SpacingInc);
+        y += row_h + 22.0;
 
-        // line spacing
-        let ls = format!("Line {:.1}", self.settings.line_spacing);
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::MinusI, false, Action::SpacingDec) + 2.0;
-        let (lsw, _) = tr.measure(&ls, 12.0, None);
-        tr.draw_text(scene, &ls, 12.0, c.text_dim, t * Affine::translate((x + 4.0, cy + 9.0)), None);
-        x += lsw as f64 + 8.0;
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::PlusI, false, Action::SpacingInc) + 22.0;
+        // Typeface segmented.
+        tr.draw_text_weighted(scene, "TYPEFACE", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
+        y += 16.0;
+        let mut sx = ix0;
+        for f in ReadFont::ALL {
+            let active = self.settings.font == f;
+            let action = if active { Action::Swallow } else { Action::CycleFont };
+            sx += self.pill(scene, t, tr, theme, sx, y, row_h - 4.0, f.label(), 12.5, active, Some(action)) + 8.0;
+        }
+        y += (row_h - 4.0) + 22.0;
 
-        // appearance: reading-theme segmented (right-aligned)
-        let mut groups_x = x;
+        // Page tint segmented.
+        tr.draw_text_weighted(scene, "PAGE", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
+        y += 16.0;
+        let mut sx = ix0;
         for rt in ReadTheme::ALL {
             let active = self.settings.theme == rt;
-            groups_x += self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                groups_x,
-                pill_y,
-                pill_h,
-                rt.label(),
-                12.0,
-                active,
-                Some(Action::SetReadTheme(rt)),
-            ) + 6.0;
+            sx += self.pill(scene, t, tr, theme, sx, y, row_h - 4.0, rt.label(), 12.5, active, Some(Action::SetReadTheme(rt))) + 8.0;
         }
-        groups_x += 14.0;
+    }
 
-        // highlight colour swatches
-        for col in HiColor::ALL {
-            let r9 = 9.0;
-            let center = Point::new(groups_x + r9, pill_y + pill_h / 2.0);
-            let rect = Rect::new(center.x - r9, center.y - r9, center.x + r9, center.y + r9);
-            paint::circle(scene, t, center, r9, ReaderPalette::highlight_swatch(col));
-            if self.hi_color == col {
-                paint::stroke_round(scene, t, rect.inflate(2.0, 2.0), r9 + 2.0, theme.text_primary, 1.6);
-            } else if self.is_hover(rect) {
-                paint::stroke_round(scene, t, rect.inflate(2.0, 2.0), r9 + 2.0, theme.border_standard, 1.2);
-            }
-            self.push_hit(rect.inflate(3.0, 3.0), Action::SetColor(col));
-            groups_x += r9 * 2.0 + 8.0;
-        }
+    /// A labelled −/value/＋ stepper row used inside the reading popover.
+    #[allow(clippy::too_many_arguments)]
+    fn stepper_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        x0: f64,
+        x1: f64,
+        y: f64,
+        h: f64,
+        label: &str,
+        value: &str,
+        dec: Action,
+        inc: Action,
+    ) {
+        tr.draw_text_weighted(
+            scene,
+            label,
+            13.0,
+            c.text_primary,
+            t * Affine::translate((x0, y + (h - 13.0) / 2.0)),
+            None,
+            TextWeight::Medium,
+        );
+        let btn = h;
+        let plus_x = x1 - btn;
+        let (vw, _) = tr.measure_weighted(value, 13.0, None, TextWeight::Medium);
+        let value_slot = 46.0_f64;
+        let minus_x = plus_x - value_slot - btn;
+        self.icon_button(scene, t, theme, minus_x, y, btn, Ico::MinusI, false, dec);
+        tr.draw_text_weighted(
+            scene,
+            value,
+            13.0,
+            c.text_primary,
+            t * Affine::translate((minus_x + btn + (value_slot - vw as f64) / 2.0, y + (h - 13.0) / 2.0)),
+            None,
+            TextWeight::Medium,
+        );
+        self.icon_button(scene, t, theme, plus_x, y, btn, Ico::PlusI, false, inc);
     }
 
     /// `panel_x0` is the rail's left edge — `r.x0` when docked, or a slid
@@ -1960,6 +2461,59 @@ fn page_for_block(layout: &ChapterLayout, block: usize) -> usize {
     page
 }
 
+/// Truncate `text` with a trailing ellipsis so it fits within `max_w` at the
+/// given size/weight. Returns the full string when it already fits.
+fn ellipsize(
+    tr: &mut TextRenderer,
+    text: &str,
+    size: f32,
+    weight: TextWeight,
+    max_w: f64,
+) -> String {
+    if tr.measure_weighted(text, size, None, weight).0 as f64 <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut hi = chars.len();
+    // Binary-search the longest prefix that fits with an ellipsis appended.
+    let mut best = String::from("…");
+    let mut lo = 0;
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        if tr.measure_weighted(&candidate, size, None, weight).0 as f64 <= max_w {
+            best = candidate;
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best
+}
+
+/// Blit a decoded cover into `rect` with cover-fit cropping and a rounded
+/// clip, so real artwork of any aspect fills the shelf slot cleanly.
+fn blit_cover(scene: &mut Scene, t: Affine, img: PenikoImage, rect: Rect, radius: f64) {
+    let iw = img.width.max(1) as f64;
+    let ih = img.height.max(1) as f64;
+    let (rw, rh) = (rect.width(), rect.height());
+    if rw <= 0.0 || rh <= 0.0 {
+        return;
+    }
+    let scale = (rw / iw).max(rh / ih);
+    let dw = iw * scale;
+    let dh = ih * scale;
+    let dx = rect.x0 + (rw - dw) * 0.5;
+    let dy = rect.y0 + (rh - dh) * 0.5;
+    let brush_transform = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+
+    let clip = RoundedRect::from_rect(rect, radius);
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    let brush = ImageBrush::new(img);
+    scene.fill(Fill::NonZero, t, &brush, Some(brush_transform), &rect);
+    scene.pop_layer();
+}
+
 /// Pick a cover spine + readable ink for a book, sourced entirely from theme
 /// tokens (semantic hues + accent) so covers stay on-brand across OS themes.
 fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
@@ -1978,4 +2532,210 @@ fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
         Color::from_rgb8(28, 26, 30)
     };
     (base, ink)
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    //! Drive the app through the real `handle_event` path — a headless frame
+    //! populates hit regions, then synthesized winit clicks route through the
+    //! same code the live compositor uses. Asserts observable state/CRDT change.
+
+    use super::*;
+    use crate::content::load_sample_library;
+    use crate::model::AnnoKind;
+    use ui::presence::PresenceCtx;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::DeviceId;
+
+    fn app_with_sample() -> BooksApp {
+        BooksApp::with_library(load_sample_library())
+    }
+
+    /// Run one full headless frame so `self.hits` reflects the current view.
+    fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
+        let root = automerge::ROOT;
+        app.sync(doc, &root);
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.reconcile_flaps();
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Centre of the topmost recorded hit whose action matches `pred`.
+    fn find_hit(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Point> {
+        app.hits.iter().rev().find(|h| pred(&h.action)).map(|h| h.rect.center())
+    }
+
+    /// Route a real left-click at `p` (logical px) through `handle_event`.
+    fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
+        let mods = Modifiers::default();
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        let mv = WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(p.x, p.y),
+        };
+        app.handle_event(&mv, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        let press = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        handled = false;
+        app.handle_event(&press, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+
+    /// Route a wheel event (`lines` positive == scroll up) through `handle_event`.
+    fn wheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
+        let mods = Modifiers::default();
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        let ev = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, lines),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        app.handle_event(&ev, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+
+    #[test]
+    fn wheel_turns_pages_in_the_reader() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert_eq!(app.view, View::Reader);
+        let start = (app.chapter, app.page);
+        // A downward flick turns forward.
+        assert!(wheel(&mut app, &mut doc, -4.0), "downward wheel turned a page");
+        assert!(
+            (app.chapter, app.page) != start,
+            "advanced from ch{}/pg{}",
+            start.0,
+            start.1
+        );
+        // An upward flick turns back.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let mid = (app.chapter, app.page);
+        wheel(&mut app, &mut doc, 4.0);
+        assert!((app.chapter, app.page) != mid, "turned back from the advanced spot");
+    }
+
+    #[test]
+    fn wheel_scrolls_the_library_shelf() {
+        let mut app = app_with_sample();
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        // A short window so the three sample cards overflow into a scroll range.
+        frame(&mut app, &mut doc, 560.0, 600.0);
+        assert!(app.shelf_max_scroll > 0.0, "shelf overflows this window");
+        assert_eq!(app.shelf_scroll, 0.0, "starts at the top");
+        // Scroll down, then hard down — must clamp at the bottom.
+        assert!(wheel(&mut app, &mut doc, -3.0), "wheel scrolled the shelf");
+        assert!(app.shelf_scroll > 0.0);
+        wheel(&mut app, &mut doc, -100.0);
+        assert!(app.shelf_scroll <= app.shelf_max_scroll + 0.001, "never past the end");
+        assert!(app.shelf_scroll > 0.0);
+        // Scroll back up — must clamp at the top.
+        wheel(&mut app, &mut doc, 100.0);
+        assert_eq!(app.shelf_scroll, 0.0, "clamps at the top");
+    }
+
+    #[test]
+    fn opening_a_book_from_the_shelf_enters_the_reader() {
+        let mut app = app_with_sample();
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 720.0);
+        let target = find_hit(&app, |a| matches!(a, Action::OpenBook(_))).expect("a book card hit");
+        assert!(click(&mut app, &mut doc, target), "book click handled");
+        assert_eq!(app.view, View::Reader);
+    }
+
+    #[test]
+    fn next_page_advances_position() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let (c0, p0) = (app.chapter, app.page);
+        let next = find_hit(&app, |a| matches!(a, Action::NextPage)).expect("next button");
+        assert!(click(&mut app, &mut doc, next), "next handled");
+        assert!(
+            app.page != p0 || app.chapter != c0,
+            "position advanced from ch{c0}/pg{p0} to ch{}/pg{}",
+            app.chapter,
+            app.page
+        );
+    }
+
+    #[test]
+    fn selecting_a_paragraph_then_a_swatch_writes_a_highlight() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let before = BooksDoc::list_annotations(&doc).len();
+        // Select a paragraph via its page hit.
+        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
+        assert!(click(&mut app, &mut doc, block), "select handled");
+        assert!(app.selected_block.is_some());
+        // The selection HUD now offers colour swatches — click one to highlight.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(_))).expect("a swatch");
+        assert!(click(&mut app, &mut doc, swatch), "swatch handled");
+        let after = BooksDoc::list_annotations(&doc);
+        assert_eq!(after.len(), before + 1, "one highlight added");
+        assert!(after.iter().any(|a| a.kind == AnnoKind::Highlight));
+    }
+
+    #[test]
+    fn aa_button_opens_popover_and_page_tint_persists() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(!app.type_popover);
+        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
+        assert!(click(&mut app, &mut doc, aa));
+        assert!(app.type_popover, "popover opened");
+        // Choose the Dark page tint from the popover.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let dark = find_hit(&app, |a| matches!(a, Action::SetReadTheme(ReadTheme::Dark)))
+            .expect("dark tint pill");
+        assert!(click(&mut app, &mut doc, dark));
+        assert_eq!(BooksDoc::read_settings(&doc).theme, ReadTheme::Dark);
+    }
+
+    #[test]
+    fn rails_collapse_on_narrow_and_dock_on_wide() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        // Wide: both rails docked-open by default.
+        frame(&mut app, &mut doc, 1280.0, 720.0);
+        assert!(app.toc_open(), "contents docked+open at 1280");
+        assert!(app.notes_open(), "annotations docked+open at 1280");
+        // Narrow: both become closed overlays, so the page owns the width.
+        frame(&mut app, &mut doc, 560.0, 720.0);
+        assert_eq!(app.toc_layout(), SplitLayout::Overlay);
+        assert_eq!(app.notes_layout(), SplitLayout::Overlay);
+        assert!(!app.toc_open(), "contents closed at 560");
+        assert!(!app.notes_open(), "annotations closed at 560");
+    }
+
+    #[test]
+    fn runtime_start_seeds_no_annotations() {
+        // A non-demo app must never fabricate marks into a fresh document.
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(BooksDoc::list_annotations(&doc).is_empty(), "no seeded annotations");
+    }
 }
