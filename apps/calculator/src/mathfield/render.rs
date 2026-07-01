@@ -6,7 +6,7 @@
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::draw;
@@ -127,23 +127,32 @@ fn draw_box(
             );
         }
         BoxKind::SqrtSign { over_w, size } => {
-            // A √ tick rising into an overbar that spans the radicand.
+            // A clean radical: a short entry stroke dipping to the nib, one
+            // straight rise to the apex, then a level vinculum spanning the
+            // radicand. Round joins/caps keep the acute apex from spiking.
             let _ = c;
             let left = ox + b.x;
             let top = oy + b.y;
-            let bottom = oy + b.y + b.h;
-            let mid = top + b.h * 0.55;
             let sw = b.w;
+            let thick = ((*size as f64) * 0.085).max(1.4);
+            // Vinculum sits just below the box top, its centreline at `vy`.
+            let vy = top + thick * 0.5 + 1.0;
+            let apex_x = left + sw;
+            // Entry comes in at ~half height; the nib bottoms out near the
+            // radicand baseline (a touch above the very bottom edge).
+            let entry = Point::new(left + sw * 0.04, top + b.h * 0.52);
+            let nib = Point::new(left + sw * 0.42, top + b.h * 0.9);
+            let apex = Point::new(apex_x, vy);
+            let vinc_end = Point::new(apex_x + over_w, vy);
             let mut path = BezPath::new();
-            // small down-tick, up the radical, across the top of the radicand
-            path.move_to(Point::new(left + sw * 0.05, mid));
-            path.line_to(Point::new(left + sw * 0.30, mid + b.h * 0.18));
-            path.line_to(Point::new(left + sw * 0.55, top + (*size as f64) * 0.18));
-            path.line_to(Point::new(left + sw, top + 1.5));
-            path.line_to(Point::new(left + sw + over_w, top + 1.5));
-            let stroke = Stroke::new(1.6);
+            path.move_to(entry);
+            path.line_to(nib);
+            path.line_to(apex);
+            path.line_to(vinc_end);
+            let stroke = Stroke::new(thick)
+                .with_join(Join::Round)
+                .with_caps(Cap::Round);
             scene.stroke(&stroke, t, text_color, None, &path);
-            let _ = bottom;
         }
     }
 }
