@@ -161,6 +161,19 @@ pub fn sample_registry() -> PermissionRegistry {
     reg
 }
 
+/// The registry the standalone app uses at runtime: only the **real OS
+/// system permissions** (workspace, membership, app-management) the
+/// compositor itself enforces. Installed apps contribute their own
+/// permissions through the registry seam
+/// ([`crate::editor::EditorView::with_registry`]); until an app registers
+/// its set, only these system permissions are grantable — nothing is
+/// fabricated on the user's behalf.
+pub fn system_registry() -> PermissionRegistry {
+    let mut reg = PermissionRegistry::new();
+    reg.register_all(system_permissions());
+    reg
+}
+
 // Stable, recognisable role colors (packed 0xRRGGBB).
 const COLOR_ADMIN: u32 = 0xE6_4A_4A; // red
 const COLOR_MOD: u32 = 0x4A_8FE6; // blue

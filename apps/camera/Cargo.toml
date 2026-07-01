@@ -32,6 +32,12 @@ winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
 
+# On-disk photo library: file dimensions, decode + downscale for thumbnails.
+# Default features are trimmed to the formats a camera roll actually holds.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+png = "0.17"
+dirs = "6"
+
 # QR / barcode pipeline — both pure Rust.
 #   qrcode:  encode payloads into a module matrix (used to synthesize the
 #            offline sample frame for `--shots`, and to render the "share

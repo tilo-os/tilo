@@ -6,19 +6,15 @@
 //! plus a signing flow — all durable markup lives in the shared Automerge
 //! document so undo/redo and live collaboration come for free.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
-//!
 //! ## Rendering backend
 //!
-//! Real PDF rasterisation (pdfium / mupdf) requires a native library that
-//! is not guaranteed present in the build sandbox, so this slice ships a
-//! pure-Rust page model ([`model::Document`]): each page is a list of
-//! typographic blocks laid out with the toolkit's `cosmic-text` engine
-//! into honest, selectable, searchable text on a US-Letter card. Geometry
-//! is expressed in PDF points so a real raster backend can be slotted in
-//! behind the same [`model::Page`] coordinate space later — see
-//! `model.rs` for the followup note.
+//! A real PDF is loaded through [`source`], which rasterises pages with a
+//! dynamically-loaded `pdfium` when one is available and otherwise falls back
+//! to pure-Rust text extraction. Either way the durable markup lives in the
+//! shared Automerge document, so undo/redo and live collaboration come for
+//! free. Launched with a file path the app opens it; launched bare it shows
+//! an empty state. The bundled demonstration document ([`model::sample_document`])
+//! is used only by the screenshot harness and the tests.
 
 pub mod app;
 pub mod doc;
@@ -31,9 +27,33 @@ pub use model::{
     AnnoKind, Annotation, Comment, Document, Signature, Swatch, Tool,
 };
 
+pub mod source;
+
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// The no-document state (live launch with no file).
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(PdfApp::new())
+    Box::new(PdfApp::empty())
+}
+
+/// Open a real PDF from `path`.
+pub fn app_root_open(path: impl AsRef<std::path::Path>) -> Box<dyn Widget> {
+    Box::new(PdfApp::open(path))
+}
+
+/// The bundled demonstration document with example markup — screenshots and
+/// tests only.
+pub fn app_root_sample() -> Box<dyn Widget> {
+    Box::new(PdfApp::sample())
+}
+
+/// Screenshot-only: the sample document with the inline comment editor open,
+/// so a still frame can show the caret + focus ring.
+pub fn app_root_sample_editing() -> Box<dyn Widget> {
+    Box::new(PdfApp::sample_editing())
+}
+
+/// Screenshot-only: the empty state with the in-app file browser open.
+pub fn app_root_open_dialog() -> Box<dyn Widget> {
+    Box::new(PdfApp::open_dialog_demo())
 }

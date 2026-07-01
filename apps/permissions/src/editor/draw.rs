@@ -113,6 +113,37 @@ pub fn toolbar_button(
     );
 }
 
+/// A hamburger toggle for the overlay sidebar. Drawn only in the narrow
+/// layout; `active` (flap open) tints it with the accent so the state is
+/// visible. Three lines are drawn directly so it never depends on an icon
+/// glyph being present in the font.
+pub fn menu_button(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, active: bool) {
+    if rect.width() <= 0.0 {
+        return;
+    }
+    let c = &theme.tokens.colors;
+    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+    if active {
+        scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
+    } else {
+        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+    }
+    let line_col = if active { Color::WHITE } else { c.text_primary };
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let half = 8.0;
+    for dy in [-5.0, 0.0, 5.0] {
+        scene.stroke(
+            &Stroke::new(1.8),
+            t,
+            line_col,
+            None,
+            &vello::kurbo::Line::new((cx - half, cy + dy), (cx + half, cy + dy)),
+        );
+    }
+}
+
 pub fn danger_button(
     scene: &mut Scene,
     t: Affine,

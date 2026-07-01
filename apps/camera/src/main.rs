@@ -24,8 +24,46 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // Headless helper: populate a directory with real image files (procedural
+    // scenes + a scannable QR poster) so the disk-backed gallery / offline
+    // scanner can be screenshotted against real content. Dev/test only.
+    if let Some(dir) = parse_flag(&args, "--emit-photos") {
+        emit_photos(std::path::Path::new(&dir))?;
+        println!("camera: wrote sample photos to {dir}");
+        return Ok(());
+    }
+
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(camera::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // Shots-only flags mirror the env hooks the widget reads, so the
+        // headless harness can reach every state without relying on the
+        // parent shell's environment surviving the sandbox boundary. None of
+        // these affect the live event-loop path.
+        if let Some(screen) = parse_flag(&args, "--screen") {
+            unsafe { std::env::set_var("CAMERA_SCREEN", screen) };
+        }
+        if let Some(dir) = parse_flag(&args, "--dir") {
+            unsafe { std::env::set_var("CAMERA_DIR", dir) };
+        }
+        if let Some(px) = parse_flag(&args, "--scroll") {
+            unsafe { std::env::set_var("CAMERA_SCROLL", px) };
+        }
+        if has_flag(&args, "--select") {
+            unsafe { std::env::set_var("CAMERA_SELECT", "1") };
+        }
+        if has_flag(&args, "--scan-first") {
+            unsafe { std::env::set_var("CAMERA_SCAN_FIRST", "1") };
+        }
+        let (dw, dh) = DEFAULT_SHOTS_VIEWPORT;
+        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(dw);
+        let h = parse_flag(&args, "--height").and_then(|s| s.parse().ok()).unwrap_or(dh);
+        // Screenshots + tests default to the hermetic sample source — never
+        // the disk or a camera device. `--disk` (or `CAMERA_SHOTS_DISK`) opts
+        // into the real live source (honoring `--dir`/`CAMERA_DIR`) to capture
+        // the real empty-library / no-camera / offline-scan states.
+        let disk = has_flag(&args, "--disk") || std::env::var_os("CAMERA_SHOTS_DISK").is_some();
+        let root = if disk { camera::app_root() } else { camera::shots_root() };
+        render_shot_to_png(root, (w, h), &out)?;
         return Ok(());
     }
 
@@ -43,6 +81,41 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// True if a bare `--flag` is present.
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+/// Write a handful of real PNGs into `dir`: procedural scenes plus one QR
+/// poster the offline scanner can decode. Timestamped writes are spaced so
+/// each lands with a distinct name. Headless dev/test tooling only.
+fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    for seed in 0..5u8 {
+        let fb = camera::frame::thumbnail(seed, 960, 640);
+        camera::library::write_photo(dir, &fb)?;
+        std::thread::sleep(std::time::Duration::from_millis(4));
+    }
+    let (qr, _) = camera::frame::scanner_frame(4, 900, 640, "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;");
+    camera::library::write_photo(dir, &qr)?;
+    Ok(())
+}
+
+/// Read `--flag VALUE` or `--flag=VALUE` from the argument list.
+fn parse_flag(args: &[String], flag: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
         }
     }
     None
