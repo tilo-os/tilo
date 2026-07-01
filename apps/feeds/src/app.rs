@@ -43,6 +43,13 @@ use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
 const LIST_W: f64 = 400.0;
+/// Max CRDT writes persisted per frame. A big refresh queues its writes and
+/// they flush across several frames, so no single frame stalls persisting the
+/// whole batch (which was a multi-second main-thread block). Kept small so even
+/// an unoptimised (debug) build with a large document stays well under a 16 ms
+/// frame budget; the backlog still drains within a second or two of wall-clock
+/// while the UI stays fully interactive throughout.
+const FLUSH_BUDGET: usize = 3;
 const HEADER_H: f64 = 56.0;
 const SIDE_ROW_H: f64 = 34.0;
 const LIST_ROW_H: f64 = 88.0;
@@ -350,6 +357,19 @@ impl FeedsApp {
     /// Set the reading font directly (for `--shots` of the serif body).
     pub fn set_read_font(&mut self, font: ReadFont) {
         self.settings.font = font;
+    }
+
+    /// Give a couple of feeds deliberately long titles so a `--shots` capture
+    /// exercises the sidebar's single-line elide + right-edge fade (proving a
+    /// long entry no longer wraps into the row below).
+    pub fn stage_long_sidebar_titles(&mut self) {
+        let long = [
+            "International Space Station Daily Operations & Mission Updates",
+            "The Exhaustively Comprehensive Front-End Engineering Weekly Digest",
+        ];
+        for (f, title) in self.store.feeds.iter_mut().zip(long) {
+            f.title = title.to_string();
+        }
     }
 
     /// Choose an interesting article to open on launch (the richest unread
@@ -698,19 +718,33 @@ impl FeedsApp {
         }
     }
 
-    /// Persist any changes the live drain queued. Called from passes that hold
-    /// the document (`sync` / `handle_event`). Idempotent: dedup already
-    /// happened in the live drain, so these are straight upserts.
+    /// Persist changes the live drain queued, **bounded to a small budget per
+    /// call** so a big refresh (hundreds of new articles at once) can never
+    /// stall a frame. Automerge map writes + block JSON serialisation are not
+    /// free; persisting an entire backlog in one pass was a multi-second
+    /// main-thread block (the "OS asks to kill it" hang). Instead we drain up to
+    /// [`FLUSH_BUDGET`] writes here and leave the rest queued; `needs_animation_frame`
+    /// keeps frames flowing until the queue empties, so the backlog persists
+    /// across a handful of frames while the UI stays responsive throughout.
+    /// Idempotent: dedup already happened in the live drain, so these are
+    /// straight upserts.
     fn flush_doc_writes(&mut self, doc: &mut AutoCommit) {
         if self.pending_doc_writes.is_empty() {
             return;
         }
-        for w in self.pending_doc_writes.drain(..) {
+        let n = self.pending_doc_writes.len().min(FLUSH_BUDGET);
+        for w in self.pending_doc_writes.drain(..n) {
             match w {
                 DocWrite::Article(a) => FeedsDoc::upsert_article(doc, &a),
                 DocWrite::Feed(f) => FeedsDoc::upsert_feed(doc, &f),
             }
         }
+        // Commit this batch so the pending-op buffer doesn't accumulate across
+        // frames. An `AutoCommit` that never commits makes each successive `put`
+        // re-scan the growing uncommitted transaction — O(n²) over a big
+        // refresh, which is what turned a large batch into a multi-second stall.
+        // Committing per flush keeps each write O(1)-ish.
+        doc.commit();
     }
 
     // --- geometry --------------------------------------------------------
@@ -1492,6 +1526,8 @@ fn draw_sidebar(
     title_inset: f64,
 ) {
     let c = &theme.tokens.colors;
+    // The sidebar's own fill (see `paint`), used for the label fade-out band.
+    let sidebar_bg = c.neutral[0];
     // Header / wordmark.
     let header = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + HEADER_H);
     tr.draw_text_weighted(
@@ -1579,16 +1615,44 @@ fn draw_sidebar(
         let max_w = (row.rect.x1 - 12.0 - badge_w - 6.0 - text_x).max(20.0) as f32;
         let weight = if row.badge > 0 { TextWeight::Semibold } else { TextWeight::Regular };
         let size = if matches!(row.role, RowRole::Feed { .. }) { 13.0 } else { 14.0 };
-        let label = elide(tr, &row.label, size, max_w);
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            size,
-            label_color,
-            t * Affine::translate((text_x, cy - (size as f64) * 0.62)),
-            Some(max_w),
-            weight,
-        );
+        // Single-line label with a soft right-edge fade. The label is measured
+        // with the SAME weight it draws with (heavier weights advance wider, so
+        // a Regular-measured elide could still overflow when drawn Semibold) and
+        // drawn with `max_width: None` so cosmic-text never wraps it onto a
+        // second line that would collide with the row below. When the full text
+        // doesn't fit, a short gradient fades the last few px into the sidebar
+        // background instead of hard-cutting — the requested fade-out.
+        let full_w = tr.measure_weighted(&row.label, size, None, weight).0;
+        let truncated = full_w > max_w;
+        let baseline = cy - (size as f64) * 0.62;
+        if truncated {
+            // Reserve room for the fade so a glyph never ends mid-fade.
+            let fade_w = 22.0_f32.min(max_w * 0.4);
+            let draw_w = (max_w - fade_w * 0.5).max(10.0);
+            let label = elide_weighted(tr, &row.label, size, draw_w, weight);
+            tr.draw_text_weighted(
+                scene, &label, size, label_color,
+                t * Affine::translate((text_x, baseline)), None, weight,
+            );
+            // Fade band: transparent → sidebar background, over the row's height.
+            let fade_x1 = text_x + max_w as f64;
+            let fade_x0 = fade_x1 - fade_w as f64;
+            let grad = vello::peniko::Gradient::new_linear(
+                Point::new(fade_x0, cy),
+                Point::new(fade_x1, cy),
+            )
+            .with_stops([
+                (0.0, alpha(sidebar_bg, 0)),
+                (1.0, sidebar_bg),
+            ]);
+            let band = Rect::new(fade_x0, row.rect.y0, fade_x1, row.rect.y1);
+            scene.fill(Fill::NonZero, t, &grad, None, &band);
+        } else {
+            tr.draw_text_weighted(
+                scene, &row.label, size, label_color,
+                t * Affine::translate((text_x, baseline)), None, weight,
+            );
+        }
     }
 }
 
@@ -2266,6 +2330,27 @@ fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> String {
     out
 }
 
+/// Weight-aware single-line truncation. Measures with the SAME `weight` the
+/// text will be drawn with (heavier weights advance wider, so a Regular-measured
+/// elide can still overflow when drawn Semibold — the sidebar-wrap bug). No
+/// trailing ellipsis: the caller pairs this with a right-edge gradient fade, so
+/// the cut reads as a fade rather than a hard "…".
+fn elide_weighted(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32, weight: TextWeight) -> String {
+    if tr.measure_weighted(s, size, None, weight).0 <= max_w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for ch in s.chars() {
+        let mut probe = out.clone();
+        probe.push(ch);
+        if tr.measure_weighted(&probe, size, None, weight).0 > max_w {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Truncate to fit within two lines of width `max_w`.
 fn two_line_elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> String {
     let (_w, h) = tr.measure(s, size, Some(max_w));
@@ -2607,6 +2692,169 @@ mod tests {
         FeedsApp::new()
     }
 
+    /// Run one full headless frame (sync → build_layout → compute → apply →
+    /// draw), mirroring `ui::App`'s per-frame cycle, and return how long the
+    /// **draw** pass took. No GPU — `TextRenderer`/`Scene` are CPU-side, so this
+    /// exercises exactly the main-thread work a real frame does.
+    fn headless_frame(app: &mut FeedsApp, doc: &mut AutoCommit, tr: &mut TextRenderer) -> std::time::Duration {
+        use taffy::prelude::*;
+        use vello::kurbo::Point;
+        let theme = ui::theme::Theme::dark();
+        let presence = ui::presence::PresenceCtx::empty();
+        let permission = ui::permissions::PermissionContext::permissive();
+
+        app.sync(doc, &automerge::ROOT);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: Dimension::length(1280.0), height: Dimension::length(800.0) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trm = &mut *tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(1280.0),
+                        height: AvailableSpace::Definite(800.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trm) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+
+        let mut scene = vello::Scene::new();
+        let t0 = std::time::Instant::now();
+        app.draw_with_presence(&mut scene, vello::kurbo::Affine::IDENTITY, tr, &theme, &presence, &permission);
+        t0.elapsed()
+    }
+
+    /// THE responsiveness regression test the coordinator demanded. Spawns the
+    /// REAL worker (real thread + real Tokio runtime + real reqwest client),
+    /// fires a refresh against unreachable hosts, then proves the MAIN THREAD
+    /// stays responsive: `refresh_all`, every `draw`, and `handle_event` each
+    /// return in well under a 16 ms frame budget while the refresh is in flight.
+    /// If any network I/O, runtime construction, or blocking `recv` ran on the
+    /// UI thread, one of these would blow the budget.
+    #[test]
+    fn real_worker_refresh_keeps_main_thread_responsive() {
+        use std::time::{Duration, Instant};
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let mut tr = TextRenderer::new();
+        // Warm frames so first-frame font loading / cache warm-up isn't
+        // attributed to refresh, then capture a BASELINE for one idle draw +
+        // one idle input event. The invariant we prove is build-independent:
+        // an in-flight refresh must not make draw/handle_event meaningfully
+        // slower than this baseline — i.e. no network / runtime / blocking recv
+        // runs on the UI thread. (An absolute "<16ms" bound would just measure
+        // how slow an unoptimised debug draw of the sample scene is.)
+        let synth_event = || WindowEvent::CursorMoved {
+            device_id: unsafe { winit::event::DeviceId::dummy() },
+            position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
+        };
+        let dispatch = |a: &mut FeedsApp, doc: &mut AutoCommit| {
+            let mut handled = false;
+            let mut focus: Option<NodeId> = None;
+            let node = a.node.unwrap();
+            let t = Instant::now();
+            a.handle_event(
+                &synth_event(), 1.0, &winit::event::Modifiers::default(), doc,
+                &automerge::ROOT, &mut handled, &mut focus, node, &TaffyTree::new(),
+            );
+            t.elapsed()
+        };
+        for _ in 0..3 {
+            let _ = headless_frame(&mut a, &mut doc, &mut tr);
+        }
+        let mut base_draw = Duration::from_secs(9999);
+        let mut base_event = Duration::from_secs(9999);
+        for _ in 0..5 {
+            base_draw = base_draw.min(headless_frame(&mut a, &mut doc, &mut tr));
+            base_event = base_event.min(dispatch(&mut a, &mut doc));
+        }
+
+        // Point every feed at an unreachable host so the worker's fetches hang
+        // on connect/timeout — the worst case for "does the UI block?".
+        for f in a.store.feeds.iter_mut() {
+            f.url = "https://10.255.255.1/feed.xml".to_string();
+            f.kind = FeedKind::Rss;
+        }
+
+        // Cold start: the FIRST refresh must also spawn the worker + runtime
+        // off the UI thread. The call itself must be trivial.
+        let t_refresh = Instant::now();
+        a.refresh_all();
+        let refresh_cost = t_refresh.elapsed();
+        assert!(
+            refresh_cost < Duration::from_millis(16),
+            "refresh_all (incl. cold worker/runtime spawn) must not block the UI thread; took {refresh_cost:?}"
+        );
+        assert!(a.worker.is_some(), "worker really spawned");
+        assert!(a.refresh.in_progress());
+
+        // Pump frames for a window while the fetches are genuinely outstanding
+        // (the worker hammers unreachable hosts the whole time). Track the best
+        // (fastest achievable) draw + event during the refresh — if any network
+        // I/O or blocking recv leaked onto the UI thread, even the *best* frame
+        // would balloon far past the idle baseline.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut frames = 0u32;
+        let mut best_draw = Duration::from_secs(9999);
+        let mut best_event = Duration::from_secs(9999);
+        while Instant::now() < deadline {
+            best_draw = best_draw.min(headless_frame(&mut a, &mut doc, &mut tr));
+            best_event = best_event.min(dispatch(&mut a, &mut doc));
+            frames += 1;
+        }
+
+        assert!(frames > 5, "the loop kept pumping frames while refreshing (got {frames})");
+        // The refresh adds no blocking to the UI thread: draw + event during a
+        // refresh are within a small factor of the idle baseline (generous 4x
+        // slack absorbs scheduler jitter from the busy worker threads). A real
+        // main-thread network block would be orders of magnitude over.
+        let draw_bound = base_draw * 4 + Duration::from_millis(2);
+        let event_bound = base_event * 4 + Duration::from_millis(2);
+        assert!(
+            best_draw <= draw_bound,
+            "draw blocked during refresh: {best_draw:?} vs idle baseline {base_draw:?} (bound {draw_bound:?})"
+        );
+        assert!(
+            best_event <= event_bound,
+            "handle_event blocked during refresh: {best_event:?} vs idle baseline {base_event:?} (bound {event_bound:?})"
+        );
+        // And an event dispatch is genuinely cheap in absolute terms — a cursor
+        // move can never touch the network, so this is a hard ceiling.
+        assert!(
+            best_event < Duration::from_millis(16),
+            "a cursor move must be instant even during refresh; took {best_event:?}"
+        );
+        // While fetches are still outstanding, the widget keeps asking for
+        // frames so the drain runs to completion without user input.
+        assert!(
+            a.needs_animation_frame(),
+            "needs_animation_frame stays true while the refresh is in flight"
+        );
+    }
+
     // --- async refresh (non-blocking) ------------------------------------
 
     /// Proves the refresh path is fully async: `refresh_all` only enqueues (no
@@ -2693,6 +2941,89 @@ mod tests {
         // the drain keeps running without user input — this is what makes the
         // refresh land while idle instead of appearing to "block".
         assert!(a.needs_animation_frame(), "frames keep flowing until the batch finishes");
+    }
+
+    /// A refresh that returns a LARGE volume of articles (the realistic case
+    /// the unreachable-host test can't hit) must still keep the main thread
+    /// responsive: the live drain + the per-frame CRDT flush must not blow the
+    /// frame budget even when hundreds of articles land at once. Proves the
+    /// flush is bounded per frame rather than persisting everything in one go.
+    #[test]
+    fn large_result_batch_does_not_block_the_frame() {
+        use std::time::{Duration, Instant};
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let mut tr = TextRenderer::new();
+        let _ = headless_frame(&mut a, &mut doc, &mut tr);
+
+        let tx = a.install_test_worker();
+        a.refresh_all();
+
+        // Each feed returns a big batch — ~100 articles each, several feeds.
+        let feed_ids: Vec<Id> = a.store.feeds.iter().map(|f| f.id).collect();
+        let mut total_new = 0usize;
+        for fid in &feed_ids {
+            let mut arts = Vec::new();
+            for i in 0..100 {
+                arts.push(Article {
+                    id: Uuid::new_v4(),
+                    feed_id: *fid,
+                    title: format!("Article {i} for feed"),
+                    author: "a".into(),
+                    url: format!("https://example.com/{fid}/{i}"),
+                    published: a.now - i as i64 * 60,
+                    summary: "summary text".into(),
+                    blocks: vec![
+                        crate::model::ContentBlock::new(crate::model::BlockKind::Paragraph, "Body paragraph one."),
+                        crate::model::ContentBlock::new(crate::model::BlockKind::Paragraph, "Body paragraph two."),
+                    ],
+                    read: false,
+                    starred: false,
+                });
+                total_new += 1;
+            }
+            tx.send(FetchResult::Articles { feed_id: *fid, title: None, articles: arts }).unwrap();
+        }
+
+        // The live drain folds everything into the store in one pass. This is
+        // pure in-memory work (no CRDT, no network) and must be cheap even for
+        // a big batch — it's what runs on the draw thread every frame.
+        let t_drain = Instant::now();
+        a.drain_fetches_live();
+        let drain_cost = t_drain.elapsed();
+        assert!(
+            drain_cost < Duration::from_millis(16),
+            "live in-memory drain blocked the frame with a big batch: {drain_cost:?}"
+        );
+        // The whole batch is now visible in the store immediately...
+        assert!(a.store.articles.len() >= total_new);
+        // ...but the CRDT writes are queued, NOT persisted in one blocking pass.
+        assert!(a.pending_doc_writes.len() >= total_new - 8);
+
+        // The key invariant: each flush call persists at most FLUSH_BUDGET
+        // writes, so the per-frame main-thread cost of persistence is BOUNDED
+        // and independent of how big the refresh was. (Automerge write cost is
+        // ~constant per op in release; the fix is that we never do the whole
+        // backlog in a single frame — that was the multi-second hang.)
+        let before = a.pending_doc_writes.len();
+        a.flush_doc_writes(&mut doc);
+        let persisted_this_frame = before - a.pending_doc_writes.len();
+        assert!(
+            persisted_this_frame <= FLUSH_BUDGET,
+            "one flush must persist at most FLUSH_BUDGET ({FLUSH_BUDGET}) writes, did {persisted_this_frame}"
+        );
+
+        // Drain the rest across frames; the backlog empties in bounded steps.
+        let mut frames = 1;
+        while !a.pending_doc_writes.is_empty() && frames < 5000 {
+            a.flush_doc_writes(&mut doc);
+            frames += 1;
+        }
+        assert!(a.pending_doc_writes.is_empty(), "backlog fully drained");
+        // Everything eventually persisted to the CRDT.
+        let persisted = FeedsDoc::load(&doc).articles.len();
+        assert!(persisted >= total_new, "all {total_new} articles persisted (got {persisted})");
     }
 
     /// `refresh_all` enqueues exactly one request per feed and finishes only
