@@ -12,9 +12,10 @@
 //! back into the document.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -32,7 +33,10 @@ use crate::doc::SheetsDoc;
 use crate::formula;
 use crate::grid::{Grid, GridCmd};
 use crate::infer::infer_entry;
-use crate::model::{a1_to_addr, Addr, CellFormat, Currency, DateStyle, FormatCategory, TimeStyle};
+use crate::model::{
+    a1_to_addr, format_value, Addr, CellFormat, CellValue, Currency, DateStyle, FormatCategory,
+    TimeStyle,
+};
 use crate::settings::{DocSettings, EffectiveLocale, GlobalSettings};
 
 const MENUBAR_H: f64 = 44.0;
@@ -56,7 +60,6 @@ enum MenuItem {
     ClearFormat,
     // Settings.
     OpenDocSettings,
-    OpenGlobalSettings,
     // Inline bar action.
     AutoSum,
 }
@@ -69,12 +72,11 @@ enum OpenMenu {
     Format,
 }
 
-/// Which settings panel (if any) is open.
+/// Whether the per-document settings panel is open.
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsPanel {
     None,
     Document,
-    Global,
 }
 
 struct MenuButton {
@@ -102,10 +104,6 @@ enum SettingKind {
     DocCurrency(Option<Currency>),
     DocDate(Option<DateStyle>),
     DocTime(Option<TimeStyle>),
-    GlobalCurrency(Currency),
-    GlobalDate(DateStyle),
-    GlobalTime(TimeStyle),
-    GlobalSave,
 }
 
 pub struct SheetsApp {
@@ -120,7 +118,9 @@ pub struct SheetsApp {
     dropdown_rect: Rect,
     setting_chips: Vec<SettingChip>,
     panel_rect: Rect,
-    type_indicator_rect: Rect,
+    /// Y of each settings section's first chip row (Currency, Date, Time), so
+    /// the section labels stay aligned even when a row wraps on narrow widths.
+    settings_section_y: [f64; 3],
     tab_rects: Vec<(Rect, usize)>,
     add_tab_rect: Rect,
     formula_field_rect: Rect,
@@ -137,9 +137,52 @@ pub struct SheetsApp {
     settings_panel: SettingsPanel,
     global: GlobalSettings,
     doc_settings: DocSettings,
-    /// Whether the next frame should pre-open the File menu (used to show
-    /// the relocated file actions in the offscreen screenshot).
-    preview_open_file_menu: bool,
+    /// Whether the workbook is persisted to disk between sessions. Off for the
+    /// headless `--shots`/test path so screenshots never touch the user's data.
+    persist: bool,
+    /// Whether an empty workbook is seeded with the sample budget (only the
+    /// headless `--shots`/test path does; a real launch opens a blank sheet).
+    seed_sample_data: bool,
+    /// Document heads last written to disk — persistence is skipped while the
+    /// document is unchanged, so idle frames never re-serialize.
+    saved_heads: Vec<ChangeHash>,
+    /// Memoised recalculation: `reload` recomputes only when the document
+    /// heads or active sheet change, so selection/scroll frames are cheap.
+    cache: Option<ReloadCache>,
+    /// The last copied/cut rectangle, kept so an in-app paste can restore raw
+    /// inputs and formats exactly (and shift relative formula references),
+    /// beyond the plain-text payload other apps see on the system clipboard.
+    clipboard: Option<ClipboardGrid>,
+}
+
+/// A rectangle captured by copy/cut, retaining each cell's raw input and
+/// format so an in-app paste is lossless. `tsv` is the exact plain-text
+/// payload pushed to the system clipboard; a later paste compares the live
+/// clipboard against it to decide whether to reuse this rich copy or parse
+/// whatever another app has since placed there.
+struct ClipboardGrid {
+    /// Top-left source address of the copied rectangle.
+    src: Addr,
+    /// Row-major `(raw, format)` for every cell in the rectangle.
+    cells: Vec<Vec<(String, CellFormat)>>,
+    /// A cut moves cells verbatim (source cleared on paste, refs unshifted);
+    /// a copy shifts relative references to the paste target.
+    cut: bool,
+    /// The tab/newline-separated display text written to the system clipboard.
+    tsv: String,
+}
+
+/// The recomputed view of the active sheet, kept between frames so that
+/// selection changes, scrolling, and format lookups don't re-snapshot the
+/// CRDT or re-run the formula engine.
+struct ReloadCache {
+    heads: Vec<ChangeHash>,
+    sheet: usize,
+    /// Effective per-cell format (explicit format, else propagated formula
+    /// unit). Drives the type indicator and the selection summary.
+    eff_fmt: HashMap<Addr, CellFormat>,
+    /// Computed cell values, reused for the live selection summary.
+    values: HashMap<Addr, CellValue>,
 }
 
 impl SheetsApp {
@@ -156,7 +199,7 @@ impl SheetsApp {
             dropdown_rect: Rect::ZERO,
             setting_chips: Vec::new(),
             panel_rect: Rect::ZERO,
-            type_indicator_rect: Rect::ZERO,
+            settings_section_y: [0.0; 3],
             tab_rects: Vec::new(),
             add_tab_rect: Rect::ZERO,
             formula_field_rect: Rect::ZERO,
@@ -173,8 +216,48 @@ impl SheetsApp {
             settings_panel: SettingsPanel::None,
             global: GlobalSettings::default(),
             doc_settings: DocSettings::default(),
-            preview_open_file_menu: true,
+            persist: true,
+            seed_sample_data: false,
+            saved_heads: Vec::new(),
+            cache: None,
+            clipboard: None,
         }
+    }
+
+    /// Configure the app for the headless `--shots`/test path: seed the sample
+    /// workbook so a captured frame shows real formulas, and disable on-disk
+    /// persistence so screenshots never read or write the user's workbook.
+    pub fn shots_mode(&mut self) {
+        self.persist = false;
+        self.seed_sample_data = true;
+    }
+
+    /// Shots hook: open the File menu so its actions appear in the frame.
+    pub fn shots_open_file_menu(&mut self) {
+        self.open_menu = OpenMenu::File;
+    }
+
+    /// Shots hook: open the Format menu.
+    pub fn shots_open_format_menu(&mut self) {
+        self.open_menu = OpenMenu::Format;
+    }
+
+    /// Shots hook: open the per-document settings panel.
+    pub fn shots_open_doc_settings(&mut self) {
+        self.settings_panel = SettingsPanel::Document;
+    }
+
+    /// Shots hook: begin editing the active cell so the in-cell editor and the
+    /// active formula bar are captured.
+    pub fn shots_begin_edit(&mut self) {
+        self.grid.begin_edit_in_place();
+    }
+
+    /// Shots hook: select a multi-cell numeric range so the live status-bar
+    /// summary (Sum / Avg / Count) is captured.
+    pub fn shots_select_summary_range(&mut self) {
+        // Budget!B2:B6 — the January column body.
+        self.grid.select_range_public((1, 1), (1, 5));
     }
 
     /// The document's effective locale (per-doc overrides over global).
@@ -188,23 +271,88 @@ impl SheetsApp {
 
     // --- document plumbing --------------------------------------------------
 
-    fn seed_if_empty(&mut self, doc: &mut AutoCommit) {
-        if !SheetsDoc::is_empty(doc) {
+    /// One-time startup: adopt any workbook persisted from a previous session,
+    /// otherwise open a blank sheet (a real launch never fabricates sample
+    /// data; only the headless shots/test path seeds the sample budget).
+    fn initialize(&mut self, doc: &mut AutoCommit) {
+        if self.persist {
+            if let Some(path) = workbook_path() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if let Ok(mut saved) = AutoCommit::load(&bytes) {
+                        let _ = doc.merge(&mut saved);
+                    }
+                }
+            }
+        }
+        if SheetsDoc::is_empty(doc) {
+            if self.seed_sample_data {
+                seed_workbook(doc);
+                SheetsDoc::set_active_index(doc, 0);
+                // Preselect a smart-typed currency cell so the formula bar and
+                // the type indicator are populated in the captured frame.
+                if let Some(addr) = a1_to_addr("E2") {
+                    self.grid.select_only(addr);
+                }
+            } else {
+                SheetsDoc::add_sheet(doc, "Sheet1");
+                SheetsDoc::set_active_index(doc, 0);
+                self.grid.select_only((0, 0));
+            }
+        } else {
+            // Restored workbook: clamp the persisted active index and land on A1.
+            let active = SheetsDoc::active_index(doc);
+            SheetsDoc::set_active_index(doc, active);
+            self.grid.select_only((0, 0));
+        }
+        // Treat the freshly-seeded/restored state as "already on disk" so an
+        // untouched workbook is never rewritten on idle frames.
+        self.saved_heads = doc.get_heads();
+    }
+
+    /// Persist the workbook to the per-user data directory whenever it has
+    /// changed since the last write. A no-op on idle/selection/scroll frames
+    /// (the heads are unchanged) and in the shots/test path.
+    fn persist_if_dirty(&mut self, doc: &mut AutoCommit) {
+        if !self.persist {
             return;
         }
-        seed_workbook(doc);
-        SheetsDoc::set_active_index(doc, 0);
-        // Preselect a smart-typed currency cell so the formula bar + type
-        // indicator are populated in the first frame / screenshot.
-        if let Some(addr) = a1_to_addr("E2") {
-            self.grid.select_only(addr);
+        let heads = doc.get_heads();
+        if heads == self.saved_heads {
+            return;
         }
+        if let Some(path) = workbook_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let bytes = doc.save();
+            if std::fs::write(&path, bytes).is_ok() {
+                self.saved_heads = heads;
+                return;
+            }
+        }
+        // No writable data dir — record the heads anyway so we don't retry
+        // (and thrash) on every subsequent frame.
+        self.saved_heads = heads;
     }
 
     /// Read the active sheet, recalculate, propagate formats onto computed
     /// cells, and push the data into the grid.
+    ///
+    /// Memoised on `(document heads, active sheet)`: selection changes,
+    /// scrolling, and hover — which never mutate the CRDT — reuse the cached
+    /// result instead of re-snapshotting the document and re-running the whole
+    /// formula engine every frame.
     fn reload(&mut self, doc: &mut AutoCommit) {
-        self.active_sheet = SheetsDoc::active_index(doc);
+        let heads = doc.get_heads();
+        let sheet = SheetsDoc::active_index(doc);
+        if let Some(c) = &self.cache {
+            if c.sheet == sheet && c.heads == heads {
+                self.active_sheet = sheet;
+                return;
+            }
+        }
+
+        self.active_sheet = sheet;
         self.sheet_names = SheetsDoc::sheet_names(doc);
         self.doc_settings = SheetsDoc::doc_settings(doc);
         let cur = self.default_currency();
@@ -225,6 +373,12 @@ impl SheetsApp {
             }
         }
 
+        self.cache = Some(ReloadCache {
+            heads,
+            sheet,
+            eff_fmt: fmt.clone(),
+            values: values.clone(),
+        });
         self.grid.set_data(snap.raw, fmt, values);
         self.dirty = true;
     }
@@ -289,6 +443,132 @@ impl SheetsApp {
         self.status = format!("Cleared format on {}", self.grid.selection_label());
     }
 
+    // --- clipboard ----------------------------------------------------------
+
+    /// Copy (or cut) the current selection. The rich rectangle (raw + format)
+    /// is retained for a lossless in-app paste, and a tab/newline-separated
+    /// grid of the *displayed* values is pushed to the system clipboard so it
+    /// pastes cleanly into other apps. A cut clears its source cells when the
+    /// paste lands (spreadsheet "move" semantics), so nothing is lost if the
+    /// user changes their mind.
+    fn copy_selection(&mut self, cut: bool) {
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let mut cells = Vec::with_capacity((r1 - r0 + 1) as usize);
+        let mut tsv_rows = Vec::with_capacity((r1 - r0 + 1) as usize);
+        for r in r0..=r1 {
+            let mut row_cells = Vec::with_capacity((c1 - c0 + 1) as usize);
+            let mut tsv_cols = Vec::with_capacity((c1 - c0 + 1) as usize);
+            for c in c0..=c1 {
+                let addr = (c, r);
+                let raw = self.grid.cell_raw_at(addr);
+                let fmt = self.grid.cell_fmt_at(addr);
+                let display = self
+                    .grid
+                    .cell_value_at(addr)
+                    .map(|v| format_value(&v, fmt))
+                    .unwrap_or_default();
+                row_cells.push((raw, fmt));
+                tsv_cols.push(tsv_cell(&display));
+            }
+            cells.push(row_cells);
+            tsv_rows.push(tsv_cols.join("\t"));
+        }
+        let tsv = tsv_rows.join("\n");
+        ui::clipboard_copy(&tsv);
+        self.clipboard = Some(ClipboardGrid { src: (c0, r0), cells, cut, tsv });
+        let verb = if cut { "Cut" } else { "Copied" };
+        self.status = format!("{verb} {}", self.grid.selection_label());
+        self.dirty = true;
+    }
+
+    /// Paste at the active cell. When the system clipboard still holds exactly
+    /// what we last copied, the rich rectangle is used — raw inputs and
+    /// formats are restored and relative formula references shift to the new
+    /// location. Otherwise the plain-text clipboard is parsed as a TSV grid
+    /// and each field is smart-typed, so a paste from any other app works too.
+    fn paste(&mut self, doc: &mut AutoCommit) {
+        let target = self.grid.active();
+        let system = ui::clipboard_paste();
+        let use_internal = match (&self.clipboard, &system) {
+            (Some(cb), Some(text)) => *text == cb.tsv,
+            // No readable system clipboard (e.g. headless) → trust our own copy.
+            (Some(_), None) => true,
+            _ => false,
+        };
+
+        if use_internal {
+            // `take` so a cut is one-shot; a plain copy is re-stored below.
+            let cb = self.clipboard.take().unwrap();
+            let rows = cb.cells.len() as u32;
+            let cols = cb.cells.first().map(Vec::len).unwrap_or(0) as u32;
+            if rows == 0 || cols == 0 {
+                self.clipboard = Some(cb);
+                return;
+            }
+            let dc = target.0 as i64 - cb.src.0 as i64;
+            let dr = target.1 as i64 - cb.src.1 as i64;
+            // A cut moves the block: clear the whole source first, then write.
+            if cb.cut {
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let addr = (cb.src.0 + c, cb.src.1 + r);
+                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
+                        SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+                    }
+                }
+            }
+            let mut last = target;
+            for (ri, row) in cb.cells.iter().enumerate() {
+                for (ci, (raw, fmt)) in row.iter().enumerate() {
+                    let addr = (target.0 + ci as u32, target.1 + ri as u32);
+                    let out_raw = if cb.cut {
+                        raw.clone()
+                    } else {
+                        shift_formula_refs(raw, dc, dr)
+                    };
+                    SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &out_raw);
+                    SheetsDoc::set_cell_format(doc, self.active_sheet, addr, *fmt);
+                    last = addr;
+                }
+            }
+            if !cb.cut {
+                self.clipboard = Some(cb);
+            }
+            self.grid.select_range_public(target, last);
+        } else if let Some(text) = system {
+            let cur = self.default_currency();
+            let normalized = text.replace('\r', "");
+            let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
+            if body.is_empty() {
+                self.status = "Clipboard is empty".into();
+                return;
+            }
+            let mut last = target;
+            for (ri, line) in body.split('\n').enumerate() {
+                for (ci, field) in line.split('\t').enumerate() {
+                    let addr = (target.0 + ci as u32, target.1 + ri as u32);
+                    if field.is_empty() {
+                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
+                        SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+                    } else {
+                        let inferred = infer_entry(field, cur);
+                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &inferred.raw);
+                        SheetsDoc::set_cell_format(doc, self.active_sheet, addr, inferred.format);
+                    }
+                    last = addr;
+                }
+            }
+            self.grid.select_range_public(target, last);
+        } else {
+            self.status = "Clipboard is empty".into();
+            return;
+        }
+
+        self.needs_commit = true;
+        self.reload(doc);
+        self.status = format!("Pasted into {}", self.grid.selection_label());
+    }
+
     /// AutoSum: scan upward from the active cell for a run of numeric cells
     /// and write `=SUM(top:above)` into the active cell.
     fn auto_sum(&mut self, doc: &mut AutoCommit) {
@@ -323,10 +603,29 @@ impl SheetsApp {
         self.status = format!("Inserted {formula}");
     }
 
-    fn import_demo_csv(&mut self, doc: &mut AutoCommit) {
-        let idx = SheetsDoc::add_sheet(doc, "Imported");
-        let parsed = crate::csv::parse_csv(DEMO_CSV);
+    /// Import the most recently modified `.csv` file from the shared Sheets
+    /// folder into a new sheet, running smart type inference on each field.
+    /// No file picker exists in the toolkit yet, so "most recent in the
+    /// folder" is the selection heuristic (drop a file there, then import).
+    fn import_csv(&mut self, doc: &mut AutoCommit) {
+        let Some(dir) = exports_dir() else {
+            self.status = "No documents folder available for import".into();
+            return;
+        };
+        let Some(path) = newest_with_ext(&dir, "csv") else {
+            self.status = format!("No .csv files to import in {}", dir.display());
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("CSV import failed: {e}");
+                return;
+            }
+        };
+        let parsed = crate::csv::parse_csv(&text);
         let count = parsed.len();
+        let idx = SheetsDoc::add_sheet(doc, &sheet_name_from_path(&path));
         let cur = self.default_currency();
         for (addr, raw) in parsed {
             let inferred = infer_entry(&raw, cur);
@@ -338,7 +637,7 @@ impl SheetsApp {
         SheetsDoc::set_active_index(doc, idx);
         self.needs_commit = true;
         self.reload(doc);
-        self.status = format!("Imported {count} cells from CSV into a new sheet");
+        self.status = format!("Imported {count} cells from {}", file_label(&path));
     }
 
     /// Build an export table for the active sheet from its computed values.
@@ -380,36 +679,42 @@ impl SheetsApp {
             rows.push(row);
         }
         let csv = crate::csv::to_csv(&rows);
-        let path = std::env::temp_dir().join(format!("sheets-{}.csv", sanitize(&snap.name)));
+        let Some(path) = export_path(&snap.name, "csv") else {
+            self.status = "No documents folder available for export".into();
+            return;
+        };
         match std::fs::write(&path, csv) {
-            Ok(_) => self.status = format!("Exported CSV to {}", path.display()),
+            Ok(_) => self.status = format!("Exported {}", file_label(&path)),
             Err(e) => self.status = format!("CSV export failed: {e}"),
         }
     }
 
     fn export_xlsx(&mut self, doc: &mut AutoCommit) {
         let table = self.active_table(doc);
-        let name = sanitize(&table.name);
-        let path = std::env::temp_dir().join(format!("sheets-{name}.xlsx"));
+        let Some(path) = export_path(&table.name, "xlsx") else {
+            self.status = "No documents folder available for export".into();
+            return;
+        };
         match crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)) {
-            Ok(_) => self.status = format!("Exported Excel workbook to {}", path.display()),
+            Ok(_) => self.status = format!("Exported {}", file_label(&path)),
             Err(e) => self.status = format!("Excel export failed: {e}"),
         }
     }
 
     fn export_ods(&mut self, doc: &mut AutoCommit) {
         let table = self.active_table(doc);
-        let name = sanitize(&table.name);
-        let path = std::env::temp_dir().join(format!("sheets-{name}.ods"));
+        let Some(path) = export_path(&table.name, "ods") else {
+            self.status = "No documents folder available for export".into();
+            return;
+        };
         match crate::ods::write_ods(&path, std::slice::from_ref(&table)) {
-            Ok(_) => self.status = format!("Exported Calc document to {}", path.display()),
+            Ok(_) => self.status = format!("Exported {}", file_label(&path)),
             Err(e) => self.status = format!("Calc export failed: {e}"),
         }
     }
 
-    /// Import the first sheet of an `.xlsx`/`.ods` table set into a new
-    /// sheet. We round-trip our own last export so the action is meaningful
-    /// even without a file picker.
+    /// Import a parsed set of tables (one per sheet) into new sheets, running
+    /// smart inference where a source cell carried no explicit format.
     fn import_tables(&mut self, doc: &mut AutoCommit, tables: Vec<crate::xlsx::SheetTable>, kind: &str) {
         let cur = self.default_currency();
         let mut total = 0;
@@ -440,28 +745,31 @@ impl SheetsApp {
     }
 
     fn import_xlsx(&mut self, doc: &mut AutoCommit) {
-        // Demo path: export the active sheet to a temp xlsx, read it back.
-        let table = self.active_table(doc);
-        let path = std::env::temp_dir().join("sheets-import-demo.xlsx");
-        if crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).is_err() {
-            self.status = "Excel import unavailable".into();
+        let Some(dir) = exports_dir() else {
+            self.status = "No documents folder available for import".into();
             return;
-        }
+        };
+        let Some(path) = newest_with_ext(&dir, "xlsx") else {
+            self.status = format!("No .xlsx files to import in {}", dir.display());
+            return;
+        };
         match crate::xlsx::read_xlsx(&path) {
-            Ok(tables) => self.import_tables(doc, tables, "Excel (.xlsx)"),
+            Ok(tables) => self.import_tables(doc, tables, &file_label(&path)),
             Err(e) => self.status = format!("Excel import failed: {e}"),
         }
     }
 
     fn import_ods(&mut self, doc: &mut AutoCommit) {
-        let table = self.active_table(doc);
-        let path = std::env::temp_dir().join("sheets-import-demo.ods");
-        if crate::ods::write_ods(&path, std::slice::from_ref(&table)).is_err() {
-            self.status = "Calc import unavailable".into();
+        let Some(dir) = exports_dir() else {
+            self.status = "No documents folder available for import".into();
             return;
-        }
+        };
+        let Some(path) = newest_with_ext(&dir, "ods") else {
+            self.status = format!("No .ods files to import in {}", dir.display());
+            return;
+        };
         match crate::ods::read_ods(&path) {
-            Ok(tables) => self.import_tables(doc, tables, "Calc (.ods)"),
+            Ok(tables) => self.import_tables(doc, tables, &file_label(&path)),
             Err(e) => self.status = format!("Calc import failed: {e}"),
         }
     }
@@ -496,26 +804,11 @@ impl SheetsApp {
             SettingKind::DocCurrency(c) => self.doc_settings.currency = c,
             SettingKind::DocDate(d) => self.doc_settings.date_format = d,
             SettingKind::DocTime(t) => self.doc_settings.time_format = t,
-            SettingKind::GlobalCurrency(c) => self.global.locale.currency = c,
-            SettingKind::GlobalDate(d) => self.global.locale.date_format = d,
-            SettingKind::GlobalTime(t) => self.global.locale.time_format = t,
-            SettingKind::GlobalSave => {
-                match self.global.save() {
-                    Ok(p) => self.status = format!("Saved global settings to {}", p.display()),
-                    Err(e) => self.status = format!("Could not save global settings: {e}"),
-                }
-                self.reload(doc);
-                return;
-            }
         }
-        // Persist document overrides into the CRDT.
-        if matches!(
-            kind,
-            SettingKind::DocCurrency(_) | SettingKind::DocDate(_) | SettingKind::DocTime(_)
-        ) {
-            SheetsDoc::set_doc_settings(doc, &self.doc_settings);
-            self.needs_commit = true;
-        }
+        // Persist the document overrides into the CRDT so collaborators (and
+        // the next session) share the document's conventions.
+        SheetsDoc::set_doc_settings(doc, &self.doc_settings);
+        self.needs_commit = true;
         self.reload(doc);
     }
 
@@ -569,22 +862,6 @@ impl SheetsApp {
             Some(MenuItem::OpenDocSettings),
             None,
         ));
-        self.menu_buttons.push(mk(
-            "Defaults",
-            &mut x,
-            82.0,
-            Some(MenuItem::OpenGlobalSettings),
-            None,
-        ));
-
-        // Type indicator, right-aligned and prominent.
-        let ti_w = 188.0;
-        self.type_indicator_rect = Rect::new(
-            self.menubar_rect.x1 - ti_w - 10.0,
-            by,
-            self.menubar_rect.x1 - 10.0,
-            by + bh,
-        );
 
         // Formula bar field (after the name box + fx label).
         let fx_w = 30.0;
@@ -686,62 +963,56 @@ impl SheetsApp {
     }
 
     fn layout_settings_panel(&mut self) {
-        // Centered modal panel.
-        let pw = 460.0;
-        let ph = 280.0;
+        // Centered modal panel, sized to fit even the narrow viewport. Chip
+        // rows start under the section label and wrap within the panel width.
+        let pw = 440.0_f64.min(self.rect.width() - 32.0).max(300.0);
+        let ph = 268.0;
         let cx = self.rect.center().x;
         let cy = self.rect.center().y;
         self.panel_rect = Rect::new(cx - pw / 2.0, cy - ph / 2.0, cx + pw / 2.0, cy + ph / 2.0);
 
         let chip_h = 26.0;
         let left = self.panel_rect.x0 + 20.0;
-        let mut y = self.panel_rect.y0 + 64.0;
+        let row_start = left + 96.0; // clears the section label column
         let chip_gap = 6.0;
+        let wrap_x = self.panel_rect.x1 - 20.0;
+        let mut y = self.panel_rect.y0 + 64.0;
 
-        let is_doc = self.settings_panel == SettingsPanel::Document;
-
-        // Row 1: currency.
+        // Row: currency. First an explicit "Default" (inherit global) chip.
+        self.settings_section_y[0] = y;
         {
-            let mut x = left + 110.0;
-            // For the document panel, offer an explicit "Default" (inherit).
-            if is_doc {
-                let rect = Rect::new(x, y, x + 74.0, y + chip_h);
-                self.setting_chips.push(SettingChip {
-                    rect,
-                    kind: SettingKind::DocCurrency(None),
-                });
-                x += 74.0 + chip_gap;
-            }
-            for c in Currency::ALL {
-                let rect = Rect::new(x, y, x + 48.0, y + chip_h);
-                self.setting_chips.push(SettingChip {
-                    rect,
-                    kind: if is_doc {
-                        SettingKind::DocCurrency(Some(c))
-                    } else {
-                        SettingKind::GlobalCurrency(c)
-                    },
-                });
-                x += 48.0 + chip_gap;
-                if x > self.panel_rect.x1 - 60.0 {
-                    x = left + 110.0;
-                    y += chip_h + chip_gap;
+            let mut x = row_start;
+            let push = |chips: &mut Vec<SettingChip>, x: &mut f64, y: &mut f64, w: f64, kind| {
+                if *x + w > wrap_x {
+                    *x = row_start;
+                    *y += chip_h + chip_gap;
                 }
+                chips.push(SettingChip {
+                    rect: Rect::new(*x, *y, *x + w, *y + chip_h),
+                    kind,
+                });
+                *x += w + chip_gap;
+            };
+            push(&mut self.setting_chips, &mut x, &mut y, 74.0, SettingKind::DocCurrency(None));
+            for c in Currency::ALL {
+                push(
+                    &mut self.setting_chips,
+                    &mut x,
+                    &mut y,
+                    48.0,
+                    SettingKind::DocCurrency(Some(c)),
+                );
             }
         }
         y += chip_h + 18.0;
 
-        // Row 2: date style.
+        // Row: date style.
+        self.settings_section_y[1] = y;
         {
-            let mut x = left + 110.0;
-            if is_doc {
-                let rect = Rect::new(x, y, x + 74.0, y + chip_h);
-                self.setting_chips.push(SettingChip {
-                    rect,
-                    kind: SettingKind::DocDate(None),
-                });
-                x += 74.0 + chip_gap;
-            }
+            let mut x = row_start;
+            let rect = Rect::new(x, y, x + 74.0, y + chip_h);
+            self.setting_chips.push(SettingChip { rect, kind: SettingKind::DocDate(None) });
+            x += 74.0 + chip_gap;
             for (label, d) in [
                 ("ISO", DateStyle::Iso),
                 ("US", DateStyle::Us),
@@ -749,58 +1020,30 @@ impl SheetsApp {
                 ("Long", DateStyle::Long),
             ] {
                 let w = (label.len() as f64 * 8.0 + 24.0).max(48.0);
-                let rect = Rect::new(x, y, x + w, y + chip_h);
                 self.setting_chips.push(SettingChip {
-                    rect,
-                    kind: if is_doc {
-                        SettingKind::DocDate(Some(d))
-                    } else {
-                        SettingKind::GlobalDate(d)
-                    },
+                    rect: Rect::new(x, y, x + w, y + chip_h),
+                    kind: SettingKind::DocDate(Some(d)),
                 });
                 x += w + chip_gap;
             }
         }
         y += chip_h + 18.0;
 
-        // Row 3: time style.
+        // Row: time style.
+        self.settings_section_y[2] = y;
         {
-            let mut x = left + 110.0;
-            if is_doc {
-                let rect = Rect::new(x, y, x + 74.0, y + chip_h);
-                self.setting_chips.push(SettingChip {
-                    rect,
-                    kind: SettingKind::DocTime(None),
-                });
-                x += 74.0 + chip_gap;
-            }
+            let mut x = row_start;
+            let rect = Rect::new(x, y, x + 74.0, y + chip_h);
+            self.setting_chips.push(SettingChip { rect, kind: SettingKind::DocTime(None) });
+            x += 74.0 + chip_gap;
             for (label, t) in [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)] {
                 let w = label.len() as f64 * 8.0 + 24.0;
-                let rect = Rect::new(x, y, x + w, y + chip_h);
                 self.setting_chips.push(SettingChip {
-                    rect,
-                    kind: if is_doc {
-                        SettingKind::DocTime(Some(t))
-                    } else {
-                        SettingKind::GlobalTime(t)
-                    },
+                    rect: Rect::new(x, y, x + w, y + chip_h),
+                    kind: SettingKind::DocTime(Some(t)),
                 });
                 x += w + chip_gap;
             }
-        }
-
-        // Save button only on the global panel.
-        if !is_doc {
-            let rect = Rect::new(
-                self.panel_rect.x1 - 150.0,
-                self.panel_rect.y1 - 44.0,
-                self.panel_rect.x1 - 20.0,
-                self.panel_rect.y1 - 14.0,
-            );
-            self.setting_chips.push(SettingChip {
-                rect,
-                kind: SettingKind::GlobalSave,
-            });
         }
     }
 
@@ -867,9 +1110,6 @@ impl SheetsApp {
             };
             self.draw_chip(scene, transform, tr, theme, b.rect, &label, active, accent);
         }
-
-        // The type/format indicator — a prominent pill the user relies on.
-        self.draw_type_indicator(scene, transform, tr, theme);
 
         scene.stroke(
             &Stroke::new(1.0),
@@ -1004,55 +1244,51 @@ impl SheetsApp {
             transform * Affine::translate((self.add_tab_rect.center().x - 4.0, self.add_tab_rect.y0 + 4.0)),
             None,
         );
-        let (sw, _) = tr.measure(&self.status, theme.tokens.typography.scale.xs, None);
-        tr.draw_text(
-            scene,
-            &self.status,
-            theme.tokens.typography.scale.xs,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    self.tabs_rect.x1 - sw as f64 - 12.0,
-                    self.tabs_rect.y0 + (TABS_H - theme.tokens.typography.scale.xs as f64) / 2.0,
-                )),
-            None,
-        );
-    }
-
-    /// The prominent type/format indicator above the grid. Shows the active
-    /// cell's inferred category, e.g. `Type: Currency (USD)`.
-    fn draw_type_indicator(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        let rect = self.type_indicator_rect;
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5].with_alpha_factor(0.16),
-            None,
-            &shape,
-        );
-        scene.stroke(&Stroke::new(1.0), transform, colors.accent[5], None, &shape);
-        let sm = theme.tokens.typography.scale.sm;
-        let text = format!("Type: {}", self.current_active_format.label());
-        let (tw, _) = tr.measure(&text, sm, None);
-        let tx = rect.center().x - tw as f64 / 2.0;
-        let ty = rect.y0 + (rect.height() - sm as f64) / 2.0;
+        // Right side of the status bar: a live selection summary
+        // (Sum / Avg / Count over the numeric cells in the selection), or —
+        // when the selection holds no numbers — the active cell's type. This
+        // is computed from real cell values every frame, and right-aligns so
+        // it never collides with the tabs.
+        let xs = theme.tokens.typography.scale.xs;
+        let status_y = self.tabs_rect.y0 + (TABS_H - xs as f64) / 2.0;
+        let info = match self.selection_summary() {
+            Some(s) => format!(
+                "Sum {}    Avg {}    Count {}",
+                format_value(&CellValue::Number(s.sum), s.fmt),
+                format_value(&CellValue::Number(s.avg), s.fmt),
+                s.count,
+            ),
+            None => self.current_active_format.label(),
+        };
+        let (iw, _) = tr.measure(&info, xs, None);
+        let info_x = self.tabs_rect.x1 - iw as f64 - 12.0;
         tr.draw_text_weighted(
             scene,
-            &text,
-            sm,
+            &info,
+            xs,
             colors.text_primary,
-            transform * Affine::translate((tx, ty)),
+            transform * Affine::translate((info_x, status_y)),
             None,
             TextWeight::Semibold,
         );
+
+        // The transient action message (e.g. "Exported…") sits between the
+        // tabs and the summary, clipped so long paths never overrun it.
+        let msg_left = self.add_tab_rect.x1 + 16.0;
+        let msg_right = info_x - 16.0;
+        if !self.status.is_empty() && msg_right - msg_left > 48.0 {
+            let clip = Rect::new(msg_left, self.tabs_rect.y0, msg_right, self.tabs_rect.y1);
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
+            tr.draw_text(
+                scene,
+                &self.status,
+                xs,
+                colors.text_dim,
+                transform * Affine::translate((msg_left, status_y)),
+                None,
+            );
+            scene.pop_layer();
+        }
     }
 
     fn draw_dropdown(
@@ -1143,11 +1379,7 @@ impl SheetsApp {
 
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
-        let title = if self.settings_panel == SettingsPanel::Document {
-            "Document settings"
-        } else {
-            "Global defaults (all qOS apps)"
-        };
+        let title = "Document settings";
         tr.draw_text_weighted(
             scene,
             title,
@@ -1158,16 +1390,10 @@ impl SheetsApp {
             TextWeight::Bold,
         );
 
-        // Row labels.
+        // Section labels, aligned to the exact chip-row Y captured at layout
+        // time so they stay correct even when the currency row wraps.
         let label_x = self.panel_rect.x0 + 20.0;
-        let rows_y = [
-            self.panel_rect.y0 + 64.0,
-            self.panel_rect.y0 + 64.0 + 26.0 + 18.0 + 26.0, // approx; date row
-        ];
-        let _ = rows_y;
-        // Draw the three section labels aligned to the chip rows.
-        let mut section_y = self.panel_rect.y0 + 64.0;
-        for label in ["Currency", "Date", "Time"] {
+        for (label, &section_y) in ["Currency", "Date", "Time"].iter().zip(&self.settings_section_y) {
             tr.draw_text(
                 scene,
                 label,
@@ -1176,17 +1402,13 @@ impl SheetsApp {
                 transform * Affine::translate((label_x, section_y + 4.0)),
                 None,
             );
-            section_y += 26.0 + 18.0;
         }
 
         // Chips.
         for chip in &self.setting_chips {
             let (label, selected) = self.chip_label_and_state(chip.kind);
-            let is_save = matches!(chip.kind, SettingKind::GlobalSave);
             let shape = RoundedRect::from_rect(chip.rect, theme.tokens.radii.sm as f64);
-            let bg = if is_save {
-                colors.accent[5]
-            } else if selected {
+            let bg = if selected {
                 colors.accent[5].with_alpha_factor(0.85)
             } else {
                 colors.surfaces.raised
@@ -1195,29 +1417,25 @@ impl SheetsApp {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                if selected || is_save { colors.accent[5] } else { colors.border_standard },
+                if selected { colors.accent[5] } else { colors.border_standard },
                 None,
                 &shape,
             );
             let (tw, _) = tr.measure(&label, sm, None);
             let tx = chip.rect.center().x - tw as f64 / 2.0;
             let ty = chip.rect.y0 + (chip.rect.height() - sm as f64) / 2.0;
-            let color = if selected || is_save { Color::WHITE } else { colors.text_primary };
+            let color = if selected { Color::WHITE } else { colors.text_primary };
             tr.draw_text(scene, &label, sm, color, transform * Affine::translate((tx, ty)), None);
         }
 
-        // Hint footer.
-        let hint = if self.settings_panel == SettingsPanel::Document {
-            "Document overrides layer over the global defaults. \"Default\" = inherit."
-        } else {
-            "Saved to ~/.config/qos/settings.json — shared with the settings app and others."
-        };
+        // Footer: how the currently active cell renders under these settings.
+        let footer = format!("Applies to this workbook. Active cell: {}", self.current_active_format.label());
         tr.draw_text(
             scene,
-            hint,
+            &footer,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform * Affine::translate((self.panel_rect.x0 + 20.0, self.panel_rect.y1 - 30.0)),
+            transform * Affine::translate((self.panel_rect.x0 + 20.0, self.panel_rect.y1 - 28.0)),
             None,
         );
     }
@@ -1232,30 +1450,58 @@ impl SheetsApp {
             SettingKind::DocDate(Some(d)) => (date_label(d).into(), self.doc_settings.date_format == Some(d)),
             SettingKind::DocTime(None) => ("Default".into(), self.doc_settings.time_format.is_none()),
             SettingKind::DocTime(Some(t)) => (time_label(t).into(), self.doc_settings.time_format == Some(t)),
-            SettingKind::GlobalCurrency(c) => (c.code().into(), self.global.locale.currency == c),
-            SettingKind::GlobalDate(d) => (date_label(d).into(), self.global.locale.date_format == d),
-            SettingKind::GlobalTime(t) => (time_label(t).into(), self.global.locale.time_format == t),
-            SettingKind::GlobalSave => ("Save defaults".into(), false),
         }
     }
 
-    fn format_of_active(&self, doc: &mut AutoCommit) -> CellFormat {
-        let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
+    /// The active cell's effective format, read from the memoised reload cache
+    /// (the propagation of formula units is already baked into `eff_fmt`).
+    fn format_of_active(&self) -> CellFormat {
         let active = self.grid.active();
-        if let Some(f) = snap.fmt.get(&active).copied() {
-            return f;
-        }
-        // No explicit format — reflect any propagated format for formulas.
-        if let Some(raw) = snap.raw.get(&active) {
-            if let Some(body) = raw.strip_prefix('=') {
-                if let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
-                    return inferred;
-                }
+        self.cache
+            .as_ref()
+            .and_then(|c| c.eff_fmt.get(&active).copied())
+            .unwrap_or_default()
+    }
+
+    /// A live summary of the current selection for the status bar: the sum,
+    /// average, and count of numeric cells. Returns `None` unless at least two
+    /// numbers are selected — a single cell shows its type instead, so the
+    /// summary only appears when it is actually informative (matching how
+    /// desktop spreadsheets behave).
+    fn selection_summary(&self) -> Option<SelectionSummary> {
+        let cache = self.cache.as_ref()?;
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for addr in self.grid.selected_cells() {
+            if let Some(CellValue::Number(n)) = cache.values.get(&addr) {
+                sum += *n;
+                count += 1;
             }
         }
-        CellFormat::default()
+        if count < 2 {
+            return None;
+        }
+        // Present the summary in the active cell's format when it is a
+        // number/currency/percent, so `$` and `%` read naturally.
+        let fmt = match self.format_of_active() {
+            f @ (CellFormat::Currency(_) | CellFormat::Number | CellFormat::Percent) => f,
+            _ => CellFormat::Number,
+        };
+        Some(SelectionSummary {
+            sum,
+            avg: sum / count as f64,
+            count,
+            fmt,
+        })
     }
+}
+
+/// A numeric summary of the selection shown in the status bar.
+struct SelectionSummary {
+    sum: f64,
+    avg: f64,
+    count: usize,
+    fmt: CellFormat,
 }
 
 fn menu_item_label(item: &MenuItem) -> &'static str {
@@ -1270,7 +1516,6 @@ fn menu_item_label(item: &MenuItem) -> &'static str {
         MenuItem::SetFormat(f) => format_menu_label(*f),
         MenuItem::ClearFormat => "Clear format",
         MenuItem::OpenDocSettings => "Document settings",
-        MenuItem::OpenGlobalSettings => "Global defaults",
         MenuItem::AutoSum => "AutoSum",
     }
 }
@@ -1313,21 +1558,202 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
+/// Flatten a cell's display text into a single TSV field: tabs and newlines
+/// would break the row/column structure, so they collapse to spaces.
+fn tsv_cell(display: &str) -> String {
+    display.replace(['\t', '\n', '\r'], " ")
+}
+
+/// Rewrite a formula so its **relative** cell references shift by `(dc, dr)`
+/// when it is pasted to a new location — the behaviour every spreadsheet
+/// applies on copy/paste. `$`-anchored column/row components stay put, string
+/// literals and function names are left untouched, and numeric literals
+/// (including scientific notation like `1e3`) are never mistaken for a
+/// reference. Non-formula raw inputs are returned unchanged.
+fn shift_formula_refs(raw: &str, dc: i64, dr: i64) -> String {
+    let Some(body) = raw.strip_prefix('=') else {
+        return raw.to_string();
+    };
+    if dc == 0 && dr == 0 {
+        return raw.to_string();
+    }
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = String::with_capacity(raw.len() + 4);
+    out.push('=');
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            // Copy a string literal verbatim, including the closing quote.
+            out.push(c);
+            i += 1;
+            while i < chars.len() {
+                out.push(chars[i]);
+                let done = chars[i] == '"';
+                i += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '$' || c.is_ascii_alphabetic() {
+            let start = i;
+            while i < chars.len() && (chars[i] == '$' || chars[i].is_ascii_alphanumeric()) {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            // A run right after a digit/dot is an exponent (`1e3`), not a ref.
+            let prev_numish = start > 0
+                && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.');
+            // An identifier followed by `(` is a function name, not a ref.
+            let mut k = i;
+            while k < chars.len() && chars[k].is_whitespace() {
+                k += 1;
+            }
+            let is_call = k < chars.len() && chars[k] == '(';
+            if !prev_numish && !is_call {
+                if let Some(shifted) = shift_ref_token(&token, dc, dr) {
+                    out.push_str(&shifted);
+                    continue;
+                }
+            }
+            out.push_str(&token);
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Shift one `A1`/`$A$1`-shaped token by `(dc, dr)`, preserving any `$`
+/// anchors. Returns `None` when the token is not a well-formed reference
+/// (leaving function names, booleans, etc. untouched).
+fn shift_ref_token(tok: &str, dc: i64, dr: i64) -> Option<String> {
+    let bytes = tok.as_bytes();
+    let mut i = 0;
+    let col_abs = i < bytes.len() && bytes[i] == b'$';
+    if col_abs {
+        i += 1;
+    }
+    let ls = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    if i == ls {
+        return None;
+    }
+    let letters = &tok[ls..i];
+    let row_abs = i < bytes.len() && bytes[i] == b'$';
+    if row_abs {
+        i += 1;
+    }
+    let ds = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == ds || i != bytes.len() {
+        return None;
+    }
+    let col = crate::model::letters_to_col(letters)? as i64;
+    let row: i64 = tok[ds..i].parse().ok()?; // 1-based
+    let new_col = if col_abs { col } else { (col + dc).max(0) };
+    let new_row = if row_abs { row } else { (row + dr).max(1) };
+    let mut s = String::new();
+    if col_abs {
+        s.push('$');
+    }
+    s.push_str(&crate::model::col_to_letters(new_col as u32));
+    if row_abs {
+        s.push('$');
+    }
+    s.push_str(&new_row.to_string());
+    Some(s)
+}
+
+/// Where the workbook is persisted between sessions:
+/// `$XDG_DATA_HOME/qos/sheets/workbook.automerge` (falls back to
+/// `~/.local/share`).
+fn workbook_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(dirs::data_dir)?;
+    Some(base.join("qos").join("sheets").join("workbook.automerge"))
+}
+
+/// The shared folder for CSV/Excel/Calc import and export — the user's
+/// documents directory when available, otherwise the app's data directory.
+/// The same folder is both the export target and the import source, so a
+/// file exported here (or dropped in) is the one a later import reads.
+fn exports_dir() -> Option<PathBuf> {
+    let base = dirs::document_dir().or_else(dirs::data_dir)?;
+    Some(base.join("qOS Sheets"))
+}
+
+/// Build an export path `<exports_dir>/<sheet>.<ext>`, creating the folder.
+fn export_path(sheet_name: &str, ext: &str) -> Option<PathBuf> {
+    let dir = exports_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let name = sanitize(sheet_name);
+    let stem = if name.is_empty() { "Sheet".to_string() } else { name };
+    Some(dir.join(format!("{stem}.{ext}")))
+}
+
+/// The most recently modified file in `dir` whose extension matches `ext`
+/// (case-insensitive), or `None` when the folder holds no such file.
+fn newest_with_ext(dir: &std::path::Path, ext: &str) -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let matches = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case(ext))
+            .unwrap_or(false);
+        if !matches {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            best = Some((mtime, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// A new sheet name derived from an imported file's stem.
+fn sheet_name_from_path(path: &std::path::Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Imported".to_string())
+}
+
+/// A short, user-facing label for a path (its file name) for status messages.
+fn file_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 impl Widget for SheetsApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             // Pull the shared global defaults once at startup.
             self.global = GlobalSettings::load();
-            self.seed_if_empty(state);
-            // Show the File menu open in the first frame so the relocated
-            // file actions are visible in the offscreen screenshot.
-            if self.preview_open_file_menu {
-                self.open_menu = OpenMenu::File;
-            }
+            self.initialize(state);
             self.seeded = true;
         }
         self.reload(state);
-        self.current_active_format = self.format_of_active(state);
+        self.current_active_format = self.format_of_active();
+        self.persist_if_dirty(state);
     }
 
     fn build_layout(
@@ -1427,7 +1853,6 @@ impl Widget for SheetsApp {
                 if self.open_menu != OpenMenu::None {
                     if let Some(item) = self.dropdown_item_at(p) {
                         self.open_menu = OpenMenu::None;
-                        self.preview_open_file_menu = false;
                         self.run_menu_item(state, item);
                         self.dirty = true;
                         *handled = true;
@@ -1435,7 +1860,6 @@ impl Widget for SheetsApp {
                     }
                     if !self.dropdown_rect.contains(p) && !self.menubar_rect.contains(p) {
                         self.open_menu = OpenMenu::None;
-                        self.preview_open_file_menu = false;
                         self.dirty = true;
                     }
                 }
@@ -1449,7 +1873,6 @@ impl Widget for SheetsApp {
                             } else {
                                 opens
                             };
-                            self.preview_open_file_menu = false;
                         } else if let Some(item) = b.item.clone() {
                             self.run_menu_item(state, item);
                         }
@@ -1546,12 +1969,48 @@ impl Widget for SheetsApp {
                     {
                         self.open_menu = OpenMenu::None;
                         self.settings_panel = SettingsPanel::None;
-                        self.preview_open_file_menu = false;
                         self.dirty = true;
                         *handled = true;
                         return;
                     }
                 }
+
+                // Clipboard chords + select-all operate on the grid selection,
+                // so they are skipped while an in-cell edit owns the keyboard.
+                if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                    let ctrl =
+                        modifiers.state().control_key() || modifiers.state().super_key();
+                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing() {
+                        if let winit::keyboard::Key::Character(c) = &ke.logical_key {
+                            match c.as_str() {
+                                "c" | "C" => {
+                                    self.copy_selection(false);
+                                    *handled = true;
+                                    return;
+                                }
+                                "x" | "X" => {
+                                    self.copy_selection(true);
+                                    *handled = true;
+                                    return;
+                                }
+                                "v" | "V" => {
+                                    self.paste(state);
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                "a" | "A" => {
+                                    self.grid.select_used_range();
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 let mut out = Vec::new();
                 if self.grid.key(event, modifiers, &mut out) {
                     *handled = true;
@@ -1615,7 +2074,7 @@ impl SheetsApp {
     fn run_menu_item(&mut self, doc: &mut AutoCommit, item: MenuItem) {
         match item {
             MenuItem::NewSheet => self.add_sheet(doc),
-            MenuItem::ImportCsv => self.import_demo_csv(doc),
+            MenuItem::ImportCsv => self.import_csv(doc),
             MenuItem::ExportCsv => self.export_csv(doc),
             MenuItem::ImportXlsx => self.import_xlsx(doc),
             MenuItem::ExportXlsx => self.export_xlsx(doc),
@@ -1625,11 +2084,6 @@ impl SheetsApp {
             MenuItem::ClearFormat => self.clear_format(doc),
             MenuItem::OpenDocSettings => {
                 self.settings_panel = SettingsPanel::Document;
-                self.open_menu = OpenMenu::None;
-                self.relayout_overlays();
-            }
-            MenuItem::OpenGlobalSettings => {
-                self.settings_panel = SettingsPanel::Global;
                 self.open_menu = OpenMenu::None;
                 self.relayout_overlays();
             }
@@ -1762,10 +2216,247 @@ fn seed_workbook(doc: &mut AutoCommit) {
     }
 }
 
-/// Sample CSV used by the File ▸ Import CSV action (no file picker in
-/// headless mode, so the demo imports an embedded dataset).
-const DEMO_CSV: &str = "Product,Units,Price,Revenue\n\
-Widget,120,$4.50,=B2*C2\n\
-Gadget,85,$12.00,=B3*C3\n\
-Gizmo,200,$2.25,=B4*C4\n\
-Total,=SUM(B2:B4),,=SUM(D2:D4)\n";
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::GridCmd;
+
+    /// Serializes the tests that mutate the process-global `XDG_DATA_HOME`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Serializes tests that round-trip through the process-global system
+    /// clipboard, so a parallel test's copy can't land between another's
+    /// copy and paste (the app itself is single-instance, so this only
+    /// matters under the parallel test harness).
+    static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Build an app in the seeded (sample) mode and run the first `sync`, which
+    /// is exactly what the live/offscreen paths do before drawing.
+    fn seeded_app() -> (SheetsApp, AutoCommit) {
+        let mut app = SheetsApp::new();
+        app.shots_mode(); // seed sample data, no disk persistence
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        (app, doc)
+    }
+
+    fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
+        app.cache.as_ref().and_then(|c| c.values.get(&addr).cloned())
+    }
+
+    #[test]
+    fn seed_computes_real_formulas() {
+        let (app, _doc) = seeded_app();
+        // Budget!E2 = SUM(B2:D2) = 1200 + 1200 + 1200 = 3600.
+        assert_eq!(value_at(&app, (4, 1)), Some(CellValue::Number(3600.0)));
+        // The active cell (E2) is a propagated currency.
+        assert!(matches!(app.format_of_active(), CellFormat::Currency(_)));
+    }
+
+    #[test]
+    fn editing_a_cell_recalculates_dependents() {
+        // This is the real path `handle_event` runs after `grid.key`: it hands
+        // the emitted commands to `apply_cmds`, which infers the entry, writes
+        // the CRDT, and recalculates.
+        let (mut app, mut doc) = seeded_app();
+        let b2 = (1, 1);
+        let e2 = (4, 1);
+        assert_eq!(value_at(&app, e2), Some(CellValue::Number(3600.0)));
+
+        app.apply_cmds(
+            &mut doc,
+            vec![
+                GridCmd::SetCell { addr: b2, raw: "1000".into() },
+                GridCmd::Commit,
+            ],
+        );
+
+        // The stored raw changed and the dependent SUM recomputed.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, b2), "1000");
+        assert_eq!(value_at(&app, e2), Some(CellValue::Number(3400.0)));
+    }
+
+    #[test]
+    fn auto_sum_writes_a_working_formula() {
+        let (mut app, mut doc) = seeded_app();
+        // Put the active cell just below a numeric run and AutoSum it.
+        app.grid.select_only((1, 7)); // B8, under B2:B7
+        app.auto_sum(&mut doc);
+        let raw = SheetsDoc::cell_raw(&mut doc, 0, (1, 7));
+        assert!(raw.starts_with("=SUM("), "auto-sum wrote {raw:?}");
+        // The computed value is finite and positive (a real sum, not an error).
+        match value_at(&app, (1, 7)) {
+            Some(CellValue::Number(n)) => assert!(n > 0.0),
+            other => panic!("expected a numeric AutoSum result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_format_changes_active_type() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((1, 8)); // B9 = 2600 (currency in the seed)
+        app.apply_format(&mut doc, CellFormat::Percent);
+        assert_eq!(app.format_of_active(), CellFormat::Percent);
+    }
+
+    #[test]
+    fn selection_summary_sums_real_values() {
+        let (mut app, _doc) = seeded_app();
+        // Select the Jan column body B2:B6 (five numeric cells).
+        app.grid.set_selection((1, 1), (1, 5));
+        let summary = app.selection_summary().expect("numeric selection");
+        assert_eq!(summary.count, 5);
+        // 1200 + 420 + 180 + 90 + 150 = 2040.
+        assert!((summary.sum - 2040.0).abs() < 1e-6, "sum={}", summary.sum);
+        assert!((summary.avg - 408.0).abs() < 1e-6, "avg={}", summary.avg);
+    }
+
+    #[test]
+    fn copy_paste_preserves_value_and_format() {
+        // Copy a currency cell into an empty one; the raw and the currency
+        // format both come across, and it recomputes to the same number.
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((1, 1)); // B2 = 1200, currency
+        app.copy_selection(false);
+        app.grid.select_only((1, 7)); // B8, empty
+        app.paste(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 7)), "1200");
+        assert!(matches!(app.grid.cell_fmt_at((1, 7)), CellFormat::Currency(_)));
+        assert_eq!(value_at(&app, (1, 7)), Some(CellValue::Number(1200.0)));
+    }
+
+    #[test]
+    fn copy_paste_shifts_relative_formula_refs() {
+        // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
+        // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
+        // AVERAGE, and the pasted formula recomputes against the new operands.
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((4, 1)); // E2
+        app.copy_selection(false);
+        app.grid.select_only((5, 2)); // F3
+        app.paste(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 2)), "=SUM(C3:E3)");
+        // C3=460, D3=510, E3=SUM(B3:D3)=1390 → 2360.
+        assert_eq!(value_at(&app, (5, 2)), Some(CellValue::Number(2360.0)));
+    }
+
+    #[test]
+    fn cut_moves_cell_and_clears_source() {
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 0)); // A1 = "Category"
+        app.copy_selection(true); // cut
+        app.grid.select_only((0, 20)); // A21, empty
+        app.paste(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 20)), "Category");
+    }
+
+    #[test]
+    fn shift_refs_handles_anchors_functions_and_numbers() {
+        assert_eq!(shift_formula_refs("=A1+$B$2", 1, 1), "=B2+$B$2");
+        assert_eq!(shift_formula_refs("=SUM(A1:A3)*2", 2, 0), "=SUM(C1:C3)*2");
+        // Mixed anchors: `$A1` shifts row only, `A$1` shifts column only.
+        assert_eq!(shift_formula_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
+        // Scientific-notation literals are not references.
+        assert_eq!(shift_formula_refs("=1e3+A1", 0, 1), "=1e3+A2");
+        // Function names + string literals are left untouched.
+        assert_eq!(
+            shift_formula_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+            "=IF(A2>0,\"A1\",B3)"
+        );
+        // A plain literal is returned unchanged.
+        assert_eq!(shift_formula_refs("1200", 3, 3), "1200");
+    }
+
+    #[test]
+    fn blank_launch_opens_a_single_empty_sheet() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // A real launch (persist on, but pointed at an empty temp data dir)
+        // must NOT fabricate the sample workbook.
+        let tmp = std::env::temp_dir().join(format!("qos-sheets-blank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+
+        let mut app = SheetsApp::new(); // persist = true, seed_sample_data = false
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), 1);
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Sheet1"]);
+        // No fabricated cells.
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+        assert!(snap.raw.is_empty(), "blank launch seeded {} cells", snap.raw.len());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Not a correctness test: a perf guard demonstrating that a no-op reload
+    /// (no document change, as on every scroll/selection/hover frame) skips the
+    /// snapshot + full recalculation. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_reload_memoisation() {
+        let (mut app, mut doc) = seeded_app();
+        let n = 20_000;
+
+        // Memoised path (heads unchanged) — what interaction frames now hit.
+        let t0 = std::time::Instant::now();
+        for _ in 0..n {
+            app.reload(&mut doc);
+        }
+        let memo = t0.elapsed();
+
+        // Forced path (snapshot + recalculate every call) — the old behaviour.
+        let t1 = std::time::Instant::now();
+        for _ in 0..n {
+            app.cache = None;
+            app.reload(&mut doc);
+        }
+        let forced = t1.elapsed();
+
+        eprintln!(
+            "reload x{n}: memoised={:?} ({:.3}us/call)  forced={:?} ({:.3}us/call)",
+            memo,
+            memo.as_secs_f64() * 1e6 / n as f64,
+            forced,
+            forced.as_secs_f64() * 1e6 / n as f64,
+        );
+        assert!(memo < forced, "memoised reload must be cheaper than a forced one");
+    }
+
+    #[test]
+    fn workbook_persists_and_reloads() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("qos-sheets-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+
+        // Session one: blank launch, edit a cell, persist.
+        let mut app = SheetsApp::new();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.apply_cmds(
+            &mut doc,
+            vec![
+                GridCmd::SetCell { addr: (0, 0), raw: "hello".into() },
+                GridCmd::Commit,
+            ],
+        );
+        app.persist_if_dirty(&mut doc);
+        assert!(workbook_path().unwrap().exists(), "workbook was not written");
+
+        // Session two: a fresh app + fresh document reopens the saved workbook.
+        let mut app2 = SheetsApp::new();
+        let mut doc2 = AutoCommit::new();
+        app2.sync(&mut doc2, &root);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (0, 0)), "hello");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

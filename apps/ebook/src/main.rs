@@ -41,9 +41,29 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, ebook::app_root());
+    // A positional `.epub` path opens that book directly (OS file association).
+    let root = match positional_epub(&args) {
+        Some(path) => ebook::app_root_for_path(&path),
+        None => ebook::app_root(),
+    };
+    let app = ui::App::new(state, root);
     app.run();
     Ok(())
+}
+
+/// First positional argument that is an existing `.epub` file, if any.
+fn positional_epub(args: &[String]) -> Option<std::path::PathBuf> {
+    args.iter().skip(1).find_map(|a| {
+        if a.starts_with('-') {
+            return None;
+        }
+        let p = std::path::PathBuf::from(a);
+        let is_epub = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"));
+        (is_epub && p.exists()).then_some(p)
+    })
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

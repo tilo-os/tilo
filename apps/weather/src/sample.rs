@@ -4,10 +4,15 @@
 //! no async runtime**, so it can't wait on a live network fetch. To keep
 //! the screenshot honest — a real, populated UI rather than an empty
 //! shell — every saved location ships with a representative snapshot
-//! synthesized here. In the live binary these same snapshots seed the
-//! first frame and are then overwritten by real Open-Meteo fetches
-//! (`net.rs`). Everything is stored in **metric** (the snapshot's
-//! `source_units`); the UI converts to the user's preference at draw time.
+//! synthesized here. This data is used **only** by the offscreen/test path
+//! ([`WeatherApp::new`]); the live binary ([`WeatherApp::live`]) discards
+//! these snapshots and shows real Open-Meteo fetches instead, so it never
+//! displays invented readings. Everything is stored in **metric** (the
+//! snapshot's `source_units`); the UI converts to the user's preference at
+//! draw time.
+//!
+//! [`WeatherApp::new`]: crate::app::WeatherApp::new
+//! [`WeatherApp::live`]: crate::app::WeatherApp::live
 
 use crate::model::{
     CurrentConditions, DayForecast, HourPoint, SavedLocation, WeatherModel, WeatherSnapshot,

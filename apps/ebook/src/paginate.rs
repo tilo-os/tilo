@@ -176,6 +176,9 @@ struct Word {
     italic: bool,
     mono: bool,
     w: f32,
+    /// Whether a space separates this word from the previous one. `false` lets
+    /// punctuation and clitics hug the preceding word across a style boundary.
+    space_before: bool,
 }
 
 fn weight(bold: bool) -> TextWeight {
@@ -221,27 +224,31 @@ pub fn layout_chapter(
         let text_width = (content_w - st.indent).max(40.0);
         let space_w = measure_space(tr, st.size, base_mono);
 
-        // Build the word list with measured widths.
+        // Build the word list with measured widths. The first word of each
+        // span inherits the span's `space_before`; later words in a span are
+        // whitespace-separated by construction.
         let mut words: Vec<Word> = Vec::new();
         for span in block.spans() {
             let bold = span.bold || st.force_bold;
             let italic = span.italic || st.force_italic;
             let mono = span.code || base_mono;
-            for w in span.text.split_whitespace() {
+            for (wi, w) in span.text.split_whitespace().enumerate() {
                 let (ww, _h) = tr.measure_styled(w, st.size, None, weight(bold), italic, mono);
-                words.push(Word { text: w.to_string(), bold, italic, mono, w: ww });
+                let space_before = if wi == 0 { span.space_before } else { true };
+                words.push(Word { text: w.to_string(), bold, italic, mono, w: ww, space_before });
             }
         }
 
-        // Greedy word wrap.
+        // Greedy word wrap. A word joins with a leading space only when
+        // `space_before` says so — otherwise it abuts the previous run.
         let mut lines: Vec<LaidLine> = Vec::new();
         let mut cur: Vec<LineRun> = Vec::new();
         let mut cur_w = 0.0f32;
         let block_top = y;
         let mut line_idx = 0usize;
         for word in &words {
-            let advance = if cur.is_empty() { 0.0 } else { space_w };
-            if !cur.is_empty() && cur_w + advance + word.w > text_width {
+            let gap = if !cur.is_empty() && word.space_before { space_w } else { 0.0 };
+            if !cur.is_empty() && cur_w + gap + word.w > text_width {
                 lines.push(LaidLine {
                     y: block_top + line_idx as f32 * line_height,
                     runs: std::mem::take(&mut cur),
@@ -249,7 +256,7 @@ pub fn layout_chapter(
                 line_idx += 1;
                 cur_w = 0.0;
             }
-            let x = if cur.is_empty() { 0.0 } else { cur_w + space_w };
+            let x = if cur.is_empty() { 0.0 } else { cur_w + gap };
             cur.push(LineRun {
                 x,
                 text: word.text.clone(),

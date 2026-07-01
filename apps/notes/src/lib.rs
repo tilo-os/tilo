@@ -1,4 +1,4 @@
-//! Library root for the nirios notes app.
+//! Library root for the notes app.
 //!
 //! The binary in `main.rs` is a thin shim that wires the [`NotesApp`]
 //! widget up to a `ui::App`. Everything else — data model, storage,
@@ -13,6 +13,7 @@ pub mod sidebar;
 pub mod shortcuts_overlay;
 pub mod status_bar;
 pub mod app;
+pub mod shots;
 
 pub use app::NotesApp;
 pub use app::WELCOME_BODY;
