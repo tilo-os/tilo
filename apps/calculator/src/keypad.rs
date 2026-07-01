@@ -99,6 +99,19 @@ impl CalcScreen {
         &self.keys
     }
 
+    /// Bench/test helper: screen-space center of keypad key `i`, once the pad
+    /// has been laid out. Used by the headless interaction bench + tests.
+    #[doc(hidden)]
+    pub fn key_center(&self, i: usize) -> Option<Point> {
+        self.key_rects.get(i).map(|r| r.center())
+    }
+
+    /// Bench/test helper: index of the first keypad key whose label is `label`.
+    #[doc(hidden)]
+    pub fn key_index_for_label(&self, label: &str) -> Option<usize> {
+        self.keys.iter().position(|k| k.label() == label)
+    }
+
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
     /// breakpoint changed. Cheap when unchanged (the common case).
     fn ensure_layout(&mut self, keypad_w: f64) {

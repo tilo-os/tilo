@@ -19,8 +19,8 @@ pub mod render;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::Modifiers;
 use winit::keyboard::{Key as WKey, NamedKey};
 
@@ -47,6 +47,11 @@ pub struct MathField {
     base_size: f32,
     /// Whether a drag-select is in progress.
     dragging: bool,
+    /// Content-local pixels scrolled off the top-left. Keeps a long or tall
+    /// formula scrolling *within* the fixed field rect instead of overflowing
+    /// it (which used to make the formula appear to resize the row). Updated to
+    /// keep the caret in view while typing, and by the mouse wheel.
+    scroll: Vec2,
 }
 
 impl MathField {
@@ -59,6 +64,7 @@ impl MathField {
             layout_sig: None,
             base_size: layout::BASE_SIZE,
             dragging: false,
+            scroll: Vec2::ZERO,
         }
     }
 
@@ -103,6 +109,13 @@ impl MathField {
         self.editor.park_demo_selection();
     }
 
+    /// Park the caret at the very end of the formula (shot/demo helper), so a
+    /// static frame of a long formula shows it scrolled to its tail with the
+    /// caret in view.
+    pub fn park_caret_at_end(&mut self) {
+        self.editor.end(false);
+    }
+
     /// Set the content rect for this frame and (re)build the layout.
     pub fn set_rect(&mut self, rect: Rect, tr: &mut TextRenderer) {
         self.rect = rect;
@@ -114,20 +127,97 @@ impl MathField {
         // form is a faithful signature of the (canonical) tree the editor
         // builds, and is far cheaper to compute than a full measure+box pass.
         let sig = (self.editor.to_linear(), self.base_size);
-        if self.layout.is_some() && self.layout_sig.as_ref() == Some(&sig) {
-            return;
+        if self.layout.is_none() || self.layout_sig.as_ref() != Some(&sig) {
+            self.layout = Some(layout::layout(&self.editor.expr.root, tr, self.base_size));
+            self.layout_sig = Some(sig);
         }
-        self.layout = Some(layout::layout(&self.editor.expr.root, tr, self.base_size));
-        self.layout_sig = Some(sig);
+        // Track the caret every pass (a caret move doesn't change the content
+        // signature, but must still bring the caret back into view).
+        self.ensure_caret_visible();
     }
 
-    /// Origin (top-left) where content is drawn: vertically centered in rect,
-    /// left-padded a little.
+    /// Left padding between the field edge and the content.
+    const PAD_X: f64 = 4.0;
+
+    /// Origin (top-left) where content is drawn. Horizontally the content is
+    /// left-padded and shifted by the horizontal scroll; vertically it is
+    /// centered when it fits and top-aligned + scrolled when it is taller than
+    /// the field, so the field never grows with the formula.
     fn content_origin(&self) -> Point {
         let h = self.layout.as_ref().map(|l| l.height).unwrap_or(0.0);
-        let pad_x = 4.0;
-        let y = self.rect.y0 + (self.rect.height() - h) / 2.0;
-        Point::new(self.rect.x0 + pad_x, y)
+        let view_h = self.rect.height();
+        let y = if h <= view_h {
+            self.rect.y0 + (view_h - h) / 2.0
+        } else {
+            self.rect.y0 - self.scroll.y
+        };
+        Point::new(self.rect.x0 + Self::PAD_X - self.scroll.x, y)
+    }
+
+    /// Visible content width (field width minus the left pad).
+    fn view_w(&self) -> f64 {
+        (self.rect.width() - Self::PAD_X).max(1.0)
+    }
+
+    /// Maximum scroll offsets for the current content + field size.
+    fn scroll_bounds(&self) -> (f64, f64) {
+        match self.layout.as_ref() {
+            Some(l) => (
+                (l.width - self.view_w()).max(0.0),
+                (l.height - self.rect.height()).max(0.0),
+            ),
+            None => (0.0, 0.0),
+        }
+    }
+
+    /// Nudge the scroll so the caret stays inside the field, then clamp both
+    /// axes to the content. Called every layout pass.
+    fn ensure_caret_visible(&mut self) {
+        // Read what we need out of the (immutably borrowed) layout first, so we
+        // can mutate `self.scroll` afterwards without a borrow conflict.
+        let caret = {
+            let Some(layout) = self.layout.as_ref() else {
+                return;
+            };
+            render::caret_gap(layout, &self.editor.caret.steps, self.editor.caret.offset)
+                .map(|g| (g.x, g.top, g.bottom))
+        };
+        let view_w = self.view_w();
+        let view_h = self.rect.height();
+        let content_h = self.layout.as_ref().map(|l| l.height).unwrap_or(0.0);
+        let margin = 8.0f64;
+        if let Some((cx, ctop, cbot)) = caret {
+            if cx < self.scroll.x + margin {
+                self.scroll.x = cx - margin;
+            } else if cx > self.scroll.x + view_w - margin {
+                self.scroll.x = cx - view_w + margin;
+            }
+            if content_h > view_h {
+                if ctop < self.scroll.y {
+                    self.scroll.y = ctop;
+                } else if cbot > self.scroll.y + view_h {
+                    self.scroll.y = cbot - view_h;
+                }
+            }
+        }
+        let (max_x, max_y) = self.scroll_bounds();
+        self.scroll.x = self.scroll.x.clamp(0.0, max_x);
+        self.scroll.y = self.scroll.y.clamp(0.0, max_y);
+    }
+
+    /// Scroll the content by `(dx, dy)` content pixels (e.g. from the wheel),
+    /// clamped to the content extent.
+    pub fn scroll_by(&mut self, dx: f64, dy: f64) {
+        let (max_x, max_y) = self.scroll_bounds();
+        self.scroll.x = (self.scroll.x + dx).clamp(0.0, max_x);
+        self.scroll.y = (self.scroll.y + dy).clamp(0.0, max_y);
+    }
+
+    /// Whether the content currently overflows the field on either axis (so it
+    /// is scrolled rather than fully visible).
+    pub fn overflows(&self) -> bool {
+        let (mx, my) = self.scroll_bounds();
+        mx > 0.0 || my > 0.0
     }
 
     /// Draw the field. `focused` controls caret visibility.
@@ -148,6 +238,9 @@ impl MathField {
         let sel = self.editor.selection();
         let sel_gaps = render::row_gaps(layout, steps);
         let sel_gaps_ref: Vec<(usize, &layout::Gap)> = sel_gaps;
+        // Clip to the field rect so a long/tall formula scrolls within a
+        // bounded box instead of spilling over neighbouring rows.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         render::draw_field(
             scene,
             t,
@@ -161,6 +254,7 @@ impl MathField {
             text_color,
             focused,
         );
+        scene.pop_layer();
     }
 
     /// The engine-ready linear form after an edit, recording it as the new
