@@ -1,7 +1,10 @@
 //! The Monitor root widget: a two-tab activity monitor (Processes /
-//! Resources) with an always-visible system rail. View-level state (sort,
-//! filter, selection, active tab, scroll) lives in widget fields here;
-//! durable preferences live in the CRDT via [`crate::prefs`].
+//! Resources). The system stats are treated as **content**, not navigation —
+//! there is no sidebar. The Processes tab is a full-width process table under
+//! a compact horizontal summary strip; the Resources tab is a reflowing
+//! dashboard of gauges and charts. View-level state (sort, filter, selection,
+//! active tab, scroll) lives in widget fields here; durable preferences live
+//! in the CRDT via [`crate::prefs`].
 //!
 //! The widget owns its own geometry: `build_layout` is a single
 //! full-bleed leaf, and `draw` lays out every region by hand and renders
@@ -26,13 +29,13 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{SplitLayout, Widget};
+use ui::widget::Widget;
 
 use crate::charts::{self, with_alpha, Series};
 use crate::layout;
 use crate::model::{fmt_bytes, fmt_rate, fmt_uptime, MonitorModel, ProcessInfo};
 use crate::prefs::Prefs;
-use crate::responsive::{ProcPane, ProcPush, RailFlap};
+use crate::responsive::{ProcPane, ProcPush};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 
@@ -85,7 +88,6 @@ impl SortKey {
 // ---- layout constants ----------------------------------------------------
 const OUTER_PAD: f64 = 14.0;
 const HEADER_H: f64 = 56.0;
-const RAIL_W: f64 = 248.0;
 const GAP: f64 = 14.0;
 const ROW_H: f64 = 22.0;
 const TABLE_HEADER_H: f64 = 26.0;
@@ -123,10 +125,9 @@ struct Hit {
     menu_items: Vec<(usize, Rect)>,
     modal_kill: Rect,
     modal_cancel: Rect,
-    /// Hamburger / close affordance summoning the rail when it isn't docked.
-    rail_toggle: Rect,
-    /// The dimming scrim behind an open overlay rail (tap to dismiss).
-    rail_scrim: Rect,
+    /// Summary-strip stat cells (Processes tab). Clicking one jumps to the
+    /// Resources dashboard, where that stat's full gauge/chart lives.
+    summary_cells: Vec<Rect>,
     /// Back affordance returning from the pushed detail to the table (narrow).
     detail_back: Rect,
 }
@@ -148,8 +149,7 @@ impl Hit {
             menu_items: Vec::new(),
             modal_kill: Rect::ZERO,
             modal_cancel: Rect::ZERO,
-            rail_toggle: Rect::ZERO,
-            rail_scrim: Rect::ZERO,
+            summary_cells: Vec::new(),
             detail_back: Rect::ZERO,
         }
     }
@@ -172,8 +172,8 @@ pub struct MonitorApp {
     /// columns are wider than the viewport (clamped to the overflow).
     table_scroll_x: f32,
     /// Vertical scroll of the *whole* view, in logical px, when the laid-out
-    /// content (rail card column on the Resources tab, the chart grid, etc.)
-    /// is taller than the body viewport. Clamped each frame to the overflow.
+    /// Resources dashboard (overview row + per-core grid + chart grid) is
+    /// taller than the body viewport. Clamped each frame to the overflow.
     view_scroll_y: f32,
     /// Last frame's content/viewport heights, recorded during `draw` so
     /// wheel + clamp can run in `handle_event` without re-deriving layout.
@@ -210,9 +210,6 @@ pub struct MonitorApp {
     context_menu_seed: Option<u32>,
 
     // responsive layout
-    /// The system rail: docked beside content when wide, an overlay flap
-    /// (closed by default, hamburger-summoned) when narrow.
-    rail: RailFlap,
     /// The Processes master-detail push flow used only when narrow.
     proc_push: ProcPush,
 
@@ -279,7 +276,6 @@ impl MonitorApp {
             pending_action: Arc::new(Mutex::new(None)),
             copied_pid: None,
             context_menu_seed: None,
-            rail: RailFlap::default(),
             proc_push: ProcPush::default(),
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -647,69 +643,36 @@ impl MonitorApp {
     }
 
     // ---- responsive helpers ----------------------------------------------
-    /// Resolve the rail's split layout from the current allocated width.
-    fn rail_layout(&self) -> SplitLayout {
-        RailFlap::layout(self.rect.width())
-    }
-
-    /// `true` when the window is narrow enough for the overlay rail + the
-    /// single-pane Processes push flow.
+    /// `true` when the window is narrow enough for the single-pane Processes
+    /// push flow (table OR detail, not both stacked).
     fn is_narrow(&self) -> bool {
         crate::responsive::is_narrow(self.rect.width())
     }
 
-    /// Whether the hamburger / close toggle is currently shown over the
-    /// content — whenever the rail isn't fully docked-open, so a collapsed
-    /// rail can be summoned and an open overlay rail dismissed.
-    fn show_rail_toggle(&self) -> bool {
-        self.rail_layout() == SplitLayout::Overlay || self.rail.reveal() < 0.999
-    }
-
     // ---- content-height helpers (drive the whole-view vertical scroll) ---
-    /// Natural height of the system rail's stacked cards (ring, memory,
-    /// sparklines, info). The info card is laid out to a fixed footprint so
-    /// the rail has a definite intrinsic height the page scroll can use.
-    fn rail_natural_h(&self) -> f64 {
-        let info_h = 112.0; // host/kernel/cores/uptime + cpu brand line
-        layout::RAIL_RING_H
-            + GAP
-            + layout::RAIL_MEM_H
-            + GAP
-            + layout::rail_spark_panel_h()
-            + GAP
-            + info_h
-    }
-
-    /// Natural height of the Resources tab body for `n` cores at content
-    /// width `w`: the per-core card (sized to its row count) + the 2×2 chart
-    /// grid with a legible minimum chart height.
+    /// Natural height of the Resources dashboard body at content width `w`:
+    /// the overview row (Processor / Memory / System) + the per-core card
+    /// (sized to its row count) + the chart grid, each reflowed for `w` with
+    /// a legible minimum chart height.
     fn resources_natural_h(&self, w: f64) -> f64 {
         let n = self.model.metrics.cores.len().max(1);
         let grid = layout::per_core_grid(n, w - 2.0 * layout::RAIL_CARD_PAD);
         let core_h = layout::per_core_card_h(grid);
+        let rows = layout::charts_rows(w);
         let min_chart_h = 150.0;
-        let charts_h = 2.0 * min_chart_h + GAP;
-        core_h + GAP + charts_h
+        let charts_h = rows as f64 * min_chart_h + (rows as f64 - 1.0) * GAP;
+        layout::overview_h(w) + GAP + core_h + GAP + charts_h
     }
 
-    /// The wider of the rail column and the active tab's body — the page's
-    /// intrinsic content height, against which `view_scroll_y` is clamped.
-    /// `main_w` is the content column width (right of any docked rail).
+    /// The active tab's intrinsic content height, against which
+    /// `view_scroll_y` is clamped. `main_w` is the body content width.
     fn content_natural_h(&self, main_w: f64) -> f64 {
-        let body = match self.tab {
+        match self.tab {
             // Processes is a self-contained, internally-scrolling table; its
             // body fills the viewport and never drives the page scroll.
             Tab::Processes => 0.0,
             Tab::Resources => self.resources_natural_h(main_w),
-        };
-        // The docked rail can be taller than a short Resources body, so the
-        // page must scroll to reach the rail's info card too.
-        let rail = if self.rail_layout() == SplitLayout::Docked && self.rail.reveal() > 0.5 {
-            self.rail_natural_h()
-        } else {
-            0.0
-        };
-        body.max(rail)
+        }
     }
 
     // ---- headless screenshot scenarios -----------------------------------
@@ -720,19 +683,16 @@ impl MonitorApp {
     /// frame — at a narrow viewport that is the closed-rail process table.
     ///
     /// Recognised scenarios:
-    /// * `"rail"`   — force the overlay rail open so a narrow shot shows the
-    ///   slid-in rail above its dimming scrim.
     /// * `"detail"` — snap the narrow Processes push flow to the pushed detail
     ///   pane (otherwise a narrow frame opens to the table, as a fresh window
     ///   would).
-    /// * `"resources"`      — switch to the Resources tab so a shot shows the
-    ///   per-core grid + 2×2 charts (the fitted per-core card).
+    /// * `"resources"`      — switch to the Resources dashboard so a shot shows
+    ///   the overview row + per-core grid + chart grid.
     /// * `"resources-many"` — Resources tab seeded with a high core count so a
     ///   short/narrow shot demonstrates the per-core card growing to fit every
     ///   core and the whole view becoming vertically scrollable.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
-            "rail" => self.rail.snap(true),
             "detail" => self.proc_push.snap(ProcPane::Detail),
             "resources" => self.tab = Tab::Resources,
             // ---- process-tree scenarios -----------------------------------
@@ -950,181 +910,185 @@ impl MonitorApp {
         );
     }
 
-    fn draw_rail(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
+    /// The compact horizontal **summary strip** at the top of the Processes
+    /// tab: four small readouts — CPU / Memory / Network / Disk — each a
+    /// label, a headline number and a sparkline. This is the old left rail's
+    /// content, rehomed as a slim content band above the full-width table
+    /// instead of a fake sidebar. It wraps to fewer columns as the window
+    /// narrows (`layout::summary_grid`). Clicking a cell jumps to the
+    /// Resources dashboard where that stat's full gauge/chart lives; the cell
+    /// hit rects are recorded for `on_click`.
+    fn draw_summary_strip(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect, g: layout::StripGrid) {
+        let c = &theme.tokens.colors;
+
+        // Own the per-cell spec up front so the immutable metrics borrow is
+        // released before we push into `self.hit`.
+        struct Cell {
+            label: &'static str,
+            value: String,
+            vcolor: Color,
+            data: Vec<f32>,
+            max: f32,
+            spark: Color,
+        }
+        let cells = {
+            let m = &self.model.metrics;
+            let overall = m.cpu_overall();
+            let net_max = m.net_rx_hist.max().max(m.net_tx_hist.max()).max(1.0);
+            let disk_max = m.disk_read_hist.max().max(m.disk_write_hist.max()).max(1.0);
+            [
+                Cell { label: "CPU", value: format!("{:.0}%", overall), vcolor: charts::load_color(theme, overall / 100.0), data: m.cpu_hist.as_slice().to_vec(), max: 100.0, spark: c.accent[5] },
+                Cell { label: "Memory", value: fmt_bytes(m.mem_used), vcolor: c.text_primary, data: m.mem_hist.as_slice().to_vec(), max: 1.0, spark: c.semantic.success },
+                Cell { label: "Network", value: fmt_rate(m.net_rx + m.net_tx), vcolor: c.text_primary, data: m.net_rx_hist.as_slice().to_vec(), max: net_max, spark: c.semantic.info },
+                Cell { label: "Disk", value: fmt_rate(m.disk_read + m.disk_write), vcolor: c.text_primary, data: m.disk_read_hist.as_slice().to_vec(), max: disk_max, spark: c.semantic.warning },
+            ]
+        };
+
+        self.hit.summary_cells.clear();
+        let cols = g.cols;
+        let cell_w = (r.width() - (cols as f64 - 1.0) * GAP) / cols as f64;
+        let xs = theme.tokens.typography.scale.xs;
+        let sm = theme.tokens.typography.scale.sm;
+        for (i, cell) in cells.iter().enumerate() {
+            let col = i % cols;
+            let row = i / cols;
+            let x0 = r.x0 + col as f64 * (cell_w + GAP);
+            let y0 = r.y0 + row as f64 * (layout::STRIP_CELL_H + GAP);
+            let rect = Rect::new(x0, y0, x0 + cell_w, y0 + layout::STRIP_CELL_H);
+            let inner = charts::panel(scene, t, rect, theme, layout::STRIP_CELL_PAD);
+            // Label (dim, left) + headline value (bold, right).
+            tr.draw_text(scene, cell.label, xs, c.text_dim, t * Affine::translate((inner.x0, inner.y0)), None);
+            let (vw, _) = tr.measure_weighted(&cell.value, sm, None, TextWeight::Bold);
+            tr.draw_text_weighted(scene, &cell.value, sm, cell.vcolor, t * Affine::translate((inner.x1 - vw as f64, inner.y0 - 1.0)), None, TextWeight::Bold);
+            // Sparkline fills the lower portion of the cell.
+            let sr = Rect::new(inner.x0, inner.y0 + 22.0, inner.x1, inner.y1);
+            charts::sparkline(scene, t, sr, &cell.data, cell.max, cell.spark);
+            self.hit.summary_cells.push(rect);
+        }
+    }
+
+    /// The Resources overview **Processor** card: a CPU-load ring gauge, plus
+    /// (when the card is wide enough) a compact stats column — load average,
+    /// process and thread counts. This is the old rail's top section as
+    /// dashboard content.
+    fn draw_processor_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
         let c = &theme.tokens.colors;
         let m = &self.model.metrics;
-
-        // Section 1: overall CPU ring + load average.
-        let ring_h = 168.0;
-        let ring_panel = Rect::new(r.x0, r.y0, r.x1, r.y0 + ring_h);
-        let inner = charts::panel(scene, t, ring_panel, theme, 12.0);
+        let inner = charts::panel(scene, t, rect, theme, 12.0);
         tr.draw_text_weighted(scene, "Processor", theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((inner.x0, inner.y0)), None, TextWeight::Semibold);
         let overall = m.cpu_overall();
-        let center = Point::new(inner.center().x, inner.y0 + 84.0);
-        charts::ring_gauge(
-            scene, t, tr, center, 44.0, 9.0, overall / 100.0,
-            charts::load_color(theme, overall / 100.0), theme,
-            &format!("{:.0}%", overall), "CPU LOAD",
-        );
-        let la = format!("load  {:.2}  {:.2}  {:.2}", m.load_avg[0], m.load_avg[1], m.load_avg[2]);
-        let (lw, _) = tr.measure(&la, theme.tokens.typography.scale.xs, None);
-        tr.draw_text(scene, &la, theme.tokens.typography.scale.xs, c.text_dim, t * Affine::translate((inner.center().x - lw as f64 / 2.0, inner.y1 - 12.0)), None);
+        let xs = theme.tokens.typography.scale.xs;
+        let sm = theme.tokens.typography.scale.sm;
+        if inner.width() >= 300.0 {
+            // Ring on the left, stats column on the right.
+            let center = Point::new(inner.x0 + 62.0, inner.center().y + 8.0);
+            charts::ring_gauge(scene, t, tr, center, 44.0, 9.0, overall / 100.0, charts::load_color(theme, overall / 100.0), theme, &format!("{:.0}%", overall), "CPU LOAD");
+            let sx = inner.x0 + 138.0;
+            let procs = self.model.processes.len();
+            let threads: usize = self.model.processes.iter().map(|p| p.threads).sum();
+            let stats = [
+                ("Load average", format!("{:.2}  {:.2}  {:.2}", m.load_avg[0], m.load_avg[1], m.load_avg[2])),
+                ("Processes", format!("{procs}")),
+                ("Threads", format!("{threads}")),
+            ];
+            let mut sy = inner.y0 + 30.0;
+            for (label, value) in stats {
+                tr.draw_text(scene, label, xs, c.text_dim, t * Affine::translate((sx, sy)), None);
+                let value = Self::truncate(tr, &value, sm, inner.x1 - sx);
+                tr.draw_text_weighted(scene, &value, sm, c.text_primary, t * Affine::translate((sx, sy + 15.0)), None, TextWeight::Semibold);
+                sy += 40.0;
+            }
+        } else {
+            // Narrow/stacked: centred ring with the load average beneath it.
+            let center = Point::new(inner.center().x, inner.y0 + 84.0);
+            charts::ring_gauge(scene, t, tr, center, 44.0, 9.0, overall / 100.0, charts::load_color(theme, overall / 100.0), theme, &format!("{:.0}%", overall), "CPU LOAD");
+            let la = format!("load  {:.2}  {:.2}  {:.2}", m.load_avg[0], m.load_avg[1], m.load_avg[2]);
+            let (lw, _) = tr.measure(&la, xs, None);
+            tr.draw_text(scene, &la, xs, c.text_dim, t * Affine::translate((inner.center().x - lw as f64 / 2.0, inner.y1 - 12.0)), None);
+        }
+    }
 
-        // Section 2: memory + swap.
-        let mem_y = ring_panel.y1 + GAP;
-        let mem_panel = Rect::new(r.x0, mem_y, r.x1, mem_y + 96.0);
-        let mi = charts::panel(scene, t, mem_panel, theme, 12.0);
+    /// The Resources overview **Memory** card: RAM + swap bar gauges, plus a
+    /// memory-history sparkline when the card is tall enough.
+    fn draw_memory_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
+        let c = &theme.tokens.colors;
+        let m = &self.model.metrics;
+        let mi = charts::panel(scene, t, rect, theme, 12.0);
         tr.draw_text_weighted(scene, "Memory", theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((mi.x0, mi.y0)), None, TextWeight::Semibold);
         let ram_label = format!("{} / {}", fmt_bytes(m.mem_used), fmt_bytes(m.mem_total));
-        charts::bar_gauge(
-            scene, t, tr,
-            Rect::new(mi.x0, mi.y0 + 22.0, mi.x1, mi.y0 + 44.0),
-            theme, m.mem_frac(), charts::load_color(theme, m.mem_frac()), "RAM", &ram_label,
-        );
+        charts::bar_gauge(scene, t, tr, Rect::new(mi.x0, mi.y0 + 24.0, mi.x1, mi.y0 + 46.0), theme, m.mem_frac(), charts::load_color(theme, m.mem_frac()), "RAM", &ram_label);
         let swap_label = format!("{} / {}", fmt_bytes(m.swap_used), fmt_bytes(m.swap_total));
-        charts::bar_gauge(
-            scene, t, tr,
-            Rect::new(mi.x0, mi.y0 + 52.0, mi.x1, mi.y0 + 74.0),
-            theme, m.swap_frac(), c.accent[5], "Swap", &swap_label,
-        );
+        charts::bar_gauge(scene, t, tr, Rect::new(mi.x0, mi.y0 + 56.0, mi.x1, mi.y0 + 78.0), theme, m.swap_frac(), c.accent[5], "Swap", &swap_label);
+        // A memory sparkline fills the remaining height on the taller (abreast
+        // or fixed-height) card.
+        if mi.height() >= 108.0 {
+            let sr = Rect::new(mi.x0, mi.y0 + 92.0, mi.x1, mi.y1);
+            charts::sparkline(scene, t, sr, m.mem_hist.as_slice(), 1.0, c.semantic.success);
+        }
+    }
 
-        // Section 3: net + disk sparklines. The card height is derived from
-        // the three stacked sparkline rows (label + 32px chart each) plus the
-        // card padding, so the last (Disk) row sits *inside* the card instead
-        // of spilling below it. See `layout::rail_spark_panel_h`.
-        let sp_y = mem_panel.y1 + GAP;
-        let sp_panel = Rect::new(r.x0, sp_y, r.x1, sp_y + layout::rail_spark_panel_h());
-        let si = charts::panel(scene, t, sp_panel, theme, layout::RAIL_CARD_PAD);
-        let spark = |scene: &mut Scene, tr: &mut TextRenderer, y: f64, label: &str, val: &str, data: &[f32], color: Color| {
-            tr.draw_text_weighted(scene, label, theme.tokens.typography.scale.xs, c.text_primary, t * Affine::translate((si.x0, y)), None, TextWeight::Medium);
-            let (vw, _) = tr.measure(val, theme.tokens.typography.scale.xs, None);
-            tr.draw_text(scene, val, theme.tokens.typography.scale.xs, c.text_dim, t * Affine::translate((si.x1 - vw as f64, y)), None);
-            let sr = Rect::new(si.x0, y + 14.0, si.x1, y + layout::SPARK_ROW_EXTENT);
-            let mx = data.iter().copied().fold(0.0_f32, f32::max).max(1.0);
-            charts::sparkline(scene, t, sr, data, mx, color);
+    /// The Resources overview **System** card: host / kernel / cores / uptime
+    /// and the CPU brand — the old rail info card, now dashboard content.
+    fn draw_system_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
+        let c = &theme.tokens.colors;
+        let m = &self.model.metrics;
+        let ii = charts::panel(scene, t, rect, theme, 12.0);
+        tr.draw_text_weighted(scene, "System", theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((ii.x0, ii.y0)), None, TextWeight::Semibold);
+        let fs = theme.tokens.typography.scale.xs;
+        let mut y = ii.y0 + 24.0;
+        let line = |scene: &mut Scene, tr: &mut TextRenderer, k: &str, v: String, y: &mut f64| {
+            tr.draw_text(scene, k, fs, c.text_dim, t * Affine::translate((ii.x0, *y)), None);
+            let vv = Self::truncate(tr, &v, fs, ii.width() - 60.0);
+            let (vw, _) = tr.measure(&vv, fs, None);
+            tr.draw_text(scene, &vv, fs, c.text_primary, t * Affine::translate((ii.x1 - vw as f64, *y)), None);
+            *y += 18.0;
         };
-        spark(scene, tr, si.y0, "Net ↓", &fmt_rate(m.net_rx), m.net_rx_hist.as_slice(), c.semantic.info);
-        spark(scene, tr, si.y0 + layout::SPARK_ROW_STRIDE, "Net ↑", &fmt_rate(m.net_tx), m.net_tx_hist.as_slice(), c.accent[6]);
-        spark(scene, tr, si.y0 + 2.0 * layout::SPARK_ROW_STRIDE, "Disk", &format!("{} / {}", fmt_rate(m.disk_read), fmt_rate(m.disk_write)), m.disk_read_hist.as_slice(), c.semantic.warning);
-
-        // Section 4: system info text. Drawn to a fixed footprint (not the
-        // remaining `r.y1` slack) so the rail has a definite intrinsic height
-        // the whole-view scroll can reveal in full. When the rail is taller
-        // than the viewport the page scroll brings this card into view.
-        let info_y = sp_panel.y1 + GAP;
-        let info_h = 112.0;
-        let info_bottom = (info_y + info_h).min(r.y1.max(info_y + info_h));
-        {
-            let info_panel = Rect::new(r.x0, info_y, r.x1, info_bottom);
-            let ii = charts::panel(scene, t, info_panel, theme, layout::RAIL_CARD_PAD);
-            let mut y = ii.y0;
-            let fs = theme.tokens.typography.scale.xs;
-            let line = |scene: &mut Scene, tr: &mut TextRenderer, y: &mut f64, k: &str, v: String| {
-                tr.draw_text(scene, k, fs, c.text_dim, t * Affine::translate((ii.x0, *y)), None);
-                let vv = Self::truncate(tr, &v, fs, ii.width() - 52.0);
-                let (vw, _) = tr.measure(&vv, fs, None);
-                tr.draw_text(scene, &vv, fs, c.text_primary, t * Affine::translate((ii.x1 - vw as f64, *y)), None);
-                *y += 18.0;
-            };
-            line(scene, tr, &mut y, "host", m.host.clone());
-            line(scene, tr, &mut y, "kernel", m.kernel.clone());
-            line(scene, tr, &mut y, "cores", format!("{}", m.cores.len()));
-            line(scene, tr, &mut y, "uptime", fmt_uptime(m.uptime_secs));
-            if y + 14.0 < ii.y1 {
-                let cpu = Self::truncate(tr, &m.cpu_brand, fs, ii.width());
-                tr.draw_text(scene, &cpu, fs, c.text_dim, t * Affine::translate((ii.x0, y)), None);
-            }
+        line(scene, tr, "host", m.host.clone(), &mut y);
+        line(scene, tr, "kernel", m.kernel.clone(), &mut y);
+        line(scene, tr, "cores", format!("{}", m.cores.len()), &mut y);
+        line(scene, tr, "uptime", fmt_uptime(m.uptime_secs), &mut y);
+        if y + 14.0 <= ii.y1 {
+            let cpu = Self::truncate(tr, &m.cpu_brand, fs, ii.width());
+            tr.draw_text(scene, &cpu, fs, c.text_dim, t * Affine::translate((ii.x0, y)), None);
         }
     }
 
-    /// Position and paint the system rail for the current split layout. Docked
-    /// mode draws the rail in place (the content is already inset for it).
-    /// Overlay mode dims the body behind a scrim that fades with the reveal
-    /// and floats the rail in from the left edge over the content, exactly
-    /// like an Adwaita flap. Records the scrim hit rect for tap-to-dismiss.
-    fn draw_rail_region(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rail_docked: Rect,
-        layout: SplitLayout,
-    ) {
+    /// The Resources **per-core utilisation** card: one bar gauge per core in a
+    /// grid that wraps to as many rows as the core count needs, sized so the
+    /// last row renders inside the card (`layout::per_core_card_h`).
+    fn draw_per_core(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, core_panel: Rect, grid: layout::CoreGrid) {
         let c = &theme.tokens.colors;
-        let reveal = self.rail.reveal();
-
-        match layout {
-            SplitLayout::Docked => {
-                // Fully collapsed (mid hide-animation, content not yet
-                // reclaimed) — nothing to paint.
-                if reveal <= 0.001 {
-                    return;
-                }
-                self.draw_rail(scene, t, tr, theme, rail_docked);
-            }
-            SplitLayout::Overlay => {
-                if reveal <= 0.001 {
-                    return; // fully collapsed overlay — nothing to paint
-                }
-                // Dim the whole app behind the flap; tap dismisses it.
-                let scrim = with_alpha(c.surfaces.overlay, (reveal * 178.0) as u8);
-                scene.fill(Fill::NonZero, t, scrim, None, &self.rect);
-                self.hit.rail_scrim = self.rect;
-
-                // Float the rail in from off-screen-left as the slide eases.
-                let slide = self.rail.slide();
-                let rail_w = rail_docked.width();
-                let x0 = rail_docked.x0 - (rail_w + OUTER_PAD) * (1.0 - slide);
-                let panel = Rect::new(x0, rail_docked.y0, x0 + rail_w, rail_docked.y1);
-                // Opaque backing so the rail floats clearly over the content.
-                charts::fill_rrect(scene, t, panel, theme.tokens.radii.md as f64 + 2.0, c.surfaces.raised);
-                charts::stroke_rrect(scene, t, panel, theme.tokens.radii.md as f64 + 2.0, c.border_standard, 1.0);
-                self.draw_rail(scene, t, tr, theme, panel);
-            }
+        let n = self.model.metrics.cores.len().max(1);
+        let ci = charts::panel(scene, t, core_panel, theme, layout::RAIL_CARD_PAD);
+        tr.draw_text_weighted(scene, &format!("Per-Core Utilisation  ·  {} threads", n), theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((ci.x0, ci.y0)), None, TextWeight::Semibold);
+        let grid_top = ci.y0 + layout::CORE_TITLE_H;
+        let cols = grid.cols;
+        let cell_w = (ci.width() - (cols as f64 - 1.0) * layout::CORE_GAP) / cols as f64;
+        for (i, &usage) in self.model.metrics.cores.iter().enumerate() {
+            let col = i % cols;
+            let rowi = i / cols;
+            let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
+            let y0 = grid_top + rowi as f64 * layout::CORE_ROW_STRIDE;
+            charts::bar_gauge(scene, t, tr, Rect::new(x0, y0, x0 + cell_w, y0 + 22.0), theme, usage / 100.0, charts::load_color(theme, usage / 100.0), &format!("C{i}"), &format!("{:.0}%", usage));
         }
     }
 
-    /// The hamburger / close toggle in the content's top-left corner. Shown
-    /// whenever the rail isn't fully docked-open, so a collapsed rail can be
-    /// summoned and an open overlay rail dismissed. Records its hit rect.
-    fn draw_rail_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, content: Rect) {
-        let c = &theme.tokens.colors;
-        let size = 34.0;
-        let bx = content.x0;
-        let by = content.y0;
-        let btn = Rect::new(bx, by, bx + size, by + size);
-        charts::fill_rrect(scene, t, btn, theme.tokens.radii.md as f64, c.surfaces.raised);
-        charts::stroke_rrect(scene, t, btn, theme.tokens.radii.md as f64, c.border_standard, 1.0);
-
-        let cx = btn.x0 + size / 2.0;
-        let open = self.rail.reveal() > 0.5;
-        if open {
-            // An "X" / close affordance when the rail is showing.
-            let rr = 6.0;
-            let cyc = btn.y0 + size / 2.0;
-            scene.stroke(&Stroke::new(1.8), t, c.text_primary, None, &Line::new((cx - rr, cyc - rr), (cx + rr, cyc + rr)));
-            scene.stroke(&Stroke::new(1.8), t, c.text_primary, None, &Line::new((cx + rr, cyc - rr), (cx - rr, cyc + rr)));
-        } else {
-            // Three-line hamburger.
-            let line_w = 14.0;
-            for i in 0..3 {
-                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
-                scene.stroke(&Stroke::new(1.8), t, c.text_primary, None, &Line::new((cx - line_w / 2.0, ly), (cx + line_w / 2.0, ly)));
-            }
-        }
-        self.hit.rail_toggle = btn;
-    }
-
-    /// The Processes tab. Wide: a toolbar, the process table, and the selected
-    /// process's detail strip stacked top to bottom. Narrow: single-pane push
-    /// — the toolbar+table OR the detail, sliding horizontally as one swaps for
-    /// the other (driven by [`ProcPush`]). Selecting a row pushes the detail in
-    /// with a Back affordance; Back (or Esc) slides the table back.
+    /// The Processes tab: a compact summary strip, a search/sort toolbar, and
+    /// a **full-width** process table — the table is the content. Wide: the
+    /// selected process's detail strip stacks below the table. Narrow:
+    /// single-pane push — the strip+toolbar+table OR the detail, sliding
+    /// horizontally as one swaps for the other (driven by [`ProcPush`]).
+    /// Selecting a row pushes the detail in with a Back affordance; Back (or
+    /// Esc) slides the table back.
     fn draw_processes(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
+        let strip_g = layout::summary_grid(r.width());
+        let strip_h = layout::summary_strip_h(strip_g);
+
         if !self.is_narrow() {
-            // Wide: toolbar, table, detail strip stacked.
-            let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + 36.0);
+            // Wide: summary strip, toolbar, table, detail strip stacked.
+            let strip = Rect::new(r.x0, r.y0, r.x1, r.y0 + strip_h);
+            self.draw_summary_strip(scene, t, tr, theme, strip, strip_g);
+            let toolbar = Rect::new(r.x0, strip.y1 + GAP, r.x1, strip.y1 + GAP + 36.0);
             self.draw_toolbar(scene, t, tr, theme, toolbar);
             let table_top = toolbar.y1 + GAP;
             let table_bottom = r.y1 - DETAIL_H - GAP;
@@ -1147,10 +1111,12 @@ impl MonitorApp {
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
 
-        // Table slab: toolbar + full-height table (no detail reservation —
-        // the detail is its own pushed pane on narrow).
+        // Table slab: summary strip + toolbar + full-height table (no detail
+        // reservation — the detail is its own pushed pane on narrow).
         if slide < 0.999 {
-            let toolbar = Rect::new(table_slab.x0, table_slab.y0, table_slab.x1, table_slab.y0 + 36.0);
+            let strip = Rect::new(table_slab.x0, table_slab.y0, table_slab.x1, table_slab.y0 + strip_h);
+            self.draw_summary_strip(scene, t, tr, theme, strip, strip_g);
+            let toolbar = Rect::new(table_slab.x0, strip.y1 + GAP, table_slab.x1, strip.y1 + GAP + 36.0);
             self.draw_toolbar(scene, t, tr, theme, toolbar);
             let table_panel = Rect::new(table_slab.x0, toolbar.y1 + GAP, table_slab.x1, table_slab.y1);
             self.draw_process_table(scene, t, tr, theme, table_panel);
@@ -1366,13 +1332,11 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         let bar_h = 36.0;
 
-        // Back chip: chevron + "Processes". Indented past the rail's hamburger
-        // toggle (which also lives in the top-left corner) so the two don't
-        // overlap.
+        // Back chip: chevron + "Processes", top-left of the pushed detail pane.
         let label = "Processes";
         let fs = theme.tokens.typography.scale.sm;
         let (lw, lh) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
-        let back_x0 = r.x0 + 34.0 + GAP;
+        let back_x0 = r.x0;
         let back = Rect::new(back_x0, r.y0, back_x0 + 34.0 + lw as f64 + 14.0, r.y0 + bar_h - 4.0);
         charts::fill_rrect(scene, t, back, theme.tokens.radii.md as f64, c.surfaces.raised);
         charts::stroke_rrect(scene, t, back, theme.tokens.radii.md as f64, c.border_standard, 1.0);
@@ -1519,70 +1483,79 @@ impl MonitorApp {
         self.hit.kill_btn = kr;
     }
 
+    /// The Resources dashboard. Top-to-bottom: an **overview row** (Processor
+    /// ring, Memory gauges, System info) that sits three abreast when wide and
+    /// stacks when narrow; a **full-width per-core** utilisation grid; then a
+    /// **chart grid** (CPU / Memory / Network / Disk) that is two-up when wide
+    /// and one column when narrow. Every band reflows with the width and the
+    /// whole view page-scrolls when the content is taller than the viewport
+    /// (`content_natural_h` → `resources_natural_h`).
     fn draw_resources(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
         let c = &theme.tokens.colors;
-        let n = self.model.metrics.cores.len().max(1);
 
-        // Per-core grid panel. Columns fit the width; rows wrap to however
-        // many the core count needs, and the card grows to hold *every* row
-        // (`layout::per_core_card_h`) so the last cores never render below
-        // the card background. The whole view scrolls when this pushes the
-        // content past the viewport, so the card is sized to its content
-        // rather than clamped to a fraction of the viewport.
-        let grid_inner_w = r.width() - 2.0 * layout::RAIL_CARD_PAD;
-        let grid = layout::per_core_grid(n, grid_inner_w);
-        let core_panel_h = layout::per_core_card_h(grid);
-        let core_panel = Rect::new(r.x0, r.y0, r.x1, r.y0 + core_panel_h);
-        let ci = charts::panel(scene, t, core_panel, theme, layout::RAIL_CARD_PAD);
-        tr.draw_text_weighted(scene, &format!("Per-Core Utilisation  ·  {} threads", n), theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((ci.x0, ci.y0)), None, TextWeight::Semibold);
-        let grid_top = ci.y0 + layout::CORE_TITLE_H;
-        let cols = grid.cols;
-        let cell_w = (ci.width() - (cols as f64 - 1.0) * layout::CORE_GAP) / cols as f64;
-        let cores = self.model.metrics.cores.clone();
-        for (i, &usage) in cores.iter().enumerate() {
-            let col = i % cols;
-            let rowi = i / cols;
-            let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
-            let y0 = grid_top + rowi as f64 * layout::CORE_ROW_STRIDE;
-            charts::bar_gauge(
-                scene, t, tr,
-                Rect::new(x0, y0, x0 + cell_w, y0 + 22.0),
-                theme, usage / 100.0, charts::load_color(theme, usage / 100.0),
-                &format!("C{i}"), &format!("{:.0}%", usage),
-            );
+        // ---- overview row: Processor / Memory / System --------------------
+        let mut y = r.y0;
+        if layout::overview_cols(r.width()) == 3 {
+            let card_w = (r.width() - 2.0 * GAP) / 3.0;
+            let h = layout::OVERVIEW_H;
+            let x0 = r.x0;
+            let x1 = x0 + card_w + GAP;
+            let x2 = x1 + card_w + GAP;
+            self.draw_processor_card(scene, t, tr, theme, Rect::new(x0, y, x0 + card_w, y + h));
+            self.draw_memory_card(scene, t, tr, theme, Rect::new(x1, y, x1 + card_w, y + h));
+            self.draw_system_card(scene, t, tr, theme, Rect::new(x2, y, r.x1, y + h));
+            y += h + GAP;
+        } else {
+            self.draw_processor_card(scene, t, tr, theme, Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_RING_H));
+            y += layout::OVERVIEW_RING_H + GAP;
+            self.draw_memory_card(scene, t, tr, theme, Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_MEM_H));
+            y += layout::OVERVIEW_MEM_H + GAP;
+            self.draw_system_card(scene, t, tr, theme, Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_SYS_H));
+            y += layout::OVERVIEW_SYS_H + GAP;
         }
 
-        // 2×2 chart grid below. Give each chart a sensible minimum height so
-        // it stays legible; when the viewport is short the page scrolls.
-        let charts_top = core_panel.y1 + GAP;
-        let m = &self.model.metrics;
+        // ---- per-core utilisation grid (full width) -----------------------
+        let n = self.model.metrics.cores.len().max(1);
+        let grid = layout::per_core_grid(n, r.width() - 2.0 * layout::RAIL_CARD_PAD);
+        let core_h = layout::per_core_card_h(grid);
+        self.draw_per_core(scene, t, tr, theme, Rect::new(r.x0, y, r.x1, y + core_h), grid);
+        y += core_h + GAP;
+
+        // ---- chart grid: CPU / Memory / Network / Disk --------------------
+        // Two-up when wide, one column when narrow. Each cell keeps a legible
+        // minimum height; when the viewport is short the page scrolls.
+        let cols = layout::charts_cols(r.width());
+        let rows = layout::charts_rows(r.width());
         let min_chart_h = 150.0;
-        let avail_h = (r.y1 - charts_top).max(2.0 * min_chart_h + GAP);
-        let area = Rect::new(r.x0, charts_top, r.x1, charts_top + avail_h);
-        let cw = (area.width() - GAP) / 2.0;
-        let ch = (area.height() - GAP) / 2.0;
-        let cell = |row: usize, col: usize| {
-            let x0 = area.x0 + col as f64 * (cw + GAP);
-            let y0 = area.y0 + row as f64 * (ch + GAP);
+        let charts_top = y;
+        let avail_h = (r.y1 - charts_top).max(rows as f64 * min_chart_h + (rows as f64 - 1.0) * GAP);
+        let cw = (r.width() - (cols as f64 - 1.0) * GAP) / cols as f64;
+        let ch = (avail_h - (rows as f64 - 1.0) * GAP) / rows as f64;
+        let cell = |i: usize| {
+            let col = i % cols;
+            let row = i / cols;
+            let x0 = r.x0 + col as f64 * (cw + GAP);
+            let y0 = charts_top + row as f64 * (ch + GAP);
             Rect::new(x0, y0, x0 + cw, y0 + ch)
         };
 
+        let m = &self.model.metrics;
         // CPU%.
         charts::area_chart(
-            scene, t, tr, cell(0, 0), theme, "CPU",
+            scene, t, tr, cell(0), theme, "CPU",
             &[Series { data: m.cpu_hist.as_slice(), color: c.accent[5], legend: format!("{:.0}%", m.cpu_overall()) }],
             100.0, "100%", "0%",
         );
         // Memory%.
         charts::area_chart(
-            scene, t, tr, cell(0, 1), theme, "Memory",
+            scene, t, tr, cell(1), theme, "Memory",
             &[Series { data: m.mem_hist.as_slice(), color: c.semantic.success, legend: fmt_bytes(m.mem_used) }],
             1.0, "100%", "0%",
         );
         // Network rx/tx.
         let net_max = m.net_rx_hist.max().max(m.net_tx_hist.max()).max(1.0) * 1.2;
         charts::area_chart(
-            scene, t, tr, cell(1, 0), theme, "Network",
+            scene, t, tr, cell(2), theme, "Network",
             &[
                 Series { data: m.net_rx_hist.as_slice(), color: c.semantic.info, legend: format!("↓ {}", fmt_rate(m.net_rx)) },
                 Series { data: m.net_tx_hist.as_slice(), color: c.accent[6], legend: format!("↑ {}", fmt_rate(m.net_tx)) },
@@ -1592,7 +1565,7 @@ impl MonitorApp {
         // Disk read/write.
         let disk_max = m.disk_read_hist.max().max(m.disk_write_hist.max()).max(1.0) * 1.2;
         charts::area_chart(
-            scene, t, tr, cell(1, 1), theme, "Disk I/O",
+            scene, t, tr, cell(3), theme, "Disk I/O",
             &[
                 Series { data: m.disk_read_hist.as_slice(), color: c.semantic.warning, legend: format!("R {}", fmt_rate(m.disk_read)) },
                 Series { data: m.disk_write_hist.as_slice(), color: c.semantic.danger, legend: format!("W {}", fmt_rate(m.disk_write)) },
@@ -1699,25 +1672,6 @@ impl MonitorApp {
             return;
         }
 
-        // The rail flap and its scrim float above everything else, so they
-        // claim the click first. The hamburger toggle is painted on top of the
-        // scrim, so test it before the scrim.
-        let layout = self.rail_layout();
-        if self.show_rail_toggle() && self.hit.rail_toggle.contains(p) {
-            self.search_focused = false;
-            self.rail.toggle(layout);
-            *handled = true;
-            return;
-        }
-        // An open overlay rail dims the content; tapping the scrim (anywhere
-        // outside the floated rail) dismisses it and swallows the click.
-        if layout == SplitLayout::Overlay && self.rail.is_open(layout) {
-            self.search_focused = false;
-            self.rail.close();
-            *handled = true;
-            return;
-        }
-
         // Lose search focus unless the search box itself is clicked.
         let clicked_search = self.hit.search.contains(p);
         self.search_focused = clicked_search;
@@ -1727,6 +1681,19 @@ impl MonitorApp {
             self.proc_push.show_table();
             *handled = true;
             return;
+        }
+
+        // A click on a summary-strip cell (Processes) jumps to the Resources
+        // dashboard, where that stat's full gauge/chart lives.
+        for cell in self.hit.summary_cells.clone() {
+            if cell.contains(p) {
+                if self.tab != Tab::Resources {
+                    self.view_scroll_y = 0.0;
+                }
+                self.tab = Tab::Resources;
+                *handled = true;
+                return;
+            }
         }
 
         if self.hit.tab_proc.contains(p) {
@@ -1942,14 +1909,9 @@ impl MonitorApp {
 
         // Global keys.
         match key {
-            // Esc unwinds the responsive stack: dismiss an open overlay rail
-            // first, otherwise pop a pushed detail pane back to the table.
+            // Esc pops a pushed detail pane back to the table (narrow).
             Key::Named(NamedKey::Escape) => {
-                let layout = self.rail_layout();
-                if layout == SplitLayout::Overlay && self.rail.is_open(layout) {
-                    self.rail.close();
-                    *handled = true;
-                } else if self.is_narrow() && self.proc_push.pane() == ProcPane::Detail {
+                if self.is_narrow() && self.proc_push.pane() == ProcPane::Detail {
                     self.proc_push.show_table();
                     *handled = true;
                 }
@@ -2094,12 +2056,8 @@ impl Widget for MonitorApp {
         // App background.
         scene.fill(Fill::NonZero, t, theme.tokens.colors.surfaces.base, None, &r);
 
-        // Resolve the rail layout from the allocated width and advance the
-        // eased flaps once per frame (the redraw loop keeps pumping while
-        // `needs_animation_frame` is true).
-        let layout = self.rail_layout();
-        self.rail.reconcile(layout);
-        self.rail.tick(layout);
+        // Advance the eased push flap once per frame (the redraw loop keeps
+        // pumping while `needs_animation_frame` is true).
         self.proc_push.tick();
 
         let content = Rect::new(r.x0 + OUTER_PAD, r.y0 + OUTER_PAD, r.x1 - OUTER_PAD, r.y1 - OUTER_PAD);
@@ -2107,43 +2065,19 @@ impl Widget for MonitorApp {
         let body_top = header.y1 + GAP;
         let body = Rect::new(content.x0, body_top, content.x1, content.y1);
 
-        // The rail's docked footprint at full reveal, and the content column
-        // beside it. Docked: the content is inset by the rail's *revealed*
-        // width so it animates with the slide. Overlay: the content uses the
-        // full body width and the rail floats over it.
-        let rail_docked = Rect::new(body.x0, body.y0, body.x0 + RAIL_W, body.y1);
-        let main_full = match layout {
-            SplitLayout::Docked => {
-                let inset = (RAIL_W + GAP) * self.rail.reveal();
-                Rect::new(body.x0 + inset, body.y0, body.x1, body.y1)
-            }
-            SplitLayout::Overlay => body,
-        };
-        // When the hamburger toggle floats over the content's top-left corner
-        // (narrow overlay), inset the content column past it so the first row
-        // — the search toolbar, or the per-core card title — clears the
-        // toggle instead of rendering under it. The toggle itself is still
-        // painted at `main_full`'s corner.
-        let main = if self.show_rail_toggle() && layout == SplitLayout::Overlay {
-            Rect::new(main_full.x0 + 34.0 + GAP, main_full.y0, main_full.x1, main_full.y1)
-        } else {
-            main_full
-        };
-
         self.draw_header(scene, t, text_renderer, theme, header);
 
         // ---- whole-view vertical scroll -------------------------------
-        // The body (rail column + active tab) can be taller than its
-        // viewport — a docked rail's info card, or the Resources tab's
-        // per-core grid + 2×2 charts on a large machine / short window.
-        // Mirror `ui::widget::Scrollable`'s model: draw the body content at
-        // `(… − offset)` inside a clip layer the size of the viewport, clamp
-        // the offset to `content − viewport`, and paint a scrollbar. The
-        // header stays pinned above the scroll. The Processes tab manages its
-        // own internal row scroll, so it reports zero page-content height and
-        // never page-scrolls.
+        // The Resources dashboard can be taller than its viewport — the
+        // overview row + per-core grid + chart grid on a large machine or a
+        // short/narrow window. Mirror `ui::widget::Scrollable`'s model: draw
+        // the body content at `(… − offset)` inside a clip layer the size of
+        // the viewport, clamp the offset to `content − viewport`, and paint a
+        // scrollbar. The header stays pinned above the scroll. The Processes
+        // tab manages its own internal row scroll, so it reports zero
+        // page-content height and never page-scrolls.
         let viewport_h = body.height();
-        let content_natural_h = self.content_natural_h(main.width());
+        let content_natural_h = self.content_natural_h(body.width());
         let page_overflow = (content_natural_h - viewport_h).max(0.0);
         self.content_h = content_natural_h.max(viewport_h);
         self.viewport_h = viewport_h;
@@ -2163,21 +2097,11 @@ impl Widget for MonitorApp {
         }
         let top = body.y0 - dy;
         let content_bottom = top + self.content_h;
-        let main_scrolled = Rect::new(main.x0, top, main.x1, content_bottom);
-        let rail_scrolled = Rect::new(rail_docked.x0, top, rail_docked.x1, content_bottom);
+        let body_scrolled = Rect::new(body.x0, top, body.x1, content_bottom);
 
-        // Content first; the overlay rail (if any) paints on top of it.
         match self.tab {
-            Tab::Processes => self.draw_processes(scene, t, text_renderer, theme, main_scrolled),
-            Tab::Resources => self.draw_resources(scene, t, text_renderer, theme, main_scrolled),
-        }
-
-        // The system rail: docked beside the content (scrolls with the page),
-        // or an overlay flap that slides in over it behind a dimming scrim
-        // (pinned — overlays never page-scroll, so it uses the un-shifted
-        // footprint and paints after the clip is popped).
-        if layout == SplitLayout::Docked {
-            self.draw_rail_region(scene, t, text_renderer, theme, rail_scrolled, layout);
+            Tab::Processes => self.draw_processes(scene, t, text_renderer, theme, body_scrolled),
+            Tab::Resources => self.draw_resources(scene, t, text_renderer, theme, body_scrolled),
         }
 
         if scrolling {
@@ -2191,20 +2115,6 @@ impl Widget for MonitorApp {
             let pos = if page_overflow > 0.0 { dy / page_overflow } else { 0.0 };
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
             charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
-        }
-
-        // The overlay rail flap floats above the (now-popped) scroll clip and
-        // the page scrollbar, pinned to the un-shifted body so it never
-        // page-scrolls.
-        if layout == SplitLayout::Overlay {
-            self.draw_rail_region(scene, t, text_renderer, theme, rail_docked, layout);
-        }
-
-        // Hamburger / close affordance over the content's top-left corner,
-        // shown whenever the rail isn't fully docked-open. Pinned (not
-        // scrolled) so it stays reachable.
-        if self.show_rail_toggle() {
-            self.draw_rail_toggle(scene, t, theme, main_full);
         }
 
         // A `--shots` request to open the context menu over a seeded pid: now
@@ -2301,8 +2211,8 @@ impl Widget for MonitorApp {
                     }
                     *handled = true;
                 } else {
-                    // Anywhere else (Resources tab, the rail column, the
-                    // toolbar) scrolls the whole page.
+                    // Anywhere else (the Resources dashboard, the summary
+                    // strip, the toolbar) scrolls the whole page.
                     let max_y = (self.content_h - self.viewport_h).max(0.0) as f32;
                     let before = self.view_scroll_y;
                     self.view_scroll_y = (self.view_scroll_y + px_y).clamp(0.0, max_y);
@@ -2378,9 +2288,6 @@ mod tests {
     /// writes into a CPU `Scene`.
     fn draw_at(a: &mut MonitorApp, w: f64, h: f64) {
         a.rect = Rect::new(0.0, 0.0, w, h);
-        // Settle the rail flap for this width so the layout is stable.
-        let layout = a.rail_layout();
-        a.rail.reconcile(layout);
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();

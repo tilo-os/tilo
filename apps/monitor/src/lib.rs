@@ -1,7 +1,9 @@
 //! Monitor — a CRDT-native graphical activity monitor for qOS, built on
 //! the `ui` toolkit.
 //!
-//! Two tabs (Processes / Resources) share a live system rail. Real
+//! Two tabs (Processes / Resources) present live system stats as content —
+//! a summary strip over a full-width process table, and a reflowing resource
+//! dashboard — with no sidebar. Real
 //! `sysinfo` data drives the live binary; a representative
 //! [`model::MonitorModel::sample`] snapshot drives `--shots` so the
 //! headless screenshot is fully populated offline.
@@ -13,7 +15,7 @@
 //! - [`charts`]     — custom Vello primitives (area charts, ring/bar gauges).
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
 //! - [`prefs`]      — durable preferences persisted in the Automerge document.
-//! - [`responsive`] — width-driven rail flap + Processes push navigation.
+//! - [`responsive`] — width-driven Processes push navigation + dashboard reflow.
 //! - [`app`]        — the root [`app::MonitorApp`] widget.
 //!
 //! `app_root` is the single integration point used by both the live event

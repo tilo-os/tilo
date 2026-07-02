@@ -5,14 +5,14 @@
 //! Pulling the geometry out here has two payoffs:
 //!
 //! * **Cards fit their content.** A card height is derived from the rows it
-//!   must hold (`rail_spark_panel_h`, `per_core_grid`), so adding a row or a
-//!   core can never leave content spilling below the background rectangle —
-//!   the bug these helpers exist to kill.
+//!   must hold (`per_core_card_h`, `summary_strip_h`, `overview_h`), so
+//!   adding a row or a core can never leave content spilling below the
+//!   background rectangle — the bug these helpers exist to kill.
 //! * **It's testable.** `draw` consumes nothing the tests can't also call,
-//!   so the layout invariants ("the spark card contains all three
-//!   sparklines", "the per-core grid cell count equals the core count",
-//!   "no process column overflows the table width") are asserted against the
-//!   exact arithmetic the renderer uses — no tautological mirror.
+//!   so the layout invariants ("the summary strip never orphans a cell",
+//!   "the per-core grid cell count equals the core count", "no process column
+//!   overflows the table width") are asserted against the exact arithmetic
+//!   the renderer uses — no tautological mirror.
 //!
 //! Nothing here touches Vello, the CRDT, or `sysinfo`; it is plain `f64`
 //! geometry over [`vello::kurbo::Rect`].
@@ -21,36 +21,113 @@ use vello::kurbo::Rect;
 
 use crate::app::SortKey;
 
-// ---- rail (left column) cards -------------------------------------------
+// ---- shared card padding -------------------------------------------------
 
-/// Inner padding every rail card insets its content by (matches
-/// [`crate::charts::panel`]'s `pad`).
+/// Inner padding a content card insets its content by (matches
+/// [`crate::charts::panel`]'s `pad`). Used by the per-core grid and the
+/// Resources dashboard cards.
 pub const RAIL_CARD_PAD: f64 = 12.0;
 
-/// Fixed height of the processor (CPU ring) card.
-pub const RAIL_RING_H: f64 = 168.0;
-/// Fixed height of the memory + swap card.
-pub const RAIL_MEM_H: f64 = 96.0;
+/// Gap between cards / grid cells, mirrored from the app's outer `GAP` so the
+/// wrap-height arithmetic here matches the renderer's spacing.
+const GAP: f64 = 14.0;
 
-/// One sparkline block inside the net/net/disk card: a label line plus the
-/// 32px chart below it. Three of these stack in the card.
-pub const SPARK_ROW_STRIDE: f64 = 52.0;
-/// Vertical extent of a single sparkline block from its label baseline to
-/// the bottom of its 32px chart (`+14` to label-to-chart gap, `+32` chart).
-pub const SPARK_ROW_EXTENT: f64 = 46.0;
-/// How many sparkline rows live in the net/net/disk card.
-pub const SPARK_ROWS: usize = 3;
+// ---- summary strip (Processes tab) --------------------------------------
+//
+// The Processes tab carries a compact horizontal *summary strip* of the four
+// headline system stats (CPU / Memory / Network / Disk) — a sparkline plus a
+// number each — above a full-width process table. The strip is content, not
+// a navigation rail: it wraps to fewer columns as the window narrows instead
+// of stealing a fixed left gutter.
 
-/// Height the net/net/disk sparkline card must be so its **last** sparkline
-/// (the Disk row) sits fully *inside* the card rather than spilling below
-/// it. Derived from the three stacked rows plus top+bottom card padding.
-///
-/// Three rows occupy `2 * stride + extent` of inner height (the first two
-/// rows advance by `stride`, the last only needs its own `extent`); add the
-/// card's top and bottom padding.
-pub fn rail_spark_panel_h() -> f64 {
-    let inner = (SPARK_ROWS as f64 - 1.0) * SPARK_ROW_STRIDE + SPARK_ROW_EXTENT;
-    inner + 2.0 * RAIL_CARD_PAD
+/// The four stats the summary strip always shows.
+pub const STRIP_CELLS: usize = 4;
+/// Height of one summary-strip stat cell (label row + sparkline + padding).
+pub const STRIP_CELL_H: f64 = 72.0;
+/// Inner padding of a summary-strip cell.
+pub const STRIP_CELL_PAD: f64 = 10.0;
+/// Minimum width one strip cell keeps before the strip wraps to fewer
+/// columns — enough for a `Network  6.7 MB/s` header plus its sparkline.
+pub const STRIP_CELL_MIN_W: f64 = 170.0;
+
+/// Resolved wrap geometry of the summary strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StripGrid {
+    pub cols: usize,
+    pub rows: usize,
+}
+
+/// Choose how many columns the four-cell summary strip wraps to for a content
+/// area `avail_w` wide. Prefers four-across, then a 2×2 block, then a single
+/// column — never three, which would orphan the fourth cell.
+pub fn summary_grid(avail_w: f64) -> StripGrid {
+    let fit = ((avail_w + GAP) / (STRIP_CELL_MIN_W + GAP)).floor() as usize;
+    let cols = if fit >= 4 {
+        4
+    } else if fit >= 2 {
+        2
+    } else {
+        1
+    };
+    let rows = STRIP_CELLS.div_ceil(cols);
+    StripGrid { cols, rows }
+}
+
+/// Height the summary strip occupies once wrapped to `g`.
+pub fn summary_strip_h(g: StripGrid) -> f64 {
+    g.rows as f64 * STRIP_CELL_H + (g.rows as f64 - 1.0) * GAP
+}
+
+// ---- Resources dashboard reflow -----------------------------------------
+//
+// The Resources tab is a real dashboard: an overview row (Processor / Memory
+// / System cards), a full-width per-core grid, then a chart grid (CPU /
+// Memory / Network / Disk). Every band reflows its column count with the
+// window width so nothing overlaps and the stats stay content, never a rail.
+
+/// Fixed height of an overview card when the three sit abreast.
+pub const OVERVIEW_H: f64 = 168.0;
+/// Natural height of the overview Processor card when the row stacks.
+pub const OVERVIEW_RING_H: f64 = 168.0;
+/// Natural height of the overview Memory card when the row stacks.
+pub const OVERVIEW_MEM_H: f64 = 116.0;
+/// Natural height of the overview System card when the row stacks — tall
+/// enough for the four host lines plus the CPU-brand line beneath them.
+pub const OVERVIEW_SYS_H: f64 = 150.0;
+
+/// Columns the overview row uses: three abreast when wide, else a single
+/// full-width stacked column.
+pub fn overview_cols(avail_w: f64) -> usize {
+    if avail_w >= 720.0 {
+        3
+    } else {
+        1
+    }
+}
+
+/// Height the overview row occupies for `avail_w` — one card tall when the
+/// three sit abreast, or the sum of their natural heights when stacked.
+pub fn overview_h(avail_w: f64) -> f64 {
+    if overview_cols(avail_w) == 3 {
+        OVERVIEW_H
+    } else {
+        OVERVIEW_RING_H + GAP + OVERVIEW_MEM_H + GAP + OVERVIEW_SYS_H
+    }
+}
+
+/// Columns the Resources chart grid uses: two-up when wide, a single column
+/// when narrow so each chart stays legible.
+pub fn charts_cols(avail_w: f64) -> usize {
+    if avail_w >= 620.0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Rows the four-chart Resources grid wraps to for `avail_w`.
+pub fn charts_rows(avail_w: f64) -> usize {
+    4usize.div_ceil(charts_cols(avail_w))
 }
 
 // ---- per-core utilisation grid ------------------------------------------
@@ -186,22 +263,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn spark_card_contains_all_three_sparklines() {
-        // The card is positioned at an arbitrary y; its inner content top is
-        // `y + pad`, and the last (Disk) sparkline's chart bottom must sit at
-        // or above the card's inner bottom — i.e. nothing spills out.
-        let y = 240.0_f64;
-        let h = rail_spark_panel_h();
-        let card = Rect::new(0.0, y, 248.0, y + h);
-        let ci = inner(card, RAIL_CARD_PAD);
-        // Disk row label baseline + its chart bottom (see `draw_rail`).
-        let last_row_top = ci.y0 + (SPARK_ROWS as f64 - 1.0) * SPARK_ROW_STRIDE;
-        let last_chart_bottom = last_row_top + SPARK_ROW_EXTENT;
-        assert!(
-            last_chart_bottom <= ci.y1 + 0.001,
-            "disk sparkline bottom {last_chart_bottom} must fit inside card inner bottom {}",
-            ci.y1
-        );
+    fn summary_strip_wraps_but_never_orphans_a_cell() {
+        // Wide content seats all four stat cells across one row.
+        let wide = summary_grid(1200.0);
+        assert_eq!(wide.cols, 4);
+        assert_eq!(wide.rows, 1);
+        // A phone-narrow strip drops to a 2×2 block — never three-across,
+        // which would leave the fourth cell orphaned on its own row.
+        let narrow = summary_grid(520.0);
+        assert_eq!(narrow.cols, 2);
+        assert_eq!(narrow.rows, 2);
+        assert_ne!(summary_grid(560.0).cols, 3, "never a 3-wide orphan layout");
+        // Whatever the width, the cols hold every cell.
+        for &w in &[300.0_f64, 520.0, 772.0, 1200.0] {
+            let g = summary_grid(w);
+            assert!(g.cols * g.rows >= STRIP_CELLS, "w={w} holds every cell");
+            // Each cell keeps at least its minimum width (no squeezing).
+            let cell_w = (w - (g.cols as f64 - 1.0) * GAP) / g.cols as f64;
+            assert!(
+                g.cols == 1 || cell_w >= STRIP_CELL_MIN_W - 0.001,
+                "w={w}: cell {cell_w} below min {STRIP_CELL_MIN_W}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_reflows_columns_with_width() {
+        // Wide: overview three abreast, charts two-up.
+        assert_eq!(overview_cols(1200.0), 3);
+        assert_eq!(charts_cols(1200.0), 2);
+        // Medium (an 800px window's content band): still the roomy dashboard.
+        assert_eq!(overview_cols(772.0), 3);
+        assert_eq!(charts_cols(772.0), 2);
+        // Narrow: everything stacks to a single column so nothing is squeezed.
+        assert_eq!(overview_cols(532.0), 1);
+        assert_eq!(charts_cols(532.0), 1);
+        // Stacking the overview makes it taller than the abreast row, and the
+        // chart grid gains rows — both feed the page-scroll height.
+        assert!(overview_h(532.0) > overview_h(1200.0));
+        assert_eq!(charts_rows(1200.0), 2);
+        assert_eq!(charts_rows(532.0), 4);
     }
 
     #[test]
