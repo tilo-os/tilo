@@ -65,8 +65,38 @@ const DIAG_H: f64 = 168.0;
 const PILL_H: f64 = 28.0;
 const PILL_FONT: f32 = 12.5;
 
+/// Below this window width the side-by-side split can't give either pane a
+/// usable size, so the editor folds to a single pane with an Edit/Preview
+/// switch and an overflow menu. Re-evaluated from the live width every layout
+/// pass, so resizing across the threshold reflows immediately.
+const COMPACT_W: f64 = 760.0;
+
 /// How long a transient toast (Save / Open feedback) stays on screen.
 const FLASH_MS: u128 = 3200;
+
+/// Which single pane the compact (narrow-window) layout is showing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompactPane {
+    Editor,
+    Preview,
+}
+
+/// Source with two deliberate mistakes, used only by the `--shots errors`
+/// scenario to capture the Problems panel with real compiler diagnostics.
+const ERROR_DEMO: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
+
+= Draft with mistakes
+
+This paragraph references #missing_variable which is not defined.
+
+$ 1 / $
+"#;
+
+/// A document whose final line is very long, used only by the `--shots
+/// scrolled` scenario to capture the source editor scrolled sideways with the
+/// caret kept in view at the end of the line. The long line is last (no
+/// trailing newline) so placing the caret at the document end lands it there.
+const SCROLL_DEMO: &str = "= Horizontal scroll\n\n#let note = \"This is a single very long line of source text that runs well past the right edge of the editor pane, so the view must scroll sideways to keep the caret in view as you type toward the end.\"";
 
 /// A document the switcher can cycle to: either a bundled sample or a `.typ`
 /// file discovered on disk.
@@ -90,6 +120,12 @@ enum TbAction {
     ZoomIn,
     Fit,
     ToggleProblems,
+    /// Compact layout: show the source editor pane.
+    ShowEditor,
+    /// Compact layout: show the rendered preview pane.
+    ShowPreview,
+    /// Compact layout: open/close the overflow menu.
+    ToggleMenu,
 }
 
 pub struct TypstApp {
@@ -125,6 +161,18 @@ pub struct TypstApp {
     err_count: usize,
     warn_count: usize,
     elapsed_ms: u128,
+    /// Whether the current width put us in the single-pane compact layout.
+    /// Recomputed every `apply_layout` from the live width — never cached from
+    /// the first frame.
+    compact: bool,
+    /// Which pane the compact layout is showing (ignored while `compact` is
+    /// false).
+    compact_view: CompactPane,
+    /// Whether the compact overflow menu is open.
+    menu_open: bool,
+    /// Screenshot-only: on the next layout pass, drop the caret at the end of
+    /// the source and scroll it into view. Never set by the live event loop.
+    demo_scroll_caret_end: bool,
 
     // --- layout rects (filled by apply_layout) ---
     rect: Rect,
@@ -142,11 +190,22 @@ pub struct TypstApp {
     divider_hover: bool,
     /// Cached toolbar hit regions from the last draw.
     toolbar_hits: Vec<(TbAction, Rect)>,
+    /// Cached overflow-menu hit regions from the last draw (compact layout).
+    menu_hits: Vec<(TbAction, Rect)>,
     flash: Option<(String, Instant)>,
 }
 
 impl TypstApp {
+    /// The live editor: its document library is the user's real `.typ` files on
+    /// disk. If none exist yet it opens a single blank starter document.
     pub fn new() -> Self {
+        Self::from_library(Self::save_dir())
+    }
+
+    /// A hermetic instance seeded with the bundled example documents. Used by
+    /// the offscreen `--shots` renderer and tests so the output never depends
+    /// on what happens to be on disk.
+    pub fn with_demo_documents() -> Self {
         let documents: Vec<Document> = SAMPLES
             .iter()
             .map(|s| Document {
@@ -155,7 +214,28 @@ impl TypstApp {
                 from_disk: false,
             })
             .collect();
+        Self::with_documents(documents, DEFAULT_INDEX)
+    }
 
+    /// Build the live library from `dir`: every `.typ` file found there, or a
+    /// single blank starter when the directory is empty or absent.
+    fn from_library(dir: Option<PathBuf>) -> Self {
+        let mut documents = Vec::new();
+        if let Some(dir) = dir.as_ref() {
+            documents = Self::scan_dir(dir);
+        }
+        if documents.is_empty() {
+            documents.push(Document {
+                name: "untitled.typ".into(),
+                source: crate::samples::STARTER.to_string(),
+                from_disk: false,
+            });
+        }
+        Self::with_documents(documents, 0)
+    }
+
+    fn with_documents(documents: Vec<Document>, current: usize) -> Self {
+        let current = current.min(documents.len().saturating_sub(1));
         Self {
             parts: WorldParts::new(),
             worker: None,
@@ -165,16 +245,20 @@ impl TypstApp {
             diagnostics: DiagnosticsPanel::new(),
             source_id: None,
             documents,
-            current: DEFAULT_INDEX,
+            current,
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
             tokens: Vec::new(),
             split_ratio: 0.46,
-            show_diagnostics: true,
+            show_diagnostics: false,
             err_count: 0,
             warn_count: 0,
             elapsed_ms: 0,
+            compact: false,
+            compact_view: CompactPane::Editor,
+            menu_open: false,
+            demo_scroll_caret_end: false,
             rect: Rect::ZERO,
             toolbar_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
@@ -187,7 +271,36 @@ impl TypstApp {
             dragging_editor: false,
             divider_hover: false,
             toolbar_hits: Vec::new(),
+            menu_hits: Vec::new(),
             flash: None,
+        }
+    }
+
+    /// Screenshot-only: pre-arrange a demo instance into a named state so the
+    /// offscreen renderer can capture views that normally require interaction.
+    /// Never called by the live event loop.
+    pub fn apply_demo_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "preview" => self.compact_view = CompactPane::Preview,
+            "menu" => {
+                self.compact_view = CompactPane::Editor;
+                self.menu_open = true;
+            }
+            "problems" => self.show_diagnostics = true,
+            "scrolled" => {
+                if let Some(d) = self.documents.get_mut(self.current) {
+                    d.source = SCROLL_DEMO.to_string();
+                }
+                self.editor.focused = true;
+                self.demo_scroll_caret_end = true;
+            }
+            "errors" => {
+                self.show_diagnostics = true;
+                if let Some(d) = self.documents.get_mut(self.current) {
+                    d.source = ERROR_DEMO.to_string();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -235,7 +348,9 @@ impl TypstApp {
         self.editor.caret = 0;
         self.editor.anchor = 0;
         self.editor.scroll_y = 0.0;
-        self.editor.focused = true;
+        self.editor.scroll_x = 0.0;
+        // Keep focus consistent with the visible pane in compact mode.
+        self.editor.focused = !(self.compact && matches!(self.compact_view, CompactPane::Preview));
         self.preview.fit_width();
         let name = self.documents[self.current].name.clone();
         self.set_flash(format!("Opened {name}"));
@@ -330,34 +445,50 @@ impl TypstApp {
         }
     }
 
-    /// Rebuild the document list: bundled samples first, then every `.typ`
-    /// file found in the save directory (deduped against bundled names).
-    fn rescan_library(&mut self) {
-        self.documents.truncate(SAMPLES.len());
-        if let Some(dir) = Self::save_dir() {
-            if let Ok(rd) = std::fs::read_dir(&dir) {
-                let mut entries: Vec<_> = rd
-                    .flatten()
-                    .filter(|e| {
-                        e.path().extension().map(|x| x == "typ").unwrap_or(false)
-                    })
-                    .collect();
-                entries.sort_by_key(|e| e.file_name());
-                for e in entries {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if let Ok(src) = std::fs::read_to_string(e.path()) {
-                        self.documents.push(Document {
-                            name,
-                            source: src,
-                            from_disk: true,
-                        });
-                    }
+    /// Read every `.typ` file in `dir` into a `Document` list (name-sorted).
+    fn scan_dir(dir: &std::path::Path) -> Vec<Document> {
+        let mut docs = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            let mut entries: Vec<_> = rd
+                .flatten()
+                .filter(|e| e.path().extension().map(|x| x == "typ").unwrap_or(false))
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Ok(src) = std::fs::read_to_string(e.path()) {
+                    docs.push(Document { name, source: src, from_disk: true });
                 }
             }
         }
-        if self.current >= self.documents.len() {
-            self.current = self.documents.len().saturating_sub(1);
+        docs
+    }
+
+    /// Refresh the on-disk documents, preserving the currently open document by
+    /// name where possible. Bundled demo documents (if any) are kept ahead of
+    /// the disk ones.
+    fn rescan_library(&mut self) {
+        let open_name = self.documents.get(self.current).map(|d| d.name.clone());
+        // Preserve any non-disk documents (demo set / unsaved starter) at the
+        // front; replace the disk-backed tail with a fresh scan.
+        self.documents.retain(|d| !d.from_disk);
+        if let Some(dir) = Self::save_dir() {
+            let mut disk = Self::scan_dir(&dir);
+            // Don't list a disk file that duplicates a bundled name.
+            disk.retain(|d| !self.documents.iter().any(|b| b.name == d.name));
+            self.documents.append(&mut disk);
         }
+        if self.documents.is_empty() {
+            self.documents.push(Document {
+                name: "untitled.typ".into(),
+                source: crate::samples::STARTER.to_string(),
+                from_disk: false,
+            });
+        }
+        // Re-point `current` at the same document by name if it survived.
+        self.current = open_name
+            .and_then(|n| self.documents.iter().position(|d| d.name == n))
+            .unwrap_or(self.current.min(self.documents.len().saturating_sub(1)));
     }
 
     fn next_doc(&mut self, doc: &mut AutoCommit) {
@@ -378,17 +509,40 @@ impl TypstApp {
     }
 
     fn do_action(&mut self, action: TbAction, doc: &mut AutoCommit) {
+        // Any menu item closes the overflow menu once actioned.
+        if !matches!(action, TbAction::ToggleMenu) {
+            self.menu_open = false;
+        }
         match action {
             TbAction::PrevDoc => self.prev_doc(doc),
             TbAction::NextDoc => self.next_doc(doc),
             TbAction::Compile => self.force_recompile(doc),
             TbAction::Save => self.save(doc),
             TbAction::Open => self.open(doc),
-            TbAction::ZoomOut => self.preview.zoom_out(),
-            TbAction::ZoomIn => self.preview.zoom_in(),
-            TbAction::Fit => self.preview.fit_width(),
+            TbAction::ZoomOut => {
+                self.preview.zoom_out();
+                self.set_compact_view(CompactPane::Preview);
+            }
+            TbAction::ZoomIn => {
+                self.preview.zoom_in();
+                self.set_compact_view(CompactPane::Preview);
+            }
+            TbAction::Fit => {
+                self.preview.fit_width();
+                self.set_compact_view(CompactPane::Preview);
+            }
             TbAction::ToggleProblems => self.show_diagnostics = !self.show_diagnostics,
+            TbAction::ShowEditor => self.set_compact_view(CompactPane::Editor),
+            TbAction::ShowPreview => self.set_compact_view(CompactPane::Preview),
+            TbAction::ToggleMenu => self.menu_open = !self.menu_open,
         }
+    }
+
+    /// Switch the compact single-pane view. Keeps editor focus in sync so the
+    /// caret only blinks (and only demands animation frames) while editing.
+    fn set_compact_view(&mut self, view: CompactPane) {
+        self.compact_view = view;
+        self.editor.focused = matches!(view, CompactPane::Editor);
     }
 
     fn set_flash(&mut self, msg: String) {
@@ -406,16 +560,19 @@ impl TypstApp {
     }
 
     /// 1-based (line, col) of the editor caret within the cached source.
+    /// Single pass over the leading chars — no allocation.
     fn caret_line_col(&self) -> (usize, usize) {
         let caret = self.editor.caret;
-        let before: String = self.source_cache.chars().take(caret).collect();
-        let line = before.matches('\n').count() + 1;
-        let col = before
-            .rsplit('\n')
-            .next()
-            .map(|s| s.chars().count())
-            .unwrap_or(0)
-            + 1;
+        let mut line = 1usize;
+        let mut col = 1usize;
+        for ch in self.source_cache.chars().take(caret) {
+            if ch == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
         (line, col)
     }
 
@@ -423,8 +580,90 @@ impl TypstApp {
         self.worker.as_ref().map(|w| w.in_flight()).unwrap_or(false)
     }
 
+    /// Compute every pane rect from a content rect. Split out from
+    /// [`Widget::apply_layout`] so resize reflow is unit-testable without a
+    /// taffy pass. The layout mode is re-derived from `rect`'s width every call
+    /// — never cached from the first frame.
+    fn layout_in(&mut self, rect: Rect) {
+        self.rect = rect;
+        let r = self.rect;
+        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        self.status_rect = Rect::new(r.x0, r.y1 - STATUS_H, r.x1, r.y1);
+        let content_top = self.toolbar_rect.y1;
+        let content_bottom = self.status_rect.y0;
+        let content_w = r.width();
+
+        // Derive the layout mode from the *current* width every pass, so a
+        // resize across the threshold reflows without any cached-on-launch mode.
+        self.compact = content_w < COMPACT_W;
+        if !self.compact {
+            self.menu_open = false;
+        }
+
+        if self.compact {
+            self.divider_rect = Rect::ZERO;
+            let pane = Rect::new(r.x0, content_top, r.x1, content_bottom);
+            let (main, diag) = self.split_off_diagnostics(pane);
+            self.diag_rect = diag;
+            match self.compact_view {
+                CompactPane::Editor => {
+                    self.editor_rect = main;
+                    self.preview_rect = Rect::ZERO;
+                }
+                CompactPane::Preview => {
+                    self.preview_rect = main;
+                    self.editor_rect = Rect::ZERO;
+                }
+            }
+        } else {
+            let split_x = r.x0 + content_w * self.split_ratio;
+            let editor_col = Rect::new(r.x0, content_top, split_x, content_bottom);
+            self.preview_rect = Rect::new(split_x + DIVIDER_W, content_top, r.x1, content_bottom);
+            self.divider_rect = Rect::new(split_x, content_top, split_x + DIVIDER_W, content_bottom);
+            let (main, diag) = self.split_off_diagnostics(editor_col);
+            self.editor_rect = main;
+            self.diag_rect = diag;
+        }
+
+        self.editor.set_rect(self.editor_rect);
+        self.preview.set_rect(self.preview_rect);
+        self.diagnostics.set_rect(self.diag_rect);
+
+        // Screenshot harness only: now that the editor has a real rect, place
+        // the caret at the end of the source and scroll it into view so the
+        // capture shows the horizontally-scrolled state.
+        if self.demo_scroll_caret_end && !self.source_cache.is_empty() {
+            self.demo_scroll_caret_end = false;
+            let src = self.source_cache.clone();
+            self.editor.caret = src.chars().count();
+            self.editor.anchor = self.editor.caret;
+            self.editor.ensure_visible(&src);
+        }
+    }
+
+    /// Carve a bottom diagnostics strip out of `col` when the Problems panel is
+    /// open and there's room; otherwise the whole column stays as content.
+    fn split_off_diagnostics(&self, col: Rect) -> (Rect, Rect) {
+        if self.show_diagnostics && col.height() > 120.0 {
+            let dh = DIAG_H.min(col.height() * 0.5);
+            (
+                Rect::new(col.x0, col.y0, col.x1, col.y1 - dh),
+                Rect::new(col.x0, col.y1 - dh, col.x1, col.y1),
+            )
+        } else {
+            (col, Rect::ZERO)
+        }
+    }
+
     fn hit_toolbar(&self, p: Point) -> Option<TbAction> {
         self.toolbar_hits
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .map(|(a, _)| *a)
+    }
+
+    fn hit_menu(&self, p: Point) -> Option<TbAction> {
+        self.menu_hits
             .iter()
             .find(|(_, r)| r.contains(p))
             .map(|(a, _)| *a)
@@ -478,6 +717,7 @@ impl TypstApp {
 
     fn draw_toolbar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.toolbar_hits.clear();
+        self.menu_hits.clear();
         let c = &theme.tokens.colors;
         let tb = self.toolbar_rect;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &tb);
@@ -491,45 +731,146 @@ impl TypstApp {
         );
 
         let y = tb.y0 + (tb.height() - PILL_H) / 2.0;
-        let mut x = tb.x0 + 12.0;
+        if self.compact {
+            self.draw_toolbar_compact(scene, t, tr, theme, y);
+        } else {
+            self.draw_toolbar_full(scene, t, tr, theme, y);
+        }
+    }
 
-        // --- left group: document switcher ---
-        let prev_w = Self::pill_width(tr, "‹");
-        self.paint_pill(
+    fn draw_toolbar_full(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+    ) {
+        let tb = self.toolbar_rect;
+        // Show the "n/m" index only when there's plenty of room.
+        let with_index = tb.width() >= 1000.0;
+        let mut x = self.draw_doc_switcher(scene, t, tr, theme, tb.x0 + 12.0, y, 220.0, with_index);
+        x += 10.0;
+
+        // --- action group ---
+        for (lbl, act) in [
+            ("Compile", TbAction::Compile),
+            ("Save", TbAction::Save),
+            ("Open", TbAction::Open),
+        ] {
+            let w = Self::pill_width(tr, lbl);
+            self.paint_pill(scene, t, tr, theme, Rect::new(x, y, x + w, y + PILL_H), lbl, act, false);
+            x += w + 8.0;
+        }
+
+        // --- right group: zoom + problems (placed from the right edge) ---
+        let mut rx = tb.x1 - 12.0;
+        rx = self.draw_problems_pill(scene, t, tr, theme, rx, y, true);
+        rx -= 8.0;
+
+        // zoom cluster: [ − ] [ 100% ] [ + ] [ Fit ]  (right to left)
+        for (lbl, act) in [("Fit", TbAction::Fit), ("+", TbAction::ZoomIn)] {
+            let w = Self::pill_width(tr, lbl);
+            let r = Rect::new(rx - w, y, rx, y + PILL_H);
+            self.paint_pill(scene, t, tr, theme, r, lbl, act, false);
+            rx -= w + 6.0;
+        }
+        // zoom percentage chip (non-interactive)
+        let c = &theme.tokens.colors;
+        let zlabel = format!("{:.0}%", self.preview.zoom() * 100.0);
+        let (zw, _) = tr.measure_weighted(&zlabel, PILL_FONT, None, TextWeight::Medium);
+        let zchip_w = zw as f64 + 16.0;
+        let zr = Rect::new(rx - zchip_w, y, rx, y + PILL_H);
+        tr.draw_text_weighted(
             scene,
-            t,
-            tr,
-            theme,
-            Rect::new(x, y, x + prev_w, y + PILL_H),
-            "‹",
-            TbAction::PrevDoc,
-            false,
+            &zlabel,
+            PILL_FONT,
+            c.text_dim,
+            t * Affine::translate((zr.x0 + 8.0, y + (PILL_H - PILL_FONT as f64 * 1.25) / 2.0)),
+            None,
+            TextWeight::Medium,
         );
-        x += prev_w + 6.0;
+        rx -= zchip_w + 6.0;
+        let zow = Self::pill_width(tr, "−");
+        let zor = Rect::new(rx - zow, y, rx, y + PILL_H);
+        self.paint_pill(scene, t, tr, theme, zor, "−", TbAction::ZoomOut, false);
+    }
 
-        // doc name label (with index), drawn in a flat chip
+    fn draw_toolbar_compact(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+    ) {
+        let tb = self.toolbar_rect;
+        // Right edge, inward: overflow kebab, then a problems badge but only
+        // when there's actually something to show (an empty badge is noise).
+        let mut rx = tb.x1 - 12.0;
+        let kebab_w = 30.0;
+        let kr = Rect::new(rx - kebab_w, y, rx, y + PILL_H);
+        self.paint_pill(scene, t, tr, theme, kr, "⋯", TbAction::ToggleMenu, self.menu_open);
+        rx -= kebab_w + 8.0;
+        if self.err_count > 0 || self.warn_count > 0 {
+            rx = self.draw_problems_pill(scene, t, tr, theme, rx, y, false);
+            rx -= 10.0;
+        }
+
+        // Segmented Edit / Preview switch, centred in the remaining span.
+        let seg = self.draw_view_switch(scene, t, tr, theme, y);
+
+        // Document switcher on the left, capped so it never reaches the switch.
+        let max_chip = (seg.x0 - (tb.x0 + 12.0) - 12.0).max(64.0);
+        let _ = self.draw_doc_switcher(scene, t, tr, theme, tb.x0 + 12.0, y, max_chip, false);
+        let _ = rx;
+    }
+
+    /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
+    /// the name chip width (the name is elided to fit). Returns the x just past
+    /// the group.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_doc_switcher(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        y: f64,
+        max_chip: f64,
+        with_index: bool,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let mut x = x;
+        let multi = self.documents.len() > 1;
+
+        let prev_w = Self::pill_width(tr, "‹");
+        if multi {
+            self.paint_pill(
+                scene, t, tr, theme,
+                Rect::new(x, y, x + prev_w, y + PILL_H),
+                "‹", TbAction::PrevDoc, false,
+            );
+            x += prev_w + 6.0;
+        }
+
         let name = self
             .documents
             .get(self.current)
-            .map(|d| {
-                if d.from_disk {
-                    format!("{}  (disk)", d.name)
-                } else {
-                    d.name.clone()
-                }
-            })
+            .map(|d| d.name.clone())
             .unwrap_or_else(|| "untitled".into());
-        let label = format!("{name}   {}/{}", self.current + 1, self.documents.len());
+        let base = if with_index && multi {
+            format!("{name}   {}/{}", self.current + 1, self.documents.len())
+        } else {
+            name
+        };
+        // Elide to fit the cap.
+        let label = elide_to_width(tr, &base, max_chip - 24.0);
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
-        let chip_w = lw as f64 + 24.0;
+        let chip_w = (lw as f64 + 24.0).min(max_chip);
         let chip = Rect::new(x, y, x + chip_w, y + PILL_H);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.surfaces.base,
-            None,
-            &RoundedRect::from_rect(chip, 7.0),
-        );
+        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &RoundedRect::from_rect(chip, 7.0));
         tr.draw_text_weighted(
             scene,
             &label,
@@ -541,95 +882,177 @@ impl TypstApp {
         );
         x += chip_w + 6.0;
 
-        let next_w = Self::pill_width(tr, "›");
-        self.paint_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            Rect::new(x, y, x + next_w, y + PILL_H),
-            "›",
-            TbAction::NextDoc,
-            false,
-        );
-        x += next_w + 16.0;
-
-        // --- action group ---
-        for (lbl, act) in [
-            ("Compile", TbAction::Compile),
-            ("Save", TbAction::Save),
-            ("Open", TbAction::Open),
-        ] {
-            let w = Self::pill_width(tr, lbl);
+        if multi {
+            let next_w = Self::pill_width(tr, "›");
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
-                Rect::new(x, y, x + w, y + PILL_H),
-                lbl,
-                act,
-                false,
+                scene, t, tr, theme,
+                Rect::new(x, y, x + next_w, y + PILL_H),
+                "›", TbAction::NextDoc, false,
             );
-            x += w + 8.0;
+            x += next_w;
         }
+        x
+    }
 
-        // --- right group: zoom + problems (placed from the right edge) ---
-        let mut rx = tb.x1 - 12.0;
+    /// A two-segment Edit / Preview toggle, centred in the toolbar. Returns its
+    /// rect so callers can avoid overlapping it.
+    fn draw_view_switch(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
+        let tb = self.toolbar_rect;
+        let seg_edit = "Edit";
+        let seg_prev = "Preview";
+        let (ew, _) = tr.measure_weighted(seg_edit, PILL_FONT, None, TextWeight::Medium);
+        let (pw, _) = tr.measure_weighted(seg_prev, PILL_FONT, None, TextWeight::Medium);
+        let ew = ew as f64 + 22.0;
+        let pw = pw as f64 + 22.0;
+        let total = ew + pw;
+        let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
+        let outer = Rect::new(x0, y, x0 + total, y + PILL_H);
+        scene.fill(Fill::NonZero, t, c.surface_white_5, None, &RoundedRect::from_rect(outer, 8.0));
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &RoundedRect::from_rect(outer, 8.0));
 
-        let problems_active = self.show_diagnostics;
-        let problems_lbl = if self.err_count > 0 {
-            format!("Problems ({})", self.err_count)
-        } else if self.warn_count > 0 {
-            format!("Problems ({})", self.warn_count)
+        let edit_active = matches!(self.compact_view, CompactPane::Editor);
+        // Edit segment.
+        let er = Rect::new(x0, y, x0 + ew, y + PILL_H);
+        self.paint_segment(scene, t, tr, theme, er, seg_edit, TbAction::ShowEditor, edit_active);
+        // Preview segment.
+        let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + PILL_H);
+        self.paint_segment(scene, t, tr, theme, pr, seg_prev, TbAction::ShowPreview, !edit_active);
+        outer
+    }
+
+    /// A "Problems" pill placed from its right edge at `rx`. `long` uses the
+    /// full "Problems (n)" label; otherwise a compact count badge. Returns the
+    /// left edge just past the pill.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_problems_pill(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rx: f64,
+        y: f64,
+        long: bool,
+    ) -> f64 {
+        let count = if self.err_count > 0 {
+            self.err_count
         } else {
-            "Problems".to_string()
+            self.warn_count
         };
-        let pw = Self::pill_width(tr, &problems_lbl);
-        let pr = Rect::new(rx - pw, y, rx, y + PILL_H);
-        self.paint_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            pr,
-            &problems_lbl,
-            TbAction::ToggleProblems,
-            problems_active,
-        );
-        rx -= pw + 14.0;
+        let label = if long {
+            if count > 0 {
+                format!("Problems ({count})")
+            } else {
+                "Problems".to_string()
+            }
+        } else if count > 0 {
+            format!("● {count}")
+        } else {
+            "●".to_string()
+        };
+        let w = Self::pill_width(tr, &label);
+        let r = Rect::new(rx - w, y, rx, y + PILL_H);
+        self.paint_pill(scene, t, tr, theme, r, &label, TbAction::ToggleProblems, self.show_diagnostics);
+        r.x0
+    }
 
-        // zoom cluster: [ − ] [ 100% ] [ + ] [ Fit ]  (right to left)
-        for (lbl, act) in [
-            ("Fit", TbAction::Fit),
-            ("+", TbAction::ZoomIn),
-        ] {
-            let w = Self::pill_width(tr, lbl);
-            let r = Rect::new(rx - w, y, rx, y + PILL_H);
-            self.paint_pill(scene, t, tr, theme, r, lbl, act, false);
-            rx -= w + 6.0;
+    /// Paint one segment of a segmented control (no rounded outline of its own;
+    /// the container draws that).
+    #[allow(clippy::too_many_arguments)]
+    fn paint_segment(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        label: &str,
+        action: TbAction,
+        active: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        if active {
+            let shape = RoundedRect::from_rect(rect.inflate(-2.0, -2.0), 6.0);
+            scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
         }
-        // zoom percentage chip (non-interactive)
-        let zlabel = format!("{:.0}%", self.preview.zoom() * 100.0);
-        let (zw, _) = tr.measure_weighted(&zlabel, PILL_FONT, None, TextWeight::Medium);
-        let zchip_w = zw as f64 + 16.0;
-        let zr = Rect::new(rx - zchip_w, y, rx, y + PILL_H);
+        let fg = if active { Color::WHITE } else { c.text_primary };
+        let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
+        let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
+        let ty = rect.y0 + (rect.height() - PILL_FONT as f64 * 1.25) / 2.0;
         tr.draw_text_weighted(
             scene,
-            &zlabel,
+            label,
             PILL_FONT,
-            c.text_dim,
-            t * Affine::translate((
-                zr.x0 + 8.0,
-                y + (PILL_H - PILL_FONT as f64 * 1.25) / 2.0,
-            )),
+            fg,
+            t * Affine::translate((tx, ty)),
             None,
             TextWeight::Medium,
         );
-        rx -= zchip_w + 6.0;
-        let zow = Self::pill_width(tr, "−");
-        let zor = Rect::new(rx - zow, y, rx, y + PILL_H);
-        self.paint_pill(scene, t, tr, theme, zor, "−", TbAction::ZoomOut, false);
+        self.toolbar_hits.push((action, rect));
+    }
+
+    /// Draw the compact overflow menu as a floating panel anchored under the
+    /// kebab button.
+    fn draw_menu(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.menu_hits.clear();
+        let c = &theme.tokens.colors;
+        let problems_label = if self.show_diagnostics {
+            "Hide problems"
+        } else {
+            "Show problems"
+        };
+        let items: [(&str, TbAction); 7] = [
+            ("Recompile", TbAction::Compile),
+            ("Save", TbAction::Save),
+            ("Open…", TbAction::Open),
+            ("Zoom in", TbAction::ZoomIn),
+            ("Zoom out", TbAction::ZoomOut),
+            ("Fit width", TbAction::Fit),
+            (problems_label, TbAction::ToggleProblems),
+        ];
+        let row_h = 32.0;
+        let pad = 6.0;
+        let mut w: f64 = 150.0;
+        for (lbl, _) in &items {
+            let (lw, _) = tr.measure(lbl, PILL_FONT, None);
+            w = w.max(lw as f64 + 28.0);
+        }
+        let h = items.len() as f64 * row_h + pad * 2.0;
+        let x1 = self.toolbar_rect.x1 - 10.0;
+        let x0 = (x1 - w).max(self.rect.x0 + 8.0);
+        let y0 = self.toolbar_rect.y1 + 4.0;
+        let panel = Rect::new(x0, y0, x1, y0 + h);
+
+        // Shadow + card.
+        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &RoundedRect::from_rect(panel.inflate(3.0, 3.0), 12.0));
+        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &RoundedRect::from_rect(panel, 10.0));
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &RoundedRect::from_rect(panel, 10.0));
+
+        let mut y = y0 + pad;
+        for (lbl, act) in items {
+            let row = Rect::new(x0 + pad, y, x1 - pad, y + row_h);
+            if row.contains(self.mouse) {
+                scene.fill(Fill::NonZero, t, c.surface_white_5, None, &RoundedRect::from_rect(row, 6.0));
+            }
+            tr.draw_text(
+                scene,
+                lbl,
+                PILL_FONT,
+                c.text_primary,
+                t * Affine::translate((row.x0 + 10.0, y + (row_h - PILL_FONT as f64 * 1.25) / 2.0)),
+                None,
+            );
+            self.menu_hits.push((act, row));
+            y += row_h;
+        }
     }
 
     fn draw_divider(&mut self, scene: &mut Scene, t: Affine, theme: &Theme) {
@@ -673,9 +1096,10 @@ impl TypstApp {
 
         // left: caret + page + zoom
         let (ln, col) = self.caret_line_col();
+        let pages = self.preview.page_count();
         let left = format!(
-            "Ln {ln}, Col {col}     ·     {} page(s)     ·     {:.0}%",
-            self.preview.page_count(),
+            "Ln {ln}, Col {col}     ·     {}     ·     {:.0}%",
+            plural(pages, "page", "pages"),
             self.preview.zoom() * 100.0
         );
         tr.draw_text(
@@ -708,13 +1132,14 @@ impl TypstApp {
         } else if self.err_count > 0 {
             (
                 format!(
-                    "{} error(s), {} warning(s)",
-                    self.err_count, self.warn_count
+                    "{}, {}",
+                    plural(self.err_count, "error", "errors"),
+                    plural(self.warn_count, "warning", "warnings")
                 ),
                 c.semantic.danger,
             )
         } else if self.warn_count > 0 {
-            (format!("{} warning(s)", self.warn_count), c.semantic.warning)
+            (plural(self.warn_count, "warning", "warnings"), c.semantic.warning)
         } else {
             (format!("Compiled in {} ms", self.elapsed_ms), c.semantic.success)
         };
@@ -735,6 +1160,35 @@ impl Default for TypstApp {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Format a count with the grammatically correct noun: `1 page`, `2 pages`.
+pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
+    if n == 1 {
+        format!("{n} {singular}")
+    } else {
+        format!("{n} {plural}")
+    }
+}
+
+/// Shorten `s` with a trailing ellipsis so it fits within `max_w` pixels at the
+/// toolbar font. Returns `s` untouched when it already fits.
+fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
+    let (full, _) = tr.measure_weighted(s, PILL_FONT, None, TextWeight::Semibold);
+    if (full as f64) <= max_w || max_w <= 0.0 {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut keep = chars.len();
+    while keep > 1 {
+        keep -= 1;
+        let candidate: String = chars[..keep].iter().collect::<String>() + "…";
+        let (w, _) = tr.measure_weighted(&candidate, PILL_FONT, None, TextWeight::Semibold);
+        if (w as f64) <= max_w {
+            return candidate;
+        }
+    }
+    "…".to_string()
 }
 
 impl Widget for TypstApp {
@@ -786,39 +1240,13 @@ impl Widget for TypstApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
+        let rect = Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-
-        let r = self.rect;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        self.status_rect = Rect::new(r.x0, r.y1 - STATUS_H, r.x1, r.y1);
-        let content_top = self.toolbar_rect.y1;
-        let content_bottom = self.status_rect.y0;
-        let content_w = r.width();
-        let split_x = r.x0 + content_w * self.split_ratio;
-
-        let editor_col = Rect::new(r.x0, content_top, split_x, content_bottom);
-        self.preview_rect = Rect::new(split_x + DIVIDER_W, content_top, r.x1, content_bottom);
-        self.divider_rect = Rect::new(split_x, content_top, split_x + DIVIDER_W, content_bottom);
-
-        if self.show_diagnostics && editor_col.height() > 80.0 {
-            let dh = DIAG_H.min(editor_col.height() * 0.5);
-            self.editor_rect =
-                Rect::new(editor_col.x0, editor_col.y0, editor_col.x1, editor_col.y1 - dh);
-            self.diag_rect =
-                Rect::new(editor_col.x0, editor_col.y1 - dh, editor_col.x1, editor_col.y1);
-        } else {
-            self.editor_rect = editor_col;
-            self.diag_rect = Rect::ZERO;
-        }
-
-        self.editor.set_rect(self.editor_rect);
-        self.preview.set_rect(self.preview_rect);
-        self.diagnostics.set_rect(self.diag_rect);
+        self.layout_in(rect);
     }
 
     fn draw(
@@ -838,14 +1266,31 @@ impl Widget for TypstApp {
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &self.rect);
 
         self.draw_toolbar(scene, t, tr, theme);
-        self.editor
-            .draw(scene, t, tr, theme, &self.source_cache, &self.tokens);
-        self.preview.draw(scene, t, tr, theme);
-        self.draw_divider(scene, t, theme);
+
+        if self.compact {
+            match self.compact_view {
+                CompactPane::Editor => {
+                    self.editor
+                        .draw(scene, t, tr, theme, &self.source_cache, &self.tokens);
+                }
+                CompactPane::Preview => self.preview.draw(scene, t, tr, theme),
+            }
+        } else {
+            self.editor
+                .draw(scene, t, tr, theme, &self.source_cache, &self.tokens);
+            self.preview.draw(scene, t, tr, theme);
+            self.draw_divider(scene, t, theme);
+        }
+
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
         }
         self.draw_status(scene, t, tr, theme);
+
+        // The overflow menu floats above everything else.
+        if self.compact && self.menu_open {
+            self.draw_menu(scene, t, tr, theme);
+        }
     }
 
     fn draw_with_presence(
@@ -973,6 +1418,19 @@ impl Widget for TypstApp {
                 ..
             } => {
                 let p = self.mouse;
+                // The compact overflow menu grabs clicks before anything else.
+                if self.compact && self.menu_open {
+                    if let Some(a) = self.hit_menu(p) {
+                        self.do_action(a, doc);
+                        *handled = true;
+                        return;
+                    }
+                    if !self.toolbar_rect.contains(p) {
+                        self.menu_open = false;
+                        *handled = true;
+                        return;
+                    }
+                }
                 if self.toolbar_rect.contains(p) {
                     if let Some(a) = self.hit_toolbar(p) {
                         self.do_action(a, doc);
@@ -980,7 +1438,7 @@ impl Widget for TypstApp {
                     *handled = true;
                     return;
                 }
-                if self.divider_rect.inflate(2.0, 0.0).contains(p) {
+                if !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p) {
                     self.dragging_divider = true;
                     *handled = true;
                     return;
@@ -998,7 +1456,13 @@ impl Widget for TypstApp {
                     if let Some(line) = self.diagnostics.on_mouse_down(p) {
                         let text = doc.text(&src_id).unwrap_or_default();
                         self.editor.goto_line(&text, line);
-                        self.editor.focused = true;
+                        // In compact mode a diagnostic click brings the source
+                        // into view so the jump is visible.
+                        if self.compact {
+                            self.set_compact_view(CompactPane::Editor);
+                        } else {
+                            self.editor.focused = true;
+                        }
                     }
                     *handled = true;
                     return;
@@ -1018,14 +1482,22 @@ impl Widget for TypstApp {
                 self.dragging_editor = false;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * 48.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y,
+                let (mut dx, mut dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        (-(*x as f64) * 48.0, -(*y as f64) * 48.0)
+                    }
+                    MouseScrollDelta::PixelDelta(pp) => (-pp.x, -pp.y),
                 };
+                // Shift turns a vertical wheel into horizontal scroll — the
+                // usual convention for a mouse with no horizontal axis.
+                if modifiers.state().shift_key() && dx == 0.0 {
+                    dx = dy;
+                    dy = 0.0;
+                }
                 let p = self.mouse;
                 if self.editor_rect.contains(p) {
                     let text = doc.text(&src_id).unwrap_or_default();
-                    self.editor.scroll_by(dy as f32, &text);
+                    self.editor.scroll_by(dx as f32, dy as f32, &text);
                 } else if self.show_diagnostics && self.diag_rect.contains(p) {
                     self.diagnostics.scroll_by(dy);
                 } else if self.preview_rect.contains(p) {
@@ -1056,13 +1528,77 @@ impl Widget for TypstApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
 
     fn fresh() -> (TypstApp, AutoCommit) {
-        let mut app = TypstApp::new();
+        let mut app = TypstApp::with_demo_documents();
         let mut doc = AutoCommit::new();
-        // Drive one sync to seed + compile the bundled sample.
+        // Drive one sync to seed + compile the first demo document.
         app.sync(&mut doc, &ROOT);
         (app, doc)
+    }
+
+    fn device_id() -> DeviceId {
+        // winit exposes no public DeviceId constructor; tests only need a value.
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn cursor(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: device_id(),
+            position: PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Pump one event through the production `Widget::handle_event`, returning
+    /// whether it was consumed.
+    fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
+        let taffy = TaffyTree::<()>::new();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            NodeId::new(0),
+            &taffy,
+        );
+        handled
+    }
+
+    /// Run one real draw pass so `toolbar_hits` / `menu_hits` are populated,
+    /// exactly as they are for the live pointer path.
+    fn render_once(app: &mut TypstApp) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::empty();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn hit(app: &TypstApp, action: TbAction) -> Rect {
+        app.toolbar_hits
+            .iter()
+            .find(|(a, _)| *a == action)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("toolbar action not drawn"))
+    }
+
+    fn center(r: Rect) -> Point {
+        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
     }
 
     #[test]
@@ -1070,11 +1606,29 @@ mod tests {
         let (app, doc) = fresh();
         assert!(app.source_id.is_some(), "source object seeded");
         let src = app.read_source(&doc);
-        assert!(!src.is_empty(), "seeded with sample text");
+        assert!(!src.is_empty(), "seeded with demo text");
         assert!(app.initialized);
-        // Welcome sample compiles cleanly into at least one page.
+        // Welcome demo compiles cleanly into at least one page.
         assert!(app.preview.page_count() >= 1, "rendered a page");
-        assert_eq!(app.err_count, 0, "welcome sample has no errors");
+        assert_eq!(app.err_count, 0, "welcome demo has no errors");
+    }
+
+    /// A focused editor that isn't compiling or flashing must report no need
+    /// for animation frames, so the event loop stays idle (no per-vsync
+    /// redraw just to blink a caret).
+    #[test]
+    fn focused_idle_app_requests_no_animation_frame() {
+        let (app, _doc) = fresh();
+        assert!(app.editor.focused, "editor focused by default");
+        assert!(
+            !app.compiling(),
+            "the initial compile ran synchronously; nothing in flight"
+        );
+        assert!(app.flash_text().is_none(), "no transient toast pending");
+        assert!(
+            !app.needs_animation_frame(),
+            "a focused-but-idle editor must not drive continuous redraws"
+        );
     }
 
     #[test]
@@ -1089,9 +1643,130 @@ mod tests {
 
     #[test]
     fn caret_line_col_tracks_newlines() {
-        let mut app = TypstApp::new();
+        let mut app = TypstApp::with_demo_documents();
         app.source_cache = "abc\nde\nf".to_string();
         app.editor.caret = 5; // line 2, col 2 (just after 'd')
         assert_eq!(app.caret_line_col(), (2, 2));
+    }
+
+    /// The responsive contract: layout is re-derived from the *current* width
+    /// every pass, so resizing across the threshold reflows both ways — it is
+    /// never frozen to the first frame's mode.
+    #[test]
+    fn resize_reflows_between_split_and_compact() {
+        let (mut app, _doc) = fresh();
+
+        // Wide → split: both panes have area and the divider exists.
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        assert!(!app.compact);
+        assert!(app.editor_rect.area() > 0.0);
+        assert!(app.preview_rect.area() > 0.0);
+        assert!(app.divider_rect.area() > 0.0);
+
+        // Narrow → compact: a single pane, no divider.
+        app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
+        assert!(app.compact);
+        assert_eq!(app.divider_rect.area(), 0.0);
+        assert!(app.editor_rect.area() > 0.0, "editor pane shown");
+        assert_eq!(app.preview_rect.area(), 0.0, "preview hidden in compact");
+
+        // Resize back to wide → must reflow to split again (not frozen).
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        assert!(!app.compact, "reflowed back to split after widening");
+        assert!(app.preview_rect.area() > 0.0);
+    }
+
+    /// Tapping the compact Edit/Preview segmented control through the real
+    /// pointer path swaps the visible pane.
+    #[test]
+    fn compact_view_switch_via_pointer() {
+        let (mut app, mut doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
+        assert!(app.compact);
+        assert!(matches!(app.compact_view, CompactPane::Editor));
+
+        render_once(&mut app);
+        let target = center(hit(&app, TbAction::ShowPreview));
+        send(&mut app, &mut doc, &cursor(target));
+        assert!(send(&mut app, &mut doc, &press()), "click consumed");
+        assert!(matches!(app.compact_view, CompactPane::Preview));
+
+        // Relayout confirms the preview pane now occupies the content area.
+        app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
+        assert!(app.preview_rect.area() > 0.0);
+        assert_eq!(app.editor_rect.area(), 0.0);
+    }
+
+    /// The compact overflow menu opens from the kebab and its items act through
+    /// the real pointer path, then dismiss the menu.
+    #[test]
+    fn compact_overflow_menu_acts() {
+        let (mut app, mut doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
+        render_once(&mut app);
+
+        // Open the menu.
+        let kebab = center(hit(&app, TbAction::ToggleMenu));
+        send(&mut app, &mut doc, &cursor(kebab));
+        send(&mut app, &mut doc, &press());
+        assert!(app.menu_open, "kebab opened the menu");
+
+        // Draw again so the menu rows are hit-testable, then click "Zoom in".
+        render_once(&mut app);
+        let zoom_in = app
+            .menu_hits
+            .iter()
+            .find(|(a, _)| *a == TbAction::ZoomIn)
+            .map(|(_, r)| center(*r))
+            .expect("zoom-in row drawn");
+        let before = app.preview.zoom();
+        send(&mut app, &mut doc, &cursor(zoom_in));
+        send(&mut app, &mut doc, &press());
+        assert!(!app.menu_open, "menu closed after acting");
+        assert!(app.preview.zoom() > before, "zoom applied");
+        assert!(matches!(app.compact_view, CompactPane::Preview));
+    }
+
+    #[test]
+    fn live_library_reads_typ_files_from_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "typst_editor_lib_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("beta.typ"), "= Beta").unwrap();
+        std::fs::write(dir.join("alpha.typ"), "= Alpha").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+
+        let app = TypstApp::from_library(Some(dir.clone()));
+        let names: Vec<_> = app.documents.iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["alpha.typ", "beta.typ"], "sorted, .txt ignored");
+        assert!(app.documents.iter().all(|d| d.from_disk));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn live_library_seeds_starter_when_empty() {
+        let dir = std::env::temp_dir().join(format!(
+            "typst_editor_empty_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let app = TypstApp::from_library(Some(dir.clone()));
+        assert_eq!(app.documents.len(), 1);
+        assert_eq!(app.documents[0].name, "untitled.typ");
+        assert!(!app.documents[0].from_disk, "starter is not a disk file");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

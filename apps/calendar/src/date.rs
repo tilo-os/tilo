@@ -79,6 +79,33 @@ pub fn fmt_day_long(date: NaiveDate) -> String {
     )
 }
 
+/// "15 Jun" — no weekday prefix (used for compact week ranges where the
+/// day-of-week is already visible in the column headers).
+pub fn fmt_day_short(date: NaiveDate) -> String {
+    format!("{} {}", date.day(), &month_name(date.month())[..3])
+}
+
+/// A week range with weekday names, e.g. "Mon 29 Jun – Sun 5 Jul".
+pub fn week_range_long(start: NaiveDate, end: NaiveDate) -> String {
+    format!("{} – {}", fmt_day_long(start), fmt_day_long(end))
+}
+
+/// A compact week range: "23 – 29 Jun" within one month, "29 Jun – 5 Jul"
+/// across a month boundary. Always shows both endpoints so the full span
+/// reads even where horizontal room is tight.
+pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
+    if start.month() == end.month() {
+        format!(
+            "{} – {} {}",
+            start.day(),
+            end.day(),
+            &month_name(end.month())[..3]
+        )
+    } else {
+        format!("{} – {}", fmt_day_short(start), fmt_day_short(end))
+    }
+}
+
 /// A human "relative" label for a due date against `today`.
 pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
     let d = (due - today).num_days();

@@ -25,7 +25,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(typst_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        // The offscreen screenshot path uses the bundled demo documents so the
+        // capture is hermetic and deterministic; the live app reads the user's
+        // real document library instead.
+        let root = match parse_scenario_arg(&args) {
+            Some(scenario) => typst_editor::demo_root_scenario(&scenario),
+            None => typst_editor::demo_root(),
+        };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 
@@ -33,6 +41,39 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, typst_editor::app_root());
     app.run();
     Ok(())
+}
+
+/// Parse an optional `--viewport WxH` (shots-only) that overrides the default
+/// capture size. Purely a screenshot affordance — it never affects the live
+/// event loop, which sizes itself to the window.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--viewport" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            break rest.to_string();
+        }
+    };
+    let (w, h) = raw.split_once(['x', 'X', '×'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Parse an optional `--scenario NAME` (shots-only) used to pre-arrange the
+/// captured state. Never consulted by the live event loop.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    loop {
+        let arg = iter.next()?;
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

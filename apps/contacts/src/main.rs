@@ -33,7 +33,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let show_detail = args.iter().any(|a| a == "--detail");
         let scenario = parse_scenario_arg(&args);
-        let mut app = contacts::ContactsApp::new();
+        // Screenshots use the hermetic sample book so a headless frame is
+        // populated and never reads or writes the real address-book file.
+        let mut app = contacts::ContactsApp::sample();
         if show_detail {
             app.shots_show_detail();
         }
@@ -50,6 +52,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
             Some("context") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu()),
             Some("confirm") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_confirm_delete()),
+            Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
             _ => Box::new(|_: &mut contacts::ContactsApp| {}),
         };
         render_shot_to_png(app, viewport, &out, setup)?;
