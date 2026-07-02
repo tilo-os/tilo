@@ -611,3 +611,140 @@ fn wheel_scrolls_within_bounds() {
     f.scroll_by(-10_000.0, 0.0);
     assert_eq!(f.scroll.x, 0.0);
 }
+
+// -- expandable card: grow to fit, then scroll (HIG §2) ----------------------
+
+/// A card grows to fit its formula UP TO the max, then scrolls — never clips.
+/// Proven on the real path across three regimes: a fraction (grows to fit, shown
+/// in full), the 3D-default stacked surface (grows to fit, shown in full), and a
+/// fraction-over-fraction that exceeds the max (clamps to the max, then scrolls).
+#[test]
+fn card_grows_to_fit_then_scrolls_beyond_max() {
+    use super::{card_view_height, MathField, CARD_MAX_H, CARD_MIN_H};
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+
+    // A fraction is taller than a plain line but under the generous max: the
+    // card grows to its exact height and shows it IN FULL (no scroll, no clip).
+    for src in ["(x^2+1)/(x-3)", "sin(sqrt(x^2+y^2))"] {
+        let mut f = MathField::new(src).with_size(20.0);
+        let h = f.content_height(&mut tr);
+        assert!(
+            h > CARD_MIN_H && h <= CARD_MAX_H,
+            "{src}: fixture must grow (taller than min, at/under max), got {h}"
+        );
+        let view = card_view_height(h);
+        assert!(
+            (view - h).abs() < 1e-9,
+            "{src}: card must grow to fit the formula exactly ({view} vs {h})"
+        );
+        f.set_rect(Rect::new(0.0, 0.0, 260.0, view), &mut tr);
+        assert!(!f.overflows(), "{src}: a formula that fits under the max must show in full");
+    }
+
+    // A fraction-over-fraction exceeds even the generous max: the card clamps to
+    // the max and the field reports overflow (scroll), never clip.
+    let mut huge = MathField::new("(1/x)/(1/y)").with_size(20.0);
+    let huge_h = huge.content_height(&mut tr);
+    assert!(huge_h > CARD_MAX_H, "fixture must exceed the card max ({huge_h})");
+    let huge_view = card_view_height(huge_h);
+    assert!(
+        (huge_view - CARD_MAX_H).abs() < 1e-9,
+        "a taller-than-max formula clamps the card to the max"
+    );
+    huge.set_rect(Rect::new(0.0, 0.0, 260.0, huge_view), &mut tr);
+    assert!(
+        huge.overflows(),
+        "content beyond the card max must scroll within the card, not clip"
+    );
+}
+
+// -- selection + clipboard on the real field paths ---------------------------
+
+/// Dragging the mouse selects exactly the dragged span, and Delete removes
+/// exactly it — the real press → drag → key path, not a model shortcut.
+#[test]
+fn drag_select_then_delete_removes_exactly_the_span() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::{Point, Rect};
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key as WKey, NamedKey};
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("x+123").with_size(20.0);
+    f.set_rect(Rect::new(10.0, 5.0, 320.0, 45.0), &mut tr);
+    let origin = f.content_origin();
+    let py = origin.y + 10.0;
+    let gap_x = |f: &MathField, k: usize| -> f64 {
+        let g = f
+            .layout
+            .as_ref()
+            .unwrap()
+            .gaps
+            .iter()
+            .find(|g| g.steps.is_empty() && g.index == k)
+            .unwrap();
+        origin.x + g.x
+    };
+    let x2 = gap_x(&f, 2); // before '1'
+    let x5 = gap_x(&f, 5); // end
+    f.on_press_cached(Point::new(x2, py), false);
+    f.on_drag_cached(Point::new(x5, py));
+    let sel = f.editor.selection().expect("a drag selection");
+    assert_eq!(
+        (sel.lo(), sel.hi()),
+        (2, 5),
+        "drag must select exactly the dragged span"
+    );
+    f.on_release();
+    let changed = f.handle_key(&WKey::Named(NamedKey::Delete), &Modifiers::default());
+    assert!(changed, "Delete over a selection changes the content");
+    assert_eq!(f.linear(), "x+", "Delete must remove exactly the selected span");
+}
+
+/// Ctrl+X over a selection cuts exactly that span through the field's real key
+/// path (`handle_key`). Deletion is asserted deterministically; the copy half
+/// routes to the shared `ui` clipboard core (a headless-safe no-op here).
+#[test]
+fn ctrl_x_cuts_the_selected_span_through_handle_key() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("x+123").with_size(20.0);
+    f.set_rect(Rect::new(0.0, 0.0, 320.0, 45.0), &mut tr);
+    // Select "123" via End then shift+Left ×3 — all through handle_key.
+    f.handle_key(&WKey::Named(NamedKey::End), &Modifiers::default());
+    let shift = Modifiers::from(ModifiersState::SHIFT);
+    for _ in 0..3 {
+        f.handle_key(&WKey::Named(NamedKey::ArrowLeft), &shift);
+    }
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    let changed = f.handle_key(&WKey::Character("x".into()), &ctrl);
+    assert!(changed, "Ctrl+X over a selection changes the content");
+    assert_eq!(f.linear(), "x+", "Ctrl+X removes exactly the selected span");
+}
+
+/// Copy → paste round-trips through the shared editor core the field's Ctrl+C /
+/// Ctrl+V call (`selected_linear` / `paste_linear`) — deterministic and
+/// independent of the (headless-unavailable) system clipboard.
+#[test]
+fn copy_then_paste_round_trips_through_editor_core() {
+    let mut e = ed("x+123");
+    e.end(false);
+    e.move_left(true);
+    e.move_left(true);
+    e.move_left(true); // select "123"
+    let copied = e.selected_linear().expect("copy serializes the selection");
+    assert_eq!(copied, "123");
+    // Paste at the end appends exactly the copied span (Ctrl+V's parse path).
+    e.end(false);
+    e.paste_linear(&copied);
+    assert_eq!(e.to_linear(), "x+123123");
+}

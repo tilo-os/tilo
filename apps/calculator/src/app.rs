@@ -51,8 +51,17 @@ pub struct CalculatorApp {
 
     seeded: bool,
     model_dirty: bool,
+    /// When `Some`, an edit landed at this time and has not yet been sealed into
+    /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
+    /// coalesces into a single Ctrl+Z step once editing pauses.
+    last_edit_time: Option<std::time::Instant>,
     node: Option<NodeId>,
 }
+
+/// How long editing must pause before a burst of keystrokes is sealed into one
+/// undo checkpoint (see [`CalculatorApp::needs_commit`]). Mirrors `TextInput`'s
+/// time-based coalescing so undo granularity is per-pause, not per-keystroke.
+const COMMIT_COALESCE: std::time::Duration = std::time::Duration::from_millis(600);
 
 impl CalculatorApp {
     pub fn new() -> Self {
@@ -75,6 +84,7 @@ impl CalculatorApp {
             last_click_pos: Point::ZERO,
             seeded: false,
             model_dirty: false,
+            last_edit_time: None,
             node: None,
         }
     }
@@ -548,6 +558,24 @@ impl Widget for CalculatorApp {
                 crate::doc::store(state, &self.model);
             }
             self.seeded = true;
+            return;
+        }
+        // After the first frame the CRDT holds the source of truth for all
+        // persisted state. If the document changed underneath us — Ctrl+Z/Y
+        // reloaded a snapshot through `ui::State`, or a collaborator's patch
+        // merged — adopt it so the restored formula / history / view is what we
+        // render and edit next. Without this, undo/redo would revert the CRDT
+        // but leave the on-screen model stale (the actual bug).
+        //
+        // Our own in-frame edits round-trip byte-identically through
+        // store→load, so this reloads *only* on a genuine external change.
+        // `after_equals` is ephemeral (never persisted), so carry it across the
+        // comparison to avoid a spurious reload after an `=`.
+        if let Some(mut loaded) = crate::doc::load(state) {
+            loaded.after_equals = self.model.after_equals;
+            if loaded != self.model {
+                self.model = loaded;
+            }
         }
     }
 
@@ -690,11 +718,29 @@ impl Widget for CalculatorApp {
         if self.model_dirty {
             crate::doc::store(state, &self.model);
             self.model_dirty = false;
+            // Mark an uncommitted edit so `needs_commit` can seal it into an
+            // undo checkpoint once editing pauses (character-key edits are not
+            // committed by the App's per-event path, only coalesced here).
+            self.last_edit_time = Some(std::time::Instant::now());
         }
     }
 
     fn name(&self) -> &str {
         "CalculatorApp"
+    }
+
+    /// Seal a burst of edits into one undo checkpoint after a short pause, so
+    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
+    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
+    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
+    /// bespoke stack.
+    fn needs_commit(&self) -> bool {
+        self.last_edit_time
+            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
+    }
+
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -757,5 +803,71 @@ mod tests {
         let none = winit::event::Modifiers::default();
         app.on_key(&WKey::Named(NamedKey::Backspace), &none);
         assert_eq!(app.model.surface, "x+");
+    }
+
+    /// Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
+    /// stack (not a bespoke calculator stack): typing checkpoints via
+    /// `commit_action`, Ctrl+Z restores the previous CRDT snapshot, and `sync`
+    /// adopts the restored document back into the on-screen model.
+    #[test]
+    fn undo_redo_of_formula_edit_routes_through_ui_state() {
+        use crate::doc;
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+
+        // Seed the CRDT from the initial model, then checkpoint that baseline.
+        app.sync(&mut state.doc, &state.root);
+        state.commit_action(None, None);
+
+        // Start from a single, empty 2D function; checkpoint it.
+        app.set_mode(Mode::Graph2d);
+        app.model.funcs = vec![PlotFn { expr: String::new(), visible: true }];
+        app.model.active_fn = 0;
+        doc::store(&mut state.doc, &app.model);
+        state.commit_action(None, None);
+
+        // Type "2*x" (character edits) and seal one checkpoint — exactly what the
+        // App's needs_commit → commit_action coalescing does after a pause.
+        let none = winit::event::Modifiers::default();
+        for ch in ["2", "*", "x"] {
+            app.on_key(&WKey::Character(ch.into()), &none);
+        }
+        assert_eq!(app.model.funcs[0].expr, "2*x");
+        doc::store(&mut state.doc, &app.model);
+        state.commit_action(None, None);
+
+        // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
+        assert!(state.undo(None, None).is_some(), "undo must pop a checkpoint");
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.model.funcs[0].expr, "",
+            "Ctrl+Z must restore the pre-edit formula"
+        );
+
+        // Ctrl+Y: redo re-applies; sync adopts it.
+        assert!(state.redo(None, None).is_some(), "redo must pop a checkpoint");
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.model.funcs[0].expr, "2*x",
+            "Ctrl+Y must re-apply the edit"
+        );
+    }
+
+    /// A change made directly in the shared CRDT (as a collaborator's merged
+    /// patch would appear) is adopted by `sync` — proving the field buffer is
+    /// genuinely CRDT-backed, not a private String the app owns.
+    #[test]
+    fn external_crdt_edit_is_adopted_on_sync() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+
+        // Mutate the document out-of-band, then re-sync.
+        app.model.mode = Mode::Graph3d; // (only to prove sync overwrites it)
+        let mut edited = crate::doc::load(&state.doc).expect("seeded");
+        edited.surface = "x*y+1".into();
+        crate::doc::store(&mut state.doc, &edited);
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(app.model.surface, "x*y+1", "sync must adopt the external CRDT surface edit");
     }
 }

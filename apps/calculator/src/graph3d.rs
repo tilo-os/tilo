@@ -20,10 +20,20 @@ const DOM: f64 = 7.0;
 /// Grid resolution (cells per axis).
 const N: usize = 40;
 
+/// Vertical padding between the surface card's edge and the math-field viewport.
+const EXPR_PAD_Y: f64 = 7.0;
+/// Surface card height for a short, single-line expression.
+const BASE_EXPR_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * EXPR_PAD_Y;
+
 pub struct Graph3dScreen {
     pub panel: Rect,
     pub canvas: Rect,
     expr_rect: Rect,
+    /// Grown (outer) height of the surface expression card, measured in `draw`
+    /// and reused by `layout` on the event path so the box the user clicks
+    /// matches what was painted. A tall stacked surface (the default
+    /// `sin(√(x²+y²))`) grows the card to the max, then scrolls within it.
+    expr_card_h: f64,
     /// The 2D math editor for the `z = f(x, y)` surface expression.
     field: MathField,
     /// Projected + depth-sorted surface geometry, rebuilt only when the
@@ -40,6 +50,7 @@ impl Default for Graph3dScreen {
             panel: Rect::ZERO,
             canvas: Rect::ZERO,
             expr_rect: Rect::ZERO,
+            expr_card_h: BASE_EXPR_H,
             field: MathField::new("").with_size(20.0),
             surface_cache: SurfaceCache::default(),
         }
@@ -104,12 +115,28 @@ impl Graph3dScreen {
         let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
         self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
         self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
-        self.expr_rect = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 60.0, self.panel.x1 - 16.0, self.panel.y0 + 96.0);
+        // The surface card grows with the formula (measured in `draw`), so a
+        // stacked expression is shown in a taller box instead of being clipped.
+        let top = self.panel.y0 + 60.0;
+        self.expr_rect = Rect::new(self.panel.x0 + 16.0, top, self.panel.x1 - 16.0, top + self.expr_card_h);
     }
 
     /// Feed the surface expression into the editor (no-op when unchanged).
     pub fn sync_field(&mut self, model: &CalcModel) {
         self.field.set_source(&model.surface);
+    }
+
+    /// Measure the surface formula and grow the card to fit it up to the max.
+    /// Run before `layout` in `draw` (a `TextRenderer` is available there).
+    fn measure_card(&mut self, model: &CalcModel, tr: &mut TextRenderer) {
+        self.sync_field(model);
+        let content_h = if self.field.is_empty() {
+            crate::mathfield::CARD_MIN_H
+        } else {
+            self.field.content_height(tr)
+        };
+        let field_h = crate::mathfield::card_view_height(content_h);
+        self.expr_card_h = field_h + 2.0 * EXPR_PAD_Y;
     }
 
     /// The surface math editor.
@@ -131,6 +158,8 @@ impl Graph3dScreen {
         model: &CalcModel,
         area: Rect,
     ) {
+        // Measure the surface formula → grow the card, then lay out from it.
+        self.measure_card(model, tr);
         self.layout(area);
         let c = &theme.tokens.colors;
 
@@ -148,15 +177,16 @@ impl Graph3dScreen {
         draw::text_in(scene, tr, t, sub, "z = f(x, y)", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
 
         // expression box (always the edit target in 3D mode): a real 2D math
-        // editor for z = f(x, y).
-        self.sync_field(model);
+        // editor for z = f(x, y). Already synced + measured by `measure_card`.
         draw::fill_rrect(scene, t, self.expr_rect, 8.0, c.neutral[1]);
         draw::stroke_rrect(scene, t, self.expr_rect, 8.0, c.accent[5], 1.0);
         let valid = engine::compile(&model.surface, model.deg, true).is_ok();
         let col = if valid { c.text_primary } else { c.semantic.danger };
         let prefix = Rect::new(self.expr_rect.x0 + 12.0, self.expr_rect.y0, self.expr_rect.x0 + 40.0, self.expr_rect.y1);
         draw::text_in(scene, tr, t, prefix, "z =", 14.0, col, Align::Left, TextWeight::Medium);
-        let edit = Rect::new(self.expr_rect.x0 + 40.0, self.expr_rect.y0 + 2.0, self.expr_rect.x1 - 8.0, self.expr_rect.y1 - 2.0);
+        // The field viewport fills the grown card minus its vertical padding, so
+        // it grows with the card and only scrolls when content exceeds the max.
+        let edit = Rect::new(self.expr_rect.x0 + 40.0, self.expr_rect.y0 + EXPR_PAD_Y, self.expr_rect.x1 - 8.0, self.expr_rect.y1 - EXPR_PAD_Y);
         self.field.set_rect(edit, tr);
         self.field.draw(scene, t, tr, theme, col, true);
 
@@ -445,5 +475,74 @@ mod tests {
             assert!((0.0..=1.0).contains(&cell.height_f));
             assert!(cell.shade >= 0.55 && cell.shade <= 1.0);
         }
+    }
+
+    /// The 3D default surface `sin(√(x²+y²))` is a stacked expression that used
+    /// to be silently clipped in the fixed 32 px box. Its card now grows to fit
+    /// it and shows it IN FULL (no clip). Mirrors `draw()`'s measure → layout
+    /// sequence, then sizes the field exactly as `draw()` does.
+    #[test]
+    fn default_surface_card_grows_to_fit_in_full() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph3dScreen::default();
+        let m = CalcModel::seeded(); // surface = sin(sqrt(x^2+y^2))
+        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        s.measure_card(&m, &mut tr);
+        s.layout(area);
+        assert!(
+            s.expr_card_h > BASE_EXPR_H,
+            "the 3D default surface card must grow taller than the base ({BASE_EXPR_H}), got {}",
+            s.expr_card_h
+        );
+        assert!(
+            (s.expr_rect.height() - s.expr_card_h).abs() < 1e-6,
+            "the surface box must reflect the grown card height"
+        );
+        let edit = Rect::new(
+            s.expr_rect.x0 + 40.0,
+            s.expr_rect.y0 + EXPR_PAD_Y,
+            s.expr_rect.x1 - 8.0,
+            s.expr_rect.y1 - EXPR_PAD_Y,
+        );
+        // Shown in full VERTICALLY (grown to fit), not clipped.
+        let content_h = s.field.content_height(&mut tr);
+        assert!(
+            content_h <= edit.height() + 0.5,
+            "the 3D default surface must fit vertically in its grown box: content {content_h} vs field {}",
+            edit.height()
+        );
+    }
+
+    /// A surface taller than the generous card max grows to the max and then
+    /// scrolls within the box — never clips.
+    #[test]
+    fn oversized_surface_card_grows_to_max_then_scrolls() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph3dScreen::default();
+        let mut m = CalcModel::seeded();
+        m.surface = "(1/x)/(1/y)".into();
+        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        s.measure_card(&m, &mut tr);
+        s.layout(area);
+        let expected = crate::mathfield::CARD_MAX_H + 2.0 * EXPR_PAD_Y;
+        assert!(
+            (s.expr_card_h - expected).abs() < 1e-6,
+            "an oversized surface card must clamp to the max ({expected}), got {}",
+            s.expr_card_h
+        );
+        let edit = Rect::new(
+            s.expr_rect.x0 + 40.0,
+            s.expr_rect.y0 + EXPR_PAD_Y,
+            s.expr_rect.x1 - 8.0,
+            s.expr_rect.y1 - EXPR_PAD_Y,
+        );
+        let content_h = s.field.content_height(&mut tr);
+        assert!(
+            content_h > edit.height() + 0.5,
+            "an oversized surface must overflow its maxed box vertically (scroll, not clip): content {content_h} vs field {}",
+            edit.height()
+        );
+        s.field.set_rect(edit, &mut tr);
+        assert!(s.field.overflows(), "the maxed box must report overflow");
     }
 }
