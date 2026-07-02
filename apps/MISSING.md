@@ -14,16 +14,15 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 ---
 
 ## calculator
-- [ ] Graph 2D/3D: the per-formula card must **grow in height to fit the formula
-      up to a max**, then scroll vertically **within** the card. Vertical
-      scrolling exists but does NOT replace an expandable card, and overflow
-      detection is unreliable — the **3D-mode default formula is not recognised
-      as overflowing** so no scrolling is enabled there. Never clip to hide
-      overflow. (HIG §2)
-- [ ] Formula editor must be a **real CRDT text editor** via the shared ui core:
-      Ctrl+Z/Y undo-redo (currently broken), selection (shift+arrows, drag,
-      ctrl+word, select-all), clipboard (ctrl+C/X/V), collaborative multi-cursor.
-      Stop hand-rolling the buffer. (HIG §3)
+- [x] Cards grow-to-fit (up to 96px max) then scroll; fractions + 3D default show
+      in full, list reflows, never clips → fixed.
+- [x] Real CRDT editor: Text-backed diff-splice buffer, undo/redo via ui::State,
+      selection + clipboard → fixed (drive-verify undo live before showing).
+- [ ] Minor: in Graph 3D the `sin` function name renders oversized relative to
+      its `(√x²+y²)` argument — legible + un-clipped but typographically off. Make
+      the function name and its parenthesised argument consistent size.
+- [ ] Remaining: remote multi-cursor is not rendered inside the math field (local
+      structured caret only) — peer carets need mapping into the 2D layout.
 
 ## sheets (spreadsheet)
 - [ ] Cell-reference visualisation: for `=A1+B1`, colour `A1` and `B1`
