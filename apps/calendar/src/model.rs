@@ -468,7 +468,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         },
         Event {
             id: Uuid::new_v4(),
-            title: "Design review — Calendar".into(),
+            title: "Design review".into(),
             start: at(today, 11, 0),
             end: at(today, 12, 0),
             all_day: false,

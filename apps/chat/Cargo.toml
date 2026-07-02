@@ -37,11 +37,12 @@ taffy = "0.10.1"
 anyhow = "1.0"
 # XDG data-dir resolution for on-disk persistence of the workspace document.
 dirs = "6.0.0"
-# Same pin as `ui`/`shell`: the in-tree C build (no runtime libopenh264.so).
-# Shared target dir means this links the already-compiled artifact — used to
-# synthesise the demo call frame so the VideoPlayer surface is populated
-# offline.
-openh264 = { version = "0.9", features = ["source"] }
+# Reading real image headers (true width/height) for files chosen in the
+# workspace attachment picker, plus PNG-encoding the demo thumbnails the shared
+# `ui::ImageStore` decodes on its worker threads — so the offline shot exercises
+# the real fetch → decode → cache → paint image path (no gradient stand-in).
+# Live attachments are read straight off the FUSE mount.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Live-media-only (feature-gated; never compiled for the default build).
 # Versions pinned to match the workspace lock so no extra copies resolve.

@@ -30,9 +30,11 @@ pub mod call;
 pub mod doc;
 pub mod emoji;
 pub mod events;
+pub mod images;
 pub mod media;
 pub mod model;
 pub mod paint;
+pub mod picker;
 pub mod render_call;
 pub mod render_chat;
 pub mod responsive;
@@ -56,7 +58,10 @@ pub fn app_root() -> Box<dyn Widget> {
 ///
 /// Recognised scenarios:
 /// * `"narrow"` — collapse both flaps for the responsive overlay capture.
+/// * `"compact"` — medium window: channels docked, members summoned on demand.
+/// * `"starter"` — the real first-run empty workspace (no demo content).
 /// * `"context"` — open a channel context menu.
+/// * `"attach"` — open the workspace file picker over the composer.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ChatApp::new_ephemeral();
     app.seed_shot_scenario(scenario);

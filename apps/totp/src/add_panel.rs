@@ -28,9 +28,9 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 use vello::Scene;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
@@ -71,6 +71,16 @@ pub struct AddAccountPanel {
     open: bool,
     window: Rect,
     modal: Rect,
+    /// Vertical scroll of the body region between the fixed title and footer,
+    /// so the form is reachable even in a short window.
+    scroll: f64,
+    max_scroll: f64,
+    /// Set when the Advanced section is revealed so the next layout scrolls
+    /// its newly-shown fields into view rather than leaving them below the
+    /// fold. Consumed (cleared) by [`layout`].
+    reveal_advanced: bool,
+    /// Clip rect for the scrolling body (fixed title/footer draw outside it).
+    body_clip: Rect,
 
     // Easy-path entry.
     uri: TextInput,
@@ -95,7 +105,6 @@ pub struct AddAccountPanel {
     event: Option<AddPanelEvent>,
 
     // Laid-out hit rects, recomputed in `layout`.
-    qr_card_rect: Rect,
     image_card_rect: Rect,
     link_card_rect: Rect,
     uri_rect: Rect,
@@ -123,6 +132,10 @@ impl AddAccountPanel {
             open: false,
             window: Rect::ZERO,
             modal: Rect::ZERO,
+            scroll: 0.0,
+            max_scroll: 0.0,
+            reveal_advanced: false,
+            body_clip: Rect::ZERO,
             uri: TextInput::local(),
             uri_expanded: false,
             issuer: TextInput::local(),
@@ -136,7 +149,6 @@ impl AddAccountPanel {
             last_mouse: Point::ZERO,
             error: String::new(),
             event: None,
-            qr_card_rect: Rect::ZERO,
             image_card_rect: Rect::ZERO,
             link_card_rect: Rect::ZERO,
             uri_rect: Rect::ZERO,
@@ -162,6 +174,8 @@ impl AddAccountPanel {
     pub fn open(&mut self) {
         self.open = true;
         self.error.clear();
+        self.scroll = 0.0;
+        self.reveal_advanced = false;
         self.uri.set_text("");
         self.uri_expanded = false;
         self.issuer.set_text("");
@@ -177,6 +191,15 @@ impl AddAccountPanel {
     pub fn close(&mut self) {
         self.open = false;
         self.set_focus(None);
+    }
+
+    /// Open with the Advanced-options section already expanded. Used by the
+    /// `--shots` renderer to capture the tall, scrolling form; runtime opens
+    /// via [`open`] with Advanced collapsed.
+    pub fn open_with_advanced(&mut self) {
+        self.open();
+        self.advanced_open = true;
+        self.reveal_advanced = true;
     }
 
     pub fn take_event(&mut self) -> Option<AddPanelEvent> {
@@ -241,43 +264,58 @@ impl AddAccountPanel {
 
     fn toggle_advanced(&mut self) {
         self.advanced_open = !self.advanced_open;
-        if !self.advanced_open && self.focused == Some(Field::Period) {
+        if self.advanced_open {
+            // Reveal the newly-shown Algorithm/Digits/Period fields on the
+            // next layout instead of leaving them below the scroll fold.
+            self.reveal_advanced = true;
+        } else if self.focused == Some(Field::Period) {
             self.set_focus(None);
         }
     }
 
     // ---- layout ------------------------------------------------------
 
-    /// Recompute the modal + every field rect for the given window. The
-    /// modal height grows as disclosures open so nothing overlaps.
+    /// Recompute the modal + every field rect for the given window.
+    ///
+    /// The modal grows to fit its content up to the available height; beyond
+    /// that the body between the fixed title and footer scrolls, so the form
+    /// is fully reachable even in a short window. Body rects are laid out
+    /// already offset by the current scroll so hit-testing and drawing share
+    /// one geometry.
     pub fn layout(&mut self, window: Rect) {
         self.window = window;
         let w = MODAL_W.min(window.width() - 48.0);
-
-        // Build the content vertically, accumulating height, then centre the
-        // card on the final height.
         let left_pad = PAD;
         let content_w = w - left_pad * 2.0;
 
-        // Method cards: three full-width rows.
-        let card_h = 60.0;
-        let card_gap = 12.0;
+        let card_h = 56.0;
+        let card_gap = 10.0;
+        let label_gap = 18.0;
+        let row_gap = 14.0;
+        let adv_header_h = 26.0;
+        // The fixed title block holds the "Add account" heading and its
+        // subtitle; the scrolling body starts below it.
+        let title_h = 74.0;
+        let footer_h = 44.0;
+        let footer_gap = 18.0;
 
-        // Estimate total height first so we can place y0.
-        let mut h = 72.0; // title block
-        h += card_h * 3.0 + card_gap * 2.0; // three method cards
+        // Natural body height (title/footer excluded). Mirrors the running-y
+        // accumulation below exactly so the scroll range is precise.
+        let mut body_natural = card_h * 2.0 + card_gap; // two method cards
         if self.uri_expanded {
-            h += 20.0 + INPUT_H + 14.0; // gap + uri row
+            body_natural += 18.0 + INPUT_H + 12.0; // gap + uri row
         }
-        h += 30.0; // "Or enter details" divider
-        h += (18.0 + INPUT_H + 16.0) * 3.0; // issuer/label/secret (label+field+gap)
-        h += 18.0 + 28.0; // advanced header
+        body_natural += 30.0; // "or enter details" divider
+        body_natural += (label_gap + INPUT_H + row_gap) * 3.0; // issuer/label/secret
+        body_natural += adv_header_h;
         if self.advanced_open {
-            h += 14.0 + 18.0 + INPUT_H + 8.0; // alg row (label+chips)
-            h += 18.0 + 18.0 + INPUT_H; // digits+period row
+            body_natural += 14.0 + 18.0 + INPUT_H + 8.0; // through the algorithm row
+            body_natural += 18.0 + INPUT_H; // digits + period row
         }
-        h += 24.0 + 48.0 + PAD; // error gap + footer + bottom pad
-        let h = h.min(window.height() - 32.0).max(360.0);
+
+        let natural_h = title_h + body_natural + footer_gap + footer_h + PAD;
+        let avail_h = (window.height() - 32.0).max(320.0);
+        let h = natural_h.min(avail_h).max(320.0);
 
         let x0 = window.center().x - w / 2.0;
         let y0 = (window.center().y - h / 2.0).max(window.y0 + 16.0);
@@ -285,34 +323,50 @@ impl AddAccountPanel {
 
         let left = x0 + left_pad;
         let right = x0 + w - left_pad;
-        let mut y = y0 + 64.0; // below title block
 
-        // Three method cards.
-        self.qr_card_rect = Rect::new(left, y, right, y + card_h);
-        y += card_h + card_gap;
+        // Footer pinned to the bottom of the card (outside the scroll region).
+        let btn_w = ((content_w - 12.0) / 2.0).min(140.0);
+        let by = y0 + h - PAD - footer_h;
+        self.save_rect = Rect::new(right - btn_w, by, right, by + footer_h);
+        self.cancel_rect = Rect::new(right - btn_w * 2.0 - 12.0, by, right - btn_w - 12.0, by + footer_h);
+
+        // Scrollable body between the fixed title and the fixed footer.
+        let body_top = y0 + title_h;
+        let body_bottom = by - footer_gap;
+        let visible_body = (body_bottom - body_top).max(0.0);
+        self.max_scroll = (body_natural - visible_body).max(0.0);
+        // When Advanced was just revealed, scroll so its fields (the
+        // bottom-most body content) are on screen rather than below the
+        // fold. Consumed here so later resizes keep the user's scroll.
+        if self.reveal_advanced {
+            self.scroll = self.max_scroll;
+            self.reveal_advanced = false;
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+        self.body_clip = Rect::new(x0, body_top, x0 + w, body_bottom);
+
+        // Lay out body rects top-down, already offset by the scroll position.
+        let mut y = body_top - self.scroll;
+
         self.image_card_rect = Rect::new(left, y, right, y + card_h);
         y += card_h + card_gap;
         self.link_card_rect = Rect::new(left, y, right, y + card_h);
         y += card_h;
 
-        // Paste-link field, only when expanded.
         if self.uri_expanded {
-            y += 20.0;
+            y += 18.0;
             let parse_w = 84.0;
             self.uri_rect = Rect::new(left, y, right - parse_w - 8.0, y + INPUT_H);
             self.parse_rect = Rect::new(right - parse_w, y, right, y + INPUT_H);
-            y += INPUT_H + 14.0;
+            y += INPUT_H + 12.0;
         } else {
             self.uri_rect = Rect::ZERO;
             self.parse_rect = Rect::ZERO;
         }
 
-        // "Or enter details" divider.
+        // "Or enter details" divider occupies 30px.
         y += 30.0;
 
-        // Manual fields: label above field, generous gaps.
-        let label_gap = 18.0;
-        let row_gap = 16.0;
         self.issuer_rect = Rect::new(left, y + label_gap, right, y + label_gap + INPUT_H);
         y += label_gap + INPUT_H + row_gap;
         self.label_rect = Rect::new(left, y + label_gap, right, y + label_gap + INPUT_H);
@@ -320,21 +374,18 @@ impl AddAccountPanel {
         self.secret_rect = Rect::new(left, y + label_gap, right, y + label_gap + INPUT_H);
         y += label_gap + INPUT_H + row_gap;
 
-        // Advanced disclosure header (always present; full-width hit row).
-        self.advanced_header_rect = Rect::new(left, y, right, y + 28.0);
-        y += 28.0;
+        self.advanced_header_rect = Rect::new(left, y, right, y + adv_header_h);
+        y += adv_header_h;
 
         if self.advanced_open {
             y += 14.0;
-            // Algorithm chip row.
             let chip_y = y + 18.0;
             let alg_w = (content_w - 12.0) / 3.0;
             for i in 0..3 {
                 let cx = left + i as f64 * (alg_w + 6.0);
                 self.alg_rects[i] = Rect::new(cx, chip_y, cx + alg_w, chip_y + INPUT_H);
             }
-            y = chip_y + INPUT_H + 18.0;
-            // Digits chips (left) + period field (right) on one row.
+            y = chip_y + INPUT_H + 8.0;
             let row_y = y + 18.0;
             let dig_w = 56.0;
             for i in 0..2 {
@@ -349,13 +400,6 @@ impl AddAccountPanel {
             self.digit_rects = [Rect::ZERO; 2];
             self.period_rect = Rect::ZERO;
         }
-
-        // Footer pinned to the bottom of the card.
-        let btn_w = 128.0;
-        let btn_h = 44.0;
-        let by = y0 + h - PAD - btn_h;
-        self.save_rect = Rect::new(right - btn_w, by, right, by + btn_h);
-        self.cancel_rect = Rect::new(right - btn_w * 2.0 - 12.0, by, right - btn_w - 12.0, by + btn_h);
 
         // Push rects into the text inputs.
         self.uri.apply_layout_external(self.uri_rect);
@@ -432,16 +476,6 @@ impl AddAccountPanel {
         self.apply_uri(&uri);
     }
 
-    /// Begin a live-camera scan. Today the shared capture pipeline doesn't
-    /// exist, so this surfaces the hook's explanation inline rather than
-    /// failing silently. See [`crate::qr::scan_with_camera`].
-    fn start_camera_scan(&mut self) {
-        match crate::qr::scan_with_camera() {
-            Ok(uri) => self.apply_uri(&uri),
-            Err(reason) => self.error = reason.message().to_string(),
-        }
-    }
-
     fn try_save(&mut self) {
         match self.build_account() {
             Ok(acc) => {
@@ -497,23 +531,24 @@ impl AddAccountPanel {
         );
         text_renderer.draw_text(
             scene,
-            "Scan, import, or enter a 2FA account",
+            "Scan an image, paste a link, or type the details",
             13.0,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((left, self.modal.y0 + 50.0)),
             None,
         );
 
-        // --- Method cards (easy paths, leading) ---
-        let qr_hover = self.qr_card_rect.contains(self.last_mouse);
-        self.draw_method_card(
-            scene, transform, text_renderer, theme, self.qr_card_rect,
-            Glyph::Qr, "Scan QR code", "Point your camera at the setup code", qr_hover, true,
-        );
+        // Everything between the fixed title and footer scrolls; clip it so
+        // scrolled rows never bleed into the chrome.
+        let clip = RoundedRect::from_rect(self.body_clip, 0.0);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
+
+        // --- Method cards. The image importer leads (it is the real QR
+        // path today); pasting a setup link is the calm secondary. ---
         let img_hover = self.image_card_rect.contains(self.last_mouse);
         self.draw_method_card(
             scene, transform, text_renderer, theme, self.image_card_rect,
-            Glyph::Image, "Import from image", "Read a QR from a screenshot or photo", img_hover, false,
+            Glyph::Image, "Scan a QR image", "Read the code from a screenshot or photo", img_hover, true,
         );
         let link_hover = self.link_card_rect.contains(self.last_mouse);
         self.draw_method_card(
@@ -557,6 +592,13 @@ impl AddAccountPanel {
             }
             self.draw_field_label(scene, transform, text_renderer, theme, "Period (s)", self.period_rect);
             self.period.draw(scene, transform, text_renderer, theme, &presence);
+        }
+
+        scene.pop_layer();
+
+        // A hint that there is more below when the body is scrollable.
+        if self.max_scroll > 0.5 && self.scroll < self.max_scroll - 0.5 {
+            self.draw_scroll_hint(scene, transform, theme);
         }
 
         // Error line, just above the footer.
@@ -656,6 +698,24 @@ impl AddAccountPanel {
         chev.line_to((cx - 4.0, cy + 6.0));
         let chev_color = if on_primary { Color::WHITE.with_alpha_factor(0.8) } else { theme.tokens.colors.text_dim };
         scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
+    }
+
+    /// A subtle downward chevron at the bottom of the scroll body, shown
+    /// only while there is more content below the fold.
+    fn draw_scroll_hint(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let cx = self.body_clip.center().x;
+        let cy = self.body_clip.y1 - 7.0;
+        let mut chev = BezPath::new();
+        chev.move_to((cx - 6.0, cy - 3.0));
+        chev.line_to((cx, cy + 3.0));
+        chev.line_to((cx + 6.0, cy - 3.0));
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            theme.tokens.colors.text_dim.with_alpha_factor(0.8),
+            None,
+            &chev,
+        );
     }
 
     fn draw_advanced_header(
@@ -916,6 +976,19 @@ impl AddAccountPanel {
             return;
         }
 
+        // Wheel scrolls the body when the form is taller than the window.
+        // The next layout pass re-offsets every rect from the new scroll.
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            if self.max_scroll > 0.0 {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 40.0,
+                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
+            }
+            return;
+        }
+
         // Keyboard: Esc cancels, Enter saves, Tab cycles focus.
         if let WindowEvent::KeyboardInput {
             event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
@@ -950,10 +1023,6 @@ impl AddAccountPanel {
             let p = self.last_mouse;
 
             // Method cards.
-            if self.qr_card_rect.contains(p) {
-                self.start_camera_scan();
-                return;
-            }
             if self.image_card_rect.contains(p) {
                 // The app owns the file picker + decode (file-access cap).
                 self.event = Some(AddPanelEvent::PickImageForQr);
@@ -1031,6 +1100,22 @@ impl AddAccountPanel {
             Field::Period => self.period_rect,
         }
     }
+
+    /// Test hook: run the exact production save path (validate → emit event).
+    #[cfg(test)]
+    pub(crate) fn save_for_test(&mut self) {
+        self.try_save();
+    }
+
+    /// Test hook: current (issuer, label, secret) field values.
+    #[cfg(test)]
+    pub(crate) fn field_snapshot(&self) -> (String, String, String) {
+        (
+            self.issuer.value().to_string(),
+            self.label.value().to_string(),
+            self.secret.value().to_string(),
+        )
+    }
 }
 
 /// The small set of glyphs the method cards draw, rendered as vector paths
@@ -1038,7 +1123,6 @@ impl AddAccountPanel {
 /// hands us.
 #[derive(Clone, Copy)]
 enum Glyph {
-    Qr,
     Image,
     Link,
 }
@@ -1047,20 +1131,6 @@ enum Glyph {
 fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, color: Color) {
     let c = tile.center();
     match glyph {
-        Glyph::Qr => {
-            // Three rounded finder squares + a couple of data cells.
-            let m = 5.0;
-            let s = 6.0;
-            let finder = |x: f64, y: f64| RoundedRect::new(x, y, x + s, y + s, 1.5);
-            let outline = Stroke::new(1.6);
-            for (fx, fy) in [(-m - s / 2.0, -m - s / 2.0), (m - s / 2.0, -m - s / 2.0), (-m - s / 2.0, m - s / 2.0)] {
-                scene.stroke(&outline, transform, color, None, &finder(c.x + fx, c.y + fy));
-            }
-            let dot = Rect::new(c.x + m - 1.5, c.y + m - 1.5, c.x + m + 1.5, c.y + m + 1.5);
-            scene.fill(Fill::NonZero, transform, color, None, &dot);
-            let dot2 = Rect::new(c.x + m + 2.5, c.y + m + 2.5, c.x + m + 5.0, c.y + m + 5.0);
-            scene.fill(Fill::NonZero, transform, color, None, &dot2);
-        }
         Glyph::Image => {
             // Picture frame + sun + mountain.
             let frame = RoundedRect::new(c.x - 8.0, c.y - 7.0, c.x + 8.0, c.y + 7.0, 2.0);
@@ -1134,6 +1204,102 @@ mod tests {
     }
 
     #[test]
+    fn default_form_fits_a_tall_window_without_scrolling() {
+        let mut p = AddAccountPanel::new();
+        p.open();
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert_eq!(p.max_scroll, 0.0, "the calm default form fits without scrolling");
+        assert!(p.save_rect.y1 <= p.modal.y1, "footer stays inside the modal");
+        assert!(p.modal.y1 <= 800.0 - 16.0, "modal fits inside the window");
+    }
+
+    #[test]
+    fn tall_form_scrolls_in_a_short_window_without_overflowing() {
+        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut p = AddAccountPanel::new();
+        p.open();
+        p.toggle_advanced(); // makes the form taller than a 600px window
+        p.layout(win);
+        assert!(p.max_scroll > 0.0, "advanced form must scroll in a short window");
+        // The footer is pinned inside the modal, never off-screen.
+        assert!(p.save_rect.y1 <= p.modal.y1);
+        assert!(p.modal.y1 <= 600.0);
+        // Reset to the top of the body (revealing Advanced auto-scrolled to
+        // the bottom), so we can prove the scroll mechanic independently.
+        p.scroll = 0.0;
+        p.layout(win);
+        let period_top_before = p.period_rect.y0;
+        // Scrolling to the bottom brings the period field up into the body.
+        p.scroll = p.max_scroll;
+        p.layout(win);
+        assert!(
+            p.period_rect.y0 < period_top_before,
+            "scrolling moves body content upward into view"
+        );
+        // Fully scrolled, the last field sits within the visible body band.
+        assert!(p.period_rect.y1 <= p.body_clip.y1 + 1.0, "bottom of form reachable");
+    }
+
+    #[test]
+    fn modal_reflows_from_the_current_window_on_every_layout() {
+        // Guards against caching the size from the first frame: the same
+        // instance must re-derive width + scroll when the window changes.
+        let mut p = AddAccountPanel::new();
+        p.open();
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let wide_w = p.modal.width();
+        assert_eq!(p.max_scroll, 0.0, "roomy window needs no scroll");
+        p.layout(Rect::new(0.0, 0.0, 400.0, 420.0));
+        assert!(p.modal.width() < wide_w, "modal narrows to the smaller window");
+        assert!(p.max_scroll > 0.0, "a short window enables scrolling");
+        // And back to roomy — it must recover, not stay narrow.
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert!((p.modal.width() - wide_w).abs() < 0.5, "modal widens back");
+        assert_eq!(p.max_scroll, 0.0);
+    }
+
+    #[test]
+    fn revealing_advanced_scrolls_its_fields_into_view() {
+        // In a short window the expanded Advanced section is taller than the
+        // fold; toggling it open must auto-scroll so the last field lands
+        // inside the visible body band instead of below it.
+        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut p = AddAccountPanel::new();
+        p.open();
+        p.layout(win);
+        p.toggle_advanced();
+        p.layout(win);
+        assert!(p.advanced_open);
+        assert!(p.max_scroll > 0.0, "advanced form overflows a 600px window");
+        assert_eq!(p.scroll, p.max_scroll, "toggle scrolls the new fields into view");
+        assert_ne!(p.period_rect, Rect::ZERO, "period field is laid out");
+        assert!(
+            p.period_rect.y1 <= p.body_clip.y1 + 1.0,
+            "the last advanced field is within the visible body, not below the fold"
+        );
+        assert!(
+            p.period_rect.y0 >= p.body_clip.y0 - 1.0,
+            "the period field is not clipped above the body top"
+        );
+    }
+
+    #[test]
+    fn revealing_advanced_is_a_one_shot_that_survives_resize() {
+        // After the reveal-scroll, a later relayout (e.g. a resize) must not
+        // re-force the scroll — the user keeps control of their position.
+        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut p = AddAccountPanel::new();
+        p.open();
+        p.toggle_advanced();
+        p.layout(win);
+        assert!(!p.reveal_advanced, "the reveal flag is consumed by layout");
+        // Scroll back up, then relayout: the position is preserved.
+        p.scroll = 0.0;
+        p.layout(win);
+        assert_eq!(p.scroll, 0.0, "a plain relayout does not re-trigger the reveal");
+    }
+
+    #[test]
     fn apply_uri_fills_fields_and_reveals_nondefault_params() {
         let mut p = opened();
         p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45");
@@ -1152,14 +1318,6 @@ mod tests {
         let mut p = opened();
         p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
         assert!(!p.advanced_open, "spec-default account stays calm");
-    }
-
-    #[test]
-    fn camera_scan_surfaces_the_unavailable_hook_message() {
-        let mut p = opened();
-        p.start_camera_scan();
-        assert!(!p.error.is_empty());
-        assert!(p.error.contains("camera"), "explains the camera gap: {}", p.error);
     }
 
     #[test]

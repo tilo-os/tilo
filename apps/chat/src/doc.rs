@@ -145,10 +145,31 @@ impl ChatDoc {
         get_bool(doc, &ROOT, "seeded")
     }
 
+    /// First-run scaffolding for a **real** install: just the local person and
+    /// an empty workspace they own — a `#general` text channel and a `General`
+    /// voice channel to start in. No fabricated people or conversation; the
+    /// user creates channels, invites peers, and types. Idempotent via the
+    /// `seeded` guard so adopting a peer's shared document never re-seeds.
+    ///
+    /// The rich demo workspace ([`Self::seed_if_empty`]) is reserved for the
+    /// ephemeral `--shots`/test path — it never lands on a real user's disk.
+    pub fn seed_starter(doc: &mut AutoCommit, me_id: &str, me_name: &str, me_initials: &str) {
+        if Self::is_seeded(doc) {
+            return;
+        }
+        let _ = doc.put(&ROOT, "seeded", true);
+
+        Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
+        Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
+        Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
+        Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
+        Self::put_channel(doc, "c_general", "ws_home", "cat_home_text", "general", "", ChannelKind::Text, 0, 0);
+        Self::put_channel(doc, "c_lounge", "ws_home", "cat_home_voice", "Lounge", "", ChannelKind::Voice, 0, 0);
+    }
+
     /// Populate the document with a believable demo workspace if it is
-    /// empty. Idempotent via the `seeded` guard so a second peer that
-    /// adopts shared state never double-seeds. Mirrors the notes app's
-    /// seed-or-adopt handshake.
+    /// empty. **Demo/screenshot only** — the live app seeds via
+    /// [`Self::seed_starter`] instead. Idempotent via the `seeded` guard.
     pub fn seed_if_empty(doc: &mut AutoCommit) {
         if Self::is_seeded(doc) {
             return;
@@ -243,10 +264,9 @@ impl ChatDoc {
                     text: "Here's the frame — the host tile keeps the live camera, everyone else collapses to chips when they're audio-only.".into(),
                     attachment: Some(Attachment::Image {
                         name: "call-overlay-v3.png".into(),
-                        path: "/var/workspace/design/call-overlay-v3.png".into(),
-                        w: 1280,
-                        h: 720,
-                        tint: 1,
+                        path: crate::images::DEMO_CALL_GRID.into(),
+                        w: 640,
+                        h: 360,
                     }),
                     reactions: vec![
                         ("❤️".into(), vec!["u_me".into(), "u_sora".into(), "u_milo".into()]),
@@ -496,13 +516,12 @@ impl ChatDoc {
         if let Some(att) = &nm.attachment {
             let a = doc.put_object(&block, "attachment", ObjType::Map).expect("att");
             match att {
-                Attachment::Image { name, path, w, h, tint } => {
+                Attachment::Image { name, path, w, h } => {
                     let _ = doc.put(&a, "kind", "image");
                     let _ = doc.put(&a, "name", name.as_str());
                     let _ = doc.put(&a, "path", path.as_str());
                     let _ = doc.put(&a, "w", *w as i64);
                     let _ = doc.put(&a, "h", *h as i64);
-                    let _ = doc.put(&a, "tint", *tint as i64);
                 }
                 Attachment::File { name, path, size } => {
                     let _ = doc.put(&a, "kind", "file");
@@ -1012,7 +1031,6 @@ impl ChatDoc {
                 path: get_str(doc, &a, "path"),
                 w: get_i64(doc, &a, "w") as u32,
                 h: get_i64(doc, &a, "h") as u32,
-                tint: get_i64(doc, &a, "tint") as usize,
             }),
             "file" => Some(Attachment::File {
                 name: get_str(doc, &a, "name"),
@@ -1033,6 +1051,37 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
         doc
+    }
+
+    #[test]
+    fn seed_starter_is_minimal_real_and_has_no_demo_content() {
+        // The live first-run seed: just the local person + an empty workspace.
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, model::ME, "Ada Lovelace", "AL");
+
+        let users = ChatDoc::list_users(&doc);
+        assert_eq!(users.len(), 1, "only the local user — no fabricated people");
+        assert_eq!(users[0].id, model::ME);
+        assert_eq!(users[0].name, "Ada Lovelace");
+
+        let ws = ChatDoc::list_workspaces(&doc);
+        assert_eq!(ws.len(), 1);
+        assert_eq!(ws[0].id, "ws_home");
+        assert!(ws.iter().all(|w| w.id != "ws_acme"), "no demo workspaces");
+
+        let chans = ChatDoc::list_channels(&doc);
+        assert!(chans.iter().any(|c| c.id == "c_general" && c.kind == ChannelKind::Text));
+        assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
+        assert!(chans.iter().all(|c| c.id != "c_crit"), "no demo channels");
+        assert!(
+            ChatDoc::list_messages(&doc, "c_general").is_empty(),
+            "a real first run has no fabricated conversation"
+        );
+
+        // Idempotent: adopting or re-seeding never duplicates.
+        ChatDoc::seed_starter(&mut doc, model::ME, "X", "X");
+        assert_eq!(ChatDoc::list_users(&doc).len(), 1);
+        assert_eq!(ChatDoc::list_workspaces(&doc).len(), 1);
     }
 
     #[test]

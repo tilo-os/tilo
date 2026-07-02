@@ -43,16 +43,48 @@ pub use model::{Account, Algorithm, Vault};
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree (the account list screen).
+/// Build the app's root widget for the **live** session: it loads the
+/// user's persisted vault and shows the empty state on a fresh install.
+/// It never fabricates sample accounts.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(AuthenticatorApp::new())
 }
 
-/// Build the root widget already showing the Add-account screen. Used by
-/// the `--shots` renderer to capture the add flow, and available to any
-/// caller that wants to land directly on it.
+/// Build the root widget seeded with a deterministic sample vault. Used by
+/// the `--shots` renderer and demos so the frame is populated and
+/// reproducible without touching (or leaking) the real on-disk vault.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(AuthenticatorApp::demo())
+}
+
+/// Build the root widget with no accounts — the first-run empty state. Used
+/// by the `--shots` renderer to capture that experience deterministically.
+pub fn app_root_empty() -> Box<dyn Widget> {
+    Box::new(AuthenticatorApp::empty())
+}
+
+/// Build the sample-seeded root already showing the Add-account screen.
+/// Used by the `--shots` renderer to capture the add flow.
 pub fn app_root_add_screen() -> Box<dyn Widget> {
-    let mut app = AuthenticatorApp::new();
+    let mut app = AuthenticatorApp::demo();
     app.seed_open_add();
+    Box::new(app)
+}
+
+/// Build the sample-seeded root on the Add-account screen with Advanced
+/// options expanded — the `--shots` renderer uses it to capture the tall,
+/// scrolling form.
+pub fn app_root_add_advanced_screen() -> Box<dyn Widget> {
+    let mut app = AuthenticatorApp::demo();
+    app.seed_open_add_advanced();
+    Box::new(app)
+}
+
+/// Build the sample-seeded root on the Add-account screen with the QR image
+/// file chooser overlaid — the `--shots` renderer uses it to capture the
+/// import flow that the "Scan a QR image" action opens at runtime.
+pub fn app_root_add_picker_screen() -> Box<dyn Widget> {
+    let mut app = AuthenticatorApp::demo();
+    app.seed_open_add_picker();
     Box::new(app)
 }

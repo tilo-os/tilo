@@ -6,7 +6,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Brush, Color, Fill, Gradient};
+use vello::peniko::Color;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -379,25 +379,18 @@ impl ChatApp {
             Some(ch) => (ch.name.clone(), ch.topic.clone(), ch.kind.glyph()),
             None => (String::new(), String::new(), "#"),
         };
-        label(scene, tr, tf, glyph, 18.0, c.text_dim, h.x0 + left_inset, h.center().y - 11.0);
-        let nx = h.x0 + left_inset + 22.0;
-        let (nw, _) = text(scene, tr, tf, &name, 17.0, c.text_primary, nx, h.center().y - 11.0, TextWeight::Bold, None);
-        // topic after the name, dim, with a separator
-        if !topic.is_empty() {
-            let sep_x = nx + nw as f64 + 14.0;
-            hline(scene, tf, sep_x, sep_x, h.center().y - 9.0, c.border_standard); // tiny tick (no-op visually)
-            let tx = sep_x + 4.0;
-            let avail = h.x1 - tx - 220.0;
-            let topic_t = truncate_to(tr, &topic, 13.0, avail.max(40.0));
-            label(scene, tr, tf, &topic_t, 13.0, c.text_dim, tx, h.center().y - 7.0);
-        }
 
-        // right-aligned action buttons
-        let mut x = h.x1 - 16.0;
+        // Right-aligned action buttons are placed first so the title + topic
+        // know exactly where they must stop — they truncate before the button
+        // cluster and can never overlap it, even on a very narrow header.
         let members = self.users.len();
-        // call button (accent when a call is live)
-        x -= 92.0;
-        let call_btn = Rect::new(x, h.center().y - 16.0, x + 84.0, h.center().y + 16.0);
+        let call_w = 84.0;
+        let mem_w = 52.0;
+        let gap = 8.0;
+        let cy = h.center().y;
+        // call button (accent when a call is live).
+        let call_x0 = h.x1 - 16.0 - call_w;
+        let call_btn = Rect::new(call_x0, cy - 16.0, call_x0 + call_w, cy + 16.0);
         let (cbg, ctx) = if self.call.active {
             (c.accent[5], Color::WHITE)
         } else {
@@ -409,12 +402,29 @@ impl ChatApp {
         ChatApp::push_hit(hits, call_btn, Hit::StartCall);
 
         // members pill — toggles the right flap (members / thread).
-        x -= 60.0;
-        let mem = Rect::new(x, h.center().y - 16.0, x + 52.0, h.center().y + 16.0);
+        let mem_x0 = call_x0 - gap - mem_w;
+        let mem = Rect::new(mem_x0, cy - 16.0, mem_x0 + mem_w, cy + 16.0);
         let mem_on = self.right_flap_open();
         fill_round(scene, tf, mem, 8.0, if mem_on { c.accent[5].with_alpha_factor(0.22) } else { c.surface_white_5 });
         label(scene, tr, tf, &format!("👥 {members}"), 12.5, if mem_on { c.accent[7] } else { c.text_dim }, mem.x0 + 9.0, mem.center().y - 8.0);
         ChatApp::push_hit(hits, mem, Hit::ToggleRightFlap);
+
+        // Title + topic occupy the space left of the button cluster; both
+        // truncate to that width so nothing runs under the buttons.
+        let cluster_left = mem_x0;
+        label(scene, tr, tf, glyph, 18.0, c.text_dim, h.x0 + left_inset, cy - 11.0);
+        let nx = h.x0 + left_inset + 22.0;
+        let name_max = (cluster_left - 12.0 - nx).max(0.0);
+        let name_t = truncate_to(tr, &name, 17.0, name_max);
+        let (nw, _) = text(scene, tr, tf, &name_t, 17.0, c.text_primary, nx, cy - 11.0, TextWeight::Bold, None);
+        if !topic.is_empty() {
+            let tx = nx + nw as f64 + 18.0;
+            let avail = cluster_left - 12.0 - tx;
+            if avail >= 48.0 {
+                let topic_t = truncate_to(tr, &topic, 13.0, avail);
+                label(scene, tr, tf, &topic_t, 13.0, c.text_dim, tx, cy - 7.0);
+            }
+        }
     }
 
     /// Floating flap toggles: a hamburger at the header's left edge when the
@@ -492,6 +502,24 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let text_x = area.x0 + 16.0 + AVATAR + 14.0;
         let text_w = (area.x1 - text_x - 18.0).max(80.0) as f32;
+
+        // Empty channel: a quiet start-of-conversation marker rather than a
+        // blank void, so a fresh channel reads as ready, not broken.
+        if self.messages.is_empty() {
+            let ch_name = self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
+            let cx = area.center().x;
+            let cy = area.y0 + (area.height() * 0.5).min(220.0);
+            fill_circle(scene, tf, Point::new(cx, cy), 30.0, c.surface_white_5);
+            let (gw, gh) = tr.measure_weighted("#", 30.0, None, TextWeight::Bold);
+            text(scene, tr, tf, "#", 30.0, c.text_dim, cx - gw as f64 / 2.0, cy - gh as f64 / 2.0, TextWeight::Bold, None);
+            let title = format!("#{ch_name}");
+            let (tw, _) = tr.measure_weighted(&title, 20.0, None, TextWeight::Bold);
+            text(scene, tr, tf, &title, 20.0, c.text_primary, cx - tw as f64 / 2.0, cy + 46.0, TextWeight::Bold, None);
+            let sub = format!("This is the start of the {title} channel.");
+            let (sw, _) = tr.measure(&sub, 13.0, None);
+            label(scene, tr, tf, &sub, 13.0, c.text_dim, cx - sw as f64 / 2.0, cy + 76.0);
+            return;
+        }
 
         let groups = model::group_messages(&self.messages);
 
@@ -711,19 +739,24 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         match att {
-            Attachment::Image { name, w, h, tint, .. } => {
+            Attachment::Image { name, path, w, h } => {
                 let (tw, th) = image_thumb_size(*w, *h, text_w as f64);
                 let rect = Rect::new(x, y, x + tw, y + th);
-                // gradient stand-in for the FUSE-hydrated image
-                let g = Gradient::new_linear(Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y1))
-                    .with_stops([
-                        (0.0_f32, palette_color(theme, *tint)),
-                        (1.0_f32, palette_color(theme, tint + 2)),
-                    ]);
-                let shape = vello::kurbo::RoundedRect::from_rect(rect, 12.0);
-                scene.fill(Fill::NonZero, tf, &Brush::Gradient(g), None, &shape);
-                // soft inner vignette + a framing stroke
-                fill_round(scene, tf, Rect::new(rect.x0, rect.y1 - 30.0, rect.x1, rect.y1), 12.0, Color::from_rgba8(0, 0, 0, 90));
+                // Real decoded bytes from the shared background image cache
+                // (projected from the FUSE workspace). `get` schedules the
+                // load the first time a path is seen and returns the decoded
+                // image on a later frame; until then we show a neutral tile.
+                if let Some(img) = self.images.get(path) {
+                    ui::image_store::paint_image_cover(scene, tf, rect, &img, 12.0);
+                } else {
+                    fill_round(scene, tf, rect, 12.0, c.surfaces.raised);
+                    let dot = Point::new(rect.center().x, rect.center().y - 4.0);
+                    fill_circle(scene, tf, dot, 12.0, c.surface_white_10);
+                    let (gw, gh) = tr.measure("🖼", 18.0, None);
+                    text(scene, tr, tf, "🖼", 18.0, c.text_dim, dot.x - gw as f64 / 2.0, dot.y - gh as f64 / 2.0, TextWeight::Regular, None);
+                }
+                // Caption gradient scrim + filename, then a framing stroke.
+                fill_round(scene, tf, Rect::new(rect.x0, rect.y1 - 30.0, rect.x1, rect.y1), 12.0, Color::from_rgba8(0, 0, 0, 120));
                 stroke_round(scene, tf, rect, 12.0, c.border_white_10, 1.0);
                 label(scene, tr, tf, &format!("🖼  {name}"), 12.0, Color::WHITE, rect.x0 + 12.0, rect.y1 - 22.0);
                 let dim = format!("{w}×{h}");
@@ -739,7 +772,15 @@ impl ChatApp {
                 text(scene, tr, tf, "📄", 16.0, Color::WHITE, icon.center().x - iw as f64 / 2.0, icon.center().y - ih as f64 / 2.0, TextWeight::Regular, None);
                 let fname = truncate_to(tr, name, 13.5, chip.width() - 70.0);
                 label(scene, tr, tf, &fname, 13.5, c.text_primary, chip.x0 + 56.0, chip.center().y - 14.0);
-                label(scene, tr, tf, &format!("{} · shared via /var/workspace", human_size(*size)), 11.0, c.text_dim, chip.x0 + 56.0, chip.center().y + 2.0);
+                let ext = std::path::Path::new(name)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_uppercase())
+                    .filter(|e| !e.is_empty());
+                let meta = match ext {
+                    Some(e) => format!("{e} · {}", human_size(*size)),
+                    None => human_size(*size),
+                };
+                label(scene, tr, tf, &meta, 11.0, c.text_dim, chip.x0 + 56.0, chip.center().y + 2.0);
             }
         }
     }
@@ -944,6 +985,92 @@ impl ChatApp {
             yy += 28.0;
         }
         yy + 10.0
+    }
+
+    // ------------------------------------------------------- attach picker
+    /// The workspace file picker, anchored above the composer's "+". Lists the
+    /// real image files found in the shared workspace, each with a decoded
+    /// thumbnail (through the same [`ui::ImageStore`] the timeline uses), so a
+    /// share is always an actual file the user chose. An empty workspace says
+    /// so plainly rather than offering anything fabricated.
+    pub(crate) fn draw_attach_picker(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        // Full-window dismiss scrim (lowest priority).
+        ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
+
+        let comp = self.composer_rect(tr);
+        let w = 360.0_f64.min(self.rect.width() - 32.0).max(220.0);
+        let x0 = comp
+            .x0
+            .min(self.rect.x1 - w - 12.0)
+            .max(self.rect.x0 + 12.0);
+
+        let head_h = 40.0;
+        let row_h = 52.0;
+        let max_rows = 6usize;
+        let shown = self.attach_entries.len().min(max_rows);
+        let body_h = if self.attach_entries.is_empty() {
+            46.0
+        } else {
+            shown as f64 * row_h + 8.0
+        };
+        let more_h = if self.attach_entries.len() > max_rows { 20.0 } else { 0.0 };
+        let panel_h = head_h + body_h + more_h + 8.0;
+        let y1 = comp.y0 - 10.0;
+        let y0 = (y1 - panel_h).max(self.rect.y0 + 12.0);
+        let panel = Rect::new(x0, y0, x0 + w, y1);
+
+        fill_round(scene, tf, panel.inflate(5.0, 5.0), 18.0, Color::from_rgba8(0, 0, 0, 70));
+        fill_round(scene, tf, panel, 14.0, c.neutral[1]);
+        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
+
+        label(scene, tr, tf, "Share a file", 13.5, c.text_primary, panel.x0 + 14.0, panel.y0 + 12.0);
+        let count = format!("{}", self.attach_entries.len());
+        let (cw, _) = tr.measure(&count, 11.5, None);
+        label(scene, tr, tf, &count, 11.5, c.text_dim, panel.x1 - cw as f64 - 14.0, panel.y0 + 14.0);
+        hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, panel.y0 + head_h - 4.0, c.border_standard);
+
+        if self.attach_entries.is_empty() {
+            let dir = crate::picker::attach_dir();
+            let s = format!("No images in {}", dir.display());
+            let s = truncate_to(tr, &s, 12.5, panel.width() - 28.0);
+            label(scene, tr, tf, &s, 12.5, c.text_dim, panel.x0 + 14.0, panel.y0 + head_h + 10.0);
+            return;
+        }
+
+        let mut y = panel.y0 + head_h + 4.0;
+        for e in self.attach_entries.iter().take(max_rows) {
+            let row = Rect::new(panel.x0 + 6.0, y, panel.x1 - 6.0, y + row_h - 6.0);
+            if row.contains(self.last_mouse) {
+                fill_round(scene, tf, row, 10.0, c.surface_white_5);
+            }
+            let thumb = Rect::new(row.x0 + 6.0, row.y0 + 5.0, row.x0 + 62.0, row.y1 - 5.0);
+            let key = e.key();
+            if let Some(img) = self.images.get(&key) {
+                ui::image_store::paint_image_cover(scene, tf, thumb, &img, 8.0);
+            } else {
+                fill_round(scene, tf, thumb, 8.0, c.surfaces.raised);
+                let (gw, gh) = tr.measure("🖼", 16.0, None);
+                text(scene, tr, tf, "🖼", 16.0, c.text_dim, thumb.center().x - gw as f64 / 2.0, thumb.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
+            }
+            stroke_round(scene, tf, thumb, 8.0, c.border_white_10, 1.0);
+            let name = truncate_to(tr, &e.name, 13.5, row.width() - 96.0);
+            label(scene, tr, tf, &name, 13.5, c.text_primary, thumb.x1 + 12.0, row.center().y - 13.0);
+            label(scene, tr, tf, &human_size(e.size), 11.0, c.text_dim, thumb.x1 + 12.0, row.center().y + 3.0);
+            ChatApp::push_hit(hits, row, Hit::AttachPick(key));
+            y += row_h;
+        }
+        if self.attach_entries.len() > max_rows {
+            let more = format!("+{} more in the workspace", self.attach_entries.len() - max_rows);
+            label(scene, tr, tf, &more, 11.0, c.text_dim, panel.x0 + 14.0, panel.y1 - 16.0);
+        }
     }
 }
 
