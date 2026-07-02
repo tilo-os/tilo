@@ -38,10 +38,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         // `--shots` renders one offscreen frame. A `--viewport WxH` arg
         // overrides the default desktop viewport so the same binary can
-        // capture the narrow responsive layout (overlay rail + single-pane
-        // Processes push). `--scenario NAME` snaps a deterministic
-        // interaction state (`rail` = open overlay rail, `detail` = pushed
-        // detail pane) since a single frame has no event loop.
+        // capture the narrow responsive layout (single-pane Processes push +
+        // stacked dashboard). `--scenario NAME` snaps a deterministic
+        // interaction state (`resources` = Resources dashboard, `detail` =
+        // pushed detail pane) since a single frame has no event loop.
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let mut app = monitor::MonitorApp::new();
         if let Some(scenario) = parse_scenario_arg(&args) {
