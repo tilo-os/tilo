@@ -102,50 +102,65 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       render path ignores it; remove the misleading comment.
 
 ## maps
-- [ ] Unbounded failed-tile refetch loop: a failed tile is dropped with no
-      negative-cache, so it re-requests every frame and the loop never idles —
-      continuous CPU/repaint spin + hammering tile.openstreetmap.org (ban risk),
-      even in the offline scenario. Negative-cache failures with backoff. (HIG §5)
+- [x] Unbounded failed-tile refetch loop → fixed (negative-cache + backoff; loop
+      idles once tiles resolve).
+- [ ] Directions "swap ends" (⇅) is broken: it sets origin = the selected place,
+      but destination is still read from `selected_place()`, so origin==dest and
+      it routes the destination to itself (0 min / 0 m); the "from" label stays
+      stale. Give directions a proper separate origin AND destination so swap
+      actually swaps.
+- [ ] Transit tab: clicking the Transit tab only switches the view and never
+      triggers a departures fetch, so it always shows "No itineraries found" as if
+      an empty result — actually run the lookup when the tab is selected.
+- [ ] First-run shows a fully blank dark map (no basemap/grid, no loading
+      affordance) until OSM raster tiles arrive; if egress is blocked it's a black
+      void. Show a basemap/grid + a loading/imagery affordance.
 
 ## typst_editor
-- [ ] Source editor has no horizontal scroll and no word-wrap: typing past the
-      pane's right edge pushes caret+text off-screen with no way back. Add
-      horizontal scroll (keep caret visible) or word-wrap.
-- [ ] Idle spin: redraws every vsync while the editor pane is focused (just to
-      blink a caret). Settle to ~0 idle frames. (HIG §5)
+- [x] Horizontal scroll / keep caret in view → fixed.
+- [x] Idle spin while editor focused → fixed.
 
 ## contacts
-- [ ] Toasts never auto-dismiss (an Instant is stored but never read for expiry).
-      Implement timed dismissal.
-- [ ] Detail-pane heading truncates the contact NAME (`Ada Lovela…`) at 800px —
-      the primary heading shouldn't truncate at a moderate width.
+- [x] Toasts auto-dismiss → fixed.
+- [x] Detail-pane name no longer truncates at 800px → fixed.
 
 ## totp
-- [ ] "Scan a QR image" CTA opens no file picker (only reads an env var) — a
-      functional dead-end. Wire a real file picker (portal/compositor capability).
-- [ ] Advanced-options section sits below the modal fold with no auto-scroll —
-      scroll the revealed fields into view when toggled.
-- [ ] TOTP secrets persisted as plaintext JSON — implement encryption-at-rest.
+- [x] QR-image import wired to a real picker → fixed. (Follow-up: it must go
+      through the XDG portal per HIG §5 — audit in the picker sweep.)
+- [x] Advanced options scroll into view → fixed.
+- [x] Vault encrypted at rest → fixed.
 
 ## slides (presentation)
-- [ ] Slide thumbnails render body text garbled/overlapping/illegible (min-6px
-      font clamp oversizes paragraphs vs the tiny thumbnail; lines collide). Fix
-      thumbnail body-text scaling.
-- [ ] Present mode (narrow): the slide-counter pill overlaps the "Esc exit" hint.
-      Separate them.
-- [ ] Overview slide-sorter: the number badge overlaps the slide title. Offset.
-- [ ] Present mode redraws the full scene every frame just to tick a 1 Hz clock —
-      tick without full-scene re-render. (HIG §5)
+- [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
+      overlap → fixed in the last pass.
+- [ ] NO SCROLLING anywhere (rail + overview): handle_event ignores MouseWheel and
+      neither the rail-thumbnail loop nor the overview applies a scroll offset — a
+      deck with more slides than fit vertically loses access to them (overview at
+      800x600 cuts off slide 5; 560px cuts off slides 3-5, on the 5-slide sample).
+      Add scrolling to the rail and the overview.
+- [ ] Thumbnail rail overflows for larger decks: thumbnails lay out unbounded
+      while the Add/Dup/Del actions are pinned to the bottom, so a deck beyond ~6
+      slides overlaps the pinned buttons and runs off-screen — the rail is the
+      primary edit-mode nav, so this breaks real decks. Make the rail scroll.
+- [ ] The "Image" toolbar tool is a non-functional placeholder (no asset pipeline
+      / picker; only paints a framed box with a mountain glyph). Wire real image
+      insertion via the XDG portal (HIG §5), or remove the tool until it works —
+      do not ship a primary insert tool that can never show a real picture.
+- [ ] Present mode never rests (needs_animation_frame always true in Present) —
+      re-renders at vsync just to tick a ~1 Hz clock. Wake at 1 Hz, don't spin.
+      (HIG §5)
 - [ ] Keep the crate named `slides` (an agent renamed it to `presentation`;
       reverted — do not re-rename).
 
 ---
 
 ## toolkit (ui) — enablers
-- [ ] Build the HIG §1 navigation primitive (NavShell): a genuine collapsible
-      sidebar (docked on desktop with a proper collapse button, overlay-drawer on
-      mobile) + a content master/detail region (side-by-side on desktop, push /
-      slide-over on mobile with a back affordance). Replace the disliked
+- [x] Build the HIG §1 navigation primitive (NavShell) → DONE (ui 13e2928; genuine
+      collapsible sidebar docked/overlay-drawer + content master/detail
+      side-by-side/push, proper collapse chevron never an X). NEXT: apps must
+      ADOPT it — weather, calendar, email, monitor. (Adoption is tracked per app.)
+- [ ] (superseded — see the DONE item above) Build the HIG §1 navigation
+      primitive (NavShell): a genuine collapsible
       web-style overlay-everywhere sidebar. Apps adopt this, not hand-rolled
       layouts.
 - [ ] Shared CRDT caret/selection text-editing core adopted by fields that today
