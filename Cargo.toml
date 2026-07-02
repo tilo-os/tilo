@@ -19,6 +19,7 @@ members = [
     "qos-collab-link",
     "qos-relay",
     "qos-launcher",
+    "qos-runtime",
     "qos-runtime-portal",
     "qos-runtime-collab",
     "qos-runtime-fs",
