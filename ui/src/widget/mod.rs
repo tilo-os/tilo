@@ -256,6 +256,12 @@ pub use nav_split::{
     NavSplit, FlapState, SplitMode, SplitLayout, PushPane,
     DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH,
 };
+mod nav_shell;
+pub use nav_shell::{
+    NavShell, ShellMode, ContentLayout, NavPane, Affordance,
+    DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
+    DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
+};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DocumentViewport, SmallContentAlign, ViewportState,
