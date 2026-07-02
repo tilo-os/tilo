@@ -117,7 +117,22 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 
 ---
 
-## 5. Performance (felt responsiveness)
+## 5. System integration (file access, host services)
+
+- **File open/save goes through the XDG Desktop Portal**
+  (`org.freedesktop.portal.FileChooser`, via `ashpd`) — an app **never draws its
+  own file picker**. The *host desktop* provides the picker: on GNOME the user
+  sees GNOME's file chooser; on qOS the **compositor implements the portal
+  backend** and renders qOS's picker (which is also where the per-cluster
+  sandbox / file-access prompt lives — the portal is the security boundary). A
+  bespoke in-app "OpenDialog", or an app-drawn `ui::FilePicker` used for OS file
+  open/save, is a bug. (`ui::FilePicker` exists only for the compositor's own
+  portal-backend rendering, or non-filesystem in-cluster pickers.)
+- Prefer host/portal services generally (screenshot, sharing, notifications)
+  over reinventing them in-app, so a qOS app behaves like a native app on
+  whatever desktop it runs.
+
+## 6. Performance (felt responsiveness)
 
 - **No idle redraw spin.** An app at rest requests **no** frames; animate only
   while something is genuinely animating. (A caret blink or a 1 Hz clock is not a
