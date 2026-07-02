@@ -12,7 +12,8 @@
 //! with `apply_layout_external` and routed events directly.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -37,6 +38,12 @@ use crate::vcard::{self, VCardVersion};
 
 const TOOLBAR_H: f64 = 56.0;
 const ROW_H: f64 = 62.0;
+
+/// How long an action toast ("Saved", "Contact deleted", …) stays on screen
+/// before it fades away on its own. The host loop is kept awake (via
+/// [`Widget::needs_animation_frame`]) only while a toast is up, so the frame
+/// where this elapses clears it and the loop returns to idle.
+const TOAST_LIFETIME: Duration = Duration::from_millis(2600);
 const DIVIDER_W: f64 = 6.0;
 const PAD: f64 = 16.0;
 const FIELD_H: f64 = 38.0;
@@ -52,11 +59,6 @@ const FORM_ROW_GAP: f64 = 10.0; // vertical gap between header rows / before bod
 
 /// Type labels offered in the phone/email/address chip menu.
 const TYPE_OPTIONS: &[&str] = &["home", "work", "mobile", "main", "other"];
-
-/// A built-in vCard used by the Import action when no external `.vcf`
-/// path is provided via `QOS_CONTACTS_IMPORT`. Demonstrates the parser
-/// against a real 3.0 card.
-const SAMPLE_VCARD: &str = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Hedy Lamarr\r\nN:Lamarr;Hedy;;;\r\nORG:Inventions Inc.\r\nTITLE:Inventor\r\nTEL;TYPE=MOBILE:+1 323 555 0177\r\nEMAIL;TYPE=HOME:hedy@example.com\r\nBDAY:1914-11-09\r\nURL:https://example.com/hedy\r\nNOTE:Frequency hopping pioneer.\r\nCATEGORIES:Friends\r\nEND:VCARD\r\n";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -363,11 +365,41 @@ pub struct ContactsApp {
     dirty: bool,
     relayout: bool,
     seeded: bool,
+
+    /// Where the address book is persisted. `Some` for the live app (loaded
+    /// on first `sync`, rewritten after every mutation); `None` for the
+    /// hermetic `--shots` / test path so those never touch the user's disk.
+    persist_path: Option<PathBuf>,
+    /// When `true`, a first `sync` onto an empty book seeds the varied sample
+    /// address book. Only the `--shots` and test constructors set this — the
+    /// live app never fabricates content.
+    seed_samples: bool,
 }
 
 impl ContactsApp {
+    /// The live app: persists to (and loads from) the real address-book file
+    /// on disk, and never fabricates sample content.
     pub fn new() -> Self {
+        Self::configured(crate::storage::default_path(), false)
+    }
+
+    /// The hermetic `--shots` / test app: seeds the varied sample address book
+    /// and never touches the user's disk, so a headless frame is populated and
+    /// tests are deterministic.
+    pub fn sample() -> Self {
+        Self::configured(None, true)
+    }
+
+    /// A disk-backed app pointed at an explicit `path` (used by the
+    /// persistence test to target a scratch directory).
+    pub fn with_persist_path(path: PathBuf) -> Self {
+        Self::configured(Some(path), false)
+    }
+
+    fn configured(persist_path: Option<PathBuf>, seed_samples: bool) -> Self {
         Self {
+            persist_path,
+            seed_samples,
             store: ContactStore::new(),
             selected: None,
             mode: Mode::View,
@@ -469,6 +501,18 @@ impl ContactsApp {
         self.confirm_delete = self.selected;
     }
 
+    /// Empty the book for `--shots` so a headless frame captures the genuine
+    /// first-launch empty state (what the live app shows before any contact
+    /// exists). Shots-only: it mutates nothing the live app relies on.
+    pub fn shots_show_empty(&mut self) {
+        self.store = ContactStore::new();
+        self.selected = None;
+        self.mode = Mode::View;
+        self.form = None;
+        self.relayout = true;
+        self.dirty = true;
+    }
+
     /// Snap a right-click context menu open on the selected contact row for
     /// `--shots`.
     pub fn shots_show_context_menu(&mut self) {
@@ -505,6 +549,13 @@ impl ContactsApp {
         self.dirty = true;
     }
 
+    /// `true` when a toast is showing and has outlived [`TOAST_LIFETIME`].
+    fn toast_expired(&self) -> bool {
+        self.toast
+            .as_ref()
+            .is_some_and(|(_, shown)| shown.elapsed() >= TOAST_LIFETIME)
+    }
+
     fn begin_edit(&mut self, draft: Contact, is_new: bool) {
         self.form = Some(EditForm::new(draft, is_new));
         self.mode = Mode::Edit;
@@ -535,12 +586,25 @@ impl ContactsApp {
             self.store.upsert(c.clone());
             ContactsDoc::upsert_contact(doc, &c);
             self.selected = Some(id);
+            self.persist();
             self.show_toast(if form.is_new { "Contact created" } else { "Saved" });
         }
         self.mode = Mode::View;
         self.popup = None;
         self.relayout = true;
         self.dirty = true;
+    }
+
+    /// Write the working address book to disk (atomic; no-op in the hermetic
+    /// shots/test path where `persist_path` is `None`). Called after every
+    /// mutation that changes the book — create/edit, delete, favorite toggle,
+    /// import — so the on-disk copy always reflects what's on screen.
+    fn persist(&self) {
+        if let Some(path) = &self.persist_path {
+            if let Err(e) = crate::storage::save(path, &self.store.contacts) {
+                tracing::warn!(error = %e, path = %path.display(), "contacts: failed to persist address book");
+            }
+        }
     }
 
     /// Whether the open edit form holds changes not yet written to the
@@ -620,6 +684,7 @@ impl ContactsApp {
             self.selected = self.visible_ids().first().copied();
         }
         self.confirm_delete = None;
+        self.persist();
         self.show_toast("Contact deleted");
         self.relayout = true;
     }
@@ -643,10 +708,26 @@ impl ContactsApp {
     }
 
     fn import_vcards(&mut self, doc: &mut AutoCommit) {
-        let text = std::env::var("QOS_CONTACTS_IMPORT")
+        // Import reads a real `.vcf` file. The path comes from
+        // `QOS_CONTACTS_IMPORT` (set by the OS file picker or the launching
+        // shell); with no path there's nothing to import, so we guide the
+        // user rather than fabricate a contact.
+        let text = match std::env::var("QOS_CONTACTS_IMPORT")
             .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .unwrap_or_else(|| SAMPLE_VCARD.to_string());
+            .filter(|p| !p.is_empty())
+        {
+            Some(path) => match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.show_toast(format!("Couldn't read {path}: {e}"));
+                    return;
+                }
+            },
+            None => {
+                self.show_toast("To import, set QOS_CONTACTS_IMPORT to a .vcf file path");
+                return;
+            }
+        };
         let parsed = vcard::parse_vcards(&text);
         let n = parsed.len();
         let mut first_new = None;
@@ -659,6 +740,9 @@ impl ContactsApp {
         }
         if let Some(id) = first_new {
             self.selected = Some(id);
+        }
+        if n > 0 {
+            self.persist();
         }
         self.show_toast(format!("Imported {n} contact{}", if n == 1 { "" } else { "s" }));
         self.relayout = true;
@@ -1027,6 +1111,14 @@ impl ContactsApp {
             self.dirty = true;
         }
 
+        // Expire a stale toast. `render` runs every animation frame while a
+        // toast is up (see `needs_animation_frame`), so this fires promptly
+        // once its lifetime elapses, then lets the loop settle back to idle.
+        if self.toast_expired() {
+            self.toast = None;
+            self.dirty = true;
+        }
+
         let c = &theme.tokens.colors;
         // App background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
@@ -1174,7 +1266,11 @@ impl ContactsApp {
             None,
             TextWeight::Bold,
         );
-        let count = format!("{} people", self.store.len());
+        let count = match self.store.len() {
+            0 => "No contacts".to_string(),
+            1 => "1 person".to_string(),
+            n => format!("{n} people"),
+        };
         tr.draw_text(
             scene,
             &count,
@@ -1243,24 +1339,35 @@ impl ContactsApp {
             let av = Rect::new(rr.x0 + 14.0, rr.y0 + 11.0, rr.x0 + 14.0 + 40.0, rr.y0 + 11.0 + 40.0);
             draw_avatar(scene, t, tr, theme, av, &contact.initials());
             let tx = av.x1 + 12.0;
+            // Elide name + subtitle to a single line each so a narrow list
+            // pane (the docked split at 800px, or a long org name) never wraps
+            // a row to two cramped lines inside its fixed height.
+            let avail = (rr.x1 - tx - 26.0).max(24.0) as f32;
+            let name = tr.elide_to_width_weighted(
+                &contact.display_name(),
+                15.0,
+                avail,
+                TextWeight::Semibold,
+            );
             tr.draw_text_weighted(
                 scene,
-                &contact.display_name(),
+                &name,
                 15.0,
                 c.text_primary,
                 t * Affine::translate((tx, rr.y0 + 13.0)),
-                Some((rr.x1 - tx - 26.0) as f32),
+                None,
                 TextWeight::Semibold,
             );
             let sub = contact.subtitle();
             if !sub.is_empty() {
+                let sub = tr.elide_to_width(&sub, 12.0, avail);
                 tr.draw_text(
                     scene,
                     &sub,
                     12.0,
                     c.text_dim,
                     t * Affine::translate((tx, rr.y0 + 33.0)),
-                    Some((rr.x1 - tx - 26.0) as f32),
+                    None,
                 );
             }
             if contact.favorite {
@@ -1276,13 +1383,29 @@ impl ContactsApp {
             );
         }
         if self.list_rows.is_empty() {
+            // Distinguish a genuinely empty book (first launch) from a filter
+            // that matched nothing, so the message is never misleading.
+            let (line1, line2): (&str, &str) = if self.store.is_empty() {
+                ("No contacts yet", "Add one with + New, or Import a .vcf")
+            } else {
+                ("No matches", "Try a different search or group")
+            };
+            tr.draw_text_weighted(
+                scene,
+                line1,
+                14.0,
+                c.text_primary,
+                t * Affine::translate((self.list_body.x0 + PAD, self.list_body.y0 + 18.0)),
+                None,
+                TextWeight::Semibold,
+            );
             tr.draw_text(
                 scene,
-                "No contacts match",
-                13.0,
+                line2,
+                12.0,
                 c.text_dim,
-                t * Affine::translate((self.list_body.x0 + PAD, self.list_body.y0 + 20.0)),
-                None,
+                t * Affine::translate((self.list_body.x0 + PAD, self.list_body.y0 + 40.0)),
+                Some((self.list_body.width() - PAD * 2.0) as f32),
             );
         }
         scene.pop_layer();
@@ -1304,9 +1427,14 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let area = self.detail_rect;
         let Some(id) = self.selected else {
+            let msg = if self.store.is_empty() {
+                "No contact selected — add one with + New"
+            } else {
+                "Select a contact to see their details"
+            };
             tr.draw_text(
                 scene,
-                "Select a contact",
+                msg,
                 15.0,
                 c.text_dim,
                 t * Affine::translate((area.x0 + PAD, area.y0 + 40.0 + self.detail_top_offset())),
@@ -1324,30 +1452,34 @@ impl ContactsApp {
         let top = area.y0 + 28.0 + off;
         let mut y = top - self.detail_scroll;
 
-        // Header: big avatar + name + subtitle.
+        // Header. The avatar sits top-left and the favorite/Edit/Delete action
+        // band top-right (pinned by `layout_detail_actions`); the name,
+        // subtitle and group badges take their own full-width rows *below* the
+        // avatar. Keeping the name off the action band's row means even a long
+        // name ("Katherine Johnson") uses the whole pane width and never
+        // truncates at a moderate width.
         let av = Rect::new(x0, y, x0 + 72.0, y + 72.0);
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
-        let hx = av.x1 + 18.0;
-        // Cap the name/subtitle so they stop before the favorite/Edit/Delete
-        // action band (it shares this y-band, especially in the narrow
-        // full-width detail pane). Elide to a single line rather than wrap,
-        // since the header below uses fixed vertical offsets.
-        let head_x1 = if self.hit.fav.width() > 0.0 {
-            (self.hit.fav.x0 - 12.0).min(x1)
-        } else {
-            x1
-        };
-        let head_w = (head_x1 - hx).max(40.0) as f32;
+
+        // Action buttons (favorite star, Edit, Delete) — top right.
+        draw_star(scene, t, self.hit.fav.center(), 11.0, theme.accent_primary, contact.favorite);
+        toolbar_button(scene, t, tr, theme, self.hit.edit, "Edit", true);
+        toolbar_button(scene, t, tr, theme, self.hit.delete, "Delete", false);
+
+        // Name + subtitle on their own full-width rows beneath the avatar.
+        let head_w = (x1 - x0).max(40.0) as f32;
+        let name_y = y + 88.0;
         let name = tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
             &name,
             26.0,
             c.text_primary,
-            t * Affine::translate((hx, y + 4.0)),
+            t * Affine::translate((x0, name_y)),
             None,
             TextWeight::Bold,
         );
+        let mut hy = name_y + 36.0;
         let sub = contact.subtitle();
         if !sub.is_empty() {
             let sub = tr.elide_to_width(&sub, 14.0, head_w);
@@ -1356,39 +1488,40 @@ impl ContactsApp {
                 &sub,
                 14.0,
                 c.text_dim,
-                t * Affine::translate((hx, y + 38.0)),
+                t * Affine::translate((x0, hy)),
                 None,
             );
+            hy += 26.0;
         }
-        // Group badges.
-        let mut bx = hx;
-        let by = y + 60.0;
-        for g in &contact.groups {
-            let tw = tr.measure(g, 11.0, None).0 as f64;
-            let bw = tw + 18.0;
-            let br = Rect::new(bx, by, bx + bw, by + 20.0);
-            let shape = RoundedRect::from_rect(br, 10.0);
-            scene.fill(Fill::NonZero, t, theme.accent_primary.with_alpha_factor(0.16), None, &shape);
-            tr.draw_text(
-                scene,
-                g,
-                11.0,
-                theme.accent_primary,
-                t * Affine::translate((bx + 9.0, by + 4.0)),
-                None,
-            );
-            bx += bw + 8.0;
-            if bx > x1 - 60.0 {
-                break;
+        // Group badges below the name/subtitle.
+        if !contact.groups.is_empty() {
+            let mut bx = x0;
+            let by = hy;
+            for g in &contact.groups {
+                let tw = tr.measure(g, 11.0, None).0 as f64;
+                let bw = tw + 18.0;
+                let br = Rect::new(bx, by, bx + bw, by + 20.0);
+                let shape = RoundedRect::from_rect(br, 10.0);
+                scene.fill(Fill::NonZero, t, theme.accent_primary.with_alpha_factor(0.16), None, &shape);
+                tr.draw_text(
+                    scene,
+                    g,
+                    11.0,
+                    theme.accent_primary,
+                    t * Affine::translate((bx + 9.0, by + 4.0)),
+                    None,
+                );
+                bx += bw + 8.0;
+                if bx > x1 - 60.0 {
+                    break;
+                }
             }
+            hy += 28.0;
         }
 
-        // Action buttons (favorite star, Edit, Delete) — top right.
-        draw_star(scene, t, self.hit.fav.center(), 11.0, theme.accent_primary, contact.favorite);
-        toolbar_button(scene, t, tr, theme, self.hit.edit, "Edit", true);
-        toolbar_button(scene, t, tr, theme, self.hit.delete, "Delete", false);
-
-        y += 96.0;
+        // Start the field sections below the header block.
+        let name_top = name_y;
+        y = hy + 12.0;
 
         // Record field value hit rects so a double-click can jump straight
         // into editing the clicked field (see `handle_detail_double_click`).
@@ -1450,8 +1583,8 @@ impl ContactsApp {
             hits.push((Slot::Notes, Rect::new(x0, y0 - 4.0, x1, y)));
         }
 
-        // Header double-click: the name band edits the first/last name.
-        hits.push((Slot::First, Rect::new(av.x1 + 18.0, top, x1, top + 40.0)));
+        // Header double-click: the name row edits the first/last name.
+        hits.push((Slot::First, Rect::new(x0, name_top - 6.0, x1, name_top + 30.0)));
 
         self.detail_field_hits = hits;
         self.detail_content_h = (y + self.detail_scroll) - top + 24.0;
@@ -2330,24 +2463,34 @@ impl Widget for ContactsApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
             let existing = ContactsDoc::list_contacts(state);
-            let mut seed_first = None;
-            if existing.is_empty() {
+            let mut prefer = None;
+            if !existing.is_empty() {
+                // The host handed us a document already carrying contacts
+                // (a restored session or a collaborator's shared book).
+                for c in existing {
+                    self.store.upsert(c);
+                }
+            } else if self.seed_samples {
+                // Hermetic `--shots` / test path only: populate a varied book
+                // and open onto its first, richly-filled record.
                 for c in sample_contacts() {
-                    if seed_first.is_none() {
-                        seed_first = Some(c.id);
+                    if prefer.is_none() {
+                        prefer = Some(c.id);
                     }
                     ContactsDoc::upsert_contact(state, &c);
                     self.store.upsert(c);
                 }
-            } else {
-                for c in existing {
+            } else if let Some(path) = self.persist_path.clone() {
+                // Live path: load the real address book off disk. An absent
+                // or empty file yields an empty book and the empty state —
+                // never fabricated content.
+                for c in crate::storage::load(&path) {
+                    ContactsDoc::upsert_contact(state, &c);
                     self.store.upsert(c);
                 }
             }
             if self.selected.is_none() {
-                // Prefer the first seeded contact (a richly-populated
-                // record) so a fresh launch opens onto a full detail view.
-                self.selected = seed_first.or_else(|| self.visible_ids().first().copied());
+                self.selected = prefer.or_else(|| self.visible_ids().first().copied());
             }
             self.seeded = true;
             self.relayout = true;
@@ -2528,7 +2671,7 @@ impl Widget for ContactsApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.push.is_animating()
+        self.dirty || self.push.is_animating() || self.toast.is_some()
     }
 
     fn mark_drawn(&mut self) {
@@ -2537,8 +2680,9 @@ impl Widget for ContactsApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the host pumping frames while the master↔detail push slide
-        // eases into place on a narrow window.
-        self.push.is_animating()
+        // eases into place on a narrow window, or while a toast is up so its
+        // timed dismissal fires even without any further user input.
+        self.push.is_animating() || self.toast.is_some()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -2714,6 +2858,7 @@ impl ContactsApp {
                             let cc = c.clone();
                             ContactsDoc::upsert_contact(state, &cc);
                         }
+                        self.persist();
                         self.dirty = true;
                     }
                     *handled = true;
@@ -3038,6 +3183,7 @@ impl ContactsApp {
                                 let cc = c.clone();
                                 ContactsDoc::upsert_contact(state, &cc);
                             }
+                            self.persist();
                             self.relayout = true;
                         }
                         ContextAction::Export => {
@@ -3426,7 +3572,7 @@ mod tests {
 
     #[test]
     fn seeds_sample_contacts_and_selects_one() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.store.len(), 7);
@@ -3438,13 +3584,13 @@ mod tests {
 
     #[test]
     fn view_mode_frame_does_not_panic() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         drive_frame(&mut app, 1280, 800);
     }
 
     #[test]
     fn narrow_frame_resolves_single_pane_push() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         // A narrow viewport drives the single-pane master-detail push.
         drive_frame(&mut app, 480, 860);
         assert!(app.narrow, "a narrow viewport resolves to single-pane push");
@@ -3453,7 +3599,7 @@ mod tests {
 
     #[test]
     fn narrow_selection_pushes_detail_then_back_returns_to_list() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         drive_frame(&mut app, 480, 860);
@@ -3469,7 +3615,7 @@ mod tests {
 
     #[test]
     fn wide_frame_stays_docked_side_by_side() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         drive_frame(&mut app, 1280, 800);
         assert!(!app.narrow, "a desktop-width viewport keeps the docked split");
         // The list pane sits left of the detail pane (classic split).
@@ -3478,7 +3624,7 @@ mod tests {
 
     #[test]
     fn edit_mode_with_repeated_fields_frame_does_not_panic() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         // Seed first.
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
@@ -3493,7 +3639,7 @@ mod tests {
 
     #[test]
     fn calendar_and_type_popups_frame_does_not_panic() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         let c = app.selected.and_then(|id| app.store.get(id)).cloned().unwrap();
@@ -3515,7 +3661,7 @@ mod tests {
 
     #[test]
     fn save_round_trips_through_doc() {
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         let mut c = app.selected.and_then(|id| app.store.get(id)).cloned().unwrap();
@@ -3559,7 +3705,7 @@ mod tests {
 
     impl Harness {
         fn new(w: u32, h: u32) -> Self {
-            let mut app = ContactsApp::new();
+            let mut app = ContactsApp::sample();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
             let mut h = Harness {
@@ -4023,7 +4169,7 @@ mod tests {
         // A freshly-opened New Contact form (with the two empty seeded
         // phone/email rows) must not be considered dirty — otherwise the
         // unsaved guard would fire on the very first contact switch.
-        let mut app = ContactsApp::new();
+        let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         app.shots_new_contact();
@@ -4035,5 +4181,246 @@ mod tests {
             }
         }
         assert!(app.form_is_dirty(), "typing a name makes the form dirty");
+    }
+
+    // =================================================================
+    // Real persistence + first-launch behaviour
+    // =================================================================
+
+    fn scratch_book() -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "contacts-app-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let path = dir.join("addressbook.automerge");
+        (dir, path)
+    }
+
+    #[test]
+    fn live_launch_with_no_saved_book_is_empty_not_fabricated() {
+        // The live app must NOT invent sample contacts on an empty disk.
+        let (dir, path) = scratch_book();
+        let mut app = ContactsApp::with_persist_path(path);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        assert!(app.store.is_empty(), "a fresh disk-backed launch shows an empty book");
+        assert!(app.selected.is_none(), "nothing is selected when the book is empty");
+        // And a full frame over the empty state must not panic.
+        drive_frame(&mut app, 1280, 800);
+        drive_frame(&mut app, 560, 720);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn created_contact_persists_across_a_restart() {
+        let (dir, path) = scratch_book();
+        // First launch: empty, then create and save a contact through the
+        // real save path (which persists to disk).
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::with_persist_path(path.clone());
+        app.sync(&mut doc, &ROOT);
+        assert!(app.store.is_empty());
+        let mut c = Contact::new();
+        c.first = "Persisted".into();
+        c.last = "Person".into();
+        c.phones.push(Labeled::new("mobile", "+1 555 0100"));
+        app.begin_edit(c, true);
+        app.save_edit(&mut doc);
+        assert_eq!(app.store.len(), 1, "the contact is in the working set");
+        assert!(path.exists(), "saving wrote the address-book file to disk");
+
+        // Second launch ("reboot"): a brand-new app at the same path loads it.
+        let mut doc2 = AutoCommit::new();
+        let mut app2 = ContactsApp::with_persist_path(path.clone());
+        app2.sync(&mut doc2, &ROOT);
+        assert_eq!(app2.store.len(), 1, "the saved contact loads on the next launch");
+        let loaded = &app2.store.contacts[0];
+        assert_eq!(loaded.first, "Persisted");
+        assert_eq!(loaded.phones[0].value, "+1 555 0100");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_reads_a_real_vcf_and_persists_it() {
+        let (dir, path) = scratch_book();
+        // Write a real .vcf on disk and point the import env var at it.
+        let vcf_path = dir.join("incoming.vcf");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &vcf_path,
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Imported Person\r\nN:Person;Imported;;;\r\nEMAIL;TYPE=HOME:imported@example.com\r\nEND:VCARD\r\n",
+        )
+        .unwrap();
+        // SAFETY: single-threaded test; the env var is read synchronously below.
+        unsafe { std::env::set_var("QOS_CONTACTS_IMPORT", &vcf_path) };
+
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::with_persist_path(path.clone());
+        app.sync(&mut doc, &ROOT);
+        assert!(app.store.is_empty());
+        app.import_vcards(&mut doc);
+        assert_eq!(app.store.len(), 1, "the real .vcf was parsed and added");
+        assert_eq!(app.store.contacts[0].first, "Imported");
+
+        // The import persisted, so it survives a restart.
+        let reloaded = crate::storage::load(&path);
+        assert_eq!(reloaded.len(), 1, "the imported contact was written to disk");
+
+        unsafe { std::env::remove_var("QOS_CONTACTS_IMPORT") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_a_contact_persists_the_removal() {
+        let (dir, path) = scratch_book();
+        // Seed a book on disk directly, then load it and delete one contact.
+        let book = sample_contacts();
+        let removed = book[0].id;
+        crate::storage::save(&path, &book).unwrap();
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::with_persist_path(path.clone());
+        app.sync(&mut doc, &ROOT);
+        let before = app.store.len();
+        app.delete_selected(&mut doc, removed);
+
+        // Reload from disk: the deletion stuck.
+        let reloaded = crate::storage::load(&path);
+        assert_eq!(reloaded.len(), before - 1, "the removal was written to disk");
+        assert!(!reloaded.iter().any(|c| c.id == removed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resizing_wide_to_narrow_reflows_the_same_instance() {
+        // Guards against the "responsive on first launch, frozen after resize"
+        // bug: the breakpoint must be re-derived from the CURRENT width on
+        // every layout pass, not cached from the first frame.
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+
+        // Lay the SAME instance out wide, then narrow, then wide again.
+        apply_at(&mut app, 1280, 800);
+        assert!(!app.narrow, "wide viewport is the docked split");
+        assert!(app.list_rect.x1 <= app.detail_rect.x0 + 0.001, "list sits left of detail");
+
+        apply_at(&mut app, 560, 720);
+        assert!(app.narrow, "shrinking below the breakpoint reflows to single-pane push");
+
+        apply_at(&mut app, 1280, 800);
+        assert!(!app.narrow, "growing back above the breakpoint restores the docked split");
+    }
+
+    #[test]
+    fn detail_name_row_fits_every_full_name_at_moderate_width() {
+        // Regression: at 800x600 the detail heading truncated the name
+        // ("Ada Lovela…") because the top-right action band stole its
+        // horizontal room. The name now sits on its own full-width row, so
+        // for every seeded contact the row must be wide enough to fit the
+        // full display name at its rendered 26px Bold — i.e. no elision.
+        let mut h = Harness::new(800, 600);
+        let mut tr = TextRenderer::new();
+        let ids: Vec<ContactId> = h.app.store.contacts.iter().map(|c| c.id).collect();
+        assert!(!h.app.narrow, "800px is the docked side-by-side split");
+        for id in ids {
+            h.app.commit_select(id);
+            h.relayout();
+            let name = h.app.store.get(id).unwrap().display_name();
+            let name_rect = h
+                .app
+                .detail_field_hits
+                .iter()
+                .find(|(s, _)| *s == Slot::First)
+                .map(|(_, r)| *r)
+                .expect("the detail header exposes a name row hit rect");
+            let measured = tr.measure_weighted(&name, 26.0, None, TextWeight::Bold).0 as f64;
+            assert!(
+                name_rect.width() >= measured,
+                "name {name:?} needs {measured:.0}px but its row is only {:.0}px — it would truncate",
+                name_rect.width(),
+            );
+        }
+    }
+
+    #[test]
+    fn toast_auto_dismisses_after_a_real_action() {
+        // After Save/Delete/Import/Export the confirmation toast used to stay
+        // forever: it stored an Instant nothing ever read. Drive a real action
+        // (delete) so the production `show_toast` fires, then prove the frame
+        // loop keeps itself awake and clears the toast once its lifetime
+        // elapses, and idles afterwards.
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let id = app.selected.unwrap();
+
+        app.delete_selected(&mut doc, id);
+        assert!(app.toast.is_some(), "deleting a contact raises a toast");
+        assert!(
+            app.needs_animation_frame(),
+            "the loop stays awake so the timed dismissal fires without further input",
+        );
+
+        // A frame drawn before the lifetime elapses keeps the toast.
+        drive_frame(&mut app, 1280, 800);
+        assert!(app.toast.is_some(), "a fresh toast survives an immediate frame");
+
+        // Back-date the toast past its lifetime and draw again → it clears,
+        // and the loop is then free to idle.
+        if let Some((_, shown)) = app.toast.as_mut() {
+            *shown = Instant::now() - TOAST_LIFETIME - Duration::from_millis(50);
+        }
+        assert!(app.toast_expired(), "the back-dated toast is past its lifetime");
+        drive_frame(&mut app, 1280, 800);
+        assert!(app.toast.is_none(), "the toast auto-dismisses once its lifetime elapses");
+        assert!(
+            !app.needs_animation_frame(),
+            "with the toast gone the loop can settle back to idle",
+        );
+    }
+
+    /// Lay a single app instance out at `w`x`h` without rebuilding it, to
+    /// simulate a live window resize (the ui loop re-runs compute+apply layout
+    /// on the existing widget when the allocation changes).
+    fn apply_at(app: &mut ContactsApp, w: u32, h: u32) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(w as f32),
+                        height: Dimension::length(h as f32),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: AvailableSpace::Definite(w as f32),
+                        height: AvailableSpace::Definite(h as f32),
+                    },
+                    |known, avail, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, avail, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        app.apply_layout(&taffy, child, Point::ORIGIN);
     }
 }

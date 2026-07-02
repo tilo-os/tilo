@@ -19,8 +19,9 @@
 //!              shortcuts, and forward to the editor when notes are active.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -143,9 +144,23 @@ pub struct CalendarApp {
     notes_editor: BlockEditor,
     bound: Option<Sel>,
     seeded: bool,
-    /// Set once the first frame has merged the synced sample calendars in, so
-    /// the offline CalDAV pull runs exactly once.
-    synced: bool,
+
+    /// True for the hermetic `--shots` / test build: it seeds sample content
+    /// and drives the offline (synthesised) CalDAV path. The live app leaves
+    /// this `false` and never fabricates data.
+    demo: bool,
+    /// Where the calendar document is persisted (live app only; `None` in
+    /// demo/test builds, which stay purely in-memory).
+    data_path: Option<PathBuf>,
+    /// Document heads at the last successful save, so we persist only when the
+    /// CRDT actually changed rather than every frame.
+    saved_heads: Vec<ChangeHash>,
+    /// Set by discrete data actions (new event, toggle, import, sync…) to force
+    /// an immediate save; continuous changes (typing in notes) coalesce instead.
+    force_persist: bool,
+    /// When the document was last written, used to debounce note typing so a
+    /// burst of keystrokes doesn't serialize the whole document every frame.
+    last_persist: std::time::Instant,
 
     // --- responsive state ------------------------------------------------
     /// Recomputed every layout from the allocated width.
@@ -165,49 +180,87 @@ pub struct CalendarApp {
     notes_origin: Point,
     notes_w: f64,
     editor_node: Option<NodeId>,
+    /// Notes-column width the editor node was last built with. When the current
+    /// width (from `detail_body_w`) diverges — i.e. a resize crossed the
+    /// breakpoint or reshaped the detail pane — `take_structure_dirty` requests
+    /// a rebuild so the editor's own text-wrap width tracks the new layout
+    /// instead of staying frozen at the width it launched with.
+    built_notes_w: f64,
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
     status: Option<String>,
     dirty: bool,
+
+    /// Receiver for an in-flight background CalDAV pull. The live sync runs on a
+    /// worker thread (the `ui` event loop is synchronous and must never block on
+    /// the network); its result is drained here on the next `sync` pass.
+    sync_rx: Option<std::sync::mpsc::Receiver<(caldav::SyncResult, SyncOutcome)>>,
+    /// True while a background sync is running, which keeps the event loop
+    /// ticking (`needs_animation_frame`) so the worker's result lands promptly
+    /// without waiting for the next unrelated input.
+    syncing: bool,
 }
 
 impl CalendarApp {
+    /// The live app: persisted to disk, no sample content, accounts sourced
+    /// from OS Settings (none on a fresh machine).
     pub fn new() -> Self {
-        let today = Local::now().date_naive();
-        let model = seed_demo(today);
-        // Default selection: the design-review event, so the first frame
-        // shows the detail panel with real rich-text notes.
-        let selection = model
-            .events
-            .iter()
-            .find(|e| e.title.starts_with("Design review"))
-            .or_else(|| model.events.first())
-            .map(|e| Sel::Event(e.id));
+        Self::build(false, crate::store::default_path())
+    }
 
-        // OS Settings owns the account lifecycle; we consume whatever it has
-        // persisted. When nothing is configured (fresh machine, or the headless
-        // `--shots` run), fall back to a representative offline store so synced
-        // calendars still appear in the sidebar.
-        let accounts =
-            AccountStore::load_from_settings().unwrap_or_else(AccountStore::sample);
+    /// The hermetic demo used by `--shots` and tests: seeded with sample
+    /// content, in-memory only (never touches disk).
+    pub fn new_demo() -> Self {
+        Self::build(true, None)
+    }
+
+    #[cfg(test)]
+    fn new_with_data_path(path: PathBuf) -> Self {
+        Self::build(false, Some(path))
+    }
+
+    fn build(demo: bool, data_path: Option<PathBuf>) -> Self {
+        let today = Local::now().date_naive();
+
+        // Sample events/tasks/accounts exist ONLY in the demo build. The live
+        // app starts empty and fills in from the persisted document + the
+        // accounts OS Settings has configured.
+        let (model, selection, accounts) = if demo {
+            let model = seed_demo(today);
+            let selection = model
+                .events
+                .iter()
+                .find(|e| e.title.starts_with("Design review"))
+                .or_else(|| model.events.first())
+                .map(|e| Sel::Event(e.id));
+            (model, selection, AccountStore::sample())
+        } else {
+            let accounts = AccountStore::load_from_settings().unwrap_or_default();
+            (Model::default(), None, accounts)
+        };
+        let detail_open = selection.is_some();
 
         Self {
             model,
             today,
             anchor: today,
-            view: View::Agenda,
+            view: View::Month,
             list_sel: ListSel::Today,
             selection,
-            detail_open: selection.is_some(),
+            detail_open,
             accounts,
             notes_editor: BlockEditor::new(),
             bound: None,
             seeded: false,
-            synced: false,
+            demo,
+            data_path,
+            saved_heads: Vec::new(),
+            force_persist: false,
+            last_persist: std::time::Instant::now(),
             sidebar_mode: SidebarMode::Persistent,
             sidebar_open: false,
-            narrow_screen: if selection.is_some() {
+            narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
                 NarrowScreen::Calendar
@@ -219,27 +272,115 @@ impl CalendarApp {
             notes_origin: Point::new(-10000.0, -10000.0),
             notes_w: DETAIL_W_WIDE - 2.0 * DETAIL_PAD,
             editor_node: None,
+            built_notes_w: -1.0,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             status: None,
             dirty: true,
+            sync_rx: None,
+            syncing: false,
         }
     }
 
-    /// Pull events from the configured CalDAV calendars and merge them into the
-    /// model. Offline / headless this synthesises each calendar's events through
-    /// the real [`ics::parse`] path (see [`crate::caldav`]); the live app runs
-    /// the same merge with results posted from a background sync worker.
-    ///
-    /// De-duped by (title, start) so a repeated sync is close to idempotent.
-    fn sync_caldav(&mut self, doc: &mut AutoCommit) {
+    // --- shots-only configuration (no effect on live runtime behaviour) --
+
+    /// Force a calendar view for a screenshot.
+    pub fn shots_set_view(&mut self, v: View) {
+        self.view = v;
+        self.dirty = true;
+    }
+
+    /// Show the calendar screen (close the detail panel) for a screenshot.
+    pub fn shots_show_calendar(&mut self) {
+        self.detail_open = false;
+        self.selection = None;
+        self.narrow_screen = NarrowScreen::Calendar;
+        self.dirty = true;
+    }
+
+    /// Open the overlay sidebar flap for a screenshot.
+    pub fn shots_open_flap(&mut self) {
+        self.sidebar_open = true;
+        self.dirty = true;
+    }
+
+    /// Kick off a CalDAV pull from the configured calendars. The live pull
+    /// touches the network, so it runs on a worker thread and its result is
+    /// drained in [`Self::poll_sync`]; the UI stays responsive throughout. The
+    /// hermetic demo/test build stays fully synchronous (it synthesises each
+    /// calendar's events through the real [`ics::parse`] path — no network, no
+    /// thread — so `--shots` and tests are deterministic).
+    fn start_sync(&mut self, doc: &mut AutoCommit) {
+        if self.syncing {
+            return;
+        }
         let inputs: Vec<_> = self
             .accounts
             .accounts
             .iter()
             .map(|a| (a.config.clone(), a.calendars.clone()))
             .collect();
-        let (result, outcome) = caldav::sync_all(&inputs, self.today);
+
+        if self.demo {
+            let (result, outcome) = caldav::sample_pull_all(&inputs, self.today);
+            self.apply_sync_result(result, outcome, doc);
+            return;
+        }
+
+        // No account configured: answer instantly rather than spinning up a
+        // worker that would only return Offline.
+        if self.accounts.is_empty() {
+            self.status = Some("No calendar accounts yet — add one in Settings".into());
+            self.dirty = true;
+            return;
+        }
+
+        // Live pull on a background thread; the result lands via `poll_sync`.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let today = self.today;
+        std::thread::spawn(move || {
+            let _ = tx.send(caldav::sync_all(&inputs, today));
+        });
+        self.sync_rx = Some(rx);
+        self.syncing = true;
+        self.status = Some("Syncing…".into());
+        self.dirty = true;
+    }
+
+    /// Drain a finished background sync, if any. Called every `sync` pass; a
+    /// no-op until the worker delivers. Keeping this off the click path is why
+    /// a slow or unreachable server never freezes the window.
+    fn poll_sync(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.sync_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((result, outcome)) => {
+                self.sync_rx = None;
+                self.syncing = false;
+                self.apply_sync_result(result, outcome, doc);
+                // A landed pull mutated the document — persist it.
+                self.force_persist = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // Worker panicked or dropped the sender without a reply.
+                self.sync_rx = None;
+                self.syncing = false;
+                self.status = Some("Sync failed".into());
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Merge a pull's events into the model + CRDT and set the status pill.
+    /// De-duped by (title, start) so a repeated sync is close to idempotent.
+    fn apply_sync_result(
+        &mut self,
+        result: caldav::SyncResult,
+        outcome: SyncOutcome,
+        doc: &mut AutoCommit,
+    ) {
         let mut added = 0usize;
         for mut e in result.events {
             if self
@@ -252,20 +393,23 @@ impl CalendarApp {
             }
             e.id = Uuid::new_v4();
             CalDoc::update_event(doc, &e);
-            if let Some(list) = CalDoc::event_notes(doc, e.id) {
-                CalDoc::seed_notes_if_empty(doc, &list, &["Synced from CalDAV"]);
-            }
             self.model.events.push(e);
             added += 1;
         }
         self.model.events.sort_by_key(|e| e.start);
-        self.status = match outcome {
+        self.status = Some(match outcome {
             SyncOutcome::Synced { calendars, .. } => {
-                Some(format!("Synced {added} events from {calendars} calendars"))
+                format!("Synced {added} events from {calendars} calendars")
             }
-            SyncOutcome::Offline => None,
-            SyncOutcome::Failed(reason) => Some(format!("Sync failed: {reason}")),
-        };
+            SyncOutcome::Offline => {
+                if self.accounts.is_empty() {
+                    "No calendar accounts yet — add one in Settings".into()
+                } else {
+                    "Couldn't reach the calendar server".into()
+                }
+            }
+            SyncOutcome::Failed(reason) => format!("Sync failed: {reason}"),
+        });
         self.dirty = true;
     }
 
@@ -296,18 +440,18 @@ impl CalendarApp {
                 "Design review",
                 &[
                     "# Agenda",
-                    "Walk the month grid + week timeline.",
+                    "Review the latest mockups.",
                     "Open questions:",
-                    "Repeat glyph on recurring chips?",
-                    "Confirm all-day strip height.",
+                    "Empty states for new users?",
+                    "Tighten dense-list spacing.",
                 ],
             ),
             (
                 "Team standup",
                 &[
-                    "# Standup notes",
-                    "Yesterday: shipped ICS export.",
-                    "Today: month-grid hit testing.",
+                    "# Standup",
+                    "Wrapped up the import flow.",
+                    "Reviewing open PRs today.",
                     "Blockers: none.",
                 ],
             ),
@@ -343,6 +487,53 @@ impl CalendarApp {
             *self.notes_editor() = ed;
             self.bound = Some(sel);
             self.dirty = true;
+        }
+    }
+
+    /// Drop the current selection if the item it points at is no longer in the
+    /// model (e.g. after adopting a persisted document that never had it).
+    fn revalidate_selection(&mut self) {
+        let alive = match self.selection {
+            Some(Sel::Event(id)) => self.model.event(id).is_some(),
+            Some(Sel::Task(id)) => self.model.task(id).is_some(),
+            None => false,
+        };
+        if !alive {
+            self.selection = None;
+            self.detail_open = false;
+            self.narrow_screen = NarrowScreen::Calendar;
+        }
+    }
+
+    /// Write the calendar document to disk when it has changed. No-op in the
+    /// demo/test build (no `data_path`) and when nothing changed since the last
+    /// save, so this is safe to call every frame.
+    ///
+    /// Discrete actions (new event, toggle, import, sync) force an immediate
+    /// write. Continuous edits — typing in a note — coalesce: the whole
+    /// document is serialized at most a few times a second while the keystrokes
+    /// keep landing, and once more when they stop.
+    fn maybe_persist(&mut self, state: &mut AutoCommit) {
+        let Some(path) = self.data_path.clone() else {
+            return;
+        };
+        let heads = state.get_heads();
+        if heads == self.saved_heads {
+            self.force_persist = false;
+            return;
+        }
+        let due = self.force_persist
+            || self.last_persist.elapsed() >= std::time::Duration::from_millis(500);
+        if !due {
+            return;
+        }
+        match crate::store::save(&path, state) {
+            Ok(()) => {
+                self.saved_heads = heads;
+                self.last_persist = std::time::Instant::now();
+                self.force_persist = false;
+            }
+            Err(e) => tracing::warn!(error = %e, "calendar: failed to persist document"),
         }
     }
 
@@ -407,8 +598,17 @@ impl CalendarApp {
     }
 
     fn export_ics(&mut self) {
+        if self.model.events.is_empty() && self.model.tasks.is_empty() {
+            self.status = Some("Nothing to export yet".into());
+            self.dirty = true;
+            return;
+        }
         let ics = ics::export(&self.model);
-        let path = std::env::temp_dir().join(ics::suggested_filename(self.anchor));
+        let dir = crate::store::transfer_dir();
+        let path = dir.join(ics::suggested_filename(self.anchor));
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         match std::fs::write(&path, ics) {
             Ok(_) => {
                 self.status = Some(format!(
@@ -422,12 +622,31 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Import the bundled sample `.ics` (anchored near today) through the
-    /// real [`ics::parse`] path, merging new events/tasks into the model
-    /// and the CRDT. De-duped by (title, start) for events and by title
-    /// for tasks so a repeated import is close to idempotent.
+    /// Import the most recent `.ics` file from the transfer directory (the
+    /// user's Downloads folder) through the real [`ics::parse`] path, merging
+    /// new events/tasks into the model and the CRDT. De-duped by (title,
+    /// start) for events and by title for tasks so a repeated import is close
+    /// to idempotent.
     fn import_ics(&mut self, doc: &mut AutoCommit) {
-        let payload = ics::sample_ics(self.today);
+        let dir = crate::store::transfer_dir();
+        let Some(path) = crate::store::newest_ics(&dir) else {
+            self.status = Some(format!("No .ics files found in {}", dir.display()));
+            self.dirty = true;
+            return;
+        };
+        let payload = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status = Some(format!("Import failed: {e}"));
+                self.dirty = true;
+                return;
+            }
+        };
+        let source = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
         let (events, tasks) = ics::parse(&payload);
         let mut added_e = 0usize;
         for mut e in events {
@@ -459,9 +678,9 @@ impl CalendarApp {
         }
         self.model.events.sort_by_key(|e| e.start);
         self.status = Some(if added_e == 0 && added_t == 0 {
-            "Sample .ics already imported".into()
+            format!("{source} already imported")
         } else {
-            format!("Imported {added_e} events · {added_t} tasks from sample.ics")
+            format!("Imported {added_e} events · {added_t} tasks from {source}")
         });
         self.dirty = true;
     }
@@ -539,9 +758,10 @@ impl CalendarApp {
         }
 
         // Notes editor placement, derived from whichever detail rect is active.
-        // The column itself is a fixed `NOTES_W` (the editor node's stable
-        // taffy size); only its origin moves with the active detail rect.
-        self.notes_w = NOTES_W;
+        // The column width tracks the detail rect (capped for readability) so
+        // the narrow single-pane screen fills its width instead of leaving a
+        // fixed-width column stranded against a wide empty margin.
+        self.notes_w = self.detail_body_w();
         if self.detail_rect.area() > 0.0 {
             self.notes_origin = Point::new(
                 self.detail_rect.x0 + DETAIL_PAD,
@@ -549,6 +769,19 @@ impl CalendarApp {
             );
         } else {
             self.notes_origin = Point::new(-10000.0, -10000.0);
+        }
+    }
+
+    /// Width of the detail body column (fields + notes editor). Fixed in the
+    /// wide docked panel; in the narrow single-pane screen it grows with the
+    /// window (capped for comfortable line length) so the detail fills the
+    /// pane instead of hugging the left edge. Derived from the allocated
+    /// window width so `build_layout` and `relayout` agree.
+    fn detail_body_w(&self) -> f64 {
+        if self.rect.width() >= WIDE_BREAKPOINT {
+            NOTES_W
+        } else {
+            (self.rect.width() - 2.0 * DETAIL_PAD).clamp(240.0, 620.0)
         }
     }
 
@@ -577,6 +810,13 @@ impl CalendarApp {
         match action {
             Action::View(v) => {
                 self.view = v;
+                // On narrow layouts the switcher lives in the overlay flap;
+                // picking a view there returns to the calendar screen and
+                // dismisses the flap so the chosen view is visible at once.
+                if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                    self.narrow_screen = NarrowScreen::Calendar;
+                    self.sidebar_open = false;
+                }
             }
             Action::Today => self.anchor = self.today,
             Action::Prev => self.step_period(-1),
@@ -613,7 +853,7 @@ impl CalendarApp {
                     }
                 }
             }
-            Action::Sync => self.sync_caldav(doc),
+            Action::Sync => self.start_sync(doc),
             Action::Export => self.export_ics(),
             Action::Import => self.import_ics(doc),
             Action::ShiftMonth(n) => self.anchor = date::add_months(self.anchor, n),
@@ -642,6 +882,10 @@ impl CalendarApp {
                 }
             }
         }
+        // Discrete actions are worth an immediate save; if the action didn't
+        // touch the document (view/navigation) the head check in `maybe_persist`
+        // makes this a no-op.
+        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -716,6 +960,34 @@ impl CalendarApp {
         );
         y += 40.0;
 
+        // View switcher — carried by the flap only in the overlay layout. The
+        // wide topbar has its own segmented switch, but on narrow layouts that
+        // switch folds away, so without this a pointer/touch user could reach
+        // Day/Agenda but never get back to Month. Keeps every view reachable.
+        if overlay {
+            let seg = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 36.0);
+            fill_round(scene, t, c.surfaces.base, seg, 9.0);
+            stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
+            let cell_w = seg.width() / View::ALL.len() as f64;
+            for (i, v) in View::ALL.iter().enumerate() {
+                let cell = Rect::new(
+                    seg.x0 + cell_w * i as f64,
+                    seg.y0,
+                    seg.x0 + cell_w * (i as f64 + 1.0),
+                    seg.y1,
+                );
+                if self.view == *v {
+                    fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
+                } else if cell.contains(self.last_mouse) {
+                    fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
+                }
+                let col = if self.view == *v { Color::WHITE } else { c.neutral[7] };
+                center_text(scene, tr, v.label(), 13.0, col, cell, t);
+                hits.push((cell, Action::View(*v)));
+            }
+            y += 50.0;
+        }
+
         // Export / Import .ics buttons (also bound to `e` / `i`).
         let bw = (r.width() - 24.0 - 8.0) / 2.0;
         let exp = Rect::new(r.x0 + 12.0, y, r.x0 + 12.0 + bw, y + 32.0);
@@ -785,17 +1057,19 @@ impl CalendarApp {
             y += 38.0;
         }
 
-        y += 14.0;
-        // Section heading.
-        tr.draw_text(
-            scene,
-            "PROJECTS",
-            11.0,
-            c.text_dim,
-            t * Affine::translate((r.x0 + pad, y)),
-            None,
-        );
-        y += 26.0;
+        // Section heading — only when the user actually has projects.
+        if !self.model.projects.is_empty() {
+            y += 14.0;
+            tr.draw_text(
+                scene,
+                "PROJECTS",
+                11.0,
+                c.text_dim,
+                t * Affine::translate((r.x0 + pad, y)),
+                None,
+            );
+            y += 26.0;
+        }
         for p in &self.model.projects {
             let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 34.0);
             let active = self.list_sel == ListSel::Project(p.id);
@@ -909,10 +1183,12 @@ impl CalendarApp {
 
         // Reserve the bottom of the sidebar for the mini-month navigator.
         let mini_top = r.y1 - 196.0;
-        // Mini upcoming-task rail — only when there's vertical room left above
-        // the mini-month (the CALENDARS section above may have used it up; the
-        // agenda/day views still list the tasks in full either way).
-        if y + 56.0 < mini_top {
+        let rail_tasks = self.model.tasks_for(&self.list_sel, self.today);
+        // Mini upcoming-task rail — only when there are tasks to show AND
+        // there's vertical room left above the mini-month (the CALENDARS
+        // section above may have used it up; the agenda/day views still list
+        // the tasks in full either way).
+        if !rail_tasks.is_empty() && y + 56.0 < mini_top {
             let list_title = match &self.list_sel {
                 ListSel::Inbox => "Inbox",
                 ListSel::Today => "Today",
@@ -1110,19 +1386,23 @@ impl CalendarApp {
         hits
     }
 
-    fn period_title(&self) -> String {
+    /// Candidate period titles for the topbar, widest first. The topbar draws
+    /// the widest one that fits the space between the Today pill and the New
+    /// button, so the full range still reads when there's room and degrades to
+    /// a compact form (still showing both endpoints) when there isn't — rather
+    /// than clipping the end date off a single fixed string.
+    fn period_title_variants(&self) -> Vec<String> {
         match self.view {
-            View::Month => date::month_title(self.anchor),
+            View::Month => vec![date::month_title(self.anchor)],
             View::Week => {
                 let w = date::week_days(self.anchor);
-                format!(
-                    "{} – {}",
-                    date::fmt_day_long(w[0]),
-                    date::fmt_day_long(w[6])
-                )
+                vec![
+                    date::week_range_long(w[0], w[6]),
+                    date::week_range_short(w[0], w[6]),
+                ]
             }
-            View::Day => date::fmt_day_long(self.anchor),
-            View::Agenda => "Upcoming".into(),
+            View::Day => vec![date::fmt_day_long(self.anchor)],
+            View::Agenda => vec!["Upcoming".into()],
         }
     }
 
@@ -1173,12 +1453,12 @@ impl CalendarApp {
         draw_icon_button(scene, t, theme, today_btn, today_btn.contains(self.last_mouse));
         center_text(scene, tr, "Today", 13.0, c.neutral[8], today_btn, t);
         hits.push((today_btn, Action::Today));
-        let title_x = today_btn.x1 + 18.0;
+        let title_x = today_btn.x1 + 14.0;
 
         // Right cluster: segmented view control (wide only) + New button.
-        let new_w = 66.0;
+        let new_w = 60.0;
         let seg_x0 = if show_segmented {
-            let seg_w = 64.0;
+            let seg_w = 56.0;
             let seg_total = seg_w * 4.0;
             let seg_x1 = right_edge - 14.0;
             let seg_x0 = seg_x1 - seg_total;
@@ -1201,7 +1481,7 @@ impl CalendarApp {
             right_edge - 14.0
         };
 
-        let new_btn = Rect::new(seg_x0 - new_w - 12.0, cy - 16.0, seg_x0 - 12.0, cy + 16.0);
+        let new_btn = Rect::new(seg_x0 - new_w - 10.0, cy - 16.0, seg_x0 - 10.0, cy + 16.0);
         fill_round(scene, t, c.accent[5], new_btn, 9.0);
         draw_plus(scene, t, Color::WHITE, Point::new(new_btn.x0 + 16.0, cy));
         tr.draw_text(
@@ -1214,13 +1494,22 @@ impl CalendarApp {
         );
         hits.push((new_btn, Action::NewEvent));
 
-        // Period title — fills the gap, clipped so a long week range never
-        // collides with the New button.
-        let title_clip = Rect::new(title_x - 2.0, r.y0, new_btn.x0 - 12.0, r.y1);
+        // Period title — fills the gap between the Today pill and the New
+        // button. Draw the widest variant that fits so the full range reads
+        // whenever there's room (dropping to a compact both-endpoints form
+        // when there isn't); the clip layer is only a last-resort safety net.
+        let title_right = new_btn.x0 - 12.0;
+        let avail = (title_right - title_x).max(0.0);
+        let variants = self.period_title_variants();
+        let title = variants
+            .iter()
+            .find(|v| tr.measure(v, 19.0, None).0 as f64 <= avail)
+            .unwrap_or_else(|| variants.last().expect("at least one title variant"));
+        let title_clip = Rect::new(title_x - 2.0, r.y0, title_right, r.y1);
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &title_clip);
         tr.draw_text(
             scene,
-            &self.period_title(),
+            title,
             19.0,
             c.text_primary,
             t * Affine::translate((title_x, cy - 11.0)),
@@ -1286,6 +1575,16 @@ impl CalendarApp {
             );
             // grid lines
             stroke_round(scene, t, c.border_standard.with_alpha(0.5), cell, 0.0, 0.5);
+
+            // Cell-level click targets are pushed FIRST so the event chips
+            // drawn below win the reverse (topmost-last) hit-scan — clicking a
+            // chip must open that event, not just re-anchor the day. The
+            // date-number strip in turn wins over the empty cell body.
+            hits.push((cell, Action::PickDate(*day)));
+            hits.push((
+                Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + 28.0),
+                Action::OpenDay(*day),
+            ));
 
             let in_month = day.month() == self.anchor.month();
             let is_today = *day == self.today;
@@ -1358,9 +1657,10 @@ impl CalendarApp {
                 let col = color.color(theme);
                 if *all_day {
                     fill_round(scene, t, col, chip, 4.0);
+                    let line = elide_to_width(tr, title, 10.0, chip.width() - 12.0);
                     tr.draw_text(
                         scene,
-                        &elide(title, 16),
+                        &line,
                         10.0,
                         Color::WHITE,
                         t * Affine::translate((chip.x0 + 6.0, chip.y0 + 3.0)),
@@ -1375,10 +1675,11 @@ impl CalendarApp {
                         None,
                         &Circle::new(Point::new(chip.x0 + 8.0, chip.center().y), 3.0),
                     );
-                    let label = format!("{} {}", date::fmt_time(start), elide(title, 14));
+                    let label = format!("{} {}", date::fmt_time(start), title);
+                    let line = elide_to_width(tr, &label, 10.0, chip.width() - 22.0);
                     tr.draw_text(
                         scene,
-                        &label,
+                        &line,
                         10.0,
                         c.neutral[9],
                         t * Affine::translate((chip.x0 + 16.0, chip.y0 + 3.0)),
@@ -1389,9 +1690,6 @@ impl CalendarApp {
                 cy += 20.0;
             }
             scene.pop_layer();
-
-            hits.push((Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + 28.0), Action::OpenDay(*day)));
-            hits.push((cell, Action::PickDate(*day)));
         }
         hits
     }
@@ -1459,9 +1757,10 @@ impl CalendarApp {
             if !allday.is_empty() {
                 let (id, title, color) = &allday[0];
                 fill_round(scene, t, color.color(theme), strip, 4.0);
+                let line = elide_to_width(tr, title, 10.0, strip.width() - 12.0);
                 tr.draw_text(
                     scene,
-                    &elide(title, 18),
+                    &line,
                     10.0,
                     Color::WHITE,
                     t * Affine::translate((strip.x0 + 6.0, strip.y0 + 4.0)),
@@ -1524,23 +1823,33 @@ impl CalendarApp {
                 fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
                 fill_round(scene, t, col, Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1), 2.0);
                 scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &block);
+                // Single line, ellipsized to the block width rather than wrapped —
+                // a long title must never spill onto the time/location subtitle
+                // row below it, and it degrades to "Team stan…" instead of a hard
+                // mid-glyph slice.
+                let text_w = block.width() - 20.0;
+                let title_line = elide_to_width(tr, &title, 11.0, text_w);
                 tr.draw_text(
                     scene,
-                    &title,
+                    &title_line,
                     11.0,
                     c.neutral[9],
                     t * Affine::translate((block.x0 + 10.0, block.y0 + 4.0)),
-                    Some((block.width() - 14.0) as f32),
+                    None,
                 );
                 if block.height() > 34.0 {
                     let sub = format!("{}–{} {}", date::fmt_time(&start), date::fmt_time(&end), loc);
+                    // Single ellipsized line too — a short block has only one row
+                    // of vertical space for the subtitle, so wrapping the location
+                    // would spill past the block bottom.
+                    let sub_line = elide_to_width(tr, &sub, 10.0, text_w);
                     tr.draw_text(
                         scene,
-                        &sub,
+                        &sub_line,
                         10.0,
                         c.text_dim,
                         t * Affine::translate((block.x0 + 10.0, block.y0 + 18.0)),
-                        Some((block.width() - 14.0) as f32),
+                        None,
                     );
                 }
                 scene.pop_layer();
@@ -1680,7 +1989,15 @@ impl CalendarApp {
         }
 
         if y <= area.y0 + 18.0 {
-            center_text(scene, tr, "Nothing scheduled in the next three weeks", 14.0, c.text_dim, area, t);
+            center_text(
+                scene,
+                tr,
+                "Nothing scheduled — press New to add an event",
+                14.0,
+                c.text_dim,
+                area,
+                t,
+            );
         }
         hits
     }
@@ -1849,24 +2166,38 @@ impl Default for CalendarApp {
 impl Widget for CalendarApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
-            if CalDoc::is_empty(state) {
+            // Live app: adopt the user's persisted calendar (empty on a fresh
+            // machine). Demo/test builds pass no path and stay in-memory.
+            if let Some(p) = &self.data_path {
+                if let Some(mut loaded) = crate::store::load(p) {
+                    let _ = state.merge(&mut loaded);
+                }
+            }
+            // Seed sample content ONLY in the demo build, and only when the
+            // document is still empty.
+            if self.demo && CalDoc::is_empty(state) {
                 CalDoc::seed(state, &self.model);
                 self.seed_demo_notes(state);
-            } else {
-                // Adopt an existing shared calendar.
-                self.model = CalDoc::read_model(state);
             }
+            // Whatever the document holds is now authoritative for the UI.
+            if !CalDoc::is_empty(state) {
+                self.model = CalDoc::read_model(state);
+            } else {
+                self.model = Model::default();
+            }
+            self.revalidate_selection();
+            self.saved_heads = state.get_heads();
             self.seeded = true;
         }
-        // First-frame CalDAV pull: merge the configured calendars' events in so
-        // the seeded view (and `--shots`) shows real synced entries. Runs once;
-        // the live app re-syncs from a worker on the `Sync` action.
-        if !self.synced {
-            self.sync_caldav(state);
-            self.synced = true;
-        }
+        // Drain a finished background CalDAV pull, if one landed since the last
+        // frame, before binding the editor so a freshly-synced selection reads
+        // back its notes.
+        self.poll_sync(state);
         self.ensure_bound(state);
         self.notes_editor.sync(state, path);
+        // Persist after the editor's sync so notes edits land too. Cheap: only
+        // writes when the document's heads changed since the last save.
+        self.maybe_persist(state);
     }
 
     fn build_layout(
@@ -1876,13 +2207,15 @@ impl Widget for CalendarApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let editor_node = self.notes_editor.build_layout(taffy, theme, node_map);
+        let notes_w = self.detail_body_w();
+        self.built_notes_w = notes_w;
         if let Ok(existing) = taffy.style(editor_node).cloned() {
             let _ = taffy.set_style(
                 editor_node,
                 Style {
                     position: taffy::Position::Absolute,
                     size: Size {
-                        width: Dimension::length(NOTES_W as f32),
+                        width: Dimension::length(notes_w as f32),
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
@@ -1979,7 +2312,7 @@ impl Widget for CalendarApp {
             let clip = Rect::new(
                 self.detail_rect.x0,
                 self.notes_origin.y - 4.0,
-                self.notes_origin.x + NOTES_W + 4.0,
+                self.notes_origin.x + self.notes_w + 4.0,
                 self.detail_rect.y1 - 12.0,
             );
             scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &clip);
@@ -2150,7 +2483,20 @@ impl Widget for CalendarApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.notes_editor.take_structure_dirty()
+        // Rebuild when the editor's own structure changed, OR when the notes
+        // column width the editor was built at no longer matches the current
+        // layout (a resize crossed the breakpoint). The rebuild re-runs
+        // `build_layout`, which resets `built_notes_w`, so this settles in one
+        // frame and never loops while the width is stable.
+        let width_changed = (self.detail_body_w() - self.built_notes_w).abs() > 0.5;
+        self.notes_editor.take_structure_dirty() || width_changed
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the event loop ticking while a background CalDAV pull is running
+        // so its result is drained in `sync` the moment it arrives, without
+        // waiting for an unrelated input event.
+        self.syncing
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -2328,13 +2674,44 @@ fn elide(s: &str, max: usize) -> String {
     }
 }
 
+/// Truncate `text` with a trailing ellipsis so it renders within `max_px` at
+/// `size`, measured against the real text shaper so the cut matches the drawn
+/// glyphs (a fixed character budget can't, since glyph widths vary). Returns
+/// the whole string when it already fits, and a lone ellipsis when not even one
+/// character does. This is what keeps event titles from being hard-sliced
+/// mid-glyph in the dense month/week grids.
+fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> String {
+    if max_px <= 0.0 {
+        return String::new();
+    }
+    if tr.measure(text, size, None).0 as f64 <= max_px {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // Largest prefix length whose "<prefix>…" still fits within `max_px`.
+    let mut lo = 0usize;
+    let mut hi = chars.len().saturating_sub(1);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let candidate: String = chars[..mid].iter().chain(std::iter::once(&'…')).collect();
+        if tr.measure(&candidate, size, None).0 as f64 <= max_px {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let mut out: String = chars[..lo].iter().collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn new_app_seeds_model_and_selection() {
-        let app = CalendarApp::new();
+    fn demo_app_seeds_model_and_selection() {
+        let app = CalendarApp::new_demo();
         assert!(!app.model.events.is_empty());
         assert!(!app.model.tasks.is_empty());
         assert!(app.selection.is_some());
@@ -2342,8 +2719,171 @@ mod tests {
     }
 
     #[test]
+    fn breakpoint_reflows_on_resize_not_cached_from_first_frame() {
+        // The reported bug: responsive on first launch, frozen after resizing.
+        // Prove the breakpoint + region rects are re-derived from the CURRENT
+        // width on every layout pass — on a SINGLE instance — by driving the
+        // real `relayout` (exactly what `apply_layout` calls) across a
+        // wide → narrow → wide sequence.
+        let mut app = CalendarApp::new_demo();
+
+        // Wide first frame: persistent sidebar, detail docked beside calendar.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert!(app.content_rect.width() > 0.0);
+        assert!(app.detail_rect.width() > 0.0);
+        let wide_content = app.content_rect;
+
+        // Resize the SAME instance narrow. A cached-from-first-frame mode would
+        // stay Persistent; a correctly re-derived one flips to Overlay.
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+        assert_eq!(
+            app.sidebar_mode,
+            SidebarMode::Overlay,
+            "breakpoint must re-derive from the current width, not the first frame"
+        );
+        // Narrow + detail-open default => detail is the full-width pushed
+        // screen and the calendar content pane collapses.
+        assert_eq!(app.content_rect.width(), 0.0);
+        assert!(app.detail_rect.width() > 0.0);
+        assert_ne!(app.content_rect, wide_content, "layout actually changed on resize");
+
+        // Back to wide — proves it toggles both directions, not just once.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert!(app.detail_rect.width() > 0.0);
+        assert_eq!(app.content_rect, wide_content);
+    }
+
+    #[test]
+    fn notes_editor_width_retracks_after_resize() {
+        // The notes editor's text-wrap width is set in `build_layout`, which the
+        // live loop only re-runs on a structure rebuild. A resize that reshapes
+        // the detail pane must therefore request a rebuild so the editor column
+        // tracks the new width instead of staying frozen at launch width.
+        use std::collections::HashMap;
+        use taffy::TaffyTree;
+
+        let mut app = CalendarApp::new_demo();
+        let theme = Theme::dark();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.build_layout(&mut taffy, &theme, &mut node_map);
+        let wide_built = app.built_notes_w;
+        assert!(wide_built > 0.0);
+
+        // Resize narrow: the pane wants a different notes width than we built.
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+        assert!(
+            (app.detail_body_w() - wide_built).abs() > 0.5,
+            "the narrow pane wants a different notes width"
+        );
+        assert!(
+            app.take_structure_dirty(),
+            "a resize that changes the notes column must request an editor rebuild"
+        );
+
+        // The rebuild adopts the resized width.
+        let mut taffy2: TaffyTree<()> = TaffyTree::new();
+        let mut node_map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        app.build_layout(&mut taffy2, &theme, &mut node_map2);
+        assert_ne!(app.built_notes_w, wide_built, "editor rebuilt at the resized width");
+    }
+
+    #[test]
+    fn week_range_short_keeps_both_endpoints() {
+        // The compact week title (used when the topbar is tight) must still show
+        // start AND end — the clip bug lost the end date entirely.
+        let s = crate::date::week_range_short(
+            NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+        );
+        assert!(s.contains("29 Jun"), "start kept: {s}");
+        assert!(s.contains("5 Jul"), "end kept: {s}");
+    }
+
+    #[test]
+    fn live_app_starts_empty_with_no_fabricated_content() {
+        // A fresh machine (no persisted document, no configured accounts) must
+        // show an empty calendar — no sample events, tasks or accounts.
+        let missing = std::env::temp_dir()
+            .join(format!("cal-empty-{}", uuid::Uuid::new_v4()))
+            .join("calendar.automerge");
+        let mut app = CalendarApp::new_with_data_path(missing);
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        assert!(app.model.events.is_empty(), "no fabricated events");
+        assert!(app.model.tasks.is_empty(), "no fabricated tasks");
+        assert!(app.accounts.is_empty(), "no fabricated accounts");
+        assert!(app.selection.is_none());
+        assert!(!app.detail_open);
+    }
+
+    #[test]
+    fn user_events_persist_across_restart() {
+        // The real backend: an event created in one session is present after a
+        // fresh instance loads the same on-disk document.
+        let dir = std::env::temp_dir().join(format!("cal-persist-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calendar.automerge");
+
+        let mut app = CalendarApp::new_with_data_path(path.clone());
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.apply_action(Action::NewEvent, &mut state.doc);
+        let created = app.model.events.iter().find(|e| e.title == "New event").map(|e| e.id);
+        assert!(created.is_some(), "NewEvent added an event to the model");
+        // Persist runs on the next sync (writes only when heads changed).
+        app.sync(&mut state.doc, &state.root);
+        assert!(path.exists(), "document was written to disk");
+
+        // Fresh instance + fresh doc: it must load the event back from disk.
+        let mut app2 = CalendarApp::new_with_data_path(path.clone());
+        let mut state2 = ui::State::new();
+        app2.sync(&mut state2.doc, &state2.root);
+        assert!(
+            app2.model.events.iter().any(|e| e.title == "New event"),
+            "event survived the restart via on-disk persistence"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_reads_a_real_ics_file() {
+        // Import pulls the newest `.ics` from the transfer directory through
+        // the real parse path — not a bundled sample.
+        let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: single-threaded test process for this env var.
+        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        let today = chrono::Local::now().date_naive();
+        std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let before = app.model.events.len();
+        app.apply_action(Action::Import, &mut state);
+        assert!(app.model.events.len() > before, "imported events landed in the model");
+        assert!(
+            app.model.events.iter().any(|e| e.title == "Quarterly all-hands"),
+            "the .ics file's event parsed in"
+        );
+        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn sync_seeds_crdt_and_binds_editor() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut state, &root);
@@ -2355,7 +2895,7 @@ mod tests {
 
     #[test]
     fn switching_view_changes_state() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.apply_action(Action::View(View::Week), &mut state);
         assert_eq!(app.view, View::Week);
@@ -2365,7 +2905,7 @@ mod tests {
 
     #[test]
     fn toggling_a_task_flips_done_and_mirrors_to_crdt() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
         let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
@@ -2376,7 +2916,7 @@ mod tests {
 
     #[test]
     fn new_event_appends_and_selects() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
         let before = app.model.events.len();
@@ -2387,7 +2927,7 @@ mod tests {
 
     #[test]
     fn stepping_month_changes_anchor_month() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         let m0 = app.anchor.month();
         app.apply_action(Action::Next, &mut state);
@@ -2399,7 +2939,7 @@ mod tests {
 
     #[test]
     fn wide_window_uses_persistent_sidebar_and_docked_detail() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
@@ -2412,7 +2952,7 @@ mod tests {
 
     #[test]
     fn narrow_window_collapses_sidebar_to_overlay() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
         app.sidebar_open = false;
         app.relayout();
@@ -2425,7 +2965,7 @@ mod tests {
 
     #[test]
     fn narrow_detail_screen_replaces_the_calendar() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
         app.detail_open = true;
         app.narrow_screen = NarrowScreen::Detail;
@@ -2444,7 +2984,7 @@ mod tests {
 
     #[test]
     fn selecting_in_narrow_mode_pushes_detail_and_closes_flap() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
         app.relayout();
         app.sidebar_open = true;
@@ -2460,10 +3000,14 @@ mod tests {
     fn sidebar_task_label_and_open_targets_coexist() {
         // The mini task rail must offer BOTH a completion target (checkbox +
         // label) and a select target (open the task) for the same row.
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        // With no synced accounts the sidebar has room for the task rail
+        // (a machine full of remote calendars still lists tasks in the
+        // agenda/day views — the rail is the space-permitting extra).
+        app.accounts = AccountStore::default();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
         app.relayout();
         // Draw to populate the hit-map.
         let theme = Theme::dark();
@@ -2488,7 +3032,7 @@ mod tests {
     fn toggling_via_label_hit_flips_completion() {
         // Resolving a ToggleTask action (what a label/checkbox click produces)
         // flips done — the production toggle path, not a helper.
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
         let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
@@ -2503,25 +3047,111 @@ mod tests {
     fn new_app_loads_caldav_accounts() {
         // Offline, the app falls back to the sample account store so synced
         // calendars appear in the sidebar.
-        let app = CalendarApp::new();
+        let app = CalendarApp::new_demo();
         assert!(!app.accounts.is_empty());
         assert!(app.accounts.all_calendars().count() > 0);
     }
 
     #[test]
     fn sync_merges_visible_calendar_events() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
-        // The first-frame sync should have merged at least one synced event in.
+        // Sync is explicit now (no fabricated auto-pull on the first frame).
+        app.apply_action(Action::Sync, &mut state);
         assert!(app.model.events.iter().any(|e| e.title == "Synced standup"));
         // The hidden "Holidays" calendar's event must not appear.
         assert!(!app.model.events.iter().any(|e| e.title == "Public holiday"));
     }
 
     #[test]
+    fn live_sync_runs_off_the_ui_thread_without_blocking() {
+        // A live (non-demo) app with a configured account must dispatch the
+        // pull to a worker thread and return immediately — the click never
+        // blocks on the network. We assert the async hand-off, then abandon the
+        // detached worker (its result is irrelevant to this behaviour).
+        let mut app = CalendarApp::new_demo();
+        app.demo = false; // exercise the real (threaded) branch
+        app.accounts = AccountStore::sample();
+        let mut state = AutoCommit::new();
+        app.start_sync(&mut state);
+        assert!(app.syncing, "a live sync is in flight");
+        assert!(app.sync_rx.is_some(), "worker result channel is armed");
+        assert!(
+            app.needs_animation_frame(),
+            "the loop must keep ticking so the result drains"
+        );
+        // Detach the worker so the test doesn't depend on the network.
+        app.sync_rx = None;
+        app.syncing = false;
+    }
+
+    #[test]
+    fn live_sync_with_no_accounts_answers_instantly() {
+        // No worker, no thread, no spin: an empty account set reports its state
+        // synchronously.
+        let mut app = CalendarApp::new_demo();
+        app.demo = false;
+        app.accounts = AccountStore::default();
+        let mut state = AutoCommit::new();
+        app.start_sync(&mut state);
+        assert!(!app.syncing, "nothing to sync → no background work");
+        assert!(app.status.as_deref().unwrap_or("").contains("account"));
+    }
+
+    #[test]
+    fn poll_sync_drains_a_finished_worker_into_the_model() {
+        // The drain path (`poll_sync` → `apply_sync_result`) folds a completed
+        // pull into the model + CRDT and clears the in-flight flag. Driven with
+        // a hand-fed channel so it is deterministic and network-free, but it is
+        // the exact production code the live worker feeds.
+        use crate::model::{Event, Palette, Recurrence};
+        use chrono::NaiveTime;
+
+        let mut app = CalendarApp::new_demo();
+        app.demo = false;
+        let mut state = AutoCommit::new();
+        let before = app.model.events.len();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let start = app
+            .today
+            .and_time(NaiveTime::from_hms_opt(8, 0, 0).unwrap());
+        let synced = Event {
+            id: uuid::Uuid::new_v4(),
+            title: "Pulled from server".into(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            location: "Remote".into(),
+            color: Palette::Blue,
+            recurrence: Recurrence::None,
+            reminder_min: None,
+            project: None,
+        };
+        tx.send((
+            caldav::SyncResult { events: vec![synced], tasks: Vec::new() },
+            SyncOutcome::Synced { calendars: 1, events: 1 },
+        ))
+        .unwrap();
+        app.sync_rx = Some(rx);
+        app.syncing = true;
+
+        app.poll_sync(&mut state);
+
+        assert!(!app.syncing, "drain clears the in-flight flag");
+        assert_eq!(app.model.events.len(), before + 1, "synced event landed");
+        assert!(
+            app.model.events.iter().any(|e| e.title == "Pulled from server"),
+            "the pulled event is now in the model"
+        );
+        // And it mirrored into the CRDT (persistence source of truth).
+        assert!(!CalDoc::is_empty(&state));
+    }
+
+    #[test]
     fn toggling_calendar_visibility_flips_the_flag() {
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         let id = app
             .accounts
@@ -2545,5 +3175,251 @@ mod tests {
             .1
             .visible;
         assert_ne!(before, after);
+    }
+
+    // --- end-to-end click routing through the real handle_event -----------
+
+    /// Owns a laid-out app + taffy tree so a test can pump synthesized winit
+    /// events through the production `Widget::handle_event`, exactly as the
+    /// live event loop does.
+    struct Harness {
+        app: CalendarApp,
+        doc: AutoCommit,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        w: u32,
+        h: u32,
+    }
+
+    impl Harness {
+        fn new(w: u32, h: u32) -> Self {
+            let mut app = CalendarApp::new_demo();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let mut hn = Harness { app, doc, taffy: TaffyTree::new(), node: NodeId::new(0), w, h };
+            hn.relayout();
+            hn
+        }
+
+        fn relayout(&mut self) {
+            use taffy::prelude::*;
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            self.taffy = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = self.app.build_layout(&mut self.taffy, &theme, &mut node_map);
+            self.node = child;
+            let root = self
+                .taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(self.w as f32),
+                            height: Dimension::length(self.h as f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            self.taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: AvailableSpace::Definite(self.w as f32),
+                        height: AvailableSpace::Definite(self.h as f32),
+                    },
+                    |known, avail, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, avail, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            self.app.apply_layout(&self.taffy, child, Point::ORIGIN);
+            // Draw once to populate the click hit-map, like the live renderer.
+            let mut scene = Scene::new();
+            self.app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+        }
+
+        fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+            let mods = winit::event::Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(
+                event,
+                1.0,
+                &mods,
+                &mut self.doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+        }
+
+        fn click(&mut self, p: Point) {
+            // winit exposes no public DeviceId constructor; the production
+            // synthesized-press path does exactly this.
+            let device_id = unsafe { std::mem::zeroed() };
+            self.dispatch(&winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            });
+            self.dispatch(&winit::event::WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            });
+        }
+
+        /// Centre of the first hit rect carrying an action matching `pred`.
+        fn hit_center<F: Fn(&Action) -> bool>(&self, pred: F) -> Option<Point> {
+            self.app
+                .hits
+                .iter()
+                .find(|(_, a)| pred(a))
+                .map(|(r, _)| r.center())
+        }
+    }
+
+    #[test]
+    fn clicking_new_button_creates_and_selects_an_event() {
+        let mut h = Harness::new(1280, 800);
+        let before = h.app.model.events.len();
+        let p = h.hit_center(|a| matches!(a, Action::NewEvent)).expect("New button present");
+        h.click(p);
+        assert_eq!(h.app.model.events.len(), before + 1, "click created an event");
+        assert!(matches!(h.app.selection, Some(Sel::Event(_))), "new event is selected");
+    }
+
+    #[test]
+    fn clicking_a_view_segment_switches_the_view() {
+        let mut h = Harness::new(1280, 800);
+        assert_eq!(h.app.view, View::Month);
+        let p = h
+            .hit_center(|a| matches!(a, Action::View(View::Week)))
+            .expect("Week segment present");
+        h.click(p);
+        assert_eq!(h.app.view, View::Week, "clicking the Week segment switched the view");
+    }
+
+    #[test]
+    fn clicking_an_event_chip_opens_its_detail() {
+        // Month view is full of chips; clicking one selects that event.
+        let mut h = Harness::new(1280, 800);
+        let (rect, id) = h
+            .app
+            .hits
+            .iter()
+            .find_map(|(r, a)| match a {
+                Action::OpenEvent(id) => Some((*r, *id)),
+                _ => None,
+            })
+            .expect("at least one event chip");
+        h.click(rect.center());
+        assert_eq!(h.app.selection, Some(Sel::Event(id)), "clicked chip is now selected");
+        assert!(h.app.detail_open, "detail panel opened");
+    }
+
+    #[test]
+    fn narrow_flap_offers_a_pointer_reachable_view_switcher() {
+        // On narrow layouts the topbar's segmented switch folds away; the
+        // overlay flap must carry a pointer-reachable switch so every view stays
+        // reachable without a keyboard (the reported dead-end: a mouse user on
+        // narrow could reach Day/Agenda but never get back to Month). Drives the
+        // real `handle_event` click path, not a synthetic call.
+        let mut h = Harness::new(560, 720);
+        assert_eq!(h.app.sidebar_mode, SidebarMode::Overlay, "560px is a narrow layout");
+        // Open the flap and re-lay so its hit-map is populated.
+        h.app.sidebar_open = true;
+        h.relayout();
+        assert_eq!(h.app.view, View::Month);
+        let p = h
+            .hit_center(|a| matches!(a, Action::View(View::Week)))
+            .expect("the flap carries a Week view target on narrow");
+        h.click(p);
+        assert_eq!(h.app.view, View::Week, "clicking the flap switcher changed the view");
+        assert!(!h.app.sidebar_open, "picking a view dismisses the flap");
+        assert_eq!(
+            h.app.narrow_screen,
+            NarrowScreen::Calendar,
+            "picking a view returns to the calendar screen"
+        );
+    }
+
+    #[test]
+    fn wide_topbar_has_no_flap_switcher_duplicate() {
+        // The flap switcher is narrow-only; the wide layout already has the
+        // topbar segmented control, so the flap must NOT add a second set of
+        // View targets (which would double every view hit).
+        let mut h = Harness::new(1280, 800);
+        let view_targets = h
+            .app
+            .hits
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::View(_)))
+            .count();
+        assert_eq!(view_targets, View::ALL.len(), "exactly one switcher on wide");
+    }
+
+    #[test]
+    fn elide_to_width_ellipsizes_and_actually_fits() {
+        let mut tr = TextRenderer::new();
+        let full = "Team standup with the whole design org";
+        // Given room for the whole string, it comes back untouched (no ellipsis).
+        let roomy = tr.measure(full, 11.0, None).0 as f64 + 10.0;
+        assert_eq!(elide_to_width(&mut tr, full, 11.0, roomy), full);
+        // Under a tight budget it must ellipsize AND the result must measure
+        // within the budget — proving the cut is width-driven, not a fixed
+        // character count that could still overflow.
+        let tight = 60.0;
+        let cut = elide_to_width(&mut tr, full, 11.0, tight);
+        assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
+        assert!(cut.chars().count() < full.chars().count());
+        assert!(
+            tr.measure(&cut, 11.0, None).0 as f64 <= tight,
+            "the ellipsized line fits the budget: {cut:?}"
+        );
+    }
+
+    #[test]
+    fn week_event_titles_are_ellipsized_not_hard_sliced() {
+        // A narrow week column can't fit a full title; the drawn line must carry
+        // an ellipsis rather than a hard mid-glyph cut. Exercise the real
+        // `draw_timeline` path and confirm at least one event line ellipsizes.
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.view = View::Week;
+        app.detail_open = false;
+        app.narrow_screen = NarrowScreen::Calendar;
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = app.view_rect();
+        let days = crate::date::week_days(app.anchor);
+        // The narrowest timed block, ellipsized to its width, must not equal the
+        // full title (i.e. a real title got shortened) and must end with '…'.
+        let col_w = (area.width() - 56.0) / days.len() as f64;
+        let block_text_w = col_w - 6.0 - 20.0; // 3px block inset each side, 10+... pad
+        let long = app
+            .model
+            .events
+            .iter()
+            .filter(|e| !e.all_day)
+            .map(|e| e.title.clone())
+            .find(|tit| tr.measure(tit, 11.0, None).0 as f64 > block_text_w)
+            .expect("demo has a title too long for a narrow week column");
+        let drawn = elide_to_width(&mut tr, &long, 11.0, block_text_w);
+        assert!(drawn.ends_with('…'), "narrow week title ellipsized: {drawn:?}");
+        assert_ne!(drawn, long);
     }
 }

@@ -30,6 +30,10 @@ pub struct SourceEditor {
     pub caret: usize,
     pub anchor: usize,
     pub scroll_y: f32,
+    /// Horizontal scroll offset in pixels. Source lines are not wrapped — a
+    /// code editor keeps them intact — so the view scrolls sideways instead,
+    /// and the caret is always kept in view horizontally (`ensure_caret_visible`).
+    pub scroll_x: f64,
     pub focused: bool,
     rect: Rect,
     /// Cached glyph cell metrics, refreshed each `draw`.
@@ -39,7 +43,6 @@ pub struct SourceEditor {
     desired_col: Option<usize>,
     /// Internal clipboard for Ctrl+C/X/V (no system clipboard dependency).
     clipboard: String,
-    blink_start: std::time::Instant,
 }
 
 impl Default for SourceEditor {
@@ -48,13 +51,13 @@ impl Default for SourceEditor {
             caret: 0,
             anchor: 0,
             scroll_y: 0.0,
+            scroll_x: 0.0,
             focused: true,
             rect: Rect::ZERO,
             char_w: FONT_SIZE as f64 * 0.6,
             line_h: (FONT_SIZE as f64 * 1.5).round(),
             desired_col: None,
             clipboard: String::new(),
-            blink_start: std::time::Instant::now(),
         }
     }
 }
@@ -84,10 +87,6 @@ impl SourceEditor {
         }
     }
 
-    fn bump_blink(&mut self) {
-        self.blink_start = std::time::Instant::now();
-    }
-
     /// Place the caret on a specific 1-based line (used when a diagnostic is
     /// clicked). Scrolls the line into view on the next draw.
     pub fn goto_line(&mut self, text: &str, line_1based: usize) {
@@ -97,29 +96,47 @@ impl SourceEditor {
         self.caret = caret;
         self.anchor = caret;
         self.desired_col = None;
-        // Centre the target line in the viewport.
+        // Centre the target line in the viewport; the line starts at column 0
+        // so the horizontal offset returns to the left edge.
         let target = line as f64 * self.line_h - self.rect.height() * 0.4;
         self.scroll_y = target.max(0.0) as f32;
-        self.bump_blink();
+        self.scroll_x = 0.0;
     }
 
     // ----- scrolling -------------------------------------------------------
 
-    pub fn scroll_by(&mut self, dy: f32, text: &str) {
+    pub fn scroll_by(&mut self, dx: f32, dy: f32, text: &str) {
         self.scroll_y += dy;
+        self.scroll_x += dx as f64;
         self.clamp_scroll(text);
     }
 
     fn clamp_scroll(&mut self, text: &str) {
         let idx = LineIndex::new(text);
         let content_h = idx.line_count() as f64 * self.line_h + self.line_h;
-        let max = (content_h - self.rect.height()).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, max as f32);
+        let max_y = (content_h - self.rect.height()).max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, max_y as f32);
+
+        // Horizontal extent: the longest line plus one cell so the caret can
+        // sit just past the final glyph.
+        let content_w = (self.rect.width() - self.gutter_width(idx.line_count())).max(1.0);
+        let widest = (idx.max_line_len() as f64 + 1.0) * self.char_w;
+        let max_x = (widest - content_w).max(0.0);
+        self.scroll_x = self.scroll_x.clamp(0.0, max_x);
+    }
+
+    /// Public entry to scroll the caret into view (used by the screenshot
+    /// harness to capture a horizontally-scrolled state; the live editor scrolls
+    /// automatically after every edit via `after_edit`).
+    pub fn ensure_visible(&mut self, text: &str) {
+        self.ensure_caret_visible(text);
     }
 
     fn ensure_caret_visible(&mut self, text: &str) {
         let idx = LineIndex::new(text);
-        let (line, _) = idx.line_col(self.caret);
+        let (line, col) = idx.line_col(self.caret);
+
+        // Vertical: keep the caret's line inside the viewport.
         let caret_top = line as f64 * self.line_h;
         let caret_bot = caret_top + self.line_h;
         let view_top = self.scroll_y as f64;
@@ -129,6 +146,20 @@ impl SourceEditor {
         } else if caret_bot > view_bot {
             self.scroll_y = (caret_bot - self.rect.height()) as f32;
         }
+
+        // Horizontal: keep the caret column inside the content area. Without
+        // this, typing past the pane's right edge would push the caret (and the
+        // text under it) out of sight with no way to scroll back.
+        let content_w = (self.rect.width() - self.gutter_width(idx.line_count())).max(1.0);
+        let caret_x = col as f64 * self.char_w;
+        // A little lookahead so the caret isn't glued to the very edge.
+        let margin = (self.char_w * 3.0).min(content_w * 0.25);
+        if caret_x < self.scroll_x + margin {
+            self.scroll_x = (caret_x - margin).max(0.0);
+        } else if caret_x + self.char_w > self.scroll_x + content_w - margin {
+            self.scroll_x = caret_x + self.char_w - content_w + margin;
+        }
+
         self.clamp_scroll(text);
     }
 
@@ -142,7 +173,9 @@ impl SourceEditor {
         let line = (rel_y / self.line_h).floor().max(0.0) as usize;
         let line = line.min(idx.line_count().saturating_sub(1));
         let content_x = self.rect.x0 + gutter;
-        let col = (((p.x - content_x) / self.char_w).round()).max(0.0) as usize;
+        // Add the horizontal scroll offset so clicks map to the true column
+        // even when the line is scrolled sideways.
+        let col = (((p.x - content_x + self.scroll_x) / self.char_w).round()).max(0.0) as usize;
         let col = col.min(idx.line_len(line));
         idx.line_start(line) + col
     }
@@ -155,14 +188,12 @@ impl SourceEditor {
             self.anchor = c;
         }
         self.desired_col = None;
-        self.bump_blink();
     }
 
     pub fn on_mouse_drag(&mut self, p: Point, text: &str) {
         let c = self.caret_at_point(p, text);
         self.caret = c;
         self.desired_col = None;
-        self.bump_blink();
     }
 
     // ----- keyboard --------------------------------------------------------
@@ -197,7 +228,6 @@ impl SourceEditor {
                     "a" => {
                         self.anchor = 0;
                         self.caret = len;
-                        self.bump_blink();
                         return true;
                     }
                     "c" => {
@@ -346,7 +376,6 @@ impl SourceEditor {
             self.anchor = new;
         }
         self.desired_col = None;
-        self.bump_blink();
     }
 
     fn move_vertical(&mut self, dir: i64, text: &str, shift: bool) {
@@ -360,13 +389,11 @@ impl SourceEditor {
         if !shift {
             self.anchor = self.caret;
         }
-        self.bump_blink();
     }
 
     fn after_edit(&mut self, doc: &mut AutoCommit, text_id: &ObjId) {
         let text = doc.text(text_id).unwrap_or_default();
         self.ensure_caret_visible(&text);
-        self.bump_blink();
     }
 
     /// Replace any active selection with `s`, then advance the caret.
@@ -462,33 +489,10 @@ impl SourceEditor {
         let sel = self.selection();
         let (caret_line, caret_col) = idx.line_col(self.caret);
 
+        // Line numbers live in the fixed gutter — never scrolled sideways — so
+        // they're painted before the horizontally-scrolled content clip.
         for line in first..last {
             let y = self.rect.y0 + top_pad + line as f64 * self.line_h - self.scroll_y as f64;
-            let line_len = idx.line_len(line);
-
-            // Current-line highlight (when focused and no selection).
-            if self.focused && sel.is_none() && line == caret_line {
-                let hl = Rect::new(content_x, y, self.rect.x1, y + self.line_h);
-                scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &hl);
-            }
-
-            // Selection highlight on this line.
-            if let Some((lo, hi)) = sel {
-                let ls = idx.line_start(line);
-                let le = ls + line_len;
-                let sel_lo = lo.max(ls);
-                let sel_hi = hi.min(le + 1); // +1 to include trailing newline visual
-                if sel_hi > sel_lo && lo <= le && hi >= ls {
-                    let c0 = sel_lo.saturating_sub(ls);
-                    let c1 = (sel_hi.saturating_sub(ls)).min(line_len + 1);
-                    let x0 = content_x + c0 as f64 * self.char_w;
-                    let x1 = content_x + c1 as f64 * self.char_w;
-                    let r = Rect::new(x0, y, x1.max(x0 + 2.0), y + self.line_h);
-                    scene.fill(Fill::NonZero, transform, selection_color(theme), None, &r);
-                }
-            }
-
-            // Line number (right-aligned in the gutter).
             let num = (line + 1).to_string();
             let num_w = num.chars().count() as f64 * self.char_w;
             let num_x = content_x - 8.0 - num_w;
@@ -504,15 +508,54 @@ impl SourceEditor {
                 false,
                 true,
             );
+        }
 
-            // Tokens for this line.
+        // Text content: clipped to the area right of the gutter and shifted by
+        // the horizontal scroll offset. The clip keeps a long line from
+        // spilling over the gutter as it scrolls sideways.
+        let content_clip = Rect::new(content_x, self.rect.y0, self.rect.x1, self.rect.y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content_clip);
+        let sx = self.scroll_x;
+
+        for line in first..last {
+            let y = self.rect.y0 + top_pad + line as f64 * self.line_h - self.scroll_y as f64;
+            let line_len = idx.line_len(line);
+
+            // Current-line highlight (focused, no selection). A full-width band,
+            // so it stays put under horizontal scroll.
+            if self.focused && sel.is_none() && line == caret_line {
+                let hl = Rect::new(content_x, y, self.rect.x1, y + self.line_h);
+                scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &hl);
+            }
+
+            // Selection highlight on this line.
+            if let Some((lo, hi)) = sel {
+                let ls = idx.line_start(line);
+                let le = ls + line_len;
+                let sel_lo = lo.max(ls);
+                let sel_hi = hi.min(le + 1); // +1 to include trailing newline visual
+                if sel_hi > sel_lo && lo <= le && hi >= ls {
+                    let c0 = sel_lo.saturating_sub(ls);
+                    let c1 = (sel_hi.saturating_sub(ls)).min(line_len + 1);
+                    let x0 = content_x + c0 as f64 * self.char_w - sx;
+                    let x1 = content_x + c1 as f64 * self.char_w - sx;
+                    let r = Rect::new(x0, y, x1.max(x0 + 2.0), y + self.line_h);
+                    scene.fill(Fill::NonZero, transform, selection_color(theme), None, &r);
+                }
+            }
+
+            // Tokens for this line (skip any scrolled fully out of view).
             if let Some(line_tokens) = tokens.get(line) {
                 for tok in line_tokens {
                     if tok.text.trim().is_empty() {
                         continue;
                     }
+                    let x = content_x + tok.start as f64 * self.char_w - sx;
+                    let tok_w = tok.text.chars().count() as f64 * self.char_w;
+                    if x + tok_w < content_x || x > self.rect.x1 {
+                        continue;
+                    }
                     let (color, weight, italic) = highlight::style(tok.cat, theme);
-                    let x = content_x + tok.start as f64 * self.char_w;
                     tr.draw_text_styled(
                         scene,
                         &tok.text,
@@ -528,29 +571,27 @@ impl SourceEditor {
             }
         }
 
-        // Caret.
-        if self.focused && self.caret_visible() {
+        // Caret — a steady bar (deliberately non-blinking; see `wants_animation`).
+        if self.focused {
             let y = self.rect.y0 + top_pad + caret_line as f64 * self.line_h - self.scroll_y as f64;
-            let x = content_x + caret_col as f64 * self.char_w;
+            let x = content_x + caret_col as f64 * self.char_w - sx;
             if y + self.line_h >= self.rect.y0 && y <= self.rect.y1 {
                 let caret = Rect::new(x, y + 1.0, x + 1.5, y + self.line_h - 1.0);
                 scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &caret);
             }
         }
 
-        scene.pop_layer();
+        scene.pop_layer(); // content clip
+        scene.pop_layer(); // pane clip
     }
 
-    fn caret_visible(&self) -> bool {
-        // ~1.06 Hz blink.
-        let ms = self.blink_start.elapsed().as_millis();
-        (ms / 530) % 2 == 0
-    }
-
-    /// Whether the editor wants continuous repaints (caret blink) — only while
-    /// focused.
+    /// Whether the editor needs continuous repaints. The caret is a steady bar
+    /// rather than a blinking one, so a focused-but-idle editor requests **no**
+    /// animation frames — it only repaints in response to real input. A blinking
+    /// caret would force a full scene rebuild every vsync just to toggle a 1.5px
+    /// bar; a steady caret is the same information at zero idle cost.
     pub fn wants_animation(&self) -> bool {
-        self.focused
+        false
     }
 }
 
@@ -595,6 +636,12 @@ impl LineIndex {
 
     fn line_len(&self, line: usize) -> usize {
         self.lines.get(line).map(|l| l.1).unwrap_or(0)
+    }
+
+    /// Char length of the longest line — the basis for the horizontal scroll
+    /// extent.
+    fn max_line_len(&self) -> usize {
+        self.lines.iter().map(|l| l.1).max().unwrap_or(0)
     }
 
     /// Map a char index to (line, col).
@@ -655,5 +702,61 @@ mod tests {
         ed.delete_range(&mut doc, &id, 1, 4);
         assert_eq!(doc.text(&id).unwrap(), "ho");
         assert_eq!(ed.caret, 1);
+    }
+
+    #[test]
+    fn max_line_len_finds_longest() {
+        let idx = LineIndex::new("ab\ncdef\ng");
+        assert_eq!(idx.max_line_len(), 4);
+    }
+
+    /// Typing past the right edge of a narrow pane must scroll the view
+    /// sideways and keep the caret inside the content area — the previous
+    /// behaviour pushed the caret off-screen with no way back. Exercises the
+    /// real edit path (`insert_str` → `after_edit` → `ensure_caret_visible`)
+    /// that a character keystroke drives.
+    #[test]
+    fn typing_long_line_keeps_caret_visible() {
+        let (mut doc, id) = doc_with("");
+        let mut ed = SourceEditor::new();
+        ed.set_rect(Rect::new(0.0, 0.0, 240.0, 400.0));
+        for _ in 0..80 {
+            ed.insert_str(&mut doc, &id, "", "x");
+        }
+        assert_eq!(ed.caret, 80);
+        assert!(ed.scroll_x > 0.0, "horizontal scroll engaged past the edge");
+
+        let content_w = 240.0 - ed.gutter_width(1);
+        let caret_x = ed.caret as f64 * ed.char_w;
+        let visible = caret_x - ed.scroll_x;
+        assert!(
+            (0.0..=content_w).contains(&visible),
+            "caret stays within the content area (visible={visible}, content_w={content_w})"
+        );
+    }
+
+    /// Moving the caret back to column 0 returns the view to the left edge.
+    #[test]
+    fn scrolling_back_to_line_start_resets_offset() {
+        let (mut doc, id) = doc_with("");
+        let mut ed = SourceEditor::new();
+        ed.set_rect(Rect::new(0.0, 0.0, 240.0, 400.0));
+        for _ in 0..80 {
+            ed.insert_str(&mut doc, &id, "", "x");
+        }
+        assert!(ed.scroll_x > 0.0);
+        ed.caret = 0;
+        ed.anchor = 0;
+        ed.ensure_visible(&doc.text(&id).unwrap());
+        assert_eq!(ed.scroll_x, 0.0, "caret at column 0 scrolls fully back left");
+    }
+
+    /// A focused editor must not request continuous animation frames when idle
+    /// — the caret is a steady bar, so the frame loop can sleep between inputs.
+    #[test]
+    fn focused_editor_is_idle() {
+        let ed = SourceEditor::new();
+        assert!(ed.focused);
+        assert!(!ed.wants_animation(), "steady caret => no idle repaints");
     }
 }

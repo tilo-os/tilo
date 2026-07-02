@@ -36,6 +36,11 @@ anyhow = "1.0"
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
 
 [features]
-# Compile the real CalDAV transport. Requires network + a TLS stack; not used by
-# the headless build or `--shots`.
+# The real CalDAV transport ships on by default so a configured account syncs
+# for real over HTTPS. It runs on a background thread (see `app::CalendarApp`),
+# so the UI never blocks on the network, and it degrades gracefully: with no
+# account configured, or the `live` feature turned off for a lean headless
+# build, sync is an instant no-op that reports "no accounts" rather than
+# fabricating events.
+default = ["live"]
 live = ["dep:reqwest"]

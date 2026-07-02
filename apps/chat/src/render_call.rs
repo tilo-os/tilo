@@ -9,7 +9,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Brush, Color, Fill, Gradient};
+use vello::peniko::Color;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -66,6 +66,39 @@ impl ChatApp {
     /// The floating overlay's home rect (video) for the current drag offset.
     fn huddle_video(&self) -> Rect {
         self.call_video_rect()
+    }
+
+    /// Paint an honest "camera off" placeholder over the host tile when the
+    /// real [`VideoPlayer`](ui::widget::VideoPlayer) surface has no decoded
+    /// frame. There is no camera in this environment, so instead of faking a
+    /// video we show the local avatar and a plain label — the same treatment a
+    /// camera-off remote participant gets. Once a live capture feeds a frame,
+    /// this yields to it automatically.
+    pub(crate) fn draw_host_camera_off(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.video.latest_frame().is_some() {
+            return; // a real capture is feeding the surface
+        }
+        let c = &theme.tokens.colors;
+        let rect = self.call_video_rect();
+        let radius = if self.call.expanded { 14.0 } else { 10.0 };
+        fill_round(scene, tf, rect, radius, c.neutral[2]);
+        let (initials, cidx) = self
+            .user(model::ME)
+            .map(|u| (u.initials.clone(), u.color_idx))
+            .unwrap_or_else(|| ("Y".into(), 0));
+        let r = (rect.height() * 0.20).clamp(22.0, 52.0);
+        let cx = rect.center().x;
+        let cy = rect.center().y - r * 0.35;
+        draw_avatar(scene, tf, tr, theme, Point::new(cx, cy), r, &initials, cidx, None);
+        let s = "Camera off";
+        let (sw, _) = tr.measure(s, 12.0, None);
+        label(scene, tr, tf, s, 12.0, c.text_dim, cx - sw as f64 / 2.0, cy + r + 8.0);
     }
 
     fn huddle_panel(&self) -> Rect {
@@ -160,23 +193,34 @@ impl ChatApp {
             }
         }
 
-        // controls row: mute, deafen, expand, leave
+        // Controls row, evenly distributed across the panel so it never
+        // overflows a small (narrow-window) huddle. On a cramped panel the
+        // buttons drop to icons and Expand is trimmed (the header "In call"
+        // button also expands the call), so the row always fits.
         let cy = panel.y1 - 34.0;
-        let mute = Rect::new(panel.x0 + 12.0, cy, panel.x0 + 70.0, cy + 28.0);
-        self.ctl(scene, tf, tr, theme, mute, if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false);
-        ChatApp::push_hit(hits, mute, Hit::CallMute);
-
-        let deaf = Rect::new(mute.x1 + 6.0, cy, mute.x1 + 64.0, cy + 28.0);
-        self.ctl(scene, tf, tr, theme, deaf, if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false);
-        ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
-
-        let exp = Rect::new(deaf.x1 + 6.0, cy, deaf.x1 + 64.0, cy + 28.0);
-        self.ctl(scene, tf, tr, theme, exp, "Expand", false, false);
-        ChatApp::push_hit(hits, exp, Hit::CallExpand);
-
-        let leave = Rect::new(panel.x1 - 70.0, cy, panel.x1 - 12.0, cy + 28.0);
-        self.ctl(scene, tf, tr, theme, leave, "Leave", false, true);
-        ChatApp::push_hit(hits, leave, Hit::CallLeave);
+        let pad = 12.0;
+        let gap = 6.0;
+        let muted = self.call.muted;
+        let deaf = self.call.deafened;
+        let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
+            (if muted { "Unmute" } else { "Mute" }, if muted { "🔇" } else { "🎤" }, muted, false, Hit::CallMute),
+            (if deaf { "Undeafen" } else { "Deafen" }, if deaf { "🔕" } else { "🎧" }, deaf, false, Hit::CallDeafen),
+            ("Expand", "⤢", false, false, Hit::CallExpand),
+            ("Leave", "✕", false, true, Hit::CallLeave),
+        ];
+        if panel.width() < 300.0 {
+            ctrls.remove(2); // trim Expand on a cramped panel
+        }
+        let n = ctrls.len() as f64;
+        let cw = ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(24.0);
+        let use_text = cw >= 58.0;
+        let mut x = panel.x0 + pad;
+        for (txt, icon, on, danger, hit) in ctrls {
+            let r = Rect::new(x, cy, x + cw, cy + 28.0);
+            self.ctl(scene, tf, tr, theme, r, if use_text { txt } else { icon }, on, danger);
+            ChatApp::push_hit(hits, r, hit);
+            x = r.x1 + gap;
+        }
     }
 
     // ----------------------------------------------------- expanded overlay
@@ -189,14 +233,18 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
+        // Opaque backdrop so the expanded call reads as its own focused
+        // surface (the app base, darkened by the overlay tint) rather than a
+        // thin scrim with the conversation showing through behind the tiles.
+        fill_rect(scene, tf, self.rect, c.surfaces.base);
         fill_rect(scene, tf, self.rect, c.surfaces.overlay);
 
-        // title + connection line (real vs simulated transport, honestly).
+        // title + participant count
         let title = self.channel(&self.call.channel).map(|c| c.name.clone()).unwrap_or_else(|| "Call".into());
         let (tw, _) = tr.measure(&title, 20.0, None);
         text(scene, tr, tf, &title, 20.0, c.text_primary, self.rect.center().x - tw as f64 / 2.0, self.rect.y0 + 28.0, TextWeight::Bold, None);
         let parts = self.call_participants();
-        let sub = format!("{} in call · {} transport", parts.len(), self.media.description());
+        let sub = format!("{} in the call", parts.len());
         let (sw, _) = tr.measure(&sub, 12.0, None);
         label(scene, tr, tf, &sub, 12.0, c.text_dim, self.rect.center().x - sw as f64 / 2.0, self.rect.y0 + 56.0);
 
@@ -209,9 +257,16 @@ impl ChatApp {
             stroke_round(scene, tf, host, 14.0, c.border_white_20, 1.5);
         }
 
-        // Remote tiles auto-arranged in a grid that adapts to the headcount.
+        // Remote tiles fill the region to the right of the host, packed into a
+        // grid that always stays inside the window at every width. The region
+        // stops above the controls bar so a wrapped (narrow) bar never collides
+        // with the tiles.
         let others: Vec<&Participant> = parts.iter().skip(1).collect();
-        let rects = grid_rects(host, others.len());
+        let inset = host.x0 - self.rect.x0; // mirror the host's left inset
+        let gap = (self.rect.width() * 0.02).clamp(10.0, 22.0);
+        let (bar, _) = self.call_overlay_controls(tr);
+        let region = Rect::new(host.x1 + gap, host.y0, self.rect.x1 - inset, bar.y0 - 14.0);
+        let rects = grid_rects(region, others.len());
         for (p, rect) in others.iter().zip(rects) {
             self.draw_member_tile(scene, tf, tr, theme, rect, p);
         }
@@ -230,37 +285,92 @@ impl ChatApp {
         let host = frac_rect(self.rect, OVERLAY_VIDEO);
         self.name_plate(scene, tf, tr, theme, host, "You (host)", self.call.muted, self.call.follow_host);
 
-        // controls bar
-        let bar_w = 640.0;
-        let bar = Rect::new(self.rect.center().x - bar_w / 2.0, self.rect.y1 - 84.0, self.rect.center().x + bar_w / 2.0, self.rect.y1 - 28.0);
+        // Controls bar: auto-sized to its buttons and wrapped onto extra rows
+        // when the window is too narrow to hold them all in one line, so it
+        // never runs off either edge.
+        let (bar, buttons) = self.call_overlay_controls(tr);
         fill_round(scene, tf, bar, 16.0, c.neutral[1]);
         stroke_round(scene, tf, bar, 16.0, c.border_white_10, 1.0);
-        let mut x = bar.x0 + 14.0;
-        let cy = bar.center().y - 16.0;
-        for (label_txt, on, danger, hit) in [
+        for (label_txt, on, danger, hit, r) in buttons {
+            self.ctl(scene, tf, tr, theme, r, label_txt, on, danger);
+            ChatApp::push_hit(hits, r, hit);
+        }
+    }
+
+    /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
+    /// to fit the current window width. Returns the bar background rect and
+    /// each button's `(label, active, danger, hit, rect)`. Shared by the
+    /// background pass (which bounds the tile region above the bar) and the
+    /// foreground pass (which draws it), so the two can never disagree.
+    fn call_overlay_controls(&self, tr: &mut TextRenderer) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
+        let specs: [(&'static str, bool, bool, Hit); 6] = [
             (if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false, Hit::CallMute),
             (if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false, Hit::CallDeafen),
             ("Audio only", self.call.audio_only, false, Hit::CallAudioOnly),
             ("Follow host", self.call.follow_host, false, Hit::CallFollow),
             ("Collapse", false, false, Hit::CallExpand),
             ("Leave", false, true, Hit::CallLeave),
-        ] {
-            let w = tr.measure(label_txt, 13.0, None).0 as f64 + 24.0;
-            let r = Rect::new(x, cy, x + w, cy + 32.0);
-            self.ctl(scene, tf, tr, theme, r, label_txt, on, danger);
-            ChatApp::push_hit(hits, r, hit);
-            x = r.x1 + 8.0;
+        ];
+        let gap = 8.0;
+        let row_gap = 8.0;
+        let bh = 32.0;
+        let side_pad = 24.0;
+        let inner_pad = 12.0;
+        let max_row_w = (self.rect.width() - 2.0 * side_pad).max(120.0);
+        let widths: Vec<f64> =
+            specs.iter().map(|s| tr.measure(s.0, 13.0, None).0 as f64 + 24.0).collect();
+
+        // Greedy pack into rows that each fit `max_row_w`.
+        let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut cur = 0.0;
+        for (i, w) in widths.iter().enumerate() {
+            let extra = if rows.last().unwrap().is_empty() { 0.0 } else { gap } + w;
+            if !rows.last().unwrap().is_empty() && cur + extra > max_row_w {
+                rows.push(Vec::new());
+                cur = 0.0;
+            }
+            let extra = if rows.last().unwrap().is_empty() { 0.0 } else { gap } + w;
+            rows.last_mut().unwrap().push(i);
+            cur += extra;
         }
 
-        // permission line — honest about the seam (default-allow today).
-        let perm = "🔒 Camera & mic shared with this cluster · call permissions: allow (OS policy pending)";
-        let (pw, _) = tr.measure(perm, 11.5, None);
-        label(scene, tr, tf, perm, 11.5, c.text_dim, self.rect.center().x - pw as f64 / 2.0, self.rect.y1 - 104.0);
+        let n_rows = rows.len() as f64;
+        let bar_h = n_rows * bh + (n_rows - 1.0) * row_gap + 2.0 * inner_pad;
+        let widest = rows
+            .iter()
+            .map(|row| {
+                row.iter().map(|&i| widths[i]).sum::<f64>()
+                    + row.len().saturating_sub(1) as f64 * gap
+            })
+            .fold(0.0_f64, f64::max);
+
+        let cx = self.rect.center().x;
+        let bar_bottom = self.rect.y1 - 18.0;
+        let bar_top = bar_bottom - bar_h;
+        let bar = Rect::new(cx - widest / 2.0 - inner_pad, bar_top, cx + widest / 2.0 + inner_pad, bar_bottom);
+
+        let mut out: Vec<(&'static str, bool, bool, Hit, Rect)> = Vec::with_capacity(specs.len());
+        let mut ry = bar_top + inner_pad;
+        for row in &rows {
+            let rw = row.iter().map(|&i| widths[i]).sum::<f64>()
+                + row.len().saturating_sub(1) as f64 * gap;
+            let mut x = cx - rw / 2.0;
+            for &i in row {
+                let r = Rect::new(x, ry, x + widths[i], ry + bh);
+                let (label_txt, on, danger, hit) = specs[i].clone();
+                out.push((label_txt, on, danger, hit, r));
+                x += widths[i] + gap;
+            }
+            ry += bh + row_gap;
+        }
+        (bar, out)
     }
 
-    /// Draw one remote participant's tile in the expanded grid. Camera-on
-    /// participants get a gradient video stand-in; muted / audio-only ones
-    /// show a centred avatar. A speaking ring highlights the active speaker.
+    /// Draw one remote participant's tile in the expanded grid. There is no
+    /// camera capture wired to remote peers in this environment, so a tile
+    /// never fabricates a video frame: it shows the participant's avatar on a
+    /// neutral surface — the same honest treatment the host tile gets — plus
+    /// their real camera state. A speaking ring highlights the active speaker.
     fn draw_member_tile(
         &self,
         scene: &mut Scene,
@@ -272,28 +382,24 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let u = self.user(&p.user);
-        let cidx = u.map(|u| u.color_idx).unwrap_or(0);
-        let camera_on = !p.audio_only && !p.muted;
-        if camera_on {
-            let g = Gradient::new_linear(Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y1))
-                .with_stops([(0.0_f32, palette_color(theme, cidx)), (1.0_f32, palette_color(theme, cidx + 3))]);
-            let shape = vello::kurbo::RoundedRect::from_rect(rect, 14.0);
-            scene.fill(Fill::NonZero, tf, &Brush::Gradient(g), None, &shape);
-            fill_round(scene, tf, Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rect.height() * 0.5), 14.0, Color::from_rgba8(255, 255, 255, 16));
-        } else {
-            fill_round(scene, tf, rect, 14.0, c.neutral[1]);
-            if let Some(u) = u {
-                let r = (rect.height() * 0.22).min(46.0);
-                draw_avatar(scene, tf, tr, theme, rect.center(), r, &u.initials, u.color_idx, None);
+        fill_round(scene, tf, rect, 14.0, c.neutral[2]);
+        if let Some(u) = u {
+            let r = (rect.height() * 0.22).clamp(16.0, 46.0);
+            let cx = rect.center().x;
+            let cy = rect.center().y - r * 0.3;
+            draw_avatar(scene, tf, tr, theme, Point::new(cx, cy), r, &u.initials, u.color_idx, None);
+            // Honest state under the avatar: "Camera off" for an audio-only
+            // participant, otherwise nothing (their camera is on but no frame
+            // reaches this peer here — we show the avatar rather than invent a
+            // picture). Never claims to be showing video it doesn't have.
+            if p.audio_only {
+                let s = "Camera off";
+                let (sw, _) = tr.measure(s, 11.5, None);
+                label(scene, tr, tf, s, 11.5, c.text_dim, cx - sw as f64 / 2.0, cy + r + 8.0);
             }
         }
         if p.talking {
             stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
-        }
-        if p.audio_only {
-            let badge = Rect::new(rect.x1 - 96.0, rect.y0 + 10.0, rect.x1 - 10.0, rect.y0 + 34.0);
-            fill_round(scene, tf, badge, 10.0, Color::from_rgba8(0, 0, 0, 120));
-            label(scene, tr, tf, "Audio only", 11.0, c.text_primary, badge.x0 + 9.0, badge.center().y - 7.0);
         }
         let name = u.map(|u| u.name.clone()).unwrap_or_default();
         self.name_plate(scene, tf, tr, theme, rect, &name, p.muted, false);
@@ -484,34 +590,100 @@ impl ChatApp {
     }
 }
 
-/// Arrange `n` remote tiles in a grid to the right of / below the host tile,
-/// auto-adapting the column count to the headcount so a 1-person call is a
-/// single big tile and a crowd packs into a tidy grid. Each tile matches the
-/// host's aspect.
-fn grid_rects(host: Rect, n: usize) -> Vec<Rect> {
-    if n == 0 {
+/// Pack `n` remote tiles into `region`, choosing the column count that yields
+/// the largest, most camera-shaped uniform tiles. Every returned rect is
+/// contained within `region`, so the grid can never spill past the window at
+/// any width or headcount. A partly-filled last row is centred.
+fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
+    if n == 0 || region.width() <= 1.0 || region.height() <= 1.0 {
         return vec![];
     }
-    let gap = host.width() * 0.045;
-    // Columns scale with the count: 1→1, 2-3→2, 4-9→3, 10+→4 (plus the host
-    // column on the left), packed beside and below the host.
-    let cols = match n {
-        1 => 1,
-        2..=3 => 2,
-        4..=8 => 3,
-        _ => 4,
-    };
-    let tw = host.width();
-    let th = host.height();
+    let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
+
+    // Try every column count and keep the one that maximises usable tile size,
+    // lightly penalising extreme aspect ratios so tiles stay landscape-ish.
+    let mut best_cols = 1usize;
+    let mut best_score = f64::MIN;
+    for cols in 1..=n {
+        let rows = n.div_ceil(cols);
+        let tw = (region.width() - (cols as f64 - 1.0) * gap) / cols as f64;
+        let th = (region.height() - (rows as f64 - 1.0) * gap) / rows as f64;
+        if tw <= 0.0 || th <= 0.0 {
+            continue;
+        }
+        let aspect = tw / th;
+        let aspect_pen = if aspect > 2.4 {
+            2.4 / aspect
+        } else if aspect < 0.85 {
+            aspect / 0.85
+        } else {
+            1.0
+        };
+        let score = tw.min(th * 1.6) * aspect_pen;
+        if score > best_score {
+            best_score = score;
+            best_cols = cols;
+        }
+    }
+
+    let cols = best_cols;
+    let rows = n.div_ceil(cols);
+    let tw = (region.width() - (cols as f64 - 1.0) * gap) / cols as f64;
+    let th = (region.height() - (rows as f64 - 1.0) * gap) / rows as f64;
+
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let col = (i % cols) as f64;
-        let row = (i / cols) as f64;
-        // First row sits beside the host; the host occupies the leftmost
-        // slot of row 0, so remote tiles start one column to its right.
-        let x0 = host.x1 + gap + col * (tw + gap);
-        let y0 = host.y0 + row * (th + gap);
+        let row = i / cols;
+        let col = i % cols;
+        // Centre the final row when it holds fewer than `cols` tiles.
+        let in_row = if row == rows - 1 { n - row * cols } else { cols };
+        let row_w = in_row as f64 * tw + (in_row as f64 - 1.0) * gap;
+        let row_x0 = region.x0 + (region.width() - row_w) / 2.0;
+        let x0 = row_x0 + col as f64 * (tw + gap);
+        let y0 = region.y0 + row as f64 * (th + gap);
         out.push(Rect::new(x0, y0, x0 + tw, y0 + th));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid_rects;
+    use vello::kurbo::Rect;
+
+    /// The expanded-overlay regression: every remote tile must stay inside the
+    /// window at every headcount and width. The old layout sized each tile to
+    /// the full host width and started at the host's right edge, so a second
+    /// column ran off the right edge; this asserts the fixed packer keeps all
+    /// tiles within the region the overlay actually hands it.
+    #[test]
+    fn grid_tiles_stay_inside_region_at_every_count_and_width() {
+        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+            // The band the overlay uses: right of the host (host.x1 ≈ 0.49·w),
+            // mirrored inset on the right, down to just above the controls bar.
+            let region = Rect::new(0.49 * w, 0.18 * h, w - 0.075 * w, h - 124.0);
+            for n in 1..=9 {
+                let rects = grid_rects(region, n);
+                assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
+                for r in &rects {
+                    assert!(
+                        r.x0 >= region.x0 - 0.5 && r.x1 <= region.x1 + 0.5,
+                        "n={n} w={w}: tile x [{:.1},{:.1}] escaped region x [{:.1},{:.1}]",
+                        r.x0, r.x1, region.x0, region.x1
+                    );
+                    assert!(
+                        r.y0 >= region.y0 - 0.5 && r.y1 <= region.y1 + 0.5,
+                        "n={n} w={w}: tile y [{:.1},{:.1}] escaped region y [{:.1},{:.1}]",
+                        r.y0, r.y1, region.y0, region.y1
+                    );
+                    assert!(r.width() > 0.0 && r.height() > 0.0, "n={n}: degenerate tile");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_is_empty_for_no_remotes() {
+        assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
+    }
 }

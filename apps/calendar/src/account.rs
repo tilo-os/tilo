@@ -258,7 +258,7 @@ impl AccountStore {
                     calendars: vec![
                         RemoteCalendar {
                             id: "work/default".into(),
-                            name: "Calendar".into(),
+                            name: "Team".into(),
                             color: Palette::Indigo.index() as u8,
                             visible: true,
                         },

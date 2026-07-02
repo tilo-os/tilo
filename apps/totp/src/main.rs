@@ -1,11 +1,18 @@
 //! Authenticator — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
-//!   * `--screen add` — pair with `--shots` to capture the Add-account
-//!                       screen instead of the list.
+//!   * default            — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH`     — render one offscreen frame to a PNG and exit
+//!                           (headless screenshot; identical passes to the live app).
+//!   * `--screen add`     — pair with `--shots` to capture the Add-account
+//!                           screen instead of the list.
+//!   * `--viewport WxH`   — pair with `--shots` to render at a specific size
+//!                           (default 1280x800) so responsive widths can be
+//!                           captured. Shots-only; the live window sizes itself.
+//!
+//! The `--shots` renderer uses a deterministic sample vault so the frame is
+//! populated and reproducible. The live event loop never fabricates sample
+//! accounts — it shows exactly what the user has saved.
 
 use std::collections::HashMap;
 
@@ -27,12 +34,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = if parse_screen_arg(&args).as_deref() == Some("add") {
-            totp::app_root_add_screen()
-        } else {
-            totp::app_root()
+        let widget = match parse_screen_arg(&args).as_deref() {
+            Some("add") => totp::app_root_add_screen(),
+            Some("add-advanced") => totp::app_root_add_advanced_screen(),
+            Some("add-picker") => totp::app_root_add_picker_screen(),
+            Some("empty") => totp::app_root_empty(),
+            _ => totp::app_root_demo(),
         };
-        render_shot_to_png(widget, DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_shot_to_png(widget, viewport, &out)?;
         return Ok(());
     }
 
@@ -54,6 +64,23 @@ fn parse_screen_arg(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Read the `--viewport WxH` flag (e.g. `--viewport 560x720`), if present.
+/// Shots-only: lets the offscreen renderer capture narrow / small widths.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--viewport" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            break rest.to_string();
+        }
+    };
+    let (w, h) = raw.split_once(['x', 'X', '*'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
