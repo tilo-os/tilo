@@ -20,6 +20,7 @@ members = [
     "qos-relay",
     "qos-launcher",
     "qos-runtime-portal",
+    "qos-runtime-collab",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
