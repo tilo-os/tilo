@@ -58,9 +58,13 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       (zoom/pan) instead of the app's hand-rolled scale so it behaves like the
       other document apps. VERIFY by opening the sample PDF and driving zoom in/out
       + pan (not an empty-state shot).
-- [ ] The open flow uses the app's own bespoke `OpenDialog` (in app.rs), which
-      looks bad. It must use the NATIVE shared file picker (`ui::widget::FilePicker`),
-      not a hand-rolled dialog. (See the toolkit item on the file picker itself.)
+- [ ] The open flow draws the app's OWN bespoke `OpenDialog` — WRONG. Open/save
+      must go through the **XDG Desktop Portal** (`org.freedesktop.portal.FileChooser`
+      via `ashpd`) so the HOST desktop provides the picker: on GNOME the user sees
+      GNOME's file picker; on real qOS the compositor's portal backend provides
+      qOS's picker (and enforces the sandbox/file-access prompt). The app must NOT
+      draw a picker itself (neither the bespoke dialog nor an app-drawn
+      ui::FilePicker). Remove the bespoke OpenDialog; call the portal.
 - [ ] Re-review ALL previously-claimed pdf features by DRIVING them on a real
       document: zoom, pan, markers/annotations, tooltips, search (whole-word/case),
       sidebar focus, delete — several were "verified" only via static shots.
@@ -147,3 +151,11 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Shared CRDT caret/selection text-editing core adopted by fields that today
       hand-roll editing (calculator formula field, etc.). (HIG §3)
 - [ ] Sweep the O(n²) `doc::store()` CRDT churn across the ~19 text apps. (HIG §5)
+- [ ] File open/save is via the **XDG Desktop Portal** (`ashpd`), NOT an
+      app-drawn picker: the host desktop provides the UI (GNOME's picker on GNOME;
+      the qOS compositor's portal backend on qOS). Provide a small shared helper
+      (`ui`) that wraps the portal open/save call so every app uses it uniformly,
+      and SWEEP all apps that currently draw their own dialog (pdf_viewer's
+      OpenDialog; audit sheets/ebook/code_editor/etc.) onto it. `ui::FilePicker`
+      is only for the qOS compositor's own portal-backend rendering (or non-file
+      in-cluster pickers), never drawn by an app for OS file open/save.
