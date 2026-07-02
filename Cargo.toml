@@ -22,6 +22,7 @@ members = [
     "qos-runtime-portal",
     "qos-runtime-collab",
     "qos-runtime-fs",
+    "qos-runtime-identity",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
