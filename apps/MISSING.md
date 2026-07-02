@@ -4,6 +4,13 @@ Rule: **never present an app to the user while it has an unchecked entry here.**
 Each item is confirmed fixed (self-verified: build + shot + driven interaction,
 graded against `ui/HIG.md`) before its box is checked. Governed by the qOS HIG.
 
+**Review discipline (do not skip):** an item is only checked after DRIVING the
+real interaction that exercises it — never off a static empty-state shot. For a
+document app that means OPEN a document and actually zoom / pan / annotate; for a
+control that means click it and confirm it does the thing. A screenshot of an
+empty state proves nothing. (I violated this by showing pdf_viewer from an empty
+"No document open" shot without ever driving zoom or open — never again.)
+
 ---
 
 ## calculator
@@ -43,6 +50,20 @@ graded against `ui/HIG.md`) before its box is checked. Governed by the qOS HIG.
       summary strip above a full-width process table on the Processes view, with
       the detailed graphs living in the Resources view — no fake sidebar. Think
       it through; make it read as content.
+
+## pdf_viewer
+- [ ] ZOOM DOES NOT WORK (raised before, and I failed to record it — now recorded).
+      The +/- / Fit buttons and ctrl+wheel must actually change the page scale on
+      a LOADED document; plus horizontal pan. Adopt the shared ui DocumentViewport
+      (zoom/pan) instead of the app's hand-rolled scale so it behaves like the
+      other document apps. VERIFY by opening the sample PDF and driving zoom in/out
+      + pan (not an empty-state shot).
+- [ ] The open flow uses the app's own bespoke `OpenDialog` (in app.rs), which
+      looks bad. It must use the NATIVE shared file picker (`ui::widget::FilePicker`),
+      not a hand-rolled dialog. (See the toolkit item on the file picker itself.)
+- [ ] Re-review ALL previously-claimed pdf features by DRIVING them on a real
+      document: zoom, pan, markers/annotations, tooltips, search (whole-word/case),
+      sidebar focus, delete — several were "verified" only via static shots.
 
 ## calendar
 - [ ] Adopt the HIG §1 three-panel model: **calendars** = genuine sidebar
