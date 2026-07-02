@@ -40,21 +40,21 @@ impl Mode {
 }
 
 /// One evaluated entry in the calculator history.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
     pub expr: String,
     pub result: String,
 }
 
 /// A `y = f(x)` curve for the 2D plotter.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlotFn {
     pub expr: String,
     pub visible: bool,
 }
 
 /// 2D viewport: world-space center + pixels-per-unit zoom.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View2d {
     pub cx: f64,
     pub cy: f64,
@@ -68,7 +68,7 @@ impl Default for View2d {
 }
 
 /// 3D viewport: orbit angles + zoom.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View3d {
     pub yaw: f64,
     pub pitch: f64,
@@ -82,7 +82,7 @@ impl Default for View3d {
 }
 
 /// The whole calculator state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CalcModel {
     pub mode: Mode,
     pub deg: bool,
