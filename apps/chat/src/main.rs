@@ -36,7 +36,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        render_shot_to_png(chat::app_root_for_shot(&scenario), viewport, &out)?;
+        let mut app = chat::ChatApp::new_ephemeral();
+        app.seed_shot_scenario(&scenario);
+        render_shot_to_png(app, viewport, &out)?;
         return Ok(());
     }
 
@@ -80,10 +82,13 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
+/// Mirrors `ui::App`'s cycle (sync → build_layout → compute_layout →
+/// apply_layout → draw) and additionally pre-warms the attachment image cache
+/// so the single frame paints real decoded thumbnails rather than a loading
+/// placeholder.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    mut app: chat::ChatApp,
     viewport: (u32, u32),
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +101,9 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
+    app.sync(&mut state.doc, &state.root);
+    app.prewarm_images();
+    let widget: &mut dyn Widget = &mut app;
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(

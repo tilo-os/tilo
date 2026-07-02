@@ -180,7 +180,10 @@ pub(crate) enum Hit {
     FocusThread,
     Send,
     ComposerEmoji(Point),
+    /// Open the workspace file picker to share an attachment.
     Attach,
+    /// Pick a specific file (by path) from the open attachment picker.
+    AttachPick(String),
     StartCall,
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
@@ -226,6 +229,10 @@ pub struct ChatApp {
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
 
+    // Attachment picker (browses the shared workspace for a file to share).
+    pub(crate) attach_open: bool,
+    pub(crate) attach_entries: Vec<crate::picker::PickEntry>,
+
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
     /// Inline rename editor: the target being renamed + its working text.
@@ -250,6 +257,10 @@ pub struct ChatApp {
     // Persistence (None for ephemeral / `--shots` instances).
     saver: Option<Saver>,
 
+    // Background image loader/cache for attachment thumbnails (decodes off
+    // the UI thread; real bytes come from the FUSE mount).
+    pub(crate) images: ui::ImageStore,
+
     // Layout + render caches.
     pub(crate) rect: Rect,
     root_node: Option<NodeId>,
@@ -258,6 +269,12 @@ pub struct ChatApp {
     pub(crate) hits: Vec<(Rect, Hit)>,
     pub(crate) last_mouse: Point,
     relayout: bool,
+    /// True while either flap is mid-slide — drives `needs_animation_frame`
+    /// so the loop keeps ticking only during the transition, then idles.
+    flap_animating: bool,
+    /// `--shots` only: seed the real minimal starter instead of the demo, so
+    /// the honest first-run empty state can be captured.
+    shot_starter: bool,
 }
 
 impl Default for ChatApp {
@@ -284,8 +301,10 @@ impl ChatApp {
     }
 
     fn bare() -> Self {
-        let mut video = VideoPlayer::new();
-        feed_demo_frame(&mut video);
+        // The host call tile is a real VideoPlayer with no frame until a live
+        // capture feeds one; there is no synthesised stand-in. Its honest
+        // "camera off" state is painted over the empty surface.
+        let video = VideoPlayer::new();
         Self {
             workspaces: Vec::new(),
             channels: Vec::new(),
@@ -306,19 +325,22 @@ impl ChatApp {
             emoji_anchor: Point::ZERO,
             history_open: None,
             history_anchor: Point::ZERO,
+            attach_open: false,
+            attach_entries: Vec::new(),
             menu: None,
             rename: None,
             swipe: None,
             call: CallState::default(),
             overlay_drag: None,
             left_flap: FlapState::open_when_docked(),
-            right_flap: FlapState::open_when_docked(),
+            right_flap: FlapState::closed_by_default(),
             left_mode: FlapMode::Docked,
             right_mode: FlapMode::Docked,
             sound: SoundEngine::new(),
             media: MediaEngine::new(),
             permissions: AllowAll,
             saver: None,
+            images: ui::ImageStore::new(crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
             video_node: None,
@@ -326,6 +348,8 @@ impl ChatApp {
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             relayout: false,
+            flap_animating: false,
+            shot_starter: false,
         }
     }
 
@@ -344,27 +368,75 @@ impl ChatApp {
         }
     }
 
-    /// Stage a named scenario for a headless screenshot. Unknown names leave
-    /// the default frame.
+    /// Stage a named scenario for a headless screenshot against the ephemeral
+    /// demo workspace. The default (empty) scenario is the rich desktop frame:
+    /// an open thread beside the conversation and a live call huddle.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "narrow" => {
-                // Snap both flaps closed so the single-frame narrow capture
-                // shows the overlay-collapsed conversation (not a mid-slide).
-                // Modes resolve to overlay at the narrow viewport during layout.
+                // Overlay-collapsed conversation: both flaps closed, no thread,
+                // no floating call — the clean single-column reading state.
                 self.left_flap.snap(false);
                 self.right_flap.snap(false);
                 self.thread_open = None;
+                self.call = CallState::default();
+            }
+            "compact" => {
+                // Medium window: docked channel list, conversation reflowed,
+                // members/thread summoned on demand (not forced open), no call.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+            }
+            "starter" => {
+                // The real first-run empty workspace (no demo content).
+                self.shot_starter = true;
+                self.thread_open = None;
+                self.call = CallState::default();
             }
             "context" => {
-                // Open a channel context menu for the screenshot.
                 self.menu = Some(ContextMenu {
                     target: MenuTarget::Channel("c_frontend".into()),
                     anchor: Point::new(240.0, 230.0),
                     items: MenuAction::for_channel().to_vec(),
                 });
             }
-            _ => {}
+            "call" => {
+                // The expanded full-window call overlay against the demo
+                // huddle (host + three remotes), so the tile grid and the
+                // wrapped controls bar can be captured headless at any width.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call.join("c_huddle");
+                self.call.expanded = true;
+            }
+            "attach" => {
+                // Show the workspace file picker with real, decodable
+                // thumbnails (the demo scheme drives the same decode path a
+                // projected FUSE image would). Ephemeral shot only.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.attach_entries = vec![
+                    crate::picker::PickEntry {
+                        path: crate::images::DEMO_CALL_GRID.into(),
+                        name: "call-overlay-v3.png".into(),
+                        size: 84_992,
+                    },
+                    crate::picker::PickEntry {
+                        path: crate::images::DEMO_SHARED_SHOT.into(),
+                        name: "design-handoff.png".into(),
+                        size: 132_480,
+                    },
+                ];
+                self.attach_open = true;
+            }
+            _ => {
+                // Desktop demo: reveal the thread beside the conversation and
+                // put this peer in the Design Huddle so the call surface shows.
+                self.right_flap.open();
+                self.call.join("c_huddle");
+            }
         }
     }
 
@@ -575,7 +647,54 @@ impl ChatApp {
         self.right_flap.reconcile(self.right_mode);
         let a = self.left_flap.tick(self.left_mode);
         let b = self.right_flap.tick(self.right_mode);
+        self.flap_animating = a || b;
         a || b
+    }
+
+    /// Keep the active workspace / channel / thread pointing at something that
+    /// exists — used after seeding a fresh (real) starter whose ids differ
+    /// from the demo defaults, and after any structural delete. Returns true
+    /// when the active workspace changed (the caller must reload so the
+    /// channel + message lists refresh).
+    pub(crate) fn ensure_selection(&mut self) -> bool {
+        let mut ws_changed = false;
+        if !self.workspaces.iter().any(|w| w.id == self.active_ws) {
+            if let Some(first) = self.workspaces.first() {
+                self.active_ws = first.id.clone();
+                self.active_channel.clear();
+                ws_changed = true;
+            }
+        }
+        // Drop a stale open thread whose parent isn't in this workspace.
+        if let Some(t) = self.thread_open.clone() {
+            if self.message(&t).is_none() {
+                self.thread_open = None;
+                if self.focus == Focus::Thread {
+                    self.focus = Focus::Main;
+                }
+            }
+        }
+        ws_changed
+    }
+
+    /// Synchronously warm the attachment-image cache for the current channel,
+    /// blocking briefly so a single offscreen `--shots` frame paints the real
+    /// decoded images. Never call this on the live UI thread — there the store
+    /// loads in the background and surfaces on a later frame.
+    pub fn prewarm_images(&self) {
+        // `self.messages` already holds every message in the active channel,
+        // including threaded replies and the thread parent, so one pass covers
+        // the timeline and the open thread panel.
+        for m in &self.messages {
+            if let Some(crate::model::Attachment::Image { path, .. }) = &m.attachment {
+                let _ = self.images.get(path);
+            }
+        }
+        // Also warm any thumbnails visible in an open attachment picker.
+        for e in &self.attach_entries {
+            let _ = self.images.get(&e.key());
+        }
+        self.images.block_until_idle(std::time::Duration::from_secs(3));
     }
 
     /// The host-tile video rect for the current call mode, including the
@@ -595,6 +714,42 @@ impl ChatApp {
     }
 }
 
+/// Resolve the local user's identity for the first-run starter workspace from
+/// the environment (`$USER` / `$USERNAME`), falling back to a neutral "You".
+/// Keeps the stable id [`model::ME`] so authored messages and reactions bind
+/// to the right person across renames.
+fn local_identity() -> (String, String, String) {
+    let raw = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "You".to_string());
+    // Present a tidy display name: capitalise the login and split on common
+    // separators so "ada.lovelace" → "Ada Lovelace".
+    let display: String = raw
+        .split(|c: char| c == '.' || c == '_' || c == '-' || c == ' ')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut ch = p.chars();
+            match ch.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let display = if display.is_empty() { "You".to_string() } else { display };
+    let initials: String = display
+        .split_whitespace()
+        .filter_map(|w| w.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    let initials = if initials.is_empty() { "Y".to_string() } else { initials };
+    (model::ME.to_string(), display, initials)
+}
+
 /// Compute an absolute rect from window-relative fractions.
 pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     let x0 = win.x0 + f.0 * win.width();
@@ -602,72 +757,38 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
 }
 
-/// Synthesise one colourful H.264 frame and hand it to the player so the
-/// host call tile shows a live-looking surface offline. Silently no-ops if
-/// the in-tree openh264 encoder is unavailable — the tile then falls back
-/// to the themed letterbox fill.
-fn feed_demo_frame(video: &mut VideoPlayer) {
-    let _ = (|| -> Option<()> {
-        use openh264::encoder::Encoder;
-        use openh264::formats::YUVBuffer;
-
-        let w = 320usize;
-        let h = 192usize;
-        let (cw, ch) = (w / 2, h / 2);
-        let y_len = w * h;
-        let uv_len = cw * ch;
-        let mut plane = vec![0u8; y_len + 2 * uv_len];
-
-        // Luma: soft vertical gradient + a centred highlight blob to read as
-        // a face/light in a dim room.
-        for y in 0..h {
-            for x in 0..w {
-                let base = 46.0 + (y as f32 / h as f32) * 70.0;
-                let dx = (x as f32 - w as f32 * 0.5) / (w as f32 * 0.5);
-                let dy = (y as f32 - h as f32 * 0.42) / (h as f32 * 0.5);
-                let blob = (1.0 - (dx * dx + dy * dy)).max(0.0) * 95.0;
-                plane[y * w + x] = (base + blob).clamp(0.0, 255.0) as u8;
-            }
-        }
-        // Chroma: cool indigo/teal sweep.
-        for cy in 0..ch {
-            for cx in 0..cw {
-                let u = 150.0 + (cx as f32 / cw as f32) * 24.0;
-                let v = 96.0 + (cy as f32 / ch as f32) * 28.0;
-                plane[y_len + cy * cw + cx] = u.clamp(0.0, 255.0) as u8;
-                plane[y_len + uv_len + cy * cw + cx] = v.clamp(0.0, 255.0) as u8;
-            }
-        }
-
-        let yuv = YUVBuffer::from_vec(plane, w, h);
-        let mut enc = Encoder::new().ok()?;
-        let bitstream = enc.encode(&yuv).ok()?;
-        let bytes = bitstream.to_vec();
-        if !bytes.is_empty() {
-            video.feed_frame(&bytes);
-            video.play();
-        }
-        Some(())
-    })();
-}
-
 impl Widget for ChatApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
-        // First-run adoption: load a persisted workspace into the shared doc
-        // before seeding, so a restart restores prior messages/structure
-        // rather than re-seeding the demo. Only the live (persistent)
-        // instance reads disk; ephemeral `--shots` instances seed fresh.
-        if self.saver.is_some() && !ChatDoc::is_seeded(doc) {
-            if let Some(dir) = storage::data_dir() {
-                if let Ok(Some(bytes)) = storage::load_bytes(&dir) {
-                    if let Ok(loaded) = AutoCommit::load(&bytes) {
-                        let _ = doc.merge(&mut loaded.clone());
+        if self.saver.is_some() {
+            // Live instance. Restore a persisted workspace if one exists so a
+            // restart keeps prior messages/structure; otherwise scaffold a
+            // real, empty starter workspace for this user — never the demo.
+            if !ChatDoc::is_seeded(doc) {
+                if let Some(dir) = storage::data_dir() {
+                    if let Ok(Some(bytes)) = storage::load_bytes(&dir) {
+                        if let Ok(loaded) = AutoCommit::load(&bytes) {
+                            let _ = doc.merge(&mut loaded.clone());
+                        }
                     }
                 }
             }
+            if !ChatDoc::is_seeded(doc) {
+                let (id, name, initials) = local_identity();
+                ChatDoc::seed_starter(doc, &id, &name, &initials);
+            }
+        } else if self.shot_starter {
+            // `--shots` capture of the honest first-run empty workspace.
+            let (id, name, initials) = local_identity();
+            ChatDoc::seed_starter(doc, &id, &name, &initials);
+        } else {
+            // Ephemeral `--shots`/test instance: the rich demo workspace.
+            ChatDoc::seed_if_empty(doc);
         }
-        ChatDoc::seed_if_empty(doc);
         self.reload(doc);
+        if self.ensure_selection() {
+            // Re-picking the workspace changes which channels/messages apply.
+            self.reload(doc);
+        }
     }
 
     fn build_layout(
@@ -784,14 +905,18 @@ impl Widget for ChatApp {
         // overlay mode (or whenever a flap is hidden).
         self.draw_flap_toggles(scene, tf, tr, theme, &mut hits);
 
-        // Call layers.
+        // Call layers. The host tile is a real VideoPlayer; with no live
+        // capture feeding it (there is no camera here) it paints an honest
+        // "camera off" placeholder rather than any fabricated frame.
         if self.call.active && self.call.expanded {
             self.draw_call_overlay_bg(scene, tf, tr, theme, &mut hits);
             self.video.draw(scene, tf, tr, theme, presence);
+            self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
         } else if self.call.active {
             self.draw_huddle_bg(scene, tf, tr, theme, &mut hits);
             self.video.draw(scene, tf, tr, theme, presence);
+            self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_huddle_fg(scene, tf, tr, theme, &mut hits);
         }
 
@@ -804,6 +929,9 @@ impl Widget for ChatApp {
         }
         if self.history_open.is_some() {
             self.draw_history_popover(scene, tf, tr, theme, &mut hits);
+        }
+        if self.attach_open {
+            self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
         }
 
         self.hits = hits;
@@ -849,10 +977,13 @@ impl Widget for ChatApp {
         std::mem::take(&mut self.relayout)
     }
 
-    /// Keep redrawing while a call is live (active-speaker pulse / video) or
-    /// a flap is mid-slide, so animations are smooth.
+    /// Keep the loop ticking only while something is actually moving: a flap
+    /// mid-slide, an overlay being dragged, or attachment images still
+    /// decoding in the background. A live-but-static call does **not** force
+    /// continuous redraws (the roster/rings are static), so an idle call
+    /// no longer pins a core.
     fn needs_animation_frame(&self) -> bool {
-        self.call.active
+        self.flap_animating || self.overlay_drag.is_some() || !self.images.is_idle()
     }
 
     fn needs_redraw(&self) -> bool {

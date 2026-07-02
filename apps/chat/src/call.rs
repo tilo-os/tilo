@@ -73,8 +73,9 @@ impl CallPermissions for AllowAll {
     }
 }
 
-/// Per-peer call view state. Defaults model "in the Design Huddle, docked
-/// overlay, mic live" so the offline screenshot shows a populated call.
+/// Per-peer call view state. A fresh app is **not** in a call — the user
+/// joins a voice channel to start one. (The demo screenshot activates a call
+/// explicitly via the shot scenario.)
 #[derive(Clone, Debug)]
 pub struct CallState {
     /// True while connected to a voice channel.
@@ -104,8 +105,8 @@ pub struct CallState {
 impl Default for CallState {
     fn default() -> Self {
         Self {
-            active: true,
-            channel: "c_huddle".into(),
+            active: false,
+            channel: String::new(),
             expanded: false,
             overlay_offset: Vec2::ZERO,
             participants_expanded: true,

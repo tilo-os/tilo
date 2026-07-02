@@ -70,14 +70,12 @@ pub enum SyncOutcome {
     Failed(String),
 }
 
-/// Pull a single remote calendar.
+/// Sample pull for one remote calendar (demo / tests only).
 ///
-/// In the headless / offline build this synthesises a representative
-/// `VCALENDAR` for the calendar and parses it through the real [`ics::parse`],
-/// so the events that come back travel the same path a live `calendar-data`
-/// REPORT response would. In the live app, this is the function the background
-/// worker replaces with a real `calendar-query` REPORT against
-/// `config.server_url`.
+/// Synthesises a representative `VCALENDAR` for the calendar and parses it
+/// through the real [`ics::parse`], so the events that come back travel the
+/// same path a live `calendar-data` REPORT response would. The live transport
+/// lives in the `live` module and does not call this.
 pub fn pull_calendar(
     _config: &CalDavConfig,
     calendar: &RemoteCalendar,
@@ -94,10 +92,35 @@ pub fn pull_calendar(
     SyncResult { events, tasks }
 }
 
-/// Synchronise every visible calendar in a set of configs+collections. The live
-/// app calls this from a worker thread and posts the [`SyncResult`] back to the
-/// event loop; the offline build runs it inline.
+/// Synchronise every visible calendar for the **live** app.
+///
+/// Compiled with the `live` feature this performs real CalDAV requests
+/// (`REPORT` calendar-query, falling back to a plain `GET`) against each
+/// account's server and parses the returned `calendar-data` through
+/// [`ics::parse`]. Without that feature there is no transport, so it returns
+/// an empty [`SyncOutcome::Offline`] — it never invents entries. Either way
+/// this stays synchronous; the live app runs it off the UI thread.
 pub fn sync_all(
+    accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+    today: NaiveDate,
+) -> (SyncResult, SyncOutcome) {
+    #[cfg(feature = "live")]
+    {
+        live::sync_all_live(accounts, today)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = (accounts, today);
+        (SyncResult::default(), SyncOutcome::Offline)
+    }
+}
+
+/// The offline sample pull used by the hermetic `--shots` / demo build and by
+/// tests. It synthesises each calendar's events as real iCalendar and parses
+/// them back through [`ics::parse`], so the sample data travels the exact
+/// import path a live `calendar-data` REPORT response would — but it is never
+/// reached by the live app.
+pub fn sample_pull_all(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
 ) -> (SyncResult, SyncOutcome) {
@@ -189,6 +212,148 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
     ics::export(&model)
 }
 
+/// Real CalDAV transport, compiled only with the `live` feature. Kept behind a
+/// module so its `reqwest` dependency never touches the default (headless)
+/// build. This talks HTTP to a configured server; there is no synthesised data
+/// here.
+#[cfg(feature = "live")]
+mod live {
+    use std::time::Duration;
+
+    use chrono::{Datelike, NaiveDate};
+
+    use super::{RemoteCalendar, SyncOutcome, SyncResult};
+    use crate::account::CalDavConfig;
+    use crate::ics;
+
+    /// Fetch every visible calendar across the configured accounts.
+    pub fn sync_all_live(
+        accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+        today: NaiveDate,
+    ) -> (SyncResult, SyncOutcome) {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("qOS-Calendar/0.1")
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return (SyncResult::default(), SyncOutcome::Failed(e.to_string())),
+        };
+
+        let mut merged = SyncResult::default();
+        let mut count = 0usize;
+        for (config, calendars) in accounts {
+            for cal in calendars.iter().filter(|c| c.visible) {
+                match pull_calendar_live(&client, config, cal, today) {
+                    Ok(mut res) => {
+                        let palette = cal.palette();
+                        for e in &mut res.events {
+                            e.color = palette;
+                        }
+                        merged.events.append(&mut res.events);
+                        merged.tasks.append(&mut res.tasks);
+                        count += 1;
+                    }
+                    Err(e) => return (merged, SyncOutcome::Failed(e)),
+                }
+            }
+        }
+        if count == 0 {
+            return (merged, SyncOutcome::Offline);
+        }
+        let events = merged.events.len();
+        (merged, SyncOutcome::Synced { calendars: count, events })
+    }
+
+    /// Pull one collection: a `REPORT` calendar-query for a window around
+    /// today, falling back to a plain `GET` for servers that expose the
+    /// collection as a single `.ics`. The response body — a multistatus
+    /// document embedding one `VCALENDAR` per resource — is handed to
+    /// [`ics::parse`], which scans out every `VEVENT`/`VTODO` it contains.
+    fn pull_calendar_live(
+        client: &reqwest::blocking::Client,
+        config: &CalDavConfig,
+        cal: &RemoteCalendar,
+        today: NaiveDate,
+    ) -> Result<SyncResult, String> {
+        let url = collection_url(config, cal);
+        let report = reqwest::Method::from_bytes(b"REPORT")
+            .map_err(|e| e.to_string())?;
+        let body = calendar_query_body(today);
+
+        let resp = client
+            .request(report, &url)
+            .basic_auth(&config.username, Some(&config.password))
+            .header("Depth", "1")
+            .header(reqwest::header::CONTENT_TYPE, "application/xml; charset=utf-8")
+            .body(body)
+            .send();
+
+        let text = match resp {
+            Ok(r) if r.status().is_success() => r.text().map_err(|e| e.to_string())?,
+            Ok(_) => {
+                // Server refused the REPORT — try a straight GET of the URL.
+                let g = client
+                    .get(&url)
+                    .basic_auth(&config.username, Some(&config.password))
+                    .send()
+                    .map_err(|e| e.to_string())?;
+                if !g.status().is_success() {
+                    return Err(format!("server returned {}", g.status()));
+                }
+                g.text().map_err(|e| e.to_string())?
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let (events, tasks) = ics::parse(&xml_text_unescape(&text));
+        Ok(SyncResult { events, tasks })
+    }
+
+    fn collection_url(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
+        // A collection href (`cal.id`) may be absolute or relative to the
+        // server. Absolute wins; otherwise join onto the configured base.
+        if cal.id.starts_with("http://") || cal.id.starts_with("https://") {
+            cal.id.clone()
+        } else {
+            format!(
+                "{}/{}",
+                config.server_url.trim_end_matches('/'),
+                cal.id.trim_start_matches('/')
+            )
+        }
+    }
+
+    fn calendar_query_body(today: NaiveDate) -> String {
+        // A ±60-day window keeps the payload small while covering the views.
+        let from = (today - chrono::Duration::days(60))
+            .format("%Y%m%dT000000Z")
+            .to_string();
+        let to = (today + chrono::Duration::days(60))
+            .format("%Y%m%dT000000Z")
+            .to_string();
+        let _ = today.year();
+        format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+<C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+<D:prop><D:getetag/><C:calendar-data/></D:prop>\
+<C:filter><C:comp-filter name=\"VCALENDAR\">\
+<C:time-range start=\"{from}\" end=\"{to}\"/>\
+</C:comp-filter></C:filter></C:calendar-query>"
+        )
+    }
+
+    /// Undo the handful of XML entities a server may apply to the embedded
+    /// `calendar-data` text so the iCalendar lines parse cleanly.
+    fn xml_text_unescape(s: &str) -> String {
+        s.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#13;", "")
+            .replace("&amp;", "&")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +384,7 @@ mod tests {
             .iter()
             .map(|a| (a.config.clone(), a.calendars.clone()))
             .collect();
-        let (res, outcome) = sync_all(&accounts, today());
+        let (res, outcome) = sample_pull_all(&accounts, today());
         // Sample has 3 visible calendars; each yields at least one event.
         assert!(matches!(outcome, SyncOutcome::Synced { calendars: 3, .. }));
         assert!(!res.is_empty());
@@ -229,6 +394,15 @@ mod tests {
 
     #[test]
     fn empty_account_set_reports_offline() {
+        let (res, outcome) = sample_pull_all(&[], today());
+        assert!(res.is_empty());
+        assert_eq!(outcome, SyncOutcome::Offline);
+    }
+
+    #[test]
+    fn live_sync_with_no_accounts_is_offline_and_empty() {
+        // The real path never fabricates: with nothing configured it returns
+        // an empty Offline result (and, without the `live` feature, always).
         let (res, outcome) = sync_all(&[], today());
         assert!(res.is_empty());
         assert_eq!(outcome, SyncOutcome::Offline);

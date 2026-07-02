@@ -20,7 +20,24 @@ pub mod worker;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app root: it reads the user's real document library from
+/// disk and opens (or seeds) an untitled starter document.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::TypstApp::new())
+}
+
+/// Build a hermetic root seeded with the bundled demo documents. Used by the
+/// offscreen `--shots` renderer and tests so captures are deterministic and do
+/// not depend on whatever `.typ` files happen to be on disk.
+pub fn demo_root() -> Box<dyn Widget> {
+    Box::new(app::TypstApp::with_demo_documents())
+}
+
+/// Like [`demo_root`] but pre-configured into a named state so `--shots` can
+/// capture views that would otherwise need interaction (compact preview, the
+/// overflow menu, the Problems panel). Screenshot-only.
+pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
+    let mut app = app::TypstApp::with_demo_documents();
+    app.apply_demo_scenario(scenario);
+    Box::new(app)
 }

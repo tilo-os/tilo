@@ -139,15 +139,15 @@ pub struct User {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Attachment {
-    /// An image projected from the P2P FUSE filesystem. `tint` selects a
-    /// deterministic gradient stand-in until the bytes hydrate from
-    /// `/var/workspace` (content is fetched on first read — see `fs`).
+    /// An image projected from the P2P FUSE filesystem. `w`/`h` are the real
+    /// pixel dimensions read from the file header; the bytes are decoded and
+    /// painted through the shared image cache (content is fetched on first
+    /// read — see `fs`), so there is no placeholder stand-in for the pixels.
     Image {
         name: String,
         path: String,
         w: u32,
         h: u32,
-        tint: usize,
     },
     /// A non-image file share (chip with name + size).
     File {

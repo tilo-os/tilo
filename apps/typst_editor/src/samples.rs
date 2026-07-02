@@ -28,50 +28,69 @@ pub const SAMPLES: &[Sample] = &[
     },
 ];
 
-/// Index of the document shown on first launch and in `--shots`.
+/// Index of the demo document shown first in `--shots` and the example gallery.
 pub const DEFAULT_INDEX: usize = 0;
+
+/// The starter document a fresh install opens with when the user has no saved
+/// `.typ` files yet. Deliberately short and neutral — a blank page to edit,
+/// not a brochure.
+pub const STARTER: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
+#set text(size: 11pt)
+
+= Untitled
+
+Start writing here. The document on the right updates as you type.
+
+- A dash makes a bullet
+- `Ctrl+S` saves, `Ctrl+Enter` recompiles
+"#;
 
 const WELCOME: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
 #set text(font: "Libertinus Serif", size: 11pt)
 #set par(justify: true)
 
-= Typst, live in qOS
+= Getting started with Typst
 
-Welcome to the *Typst editor*. Type on the left, watch the document
-re-typeset itself on the right. Everything you see here is compiled by the
-real `typst` engine and rasterised page-by-page.
+Type on the left; the rendered document updates on the right. Typst is a
+markup language for typesetting — you write plain text with a few marks and
+it lays out a finished page.
 
-== What you can write
+== Text and markup
 
-You get headings, _emphasis_, *strong* text, and `inline code` for free.
-Bullet lists are a dash:
+Headings start with `=`. Inline marks give you _emphasis_, *strong* text,
+and `code`. Paragraphs are separated by a blank line, and lists come in two
+flavours.
 
-- Collaborative editing, CRDT-backed
-- A real compiler, not a preview hack
-- Diagnostics with line numbers
+A dash makes a bullet list:
 
-Numbered lists use a plus:
+- One item
+- Another item
+- A third
 
-+ Edit the source
-+ Hit #raw("Ctrl+Enter") to recompile
-+ Read the rendered pages
+A plus makes a numbered list:
+
++ First step
++ Second step
++ Third step
 
 == Mathematics
 
-Inline maths like $a^2 + b^2 = c^2$ flows with the text, and block maths
-gets its own centred line:
+Inline maths such as $a^2 + b^2 = c^2$ flows with the text, while block
+maths gets its own centred line:
 
 $ sum_(k=1)^n k = (n (n + 1)) / 2 $
 
 == Code
 
+Fenced blocks keep their monospace formatting:
+
 ```rust
 fn main() {
-    println!("compiled by typst");
+    println!("hello");
 }
 ```
 
-Switch documents from the toolbar to explore more examples.
+Use the toolbar to open the other example documents.
 "#;
 
 const REPORT: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)

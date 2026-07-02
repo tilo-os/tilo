@@ -33,7 +33,7 @@ use crate::model::{account_color, Account, AccountId};
 use crate::ring::CountdownRing;
 use crate::totp;
 
-const ROW_HEIGHT: f64 = 88.0;
+const ROW_HEIGHT: f64 = 76.0;
 const ROW_GAP: f64 = 10.0;
 const PAD: f64 = 16.0;
 const AVATAR_R: f64 = 24.0;
@@ -346,37 +346,32 @@ impl AccountList {
         // Avatar.
         self.draw_avatar(scene, transform, text_renderer, theme, l.avatar_c, &account);
 
-        // Issuer + label.
+        // Issuer + label, vertically centred as a block. The available
+        // text width shrinks with the row so a narrow window truncates
+        // rather than colliding with the code.
+        let text_w = (l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32;
         let issuer = account.title().to_string();
+        let has_label = !account.label.trim().is_empty();
+        let issuer_y = if has_label { r.center().y - 20.0 } else { r.center().y - 10.0 };
         text_renderer.draw_text_weighted(
             scene,
             &issuer,
             16.0,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((l.text_x, r.y0 + 22.0)),
-            Some((l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32),
+            transform * Affine::translate((l.text_x, issuer_y)),
+            Some(text_w),
             TextWeight::Semibold,
         );
-        if !account.label.trim().is_empty() {
+        if has_label {
             text_renderer.draw_text(
                 scene,
                 &account.label,
                 13.0,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((l.text_x, r.y0 + 46.0)),
-                Some((l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32),
+                transform * Affine::translate((l.text_x, r.center().y + 4.0)),
+                Some(text_w),
             );
         }
-        // Algorithm / digits chip line.
-        let meta = format!("{} · {} digits", account.algorithm.as_str(), account.digits);
-        text_renderer.draw_text(
-            scene,
-            &meta,
-            11.0,
-            theme.tokens.colors.text_dim.with_alpha_factor(0.7),
-            transform * Affine::translate((l.text_x, r.y0 + 64.0)),
-            None,
-        );
 
         // The big rotating code, right-aligned to `code_right`.
         let raw = totp::code_at(&account, now);

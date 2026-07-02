@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
+use zeroize::Zeroizing;
 
 use crate::model::{Account, Algorithm};
 
@@ -83,6 +84,9 @@ pub fn code_at(account: &Account, unix_secs: f64) -> String {
     let Some(key) = decode_secret(&account.secret) else {
         return "•".repeat(digits as usize);
     };
+    // Hold the raw HMAC key in a buffer that is wiped from the heap once
+    // this code has been derived, so long-lived secret bytes don't linger.
+    let key = Zeroizing::new(key);
     if key.is_empty() {
         return "•".repeat(digits as usize);
     }
@@ -166,9 +170,11 @@ mod tests {
     #[test]
     fn code_is_stable_within_a_period_and_rotates_after() {
         let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
-        // Two times inside the same 30s window agree.
-        assert_eq!(code_at(&a, 100.0), code_at(&a, 129.0));
-        // Crossing the boundary changes the code (overwhelmingly likely).
+        // 100s and 119s both fall in the [90, 120) step (counter 3), so the
+        // code is identical.
+        assert_eq!(code_at(&a, 100.0), code_at(&a, 119.0));
+        // Crossing the 120s boundary into the next step changes the code
+        // (overwhelmingly likely).
         assert_ne!(code_at(&a, 100.0), code_at(&a, 130.0));
     }
 

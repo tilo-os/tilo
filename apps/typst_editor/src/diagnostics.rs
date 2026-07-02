@@ -9,6 +9,7 @@ use vello::peniko::{BlendMode, Fill};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use crate::app::plural;
 use crate::compile::{DiagKind, Diagnostic};
 
 const ROW_H: f64 = 26.0;
@@ -107,7 +108,11 @@ impl DiagnosticsPanel {
         let header = if errs == 0 && warns == 0 {
             "Problems — none".to_string()
         } else {
-            format!("Problems — {errs} error(s), {warns} warning(s)")
+            format!(
+                "Problems — {}, {}",
+                plural(errs, "error", "errors"),
+                plural(warns, "warning", "warnings")
+            )
         };
         tr.draw_text_weighted(
             scene,

@@ -109,24 +109,27 @@ impl Account {
     }
 
     /// Two-letter avatar initials derived from the issuer (falling back
-    /// to the label). Upper-cased, ≤ 2 chars.
+    /// to the label). Upper-cased, ≤ 2 chars. Multi-word names take the
+    /// first letter of each of the first two words ("Amazon Web" → "AW");
+    /// a single word takes its first two letters ("GitHub" → "GI") so the
+    /// avatar stays distinctive rather than collapsing to one glyph.
     pub fn initials(&self) -> String {
         let source = if !self.issuer.trim().is_empty() {
             self.issuer.trim()
         } else {
             self.label.trim()
         };
-        let mut out = String::new();
-        for word in source.split_whitespace().take(2) {
-            if let Some(c) = word.chars().next() {
-                out.push(c);
-            }
-        }
-        if out.is_empty() {
-            if let Some(c) = source.chars().next() {
-                out.push(c);
-            }
-        }
+        let words: Vec<&str> = source.split_whitespace().collect();
+        let out: String = match words.as_slice() {
+            [] => String::new(),
+            [single] => single.chars().take(2).collect(),
+            [first, second, ..] => first
+                .chars()
+                .next()
+                .into_iter()
+                .chain(second.chars().next())
+                .collect(),
+        };
         out.to_uppercase().chars().take(2).collect()
     }
 

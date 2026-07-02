@@ -265,7 +265,11 @@ impl ChatApp {
                 self.emoji_target = None;
                 self.emoji_anchor = anchor;
             }
-            Hit::Attach => self.attach_demo(doc),
+            Hit::Attach => self.open_attach_picker(),
+            Hit::AttachPick(path) => {
+                self.attach_open = false;
+                self.attach_file(doc, std::path::Path::new(&path));
+            }
             Hit::StartCall => {
                 if self.call.active {
                     self.call.expanded = !self.call.expanded;
@@ -312,7 +316,9 @@ impl ChatApp {
             Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
             Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
             Hit::Dismiss => {
-                if self.menu.is_some() {
+                if self.attach_open {
+                    self.attach_open = false;
+                } else if self.menu.is_some() {
                     self.menu = None;
                 } else if self.emoji_open {
                     self.emoji_open = false;
@@ -476,7 +482,9 @@ impl ChatApp {
 
         // Escape unwinds the top-most layer.
         if let Key::Named(NamedKey::Escape) = key {
-            if self.menu.is_some() {
+            if self.attach_open {
+                self.attach_open = false;
+            } else if self.menu.is_some() {
                 self.menu = None;
             } else if self.emoji_open {
                 self.emoji_open = false;
@@ -495,7 +503,7 @@ impl ChatApp {
             return true;
         }
         // While a popover is up, swallow other keys.
-        if self.emoji_open || self.history_open.is_some() || self.menu.is_some() {
+        if self.emoji_open || self.history_open.is_some() || self.menu.is_some() || self.attach_open {
             return true;
         }
 
@@ -635,22 +643,46 @@ impl ChatApp {
         self.persist(doc);
     }
 
-    /// Simulate sharing a file from the FUSE workspace as an attachment.
-    fn attach_demo(&mut self, doc: &mut AutoCommit) {
+    /// Open the workspace file picker (the composer "+"). Lists the real
+    /// image files in the shared workspace so the user shares an actual file —
+    /// nothing is fabricated. In a headless environment with no workspace the
+    /// list is empty and the picker says so.
+    fn open_attach_picker(&mut self) {
+        self.menu = None;
+        self.emoji_open = false;
+        self.emoji_target = None;
+        self.history_open = None;
+        self.attach_entries = crate::picker::list_images(&crate::picker::attach_dir());
+        self.attach_open = true;
+    }
+
+    /// Share the real file at `path` into the active channel: read its true
+    /// pixel dimensions from the header and post it with its actual filesystem
+    /// path, so the shared [`ui::ImageStore`] decodes the real bytes (projected
+    /// from the FUSE workspace). No caption is invented — the image stands on
+    /// its own. Returns whether a message was posted (a non-image / missing
+    /// file posts nothing).
+    pub(crate) fn attach_file(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
         use crate::model::Attachment;
+        let Some((w, h)) = crate::picker::image_dimensions(path) else {
+            return false;
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "image".into());
         ChatDoc::push_message(
             doc,
             &self.active_channel,
             NewMessage {
                 author: model::ME.into(),
                 ts: now_secs(),
-                text: "Sharing this from the workspace 👇".into(),
+                text: String::new(),
                 attachment: Some(Attachment::Image {
-                    name: "shared-from-fuse.png".into(),
-                    path: "/var/workspace/screenshots/shared-from-fuse.png".into(),
-                    w: 1200,
-                    h: 760,
-                    tint: 4,
+                    name,
+                    path: path.to_string_lossy().into_owned(),
+                    w,
+                    h,
                 }),
                 ..Default::default()
             },
@@ -658,6 +690,7 @@ impl ChatApp {
         self.scroll = 0.0;
         self.reload(doc);
         self.persist(doc);
+        true
     }
 }
 
@@ -675,6 +708,25 @@ mod tests {
     }
 
     #[test]
+    fn live_starter_selects_first_real_workspace_and_channel() {
+        // Against a real (minimal) starter document whose ids differ from the
+        // demo defaults the app boots with, `ensure_selection` must re-home
+        // the active workspace/channel and drop the stale demo thread.
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, model::ME, "You", "Y");
+        let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
+        app.reload(&doc);
+        if app.ensure_selection() {
+            app.reload(&doc);
+        }
+        assert_eq!(app.active_ws, "ws_home", "re-homed to the real workspace");
+        assert_eq!(app.active_channel, "c_general", "picked the first text channel");
+        assert!(app.thread_open.is_none(), "stale demo thread dropped");
+        // And nothing fake leaked in.
+        assert!(app.users.iter().all(|u| u.id == model::ME));
+    }
+
+    #[test]
     fn typing_then_send_appends_a_message() {
         let (mut app, mut doc) = app_with_doc();
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
@@ -686,6 +738,26 @@ mod tests {
         assert_eq!(after.len(), before + 1);
         assert_eq!(after.last().unwrap().text, "hello team");
         assert_eq!(app.draft_main, "", "draft cleared after send");
+    }
+
+    #[test]
+    fn attachment_image_decodes_through_the_image_store() {
+        // The concept message in #design-crit carries an image attachment;
+        // prewarming must drive it through the real fetch → decode → cache
+        // path so a frame paints a decoded thumbnail (not a placeholder).
+        let (app, _doc) = app_with_doc();
+        assert!(
+            app.messages.iter().any(|m| matches!(
+                &m.attachment,
+                Some(crate::model::Attachment::Image { path, .. }) if path == crate::images::DEMO_CALL_GRID
+            )),
+            "seeded conversation has an image attachment"
+        );
+        app.prewarm_images();
+        assert!(
+            app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
+            "the shared ImageStore decoded the attachment thumbnail"
+        );
     }
 
     #[test]
@@ -708,6 +780,24 @@ mod tests {
         assert_eq!(app.call.channel, "c_standup");
         // Joining records the local member in the shared voice membership.
         assert!(ChatDoc::list_voice_members(&doc, "c_standup").iter().any(|m| m.user == model::ME));
+    }
+
+    #[test]
+    fn expanding_a_call_keeps_the_full_remote_roster() {
+        // Reaching the expanded overlay through the real hit path: joining the
+        // demo huddle and hitting Expand must leave every remote in the call,
+        // so the overlay lays out host + three remote tiles (which the grid
+        // packer then keeps inside the window — see render_call's grid test).
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
+        assert!(app.call.active && app.call.channel == "c_huddle");
+        app.on_hit(Hit::CallExpand, &mut doc);
+        assert!(app.call.expanded, "the Expand control opens the full-window overlay");
+        let remotes = ChatDoc::list_voice_members(&doc, "c_huddle")
+            .into_iter()
+            .filter(|m| m.user != model::ME)
+            .count();
+        assert_eq!(remotes, 3, "all three remote participants remain in the call");
     }
 
     #[test]
@@ -780,5 +870,87 @@ mod tests {
         app.backspace(&mut doc);
         assert_eq!(app.draft_main, "ab");
         assert_eq!(app.caret, 2);
+    }
+
+    fn write_real_png(path: &std::path::Path, w: u32, h: u32) {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([80, 160, 220, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(path, bytes.into_inner()).unwrap();
+    }
+
+    #[test]
+    fn attach_shares_a_real_file_with_true_dimensions_and_no_caption() {
+        // The real attach path: picking a file posts *that* file (its real
+        // path + true header dimensions) with no invented caption — the exact
+        // opposite of fabricating content into the conversation.
+        let (mut app, mut doc) = app_with_doc();
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("diagram.png");
+        write_real_png(&png, 240, 160);
+
+        let before = ChatDoc::list_messages(&doc, "c_crit").len();
+        app.on_hit(Hit::AttachPick(png.to_string_lossy().into_owned()), &mut doc);
+        let msgs = ChatDoc::list_messages(&doc, "c_crit");
+        assert_eq!(msgs.len(), before + 1, "one real attachment posted");
+        let last = msgs.last().unwrap();
+        assert_eq!(last.text, "", "no invented caption");
+        match &last.attachment {
+            Some(model::Attachment::Image { path, w, h, .. }) => {
+                assert_eq!(path, &png.to_string_lossy(), "posts the real filesystem path");
+                assert_eq!((*w, *h), (240, 160), "reads the file's true header dimensions");
+            }
+            other => panic!("expected a real image attachment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_button_opens_picker_listing_real_workspace_files() {
+        let (mut app, mut doc) = app_with_doc();
+        let dir = tempfile::tempdir().unwrap();
+        write_real_png(&dir.path().join("shot.png"), 64, 64);
+        // Point the workspace picker at the temp dir and open it via the real
+        // event path (the composer "+").
+        unsafe { std::env::set_var("QOS_CHAT_ATTACH_DIR", dir.path()) };
+        app.on_hit(Hit::Attach, &mut doc);
+        unsafe { std::env::remove_var("QOS_CHAT_ATTACH_DIR") };
+        assert!(app.attach_open, "the picker opens");
+        assert!(
+            app.attach_entries.iter().any(|e| e.name == "shot.png"),
+            "a real workspace image is listed, not a synthesized stand-in"
+        );
+    }
+
+    #[test]
+    fn flaps_reflow_when_width_changes_on_the_same_instance() {
+        // Guard against "responsive on first launch, frozen after resize": the
+        // flap mode is re-derived from the *current* width every layout pass,
+        // never cached from the first frame.
+        use crate::responsive::FlapMode;
+        let (mut app, _doc) = app_with_doc();
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.reconcile_flaps();
+        assert_eq!(app.left_mode, FlapMode::Docked);
+        // Resize narrow on the SAME instance.
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.reconcile_flaps();
+        assert_eq!(app.left_mode, FlapMode::Overlay, "narrowing reflows to overlay");
+        // And widen again.
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.reconcile_flaps();
+        assert_eq!(app.left_mode, FlapMode::Docked, "widening reflows back to docked");
+    }
+
+    #[test]
+    fn host_call_tile_has_no_fabricated_video_frame() {
+        // The host video surface must be empty until a real capture feeds it —
+        // never a synthesized gradient "face".
+        let app = ChatApp::new_ephemeral();
+        assert!(
+            app.video.latest_frame().is_none(),
+            "no frame is fabricated at construction"
+        );
     }
 }
