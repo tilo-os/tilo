@@ -435,6 +435,38 @@ impl MathField {
     pub fn content_width(&self) -> f64 {
         self.layout.as_ref().map(|l| l.width).unwrap_or(0.0)
     }
+
+    /// Height the laid-out content needs, measured against `tr` (rebuilding the
+    /// layout if the content changed). Callers use this to GROW the hosting card
+    /// to fit the formula up to [`CARD_MAX_H`] before handing the field its rect,
+    /// so a taller formula makes its card taller instead of being clipped.
+    pub fn content_height(&mut self, tr: &mut TextRenderer) -> f64 {
+        self.relayout(tr);
+        self.layout.as_ref().map(|l| l.height).unwrap_or(0.0)
+    }
+}
+
+/// Smallest inner (content-viewport) height a formula card uses. A short,
+/// single-line formula (`x + 1`, `sin(x)`) sits in a card of this height so the
+/// common case looks unchanged.
+pub const CARD_MIN_H: f64 = 30.0;
+
+/// Largest inner height a formula card grows to. It is generous on purpose: a
+/// single fraction (`(x²+1)/(x−3)` ≈ 67 px) and a stacked `√` over superscripts
+/// (the 3D default `sin(√(x²+y²))` ≈ 39 px) are shown *in full* — the card grows
+/// to fit them rather than clipping. Only genuinely oversized content (a
+/// fraction-over-fraction and deeper nesting) exceeds this height, at which point
+/// the card stops growing and the formula becomes vertically scrollable within
+/// it — never clipped behind the card edge.
+pub const CARD_MAX_H: f64 = 96.0;
+
+/// The inner (content-viewport) height a card should use for a formula whose
+/// laid-out content is `content_h` tall: grow to fit, clamped to
+/// `[CARD_MIN_H, CARD_MAX_H]`. When `content_h` exceeds [`CARD_MAX_H`] the
+/// returned height is the max, and the field will report [`MathField::overflows`]
+/// so the caller knows the formula scrolls within the card.
+pub fn card_view_height(content_h: f64) -> f64 {
+    content_h.clamp(CARD_MIN_H, CARD_MAX_H)
 }
 
 /// Editor `·` (middle dot) → engine `*`.

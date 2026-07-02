@@ -37,6 +37,11 @@ pub struct Graph2dScreen {
     pub hovered_row: Option<usize>,
     /// One real math editor per function row, kept in sync with `model.funcs`.
     fields: Vec<MathField>,
+    /// Per-row card (outer) heights, grown to fit each formula up to a max.
+    /// Measured during `draw` (where a `TextRenderer` is available) and reused
+    /// by `layout` on the pointer/event path so hit-testing matches what was
+    /// painted. Empty / short entries fall back to [`BASE_ROW_H`].
+    card_heights: Vec<f64>,
     /// Sampled curve geometry, rebuilt only when the functions, view, domain,
     /// or canvas size change — never on a theme or tab switch (colour is
     /// resolved from the theme at paint time from the cached series index).
@@ -54,6 +59,7 @@ impl Default for Graph2dScreen {
             add_rect: Rect::ZERO,
             hovered_row: None,
             fields: Vec::new(),
+            card_heights: Vec::new(),
             curve_cache: CurveCache::default(),
         }
     }
@@ -111,7 +117,13 @@ impl CurveKey {
     }
 }
 
-const ROW_H: f64 = 52.0;
+/// Vertical padding between a card's edge and the math-field viewport inside it.
+const CARD_PAD_Y: f64 = 7.0;
+/// Gap between successive function cards.
+const ROW_GAP: f64 = 8.0;
+/// Card height for a short, single-line formula — `CARD_MIN_H` viewport plus the
+/// top/bottom padding. Keeps the common case identical to the old fixed rows.
+const BASE_ROW_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * CARD_PAD_Y;
 
 impl Graph2dScreen {
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
@@ -123,19 +135,43 @@ impl Graph2dScreen {
         self.vis_rects.clear();
         self.edit_rects.clear();
         let list_top = self.panel.y0 + 64.0;
+        // Cards flow top-to-bottom with per-row heights (a fraction's card is
+        // taller than a plain line's), so the list reflows to accommodate them.
+        let mut y = list_top;
         for i in 0..model.funcs.len() {
-            let y0 = list_top + i as f64 * ROW_H;
-            let r = Rect::new(self.panel.x0 + 12.0, y0, self.panel.x1 - 12.0, y0 + ROW_H - 8.0);
-            let vis = Rect::new(r.x1 - 34.0, r.y0 + r.height() / 2.0 - 11.0, r.x1 - 12.0, r.y0 + r.height() / 2.0 + 11.0);
+            let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
+            let r = Rect::new(self.panel.x0 + 12.0, y, self.panel.x1 - 12.0, y + card_h);
+            let vis = Rect::new(r.x1 - 34.0, r.center().y - 11.0, r.x1 - 12.0, r.center().y + 11.0);
             // Editor area: a "y =" label sits at the left, the math field fills
-            // the rest up to the visibility dot.
-            let edit = Rect::new(r.x0 + 60.0, r.y0 + 2.0, vis.x0 - 8.0, r.y1 - 2.0);
+            // the rest up to the visibility dot. Its height is the grown card
+            // minus the padding, so the field viewport grows with the card.
+            let edit = Rect::new(r.x0 + 60.0, r.y0 + CARD_PAD_Y, vis.x0 - 8.0, r.y1 - CARD_PAD_Y);
             self.vis_rects.push(vis);
             self.edit_rects.push(edit);
             self.row_rects.push(r);
+            y += card_h + ROW_GAP;
         }
-        let add_y = list_top + model.funcs.len() as f64 * ROW_H + 4.0;
+        let add_y = y + 4.0;
         self.add_rect = Rect::new(self.panel.x0 + 12.0, add_y, self.panel.x1 - 12.0, add_y + 36.0);
+    }
+
+    /// Measure every row's formula and compute its grown card height. Run at the
+    /// top of `draw` (a `TextRenderer` is available there) so `layout` — which
+    /// also runs on the event path without a renderer — can place variable-height
+    /// cards from the cached measurements. A formula taller than the card max
+    /// clamps to the max height and then scrolls within its field.
+    fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer) {
+        self.sync_fields(model);
+        self.card_heights.clear();
+        for i in 0..model.funcs.len() {
+            let content_h = if self.fields[i].is_empty() {
+                crate::mathfield::CARD_MIN_H
+            } else {
+                self.fields[i].content_height(tr)
+            };
+            let field_h = crate::mathfield::card_view_height(content_h);
+            self.card_heights.push(field_h + 2.0 * CARD_PAD_Y);
+        }
     }
 
     /// Reconcile the per-row [`MathField`]s with `model.funcs`: build one
@@ -196,6 +232,9 @@ impl Graph2dScreen {
         area: Rect,
         trace: Option<Point>,
     ) {
+        // Measure formulas → grow cards, then place the (now variable-height)
+        // rows before painting anything that depends on their rects.
+        self.measure_cards(model, tr);
         self.layout(area, model);
         let c = &theme.tokens.colors;
 
@@ -217,8 +256,7 @@ impl Graph2dScreen {
         let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 36.0, self.panel.x1 - 16.0, self.panel.y0 + 56.0);
         draw::text_in(scene, tr, t, sub, "y = f(x)  ·  click to edit", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
 
-        // Keep the editors in lock-step with the model before painting them.
-        self.sync_fields(model);
+        // Editors are already reconciled + measured by `measure_cards` above.
         for i in 0..model.funcs.len() {
             let f = &model.funcs[i];
             let r = self.row_rects[i];
@@ -619,5 +657,107 @@ mod tests {
         m.funcs[0].visible = false;
         s.ensure_curves(&m);
         assert_eq!(s.curve_cache.paths.len(), before - 1);
+    }
+
+    /// A fraction row's card grows taller than the base to show the fraction IN
+    /// FULL (no clip, no scroll) — mirrors `draw()`'s measure → layout → set-rect
+    /// sequence on the real path.
+    #[test]
+    fn fraction_card_grows_to_show_in_full() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph2dScreen::default();
+        let mut m = CalcModel::seeded();
+        m.funcs = vec![crate::model::PlotFn { expr: "(x^2+1)/(x-3)".into(), visible: true }];
+        m.active_fn = 0;
+        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        s.measure_cards(&m, &mut tr);
+        s.layout(area, &m);
+        assert!(
+            s.card_heights[0] > BASE_ROW_H + 8.0,
+            "a fraction card must grow visibly taller than the base ({BASE_ROW_H}), got {}",
+            s.card_heights[0]
+        );
+        assert!(
+            (s.row_rects[0].height() - s.card_heights[0]).abs() < 1e-6,
+            "the row rect must reflect the grown card height"
+        );
+        // The fraction fits VERTICALLY in its grown field (no vertical scroll /
+        // clip); horizontal scrolling for very wide formulas is a separate axis.
+        let content_h = s.fields[0].content_height(&mut tr);
+        assert!(
+            content_h <= s.edit_rects[0].height() + 0.5,
+            "a fraction under the card max must fit vertically in full: content {content_h} vs field {}",
+            s.edit_rects[0].height()
+        );
+    }
+
+    /// A fraction-over-fraction exceeds even the generous max: the card grows to
+    /// the max and its field scrolls (never clips).
+    #[test]
+    fn oversized_formula_card_grows_to_max_then_scrolls() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph2dScreen::default();
+        let mut m = CalcModel::seeded();
+        m.funcs = vec![crate::model::PlotFn { expr: "(1/x)/(1/y)".into(), visible: true }];
+        m.active_fn = 0;
+        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        s.measure_cards(&m, &mut tr);
+        s.layout(area, &m);
+        let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
+        assert!(
+            (s.card_heights[0] - expected).abs() < 1e-6,
+            "an oversized formula card must clamp to the max ({expected}), got {}",
+            s.card_heights[0]
+        );
+        // The formula is taller than the (maxed) field → it scrolls vertically.
+        let content_h = s.fields[0].content_height(&mut tr);
+        assert!(
+            content_h > s.edit_rects[0].height() + 0.5,
+            "an oversized formula must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
+            s.edit_rects[0].height()
+        );
+        s.fields[0].set_rect(s.edit_rects[0], &mut tr);
+        assert!(s.fields[0].overflows(), "the maxed field must report overflow");
+    }
+
+    /// A short one-line formula keeps the base card height and does not scroll,
+    /// so the common case is unchanged.
+    #[test]
+    fn short_formula_card_keeps_base_height() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph2dScreen::default();
+        let mut m = CalcModel::seeded();
+        m.funcs = vec![crate::model::PlotFn { expr: "sin(x)".into(), visible: true }];
+        m.active_fn = 0;
+        s.measure_cards(&m, &mut tr);
+        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+        assert!(
+            (s.card_heights[0] - BASE_ROW_H).abs() < 1e-6,
+            "a short one-line formula keeps the base card height, got {}",
+            s.card_heights[0]
+        );
+        s.fields[0].set_rect(s.edit_rects[0], &mut tr);
+        assert!(!s.fields[0].overflows(), "a short formula must not scroll");
+    }
+
+    /// Cards reflow: the second card starts below the (grown) first card plus the
+    /// gap, so a tall formula pushes later rows down instead of overlapping them.
+    #[test]
+    fn cards_reflow_to_accommodate_taller_rows() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph2dScreen::default();
+        let mut m = CalcModel::seeded();
+        m.funcs = vec![
+            crate::model::PlotFn { expr: "(x^2+1)/(x-3)".into(), visible: true },
+            crate::model::PlotFn { expr: "sin(x)".into(), visible: true },
+        ];
+        s.measure_cards(&m, &mut tr);
+        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+        assert!(
+            s.row_rects[1].y0 >= s.row_rects[0].y1 - 0.01,
+            "row 1 (y0={}) must start at/after the bottom of the taller row 0 (y1={})",
+            s.row_rects[1].y0,
+            s.row_rects[0].y1
+        );
     }
 }

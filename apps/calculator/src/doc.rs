@@ -164,25 +164,42 @@ fn history_matches(doc: &AutoCommit, hist: &[HistoryEntry]) -> bool {
     true
 }
 
-/// Whether the document's `funcs` list already equals `funcs`.
-fn funcs_matches(doc: &AutoCommit, funcs: &[PlotFn]) -> bool {
-    let Ok(Some((Value::Object(ObjType::List), lid))) = doc.get(&ROOT, "funcs") else {
-        return false;
+/// Reconcile the document's `funcs` list against the model **in place**: grow /
+/// shrink the list to length, then update each row's fields with a
+/// change-guarded write. Each formula is a diff-spliced `Text` object (see
+/// [`put_text`]), so a per-character edit is a genuine CRDT op on a stable
+/// object — collaborative editing / multi-cursor become possible and a keystroke
+/// no longer rewrites the whole list (the old wholesale delete+reinsert both
+/// broke character-level merge and churned the document each keystroke).
+fn store_funcs(doc: &mut AutoCommit, funcs: &[PlotFn]) {
+    let lid = match doc.get(&ROOT, "funcs") {
+        Ok(Some((Value::Object(ObjType::List), id))) => id,
+        _ => doc
+            .put_object(&ROOT, "funcs", ObjType::List)
+            .expect("put_object funcs list"),
     };
-    if doc.length(&lid) != funcs.len() {
-        return false;
+    let cur = doc.length(&lid);
+    // Shrink: drop trailing rows the model no longer has (back-to-front so
+    // indices stay valid).
+    for i in (funcs.len()..cur).rev() {
+        let _ = doc.delete(&lid, i);
     }
+    // Grow: append empty rows for newly-added functions.
+    for i in cur..funcs.len() {
+        let _ = doc
+            .insert_object(&lid, i, ObjType::Map)
+            .expect("insert func row");
+    }
+    // Update every row in place — the `expr` Text is spliced by diff, so an
+    // unchanged formula emits no ops and a one-character edit emits one op.
     for (i, f) in funcs.iter().enumerate() {
-        let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&lid, i) else {
-            return false;
+        let row = match doc.get(&lid, i) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => continue,
         };
-        if get_str(doc, &row, "expr").as_deref() != Some(f.expr.as_str())
-            || get_bool(doc, &row, "visible") != Some(f.visible)
-        {
-            return false;
-        }
+        put_text(doc, &row, "expr", &f.expr);
+        put_bool_if_changed(doc, &row, "visible", f.visible);
     }
-    true
 }
 
 fn put_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
@@ -219,7 +236,9 @@ pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
     put_text(doc, &ROOT, "expr", &m.expr);
     put_f64_if_changed(doc, &ROOT, "ans", m.ans);
     put_f64_if_changed(doc, &ROOT, "memory", m.memory);
-    put_str_if_changed(doc, &ROOT, "surface", m.surface.as_str());
+    // The surface formula is a diff-spliced Text (CRDT-backed, character-level
+    // merge) just like the calculator `expr`, not a wholesale-rewritten string.
+    put_text(doc, &ROOT, "surface", m.surface.as_str());
     put_int_if_changed(doc, &ROOT, "active", m.active_fn as i64);
 
     // history / funcs: only rewrite when the list actually differs. Rewriting a
@@ -235,15 +254,7 @@ pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
         }
     }
 
-    if !funcs_matches(doc, &m.funcs) {
-        let _ = doc.delete(&ROOT, "funcs");
-        let funcs = doc.put_object(&ROOT, "funcs", ObjType::List).unwrap();
-        for (i, f) in m.funcs.iter().enumerate() {
-            let row = doc.insert_object(&funcs, i, ObjType::Map).unwrap();
-            let _ = doc.put(&row, "expr", f.expr.as_str());
-            let _ = doc.put(&row, "visible", f.visible);
-        }
-    }
+    store_funcs(doc, &m.funcs);
 
     let v2 = put_map(doc, &ROOT, "view2d");
     put_f64_if_changed(doc, &v2, "cx", m.view2d.cx);
@@ -379,6 +390,50 @@ mod tests {
         );
         // And the round-trip value is still exactly what was typed.
         assert_eq!(load(&doc).unwrap().expr, m.expr);
+    }
+
+    #[test]
+    fn func_expr_and_surface_are_crdt_text_objects() {
+        // The graph formulas are character-level CRDT `Text`, not plain `Str` —
+        // this is what makes collaborative editing / multi-cursor possible.
+        let mut doc = AutoCommit::new();
+        let m = CalcModel::seeded();
+        store(&mut doc, &m);
+        assert!(
+            matches!(doc.get(&ROOT, "surface"), Ok(Some((Value::Object(ObjType::Text), _)))),
+            "surface must be a CRDT Text object"
+        );
+        let Ok(Some((Value::Object(ObjType::List), lid))) = doc.get(&ROOT, "funcs") else {
+            panic!("funcs list missing");
+        };
+        let row = match doc.get(&lid, 0) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => panic!("func row 0 missing"),
+        };
+        assert!(
+            matches!(doc.get(&row, "expr"), Ok(Some((Value::Object(ObjType::Text), _)))),
+            "each func's expr must be a CRDT Text object"
+        );
+    }
+
+    #[test]
+    fn editing_one_func_char_is_a_bounded_splice() {
+        // Character-level CRDT + bounded churn: appending one char to a formula
+        // grows the doc a little (one spliced op), not by rewriting the whole
+        // funcs list — the old wholesale delete+reinsert did the latter.
+        let mut doc = AutoCommit::new();
+        let mut m = CalcModel::default();
+        m.funcs = vec![PlotFn { expr: "123456789012345678901234567890".into(), visible: true }];
+        store(&mut doc, &m);
+        let before = doc.save().len();
+        m.funcs[0].expr.push('7');
+        store(&mut doc, &m);
+        let grew = doc.save().len() - before;
+        assert_eq!(load(&doc).unwrap().funcs[0].expr, m.funcs[0].expr);
+        assert!(
+            grew < 40,
+            "appending one char to a formula grew the doc by {grew} bytes (expected a single-char splice)"
+        );
     }
 
     #[test]
