@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use qos_launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use qos_launcher::run::{RunError, RunOptions, run};
 
 #[derive(Debug, Parser)]
@@ -50,6 +51,14 @@ enum Cmd {
 }
 
 fn main() -> ExitCode {
+    // Hidden subcommand: parsed BEFORE clap so its argv shape
+    // (positional paths, `--` separator) doesn't collide with clap's
+    // flag parsing. Diverges — either execvps the entrypoint or exits.
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args.get(1).map(|s| s.as_str()) == Some(SANDBOX_EXEC_SUBCOMMAND) {
+        run_sandbox_exec(&raw_args[2..]);
+    }
+
     init_tracing();
     let cli = Cli::parse();
     match cli.cmd {
@@ -65,6 +74,7 @@ fn main() -> ExitCode {
                 runtime_root: runtime,
                 bwrap_bin: None,
                 minimal_libs,
+                landlock_enforce: true,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
