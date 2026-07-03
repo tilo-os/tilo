@@ -51,6 +51,15 @@ pub struct Basemap {
     pub river: Vec<LatLon>,
 }
 
+impl Basemap {
+    /// True when there is no vector cartography to draw — the live app's
+    /// first-run state, where a reference grid substrate stands in until real
+    /// raster imagery arrives.
+    pub fn is_empty(&self) -> bool {
+        self.areas.is_empty() && self.roads.is_empty() && self.river.is_empty()
+    }
+}
+
 /// Tiny deterministic PRNG so the generated map is identical every run
 /// (stable screenshots).
 struct Rng(u64);
@@ -554,6 +563,8 @@ pub fn default_model() -> MapModel {
     m.selected = Some("marienplatz".to_string());
     m.origin = Some(origin());
     m.origin_name = "Sendling, München".to_string();
+    m.dest = Some(cell(0.0, 0.0));
+    m.dest_name = "Marienplatz".to_string();
     m.route = Some(sample_route());
     m.transit = sample_transit();
     m.panel = Panel::Directions;
@@ -561,7 +572,6 @@ pub fn default_model() -> MapModel {
     m.query = "Marienplatz".to_string();
     m.center = LatLon::new(CENTER.lat - 0.004, CENTER.lon - 0.003);
     m.zoom = 14.6;
-    m.status = "© OpenStreetMap contributors · OSRM · transitous".to_string();
     m
 }
 

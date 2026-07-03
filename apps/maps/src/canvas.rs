@@ -156,6 +156,42 @@ pub fn draw_tiles(
     painted_exact
 }
 
+/// Paint a reference-grid substrate aligned to the slippy-map tile pyramid.
+///
+/// Shown when there is neither real raster imagery nor a vector basemap yet —
+/// the live app's first frames and any offline gap. Instead of a flat black
+/// void, the viewport reads as a map substrate: land colour, a faint
+/// tile-boundary grid, and a lighter quarter-tile sub-grid for texture. The
+/// grid uses the exact same projection as [`draw_tiles`], so it lines up with
+/// the imagery that fades in on top of it.
+pub fn draw_grid_substrate(
+    scene: &mut Scene,
+    t: Affine,
+    clip: Rect,
+    model: &MapModel,
+    view_center: Point,
+    pal: &MapPalette,
+) {
+    draw::fill_rect(scene, t, clip, pal.land);
+    let tiles = TileLayer::visible_tiles(model.center, model.zoom, view_center, clip);
+    let major = draw::mix(pal.land, pal.road_secondary, 0.6);
+    let minor = draw::mix(pal.land, pal.road_secondary, 0.28);
+    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    for (_, rect) in &tiles {
+        // Quarter-tile minor grid for a paper-like texture.
+        for k in 1..4 {
+            let fx = rect.x0 + rect.width() * k as f64 / 4.0;
+            let fy = rect.y0 + rect.height() * k as f64 / 4.0;
+            draw::line(scene, t, Point::new(fx, rect.y0), Point::new(fx, rect.y1), 0.5, minor);
+            draw::line(scene, t, Point::new(rect.x0, fy), Point::new(rect.x1, fy), 0.5, minor);
+        }
+        // Major tile boundary (top + left edge; neighbours cover the rest).
+        draw::line(scene, t, Point::new(rect.x0, rect.y0), Point::new(rect.x0, rect.y1), 1.0, major);
+        draw::line(scene, t, Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y0), 1.0, major);
+    }
+    scene.pop_layer();
+}
+
 /// Paint the full basemap (areas → river → roads) clipped to `clip`.
 pub fn draw_basemap(
     scene: &mut Scene,
@@ -374,15 +410,18 @@ pub fn draw_scale_and_attribution(
     draw::line(scene, t, Point::new(x1, y - 3.0), Point::new(x1, y + 3.0), 2.0, theme.text_primary);
     draw::text_center(scene, tr, t, &label, x0, x1, y + 2.0, 10.0, theme.text_dim);
 
-    // Attribution, bottom-left.
+    // Attribution — right-aligned, just above the scale bar. Anchoring it to
+    // the right edge keeps it clear of the left-hand panel/drawer (which would
+    // otherwise cover a bottom-left credit); OSM requires it stay visible.
     let attr = "© OpenStreetMap contributors";
     let aw = draw::measure_w(tr, attr, 10.0) + 14.0;
-    let ax = clip.x0 + 12.0;
-    let ay = clip.y1 - 22.0;
+    let ax1 = clip.x1 - 24.0;
+    let ax = ax1 - aw;
+    let ay = clip.y1 - 46.0;
     draw::fill_rrect(
         scene,
         t,
-        Rect::new(ax, ay, ax + aw, ay + 17.0),
+        Rect::new(ax, ay, ax1, ay + 17.0),
         4.0,
         bar_bg,
     );
