@@ -1,0 +1,48 @@
+[package]
+name = "qos-app-host"
+version = "0.1.0"
+edition = "2024"
+description = "qOS app host — content-addressed package store + Cap'n Proto control socket. Resolves package_id → manifest + payload-root for the launcher, tracks Pinned vs LRU, runs size-pressure GC."
+
+[[bin]]
+name = "qos-app-host"
+path = "src/main.rs"
+
+[lib]
+name = "qos_app_host"
+path = "src/lib.rs"
+
+[dependencies]
+qos-pkg = { path = "../qos-pkg" }
+
+# Cap'n Proto RPC for the control socket, matching qos-format-host.
+capnp = "0.26"
+capnp-rpc = "0.26"
+capnp-futures = "0.26"
+
+# Async runtime + transport.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+
+# Daemon plumbing.
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+parking_lot = "0.12"
+hex = "0.4"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# systemd notify (sd_notify) — best-effort; we degrade if env vars missing.
+sd-notify = "0.4"
+
+[build-dependencies]
+capnpc = "0.26"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
