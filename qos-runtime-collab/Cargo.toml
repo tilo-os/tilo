@@ -1,0 +1,27 @@
+[package]
+name = "qos-runtime-collab"
+version = "0.1.0"
+edition = "2024"
+
+# qOS runtime — broker (collaboration) client. Talks to the in-tree
+# `apps/collab-broker` over a Unix-socket Cap'n Proto channel passed
+# in by the launcher as QOS_SVC_COLLAB_FD.
+
+[lib]
+name = "qos_runtime_collab"
+path = "src/lib.rs"
+
+[build-dependencies]
+capnpc = "0.26"
+
+[dependencies]
+qos-runtime-portal = { path = "../qos-runtime-portal" }
+capnp = "0.26"
+capnp-rpc = "0.26"
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+thiserror = "1"
+futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
