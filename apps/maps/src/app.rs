@@ -30,10 +30,21 @@ use crate::canvas::{self, MapPalette};
 use crate::doc::MapsDoc;
 use crate::draw;
 use crate::geo::{self, Projection};
-use crate::model::{Category, MapModel, Panel, TransitMode, TravelMode};
+use crate::location::{self, LocationChannel, LocationOutcome};
+use crate::model::{
+    Category, LatLon, MapModel, Panel, TransitMode, TransitTimeMode, TravelMode,
+};
 use crate::net::{self, NetMsg};
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileLayer};
+
+/// Which Directions endpoint field (From / To) currently has keyboard focus for
+/// typed geocoding. `None` when neither is being edited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndField {
+    Origin,
+    Dest,
+}
 
 // --- Layout metrics (logical px) -------------------------------------------
 const MARGIN: f64 = 16.0;
@@ -72,6 +83,22 @@ enum Hit {
     ToggleSave,
     ClearRoute,
     SwapEnds,
+    /// Focus the Directions "From" field for typed origin geocoding.
+    EditOrigin,
+    /// Focus the Directions "To" field for typed destination geocoding.
+    EditDest,
+    /// Choose the Nth geocoded result for the origin field.
+    PickOrigin(usize),
+    /// Choose the Nth geocoded result for the destination field.
+    PickDest(usize),
+    /// Fetch the device's real location (portal / GeoClue) and use it as origin.
+    UseMyLocation,
+    /// Set the Transit depart/arrive anchor.
+    TransitTimeMode(TransitTimeMode),
+    /// Shift the Transit time anchor by ±minutes.
+    TransitTimeDelta(i32),
+    /// Reset the Transit time anchor to "leave now".
+    TransitTimeNow,
     Journey(usize),
     /// Open the offline-download / manage-cache overlay.
     OfflineOpen,
@@ -94,6 +121,12 @@ pub struct MapsApp {
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
     search_focused: bool,
+    /// Which Directions endpoint field is being typed into, if any.
+    edit_field: Option<EndField>,
+    /// Geocoded dropdown results for the "From" field (render cache).
+    origin_results: Vec<crate::model::Place>,
+    /// Geocoded dropdown results for the "To" field (render cache).
+    dest_results: Vec<crate::model::Place>,
     left_down: bool,
     dragging: bool,
     drag_last: Point,
@@ -112,6 +145,14 @@ pub struct MapsApp {
     net_tx: Sender<NetMsg>,
     net_rx: Receiver<NetMsg>,
     pending: u32,
+    /// Whether background network/portal work may be spawned. False for the
+    /// offline `--shots`/test app so it never touches the wire or D-Bus.
+    online: bool,
+
+    // device location (portal / GeoClue), off the UI thread
+    location_rx: Option<LocationChannel>,
+    /// True while a location fix is being acquired (drives the "Locating…" UI).
+    locating: bool,
 
     // raster basemap (non-blocking OSM tiles)
     tiles: TileLayer,
@@ -142,7 +183,7 @@ impl MapsApp {
         // Empty model + empty vector basemap: before the first real tiles
         // arrive the map shows a plain themed land colour (an honest loading
         // state) rather than an invented street grid.
-        Self::build(MapModel::default(), Basemap::default(), TileLayer::new(), false)
+        Self::build(MapModel::default(), Basemap::default(), TileLayer::new(), false, true)
     }
 
     /// Headless/offline variant used by `--shots` and tests: no worker thread,
@@ -151,10 +192,10 @@ impl MapsApp {
     /// populated without ever touching the wire. The overlay drawer starts
     /// open so narrow screenshots show the panel content.
     pub fn offline() -> Self {
-        Self::build(sample::default_model(), sample::basemap(), TileLayer::offline(), true)
+        Self::build(sample::default_model(), sample::basemap(), TileLayer::offline(), true, false)
     }
 
-    fn build(model: MapModel, basemap: Basemap, tiles: TileLayer, nav_open: bool) -> Self {
+    fn build(model: MapModel, basemap: Basemap, tiles: TileLayer, nav_open: bool, online: bool) -> Self {
         let (net_tx, net_rx) = std::sync::mpsc::channel();
         let cache_bytes = tiles.cache_bytes();
         Self {
@@ -164,6 +205,9 @@ impl MapsApp {
             node: None,
             last_mouse: Point::ZERO,
             search_focused: false,
+            edit_field: None,
+            origin_results: Vec::new(),
+            dest_results: Vec::new(),
             left_down: false,
             dragging: false,
             drag_last: Point::ZERO,
@@ -178,6 +222,9 @@ impl MapsApp {
             net_tx,
             net_rx,
             pending: 0,
+            online,
+            location_rx: None,
+            locating: false,
             tiles,
             offline_open: false,
             offline_zoom_extra: 2,
@@ -199,11 +246,31 @@ impl MapsApp {
         self.model.panel = panel;
     }
 
+    /// Screenshot-only hook: force the Directions "From" field into its editing
+    /// state with a populated geocoded dropdown, so the typeable-origin flow can
+    /// be captured headlessly. Uses offline local matches only — no network.
+    pub fn set_demo_edit_origin(&mut self) {
+        self.model.panel = Panel::Directions;
+        self.edit_field = Some(EndField::Origin);
+        self.model.origin_query = "hauptbahnhof".to_string();
+        self.origin_results = self.local_matches("hauptbahnhof");
+    }
+
+    /// Screenshot-only hook: anchor the Transit picker to an "Arrive by" time an
+    /// hour out, so the stepped time label and the "Now" reset chip render.
+    pub fn set_demo_transit_arrive(&mut self) {
+        self.model.panel = Panel::Transit;
+        self.model.transit_time = crate::model::TransitTime {
+            mode: TransitTimeMode::Arrive,
+            offset_min: 60,
+        };
+    }
+
     /// Screenshot/test helper: an offline (no-worker, no-network) app that
     /// mirrors the live first-run state — an empty model and a plain themed
     /// basemap — so the empty Explore hint can be captured hermetically.
     pub fn offline_empty() -> Self {
-        Self::build(MapModel::default(), Basemap::default(), TileLayer::offline(), true)
+        Self::build(MapModel::default(), Basemap::default(), TileLayer::offline(), true, false)
     }
 
     // --- geometry helpers --------------------------------------------------
@@ -339,6 +406,9 @@ impl MapsApp {
         self.model.panel = panel;
         self.scroll = 0.0;
         self.nav_open = true;
+        // Leaving/entering a tab drops any in-progress endpoint editing so
+        // keystrokes never land in a field that isn't on screen.
+        self.edit_field = None;
         // Switching to a routing tab actually performs the lookup for the
         // current place — the tab is not a passive view. Without this the
         // Transit tab would render its empty state as if a lookup had run and
@@ -372,14 +442,14 @@ impl MapsApp {
         }
     }
 
-    /// Local (offline) search: substring match over known places. Also kicks
-    /// off a live Nominatim request whose results fold in later.
-    fn run_search(&mut self) {
-        let q = self.model.query.trim().to_string();
-        if q.is_empty() {
-            return;
+    /// Substring/keyword match over the known places for a query. Shared by the
+    /// top Explore search and the Directions endpoint fields so all three give
+    /// the same instant offline results before any network response lands.
+    fn local_matches(&self, q: &str) -> Vec<crate::model::Place> {
+        let needle = q.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
         }
-        let needle = q.to_lowercase();
         let mut results: Vec<_> = self
             .model
             .places
@@ -402,6 +472,17 @@ impl MapsApp {
                 .cloned()
                 .collect();
         }
+        results
+    }
+
+    /// Local (offline) search: substring match over known places. Also kicks
+    /// off a live Nominatim request whose results fold in later.
+    fn run_search(&mut self) {
+        let q = self.model.query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        let results = self.local_matches(&q);
         if let Some(first) = results.first() {
             let id = first.id.clone();
             self.model.center = first.pos;
@@ -420,13 +501,148 @@ impl MapsApp {
     }
 
     fn spawn_search(&mut self, query: String) {
-        let tx = self.net_tx.clone();
         self.pending += 1;
         self.model.status = "Searching…".to_string();
+        if !self.online {
+            return;
+        }
+        let tx = self.net_tx.clone();
         std::thread::spawn(move || {
             let results = net::geocode(&query);
             let _ = tx.send(NetMsg::Search { query, results });
         });
+    }
+
+    /// Focus a Directions endpoint field for typed geocoding: clear its query so
+    /// the user types fresh (a placeholder shows), and drop the top-search focus.
+    fn focus_endpoint(&mut self, field: EndField) {
+        self.edit_field = Some(field);
+        self.search_focused = false;
+        match field {
+            EndField::Origin => {
+                self.model.origin_query.clear();
+                self.origin_results.clear();
+            }
+            EndField::Dest => {
+                self.model.dest_query.clear();
+                self.dest_results.clear();
+            }
+        }
+        self.mark_dirty();
+    }
+
+    fn endpoint_query_mut(&mut self, origin: bool) -> &mut String {
+        if origin {
+            &mut self.model.origin_query
+        } else {
+            &mut self.model.dest_query
+        }
+    }
+
+    /// Refresh the instant offline dropdown for an endpoint field from the
+    /// current query text (no network — runs on every keystroke).
+    fn update_endpoint_local(&mut self, origin: bool) {
+        let q = if origin {
+            self.model.origin_query.clone()
+        } else {
+            self.model.dest_query.clone()
+        };
+        let local = self.local_matches(&q);
+        if origin {
+            self.origin_results = local;
+        } else {
+            self.dest_results = local;
+        }
+    }
+
+    /// Run a live Nominatim geocode for an endpoint field (on Enter), folding in
+    /// the instant offline matches first so the dropdown is never briefly empty.
+    fn run_endpoint_search(&mut self, origin: bool) {
+        self.update_endpoint_local(origin);
+        let q = if origin {
+            self.model.origin_query.trim().to_string()
+        } else {
+            self.model.dest_query.trim().to_string()
+        };
+        if q.is_empty() {
+            self.mark_dirty();
+            return;
+        }
+        self.pending += 1;
+        self.model.status = "Searching…".to_string();
+        if self.online {
+            let tx = self.net_tx.clone();
+            std::thread::spawn(move || {
+                let results = net::geocode(&q);
+                let _ = tx.send(NetMsg::EndpointSearch { origin, query: q, results });
+            });
+        }
+        self.mark_dirty();
+    }
+
+    /// Adopt a geocoded dropdown result as the chosen endpoint: set its coord +
+    /// label and re-route (or re-plan transit). Mirrors selecting a destination
+    /// so From and To behave symmetrically.
+    fn pick_endpoint(&mut self, origin: bool, idx: usize) {
+        let picked = if origin {
+            self.origin_results.get(idx).cloned()
+        } else {
+            self.dest_results.get(idx).cloned()
+        };
+        let Some(p) = picked else { return };
+        self.model.upsert_place(p.clone());
+        if origin {
+            self.model.origin = Some(p.pos);
+            self.model.origin_name = p.name.clone();
+            self.origin_results.clear();
+            self.model.origin_query.clear();
+        } else {
+            self.model.dest = Some(p.pos);
+            self.model.dest_name = p.name.clone();
+            self.model.selected = Some(p.id.clone());
+            self.dest_results.clear();
+            self.model.dest_query.clear();
+        }
+        self.edit_field = None;
+        self.model.center = p.pos;
+        if self.model.panel == Panel::Transit {
+            self.recompute_transit();
+        } else {
+            self.recompute_route();
+        }
+        self.mark_dirty();
+    }
+
+    /// Kick off a real device-location fix via the location portal (GeoClue2
+    /// behind it), off the UI thread. Honest states only: "Locating…" now, then
+    /// either a real origin or a clear unavailable/denied message on drain.
+    fn use_my_location(&mut self) {
+        if self.locating {
+            return;
+        }
+        self.locating = true;
+        self.model.status = "Locating…".to_string();
+        if self.online {
+            self.location_rx = Some(location::request_location());
+        }
+        self.mark_dirty();
+    }
+
+    /// Build the transit query time anchor from the picker. "Leave now" sends no
+    /// time (the planner uses its own now); otherwise an RFC-3339 wall clock at
+    /// `now + offset`, flagged depart/arrive.
+    fn transit_query(&self) -> net::TransitQuery {
+        let tt = self.model.transit_time;
+        let time = if tt.is_now() {
+            None
+        } else {
+            let when = chrono::Local::now() + chrono::Duration::minutes(tt.offset_min as i64);
+            Some(when.to_rfc3339())
+        };
+        net::TransitQuery {
+            arrive_by: tt.arrive_by(),
+            time,
+        }
     }
 
     /// Start (or restart) routing to the selected place, forcing the
@@ -466,13 +682,15 @@ impl MapsApp {
         self.fit_route();
 
         // Live OSRM request.
-        let tx = self.net_tx.clone();
         self.pending += 1;
         self.model.status = "Routing…".to_string();
-        std::thread::spawn(move || {
-            let r = net::route(origin, dest, mode);
-            let _ = tx.send(NetMsg::Route(r));
-        });
+        if self.online {
+            let tx = self.net_tx.clone();
+            std::thread::spawn(move || {
+                let r = net::route(origin, dest, mode);
+                let _ = tx.send(NetMsg::Route(r));
+            });
+        }
         self.mark_dirty();
     }
 
@@ -492,13 +710,16 @@ impl MapsApp {
         // Real departures only: clear any stale itineraries and show a loading
         // state until the planner responds — we never fabricate departures.
         self.model.transit.clear();
-        let tx = self.net_tx.clone();
         self.pending += 1;
         self.model.status = "Finding departures…".to_string();
-        std::thread::spawn(move || {
-            let r = net::transit(origin, dest);
-            let _ = tx.send(NetMsg::Transit(r));
-        });
+        if self.online {
+            let tx = self.net_tx.clone();
+            let query = self.transit_query();
+            std::thread::spawn(move || {
+                let r = net::transit(origin, dest, &query);
+                let _ = tx.send(NetMsg::Transit(r));
+            });
+        }
         self.mark_dirty();
     }
 
@@ -613,6 +834,29 @@ impl MapsApp {
                     Ok(_) => self.model.status = format!("No results for “{query}”"),
                     Err(e) => self.model.status = format!("Search failed: {e}"),
                 },
+                NetMsg::EndpointSearch { origin, query: _, results } => match results {
+                    Ok(found) if !found.is_empty() => {
+                        for p in &found {
+                            self.model.upsert_place(p.clone());
+                        }
+                        if origin {
+                            self.origin_results = found;
+                        } else {
+                            self.dest_results = found;
+                        }
+                        self.model.status.clear();
+                    }
+                    Ok(_) => self.model.status = "No matching places".to_string(),
+                    Err(e) => self.model.status = format!("Search failed: {e}"),
+                },
+                NetMsg::ReverseGeocode(r) => {
+                    if let Ok(label) = r {
+                        if !label.is_empty() {
+                            // Refine the device-location origin's label in place.
+                            self.model.origin_name = label;
+                        }
+                    }
+                }
                 NetMsg::Route(r) => match r {
                     Ok(route) => {
                         self.model.route = Some(route);
@@ -637,6 +881,58 @@ impl MapsApp {
         }
     }
 
+    /// Drain a pending device-location result (non-blocking, once per frame).
+    /// On success the coordinate becomes the route origin, the map recentres,
+    /// a reverse-geocode refines the label, and the route/transit re-plans. On
+    /// failure an honest "Location unavailable" message is shown — never a
+    /// fabricated position.
+    fn drain_location(&mut self) {
+        let Some(rx) = &self.location_rx else { return };
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.locating = false;
+                self.location_rx = None;
+                self.model.status = "Location unavailable".to_string();
+                self.mark_dirty();
+                return;
+            }
+        };
+        self.locating = false;
+        self.location_rx = None;
+        match outcome {
+            LocationOutcome::Located { lat, lon, .. } => {
+                let pos = LatLon::new(lat, lon);
+                self.model.origin = Some(pos);
+                self.model.origin_name = "Current location".to_string();
+                self.model.center = pos;
+                self.model.status = "Located".to_string();
+                // Refine the raw coordinate into a human place label.
+                if self.online {
+                    self.pending += 1;
+                    let tx = self.net_tx.clone();
+                    std::thread::spawn(move || {
+                        let r = net::reverse_geocode(pos.lat, pos.lon);
+                        let _ = tx.send(NetMsg::ReverseGeocode(r));
+                    });
+                }
+                // If a destination is known, re-plan from the real location.
+                if self.model.dest.is_some() {
+                    if self.model.panel == Panel::Transit {
+                        self.recompute_transit();
+                    } else {
+                        self.recompute_route();
+                    }
+                }
+            }
+            LocationOutcome::Unavailable(reason) => {
+                self.model.status = format!("Location unavailable — {reason}");
+            }
+        }
+        self.mark_dirty();
+    }
+
     // --- click dispatch ----------------------------------------------------
     fn dispatch(&mut self, hit: &Hit) {
         match hit {
@@ -659,14 +955,10 @@ impl MapsApp {
             Hit::ZoomIn => self.zoom_by(1.0, self.view_center()),
             Hit::ZoomOut => self.zoom_by(-1.0, self.view_center()),
             Hit::Locate => {
-                // Recentre on a known origin (set by a prior route). Without a
-                // real location fix we don't invent one — say so instead.
-                if let Some(o) = self.model.origin {
-                    self.model.center = o;
-                } else {
-                    self.model.status = "Location unavailable".to_string();
-                }
-                self.mark_dirty();
+                // Fetch the device's real position (portal / GeoClue) off the UI
+                // thread. `drain_location` recentres on the fix, or reports it
+                // unavailable — we never invent a location.
+                self.use_my_location();
             }
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
@@ -681,6 +973,27 @@ impl MapsApp {
             Hit::ToggleSave => self.toggle_save_selected(),
             Hit::ClearRoute => self.clear_route(),
             Hit::SwapEnds => self.swap_ends(),
+            Hit::EditOrigin => self.focus_endpoint(EndField::Origin),
+            Hit::EditDest => self.focus_endpoint(EndField::Dest),
+            Hit::PickOrigin(i) => self.pick_endpoint(true, *i),
+            Hit::PickDest(i) => self.pick_endpoint(false, *i),
+            Hit::UseMyLocation => self.use_my_location(),
+            Hit::TransitTimeMode(m) => {
+                self.model.transit_time.mode = *m;
+                self.recompute_transit();
+                self.mark_dirty();
+            }
+            Hit::TransitTimeDelta(d) => {
+                let v = (self.model.transit_time.offset_min + *d).clamp(0, 1440);
+                self.model.transit_time.offset_min = v;
+                self.recompute_transit();
+                self.mark_dirty();
+            }
+            Hit::TransitTimeNow => {
+                self.model.transit_time = crate::model::TransitTime::default();
+                self.recompute_transit();
+                self.mark_dirty();
+            }
             Hit::Journey(i) => {
                 self.model.transit_choice = *i;
                 self.mark_dirty();
@@ -1278,6 +1591,50 @@ impl MapsApp {
         y + ROW_H
     }
 
+    /// One typeable endpoint field (a rounded input with a leading dot, the
+    /// current text or a placeholder, and a blinking caret while focused).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_endpoint_field(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        dot: Color,
+        text: &str,
+        editing: bool,
+        placeholder: &str,
+        hit: Hit,
+    ) {
+        let c = &theme.tokens.colors;
+        let border = if editing { theme.border_focus } else { c.border_standard };
+        draw::fill_rrect(scene, t, r, 9.0, c.surfaces.base);
+        draw::stroke_rrect(scene, t, r, 9.0, 1.0, border);
+        draw::fill_circle(scene, t, Point::new(r.x0 + 16.0, r.center().y), 4.0, dot);
+        let tx = r.x0 + 30.0;
+        let size = 13.0_f32;
+        let ty = vmid(r.y0, r.height(), size);
+        let avail = r.x1 - tx - 12.0;
+        if text.is_empty() {
+            draw::text(scene, tr, t, placeholder, tx, ty, size, theme.text_dim);
+        } else {
+            draw::text_clip(scene, tr, t, text, tx, ty, size, theme.text_primary, avail);
+        }
+        if editing && self.caret_on() {
+            let w = draw::measure_w(tr, text, size).min(avail);
+            draw::line(
+                scene,
+                t,
+                Point::new(tx + w + 2.0, r.y0 + 10.0),
+                Point::new(tx + w + 2.0, r.y1 - 10.0),
+                1.5,
+                theme.accent_primary,
+            );
+        }
+        self.click_targets.push((r, hit));
+    }
+
     fn draw_directions(
         &mut self,
         scene: &mut Scene,
@@ -1291,29 +1648,97 @@ impl MapsApp {
         let x = content.x0;
         let right = content.x1;
 
-        // Endpoints summary (origin → destination), with a swap button.
-        let from = self.model.origin_name.clone();
-        let to = if !self.model.dest_name.is_empty() {
+        // Typeable endpoint fields: From and To are symmetric real search
+        // inputs. Editing one shows its geocoded dropdown; a swap flips them.
+        let field_h = 40.0;
+        let swap_w = 34.0;
+        let fields_right = right - swap_w - 8.0;
+        let from_editing = self.edit_field == Some(EndField::Origin);
+        let from_text = if from_editing {
+            self.model.origin_query.clone()
+        } else if self.model.origin.is_some() && !self.model.origin_name.is_empty() {
+            self.model.origin_name.clone()
+        } else {
+            String::new()
+        };
+        let from_r = Rect::new(x, y, fields_right, y + field_h);
+        self.draw_endpoint_field(
+            scene, t, tr, theme, from_r, theme.accent_primary, &from_text, from_editing,
+            "Choose starting point", Hit::EditOrigin,
+        );
+
+        let to_y = y + field_h + 8.0;
+        let to_r = Rect::new(x, to_y, fields_right, to_y + field_h);
+        let to_editing = self.edit_field == Some(EndField::Dest);
+        let to_text = if to_editing {
+            self.model.dest_query.clone()
+        } else if !self.model.dest_name.is_empty() {
             self.model.dest_name.clone()
         } else {
-            self.model
-                .selected_place()
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "Pick a destination".to_string())
+            self.model.selected_place().map(|p| p.name.clone()).unwrap_or_default()
         };
-        let ep_h = 64.0;
-        let ep = Rect::new(x, y, right, y + ep_h);
-        draw::fill_rrect(scene, t, ep, 10.0, c.surfaces.base);
-        draw::fill_circle(scene, t, Point::new(x + 16.0, y + 20.0), 4.0, theme.accent_primary);
-        draw::fill_circle(scene, t, Point::new(x + 16.0, y + 44.0), 4.0, c.semantic.danger);
-        draw::line(scene, t, Point::new(x + 16.0, y + 24.0), Point::new(x + 16.0, y + 40.0), 1.5, theme.text_dim);
-        draw::text_clip(scene, tr, t, &from, x + 30.0, y + 12.0, 13.0, theme.text_primary, right - x - 80.0);
-        draw::text_clip(scene, tr, t, &to, x + 30.0, y + 36.0, 13.0, theme.text_primary, right - x - 80.0);
-        let swap = Rect::new(right - 40.0, y + 14.0, right - 8.0, y + ep_h - 14.0);
-        draw::fill_rrect(scene, t, swap, 7.0, c.surfaces.raised);
-        draw::text_center(scene, tr, t, "⇅", swap.x0, swap.x1, vmid(swap.y0, swap.height(), 16.0), 16.0, theme.text_primary);
+        self.draw_endpoint_field(
+            scene, t, tr, theme, to_r, c.semantic.danger, &to_text, to_editing,
+            "Choose destination", Hit::EditDest,
+        );
+
+        // Swap button spanning both fields on the trailing edge.
+        let swap = Rect::new(right - swap_w, y + field_h / 2.0, right, to_r.y1 - field_h / 2.0);
+        draw::fill_rrect(scene, t, swap, 8.0, c.surfaces.raised);
+        draw::stroke_rrect(scene, t, swap, 8.0, 1.0, c.border_standard);
+        draw::text_center(scene, tr, t, "⇅", swap.x0, swap.x1, vmid(swap.center().y - 8.0, 16.0, 16.0), 16.0, theme.text_primary);
         self.click_targets.push((swap, Hit::SwapEnds));
-        y += ep_h + 12.0;
+        y = to_r.y1 + 10.0;
+
+        // "Use my location" — a real device-location fix for the origin.
+        let loc_h = 32.0;
+        let loc_r = Rect::new(x, y, fields_right, y + loc_h);
+        let (loc_fill, loc_fg) = if self.locating {
+            (draw::alpha(theme.accent_primary, 0.16), theme.accent_primary)
+        } else {
+            (c.surfaces.base, theme.accent_primary)
+        };
+        draw::fill_rrect(scene, t, loc_r, 8.0, loc_fill);
+        draw::stroke_rrect(scene, t, loc_r, 8.0, 1.0, c.border_standard);
+        let gx = loc_r.x0 + 18.0;
+        let gy = loc_r.center().y;
+        draw::stroke_circle(scene, t, Point::new(gx, gy), 5.0, 1.6, loc_fg);
+        draw::fill_circle(scene, t, Point::new(gx, gy), 1.6, loc_fg);
+        for (dx, dy) in [(0.0, -8.0), (0.0, 8.0), (-8.0, 0.0), (8.0, 0.0)] {
+            draw::line(scene, t, Point::new(gx + dx * 0.7, gy + dy * 0.7), Point::new(gx + dx, gy + dy), 1.4, loc_fg);
+        }
+        let loc_label = if self.locating { "Locating…" } else { "Use my location" };
+        draw::text(scene, tr, t, loc_label, gx + 16.0, vmid(loc_r.y0, loc_h, 13.0), 13.0, loc_fg);
+        self.click_targets.push((loc_r, if self.locating { Hit::Consume } else { Hit::UseMyLocation }));
+        y += loc_h + 12.0;
+
+        // Geocoded dropdown for whichever endpoint field is being edited.
+        if let Some(field) = self.edit_field {
+            let results = match field {
+                EndField::Origin => self.origin_results.clone(),
+                EndField::Dest => self.dest_results.clone(),
+            };
+            if results.is_empty() {
+                draw::text(scene, tr, t, "Type a place or address, then press Enter.", x, y, 12.0, theme.text_dim);
+                y += 22.0;
+            } else {
+                for (i, p) in results.iter().enumerate().take(6) {
+                    let rr = Rect::new(x, y, right, y + ROW_H - 12.0);
+                    let cat_col = canvas::category_color(theme, p.category);
+                    draw::fill_circle(scene, t, Point::new(rr.x0 + 14.0, rr.center().y), 6.0, cat_col);
+                    let tx = rr.x0 + 28.0;
+                    draw::text_clip(scene, tr, t, &p.name, tx, rr.y0 + 4.0, 13.0, theme.text_primary, right - tx - 8.0);
+                    draw::text_clip(scene, tr, t, &p.address, tx, rr.y0 + 22.0, 11.0, theme.text_dim, right - tx - 8.0);
+                    let hit = match field {
+                        EndField::Origin => Hit::PickOrigin(i),
+                        EndField::Dest => Hit::PickDest(i),
+                    };
+                    self.click_targets.push((rr, hit));
+                    y += ROW_H - 8.0;
+                }
+            }
+            y += 8.0;
+        }
 
         // Mode segmented control.
         let mode_rect = Rect::new(x, y, right, y + 40.0);
@@ -1371,6 +1796,75 @@ impl MapsApp {
         y
     }
 
+    /// Depart/arrive time picker for the Transit tab. Defaults to "leave now";
+    /// a segmented Leave/Arrive toggle plus a ±15-minute stepper (and a "Now"
+    /// reset) let the user anchor the query to a specific time.
+    fn draw_transit_time_picker(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        mut y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let x = content.x0;
+        let right = content.x1;
+        let tt = self.model.transit_time;
+
+        // Leave / Arrive segmented control.
+        let seg_rect = Rect::new(x, y, right, y + 34.0);
+        draw::fill_rrect(scene, t, seg_rect, 9.0, c.surfaces.base);
+        let modes = [(TransitTimeMode::Depart, "Leave"), (TransitTimeMode::Arrive, "Arrive")];
+        let seg_w = seg_rect.width() / 2.0;
+        for (i, (m, label)) in modes.iter().enumerate() {
+            let sx = seg_rect.x0 + i as f64 * seg_w;
+            let seg = Rect::new(sx, seg_rect.y0, sx + seg_w, seg_rect.y1);
+            let active = tt.mode == *m;
+            if active {
+                draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
+            }
+            let fg = if active { Color::WHITE } else { theme.text_dim };
+            draw::text_center(scene, tr, t, label, seg.x0, seg.x1, vmid(seg.y0, seg.height(), 13.0), 13.0, fg);
+            self.click_targets.push((seg, Hit::TransitTimeMode(*m)));
+        }
+        y += 42.0;
+
+        // Time stepper: [–] <clock> [+].
+        let row_h = 34.0;
+        let minus = Rect::new(x, y, x + 40.0, y + row_h);
+        let plus = Rect::new(right - 40.0, y, right, y + row_h);
+        draw::fill_rrect(scene, t, minus, 8.0, c.surfaces.base);
+        draw::fill_rrect(scene, t, plus, 8.0, c.surfaces.base);
+        draw::text_center(scene, tr, t, "–", minus.x0, minus.x1, vmid(minus.y0, row_h, 18.0), 18.0, theme.text_primary);
+        draw::text_center(scene, tr, t, "+", plus.x0, plus.x1, vmid(plus.y0, row_h, 18.0), 18.0, theme.text_primary);
+        let target = chrono::Local::now() + chrono::Duration::minutes(tt.offset_min as i64);
+        let clock = target.format("%H:%M").to_string();
+        let label = if tt.is_now() {
+            "Now".to_string()
+        } else {
+            clock
+        };
+        draw::text_center(scene, tr, t, &label, minus.x1, plus.x0, vmid(y, row_h, 15.0), 15.0, theme.accent_primary);
+        self.click_targets.push((minus, Hit::TransitTimeDelta(-15)));
+        self.click_targets.push((plus, Hit::TransitTimeDelta(15)));
+        y += row_h + 8.0;
+
+        // "Now" reset chip when the anchor has moved off the default.
+        if !tt.is_now() {
+            let now_r = Rect::new(x, y, x + 72.0, y + 26.0);
+            draw::fill_rrect(scene, t, now_r, 8.0, c.surfaces.raised);
+            draw::stroke_rrect(scene, t, now_r, 8.0, 1.0, c.border_standard);
+            draw::text_center(scene, tr, t, "Now", now_r.x0, now_r.x1, vmid(now_r.y0, 26.0, 12.0), 12.0, theme.text_primary);
+            self.click_targets.push((now_r, Hit::TransitTimeNow));
+            y += 34.0;
+        }
+
+        draw::line(scene, t, Point::new(x, y), Point::new(right, y), 1.0, c.border_standard);
+        y + 12.0
+    }
+
     fn draw_transit(
         &mut self,
         scene: &mut Scene,
@@ -1383,6 +1877,9 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
+        // Time picker first so the depart/arrive anchor is set before reading
+        // the departures below it.
+        y = self.draw_transit_time_picker(scene, t, tr, theme, content, y);
         let to = if !self.model.dest_name.is_empty() {
             self.model.dest_name.clone()
         } else {
@@ -1487,6 +1984,8 @@ impl Widget for MapsApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Pull any background network results into the model first.
         self.drain_net();
+        // Fold in a device-location fix if the portal worker has one.
+        self.drain_location();
         // Fold in any tiles / download progress the worker finished. This is a
         // non-blocking try_recv drain — it never waits on the network.
         let before = self.tiles.progress();
@@ -1600,12 +2099,21 @@ impl Widget for MapsApp {
                     if !matches!(hit, Hit::FocusSearch) {
                         self.search_focused = false;
                     }
+                    // Clicking anything other than an endpoint field (or its
+                    // dropdown) ends endpoint editing.
+                    if !matches!(
+                        hit,
+                        Hit::EditOrigin | Hit::EditDest | Hit::PickOrigin(_) | Hit::PickDest(_)
+                    ) {
+                        self.edit_field = None;
+                    }
                     self.dispatch(&hit);
                     consumed = true;
                     *handled = true;
                 }
                 if !consumed {
                     self.search_focused = false;
+                    self.edit_field = None;
                     // Map interaction: marker select or begin pan.
                     if let Some(id) = self.marker_at(p) {
                         self.select_place(&id);
@@ -1670,6 +2178,8 @@ impl Widget for MapsApp {
         // false and the loop settles instead of re-requesting every frame.
         self.pending > 0
             || !self.loaded
+            || self.locating
+            || self.location_rx.is_some()
             || self.tiles.has_inflight()
             || self.tiles.progress().is_active()
     }
@@ -1682,6 +2192,9 @@ impl Widget for MapsApp {
         // the loop at 60 Hz.
         self.pending > 0
             || self.search_focused
+            || self.edit_field.is_some()
+            || self.locating
+            || self.location_rx.is_some()
             || self.tiles.has_inflight()
             || self.tiles.progress().is_active()
     }
@@ -1702,6 +2215,41 @@ impl Widget for MapsApp {
 
 impl MapsApp {
     fn handle_key(&mut self, key: &Key, modifiers: &winit::event::Modifiers) -> bool {
+        // A Directions endpoint field (From / To) has keyboard focus: typed
+        // characters geocode that endpoint, mirroring the top search field.
+        if let Some(field) = self.edit_field {
+            let origin = field == EndField::Origin;
+            return match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.edit_field = None;
+                    self.mark_dirty();
+                    true
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.run_endpoint_search(origin);
+                    true
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.endpoint_query_mut(origin).pop();
+                    self.update_endpoint_local(origin);
+                    self.mark_dirty();
+                    true
+                }
+                Key::Named(NamedKey::Space) => {
+                    self.endpoint_query_mut(origin).push(' ');
+                    self.update_endpoint_local(origin);
+                    self.mark_dirty();
+                    true
+                }
+                Key::Character(s) => {
+                    self.endpoint_query_mut(origin).push_str(s);
+                    self.update_endpoint_local(origin);
+                    self.mark_dirty();
+                    true
+                }
+                _ => false,
+            };
+        }
         // Search field has keyboard focus.
         if self.search_focused {
             match key {
@@ -2059,6 +2607,166 @@ mod tests {
             "a lookup should surface a loading status, got {:?}",
             a.model.status
         );
+    }
+
+    // --- Typeable origin ---------------------------------------------------
+
+    /// Typing into the From field surfaces geocoded matches, and picking one
+    /// sets the origin coord + label and re-routes from there. This is the core
+    /// fix: routing from anywhere, not just the map centre / a prior route.
+    #[test]
+    fn picking_origin_result_sets_origin_and_reroutes() {
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        let before = a.model.route.clone().expect("initial route present");
+
+        // Focus the From field, type, and confirm a local match populates.
+        a.focus_endpoint(EndField::Origin);
+        a.model.origin_query = "hauptbahnhof".to_string();
+        a.update_endpoint_local(true);
+        assert!(!a.origin_results.is_empty(), "typing surfaces a From match");
+
+        let picked = a.origin_results[0].clone();
+        a.pick_endpoint(true, 0);
+        assert_eq!(a.model.origin, Some(picked.pos), "origin coord set from the result");
+        assert_eq!(a.model.origin_name, picked.name, "origin label set from the result");
+        assert!(a.edit_field.is_none(), "picking a result ends editing");
+
+        let after = a.model.route.clone().expect("route present after pick");
+        assert!(
+            (after.from.lat - picked.pos.lat).abs() < 1e-9
+                && (after.from.lon - picked.pos.lon).abs() < 1e-9,
+            "route must start from the newly-typed origin"
+        );
+        assert_ne!(after.from, before.from, "the origin actually changed");
+    }
+
+    /// A geocoded endpoint result delivered by the worker lands in the field's
+    /// dropdown and is upserted so its marker can render — the real drain path.
+    #[test]
+    fn endpoint_geocode_results_land_via_drain() {
+        let mut a = app_at(1280.0, 800.0);
+        a.focus_endpoint(EndField::Dest);
+        let p = crate::model::Place::new(
+            "osm-n-1",
+            "Englischer Garten",
+            Category::Park,
+            "München",
+            LatLon::new(48.16, 11.60),
+        );
+        a.net_tx
+            .send(NetMsg::EndpointSearch {
+                origin: false,
+                query: "english garden".into(),
+                results: Ok(vec![p.clone()]),
+            })
+            .unwrap();
+        a.drain_net();
+        assert!(
+            a.dest_results.iter().any(|r| r.id == "osm-n-1"),
+            "geocoded result populates the To dropdown"
+        );
+        assert!(a.model.place("osm-n-1").is_some(), "result upserted so its marker shows");
+    }
+
+    // --- Location services -------------------------------------------------
+
+    /// The "use my location" success path: a mocked portal fix becomes the route
+    /// origin and the journey re-plans from it. The real coordinates depend on
+    /// the host location service + user permission (unverifiable headlessly);
+    /// this proves the result *handling* around the portal.
+    #[test]
+    fn use_my_location_success_sets_origin_from_fix() {
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+
+        a.locating = true;
+        a.location_rx = Some(location::inject_for_test(LocationOutcome::Located {
+            lat: 48.11,
+            lon: 11.53,
+            accuracy_m: 8.0,
+        }));
+        a.drain_location();
+
+        assert!(!a.locating, "a delivered fix clears the locating state");
+        assert_eq!(a.model.origin, Some(LatLon::new(48.11, 11.53)), "origin set from the fix");
+        let route = a.model.route.clone().expect("route re-planned from the fix");
+        assert!(
+            (route.from.lat - 48.11).abs() < 1e-9 && (route.from.lon - 11.53).abs() < 1e-9,
+            "route starts at the device location"
+        );
+        assert!(
+            !a.model.status.to_lowercase().contains("unavailable"),
+            "a success must not read as an error, got {:?}",
+            a.model.status
+        );
+    }
+
+    /// A failed/denied fix must be honest and must never fabricate a position.
+    #[test]
+    fn location_unavailable_is_honest_and_fabricates_nothing() {
+        let mut a = app_at(1280.0, 800.0);
+        let before = a.model.origin;
+        a.locating = true;
+        a.location_rx = Some(location::inject_for_test(LocationOutcome::Unavailable(
+            "permission denied".into(),
+        )));
+        a.drain_location();
+
+        assert!(!a.locating, "the locating state clears on failure");
+        assert_eq!(a.model.origin, before, "a failed fix must not fabricate an origin");
+        assert!(
+            a.model.status.to_lowercase().contains("unavailable"),
+            "the failure must be stated plainly, got {:?}",
+            a.model.status
+        );
+    }
+
+    // --- Transit time picker -----------------------------------------------
+
+    /// The depart/arrive picker feeds the MOTIS query: "leave now" pins no time,
+    /// while an Arrive anchor carries both `arriveBy` and a concrete timestamp.
+    #[test]
+    fn transit_time_picker_feeds_query() {
+        let mut a = app_at(1280.0, 800.0);
+
+        // Default is "leave now".
+        let now_q = a.transit_query();
+        assert!(now_q.time.is_none(), "leave-now sends no explicit time");
+        assert!(!now_q.arrive_by, "leave-now is not arrive-by");
+
+        // Arrive-by, anchored 45 minutes out.
+        a.model.transit_time.mode = TransitTimeMode::Arrive;
+        a.model.transit_time.offset_min = 45;
+        let q = a.transit_query();
+        assert!(q.arrive_by, "arrive mode sets arriveBy");
+        let ts = q.time.clone().expect("a non-now anchor pins a timestamp");
+        assert!(ts.contains('T') && ts.len() >= 19, "rfc3339 timestamp, got {ts}");
+
+        let url = net::transit_url(LatLon::new(48.10, 11.55), LatLon::new(48.14, 11.58), &q);
+        assert!(url.contains("arriveBy=true"), "{url}");
+        assert!(url.contains("&time="), "picked time must reach the query: {url}");
+    }
+
+    /// Stepping the time anchor (via the real dispatch path) shifts the offset
+    /// and "Now" resets it — proving the picker controls are wired.
+    #[test]
+    fn transit_time_controls_adjust_the_anchor() {
+        let mut a = app_at(1280.0, 800.0);
+        a.dispatch(&Hit::TransitTimeDelta(15));
+        a.dispatch(&Hit::TransitTimeDelta(15));
+        assert_eq!(a.model.transit_time.offset_min, 30, "two +15 steps advance 30 min");
+        // Never steps below now.
+        for _ in 0..5 {
+            a.dispatch(&Hit::TransitTimeDelta(-15));
+        }
+        assert_eq!(a.model.transit_time.offset_min, 0, "offset floors at now");
+        a.dispatch(&Hit::TransitTimeMode(TransitTimeMode::Arrive));
+        a.dispatch(&Hit::TransitTimeDelta(15));
+        a.dispatch(&Hit::TransitTimeNow);
+        assert!(a.model.transit_time.is_now(), "\"Now\" resets to leave-now");
     }
 
     // --- Real handle_event path --------------------------------------------

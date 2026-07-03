@@ -327,6 +327,46 @@ pub struct TransitJourney {
     pub legs: Vec<TransitLeg>,
 }
 
+/// Whether a transit query is anchored to a departure or an arrival time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransitTimeMode {
+    /// Leave at the chosen time (the default, "leave now").
+    Depart,
+    /// Arrive by the chosen time.
+    Arrive,
+}
+
+/// The depart/arrive anchor for the Transit planner. Defaults to "leave now"
+/// (`Depart` at a zero offset); the user shifts the anchor in ±15-minute
+/// steps and the offset is applied to the wall clock when the query is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitTime {
+    pub mode: TransitTimeMode,
+    /// Minutes relative to "now". `0` with `Depart` means "leave now".
+    pub offset_min: i32,
+}
+
+impl Default for TransitTime {
+    fn default() -> Self {
+        Self {
+            mode: TransitTimeMode::Depart,
+            offset_min: 0,
+        }
+    }
+}
+
+impl TransitTime {
+    /// True when the anchor is the plain "leave now" default.
+    pub fn is_now(&self) -> bool {
+        self.mode == TransitTimeMode::Depart && self.offset_min == 0
+    }
+
+    /// True when the query should be anchored to the arrival time.
+    pub fn arrive_by(&self) -> bool {
+        self.mode == TransitTimeMode::Arrive
+    }
+}
+
 /// Which side panel is currently active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Panel {
@@ -367,6 +407,15 @@ pub struct MapModel {
     pub mode: TravelMode,
     /// Current search text.
     pub query: String,
+    /// Text typed into the Directions "From" field (a real geocoding input).
+    #[serde(default)]
+    pub origin_query: String,
+    /// Text typed into the Directions "To" field (a real geocoding input).
+    #[serde(default)]
+    pub dest_query: String,
+    /// Depart/arrive anchor for the Transit planner.
+    #[serde(default)]
+    pub transit_time: TransitTime,
     /// Live search results (subset shown in the Explore panel).
     pub results: Vec<Place>,
     /// Route origin — "your location". Sample data seeds a plausible spot.
@@ -400,6 +449,9 @@ impl Default for MapModel {
             panel: Panel::Explore,
             mode: TravelMode::Car,
             query: String::new(),
+            origin_query: String::new(),
+            dest_query: String::new(),
+            transit_time: TransitTime::default(),
             results: Vec::new(),
             origin: None,
             // Without a real location fix, routes start from the map centre.

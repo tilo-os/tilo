@@ -25,3 +25,12 @@ taffy = "0.10.1"
 anyhow = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 png = "0.18.1"
+# Device location through the XDG Desktop Portal (org.freedesktop.portal.Location,
+# GeoClue2 behind it). Runs off the UI thread on its own small Tokio runtime; the
+# fix is delivered back over a channel (see `location`). Honest failure states —
+# never a fabricated position.
+ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
+futures-util = "0.3"
+# RFC-3339 timestamps for the transit depart/arrive time picker.
+chrono = "0.4"
