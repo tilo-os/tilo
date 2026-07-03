@@ -145,6 +145,7 @@ impl SlidesDoc {
         let _ = doc.put(obj, "italic", el.italic);
         let _ = doc.put(obj, "radius", el.radius);
         let _ = doc.put(obj, "z", el.z);
+        let _ = doc.put(obj, "src", el.src.as_str());
         Self::write_text(doc, obj, "text", &el.text);
     }
 
@@ -418,6 +419,7 @@ impl SlidesDoc {
                         w: f64_field(doc, &e, "w").unwrap_or(200.0),
                         h: f64_field(doc, &e, "h").unwrap_or(80.0),
                         text: text_field(doc, &e, "text").unwrap_or_default(),
+                        src: str_field(doc, &e, "src").unwrap_or_default(),
                         fill: str_field(doc, &e, "fill").unwrap_or_else(|| "text".into()),
                         stroke: str_field(doc, &e, "stroke").unwrap_or_else(|| "none".into()),
                         stroke_width: f64_field(doc, &e, "stroke_width").unwrap_or(0.0),
