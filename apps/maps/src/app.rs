@@ -37,12 +37,17 @@ use crate::tiles::{GeoBounds, TileLayer};
 
 // --- Layout metrics (logical px) -------------------------------------------
 const MARGIN: f64 = 16.0;
-const PANEL_W: f64 = 360.0;
 const SEARCH_H: f64 = 48.0;
 const GAP: f64 = 10.0;
 const TAB_H: f64 = 34.0;
 const CTRL_SIZE: f64 = 40.0;
 const ROW_H: f64 = 56.0;
+/// Below this window width the side panel stops being docked and becomes a
+/// closed overlay drawer that the user opens over the map (Adwaita flap).
+const NAV_OVERLAY_BELOW: f64 = 720.0;
+/// Widest the panel is ever drawn (docked, or as an overlay drawer).
+const PANEL_MAX_W: f64 = 384.0;
+const PANEL_MIN_W: f64 = 300.0;
 
 /// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
@@ -58,6 +63,10 @@ enum Hit {
     ZoomIn,
     ZoomOut,
     Locate,
+    /// Toggle the overlay drawer (narrow layouts only).
+    ToggleNav,
+    /// Dismiss the overlay drawer (scrim tap).
+    CloseNav,
     Directions,
     Transit,
     ToggleSave,
@@ -111,6 +120,11 @@ pub struct MapsApp {
     offline_open: bool,
     offline_zoom_extra: u8,
     cache_bytes: u64,
+
+    /// Whether the side panel drawer is open. Only consulted in the narrow
+    /// overlay layout; when docked the panel is always shown. Re-evaluated
+    /// against the live window width every frame — never cached at startup.
+    nav_open: bool,
 }
 
 impl Default for MapsApp {
@@ -121,24 +135,31 @@ impl Default for MapsApp {
 
 impl MapsApp {
     /// Live app: spawns the background tile worker (network + decode off the
-    /// UI thread).
+    /// UI thread) and starts from an empty model — real OSM imagery, no
+    /// fabricated places. The user's own searches, routes and saved pins are
+    /// the only content; nothing is invented on startup.
     pub fn new() -> Self {
-        Self::with_tiles(TileLayer::new())
+        // Empty model + empty vector basemap: before the first real tiles
+        // arrive the map shows a plain themed land colour (an honest loading
+        // state) rather than an invented street grid.
+        Self::build(MapModel::default(), Basemap::default(), TileLayer::new(), false)
     }
 
     /// Headless/offline variant used by `--shots` and tests: no worker thread,
-    /// no network. The stylised vector basemap stands in for raster imagery so
-    /// the screenshot is fully populated without ever touching the wire.
+    /// no network. Renders the bundled sample city (places, a route, transit
+    /// options) and the stylised vector basemap so the screenshot is fully
+    /// populated without ever touching the wire. The overlay drawer starts
+    /// open so narrow screenshots show the panel content.
     pub fn offline() -> Self {
-        Self::with_tiles(TileLayer::offline())
+        Self::build(sample::default_model(), sample::basemap(), TileLayer::offline(), true)
     }
 
-    fn with_tiles(tiles: TileLayer) -> Self {
+    fn build(model: MapModel, basemap: Basemap, tiles: TileLayer, nav_open: bool) -> Self {
         let (net_tx, net_rx) = std::sync::mpsc::channel();
         let cache_bytes = tiles.cache_bytes();
         Self {
-            model: sample::default_model(),
-            basemap: sample::basemap(),
+            model,
+            basemap,
             rect: Rect::ZERO,
             node: None,
             last_mouse: Point::ZERO,
@@ -161,7 +182,28 @@ impl MapsApp {
             offline_open: false,
             offline_zoom_extra: 2,
             cache_bytes,
+            nav_open,
         }
+    }
+
+    /// Screenshot-only hook: force the overlay drawer open/closed so both the
+    /// map-first and panel-open states can be captured headlessly.
+    pub fn set_nav_open(&mut self, open: bool) {
+        self.nav_open = open;
+    }
+
+    /// Screenshot-only hook: force the active side panel so each tab can be
+    /// captured headlessly. Offline sample data already populates every panel,
+    /// so this never triggers a fetch.
+    pub fn set_active_panel(&mut self, panel: Panel) {
+        self.model.panel = panel;
+    }
+
+    /// Screenshot/test helper: an offline (no-worker, no-network) app that
+    /// mirrors the live first-run state — an empty model and a plain themed
+    /// basemap — so the empty Explore hint can be captured hermetically.
+    pub fn offline_empty() -> Self {
+        Self::build(MapModel::default(), Basemap::default(), TileLayer::offline(), true)
     }
 
     // --- geometry helpers --------------------------------------------------
@@ -176,16 +218,57 @@ impl MapsApp {
         Projection::new(self.model.center, self.model.zoom, self.view_center())
     }
 
-    fn search_rect(&self) -> Rect {
+    /// Whether the layout is narrow enough that the panel becomes an overlay
+    /// drawer. Derived from the *current* allocated width every call, so a
+    /// resize between breakpoints reflows immediately — never cached.
+    fn overlay_mode(&self) -> bool {
+        self.rect.width() < NAV_OVERLAY_BELOW
+    }
+
+    /// Is the side panel currently on screen? Always in docked layouts; only
+    /// when the drawer is open in the overlay layout.
+    fn panel_visible(&self) -> bool {
+        !self.overlay_mode() || self.nav_open
+    }
+
+    /// Panel width for the current window: a docked column proportional to the
+    /// window when wide, or a near-full-width drawer when narrow.
+    fn panel_w(&self) -> f64 {
+        if self.overlay_mode() {
+            (self.rect.width() - 2.0 * MARGIN).min(PANEL_MAX_W)
+        } else {
+            (self.rect.width() * 0.42).clamp(PANEL_MIN_W, PANEL_MAX_W)
+        }
+    }
+
+    /// The leading menu button that toggles the drawer — narrow layouts only.
+    fn menu_rect(&self) -> Option<Rect> {
+        if !self.overlay_mode() {
+            return None;
+        }
         let x0 = self.rect.x0 + MARGIN;
         let y0 = self.rect.y0 + MARGIN;
-        Rect::new(x0, y0, x0 + PANEL_W, y0 + SEARCH_H)
+        Some(Rect::new(x0, y0, x0 + CTRL_SIZE, y0 + SEARCH_H))
+    }
+
+    fn search_rect(&self) -> Rect {
+        let y0 = self.rect.y0 + MARGIN;
+        if self.overlay_mode() {
+            // Sits between the leading menu button and the trailing zoom column
+            // so the bar spans the full top edge without colliding.
+            let x0 = self.rect.x0 + MARGIN + CTRL_SIZE + GAP;
+            let x1 = self.rect.x1 - MARGIN - CTRL_SIZE - GAP;
+            Rect::new(x0, y0, x1.max(x0 + 120.0), y0 + SEARCH_H)
+        } else {
+            let x0 = self.rect.x0 + MARGIN;
+            Rect::new(x0, y0, x0 + self.panel_w(), y0 + SEARCH_H)
+        }
     }
 
     fn panel_rect(&self) -> Rect {
         let x0 = self.rect.x0 + MARGIN;
-        let top = self.search_rect().y1 + GAP;
-        Rect::new(x0, top, x0 + PANEL_W, self.rect.y1 - MARGIN)
+        let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
+        Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - MARGIN)
     }
 
     fn zoom_in_rect(&self) -> Rect {
@@ -220,20 +303,73 @@ impl MapsApp {
     }
 
     fn select_place(&mut self, id: &str) {
+        let changed = self.model.selected.as_deref() != Some(id);
         self.model.selected = Some(id.to_string());
-        if let Some(p) = self.model.place(id) {
+        // Selecting a place expresses destination intent: it becomes the
+        // routing/transit target. A later swap can move it to the origin side
+        // without this clobbering it (see `swap_ends`), because subsequent
+        // re-routes read `dest`, not the selection.
+        if let Some(p) = self.model.place(id).cloned() {
             self.model.center = p.pos;
+            self.model.dest = Some(p.pos);
+            self.model.dest_name = p.name;
         }
+        if changed {
+            // Departures are destination-specific: drop stale itineraries so
+            // the Transit view re-fetches for the newly selected place.
+            self.model.transit.clear();
+            self.model.transit_choice = 0;
+        }
+        // Selecting a place (e.g. tapping a map marker) reveals its card.
+        self.nav_open = true;
         self.mark_dirty();
+    }
+
+    /// Point the destination at the currently-selected place. The explicit
+    /// entry points (tapping Directions/Transit on a place card, the keyboard
+    /// shortcuts) call this so choosing a new place re-targets the route.
+    fn set_dest_to_selection(&mut self) {
+        if let Some(p) = self.model.selected_place().cloned() {
+            self.model.dest = Some(p.pos);
+            self.model.dest_name = p.name;
+        }
     }
 
     fn set_panel(&mut self, panel: Panel) {
         self.model.panel = panel;
         self.scroll = 0.0;
-        if panel == Panel::Directions && self.model.route.is_none() {
-            self.recompute_route();
+        self.nav_open = true;
+        // Switching to a routing tab actually performs the lookup for the
+        // current place — the tab is not a passive view. Without this the
+        // Transit tab would render its empty state as if a lookup had run and
+        // come back empty, when in fact nothing was ever requested.
+        match panel {
+            Panel::Directions if self.model.route.is_none() => {
+                self.recompute_route();
+            }
+            Panel::Transit
+                if self.model.transit.is_empty()
+                    && self.pending == 0
+                    && self.model.selected_place().is_some() =>
+            {
+                self.recompute_transit();
+            }
+            _ => {}
         }
         self.mark_dirty();
+    }
+
+    /// Resolve the route/transit origin. Uses a prior origin if one is set,
+    /// otherwise the current map centre (an honest "from here"), labelled as
+    /// such — we never invent a specific "your location" without a real fix.
+    fn resolve_origin(&mut self) -> crate::model::LatLon {
+        match self.model.origin {
+            Some(o) => o,
+            None => {
+                self.model.origin_name = "Map centre".to_string();
+                self.model.center
+            }
+        }
     }
 
     /// Local (offline) search: substring match over known places. Also kicks
@@ -275,6 +411,8 @@ impl MapsApp {
         self.model.push_recent(&q);
         self.model.panel = Panel::Explore;
         self.scroll = 0.0;
+        // Results just landed — reveal the drawer on narrow layouts.
+        self.nav_open = true;
 
         // Live augmentation (best effort).
         self.spawn_search(q);
@@ -291,13 +429,37 @@ impl MapsApp {
         });
     }
 
+    /// Start (or restart) routing to the selected place, forcing the
+    /// destination to the current selection. Tapping "Directions" on a place
+    /// card or pressing `d` re-targets the route at whatever is selected now.
+    fn enter_directions(&mut self) {
+        self.set_dest_to_selection();
+        self.model.panel = Panel::Directions;
+        self.recompute_route();
+    }
+
+    /// Start (or restart) a transit lookup to the selected place, forcing the
+    /// destination to the current selection.
+    fn enter_transit(&mut self) {
+        self.set_dest_to_selection();
+        self.recompute_transit();
+    }
+
     fn recompute_route(&mut self) {
-        let dest = match self.model.selected_place() {
-            Some(p) => p.pos,
+        // Adopt the selected place as destination if none has been chosen yet
+        // (e.g. the user changed travel mode straight after selecting a place).
+        // A destination set by a prior route or a swap is preserved so the
+        // endpoints don't collapse back together.
+        if self.model.dest.is_none() {
+            self.set_dest_to_selection();
+        }
+        let dest = match self.model.dest {
+            Some(d) => d,
             None => return,
         };
-        let origin = self.model.origin.unwrap_or_else(sample::origin);
+        let origin = self.resolve_origin();
         self.model.origin = Some(origin);
+        self.nav_open = true;
         let mode = self.model.mode;
         // Immediate offline fallback so the panel is never empty.
         self.model.route = Some(sample::fallback_route(origin, dest, mode));
@@ -315,17 +477,21 @@ impl MapsApp {
     }
 
     fn recompute_transit(&mut self) {
-        let dest = match self.model.selected_place() {
-            Some(p) => p.pos,
+        if self.model.dest.is_none() {
+            self.set_dest_to_selection();
+        }
+        let dest = match self.model.dest {
+            Some(d) => d,
             None => return,
         };
-        let origin = self.model.origin.unwrap_or_else(sample::origin);
+        let origin = self.resolve_origin();
         self.model.origin = Some(origin);
-        if self.model.transit.is_empty() {
-            self.model.transit = sample::sample_transit();
-        }
         self.model.panel = Panel::Transit;
         self.model.transit_choice = 0;
+        self.nav_open = true;
+        // Real departures only: clear any stale itineraries and show a loading
+        // state until the planner responds — we never fabricate departures.
+        self.model.transit.clear();
         let tx = self.net_tx.clone();
         self.pending += 1;
         self.model.status = "Finding departures…".to_string();
@@ -355,19 +521,30 @@ impl MapsApp {
         self.mark_dirty();
     }
 
+    /// Exchange the route's origin and destination (both the coordinates and
+    /// their labels), then re-route so the line and steps reflect the reversal.
     fn swap_ends(&mut self) {
-        if let (Some(o), Some(sel)) = (self.model.origin, self.model.selected_place().map(|p| p.pos)) {
-            self.model.origin = Some(sel);
-            // Selected place stays the destination conceptually; we just move
-            // origin to the old destination and re-route from the old origin.
-            let _ = o;
-            self.recompute_route();
+        // Need a concrete point on both ends to have something to swap.
+        if self.model.origin.is_none() || self.model.dest.is_none() {
+            return;
         }
+        std::mem::swap(&mut self.model.origin, &mut self.model.dest);
+        std::mem::swap(&mut self.model.origin_name, &mut self.model.dest_name);
+        // Re-route: `recompute_route` reads `dest` (now the old origin) and
+        // `resolve_origin` reads `origin` (now the old destination), so the
+        // journey is genuinely reversed rather than routed to itself.
+        self.recompute_route();
     }
 
     fn fit_route(&mut self) {
         if let Some(route) = &self.model.route {
-            let w = self.rect.width() - (PANEL_W + MARGIN * 2.0 + GAP);
+            // In the docked layout the map shares the width with the panel; in
+            // the overlay layout the drawer floats over a full-width map.
+            let w = if self.overlay_mode() {
+                self.rect.width() - MARGIN * 2.0
+            } else {
+                self.rect.width() - (self.panel_w() + MARGIN * 2.0 + GAP)
+            };
             let h = self.rect.height();
             if let Some((c, z)) = geo::fit_bounds(&route.geometry, w.max(200.0), h, 70.0) {
                 self.model.center = c;
@@ -482,17 +659,25 @@ impl MapsApp {
             Hit::ZoomIn => self.zoom_by(1.0, self.view_center()),
             Hit::ZoomOut => self.zoom_by(-1.0, self.view_center()),
             Hit::Locate => {
-                if let Some(o) = self.model.origin.or(Some(sample::origin())) {
-                    self.model.origin = Some(o);
+                // Recentre on a known origin (set by a prior route). Without a
+                // real location fix we don't invent one — say so instead.
+                if let Some(o) = self.model.origin {
                     self.model.center = o;
-                    self.mark_dirty();
+                } else {
+                    self.model.status = "Location unavailable".to_string();
                 }
+                self.mark_dirty();
             }
-            Hit::Directions => {
-                self.model.panel = Panel::Directions;
-                self.recompute_route();
+            Hit::ToggleNav => {
+                self.nav_open = !self.nav_open;
+                self.mark_dirty();
             }
-            Hit::Transit => self.recompute_transit(),
+            Hit::CloseNav => {
+                self.nav_open = false;
+                self.mark_dirty();
+            }
+            Hit::Directions => self.enter_directions(),
+            Hit::Transit => self.enter_transit(),
             Hit::ToggleSave => self.toggle_save_selected(),
             Hit::ClearRoute => self.clear_route(),
             Hit::SwapEnds => self.swap_ends(),
@@ -597,17 +782,46 @@ impl MapsApp {
         let painted_tiles =
             canvas::draw_tiles(scene, t, clip, &mut self.tiles, &self.model, view_center, &pal);
         if !painted_tiles {
-            canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, &pal);
+            if self.basemap.is_empty() {
+                // Live first-run / offline gap: no imagery and no vector
+                // cartography yet. Draw a reference grid so the map reads as a
+                // map rather than a black void, with a loading affordance.
+                canvas::draw_grid_substrate(scene, t, clip, &self.model, view_center, &pal);
+            } else {
+                canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, &pal);
+            }
         }
         if let Some(route) = &self.model.route {
             canvas::draw_route(scene, t, &proj, route, &pal);
         }
         canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, clip);
+
+        // Side panel: docked when wide, an overlay drawer (with a dimming
+        // scrim over the map) when narrow.
+        let overlay = self.overlay_mode();
+        if overlay && self.nav_open {
+            draw::fill_rect(scene, t, clip, draw::alpha(Color::BLACK, 0.42));
+            self.click_targets.push((clip, Hit::CloseNav));
+            self.draw_panel(scene, t, tr, theme);
+        } else if !overlay {
+            self.draw_panel(scene, t, tr, theme);
+        }
+
+        // Scale bar + OSM attribution on top of the drawer scrim so the credit
+        // stays fully legible and is never dimmed or clipped by an open drawer
+        // (in docked layouts it sits at the far right, clear of the panel).
         canvas::draw_scale_and_attribution(scene, t, tr, clip, &self.model, theme);
 
-        // Floating UI.
+        // Loading / offline affordance while the substrate grid is showing —
+        // above the map but below the chrome, and skipped once real imagery or
+        // the drawer scrim is up (the drawer is the focus then).
+        if !painted_tiles && self.basemap.is_empty() && !(overlay && self.nav_open) {
+            self.draw_imagery_hint(scene, t, tr, theme);
+        }
+
+        // Chrome on top of the scrim so it stays bright and usable.
         self.draw_controls(scene, t, tr, theme);
-        self.draw_panel(scene, t, tr, theme);
+        self.draw_menu(scene, t, tr, theme);
         self.draw_search(scene, t, tr, theme);
         self.draw_status(scene, t, tr, theme);
         if self.offline_open {
@@ -615,8 +829,37 @@ impl MapsApp {
         }
     }
 
+    /// The leading menu button in the narrow overlay layout: toggles the panel
+    /// drawer. Renders nothing when the panel is docked.
+    fn draw_menu(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+        let Some(r) = self.menu_rect() else { return };
+        let c = &theme.tokens.colors;
+        let border = if self.nav_open { theme.border_focus } else { c.border_standard };
+        draw::card(scene, t, r, 12.0, c.surfaces.raised, border);
+        // Three-line hamburger, or a back-chevron feel when open (rotate hint
+        // via colour). Kept as clean strokes — no icon font dependency.
+        let cx = r.center().x;
+        let cy = r.center().y;
+        let hw = 8.0;
+        let col = if self.nav_open { theme.accent_primary } else { theme.text_primary };
+        for dy in [-5.0, 0.0, 5.0] {
+            draw::line(
+                scene,
+                t,
+                Point::new(cx - hw, cy + dy),
+                Point::new(cx + hw, cy + dy),
+                2.0,
+                col,
+            );
+        }
+        self.click_targets.push((r, Hit::ToggleNav));
+    }
+
     fn draw_search(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let r = self.search_rect();
+        // Focus target first so it sits above the drawer scrim but below the
+        // clear (×) button, which is pushed later and therefore wins its area.
+        self.click_targets.push((r, Hit::FocusSearch));
         let c = &theme.tokens.colors;
         let border = if self.search_focused { theme.border_focus } else { c.border_standard };
         draw::card(scene, t, r, 12.0, c.surfaces.raised, border);
@@ -661,9 +904,6 @@ impl MapsApp {
             draw::line(scene, t, Point::new(cc.x + 4.0, cc.y - 4.0), Point::new(cc.x - 4.0, cc.y + 4.0), 1.8, theme.text_dim);
             self.click_targets.push((cb, Hit::ClearSearch));
         }
-        // Whole bar focuses search (added before the clear button so the
-        // reverse hit-test lets the clear button win).
-        self.click_targets.insert(0, (r, Hit::FocusSearch));
     }
 
     fn caret_on(&self) -> bool {
@@ -815,12 +1055,44 @@ impl MapsApp {
         let size = 12.0_f32;
         let w = draw::measure_w(tr, label, size) + 36.0;
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let r = Rect::new(cx - w / 2.0, self.rect.y0 + MARGIN, cx + w / 2.0, self.rect.y0 + MARGIN + 30.0);
+        // Sit below the top search row so it never overlaps the search field
+        // (which spans most of the top edge in the narrow layout).
+        let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
+        let r = Rect::new(cx - w / 2.0, top, cx + w / 2.0, top + 30.0);
         draw::card(scene, t, r, 15.0, theme.tokens.colors.surfaces.raised, theme.tokens.colors.border_standard);
         // Small spinner dot.
         let dot = Point::new(r.x0 + 16.0, r.center().y);
         draw::fill_circle(scene, t, dot, 4.0, theme.accent_primary);
         draw::text(scene, tr, t, label, r.x0 + 28.0, vmid(r.y0, r.height(), size), size, theme.text_primary);
+    }
+
+    /// A centred pill over the substrate grid telling the user the imagery is
+    /// loading (or unreachable), so a first-run / offline map is never a silent
+    /// void. Positioned in the visible map area, clear of the docked panel.
+    fn draw_imagery_hint(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let offline = self.tiles.has_failures() && !self.tiles.has_inflight();
+        let msg = if offline {
+            "Map imagery unavailable offline"
+        } else {
+            "Loading map…"
+        };
+        // Centre within the map area (right of the docked panel when present).
+        let area_x0 = if self.panel_visible() && !self.overlay_mode() {
+            self.panel_rect().x1 + GAP
+        } else {
+            self.rect.x0
+        };
+        let cx = (area_x0 + self.rect.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let size = 13.0_f32;
+        let w = draw::measure_w(tr, msg, size) + 44.0;
+        let r = Rect::new(cx - w / 2.0, cy - 17.0, cx + w / 2.0, cy + 17.0);
+        let c = &theme.tokens.colors;
+        draw::card(scene, t, r, 17.0, c.surfaces.raised, c.border_standard);
+        let dot = Point::new(r.x0 + 18.0, r.center().y);
+        let dot_col = if offline { c.semantic.warning } else { theme.accent_primary };
+        draw::fill_circle(scene, t, dot, 4.0, dot_col);
+        draw::text(scene, tr, t, msg, r.x0 + 30.0, vmid(r.y0, r.height(), size), size, theme.text_primary);
     }
 
     fn draw_panel(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -877,6 +1149,19 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
+
+        // First-run empty state: nothing selected, searched, saved or recent.
+        // An honest hint toward the primary action rather than a blank panel.
+        let empty = self.model.selected_place().is_none()
+            && self.model.results.is_empty()
+            && self.model.saved_places().is_empty()
+            && self.model.recents.is_empty();
+        if empty {
+            draw::text_w(scene, tr, t, "Find your way", x, y, 16.0, theme.text_primary, TextWeight::Bold);
+            draw::text(scene, tr, t, "Search for a place or address", x, y + 28.0, 13.0, theme.text_dim);
+            draw::text(scene, tr, t, "to route and plan transit.", x, y + 46.0, 13.0, theme.text_dim);
+            return y + 78.0;
+        }
 
         // Selected place card.
         if let Some(sel) = self.model.selected_place().cloned() {
@@ -1008,7 +1293,14 @@ impl MapsApp {
 
         // Endpoints summary (origin → destination), with a swap button.
         let from = self.model.origin_name.clone();
-        let to = self.model.selected_place().map(|p| p.name.clone()).unwrap_or_else(|| "Pick a destination".to_string());
+        let to = if !self.model.dest_name.is_empty() {
+            self.model.dest_name.clone()
+        } else {
+            self.model
+                .selected_place()
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "Pick a destination".to_string())
+        };
         let ep_h = 64.0;
         let ep = Rect::new(x, y, right, y + ep_h);
         draw::fill_rrect(scene, t, ep, 10.0, c.surfaces.base);
@@ -1091,12 +1383,26 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
-        let to = self.model.selected_place().map(|p| p.name.clone()).unwrap_or_else(|| "destination".to_string());
+        let to = if !self.model.dest_name.is_empty() {
+            self.model.dest_name.clone()
+        } else {
+            self.model
+                .selected_place()
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "destination".to_string())
+        };
         draw::text_w(scene, tr, t, &format!("Departures to {to}"), x, y, 14.0, theme.text_primary, TextWeight::Semibold);
         y += 26.0;
 
         if self.model.transit.is_empty() {
-            draw::text(scene, tr, t, "No itineraries — pick a destination.", x, y, 13.0, theme.text_dim);
+            let msg = if self.pending > 0 {
+                "Finding departures…"
+            } else if self.model.selected_place().is_none() {
+                "Pick a destination to see departures."
+            } else {
+                "No public-transport itineraries found."
+            };
+            draw::text(scene, tr, t, msg, x, y, 13.0, theme.text_dim);
             return y + 24.0;
         }
 
@@ -1319,7 +1625,8 @@ impl Widget for MapsApp {
                     MouseScrollDelta::LineDelta(_, y) => *y as f64,
                     MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
                 };
-                let over_panel = self.panel_rect().contains(self.last_mouse)
+                let over_panel = self.panel_visible()
+                    && self.panel_rect().contains(self.last_mouse)
                     && self.last_mouse.y > self.panel_rect().y0 + 50.0;
                 if over_panel {
                     let max = (self.content_h - self.content_view_h).max(0.0);
@@ -1354,10 +1661,13 @@ impl Widget for MapsApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep idling while anything is outstanding: net requests, the initial
-        // load, in-flight tiles, or an active offline download. This lets the
-        // app fold in worker results and repaint as imagery arrives without the
-        // user touching the input device.
+        // Keep idling only while real work is outstanding: net requests, the
+        // initial load, tiles genuinely in flight, or an active offline
+        // download. This lets the app fold in worker results and repaint as
+        // imagery arrives without the user touching the input device. A tile
+        // whose fetch failed is *not* counted — it is negative-cached with a
+        // backoff (see `TileLayer::request`), so `has_inflight()` drops to
+        // false and the loop settles instead of re-requesting every frame.
         self.pending > 0
             || !self.loaded
             || self.tiles.has_inflight()
@@ -1365,6 +1675,11 @@ impl Widget for MapsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // Same rule as `needs_idle_sync`: only ask for another frame while
+        // something is legitimately in flight (net, tiles, download) or the
+        // search caret is blinking. Failed tiles back off and clear
+        // `has_inflight()`, so a viewport of unfetchable tiles no longer pins
+        // the loop at 60 Hz.
         self.pending > 0
             || self.search_focused
             || self.tiles.has_inflight()
@@ -1432,12 +1747,11 @@ impl MapsApp {
                     true
                 }
                 Key::Character(s) if s.eq_ignore_ascii_case("d") => {
-                    self.model.panel = Panel::Directions;
-                    self.recompute_route();
+                    self.enter_directions();
                     true
                 }
                 Key::Character(s) if s.eq_ignore_ascii_case("t") => {
-                    self.recompute_transit();
+                    self.enter_transit();
                     true
                 }
                 Key::Character(s) if s.eq_ignore_ascii_case("f") => {
@@ -1479,10 +1793,12 @@ impl MapsApp {
                 Key::Named(NamedKey::Escape) => {
                     if self.offline_open {
                         self.offline_open = false;
+                    } else if self.overlay_mode() && self.nav_open {
+                        self.nav_open = false;
                     } else {
                         self.model.selected = None;
-                        self.mark_dirty();
                     }
+                    self.mark_dirty();
                     true
                 }
                 Key::Character(s) if s.eq_ignore_ascii_case("m") => {
@@ -1568,5 +1884,298 @@ mod tests {
         let head = Point::new(anchor.x, anchor.y - 22.0);
         let hit = a.marker_at(head);
         assert_eq!(hit.as_deref(), Some("hofgarten"));
+    }
+
+    /// The live app must not invent any content on startup — real imagery only,
+    /// with the user's own searches/pins as the sole data. Sample places belong
+    /// exclusively to the offline `--shots`/test path.
+    #[test]
+    fn live_app_starts_without_fabricated_content() {
+        let a = MapsApp::new();
+        assert!(a.model.places.is_empty(), "no invented places");
+        assert!(a.model.recents.is_empty(), "no invented recent searches");
+        assert!(a.model.results.is_empty());
+        assert!(a.model.selected.is_none());
+        assert!(a.model.route.is_none(), "no invented route");
+        assert!(a.model.transit.is_empty(), "no invented departures");
+        assert!(a.model.query.is_empty());
+        assert!(a.basemap.roads.is_empty(), "no invented street grid");
+    }
+
+    /// The responsive breakpoint must be re-derived from the *current* width on
+    /// every layout pass. Render the SAME instance wide then narrow and confirm
+    /// it reflows: the docked column becomes an overlay drawer and a menu
+    /// toggle appears — proving nothing is cached from the first frame.
+    #[test]
+    fn resize_reflows_between_docked_and_overlay() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = MapsApp::offline();
+
+        // Wide: docked column, no menu button, no drawer toggle target, and the
+        // search bar starts flush at the left margin.
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(!a.overlay_mode());
+        assert!(a.panel_visible());
+        let docked_w = a.panel_w();
+        assert!((300.0..=384.0).contains(&docked_w));
+        let docked_search_x0 = a.search_rect().x0;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.menu_rect().is_none());
+        assert!(!a.click_targets.iter().any(|(_, h)| matches!(h, Hit::ToggleNav)));
+
+        // Narrow: SAME instance → overlay drawer, menu button appears, and the
+        // search bar reflows to make room for the leading menu button.
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        assert!(a.overlay_mode());
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.menu_rect().is_some());
+        assert!(a.click_targets.iter().any(|(_, h)| matches!(h, Hit::ToggleNav)));
+        assert!(
+            a.search_rect().x0 > docked_search_x0 + CTRL_SIZE,
+            "top bar did not reflow: search x0 {} vs docked {docked_search_x0}",
+            a.search_rect().x0
+        );
+
+        // And back to wide reflows again (no one-way latch).
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(!a.overlay_mode());
+        assert!(a.menu_rect().is_none());
+        assert_eq!(a.search_rect().x0, docked_search_x0);
+    }
+
+    /// In the narrow overlay layout the drawer starts closed and the menu
+    /// button opens/closes it — the panel is only on screen when open.
+    #[test]
+    fn narrow_menu_toggles_drawer() {
+        let mut a = MapsApp::offline();
+        a.set_nav_open(false);
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        assert!(a.overlay_mode());
+        assert!(!a.panel_visible(), "drawer starts closed");
+        a.dispatch(&Hit::ToggleNav);
+        assert!(a.panel_visible(), "menu opens the drawer");
+        a.dispatch(&Hit::CloseNav);
+        assert!(!a.panel_visible(), "scrim/Esc closes the drawer");
+    }
+
+    /// With the drawer open the top-bar chrome must stay hittable above the
+    /// dimming scrim: tapping the search field focuses it (does not close the
+    /// drawer), the menu toggles, and the dimmed map closes.
+    #[test]
+    fn drawer_open_hit_layering_is_correct() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = MapsApp::offline();
+        a.set_nav_open(true);
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        assert!(a.overlay_mode());
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        let topmost = |a: &MapsApp, p: Point| -> Option<Hit> {
+            a.click_targets
+                .iter()
+                .rev()
+                .find(|(r, _)| r.contains(p))
+                .map(|(_, h)| h.clone())
+        };
+
+        let sc = a.search_rect().center();
+        assert!(
+            matches!(topmost(&a, sc), Some(Hit::FocusSearch)),
+            "search tap must focus, not close the drawer"
+        );
+        let mc = a.menu_rect().unwrap().center();
+        assert!(matches!(topmost(&a, mc), Some(Hit::ToggleNav)));
+        let corner = Point::new(a.rect.x1 - 4.0, a.rect.y1 - 4.0);
+        assert!(matches!(topmost(&a, corner), Some(Hit::CloseNav)));
+    }
+
+    /// Running a search reveals the drawer on narrow layouts so results are
+    /// visible without a second tap.
+    #[test]
+    fn search_opens_drawer_on_narrow() {
+        let mut a = MapsApp::offline();
+        a.set_nav_open(false);
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        a.model.query = "café".to_string();
+        a.run_search();
+        assert!(a.panel_visible(), "results should reveal the drawer");
+    }
+
+    /// Swapping endpoints must genuinely reverse origin ↔ destination — both
+    /// the coordinates and the labels — and re-route to a non-degenerate line.
+    /// Guards the prior bug where swap collapsed origin onto the destination
+    /// and produced a 0 m route with a stale "from" label.
+    #[test]
+    fn swap_ends_reverses_origin_and_destination() {
+        let mut a = app_at(1280.0, 800.0);
+        // Establish A → B: origin (Sendling) → Marienplatz.
+        a.select_place("marienplatz");
+        a.enter_directions();
+        let ab = a.model.route.clone().expect("route A→B present");
+        let from0 = a.model.origin_name.clone();
+        let to0 = a.model.dest_name.clone();
+        assert!(ab.distance_m > 1.0, "initial route must be non-degenerate");
+        assert_ne!(from0, to0, "endpoints must start distinct");
+
+        a.swap_ends();
+        let ba = a.model.route.clone().expect("route B→A present");
+        // Labels swapped.
+        assert_eq!(a.model.origin_name, to0, "from-label must become old to");
+        assert_eq!(a.model.dest_name, from0, "to-label must become old from");
+        // Coordinates genuinely reversed, not collapsed to a single point.
+        assert!(
+            (ba.from.lat - ab.to.lat).abs() < 1e-9 && (ba.from.lon - ab.to.lon).abs() < 1e-9,
+            "new origin must be the old destination"
+        );
+        assert!(
+            (ba.to.lat - ab.from.lat).abs() < 1e-9 && (ba.to.lon - ab.from.lon).abs() < 1e-9,
+            "new destination must be the old origin"
+        );
+        assert!(ba.distance_m > 1.0, "swapped route must not be a degenerate 0 m");
+    }
+
+    /// Switching to the Transit tab for a selected place must actually start
+    /// the departures lookup, not merely flip the view — otherwise the panel
+    /// renders a false "no itineraries found" for a lookup that never ran.
+    #[test]
+    fn transit_tab_triggers_fetch_for_selected_place() {
+        let mut a = app_at(1280.0, 800.0);
+        // Select a place other than the sample's default so the stale sample
+        // departures are dropped (destination-specific).
+        a.select_place("hofgarten");
+        assert!(a.model.transit.is_empty(), "selecting a new place drops stale departures");
+        a.model.panel = Panel::Explore;
+
+        a.set_panel(Panel::Transit);
+        assert_eq!(a.model.panel, Panel::Transit);
+        assert!(a.pending > 0, "transit tab must kick off a departures lookup");
+        assert!(
+            a.model.status.contains("departures") || a.model.status.contains('…'),
+            "a lookup should surface a loading status, got {:?}",
+            a.model.status
+        );
+    }
+
+    // --- Real handle_event path --------------------------------------------
+    // The tests above exercise the internal helpers; these drive the *actual*
+    // `Widget::handle_event` entry point with synthesised `WindowEvent`s, so
+    // the hit-testing, drag tracking and dispatch chain a real click travels
+    // through are all covered.
+
+    /// `DeviceId` has no public constructor; a zeroed value is the sentinel
+    /// winit itself uses and the convention across this workspace's widget
+    /// tests (see `ui/src/widget/image_viewer.rs`).
+    fn dummy_device_id() -> winit::event::DeviceId {
+        // SAFETY: `DeviceId` is an opaque platform handle; the dispatch path
+        // under test never dereferences it.
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// Feed one `WindowEvent` through the real `handle_event`, returning
+    /// whether the app marked it handled. Layout params are unused by the maps
+    /// widget (it hit-tests its own recorded rects) so dummies suffice.
+    fn feed(a: &mut MapsApp, ev: WindowEvent) -> bool {
+        let modifiers = winit::event::Modifiers::default();
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        a.handle_event(
+            &ev, 1.0, &modifiers, &mut state, &root, &mut handled, &mut focus, node, &taffy,
+        );
+        handled
+    }
+
+    fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {
+        feed(
+            a,
+            WindowEvent::CursorMoved {
+                device_id: dummy_device_id(),
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            },
+        )
+    }
+
+    fn press_left(a: &mut MapsApp) -> bool {
+        feed(
+            a,
+            WindowEvent::MouseInput {
+                device_id: dummy_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        )
+    }
+
+    /// A scroll over open map area must zoom the view (not scroll a panel),
+    /// travelling the real `WindowEvent::MouseWheel` handler.
+    #[test]
+    fn wheel_over_map_zooms_via_handle_event() {
+        let mut a = app_at(1280.0, 720.0);
+        let before = a.model.zoom;
+        // Cursor over the right-hand map area, clear of the docked panel.
+        move_to(&mut a, 1100.0, 360.0);
+        let handled = feed(
+            &mut a,
+            WindowEvent::MouseWheel {
+                device_id: dummy_device_id(),
+                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        assert!(handled, "wheel over the map must be handled");
+        assert!(a.model.zoom > before, "scroll up should zoom in");
+    }
+
+    /// Clicking the Directions tab through the real event path (draw records
+    /// the tab rects; a press hit-tests them) switches the active panel.
+    #[test]
+    fn tab_click_switches_panel_via_handle_event() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.panel = Panel::Explore;
+        // Draw once so the tab hot-regions are recorded.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let tab = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Tab(Panel::Directions)))
+            .map(|(r, _)| r.center())
+            .expect("Directions tab hot-region recorded");
+
+        move_to(&mut a, tab.x, tab.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "tab click must be handled");
+        assert_eq!(a.model.panel, Panel::Directions, "panel switched to Directions");
+    }
+
+    /// A press-then-drag over the map pans the view via the real cursor/mouse
+    /// event handlers (drag state is tracked across two events).
+    #[test]
+    fn drag_pans_map_via_handle_event() {
+        let mut a = app_at(1280.0, 720.0);
+        // Remove markers so the press lands on open map (not a pin), isolating
+        // the pan path deterministically.
+        a.model.places.clear();
+        let before = a.model.center;
+        // Press on open map area (no marker, no panel) to begin a drag.
+        move_to(&mut a, 1000.0, 360.0);
+        press_left(&mut a);
+        // Move the cursor: with the button down this pans, not hovers.
+        move_to(&mut a, 1040.0, 372.0);
+        assert!(
+            (a.model.center.lon - before.lon).abs() > 1e-6
+                || (a.model.center.lat - before.lat).abs() > 1e-6,
+            "drag should move the map centre"
+        );
     }
 }
