@@ -61,6 +61,14 @@ pub struct RunOptions {
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
+    /// Bind-mount the minimum host paths a dynamically-linked ELF
+    /// needs to `execve()`: ld-linux + libc + libgcc_s + friends,
+    /// plus `/etc/ld.so.cache`. Read-only. This is a stopgap until
+    /// the qos-runtime bundle path lands — apps that declare
+    /// `runtime = "qos-runtime/..."` should NOT need this. The
+    /// bind set is deliberately narrow (no full `/usr` or
+    /// `/lib64`) to keep the attack surface small.
+    pub minimal_libs: bool,
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.
@@ -95,6 +103,22 @@ pub fn run_with(
     // 3. Argv.
     let runtime_arg = opts.runtime_root.as_deref().map(|p| (p, "1"));
     let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds);
+
+    // Optional: narrow dynamic-loader binds. Deliberately not the whole
+    // /usr — just the files a plain dynamically-linked binary needs to
+    // execve(). Split off in front of the entrypoint token (last argv
+    // entry) so the mounts happen before exec.
+    if opts.minimal_libs {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        for path in minimal_loader_binds() {
+            if std::path::Path::new(path).exists() {
+                argv.push("--ro-bind".to_string());
+                argv.push(path.to_string());
+                argv.push(path.to_string());
+            }
+        }
+        argv.push(entry);
+    }
 
     // Insert --seccomp <child_fd> at the front so bwrap installs it
     // before any other action (matches the compositor pattern).
@@ -309,4 +333,32 @@ fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
         written += n as usize;
     }
     Ok(())
+}
+
+/// The narrow set of host paths a dynamically-linked ELF needs to
+/// `execve()` successfully. Deliberately excludes `/usr/bin` etc. —
+/// the sandbox binds the app's own payload, not the host binaries.
+///
+/// This is a stopgap until the qos-runtime bundle path lands. Apps
+/// declaring `runtime = "qos-runtime/..."` should not need `--minimal-libs`.
+fn minimal_loader_binds() -> &'static [&'static str] {
+    &[
+        // Dynamic loader itself.
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-x86-64.so.2",
+        "/lib/ld-linux.so.2",
+        "/usr/lib64/ld-linux-x86-64.so.2",
+        // libc + friends that most Rust binaries need.
+        "/lib64/libc.so.6",
+        "/lib64/libgcc_s.so.1",
+        "/lib64/libm.so.6",
+        "/lib64/libdl.so.2",
+        "/lib64/libpthread.so.0",
+        "/lib64/librt.so.1",
+        "/lib64/libutil.so.1",
+        // Dynamic linker's cache. Without it the loader falls back
+        // to a slower search but still works — we bind it because
+        // launch-latency matters.
+        "/etc/ld.so.cache",
+    ]
 }
