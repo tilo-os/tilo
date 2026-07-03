@@ -1,0 +1,21 @@
+[package]
+name = "qos-runtime"
+version = "0.1.0"
+edition = "2024"
+
+# qOS runtime — umbrella crate. Apps link against `qos-runtime` and
+# use the re-exported modules (`collab`, `fs`, `identity`, `portal`).
+# Sub-crates can also be depended on individually if an app wants
+# only one of the surfaces (e.g. an app that only reads files should
+# depend on `qos-runtime-fs` directly to avoid pulling in
+# ed25519-dalek).
+
+[lib]
+name = "qos_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+qos-runtime-portal = { path = "../qos-runtime-portal" }
+qos-runtime-collab = { path = "../qos-runtime-collab" }
+qos-runtime-fs = { path = "../qos-runtime-fs" }
+qos-runtime-identity = { path = "../qos-runtime-identity" }
