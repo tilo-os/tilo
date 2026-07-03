@@ -115,6 +115,10 @@ pub struct Element {
     /// Text body (text elements). May contain `\n` for explicit line
     /// breaks; each line is aligned independently.
     pub text: String,
+    /// Source path of an image element's picture on disk. Empty for every
+    /// non-image element. Only the path travels in the CRDT; the decoded
+    /// pixels are a per-peer runtime cache keyed by this path.
+    pub src: String,
     /// Colour *role* (see [`Palette::resolve`]) for the fill. `"none"`
     /// means no fill (shapes become outline-only).
     pub fill: String,
@@ -140,6 +144,7 @@ impl Element {
             w,
             h,
             text: text.to_string(),
+            src: String::new(),
             fill: "text".into(),
             stroke: "none".into(),
             stroke_width: 0.0,
@@ -161,6 +166,7 @@ impl Element {
             w,
             h,
             text: String::new(),
+            src: String::new(),
             fill: if kind == ElementKind::Line { "none".into() } else { "accent".into() },
             stroke: if kind == ElementKind::Line { "accent".into() } else { "none".into() },
             stroke_width: if kind == ElementKind::Line { 6.0 } else { 0.0 },
@@ -169,6 +175,30 @@ impl Element {
             bold: false,
             italic: false,
             radius: if kind == ElementKind::Rect { 16.0 } else { 0.0 },
+            z: 0,
+        }
+    }
+
+    /// An image element backed by the picture at `src` (a filesystem path).
+    /// The pixels are decoded lazily off the UI thread and cached by path.
+    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
+        Element {
+            id: new_id(),
+            kind: ElementKind::Image,
+            x,
+            y,
+            w,
+            h,
+            text: String::new(),
+            src: src.to_string(),
+            fill: "surface".into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+            font_size: 32.0,
+            align: TextAlign::Left,
+            bold: false,
+            italic: false,
+            radius: 12.0,
             z: 0,
         }
     }
@@ -513,9 +543,32 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
 }
 
 // ===========================================================================
-// Seed deck — a designed, multi-slide deck shown on first launch / --shots.
+// Starter deck — the minimal blank document a *live* launch opens with.
 // ===========================================================================
 
+/// A single blank title slide. A live launch opens with this so the app never
+/// auto-populates fabricated content; the deck's real state comes from the
+/// shared CRDT document once the user starts editing (or a peer joins).
+pub fn starter_deck() -> Deck {
+    let mut s = Slide::new(Layout::Title);
+    s.background = Background::Surface;
+    s.add(Element::text("Title", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
+    s.add(Element::text("Subtitle", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
+        e.fill = "text-dim".into();
+    }));
+    Deck {
+        title: "Untitled deck".into(),
+        palette: PaletteKind::Indigo,
+        slides: vec![s],
+    }
+}
+
+// ===========================================================================
+// Sample deck — a designed, multi-slide deck used by `--shots` and tests.
+// ===========================================================================
+
+/// A hermetic, realistic sample deck. Used only for headless screenshots and
+/// unit tests — never auto-loaded on a live launch (see [`starter_deck`]).
 pub fn seed_deck() -> Deck {
     let mut slides = Vec::new();
 
@@ -523,19 +576,18 @@ pub fn seed_deck() -> Deck {
     {
         let mut s = Slide::new(Layout::Section);
         s.background = Background::Accent;
-        s.notes = "Welcome — set the tone. This deck is itself a Slides deck, \
-                   authored live in the qOS editor. Mention CRDT-native + spatial."
+        s.notes = "Set the scene. One line on why we're renewing the park and who \
+                   the workshop is for."
             .into();
-        s.add(Element::text("SLIDES", 110.0, 250.0, 700.0, 70.0, 30.0).with(|e| {
+        s.add(Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
             e.fill = "on-accent".into();
             e.bold = true;
-            e.font_size = 28.0;
         }));
-        s.add(Element::text("Spatial presentations,\nbuilt on a live CRDT", 105.0, 300.0, 900.0, 200.0, 72.0).with(|e| {
+        s.add(Element::text("Riverside Park\nrenewal plan", 105.0, 300.0, 900.0, 220.0, 72.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }));
-        s.add(Element::text("A native qOS app  ·  every edit converges across peers", 110.0, 470.0, 900.0, 60.0, 30.0).with(|e| {
+        s.add(Element::text("Design workshop  ·  spring review", 110.0, 500.0, 900.0, 60.0, 30.0).with(|e| {
             e.fill = "on-accent".into();
         }));
         s.add(Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
@@ -549,10 +601,10 @@ pub fn seed_deck() -> Deck {
     {
         let mut s = Slide::new(Layout::TitleContent);
         s.background = Background::Surface;
-        s.notes = "Three pillars. Linger on 'state lives in the CRDT' — undo/redo \
-                   and multi-peer editing fall out of it for free."
+        s.notes = "Walk the four goals. Spend the most time on protecting the \
+                   wetland — that's the constraint everything else works around."
             .into();
-        s.add(Element::text("Why a CRDT-native editor", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+        s.add(Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
             e.bold = true;
         }));
         s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
@@ -560,14 +612,14 @@ pub fn seed_deck() -> Deck {
             e.radius = 4.0;
         }));
         s.add(Element::text(
-            "• Every element is an Automerge object\n\n• Undo, redo & live co-editing for free\n\n• Move, resize and restyle on an infinite canvas\n\n• The deck theme is driven by the OS palette",
+            "• Reconnect the waterfront path\n\n• Add shade, seating and lighting\n\n• Protect the existing wetland\n\n• Keep the budget under review",
             96.0,
             210.0,
             720.0,
             440.0,
             34.0,
         ));
-        // A small decorative diagram block on the right.
+        // A small decorative figure block on the right.
         s.add(Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
             e.fill = "accent-soft".into();
             e.radius = 28.0;
@@ -575,7 +627,7 @@ pub fn seed_deck() -> Deck {
         s.add(Element::shape(ElementKind::Ellipse, 940.0, 290.0, 180.0, 180.0).with(|e| {
             e.fill = "accent".into();
         }));
-        s.add(Element::text("⌘Z", 940.0, 345.0, 180.0, 80.0, 54.0).with(|e| {
+        s.add(Element::text("Q3", 940.0, 350.0, 180.0, 80.0, 52.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
             e.align = TextAlign::Center;
@@ -587,10 +639,10 @@ pub fn seed_deck() -> Deck {
     {
         let mut s = Slide::new(Layout::TwoColumn);
         s.background = Background::Surface;
-        s.notes = "Editor on the left, Present on the right. Demo the arrow-key \
-                   advance and the speaker-notes view (press S)."
+        s.notes = "Two path options. Ask the room which trade-off they prefer \
+                   before we cost them out."
             .into();
-        s.add(Element::text("Two modes, one document", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| e.bold = true));
+        s.add(Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| e.bold = true));
         s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
             e.fill = "accent".into();
             e.radius = 4.0;
@@ -601,12 +653,12 @@ pub fn seed_deck() -> Deck {
             e.stroke_width = 3.0;
             e.radius = 24.0;
         }));
-        s.add(Element::text("EDIT", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        s.add(Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "accent".into();
             e.bold = true;
         }));
         s.add(Element::text(
-            "Thumbnail rail, a live canvas and a\ncontextual inspector. Drag, resize\nand restyle every element.",
+            "A boardwalk along the east\nbank with a single wide\npromenade and open views.",
             128.0,
             312.0,
             460.0,
@@ -617,12 +669,12 @@ pub fn seed_deck() -> Deck {
             e.fill = "accent".into();
             e.radius = 24.0;
         }));
-        s.add(Element::text("PRESENT", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        s.add(Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }));
         s.add(Element::text(
-            "Full-screen rendering, arrow-key\nnavigation and a private speaker-\nnotes view for the presenter.",
+            "A split path with a quiet\ngarden loop inland and a\nterrace at the water's edge.",
             696.0,
             312.0,
             460.0,
@@ -636,10 +688,10 @@ pub fn seed_deck() -> Deck {
     {
         let mut s = Slide::new(Layout::Blank);
         s.background = Background::Deep;
-        s.notes = "Shapes & connectors: the canvas is general. Rect, ellipse, line \
-                   and text all compose into freeform diagrams."
+        s.notes = "The route at a glance: north gate, through the plaza, out to \
+                   the pier. Trace it as you talk."
             .into();
-        s.add(Element::text("Compose freely on the canvas", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
+        s.add(Element::text("How the paths connect", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }));
@@ -647,7 +699,7 @@ pub fn seed_deck() -> Deck {
         s.add(Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
             e.fill = "accent".into();
         }));
-        s.add(Element::text("Peer A", 150.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
+        s.add(Element::text("North\ngate", 150.0, 385.0, 230.0, 110.0, 34.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
             e.align = TextAlign::Center;
@@ -663,7 +715,7 @@ pub fn seed_deck() -> Deck {
             e.stroke = "accent".into();
             e.stroke_width = 4.0;
         }));
-        s.add(Element::text("Peer B", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
+        s.add(Element::text("Plaza", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
             e.bold = true;
             e.align = TextAlign::Center;
         }));
@@ -675,7 +727,7 @@ pub fn seed_deck() -> Deck {
             e.fill = "accent".into();
             e.radius = 20.0;
         }));
-        s.add(Element::text("⇄", 1050.0, 388.0, 150.0, 100.0, 64.0).with(|e| {
+        s.add(Element::text("Pier", 1050.0, 405.0, 150.0, 60.0, 34.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
             e.align = TextAlign::Center;
@@ -687,25 +739,25 @@ pub fn seed_deck() -> Deck {
     {
         let mut s = Slide::new(Layout::Section);
         s.background = Background::Deep;
-        s.notes = "Close. Invite them to open the rail (N), drop in a shape, hit \
-                   Present and walk the deck."
+        s.notes = "Close on the ask: feedback by Friday, prototype in April. \
+                   Leave the last slide up for questions."
             .into();
         s.add(Element::shape(ElementKind::Rect, 110.0, 300.0, 92.0, 8.0).with(|e| {
             e.fill = "accent".into();
             e.radius = 4.0;
         }));
-        s.add(Element::text("Make your first slide", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
+        s.add(Element::text("Questions & next steps", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }));
-        s.add(Element::text("Press  N  for a new slide  ·  P to present  ·  drag anything", 110.0, 450.0, 1000.0, 60.0, 30.0).with(|e| {
+        s.add(Element::text("Share feedback by Friday  ·  prototype in April", 110.0, 450.0, 1000.0, 60.0, 30.0).with(|e| {
             e.fill = "text-dim".into();
         }));
         slides.push(s);
     }
 
     Deck {
-        title: "qOS Slides — Product Tour".into(),
+        title: "Riverside Park — concept review".into(),
         palette: PaletteKind::Indigo,
         slides,
     }
