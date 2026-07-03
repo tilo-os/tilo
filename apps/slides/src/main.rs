@@ -29,13 +29,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        // The narrow-layout capture renders at a phone-ish width so the shot
-        // shows the collapsed rail as an overlay flap (see `SLIDES_SHOT`).
-        let viewport = match std::env::var("SLIDES_SHOT").as_deref() {
-            Ok("narrow") | Ok("narrow_closed") => NARROW_SHOTS_VIEWPORT,
+        // Scenario selects which screen to capture; `--scenario` wins over the
+        // legacy `SLIDES_SHOT` env var.
+        let scenario = parse_flag(&args, "--scenario").or_else(|| std::env::var("SLIDES_SHOT").ok());
+        // Viewport: explicit `--viewport WxH` wins; otherwise narrow scenarios
+        // render at a phone-ish width (so the rail resolves to an overlay
+        // flap), everything else at the default 16:10 canvas.
+        let viewport = parse_viewport(&args).unwrap_or_else(|| match scenario.as_deref() {
+            Some("narrow") | Some("narrow_closed") => NARROW_SHOTS_VIEWPORT,
             _ => DEFAULT_SHOTS_VIEWPORT,
-        };
-        render_shot_to_png(slides::app_root(), viewport, &out)?;
+        });
+        render_shot_to_png(slides::app_root_demo(scenario.as_deref()), viewport, &out)?;
         return Ok(());
     }
 
@@ -56,16 +60,29 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    parse_flag(args, "--shots").map(std::path::PathBuf::from)
+}
+
+/// Read a `--name VALUE` or `--name=VALUE` string flag from the argv.
+fn parse_flag(args: &[String], name: &str) -> Option<String> {
+    let eq = format!("{name}=");
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
+        if arg == name {
+            return iter.next().cloned();
         }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
         }
     }
     None
+}
+
+/// Parse `--viewport WxH` (e.g. `--viewport 560x720`) into a pixel viewport.
+fn parse_viewport(args: &[String]) -> Option<(u32, u32)> {
+    let spec = parse_flag(args, "--viewport")?;
+    let (w, h) = spec.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
