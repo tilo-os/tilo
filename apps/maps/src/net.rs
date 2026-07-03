@@ -23,8 +23,26 @@ pub enum NetMsg {
         query: String,
         results: Result<Vec<Place>, String>,
     },
+    /// Geocoding for one of the Directions endpoints (From / To). `origin` is
+    /// `true` for the "From" field, `false` for "To".
+    EndpointSearch {
+        origin: bool,
+        query: String,
+        results: Result<Vec<Place>, String>,
+    },
+    /// Reverse-geocoded label for a coordinate (used to name a device-location
+    /// origin with a human place instead of raw lat/lon).
+    ReverseGeocode(Result<String, String>),
     Route(Result<Route, String>),
     Transit(Result<Vec<TransitJourney>, String>),
+}
+
+/// Depart/arrive anchoring for a transit query. `time` is an RFC-3339 wall
+/// clock; `None` means "now" (the planner's own current time).
+#[derive(Clone, Debug, Default)]
+pub struct TransitQuery {
+    pub arrive_by: bool,
+    pub time: Option<String>,
 }
 
 fn client() -> reqwest::blocking::Client {
@@ -178,12 +196,46 @@ fn step_instruction(m: Maneuver, name: &str) -> String {
     }
 }
 
-/// Plan a public-transport journey via the Transitous MOTIS v3 API.
-pub fn transit(from: LatLon, to: LatLon) -> Result<Vec<TransitJourney>, String> {
+/// Reverse-geocode a coordinate to a human place label via Nominatim. Used to
+/// name a device-location origin ("Current location" → a real street/place).
+pub fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     let url = format!(
+        "https://nominatim.openstreetmap.org/reverse?lat={lat:.6}&lon={lon:.6}&format=jsonv2&zoom=16&addressdetails=1"
+    );
+    let v = fetch_json(&url)?;
+    // Prefer the specific `name`, then a short leading fragment of the full
+    // display name, so the origin label stays compact.
+    if let Some(name) = v["name"].as_str().filter(|s| !s.is_empty()) {
+        return Ok(name.to_string());
+    }
+    if let Some(display) = v["display_name"].as_str().filter(|s| !s.is_empty()) {
+        let short: Vec<&str> = display.split(',').take(2).map(|s| s.trim()).collect();
+        return Ok(short.join(", "));
+    }
+    Err("no address for this location".to_string())
+}
+
+/// Build the Transitous MOTIS `plan` URL for a journey, honouring the
+/// depart/arrive time anchor. Split out (and pure) so the time-picker wiring is
+/// unit-testable without a network round-trip.
+pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
+    let mut url = format!(
         "https://api.transitous.org/api/v1/plan?fromPlace={:.6},{:.6}&toPlace={:.6},{:.6}&numItineraries=4",
         from.lat, from.lon, to.lat, to.lon
     );
+    if let Some(time) = &when.time {
+        url.push_str(&format!("&time={}", urlencode(time)));
+    }
+    if when.arrive_by {
+        url.push_str("&arriveBy=true");
+    }
+    url
+}
+
+/// Plan a public-transport journey via the Transitous MOTIS v3 API, anchored to
+/// the caller's depart/arrive [`TransitQuery`].
+pub fn transit(from: LatLon, to: LatLon, when: &TransitQuery) -> Result<Vec<TransitJourney>, String> {
+    let url = transit_url(from, to, when);
     let v = fetch_json(&url)?;
     let its = v["itineraries"].as_array().ok_or("no itineraries")?;
     let mut out = Vec::new();
@@ -277,5 +329,30 @@ mod tests {
     fn step_instruction_formats() {
         assert_eq!(step_instruction(Maneuver::Left, "Main St"), "Turn left onto Main St");
         assert_eq!(step_instruction(Maneuver::Arrive, ""), "Arrive at your destination");
+    }
+
+    #[test]
+    fn transit_url_depart_now_omits_time() {
+        let from = LatLon::new(48.10, 11.55);
+        let to = LatLon::new(48.14, 11.58);
+        let url = transit_url(from, to, &TransitQuery::default());
+        assert!(url.contains("fromPlace=48.100000,11.550000"), "{url}");
+        assert!(url.contains("toPlace=48.140000,11.580000"), "{url}");
+        assert!(!url.contains("&time="), "depart-now must not pin a time: {url}");
+        assert!(!url.contains("arriveBy"), "depart-now is not arrive-by: {url}");
+    }
+
+    #[test]
+    fn transit_url_arrive_by_carries_time_and_flag() {
+        let from = LatLon::new(48.10, 11.55);
+        let to = LatLon::new(48.14, 11.58);
+        let when = TransitQuery {
+            arrive_by: true,
+            time: Some("2026-07-03T10:15:00+02:00".to_string()),
+        };
+        let url = transit_url(from, to, &when);
+        // The colons/plus of the timestamp must be percent-encoded into the URL.
+        assert!(url.contains("&time=2026-07-03T10%3A15%3A00%2B02%3A00"), "{url}");
+        assert!(url.contains("&arriveBy=true"), "{url}");
     }
 }

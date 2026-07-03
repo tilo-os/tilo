@@ -30,6 +30,10 @@ struct ShotArgs {
     nav_closed: bool,
     empty: bool,
     panel: Option<maps::Panel>,
+    /// Demo the typeable "From" field mid-edit with its geocoded dropdown.
+    edit_from: bool,
+    /// Demo the Transit picker anchored to an "Arrive by" time.
+    transit_arrive: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,6 +56,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(panel) = shot.panel {
             app.set_active_panel(panel);
         }
+        if shot.edit_from {
+            app.set_demo_edit_origin();
+        }
+        if shot.transit_arrive {
+            app.set_demo_transit_arrive();
+        }
         render_shot_to_png(Box::new(app), shot.viewport, &shot.out)?;
         return Ok(());
     }
@@ -68,6 +78,8 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut nav_closed = false;
     let mut empty = false;
     let mut panel: Option<maps::Panel> = None;
+    let mut edit_from = false;
+    let mut transit_arrive = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--shots" {
@@ -86,13 +98,25 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
             nav_closed = true;
         } else if arg == "--empty" {
             empty = true;
+        } else if arg == "--edit-from" {
+            edit_from = true;
+        } else if arg == "--transit-arrive" {
+            transit_arrive = true;
         } else if arg == "--panel" {
             panel = iter.next().and_then(|s| parse_panel(s));
         } else if let Some(rest) = arg.strip_prefix("--panel=") {
             panel = parse_panel(rest);
         }
     }
-    out.map(|out| ShotArgs { out, viewport, nav_closed, empty, panel })
+    out.map(|out| ShotArgs {
+        out,
+        viewport,
+        nav_closed,
+        empty,
+        panel,
+        edit_from,
+        transit_arrive,
+    })
 }
 
 /// Parse a `--panel` value into a [`maps::Panel`].

@@ -17,6 +17,7 @@ pub mod canvas;
 pub mod doc;
 pub mod draw;
 pub mod geo;
+pub mod location;
 pub mod model;
 pub mod net;
 pub mod sample;
