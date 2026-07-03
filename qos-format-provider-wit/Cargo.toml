@@ -1,0 +1,15 @@
+[package]
+name = "qos-format-provider-wit"
+version = "0.1.0"
+edition = "2021"
+description = "WIT interface + shared Rust mirror types for qOS format providers (WASM Component Model)."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+# The on-disk WIT files travel as crate assets so dependent crates can consume
+# them at build time via the `WIT_DIR` env var set in build.rs (see README).
+[package.metadata.wit]
+package = "qos:format-provider"
+version = "1.0.0"
+path = "wit"
