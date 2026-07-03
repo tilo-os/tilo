@@ -1,0 +1,12 @@
+[package]
+name = "qos-hello"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal qOS-native app for demonstrating the app install pipeline."
+
+[[bin]]
+name = "qos-hello"
+path = "src/main.rs"
+
+[dependencies]
+qos-runtime = { path = "../qos-runtime" }

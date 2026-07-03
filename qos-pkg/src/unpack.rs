@@ -62,6 +62,19 @@ pub fn unpack<S: BlobStore>(
 
     std::fs::create_dir_all(dest_dir)?;
     let dest_dir = dest_dir.canonicalize()?;
+    // The entrypoint declared by the manifest MUST be executable — the
+    // launcher execs it directly. We record the normalised path here so
+    // we can mark it +x once its bytes hit disk. Path values inside a
+    // Collection are always forward-slash-normalised regardless of host,
+    // so the comparison is stable.
+    let entrypoint_rel: Option<String> = match manifest.package.kind {
+        crate::id::Kind::App | crate::id::Kind::Service => manifest
+            .entrypoint
+            .as_ref()
+            .and_then(|e| e.bin.to_str())
+            .map(|s| s.trim_start_matches("./").replace('\\', "/")),
+        _ => None,
+    };
     for (rel_path, hash) in &collection.entries {
         // Path-traversal guard: reject `..` segments and absolute
         // paths inside the collection. Done as a string check
@@ -79,6 +92,13 @@ pub fn unpack<S: BlobStore>(
             .get(hash)?
             .ok_or_else(|| UnpackError::MissingPayloadBlob(hash.to_hex(), rel_path.clone()))?;
         std::fs::write(&out_path, bytes)?;
+        #[cfg(unix)]
+        if entrypoint_rel.as_deref() == Some(rel_path.as_str()) {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&out_path)?.permissions();
+            perm.set_mode(perm.mode() | 0o111); // preserve read/write bits, add exec
+            std::fs::set_permissions(&out_path, perm)?;
+        }
     }
     Ok(manifest)
 }

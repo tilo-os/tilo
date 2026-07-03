@@ -31,6 +31,12 @@ enum Cmd {
         /// will be warned about instead of fatal.
         #[arg(long)]
         no_services: bool,
+        /// Bind the minimum host libraries a dynamically-linked ELF needs
+        /// (ld-linux + libc + libgcc_s + /etc/ld.so.cache) — stopgap until
+        /// the qos-runtime bundle path lands. Read-only. Deliberately
+        /// NARROWER than the whole /usr or /lib64 tree.
+        #[arg(long)]
+        minimal_libs: bool,
     },
     /// Resolve an installed package by id and launch it. Not yet
     /// implemented — the package store / index lives in `qos-pkg`.
@@ -52,11 +58,13 @@ fn main() -> ExitCode {
             payload_root,
             runtime,
             no_services,
+            minimal_libs,
         } => {
             let opts = RunOptions {
                 no_services,
                 runtime_root: runtime,
                 bwrap_bin: None,
+                minimal_libs,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {

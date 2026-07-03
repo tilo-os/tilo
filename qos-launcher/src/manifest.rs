@@ -40,21 +40,60 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// Minimal manifest needed by the launcher. Lives in-tree pending
-/// `qos-pkg`.
+/// full `qos-pkg` integration.
+///
+/// Accepts both the top-level `package_id = "..."` form (this crate's
+/// original shim) and the qos-pkg canonical form (`[package] id = "..."`
+/// nested table). Whichever shows up is normalised into
+/// `MinimalManifest::package_id`. Same story for `version`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(from = "RawManifest")]
 pub struct MinimalManifest {
-    /// Reverse-DNS package identifier. Used to derive the in-sandbox
-    /// payload mount point (`/var/qos-apps/<package_id>/`).
     pub package_id: String,
-    /// Semver string. Not enforced here.
-    #[serde(default)]
     pub version: String,
-    /// Where the entrypoint binary lives, relative to the payload
-    /// root.
     pub entrypoint: Entrypoint,
-    /// Sandboxing requirements.
-    #[serde(default)]
     pub sandbox: Sandbox,
+}
+
+/// Wire-level manifest — accepts both shapes.
+#[derive(Debug, Clone, Deserialize)]
+struct RawManifest {
+    #[serde(default)]
+    package_id: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    package: Option<PackageBlock>,
+    entrypoint: Entrypoint,
+    #[serde(default)]
+    sandbox: Sandbox,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PackageBlock {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+}
+
+impl From<RawManifest> for MinimalManifest {
+    fn from(raw: RawManifest) -> Self {
+        let package_id = raw
+            .package_id
+            .or_else(|| raw.package.as_ref().and_then(|p| p.id.clone()))
+            .unwrap_or_default();
+        let version = raw
+            .version
+            .or_else(|| raw.package.and_then(|p| p.version))
+            .unwrap_or_default();
+        MinimalManifest {
+            package_id,
+            version,
+            entrypoint: raw.entrypoint,
+            sandbox: raw.sandbox,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
