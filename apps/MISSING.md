@@ -100,14 +100,15 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Stale dead comment on `Attachment::Image` (`tint` gradient stand-in) — the
       render path ignores it; remove the misleading comment.
 
-## maps — CLEAR (verified, committed 3045573)
+## maps
 - [x] Unbounded failed-tile refetch loop → fixed.
 - [x] Swap-ends (separate origin/dest + labels) → fixed.
 - [x] Transit tab triggers the departures fetch → fixed.
 - [x] First-run/offline shows a grid + "Loading map…" affordance → fixed.
-- [ ] Follow-up (not a defect): Directions origin isn't user-typeable (defaults
-      to map centre / prior route / swap); add tap-to-edit-origin + a transit
-      depart/arrive time picker. (Enhancement, not blocking.)
+- [x] Typeable From/To origin fields + "Use my location" via the location portal
+      (org.freedesktop.portal.Location) + transit time picker → fixed (6a9ad41).
+      (Location's real coords depend on the host location service + permission —
+      wiring is real + unit-tested; live fix unverifiable headlessly.)
 
 ## typst_editor
 - [x] Horizontal scroll / keep caret in view → fixed.
