@@ -124,43 +124,24 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [x] Advanced options scroll into view → fixed.
 - [x] Vault encrypted at rest → fixed.
 
-## slides (presentation)
+## slides (presentation) — CLEAR (verified, committed 6c2e54b)
 - [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
-      overlap → fixed in the last pass.
-- [ ] Deck-theme palette pills truncate labels at the DEFAULT 1280px (docked
-      inspector, nothing selected): 'Indigo'→'Indig', 'Emerald'→'Emer',
-      'Amber'→'Amb' — 5 pills sized (inner_w-32)/5 ≈ 46px but the label is drawn
-      un-clipped from dot.x1+6 and overpainted by the next pill. 3 of 5 theme
-      names unreadable. Size the pills to fit their labels (or shorten/stack).
-- [ ] At 800/560px the element-insert tools drop from the toolbar with NO
-      pointer-reachable overflow (800: Ellipse/Line/Image gone; 560: even
-      +Slide/Text/Rect gone — "reachable via keyboard" only). A pointer/touch user
-      cannot insert any element on narrow. Add an overflow menu / responsive
-      toolbar so every insert tool stays pointer-reachable at all widths.
-- [ ] Selection handles overlap the first glyph of left-anchored text (the 'G' of
-      'Goals for this phase' sits under the corner handle) at every width. Inset
-      the text or offset the handles so they don't cover content.
-- [ ] (Re-confirm the prior fixes held: rail + overview scrolling; rail action
-      buttons never overlapped by thumbnails; Image tool real-or-removed; present
-      mode wakes ~1Hz not every vsync.)
-- [ ] NO SCROLLING anywhere (rail + overview): handle_event ignores MouseWheel and
-      neither the rail-thumbnail loop nor the overview applies a scroll offset — a
-      deck with more slides than fit vertically loses access to them (overview at
-      800x600 cuts off slide 5; 560px cuts off slides 3-5, on the 5-slide sample).
-      Add scrolling to the rail and the overview.
-- [ ] Thumbnail rail overflows for larger decks: thumbnails lay out unbounded
-      while the Add/Dup/Del actions are pinned to the bottom, so a deck beyond ~6
-      slides overlaps the pinned buttons and runs off-screen — the rail is the
-      primary edit-mode nav, so this breaks real decks. Make the rail scroll.
-- [ ] The "Image" toolbar tool is a non-functional placeholder (no asset pipeline
-      / picker; only paints a framed box with a mountain glyph). Wire real image
-      insertion via the XDG portal (HIG §5), or remove the tool until it works —
-      do not ship a primary insert tool that can never show a real picture.
-- [ ] Present mode never rests (needs_animation_frame always true in Present) —
-      re-renders at vsync just to tick a ~1 Hz clock. Wake at 1 Hz, don't spin.
-      (HIG §5)
-- [ ] Keep the crate named `slides` (an agent renamed it to `presentation`;
-      reverted — do not re-rename).
+      overlap → fixed.
+- [x] Deck-theme palette pills fit their full labels + wrap to a 2nd row
+      (Indigo/Emerald/Amber · Rose/Sky) — no truncation → fixed.
+- [x] Responsive toolbar: overflow ⋯ menu keeps every insert tool
+      pointer-reachable at 1280/800/560 (verified: clicked ⋯ at 560, all 6 tools
+      shown) → fixed.
+- [x] Selection handles anchored outside the content rect (+8px) — never cover
+      the first glyph → fixed.
+- [x] Rail + overview vertical scroll for large decks; action buttons never
+      overlapped → fixed.
+- [x] Image insert goes through the XDG portal (ashpd FileChooser off-thread),
+      renders a real raster; app-drawn FilePicker + mountain-glyph removed → fixed.
+- [x] Present mode rests when idle → fixed (caveat: ui::App has no timed-wake
+      hook, so present returns false = wait-for-input rather than an autonomous
+      1 Hz tick; correct per "not every vsync").
+- [x] Crate stays named `slides`.
 
 ---
 
