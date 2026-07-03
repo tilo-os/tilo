@@ -14,6 +14,7 @@
 //! types and continue working unmodified.
 
 pub mod landlock;
+pub mod landlock_shim;
 pub mod manifest;
 pub mod run;
 pub mod sandbox;
