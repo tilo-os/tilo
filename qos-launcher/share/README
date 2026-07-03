@@ -1,0 +1,12 @@
+qos-default.bpf is compiled at runtime from the in-tree filter in
+src/seccomp.rs (compile_baseline). It is intentionally not checked
+in: the BPF blob is host-arch-specific, and shipping a stale or
+mismatched blob would silently disable the policy.
+
+If you need a static blob (e.g. to inspect the filter without
+linking seccompiler), generate it on the target host with:
+
+    cargo run -p qos-launcher --bin qos-launcher --features dump-seccomp -- \
+        --dump-seccomp > qos-launcher/share/qos-default.bpf
+
+(The dump-seccomp helper is a TODO follow-up.)

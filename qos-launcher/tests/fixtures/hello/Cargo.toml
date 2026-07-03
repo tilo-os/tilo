@@ -1,0 +1,15 @@
+[package]
+name = "qos-launcher-hello-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "hello"
+path = "src/main.rs"
+
+# Stand-alone fixture binary. Not part of the workspace — the launcher
+# tests build it manually with `rustc` (or `cargo build --manifest-path`
+# under cargo) and exec it inside the sandbox.
+
+[workspace]
