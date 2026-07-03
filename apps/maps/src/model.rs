@@ -373,6 +373,14 @@ pub struct MapModel {
     pub origin: Option<LatLon>,
     /// Origin label for the directions panel.
     pub origin_name: String,
+    /// Route destination. Held separately from `selected` so the directions
+    /// panel can swap the two endpoints without the destination collapsing
+    /// back onto the origin (which would route a point to itself).
+    #[serde(default)]
+    pub dest: Option<LatLon>,
+    /// Destination label for the directions/transit panels.
+    #[serde(default)]
+    pub dest_name: String,
     /// Map view centre + fractional zoom (slippy-map z).
     pub center: LatLon,
     pub zoom: f64,
@@ -394,7 +402,10 @@ impl Default for MapModel {
             query: String::new(),
             results: Vec::new(),
             origin: None,
-            origin_name: "Your location".to_string(),
+            // Without a real location fix, routes start from the map centre.
+            origin_name: "Map centre".to_string(),
+            dest: None,
+            dest_name: String::new(),
             center: LatLon::new(48.1371, 11.5754),
             zoom: 14.4,
             status: String::new(),
