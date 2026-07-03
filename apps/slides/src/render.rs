@@ -4,13 +4,14 @@
 //! 1280×720 coordinate space and scaled to the destination.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::ColorCompat;
 
+use crate::assets::{ImageState, ImageStore};
 use crate::model::{Element, ElementKind, Palette, Slide, TextAlign, SLIDE_W};
 
 /// Map a point from slide space to destination pixels.
@@ -40,6 +41,7 @@ pub fn draw_slide(
     slide: &Slide,
     dest: Rect,
     corner: f64,
+    images: &ImageStore,
 ) {
     let s = dest.width() / SLIDE_W;
     let bg = palette.slide_bg(slide.background);
@@ -51,7 +53,7 @@ pub fn draw_slide(
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &card);
     draw_decor(scene, transform, palette, slide, dest, s);
     for el in slide.z_sorted() {
-        draw_element(scene, transform, tr, palette, el, dest, s);
+        draw_element(scene, transform, tr, palette, el, dest, s, images);
     }
     scene.pop_layer();
 }
@@ -89,6 +91,7 @@ fn draw_element(
     e: &Element,
     dest: Rect,
     s: f64,
+    images: &ImageStore,
 ) {
     let er = element_dest(dest, s, e);
     match e.kind {
@@ -142,37 +145,98 @@ fn draw_element(
             );
         }
         ElementKind::Image => {
-            // No real asset pipeline yet — paint a framed placeholder so
-            // the element still reads as a picture box.
-            let shape = RoundedRect::from_rect(er, (e.radius.max(12.0) * s).max(2.0));
-            scene.fill(Fill::NonZero, transform, palette.surface_dim, None, &shape);
-            scene.stroke(
-                &Stroke::new((2.0 * s).max(0.5)),
-                transform,
-                with_alpha(palette.text_dim, 90),
-                None,
-                &shape,
-            );
-            // tiny "mountain" glyph
-            let cx = er.center().x;
-            let cy = er.center().y;
-            let r = er.height().min(er.width()) * 0.12;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                with_alpha(palette.text_dim, 140),
-                None,
-                &Circle::new(Point::new(cx - r, cy - r), r * 0.7),
-            );
-            let mut tri = vello::kurbo::BezPath::new();
-            tri.move_to(Point::new(er.x0 + er.width() * 0.2, er.y1 - er.height() * 0.25));
-            tri.line_to(Point::new(cx, cy));
-            tri.line_to(Point::new(er.x1 - er.width() * 0.2, er.y1 - er.height() * 0.25));
-            tri.close_path();
-            scene.fill(Fill::NonZero, transform, with_alpha(palette.text_dim, 140), None, &tri);
+            draw_image_element(scene, transform, tr, palette, e, er, s, images);
         }
         ElementKind::Text => {
             draw_text_element(scene, transform, tr, palette, e, er, s);
+        }
+    }
+}
+
+/// Paint an image element: the real decoded picture (object-fit *cover*,
+/// clipped to the element's rounded rect) once it has loaded, or a light
+/// loading / broken-file state until then.
+fn draw_image_element(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    palette: &Palette,
+    e: &Element,
+    er: Rect,
+    s: f64,
+    images: &ImageStore,
+) {
+    let radius = (e.radius.max(4.0) * s).max(2.0);
+    let frame = RoundedRect::from_rect(er, radius);
+    match images.get(&e.src) {
+        ImageState::Ready(img) => {
+            let (iw, ih) = (img.width as f64, img.height as f64);
+            if iw <= 0.0 || ih <= 0.0 || er.width() <= 0.0 || er.height() <= 0.0 {
+                return;
+            }
+            // Cover: scale so the image fills the box on its short axis, centre,
+            // and clip the overflow to the rounded element rect.
+            let scale = (er.width() / iw).max(er.height() / ih);
+            let dw = iw * scale;
+            let dh = ih * scale;
+            let dx = er.x0 + (er.width() - dw) * 0.5;
+            let dy = er.y0 + (er.height() - dh) * 0.5;
+            let brush_transform =
+                Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &frame);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &ImageBrush::new(img),
+                Some(brush_transform),
+                &er,
+            );
+            scene.pop_layer();
+        }
+        ImageState::Loading => {
+            scene.fill(Fill::NonZero, transform, palette.surface_dim, None, &frame);
+            let msg = "Loading image…";
+            let font = (14.0 * s).clamp(9.0, 15.0) as f32;
+            let (tw, th) = tr.measure_weighted(msg, font, None, TextWeight::Regular);
+            tr.draw_text_weighted(
+                scene,
+                msg,
+                font,
+                with_alpha(palette.text_dim, 200),
+                transform
+                    * Affine::translate((
+                        er.center().x - tw as f64 / 2.0,
+                        er.center().y - th as f64 / 2.0,
+                    )),
+                None,
+                TextWeight::Regular,
+            );
+        }
+        ImageState::Failed => {
+            scene.fill(Fill::NonZero, transform, palette.surface_dim, None, &frame);
+            scene.stroke(
+                &Stroke::new((1.5 * s).max(0.75)),
+                transform,
+                with_alpha(palette.danger, 180),
+                None,
+                &frame,
+            );
+            let msg = "Image unavailable";
+            let font = (13.0 * s).clamp(9.0, 14.0) as f32;
+            let (tw, th) = tr.measure_weighted(msg, font, None, TextWeight::Regular);
+            tr.draw_text_weighted(
+                scene,
+                msg,
+                font,
+                with_alpha(palette.text_dim, 210),
+                transform
+                    * Affine::translate((
+                        er.center().x - tw as f64 / 2.0,
+                        er.center().y - th as f64 / 2.0,
+                    )),
+                None,
+                TextWeight::Regular,
+            );
         }
     }
 }
@@ -188,10 +252,34 @@ fn draw_text_element(
 ) {
     let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
     let weight = if e.bold { TextWeight::Bold } else { TextWeight::Regular };
-    let font_px = (e.font_size * s).max(6.0) as f32;
-    let line_h = (font_px as f64) * 1.28;
+    // Text scales *with* the slide — a thumbnail is just a smaller slide, so
+    // the font shrinks proportionally. The previous 6px floor oversized body
+    // text relative to its shrunken box at thumbnail scale, forcing spurious
+    // word-wraps that then collided into an illegible mush. A tiny floor keeps
+    // sub-pixel sizes from degenerating to nothing.
+    let font_px = (e.font_size * s).max(1.0) as f32;
+    // `draw_text_styled` and `measure_*` both lay lines out at `font_px * 1.25`,
+    // so match that here and the vertical cursor advances *exactly* past any
+    // wrapped continuation rows.
+    let line_h = (font_px as f64) * 1.25;
+    let wrap_w = (er.width() + 4.0).max(1.0) as f32;
     let lines: Vec<&str> = e.text.split('\n').collect();
-    let total_h = line_h * lines.len() as f64;
+    // Each explicit (\n-split) line may itself word-wrap into several visual
+    // rows at this width. Measure the row count so the next line starts *below*
+    // the wrapped block instead of painting on top of it (the thumbnail garble).
+    let rows: Vec<usize> = lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                1
+            } else {
+                let (_, h) = tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
+                ((h as f64 / line_h).round() as usize).max(1)
+            }
+        })
+        .collect();
+    let total_rows: usize = rows.iter().sum();
+    let total_h = total_rows as f64 * line_h;
     // Vertically centre the text block within its box (looks right for
     // titles and short bodies). Clamp to top if it would overflow.
     let mut y = if total_h < er.height() {
@@ -199,13 +287,22 @@ fn draw_text_element(
     } else {
         er.y0
     };
-    for line in lines {
+    for (line, r) in lines.iter().zip(&rows) {
         if !line.is_empty() {
-            let (lw, _) = tr.measure_styled(line, font_px, None, weight, e.italic, false);
+            // Alignment offsets the block by the widest wrapped run; wrapped
+            // rows stay left-aligned relative to each other (this draw path has
+            // no per-call align), which reads correctly for titles and bodies.
             let x = match e.align {
                 TextAlign::Left => er.x0,
-                TextAlign::Center => er.x0 + (er.width() - lw as f64) / 2.0,
-                TextAlign::Right => er.x1 - lw as f64,
+                TextAlign::Center | TextAlign::Right => {
+                    let (lw, _) =
+                        tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
+                    if e.align == TextAlign::Center {
+                        er.x0 + (er.width() - lw as f64) / 2.0
+                    } else {
+                        er.x1 - lw as f64
+                    }
+                }
             };
             tr.draw_text_styled(
                 scene,
@@ -213,14 +310,13 @@ fn draw_text_element(
                 font_px,
                 color,
                 transform * Affine::translate((x, y)),
-                Some((er.width() + 4.0) as f32),
+                Some(wrap_w),
                 weight,
                 e.italic,
                 false,
             );
         }
-        y += line_h;
-        let _ = s;
+        y += *r as f64 * line_h;
     }
 }
 

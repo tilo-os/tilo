@@ -9,13 +9,14 @@
 //! selection, mode — is per-peer and stays local.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::Color;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use vello::peniko::{BlendMode, Color, Fill};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::icons::{draw_icon, Icon};
@@ -26,24 +27,40 @@ use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget, DEFAULT_BREAKPOINT};
 use ui::ColorCompat;
 
+use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
+use crate::portal;
 use crate::model::{
-    new_id, seed_deck, Background, Deck, Element, ElementKind, Id, Layout, Palette, PaletteKind,
-    Slide, TextAlign, FILL_ROLES, SLIDE_H, SLIDE_W, STROKE_ROLES,
+    new_id, seed_deck, starter_deck, Background, Deck, Element, ElementKind, Id, Layout, Palette,
+    PaletteKind, Slide, TextAlign, FILL_ROLES, SLIDE_H, SLIDE_W, STROKE_ROLES,
 };
 use crate::render;
+
+/// Logical pixels scrolled per mouse-wheel line notch.
+const WHEEL_LINE_PX: f64 = 48.0;
 
 const TOOLBAR_H: f64 = 56.0;
 const RAIL_W: f64 = 212.0;
 const INSPECTOR_W: f64 = 296.0;
+/// Half-size of a selection handle's *grab* zone (hit-test radius).
 const HANDLE: f64 = 9.0;
+/// How far outside the selected element's content box the resize handles sit,
+/// so a handle never covers the first glyph of left-anchored text (or any
+/// content at a corner). The selection ring is drawn at this same outset, so
+/// the ring passes through the handle centres and the whole selection
+/// decoration reads as a single frame *around* the content rather than over it.
+const HANDLE_OFFSET: f64 = 8.0;
 
 /// Below this allocated width (logical px) the editor switches from the
 /// docked side-by-side layout to a narrow layout where the slide rail
 /// collapses into an overlay flap. The slide canvas plus both side panels
 /// (rail + inspector) only fit comfortably above this width.
 const NARROW_BREAKPOINT: f64 = DEFAULT_BREAKPOINT;
+/// Below this allocated width the inspector also collapses to a right-edge
+/// overlay flap, so the narrowest windows give the canvas the full width. Set
+/// below [`NARROW_BREAKPOINT`] so a mid-width window keeps the inspector docked.
+const INSPECTOR_BREAKPOINT: f64 = 760.0;
 /// Size of the toolbar hamburger toggle that summons the collapsed rail.
 const HAMBURGER: f64 = 34.0;
 
@@ -138,6 +155,10 @@ enum Drag {
         start: Point,
         orig: (f64, f64, f64, f64),
     },
+    /// Dragging the slide-rail scrollbar thumb (edit mode).
+    ScrollRail { start_y: f64, orig_scroll: f64 },
+    /// Dragging the overview grid scrollbar thumb.
+    ScrollOverview { start_y: f64, orig_scroll: f64 },
 }
 
 impl Drag {
@@ -175,6 +196,10 @@ enum Hit {
     EditNotes,
     /// Toggle the collapsible slide rail (narrow-window hamburger).
     ToggleRail,
+    /// Toggle the collapsible inspector (narrow-window properties flap).
+    ToggleInspector,
+    /// Toggle the toolbar's insert-tool overflow ("More") menu.
+    ToggleToolbarMenu,
 }
 
 #[derive(Clone, Copy)]
@@ -228,6 +253,20 @@ struct UiButton {
     hit: Hit,
 }
 
+/// Thumbnail-list metrics for the slide rail (see [`SlidesApp::rail_metrics`]).
+struct RailMetrics {
+    tpad: f64,
+    tw: f64,
+    th: f64,
+    gap: f64,
+    /// Y of the first thumbnail before the scroll offset is applied.
+    list_top: f64,
+    /// Clip region for the scrolling thumbnail list.
+    viewport: Rect,
+    /// Maximum scroll offset (content height minus viewport height, clamped ≥0).
+    max_scroll: f64,
+}
+
 struct Chrome {
     toolbar: Rect,
     /// The rail's painted rect. When the rail is an overlay flap this slides
@@ -240,14 +279,36 @@ struct Chrome {
     thumbs: Vec<(usize, Rect)>,
     buttons: Vec<UiButton>,
     labels: Vec<Label>,
+    /// Per-thumbnail number labels — clipped to [`Chrome::rail_viewport`] and
+    /// scrolled with the rail (kept separate from the fixed `labels`).
+    thumb_labels: Vec<Label>,
+    /// Reorder chevrons on the selected thumbnail — scrolled + clipped like
+    /// the thumbnails they sit on.
+    thumb_buttons: Vec<UiButton>,
+    /// The scrolling viewport for the thumbnail list (between the "SLIDES"
+    /// header and the pinned Add/Dup/Del row). Thumbnails are clipped to it so
+    /// they can never overlap the action buttons.
+    rail_viewport: Rect,
+    /// `(track, thumb)` rects of the rail scrollbar when the list overflows.
+    rail_scrollbar: Option<(Rect, Rect)>,
     notes_box: Option<Rect>,
+    /// Background panel of the open toolbar overflow menu (`None` when closed
+    /// or when every insert tool already fits on the toolbar).
+    menu_bg: Option<Rect>,
+    /// Rows of the open overflow menu — the insert tools that didn't fit on the
+    /// toolbar, each a pointer-reachable button. Empty unless the menu is open.
+    menu_buttons: Vec<UiButton>,
     /// How the rail resolves at the current width (docked beside content, or
     /// an overlay flap over it).
     layout: SplitLayout,
+    /// How the inspector resolves at the current width.
+    inspector_layout: SplitLayout,
     /// Dimming scrim behind an open overlay flap (empty when docked/closed).
     scrim: Rect,
     /// Eased reveal `0..=1` of the rail, for the scrim opacity.
     reveal: f64,
+    /// Eased reveal `0..=1` of the inspector, for the scrim opacity.
+    inspector_reveal: f64,
 }
 
 pub struct SlidesApp {
@@ -301,6 +362,16 @@ pub struct SlidesApp {
     /// scrim, closed by default and summoned by the toolbar hamburger. This is
     /// the shared toolkit easing kernel ([`FlapState`]).
     rail_flap: FlapState,
+    /// Responsive inspector flap. The inspector docks on the right on a wide
+    /// window; below a (narrower) breakpoint it collapses to a right-edge
+    /// overlay flap so the canvas reclaims the full width. Same easing kernel
+    /// as the rail.
+    inspector_flap: FlapState,
+    /// Width below which the inspector collapses to an overlay flap. Lower than
+    /// the rail's breakpoint so a mid-width window keeps the inspector docked
+    /// (rail flap + docked inspector) and only the narrowest widths collapse
+    /// both panels.
+    inspector_breakpoint: f64,
     /// Last instant the flap animation advanced, for frame-rate-independent
     /// easing across `draw` calls.
     last_flap_tick: std::time::Instant,
@@ -311,6 +382,73 @@ pub struct SlidesApp {
     /// Width breakpoint between the docked and overlay rail layouts. A field
     /// (not a constant) so `--shots` can force a narrow layout deterministically.
     breakpoint: f64,
+
+    /// Cached render of the settled audience slide in present mode. Present
+    /// mode pumps animation frames to keep the ~1 Hz speaker clock live, but
+    /// the *slide* underneath is static between navigations — so we shape it
+    /// once into a detached scene and re-append it each vsync instead of
+    /// re-shaping every text element. Invalidated by
+    /// [`PresentCache::matches`] when the slide, size, theme or deck changes.
+    present_cache: Option<PresentCache>,
+    /// Monotonic revision of the loaded deck, bumped whenever the CRDT mirror
+    /// is reloaded. Part of [`PresentCache`]'s key so a remote edit (or undo)
+    /// to the current slide invalidates the cached render.
+    deck_rev: u64,
+
+    /// Path-keyed decode cache for image elements. Decodes off the UI thread;
+    /// the slide shows a light loading state until the pixels land.
+    images: ImageStore,
+    /// Vertical scroll offset (px) of the edit-mode thumbnail rail. Clamped to
+    /// the overflow at every use, so all thumbnails stay reachable however many
+    /// slides the deck has.
+    rail_scroll: f64,
+    /// Vertical scroll offset (px) of the slide-sorter overview grid.
+    overview_scroll: f64,
+    /// Whether the toolbar's insert-tool overflow menu is open. On a narrow
+    /// toolbar the insert tools that don't fit are moved behind a "More" (⋯)
+    /// button; this flag reveals them as a pointer-reachable dropdown so every
+    /// insert tool stays usable at any width. Transient (per-peer), not CRDT.
+    toolbar_menu_open: bool,
+    /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
+    /// file chooser is open on a worker thread; the chosen path arrives over
+    /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
+    /// `None` when idle. Per-peer/transient (not CRDT).
+    portal_rx: Option<portal::PortalChannel>,
+}
+
+/// One shaped audience slide, kept across present-mode frames so the speaker
+/// clock can tick without re-rendering the whole slide (see
+/// [`SlidesApp::present_cache`]).
+struct PresentCache {
+    slide: usize,
+    rev: u64,
+    palette: PaletteKind,
+    /// Destination rect, rounded to whole pixels so sub-pixel jitter doesn't
+    /// force a needless re-shape.
+    dest: (i64, i64, i64, i64),
+    /// The slide painted at `Affine::IDENTITY`; appended under the live
+    /// transform each frame.
+    scene: Scene,
+}
+
+impl PresentCache {
+    fn key(dest: Rect, slide: usize, rev: u64, palette: PaletteKind) -> (usize, u64, PaletteKind, (i64, i64, i64, i64)) {
+        (
+            slide,
+            rev,
+            palette,
+            (
+                dest.x0.round() as i64,
+                dest.y0.round() as i64,
+                dest.x1.round() as i64,
+                dest.y1.round() as i64,
+            ),
+        )
+    }
+
+    fn matches(&self, dest: Rect, slide: usize, rev: u64, palette: PaletteKind) -> bool {
+        (self.slide, self.rev, self.palette, self.dest) == Self::key(dest, slide, rev, palette)
+    }
 }
 
 impl Default for SlidesApp {
@@ -320,9 +458,31 @@ impl Default for SlidesApp {
 }
 
 impl SlidesApp {
+    /// A live launch opens on a single blank starter slide — the deck's real
+    /// source of truth is the shared CRDT document, which persists across
+    /// sessions. We deliberately do NOT auto-populate a fabricated multi-slide
+    /// deck here; the rich sample deck is reserved for [`SlidesApp::demo`]
+    /// (the `--shots` capture path and tests).
     pub fn new() -> Self {
-        let mut app = SlidesApp {
-            deck: seed_deck(),
+        Self::build(starter_deck())
+    }
+
+    /// Root pre-loaded with the hermetic sample deck, optionally jumped to a
+    /// named screen (`overview` / `present` / `presenter` / `help` / …). Used
+    /// only by the `--shots` capture path and tests, so a live launch never
+    /// shows fabricated content.
+    pub fn demo(scenario: Option<&str>) -> Self {
+        let mut app = Self::build(seed_deck());
+        let env = std::env::var("SLIDES_SHOT").ok();
+        if let Some(s) = scenario.or(env.as_deref()) {
+            app.apply_scenario(s);
+        }
+        app
+    }
+
+    fn build(deck: Deck) -> Self {
+        SlidesApp {
+            deck,
             rect: Rect::ZERO,
             node: None,
             seeded: false,
@@ -347,57 +507,150 @@ impl SlidesApp {
             drag: Drag::None,
             needs_commit: false,
             rail_flap: FlapState::open_when_docked(),
+            inspector_flap: FlapState::open_when_docked(),
+            inspector_breakpoint: INSPECTOR_BREAKPOINT,
             last_flap_tick: std::time::Instant::now(),
             flap_uninitialised: true,
             breakpoint: NARROW_BREAKPOINT,
-        };
-        // Optional headless-screenshot hook: pick an initial screen so
-        // `--shots` can capture each mode. No effect on normal launch.
-        if let Ok(shot) = std::env::var("SLIDES_SHOT") {
-            match shot.as_str() {
-                "overview" => app.mode = Mode::Overview,
-                "present" => {
-                    app.mode = Mode::Present;
-                    app.present_started = Some(std::time::Instant::now());
+            present_cache: None,
+            deck_rev: 0,
+            images: ImageStore::new(),
+            rail_scroll: 0.0,
+            overview_scroll: 0.0,
+            toolbar_menu_open: false,
+            portal_rx: None,
+        }
+    }
+
+    /// Jump the (sample) app to a named screen for a headless `--shots`
+    /// capture. No effect on a normal launch — only [`SlidesApp::demo`] and
+    /// the `--scenario` flag call this.
+    fn apply_scenario(&mut self, shot: &str) {
+        match shot {
+            "overview" => self.mode = Mode::Overview,
+            "present" => {
+                self.mode = Mode::Present;
+                self.present_started = Some(std::time::Instant::now());
+            }
+            "present_notes" => {
+                self.mode = Mode::Present;
+                self.show_notes = true;
+                self.present_started = Some(std::time::Instant::now());
+            }
+            // Full presenter dashboard (current + next + notes + timer +
+            // position) as it appears on the presenter's own monitor.
+            "presenter" => {
+                self.mode = Mode::Present;
+                self.presenter_view = true;
+                self.present_started = Some(std::time::Instant::now());
+            }
+            // Present-mode white-out (`W`) — the projector becomes a
+            // bright "whiteboard"/attention surface.
+            "present_white" => {
+                self.mode = Mode::Present;
+                self.blank = Blank::White;
+                self.present_started = Some(std::time::Instant::now());
+            }
+            "help" => self.show_help = true,
+            // The docked, nothing-selected inspector (slide-level properties:
+            // layout, background, and the deck-theme pills). Captures the pills
+            // at the default width to prove every theme name stays readable.
+            "slide_props" => {
+                self.cur_slide = 1;
+                self.sel = None;
+                self.bootstrapped = true;
+            }
+            // The toolbar overflow ("More") menu, opened — proves every insert
+            // tool stays pointer-reachable even when the bar can't show them all.
+            "toolbar_menu" => {
+                self.toolbar_menu_open = true;
+                self.sel = None;
+                self.bootstrapped = true;
+            }
+            // A long deck so the rail overflows its viewport — proves the rail
+            // scrolls (scrolled to the end here) and the pinned Add/Dup/Del row
+            // is never overlapped by thumbnails.
+            "many" => self.fill_long_deck(),
+            // Same long deck, but with the rail summoned open, so the scrolling
+            // thumbnail list is visible at a narrow (overlay-flap) width.
+            "many_rail" => {
+                self.fill_long_deck();
+                self.rail_flap.open();
+            }
+            // Overview scrolled to its end, proving the last slide is reachable.
+            "overview_end" => {
+                self.mode = Mode::Overview;
+                self.overview_scroll = 1.0e6;
+            }
+            // The image-insert tool now defers to the host portal chooser
+            // (HIG §5) — there is no in-app picker surface to capture, so this
+            // scenario just requests it (a no-op in a headless shot with no
+            // portal running) and otherwise shows the plain editor.
+            "picker" => self.request_image_open(),
+            // A slide carrying a real decoded raster, to prove the image
+            // pipeline in a headless screenshot. The picture is written to a
+            // temp file and decoded synchronously (the single offscreen frame
+            // has no worker-pump), then placed on a dedicated slide.
+            "image" => {
+                if let Some(path) = write_demo_image() {
+                    let src = path.to_string_lossy().to_string();
+                    self.images.load_blocking(&src);
+                    let mut s = Slide::new(Layout::TitleContent);
+                    s.add(
+                        Element::text("Site photo", 96.0, 70.0, 1088.0, 90.0, 56.0)
+                            .with(|e| e.bold = true),
+                    );
+                    s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+                        e.fill = "accent".into();
+                        e.radius = 4.0;
+                    }));
+                    s.add(Element::image(&src, 96.0, 200.0, 1088.0, 420.0));
+                    self.deck.slides.push(s);
+                    self.cur_slide = self.deck.slides.len() - 1;
+                    self.sel = None;
+                    // Keep this slide selected — skip the slide-2 view bootstrap.
+                    self.bootstrapped = true;
                 }
-                "present_notes" => {
-                    app.mode = Mode::Present;
-                    app.show_notes = true;
-                    app.present_started = Some(std::time::Instant::now());
+            }
+            // Narrow-layout captures (rendered at a phone-ish viewport, so the
+            // panels resolve to overlay flaps from the width). We only record a
+            // *preference* here and leave `flap_uninitialised` set, so the
+            // first-frame snap still resolves the OTHER flap to its default —
+            // otherwise it would show a one-frame half-open transient.
+            "narrow" => self.rail_flap.open(),
+            "narrow_closed" => self.rail_flap.close(),
+            // Narrow layout with the inspector flap summoned open.
+            "inspector" => self.inspector_flap.open(),
+            // "edit" (and anything unknown) keeps the default editor screen.
+            _ => {}
+        }
+    }
+
+    /// Grow the sample deck to 12 slides (cloning the seed slides with fresh
+    /// ids) and rest scrolled to its end, so the rail overflows its viewport.
+    /// Shared by the `many` / `many_rail` capture scenarios and the rail-scroll
+    /// reachability tests. Never runs on a live launch.
+    fn fill_long_deck(&mut self) {
+        let base = self.deck.slides.clone();
+        'fill: while self.deck.slides.len() < 12 {
+            for s in &base {
+                if self.deck.slides.len() >= 12 {
+                    break 'fill;
                 }
-                // Full presenter dashboard (current + next + notes + timer +
-                // position) as it appears on the presenter's own monitor.
-                "presenter" => {
-                    app.mode = Mode::Present;
-                    app.presenter_view = true;
-                    app.present_started = Some(std::time::Instant::now());
+                let mut c = s.clone();
+                c.id = new_id();
+                for e in &mut c.elements {
+                    e.id = new_id();
                 }
-                // Present-mode white-out (`W`) — the projector becomes a
-                // bright "whiteboard"/attention surface.
-                "present_white" => {
-                    app.mode = Mode::Present;
-                    app.blank = Blank::White;
-                    app.present_started = Some(std::time::Instant::now());
-                }
-                "help" => app.show_help = true,
-                // Narrow-layout capture (rendered at a phone-ish viewport, so
-                // the rail resolves to an overlay flap from the width). `narrow`
-                // snaps the flap open to show the summoned rail + scrim;
-                // `narrow_closed` leaves it collapsed behind the hamburger. The
-                // explicit snap is an intentional preference, so suppress the
-                // first-frame default snap.
-                "narrow" => {
-                    app.rail_flap.snap(true);
-                    app.flap_uninitialised = false;
-                }
-                "narrow_closed" => {
-                    app.rail_flap.snap(false);
-                    app.flap_uninitialised = false;
-                }
-                _ => {}
+                self.deck.slides.push(c);
             }
         }
-        app
+        self.cur_slide = self.deck.slides.len() - 1;
+        // Clamped to `max_scroll` at layout → the rail rests scrolled to its
+        // end (the case that used to overrun the pinned buttons).
+        self.rail_scroll = 1.0e6;
+        self.sel = None;
+        self.bootstrapped = true;
     }
 
     /// The rail layout resolved from the current allocated width. Overview and
@@ -413,24 +666,38 @@ impl SlidesApp {
         self.rail_flap.is_open(self.rail_layout())
     }
 
-    /// Reconcile the rail flap with the current width and advance its eased
-    /// reveal. On the very first resolved layout the reveal is snapped to the
-    /// resolved default so a narrow first frame shows the (closed) flap with no
-    /// one-frame flash. Returns the resolved layout. Called once per frame
-    /// before `compute_chrome`.
-    fn sync_rail_flap(&mut self, dt: f64) -> SplitLayout {
-        let layout = self.rail_layout();
-        self.rail_flap.reconcile(layout);
+    /// The inspector layout resolved from the current allocated width.
+    fn inspector_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), self.inspector_breakpoint)
+    }
+
+    /// Whether the inspector is currently revealed.
+    fn inspector_open(&self) -> bool {
+        self.inspector_flap.is_open(self.inspector_layout())
+    }
+
+    /// Reconcile both the rail and inspector flaps with the current width and
+    /// advance their eased reveals. On the very first resolved layout each flap
+    /// is snapped to its resolved default so a narrow first frame shows the
+    /// (closed) flaps with no one-frame flash. Returns the rail layout. Called
+    /// once per frame before `compute_chrome`.
+    fn sync_flaps(&mut self, dt: f64) -> SplitLayout {
+        let rail = self.rail_layout();
+        let insp = self.inspector_layout();
+        self.rail_flap.reconcile(rail);
+        self.inspector_flap.reconcile(insp);
         if self.flap_uninitialised {
-            self.rail_flap.snap(self.rail_flap.is_open(layout));
+            self.rail_flap.snap(self.rail_flap.is_open(rail));
+            self.inspector_flap.snap(self.inspector_flap.is_open(insp));
             // `snap` records a user preference; clear it so width changes still
             // fall back to the layout default. Re-resolving via reconcile after
             // a fresh open_when_docked would re-snap, so instead just mark done.
             self.flap_uninitialised = false;
         } else {
-            self.rail_flap.tick(layout, dt);
+            self.rail_flap.tick(rail, dt);
+            self.inspector_flap.tick(insp, dt);
         }
-        layout
+        rail
     }
 
     // --- CRDT mirror --------------------------------------------------------
@@ -441,6 +708,10 @@ impl SlidesApp {
         }
         if let Some(deck) = SlidesDoc::load(doc) {
             self.deck = deck;
+            // Bump so the present-mode slide cache re-shapes after any edit /
+            // undo / remote change. Cheap — `reload` runs on events, not per
+            // frame, so this never thrashes the cache during a live talk.
+            self.deck_rev = self.deck_rev.wrapping_add(1);
         }
         if self.deck.slides.is_empty() {
             self.cur_slide = 0;
@@ -482,44 +753,123 @@ impl SlidesApp {
         self.needs_commit = true;
     }
 
+    // --- rail scroll geometry ----------------------------------------------
+
+    /// The rail's painted rect, resolved from the current width + flap reveal.
+    /// Mirrors the computation in [`Self::compute_chrome`] so the scroll
+    /// helpers and the chrome agree.
+    fn rail_rect(&self) -> Rect {
+        let r = self.rect;
+        let body_top = r.y0 + TOOLBAR_H;
+        match self.rail_layout() {
+            SplitLayout::Docked => {
+                let inset = RAIL_W * self.rail_flap.reveal();
+                Rect::new(r.x0, body_top, r.x0 + inset, r.y1)
+            }
+            SplitLayout::Overlay => {
+                let slide = self.rail_flap.slide();
+                let x0 = r.x0 - RAIL_W * (1.0 - slide);
+                Rect::new(x0, body_top, x0 + RAIL_W, r.y1)
+            }
+        }
+    }
+
+    /// Thumbnail-list metrics for `rail` (the single source of truth shared by
+    /// chrome layout, hit-testing and wheel/drag scrolling).
+    fn rail_metrics(&self, rail: Rect) -> RailMetrics {
+        let tpad = 14.0;
+        let tw = (rail.width() - 2.0 * tpad - 22.0).max(1.0);
+        let th = tw * SLIDE_H / SLIDE_W;
+        let gap = 12.0;
+        let rb_h = 30.0;
+        let list_top = rail.y0 + tpad + 20.0;
+        let list_bottom = (rail.y1 - tpad - rb_h - 12.0).max(list_top);
+        let viewport = Rect::new(rail.x0, list_top, rail.x1, list_bottom);
+        let n = self.deck.slides.len();
+        let content_h = if n == 0 {
+            0.0
+        } else {
+            n as f64 * th + (n as f64 - 1.0) * gap
+        };
+        let max_scroll = (content_h - viewport.height()).max(0.0);
+        RailMetrics { tpad, tw, th, gap, list_top, viewport, max_scroll }
+    }
+
+    /// Adjust the rail scroll so the current slide's thumbnail is fully in
+    /// view (called after keyboard navigation / selection changes).
+    fn scroll_rail_to_current(&mut self) {
+        let m = self.rail_metrics(self.rail_rect());
+        if m.max_scroll <= 0.0 {
+            self.rail_scroll = 0.0;
+            return;
+        }
+        let i = self.cur_slide as f64;
+        let top = i * (m.th + m.gap);
+        let bottom = top + m.th;
+        let vh = m.viewport.height();
+        if self.rail_scroll > top {
+            self.rail_scroll = top;
+        } else if self.rail_scroll + vh < bottom {
+            self.rail_scroll = bottom - vh;
+        }
+        self.rail_scroll = self.rail_scroll.clamp(0.0, m.max_scroll);
+    }
+
     // --- geometry -----------------------------------------------------------
 
     fn compute_chrome(&self) -> Chrome {
         let r = self.rect;
         let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
 
-        // Resolve the responsive rail layout from the allocated width. When
-        // docked the rail is a permanent left column that insets the canvas;
-        // when narrow it becomes an overlay flap, so the canvas + inspector
-        // span the full width and the rail slides over them behind a scrim.
+        // Resolve both responsive flaps from the allocated width. Docked ⇒ the
+        // panel is a permanent column that insets the canvas; narrow ⇒ it
+        // collapses to an overlay flap that slides over the canvas behind a
+        // scrim, and the canvas reclaims that column's width.
         let layout = self.rail_layout();
         let reveal = self.rail_flap.reveal();
+        let insp_layout = self.inspector_layout();
+        let insp_reveal = self.inspector_flap.reveal();
         let body_top = toolbar.y1;
-        let (rail, canvas_left, scrim) = match layout {
+
+        // Rail column (left).
+        let (rail, canvas_left) = match layout {
             SplitLayout::Docked => {
-                // Eased inset so the rail reveals/collapses smoothly when the
-                // user toggles it even while docked.
+                // Eased inset so the rail reveals/collapses smoothly when
+                // toggled even while docked.
                 let inset = RAIL_W * reveal;
-                let rail = Rect::new(r.x0, body_top, r.x0 + inset, r.y1);
-                (rail, r.x0 + inset, Rect::ZERO)
+                (Rect::new(r.x0, body_top, r.x0 + inset, r.y1), r.x0 + inset)
             }
             SplitLayout::Overlay => {
-                // Slide the rail in from the left edge; ease-out so it
-                // decelerates into place. Closed ⇒ fully off-screen.
+                // Slide in from the left edge; closed ⇒ fully off-screen.
                 let slide = self.rail_flap.slide();
                 let x0 = r.x0 - RAIL_W * (1.0 - slide);
-                let rail = Rect::new(x0, body_top, x0 + RAIL_W, r.y1);
-                let scrim = if reveal > 0.001 {
-                    Rect::new(r.x0, body_top, r.x1, r.y1)
-                } else {
-                    Rect::ZERO
-                };
-                // Canvas takes the full width behind the flap.
-                (rail, r.x0, scrim)
+                (Rect::new(x0, body_top, x0 + RAIL_W, r.y1), r.x0)
             }
         };
-        let inspector = Rect::new(r.x1 - INSPECTOR_W, body_top, r.x1, r.y1);
-        let canvas_area = Rect::new(canvas_left, body_top, inspector.x0, r.y1);
+
+        // Inspector column (right) — mirror of the rail.
+        let (inspector, canvas_right) = match insp_layout {
+            SplitLayout::Docked => {
+                let inset = INSPECTOR_W * insp_reveal;
+                (Rect::new(r.x1 - inset, body_top, r.x1, r.y1), r.x1 - inset)
+            }
+            SplitLayout::Overlay => {
+                // Slide in from the right edge; closed ⇒ fully off-screen.
+                let slide = self.inspector_flap.slide();
+                let x0 = r.x1 - INSPECTOR_W * slide;
+                (Rect::new(x0, body_top, x0 + INSPECTOR_W, r.y1), r.x1)
+            }
+        };
+
+        // A single scrim dims the body whenever either overlay flap is revealed.
+        let rail_scrim = layout == SplitLayout::Overlay && reveal > 0.001;
+        let insp_scrim = insp_layout == SplitLayout::Overlay && insp_reveal > 0.001;
+        let scrim = if rail_scrim || insp_scrim {
+            Rect::new(r.x0, body_top, r.x1, r.y1)
+        } else {
+            Rect::ZERO
+        };
+        let canvas_area = Rect::new(canvas_left, body_top, canvas_right, r.y1);
 
         // Fit the 16:9 slide inside the canvas area with padding + caption room.
         let pad = 30.0;
@@ -553,116 +903,100 @@ impl SlidesApp {
         } else {
             toolbar.x0 + 18.0
         };
+        let by = toolbar.y0 + (TOOLBAR_H - 34.0) / 2.0;
+        let bh = 34.0;
+
+        // Right-anchored group first (Present · palette · overview grid) so we
+        // know the boundary the centre tool group and title must not cross.
+        let present_w = 18.0 + 6.0 + chrome::est_width("Present", 13.0) + 22.0;
+        let present_rect = Rect::new(toolbar.x1 - 18.0 - present_w, by, toolbar.x1 - 18.0, by + bh);
+        // On a narrow toolbar the palette pill collapses to just its colour dot
+        // (the swatch button already hides its label below 40px wide).
+        let pal_w = if toolbar.width() > 640.0 {
+            30.0 + chrome::est_width(self.deck.palette.label(), 12.0) + 22.0
+        } else {
+            34.0
+        };
+        let pal_rect = Rect::new(present_rect.x0 - 10.0 - pal_w, by, present_rect.x0 - 10.0, by + bh);
+        let grid_rect = Rect::new(pal_rect.x0 - 10.0 - bh, by, pal_rect.x0 - 10.0, by + bh);
+        buttons.push(UiButton {
+            rect: present_rect,
+            kind: ButtonKind::IconText { icon: Icon::Monitor, label: "Present".into(), accent: true },
+            hit: Hit::Present,
+        });
+        buttons.push(UiButton {
+            rect: pal_rect,
+            kind: ButtonKind::Palette { kind: self.deck.palette, selected: false },
+            hit: Hit::CyclePalette,
+        });
+        buttons.push(UiButton {
+            rect: grid_rect,
+            kind: ButtonKind::IconOnly { icon: Icon::LayoutGrid, active: self.mode == Mode::Overview },
+            hit: Hit::Overview,
+        });
+        // Inspector toggle — offered whenever the inspector can collapse (it's
+        // an overlay flap, or docked but not fully open). Mirrors the rail
+        // hamburger on the opposite edge.
+        let inspector_collapsible = insp_layout == SplitLayout::Overlay || insp_reveal < 0.999;
+        let right_edge = if inspector_collapsible {
+            let ib = Rect::new(grid_rect.x0 - 10.0 - bh, by, grid_rect.x0 - 10.0, by + bh);
+            buttons.push(UiButton {
+                rect: ib,
+                kind: ButtonKind::IconOnly { icon: Icon::Settings2, active: self.inspector_open() },
+                hit: Hit::ToggleInspector,
+            });
+            ib.x0
+        } else {
+            grid_rect.x0
+        };
+
+        // Title block, elided so it never runs under the tools or right group.
+        let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
+        let title_max = (tools_x - 12.0 - title_x).max(60.0);
         labels.push(Label {
             pos: Point::new(title_x, toolbar.y0 + 11.0),
-            text: self.deck.title.clone(),
+            text: elide(&self.deck.title, 17.0, title_max),
             font: 17.0,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
         });
         labels.push(Label {
             pos: Point::new(title_x, toolbar.y0 + 33.0),
-            text: format!(
-                "Slide {} of {}  ·  {}",
-                self.cur_slide + 1,
-                self.deck.slides.len(),
-                self.deck.palette.label()
+            text: elide(
+                &format!(
+                    "Slide {} of {}  ·  {}",
+                    self.cur_slide + 1,
+                    self.deck.slides.len(),
+                    self.deck.palette.label()
+                ),
+                11.5,
+                title_max,
             ),
             font: 11.5,
             color: LabelColor::Dim,
             weight: TextWeight::Regular,
         });
 
-        // Tool group, centred-ish after the title block. Anchored past the
-        // title (which shifts right when the hamburger is present).
-        let mut bx = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
-        let by = toolbar.y0 + (TOOLBAR_H - 34.0) / 2.0;
-        let bh = 34.0;
-        let mut add_icontext = |bx: &mut f64, icon: Icon, label: &str, accent: bool, hit: Hit| {
-            let w = 18.0 + 6.0 + chrome::est_width(label, 13.0) + 22.0;
-            let rect = Rect::new(*bx, by, *bx + w, by + bh);
-            buttons.push(UiButton {
-                rect,
-                kind: ButtonKind::IconText {
-                    icon,
-                    label: label.to_string(),
-                    accent,
-                },
-                hit,
-            });
-            *bx += w + 8.0;
-        };
-        add_icontext(&mut bx, Icon::Plus, "Slide", false, Hit::NewSlide);
-        add_icontext(&mut bx, Icon::FileText, "Text", false, Hit::Insert(ElementKind::Text));
-        let mut add_text = |bx: &mut f64, label: &str, hit: Hit| {
-            let w = chrome::est_width(label, 13.0) + 26.0;
-            let rect = Rect::new(*bx, by, *bx + w, by + bh);
-            buttons.push(UiButton {
-                rect,
-                kind: ButtonKind::Text {
-                    label: label.to_string(),
-                    active: false,
-                    danger: false,
-                },
-                hit,
-            });
-            *bx += w + 8.0;
-        };
-        add_text(&mut bx, "Rect", Hit::Insert(ElementKind::Rect));
-        add_text(&mut bx, "Ellipse", Hit::Insert(ElementKind::Ellipse));
-        add_text(&mut bx, "Line", Hit::Insert(ElementKind::Line));
-        add_text(&mut bx, "Image", Hit::Insert(ElementKind::Image));
-
-        // Right-anchored: palette cycle + Present.
-        let present_w = 18.0 + 6.0 + chrome::est_width("Present", 13.0) + 22.0;
-        let present_rect = Rect::new(
-            toolbar.x1 - 18.0 - present_w,
-            by,
-            toolbar.x1 - 18.0,
-            by + bh,
-        );
-        buttons.push(UiButton {
-            rect: present_rect,
-            kind: ButtonKind::IconText {
-                icon: Icon::Monitor,
-                label: "Present".into(),
-                accent: true,
-            },
-            hit: Hit::Present,
-        });
-        let pal_w = 30.0 + chrome::est_width(self.deck.palette.label(), 12.0) + 22.0;
-        let pal_rect = Rect::new(
-            present_rect.x0 - 10.0 - pal_w,
-            by,
-            present_rect.x0 - 10.0,
-            by + bh,
-        );
-        buttons.push(UiButton {
-            rect: pal_rect,
-            kind: ButtonKind::Palette {
-                kind: self.deck.palette,
-                selected: false,
-            },
-            hit: Hit::CyclePalette,
-        });
-        // Overview (slide-sorter) toggle, left of the palette pill.
-        let grid_rect = Rect::new(pal_rect.x0 - 10.0 - bh, by, pal_rect.x0 - 10.0, by + bh);
-        buttons.push(UiButton {
-            rect: grid_rect,
-            kind: ButtonKind::IconOnly {
-                icon: Icon::LayoutGrid,
-                active: self.mode == Mode::Overview,
-            },
-            hit: Hit::Overview,
-        });
+        // Centre tool group. Every insert tool must stay pointer-reachable at
+        // any width: the ones that fit sit on the toolbar; the rest move behind
+        // a "More" (⋯) overflow button that opens a dropdown menu. Nothing is
+        // ever silently dropped.
+        let tools_right = right_edge - 12.0;
+        let (menu_bg, menu_buttons) =
+            self.layout_tools(&mut buttons, tools_x, tools_right, by, bh, toolbar);
 
         // Thumbnail rail ----------------------------------------------------
-        let tpad = 14.0;
-        let tw = rail.width() - 2.0 * tpad - 22.0; // leave a number gutter
-        let th = tw * SLIDE_H / SLIDE_W;
-        let gap = 12.0;
-        let mut ty = rail.y0 + tpad + 4.0;
+        // The list scrolls inside a viewport between the "SLIDES" header and
+        // the pinned action row, so a deck of any length stays reachable and
+        // the thumbnails can never overlap the Add/Dup/Del buttons.
+        let m = self.rail_metrics(rail);
+        let tpad = m.tpad;
+        let tw = m.tw;
+        let th = m.th;
+        let scroll = self.rail_scroll.clamp(0.0, m.max_scroll);
         let mut thumbs = Vec::new();
+        let mut thumb_labels: Vec<Label> = Vec::new();
+        let mut thumb_buttons: Vec<UiButton> = Vec::new();
         labels.push(Label {
             pos: Point::new(rail.x0 + tpad, rail.y0 + 6.0),
             text: "SLIDES".into(),
@@ -670,12 +1004,12 @@ impl SlidesApp {
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
         });
-        ty += 16.0;
         for (i, _s) in self.deck.slides.iter().enumerate() {
             let tx = rail.x0 + tpad + 20.0;
+            let ty = m.list_top - scroll + i as f64 * (th + m.gap);
             let rect = Rect::new(tx, ty, tx + tw, ty + th);
             thumbs.push((i, rect));
-            labels.push(Label {
+            thumb_labels.push(Label {
                 pos: Point::new(rail.x0 + tpad - 2.0, ty + th / 2.0 - 8.0),
                 text: format!("{}", i + 1),
                 font: 12.0,
@@ -692,22 +1026,23 @@ impl SlidesApp {
                 let up = Rect::new(rect.x1 - cw, rect.y0 + 4.0, rect.x1 - 2.0, rect.y0 + 4.0 + cw);
                 let dn = Rect::new(rect.x1 - cw, rect.y1 - 4.0 - cw, rect.x1 - 2.0, rect.y1 - 4.0);
                 if i > 0 {
-                    buttons.push(UiButton {
+                    thumb_buttons.push(UiButton {
                         rect: up,
                         kind: ButtonKind::IconOnly { icon: Icon::ChevronUp, active: false },
                         hit: Hit::MoveSlideUp,
                     });
                 }
                 if i + 1 < self.deck.slides.len() {
-                    buttons.push(UiButton {
+                    thumb_buttons.push(UiButton {
                         rect: dn,
                         kind: ButtonKind::IconOnly { icon: Icon::ChevronDown, active: false },
                         hit: Hit::MoveSlideDown,
                     });
                 }
             }
-            ty += th + gap;
         }
+        // Scrollbar thumb on the viewport's right edge when the list overflows.
+        let rail_scrollbar = scrollbar_rects(m.viewport, scroll, m.max_scroll);
         // Rail action buttons at the bottom.
         let rb_h = 30.0;
         let rb_y = rail.y1 - tpad - rb_h;
@@ -740,11 +1075,124 @@ impl SlidesApp {
             thumbs,
             buttons,
             labels,
+            thumb_labels,
+            thumb_buttons,
+            rail_viewport: m.viewport,
+            rail_scrollbar,
             notes_box,
+            menu_bg,
+            menu_buttons,
             layout,
+            inspector_layout: insp_layout,
             scrim,
             reveal,
+            inspector_reveal: insp_reveal,
         }
+    }
+
+    /// Place the insert tools on the toolbar between `tools_x` and
+    /// `tools_right`. Tools that fit are pushed onto `buttons`; the ones that
+    /// don't move behind a "More" (⋯) overflow button (also pushed onto
+    /// `buttons`), and — when [`Self::toolbar_menu_open`] — are returned as the
+    /// dropdown's `(background, rows)`. This guarantees **every** insert tool is
+    /// pointer-reachable at every width: nothing is ever silently dropped.
+    fn layout_tools(
+        &self,
+        buttons: &mut Vec<UiButton>,
+        tools_x: f64,
+        tools_right: f64,
+        by: f64,
+        bh: f64,
+        toolbar: Rect,
+    ) -> (Option<Rect>, Vec<UiButton>) {
+        struct Tool {
+            bar: &'static str,
+            menu: &'static str,
+            icon: Option<Icon>,
+            hit: Hit,
+        }
+        // Highest priority first, so the tools most reached for stay on the bar
+        // and the rarer shape tools are the first to fall into the menu.
+        let tools = [
+            Tool { bar: "Slide", menu: "New slide", icon: Some(Icon::Plus), hit: Hit::NewSlide },
+            Tool { bar: "Text", menu: "Text box", icon: Some(Icon::FileText), hit: Hit::Insert(ElementKind::Text) },
+            Tool { bar: "Rect", menu: "Rectangle", icon: None, hit: Hit::Insert(ElementKind::Rect) },
+            Tool { bar: "Ellipse", menu: "Ellipse", icon: None, hit: Hit::Insert(ElementKind::Ellipse) },
+            Tool { bar: "Line", menu: "Line", icon: None, hit: Hit::Insert(ElementKind::Line) },
+            Tool { bar: "Image", menu: "Image", icon: None, hit: Hit::Insert(ElementKind::Image) },
+        ];
+        let gap = 8.0;
+        let bar_w = |t: &Tool| -> f64 {
+            match t.icon {
+                Some(_) => 18.0 + 6.0 + chrome::est_width(t.bar, 13.0) + 22.0,
+                None => chrome::est_width(t.bar, 13.0) + 26.0,
+            }
+        };
+        let widths: Vec<f64> = tools.iter().map(|t| bar_w(t)).collect();
+        let total: f64 = widths.iter().sum::<f64>() + gap * (tools.len() as f64 - 1.0);
+        let fits_all = tools_x + total <= tools_right + 0.5;
+
+        // When something must overflow, reserve room for the ⋯ button on the
+        // right so it (and thus the hidden tools) is always reachable.
+        let ovf_w = 40.0;
+        let limit = if fits_all { tools_right } else { tools_right - ovf_w - gap };
+
+        let mut bx = tools_x;
+        let mut hidden: Vec<usize> = Vec::new();
+        for (i, t) in tools.iter().enumerate() {
+            let w = widths[i];
+            // Keep visible tools contiguous: once one tool overflows, all the
+            // rest go to the menu too (no gap-filling with a later, narrower one).
+            if hidden.is_empty() && bx + w <= limit + 0.5 {
+                let rect = Rect::new(bx, by, bx + w, by + bh);
+                let kind = match t.icon {
+                    Some(icon) => ButtonKind::IconText { icon, label: t.bar.to_string(), accent: false },
+                    None => ButtonKind::Text { label: t.bar.to_string(), active: false, danger: false },
+                };
+                buttons.push(UiButton { rect, kind, hit: t.hit.clone() });
+                bx += w + gap;
+            } else {
+                hidden.push(i);
+            }
+        }
+        if hidden.is_empty() {
+            return (None, Vec::new());
+        }
+        // ⋯ overflow button, just past the last visible tool (clamped to fit).
+        let ovf_x = bx.min(tools_right - ovf_w);
+        let ovf = Rect::new(ovf_x, by, ovf_x + ovf_w, by + bh);
+        buttons.push(UiButton {
+            rect: ovf,
+            kind: ButtonKind::IconOnly { icon: Icon::MoreHorizontal, active: self.toolbar_menu_open },
+            hit: Hit::ToggleToolbarMenu,
+        });
+        if !self.toolbar_menu_open {
+            return (None, Vec::new());
+        }
+        // Dropdown: a panel under the ⋯ button, right-aligned to it and clamped
+        // inside the toolbar, one full-width row per hidden tool.
+        let row_h = 34.0;
+        let pad = 6.0;
+        let menu_w = hidden
+            .iter()
+            .map(|&i| chrome::est_width(tools[i].menu, 13.0) + 52.0)
+            .fold(150.0_f64, f64::max)
+            .min(toolbar.width() - 16.0);
+        let mx1 = ovf.x1.clamp(toolbar.x0 + 8.0 + menu_w, toolbar.x1 - 8.0);
+        let mx0 = mx1 - menu_w;
+        let my0 = ovf.y1 + 6.0;
+        let my1 = my0 + pad * 2.0 + row_h * hidden.len() as f64;
+        let bg = Rect::new(mx0, my0, mx1, my1);
+        let mut rows = Vec::new();
+        for (r, &i) in hidden.iter().enumerate() {
+            let ry = my0 + pad + r as f64 * row_h;
+            rows.push(UiButton {
+                rect: Rect::new(mx0 + pad, ry, mx1 - pad, ry + row_h - 4.0),
+                kind: ButtonKind::Text { label: tools[i].menu.to_string(), active: false, danger: false },
+                hit: tools[i].hit.clone(),
+            });
+        }
+        (Some(bg), rows)
     }
 
     /// Lay out the inspector contents; returns the speaker-notes box rect.
@@ -905,16 +1353,8 @@ impl SlidesApp {
             y += 10.0;
 
             header(labels, &mut y, "DECK THEME");
-            let sw = (inner_w - 4.0 * 8.0) / 5.0;
-            for (i, p) in PaletteKind::ALL.iter().enumerate() {
-                let x = x0 + i as f64 * (sw + 8.0);
-                buttons.push(UiButton {
-                    rect: Rect::new(x, y, x + sw, y + 28.0),
-                    kind: ButtonKind::Palette { kind: *p, selected: *p == self.deck.palette },
-                    hit: Hit::SetPalette(*p),
-                });
-            }
-            y += 28.0 + 10.0;
+            y = self.wrap_palette_pills(buttons, x0, x1, y);
+            y += 10.0;
         }
 
         // Speaker notes (always shown at the bottom).
@@ -973,6 +1413,39 @@ impl SlidesApp {
         y
     }
 
+    /// Width a palette pill needs to show its full label without truncation:
+    /// the colour dot (drawn at `x0+8 .. x0+20`), a 6px gap, the label, and a
+    /// trailing pad. `est_width` deliberately overestimates the real advance,
+    /// so a pill sized to this never clips its name.
+    fn palette_pill_width(label: &str) -> f64 {
+        26.0 + chrome::est_width(label, 12.0) + 12.0
+    }
+
+    /// Lay out the five deck-theme pills, each sized to fit its full name and
+    /// wrapping onto a new row when the next pill would overflow `x1`. This is
+    /// what keeps every theme name ("Indigo", "Emerald", …) fully readable in
+    /// the docked inspector at any width, instead of packing five fixed-width
+    /// pills that clip their labels. Returns the y just past the last row.
+    fn wrap_palette_pills(&self, buttons: &mut Vec<UiButton>, x0: f64, x1: f64, mut y: f64) -> f64 {
+        let bh = 28.0;
+        let gap = 8.0;
+        let mut x = x0;
+        for p in PaletteKind::ALL.iter() {
+            let w = Self::palette_pill_width(p.label()).min(x1 - x0);
+            if x > x0 && x + w > x1 + 0.5 {
+                x = x0;
+                y += bh + gap;
+            }
+            buttons.push(UiButton {
+                rect: Rect::new(x, y, x + w, y + bh),
+                kind: ButtonKind::Palette { kind: *p, selected: *p == self.deck.palette },
+                hit: Hit::SetPalette(*p),
+            });
+            x += w + gap;
+        }
+        y + bh
+    }
+
     fn wrap_pills(
         &self,
         buttons: &mut Vec<UiButton>,
@@ -1008,18 +1481,24 @@ impl SlidesApp {
 
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
         let er = render::element_dest(dest, s, el);
-        let cx = er.center().x;
-        let cy = er.center().y;
+        // Anchor the handles on a rect outset from the content by
+        // `HANDLE_OFFSET`, so each handle sits just *outside* the element and
+        // can never overlap the content (e.g. the first glyph of a left-anchored
+        // title). Resize math keys off the pointer position, not these centres,
+        // so pushing them outward doesn't change resize behaviour.
+        let hr = er.inflate(HANDLE_OFFSET, HANDLE_OFFSET);
+        let cx = hr.center().x;
+        let cy = hr.center().y;
         let pos = |h: Handle| -> Point {
             match h {
-                Handle::Tl => Point::new(er.x0, er.y0),
-                Handle::T => Point::new(cx, er.y0),
-                Handle::Tr => Point::new(er.x1, er.y0),
-                Handle::R => Point::new(er.x1, cy),
-                Handle::Br => Point::new(er.x1, er.y1),
-                Handle::B => Point::new(cx, er.y1),
-                Handle::Bl => Point::new(er.x0, er.y1),
-                Handle::L => Point::new(er.x0, cy),
+                Handle::Tl => Point::new(hr.x0, hr.y0),
+                Handle::T => Point::new(cx, hr.y0),
+                Handle::Tr => Point::new(hr.x1, hr.y0),
+                Handle::R => Point::new(hr.x1, cy),
+                Handle::Br => Point::new(hr.x1, hr.y1),
+                Handle::B => Point::new(cx, hr.y1),
+                Handle::Bl => Point::new(hr.x0, hr.y1),
+                Handle::L => Point::new(hr.x0, cy),
             }
         };
         Handle::ALL
@@ -1037,7 +1516,13 @@ impl SlidesApp {
     // --- actions ------------------------------------------------------------
 
     fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
+        // Any action other than toggling the overflow menu itself dismisses it
+        // (picking a tool from it, or any other toolbar action).
+        if !matches!(hit, Hit::ToggleToolbarMenu) {
+            self.toolbar_menu_open = false;
+        }
         match hit {
+            Hit::ToggleToolbarMenu => self.toolbar_menu_open = !self.toolbar_menu_open,
             Hit::NewSlide => self.new_slide(doc),
             Hit::DuplicateSlide => self.duplicate_slide(doc),
             Hit::DeleteSlide => self.delete_slide(doc),
@@ -1057,18 +1542,23 @@ impl SlidesApp {
                 SlidesDoc::set_palette(doc, self.deck.palette);
                 self.mark();
             }
+            // Images can't be conjured from nothing — the tool opens the host
+            // portal file chooser; the chosen file is inserted when it resolves.
+            Hit::Insert(ElementKind::Image) => self.request_image_open(),
             Hit::Insert(kind) => self.insert_element(doc, kind),
             Hit::SelectSlide(i) => {
                 self.cur_slide = i;
                 self.sel = None;
                 self.editing_text = false;
                 self.editing_notes = false;
+                self.scroll_rail_to_current();
             }
             Hit::MoveSlideUp => {
                 if self.cur_slide > 0 {
                     SlidesDoc::move_slide(doc, self.cur_slide, self.cur_slide - 1);
                     self.cur_slide -= 1;
                     self.mark();
+                    self.scroll_rail_to_current();
                 }
             }
             Hit::MoveSlideDown => {
@@ -1076,6 +1566,7 @@ impl SlidesApp {
                     SlidesDoc::move_slide(doc, self.cur_slide, self.cur_slide + 1);
                     self.cur_slide += 1;
                     self.mark();
+                    self.scroll_rail_to_current();
                 }
             }
             Hit::SetFill(role) => self.set_sel_str(doc, "fill", &role),
@@ -1135,6 +1626,7 @@ impl SlidesApp {
                 self.notes_caret = self.slide().map(|s| s.notes.chars().count()).unwrap_or(0);
             }
             Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
+            Hit::ToggleInspector => self.inspector_flap.toggle(self.inspector_layout()),
         }
         self.reload(doc);
     }
@@ -1186,6 +1678,7 @@ impl SlidesApp {
         self.sel = None;
         self.editing_text = false;
         self.mark();
+        self.scroll_rail_to_current();
     }
 
     fn duplicate_slide(&mut self, doc: &mut AutoCommit) {
@@ -1200,6 +1693,7 @@ impl SlidesApp {
         self.cur_slide = at;
         self.sel = None;
         self.mark();
+        self.scroll_rail_to_current();
     }
 
     fn delete_slide(&mut self, doc: &mut AutoCommit) {
@@ -1226,6 +1720,63 @@ impl SlidesApp {
         self.sel = Some(id);
         self.editing_text = false;
         self.mark();
+    }
+
+    /// Ask the host desktop's file chooser to pick an image, via the XDG
+    /// Desktop Portal. Per HIG §5 the app never draws its own picker: the
+    /// portal round-trip runs on a worker thread ([`portal::request_open`]) and
+    /// the chosen path comes back over a channel drained each frame in
+    /// [`Self::drain_portal`]. A second request while one is in flight is
+    /// ignored, so a double-click can't stack two host dialogs.
+    fn request_image_open(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
+        }
+        self.portal_rx = Some(portal::request_open());
+    }
+
+    /// Drain a completed portal request, if any. Called once per frame from
+    /// [`Widget::sync`]; inserts the chosen image and clears the in-flight
+    /// channel. Never blocks — a still-pending picker simply leaves the channel
+    /// installed for the next frame.
+    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                match outcome {
+                    portal::PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
+                    // A cancel or a portal failure is not a bug — leave the deck
+                    // untouched (we never fabricate a placeholder element).
+                    portal::PortalOutcome::Cancelled | portal::PortalOutcome::Failed(_) => {}
+                }
+            }
+            // Still waiting on the host dialog, or the worker vanished.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+            }
+        }
+    }
+
+    /// Place the picked image on the current slide and kick off its background
+    /// decode so the picture is ready by the time it paints.
+    fn insert_image_from_path(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        let src = path.to_string_lossy().to_string();
+        if src.is_empty() {
+            return;
+        }
+        // Start decoding now (off the UI thread) so the first paint already has
+        // pixels, or a graceful loading/failed state if it can't be read.
+        let _ = self.images.get(&src);
+        // A comfortable default frame, centred on the slide; the user resizes.
+        let el = Element::image(&src, 340.0, 168.0, 600.0, 384.0);
+        let id = el.id.clone();
+        SlidesDoc::add_element(doc, self.cur_slide, &el);
+        self.sel = Some(id);
+        self.editing_text = false;
+        self.mark();
+        self.reload(doc);
     }
 
     fn duplicate_element(&mut self, doc: &mut AutoCommit) {
@@ -1492,42 +2043,53 @@ impl SlidesApp {
     ) {
         let pal = self.palette(theme);
         let c = &theme.tokens.colors;
-        let overlay = chrome.layout == SplitLayout::Overlay;
+        let rail_overlay = chrome.layout == SplitLayout::Overlay;
+        let insp_overlay = chrome.inspector_layout == SplitLayout::Overlay;
+        let div = c.border_standard;
 
-        // Panels.
+        // Panels (base layer). A docked panel is part of the base; an overlay
+        // flap is painted later, on top of the dimming scrim.
         chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
-        // The rail column is painted with the body content below (so an open
-        // overlay flap can slide over a scrim). Docked: it's part of the base.
-        if !overlay {
+        if !rail_overlay {
             chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
         }
-        chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+        if !insp_overlay {
+            chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+        }
         chrome::fill_rect(scene, t, chrome.toolbar, mix_panel(c.surfaces.raised, c.surfaces.base));
         // Divider lines.
-        let div = c.border_standard;
         stroke_line(scene, t, chrome.toolbar.x0, chrome.toolbar.y1, chrome.toolbar.x1, chrome.toolbar.y1, div);
-        if !overlay {
+        if !rail_overlay {
             stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
         }
-        stroke_line(scene, t, chrome.inspector.x0, chrome.inspector.y0, chrome.inspector.x0, chrome.inspector.y1, div);
+        if !insp_overlay {
+            stroke_line(scene, t, chrome.inspector.x0, chrome.inspector.y0, chrome.inspector.x0, chrome.inspector.y1, div);
+        }
 
         // Canvas slide.
         if let Some(slide) = self.slide() {
             // Soft drop shadow.
             let sh = chrome.slide_dest + vello::kurbo::Vec2::new(0.0, 6.0);
             chrome::fill_rrect(scene, t, sh.inflate(2.0, 2.0), 14.0, render::with_alpha(Color::BLACK, 70));
-            render::draw_slide(scene, t, tr, theme, &pal, slide, chrome.slide_dest, 14.0);
+            render::draw_slide(scene, t, tr, theme, &pal, slide, chrome.slide_dest, 14.0, &self.images);
             chrome::stroke_rrect(scene, t, chrome.slide_dest, 14.0, render::with_alpha(c.text_primary, 28), 1.0);
 
             // Selection chrome.
             if let Some(el) = self.selected_element() {
                 let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
                 let sel_col = pal.accent;
-                chrome::stroke_rrect(scene, t, er.inflate(3.0, 3.0), 4.0, sel_col, 1.5);
+                // Ring is drawn at the handle outset so it passes through the
+                // handle centres — the whole selection frame sits *around* the
+                // content, never over the first glyph.
+                chrome::stroke_rrect(scene, t, er.inflate(HANDLE_OFFSET, HANDLE_OFFSET), 5.0, sel_col, 1.5);
                 if !self.editing_text {
                     for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
-                        chrome::fill_rrect(scene, t, hr, 2.5, Color::WHITE);
-                        chrome::stroke_rrect(scene, t, hr, 2.5, sel_col, 1.5);
+                        // The returned rect is the generous grab zone (±HANDLE);
+                        // paint a smaller visual pip centred on it so the handle
+                        // clears the content edge on every side.
+                        let vis = hr.inflate(-4.0, -4.0);
+                        chrome::fill_rrect(scene, t, vis, 2.5, Color::WHITE);
+                        chrome::stroke_rrect(scene, t, vis, 2.5, sel_col, 1.5);
                     }
                 } else {
                     self.draw_text_caret(scene, t, tr, &pal, el, er, chrome.scale);
@@ -1562,54 +2124,50 @@ impl SlidesApp {
             );
         }
 
-        // The rail (thumbnails + its buttons/labels) is content that lives
-        // inside the rail column. In overlay mode it must paint on top of the
-        // dimming scrim, so the whole rail group is deferred to a final pass.
-        // Membership is geometric: below the toolbar and within the rail's
-        // (possibly off-screen / sliding) x-span.
+        // Content that lives inside a side panel is deferred to a final pass so
+        // an open overlay flap paints on top of the dimming scrim. Membership is
+        // geometric: below the toolbar, within the panel's (possibly off-screen
+        // / sliding) x-span.
         let in_rail = |center: Point| -> bool {
             center.y >= chrome.rail.y0
                 && center.x >= chrome.rail.x0 - 0.5
                 && center.x <= chrome.rail.x1 + 0.5
         };
+        let in_inspector = |center: Point| -> bool {
+            center.y >= chrome.inspector.y0
+                && center.x >= chrome.inspector.x0 - 0.5
+                && center.x <= chrome.inspector.x1 + 0.5
+        };
+        let in_panel = |center: Point| in_rail(center) || in_inspector(center);
 
-        // Non-rail buttons (toolbar + inspector) in the base layer.
+        // Base-layer buttons + labels (toolbar chrome only; panel content is
+        // deferred below).
         for b in &chrome.buttons {
-            if !in_rail(b.rect.center()) {
+            if !in_panel(b.rect.center()) {
                 self.draw_button(scene, t, tr, theme, &pal, b);
             }
         }
-        // Notes content over its box (inspector — base layer).
-        if let (Some(nb), Some(slide)) = (chrome.notes_box, self.slide()) {
-            self.draw_notes(scene, t, tr, theme, nb, &slide.notes);
-        }
-        // Non-rail labels.
         for l in &chrome.labels {
-            if !in_rail(Point::new(l.pos.x, l.pos.y)) {
+            if !in_panel(Point::new(l.pos.x, l.pos.y)) {
                 self.draw_label(scene, t, tr, theme, &pal, l);
             }
         }
 
         // Scrim behind an open overlay flap, dimming the editor body.
-        if overlay && chrome.scrim.width() > 0.0 {
-            let alpha = (chrome.reveal * 0.5) as f32;
+        if chrome.scrim.width() > 0.0 {
+            let reveal = chrome.reveal.max(chrome.inspector_reveal);
+            let alpha = (reveal * 0.5) as f32;
             chrome::fill_rect(scene, t, chrome.scrim, render::with_alpha(Color::BLACK, (alpha * 255.0) as u8));
         }
 
-        // Rail group on top: panel fill (overlay only), thumbnails, then the
-        // rail's own buttons + labels.
-        if overlay && chrome.reveal > 0.001 {
+        // Rail group on top: panel fill (overlay only), then the fixed header
+        // + action buttons, then the scrolling thumbnail list clipped to its
+        // viewport so it can never bleed over the pinned Add/Dup/Del row.
+        if rail_overlay && chrome.reveal > 0.001 {
             chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
             stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
         }
-        for (i, rect) in &chrome.thumbs {
-            if let Some(slide) = self.deck.slides.get(*i) {
-                render::draw_slide(scene, t, tr, theme, &pal, slide, *rect, 6.0);
-                let ring = if *i == self.cur_slide { pal.accent } else { render::with_alpha(c.text_primary, 26) };
-                let w = if *i == self.cur_slide { 2.5 } else { 1.0 };
-                chrome::stroke_rrect(scene, t, *rect, 6.0, ring, w);
-            }
-        }
+        // Fixed rail chrome (SLIDES header + Add/Dup/Del) — never scrolls.
         for b in &chrome.buttons {
             if in_rail(b.rect.center()) {
                 self.draw_button(scene, t, tr, theme, &pal, b);
@@ -1618,6 +2176,60 @@ impl SlidesApp {
         for l in &chrome.labels {
             if in_rail(Point::new(l.pos.x, l.pos.y)) {
                 self.draw_label(scene, t, tr, theme, &pal, l);
+            }
+        }
+        // Scrolling thumbnail list, clipped to the rail viewport.
+        if chrome.rail.width() > 1.0 {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &chrome.rail_viewport);
+            for (i, rect) in &chrome.thumbs {
+                if let Some(slide) = self.deck.slides.get(*i) {
+                    render::draw_slide(scene, t, tr, theme, &pal, slide, *rect, 6.0, &self.images);
+                    let ring = if *i == self.cur_slide { pal.accent } else { render::with_alpha(c.text_primary, 26) };
+                    let w = if *i == self.cur_slide { 2.5 } else { 1.0 };
+                    chrome::stroke_rrect(scene, t, *rect, 6.0, ring, w);
+                }
+            }
+            for b in &chrome.thumb_buttons {
+                self.draw_button(scene, t, tr, theme, &pal, b);
+            }
+            for l in &chrome.thumb_labels {
+                self.draw_label(scene, t, tr, theme, &pal, l);
+            }
+            scene.pop_layer();
+            // Scrollbar over the (unclipped) viewport edge.
+            if let Some((track, thumb)) = chrome.rail_scrollbar {
+                chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
+                chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
+            }
+        }
+
+        // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
+        if insp_overlay && chrome.inspector_reveal > 0.001 {
+            chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+            stroke_line(scene, t, chrome.inspector.x0, chrome.inspector.y0, chrome.inspector.x0, chrome.inspector.y1, div);
+        }
+        for b in &chrome.buttons {
+            if in_inspector(b.rect.center()) {
+                self.draw_button(scene, t, tr, theme, &pal, b);
+            }
+        }
+        if let (Some(nb), Some(slide)) = (chrome.notes_box, self.slide()) {
+            self.draw_notes(scene, t, tr, theme, nb, &slide.notes);
+        }
+        for l in &chrome.labels {
+            if in_inspector(Point::new(l.pos.x, l.pos.y)) {
+                self.draw_label(scene, t, tr, theme, &pal, l);
+            }
+        }
+
+        // Toolbar overflow menu — painted last so it floats above all chrome.
+        if let Some(bg) = chrome.menu_bg {
+            let shadow = bg + vello::kurbo::Vec2::new(0.0, 4.0);
+            chrome::fill_rrect(scene, t, shadow.inflate(2.0, 2.0), 12.0, render::with_alpha(Color::BLACK, 90));
+            chrome::fill_rrect(scene, t, bg, 10.0, c.surfaces.raised);
+            chrome::stroke_rrect(scene, t, bg, 10.0, render::with_alpha(c.text_primary, 48), 1.0);
+            for b in &chrome.menu_buttons {
+                self.draw_button(scene, t, tr, theme, &pal, b);
             }
         }
     }
@@ -1729,7 +2341,13 @@ impl SlidesApp {
                 let dot = Rect::new(b.rect.x0 + 8.0, b.rect.center().y - 6.0, b.rect.x0 + 20.0, b.rect.center().y + 6.0);
                 chrome::fill_rrect(scene, t, dot, 6.0, col);
                 if b.rect.width() > 40.0 {
+                    // Clip the name to the pill so a slight text-metric
+                    // over-run can never bleed onto the next pill. Pills are
+                    // sized (see `palette_pill_width`) so the full name fits,
+                    // making this a belt-and-suspenders guard, not a truncation.
+                    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &b.rect);
                     chrome::text_vcenter(scene, t, tr, kind.label(), b.rect, dot.x1 + 6.0, 12.0, c.text_primary, TextWeight::Semibold);
+                    scene.pop_layer();
                 }
             }
             ButtonKind::Hamburger => {
@@ -1835,7 +2453,7 @@ impl SlidesApp {
     }
 
     fn draw_present(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1903,12 +2521,14 @@ impl SlidesApp {
         if let Some((from, _)) = self.transition {
             if alpha < 1.0 {
                 if let Some(prev) = self.deck.slides.get(from) {
-                    render::draw_slide(scene, t, tr, theme, &pal, prev, dest, 0.0);
+                    render::draw_slide(scene, t, tr, theme, &pal, prev, dest, 0.0, &self.images);
                 }
             }
         }
-        if let Some(slide) = self.slide() {
-            if alpha < 1.0 {
+        if alpha < 1.0 {
+            // Mid cross-fade → paint live inside the alpha layer (it animates,
+            // so caching would gain nothing and the layer transform matters).
+            if let Some(slide) = self.slide() {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -1916,11 +2536,14 @@ impl SlidesApp {
                     t,
                     &dest,
                 );
-                render::draw_slide(scene, t, tr, theme, &pal, slide, dest, 0.0);
+                render::draw_slide(scene, t, tr, theme, &pal, slide, dest, 0.0, &self.images);
                 scene.pop_layer();
-            } else {
-                render::draw_slide(scene, t, tr, theme, &pal, slide, dest, 0.0);
             }
+        } else {
+            // Settled → the slide is static between navigations. Shape it once
+            // into a detached scene, then just re-append it each frame so the
+            // speaker clock ticks without re-shaping every element every vsync.
+            self.append_present_slide(scene, t, tr, theme, &pal, dest);
         }
 
         // Progress bar pinned to the very bottom edge of the screen.
@@ -1953,15 +2576,29 @@ impl SlidesApp {
             let cr = Rect::new(dest.x1 - cw, dest.y1 + 8.0, dest.x1, dest.y1 + 8.0 + 26.0);
             chrome::fill_rrect(scene, t, cr, 13.0, render::with_alpha(Color::WHITE, 26));
             chrome::text_centered(scene, t, tr, &counter, cr, 13.0, Color::WHITE, TextWeight::Semibold);
-            tr.draw_text_weighted(
-                scene,
-                "← →  navigate    Home / End  first · last    P  presenter    S  notes    B / W  blank    Esc  exit",
-                12.5,
-                render::with_alpha(Color::WHITE, 150),
-                t * Affine::translate((dest.x0, dest.y1 + 14.0)),
-                None,
-                TextWeight::Regular,
-            );
+            // The nav hint fills the gutter to the *left* of the counter pill,
+            // capped so it can never paint under the pill (they overlapped on
+            // narrow widths). Pick the richest variant that still fits the room;
+            // if even the short one won't, drop it and keep just the counter.
+            let hint_x = dest.x0;
+            let hint_max = (cr.x0 - 16.0 - hint_x).max(0.0);
+            let full = "← →  navigate    Home / End  first · last    P  presenter    S  notes    B / W  blank    Esc  exit";
+            let medium = "← →  navigate    P  presenter    S  notes    Esc  exit";
+            let short = "← →  navigate    Esc  exit";
+            if let Some(hint) = [full, medium, short]
+                .into_iter()
+                .find(|h| chrome::est_width(h, 12.5) <= hint_max)
+            {
+                tr.draw_text_weighted(
+                    scene,
+                    hint,
+                    12.5,
+                    render::with_alpha(Color::WHITE, 150),
+                    t * Affine::translate((hint_x, dest.y1 + 14.0)),
+                    Some(hint_max as f32),
+                    TextWeight::Regular,
+                );
+            }
         }
 
         // Speaker-notes panel.
@@ -2017,9 +2654,55 @@ impl SlidesApp {
                     None,
                     TextWeight::Semibold,
                 );
-                render::draw_slide(scene, t, tr, theme, &pal, next, pr, 6.0);
+                render::draw_slide(scene, t, tr, theme, &pal, next, pr, 6.0, &self.images);
                 chrome::stroke_rrect(scene, t, pr, 6.0, render::with_alpha(Color::WHITE, 40), 1.0);
             }
+        }
+    }
+
+    /// Append the settled audience slide, (re)shaping it into a detached scene
+    /// only when the slide, size, theme or deck actually changed. Between
+    /// navigations this is a cheap scene-append, so present mode can keep the
+    /// speaker clock ticking without re-shaping every element every vsync.
+    fn append_present_slide(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pal: &Palette,
+        dest: Rect,
+    ) {
+        let slide_idx = self.cur_slide;
+        let rev = self.deck_rev;
+        let palette = self.deck.palette;
+        let stale = self
+            .present_cache
+            .as_ref()
+            .map(|c| !c.matches(dest, slide_idx, rev, palette))
+            .unwrap_or(true);
+        if stale {
+            // Shape into a detached scene at IDENTITY (absolute slide coords);
+            // the live transform is applied on append below.
+            let mut frag = Scene::new();
+            if let Some(slide) = self.deck.slides.get(slide_idx) {
+                render::draw_slide(&mut frag, Affine::IDENTITY, tr, theme, pal, slide, dest, 0.0, &self.images);
+            }
+            self.present_cache = Some(PresentCache {
+                slide: slide_idx,
+                rev,
+                palette,
+                dest: (
+                    dest.x0.round() as i64,
+                    dest.y0.round() as i64,
+                    dest.x1.round() as i64,
+                    dest.y1.round() as i64,
+                ),
+                scene: frag,
+            });
+        }
+        if let Some(c) = &self.present_cache {
+            scene.append(&c.scene, Some(t));
         }
     }
 
@@ -2138,7 +2821,7 @@ impl SlidesApp {
         let sh = cur_dest + vello::kurbo::Vec2::new(0.0, 6.0);
         chrome::fill_rrect(scene, t, sh.inflate(2.0, 2.0), 12.0, render::with_alpha(Color::BLACK, 80));
         if let Some(slide) = self.slide() {
-            render::draw_slide(scene, t, tr, theme, &pal, slide, cur_dest, 12.0);
+            render::draw_slide(scene, t, tr, theme, &pal, slide, cur_dest, 12.0, &self.images);
         }
         chrome::stroke_rrect(scene, t, cur_dest, 12.0, render::with_alpha(c.text_primary, 30), 1.0);
 
@@ -2159,7 +2842,7 @@ impl SlidesApp {
         let next_rect = Rect::new(right.x0, next_top, right.x0 + next_w, next_top + next_h);
         match self.deck.slides.get(self.cur_slide + 1) {
             Some(next) => {
-                render::draw_slide(scene, t, tr, theme, &pal, next, next_rect, 8.0);
+                render::draw_slide(scene, t, tr, theme, &pal, next, next_rect, 8.0, &self.images);
                 chrome::stroke_rrect(scene, t, next_rect, 8.0, render::with_alpha(c.text_primary, 30), 1.0);
             }
             None => {
@@ -2224,9 +2907,11 @@ impl SlidesApp {
 
     // --- overview (slide-sorter) -------------------------------------------
 
-    /// Lay out the slide grid: as many columns as fit, returning each
-    /// slide's index and destination rect. Shared by draw + hit-test.
-    fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>) {
+    /// Lay out the slide grid: as many columns as fit, returning the scroll
+    /// viewport, each slide's index + destination rect (already offset by the
+    /// clamped vertical scroll), and the maximum scroll. Shared by draw,
+    /// hit-test and the wheel/scrollbar handlers so they always agree.
+    fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
         let header_h = 64.0;
         let area = Rect::new(self.rect.x0, self.rect.y0 + header_h, self.rect.x1, self.rect.y1);
         let pad = 36.0;
@@ -2237,15 +2922,28 @@ impl SlidesApp {
         let cols = ((avail_w + gap) / (target + gap)).floor().max(1.0) as usize;
         let tw = (avail_w - (cols as f64 - 1.0) * gap) / cols as f64;
         let th = tw * SLIDE_H / SLIDE_W;
+        let n = self.deck.slides.len();
+        // Each cell is the slide card plus a caption row beneath it.
+        let cell_h = th + 30.0;
+        let row_stride = cell_h + gap;
+        let rows = if n == 0 { 0 } else { n.div_ceil(cols) };
+        // Content height from the top of `area`: top pad + all rows + bottom pad.
+        let content_h = if rows == 0 {
+            0.0
+        } else {
+            pad + rows as f64 * cell_h + (rows as f64 - 1.0) * gap + pad
+        };
+        let max_scroll = (content_h - area.height()).max(0.0);
+        let scroll = self.overview_scroll.clamp(0.0, max_scroll);
         let mut out = Vec::new();
-        for i in 0..self.deck.slides.len() {
+        for i in 0..n {
             let col = i % cols;
             let row = i / cols;
             let x = area.x0 + pad + col as f64 * (tw + gap);
-            let y = area.y0 + pad + row as f64 * (th + 30.0 + gap);
+            let y = area.y0 + pad + row as f64 * row_stride - scroll;
             out.push((i, Rect::new(x, y, x + tw, y + th)));
         }
-        (area, out)
+        (area, out, max_scroll)
     }
 
     fn draw_overview(
@@ -2280,34 +2978,56 @@ impl SlidesApp {
         );
         stroke_line(scene, t, self.rect.x0, self.rect.y0 + 60.0, self.rect.x1, self.rect.y0 + 60.0, c.border_standard);
 
-        let (_, thumbs) = self.compute_overview();
+        let (area, thumbs, max_scroll) = self.compute_overview();
+        // Clip the scrolling grid to the area below the header so cards never
+        // paint over the title row as they scroll past.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         for (i, rect) in thumbs {
             if let Some(slide) = self.deck.slides.get(i) {
                 // Drop shadow + card.
                 let sh = rect + vello::kurbo::Vec2::new(0.0, 4.0);
                 chrome::fill_rrect(scene, t, sh.inflate(1.0, 1.0), 8.0, render::with_alpha(Color::BLACK, 60));
-                render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 8.0);
+                render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 8.0, &self.images);
                 let (ring, w) = if i == self.cur_slide {
                     (pal.accent, 2.5)
                 } else {
                     (render::with_alpha(c.text_primary, 30), 1.0)
                 };
                 chrome::stroke_rrect(scene, t, rect, 8.0, ring, w);
-                // Number badge.
-                let badge = Rect::new(rect.x0 + 6.0, rect.y0 + 6.0, rect.x0 + 30.0, rect.y0 + 28.0);
-                chrome::fill_rrect(scene, t, badge, 6.0, render::with_alpha(Color::BLACK, 120));
-                chrome::text_centered(scene, t, tr, &format!("{}", i + 1), badge, 12.0, Color::WHITE, TextWeight::Semibold);
-                // Layout caption beneath.
+                // Caption row *beneath* the card: a slide-number chip then the
+                // layout name. Kept below the card so it never collides with the
+                // slide's own title/content (an on-card badge overlapped it).
+                let cap_y = rect.y1 + 7.0;
+                let num = format!("{}", i + 1);
+                let num_col = if i == self.cur_slide { pal.accent } else { c.text_primary };
+                tr.draw_text_weighted(
+                    scene,
+                    &num,
+                    12.0,
+                    num_col,
+                    t * Affine::translate((rect.x0 + 2.0, cap_y)),
+                    None,
+                    TextWeight::Bold,
+                );
+                let (num_w, _) = tr.measure_weighted(&num, 12.0, None, TextWeight::Bold);
                 tr.draw_text_weighted(
                     scene,
                     slide.layout.label(),
                     11.5,
                     c.text_dim,
-                    t * Affine::translate((rect.x0 + 2.0, rect.y1 + 7.0)),
+                    t * Affine::translate((rect.x0 + num_w as f64 + 12.0, cap_y + 0.5)),
                     None,
                     TextWeight::Regular,
                 );
             }
+        }
+        scene.pop_layer();
+        // Scrollbar when the grid overflows the viewport.
+        if let Some((track, thumb)) =
+            scrollbar_rects(area, self.overview_scroll.clamp(0.0, max_scroll), max_scroll)
+        {
+            chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
+            chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
         }
     }
 
@@ -2430,6 +3150,87 @@ fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64,
     scene.stroke(&Stroke::new(1.0), t, color, None, &line);
 }
 
+/// `(track, thumb)` rects for a vertical scrollbar over `viewport`, or `None`
+/// when the content fits (`max_scroll <= 0`). The thumb height is proportional
+/// to the visible fraction and its position to the scroll offset.
+fn scrollbar_rects(viewport: Rect, scroll: f64, max_scroll: f64) -> Option<(Rect, Rect)> {
+    if max_scroll <= 0.5 || viewport.height() <= 8.0 {
+        return None;
+    }
+    let sw = 6.0;
+    let track = Rect::new(viewport.x1 - sw - 3.0, viewport.y0, viewport.x1 - 3.0, viewport.y1);
+    let content_h = viewport.height() + max_scroll;
+    let visible_frac = (viewport.height() / content_h).clamp(0.06, 1.0);
+    let thumb_h = (track.height() * visible_frac).max(28.0);
+    let travel = track.height() - thumb_h;
+    let t = if max_scroll > 0.0 { (scroll / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
+    let ty = track.y0 + travel * t;
+    let thumb = Rect::new(track.x0, ty, track.x1, ty + thumb_h);
+    Some((track, thumb))
+}
+
+/// Map a vertical scrollbar-thumb drag (`dy` px) to a content scroll offset.
+/// The thumb travels `track.height - thumb.height`; the content travels
+/// `max_scroll` over that same span, so one thumb pixel is `max_scroll/travel`
+/// content pixels. Result is clamped to `0..=max_scroll`.
+fn scroll_from_thumb_drag(viewport: Rect, orig_scroll: f64, max_scroll: f64, dy: f64) -> f64 {
+    if max_scroll <= 0.0 {
+        return 0.0;
+    }
+    let orig = orig_scroll.clamp(0.0, max_scroll);
+    match scrollbar_rects(viewport, orig, max_scroll) {
+        Some((track, thumb)) => {
+            let travel = (track.height() - thumb.height()).max(1.0);
+            (orig + dy * (max_scroll / travel)).clamp(0.0, max_scroll)
+        }
+        None => 0.0,
+    }
+}
+
+/// Truncate `label` with a trailing ellipsis so its estimated width fits
+/// `max_w`. Uses the same [`chrome::est_width`] metric that drives the toolbar
+/// layout, so the clip lands where the layout expects it.
+fn elide(label: &str, font: f64, max_w: f64) -> String {
+    if max_w <= 0.0 || chrome::est_width(label, font) <= max_w {
+        return label.to_string();
+    }
+    let mut chars: Vec<char> = label.chars().collect();
+    while !chars.is_empty() {
+        let candidate: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
+        if chrome::est_width(&candidate, font) <= max_w {
+            return candidate;
+        }
+        chars.pop();
+    }
+    "…".to_string()
+}
+
+/// Write a small, unmistakably-photographic test raster to a temp PNG and
+/// return its path. Used only by the `image` `--shots` scenario so a headless
+/// screenshot can show the real decode path; never called on a live launch.
+fn write_demo_image() -> Option<PathBuf> {
+    use image::{Rgb, RgbImage};
+    let (w, h) = (640u32, 400u32);
+    let mut img = RgbImage::new(w, h);
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let dx = x as f32 - cx;
+        let dy = y as f32 - cy;
+        let r = (dx * dx + dy * dy).sqrt();
+        // Concentric warm rings over a cool field — clearly a raster picture,
+        // not a flat UI gradient.
+        let ring = (r * 0.06).sin() * 0.5 + 0.5;
+        let red = (40.0 + 200.0 * ring) as u8;
+        let green = (70.0 + 90.0 * ring) as u8;
+        let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
+        *px = Rgb([red, green, blue]);
+    }
+    let path = std::env::temp_dir().join("slides-demo-image.png");
+    img.save(&path).ok()?;
+    Some(path)
+}
+
 /// Fit a 16:9 slide horizontally centred but *top-anchored* inside `area`.
 fn fit_slide_top(area: Rect) -> Rect {
     let s = (area.width() / SLIDE_W).min(area.height() / SLIDE_H);
@@ -2447,6 +3248,8 @@ impl Widget for SlidesApp {
             }
             self.seeded = true;
         }
+        // Fold in a completed host image-open, if the portal worker finished.
+        self.drain_portal(state);
         self.reload(state);
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
@@ -2505,6 +3308,11 @@ impl Widget for SlidesApp {
         if self.rect.width() < 2.0 {
             return;
         }
+        // Fold in any images that finished decoding on their worker thread. A
+        // freshly-decoded image must re-shape the cached present-mode slide.
+        if self.images.pump() {
+            self.present_cache = None;
+        }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
         if let Some((_, t)) = self.transition {
             if t.elapsed().as_millis() >= TRANSITION_MS {
@@ -2517,7 +3325,21 @@ impl Widget for SlidesApp {
         let now = std::time::Instant::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
-        self.sync_rail_flap(dt);
+        self.sync_flaps(dt);
+        // Re-clamp the persisted scroll offsets to the current size/content, so
+        // a window resize (or a fresh over-large offset) self-corrects rather
+        // than sticking past the end of the list.
+        match self.mode {
+            Mode::Edit => {
+                let rail_max = self.rail_metrics(self.rail_rect()).max_scroll;
+                self.rail_scroll = self.rail_scroll.clamp(0.0, rail_max);
+            }
+            Mode::Overview => {
+                let (_, _, ov_max) = self.compute_overview();
+                self.overview_scroll = self.overview_scroll.clamp(0.0, ov_max);
+            }
+            Mode::Present => {}
+        }
         match self.mode {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
@@ -2532,11 +3354,18 @@ impl Widget for SlidesApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames pumping while the speaker timer is live, a slide
-        // cross-fade is mid-flight, or the rail flap is sliding open/closed.
-        self.mode == Mode::Present
-            || self.transition.is_some()
+        // Only ask for another frame when something is actually moving:
+        //   * a slide cross-fade is mid-flight (bounded ~240ms),
+        //   * a rail/inspector flap is sliding open/closed (bounded), or
+        //   * an image is still decoding on its worker thread.
+        // Present mode is deliberately NOT an unconditional "true": the settled
+        // slide is static and the speaker clock reads wall-time on each paint,
+        // so it re-renders on navigation/input rather than spinning at vsync
+        // for a once-a-second clock. See the note on the redraw cadence below.
+        self.transition.is_some()
             || self.rail_flap.is_animating(self.rail_layout())
+            || self.inspector_flap.is_animating(self.inspector_layout())
+            || self.images.any_loading()
     }
 
     fn draw_with_presence(
@@ -2567,7 +3396,7 @@ impl Widget for SlidesApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
-                if self.mode == Mode::Edit && self.drag.active() {
+                if self.drag.active() {
                     self.drag_move(p);
                     *handled = true;
                 }
@@ -2577,6 +3406,9 @@ impl Widget for SlidesApp {
                     ElementState::Pressed => self.on_press(state, self.last_mouse, handled),
                     ElementState::Released => self.on_release(state, handled),
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.on_wheel(*delta, scale_factor, handled);
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
@@ -2675,6 +3507,31 @@ impl SlidesApp {
     }
 
     fn drag_move(&mut self, p: Point) {
+        // Scrollbar-thumb drags don't need slide-space mapping — resolve them
+        // first (they can be live in overview mode, where there is no canvas).
+        match self.drag.clone() {
+            Drag::ScrollRail { start_y, orig_scroll } => {
+                let m = self.rail_metrics(self.rail_rect());
+                self.rail_scroll = scroll_from_thumb_drag(
+                    m.viewport,
+                    orig_scroll,
+                    m.max_scroll,
+                    p.y - start_y,
+                );
+                return;
+            }
+            Drag::ScrollOverview { start_y, orig_scroll } => {
+                let (area, _, max_scroll) = self.compute_overview();
+                self.overview_scroll = scroll_from_thumb_drag(
+                    area,
+                    orig_scroll,
+                    max_scroll,
+                    p.y - start_y,
+                );
+                return;
+            }
+            _ => {}
+        }
         let chrome = self.compute_chrome();
         let dest = chrome.slide_dest;
         let s = chrome.scale;
@@ -2742,7 +3599,8 @@ impl SlidesApp {
                     }
                 }
             }
-            Drag::None => {}
+            // `ScrollRail` / `ScrollOverview` are resolved above; `None` is a no-op.
+            _ => {}
         }
     }
 
@@ -2768,7 +3626,20 @@ impl SlidesApp {
             return;
         }
         if self.mode == Mode::Overview {
-            let (_, thumbs) = self.compute_overview();
+            let (area, thumbs, max_scroll) = self.compute_overview();
+            // Scrollbar thumb → start a scroll drag.
+            if let Some((_, thumb)) =
+                scrollbar_rects(area, self.overview_scroll.clamp(0.0, max_scroll), max_scroll)
+            {
+                if thumb.contains(p) {
+                    self.drag = Drag::ScrollOverview {
+                        start_y: p.y,
+                        orig_scroll: self.overview_scroll.clamp(0.0, max_scroll),
+                    };
+                    *handled = true;
+                    return;
+                }
+            }
             for (i, rect) in thumbs {
                 if rect.contains(p) {
                     self.apply_hit(doc, Hit::OpenSlide(i));
@@ -2781,6 +3652,49 @@ impl SlidesApp {
         }
         let chrome = self.compute_chrome();
 
+        // Toolbar overflow menu is modal-ish: while open, its rows and its
+        // click-away dismissal take precedence over everything beneath it.
+        if let Some(bg) = chrome.menu_bg {
+            for b in &chrome.menu_buttons {
+                if b.rect.contains(p) {
+                    let hit = b.hit.clone();
+                    self.apply_hit(doc, hit);
+                    *handled = true;
+                    return;
+                }
+            }
+            if bg.contains(p) {
+                // A click in the menu's own chrome (padding) keeps it open.
+                *handled = true;
+                return;
+            }
+            // A click outside the menu dismisses it — unless it landed on the ⋯
+            // toggle itself, which we let fall through so the toggle closes it.
+            let on_toggle = chrome
+                .buttons
+                .iter()
+                .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu) && b.rect.contains(p));
+            if !on_toggle {
+                self.toolbar_menu_open = false;
+                *handled = true;
+                return;
+            }
+        }
+
+        // Rail scrollbar thumb → start a scroll drag (wins over thumbnail hits
+        // beneath it).
+        if let Some((_, thumb)) = chrome.rail_scrollbar {
+            if thumb.contains(p) {
+                let m = self.rail_metrics(chrome.rail);
+                self.drag = Drag::ScrollRail {
+                    start_y: p.y,
+                    orig_scroll: self.rail_scroll.clamp(0.0, m.max_scroll),
+                };
+                *handled = true;
+                return;
+            }
+        }
+
         // Buttons first (the hamburger toggle lives here, so it wins over the
         // scrim dismissal below).
         for b in &chrome.buttons {
@@ -2791,17 +3705,23 @@ impl SlidesApp {
                 return;
             }
         }
-        // Scrim dismissal: with the rail open as an overlay flap, a click in
-        // the dimmed body (outside the rail itself) closes it — like tapping
-        // the scrim in Adwaita's flap.
-        if chrome.layout == SplitLayout::Overlay
-            && self.rail_open()
-            && chrome.scrim.contains(p)
-            && !chrome.rail.contains(p)
-        {
-            self.rail_flap.close();
-            *handled = true;
-            return;
+        // Scrim dismissal: with an overlay flap open, a click in the dimmed body
+        // (outside both panels) closes whichever flap is open — like tapping the
+        // scrim in Adwaita's flap.
+        if chrome.scrim.contains(p) && !chrome.rail.contains(p) && !chrome.inspector.contains(p) {
+            let mut dismissed = false;
+            if chrome.layout == SplitLayout::Overlay && self.rail_open() {
+                self.rail_flap.close();
+                dismissed = true;
+            }
+            if chrome.inspector_layout == SplitLayout::Overlay && self.inspector_open() {
+                self.inspector_flap.close();
+                dismissed = true;
+            }
+            if dismissed {
+                *handled = true;
+                return;
+            }
         }
         // Thumbnails. Selecting one on a narrow window also dismisses the
         // overlay flap so the chosen slide is revealed.
@@ -2897,6 +3817,12 @@ impl SlidesApp {
     }
 
     fn on_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+        // A scrollbar-thumb drag ends with no document write, in any mode.
+        if matches!(self.drag, Drag::ScrollRail { .. } | Drag::ScrollOverview { .. }) {
+            self.drag = Drag::None;
+            *handled = true;
+            return;
+        }
         if self.mode != Mode::Edit {
             return;
         }
@@ -2905,7 +3831,8 @@ impl SlidesApp {
         let id = match drag {
             Drag::Move { id, .. } => Some(id),
             Drag::Resize { id, .. } => Some(id),
-            Drag::None => None,
+            // Scroll drags were already resolved above; `None` writes nothing.
+            _ => None,
         };
         if let Some(id) = id {
             if let Some(el) = self.deck.slides.get(self.cur_slide).and_then(|s| s.element(&id)).cloned() {
@@ -2914,6 +3841,40 @@ impl SlidesApp {
                 *handled = true;
             }
             self.reload(doc);
+        }
+    }
+
+    /// Vertical mouse-wheel scrolling for the two scrollable surfaces: the
+    /// edit-mode thumbnail rail (only while the pointer is over it) and the
+    /// slide-sorter overview grid.
+    fn on_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64, handled: &mut bool) {
+        // Positive wheel deltas scroll the content up (toward the start), so we
+        // subtract from the offset.
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y as f64 * WHEEL_LINE_PX,
+            MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+        };
+        if dy == 0.0 {
+            return;
+        }
+        match self.mode {
+            Mode::Edit => {
+                if self.rail_rect().contains(self.last_mouse) {
+                    let m = self.rail_metrics(self.rail_rect());
+                    if m.max_scroll > 0.0 {
+                        self.rail_scroll = (self.rail_scroll - dy).clamp(0.0, m.max_scroll);
+                        *handled = true;
+                    }
+                }
+            }
+            Mode::Overview => {
+                let (_, _, max_scroll) = self.compute_overview();
+                if max_scroll > 0.0 {
+                    self.overview_scroll = (self.overview_scroll - dy).clamp(0.0, max_scroll);
+                    *handled = true;
+                }
+            }
+            Mode::Present => {}
         }
     }
 
@@ -2954,12 +3915,20 @@ impl SlidesApp {
             && !self.editing_text
             && !self.editing_notes
             && matches!(key, Key::Named(NamedKey::Escape))
-            && self.rail_layout() == SplitLayout::Overlay
-            && self.rail_open()
         {
-            self.rail_flap.close();
-            *handled = true;
-            return;
+            let mut dismissed = false;
+            if self.rail_layout() == SplitLayout::Overlay && self.rail_open() {
+                self.rail_flap.close();
+                dismissed = true;
+            }
+            if self.inspector_layout() == SplitLayout::Overlay && self.inspector_open() {
+                self.inspector_flap.close();
+                dismissed = true;
+            }
+            if dismissed {
+                *handled = true;
+                return;
+            }
         }
 
         // Overview (slide-sorter) navigation.
@@ -3348,6 +4317,36 @@ mod tests {
     }
 
     #[test]
+    fn inserting_a_shape_writes_through_to_the_crdt_deck() {
+        // The primary edit path: a keypress mutates the shared Automerge doc and
+        // the in-memory mirror reflects it — not a local-only cache.
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+        let before = app.slide().map(|s| s.elements.len()).unwrap_or(0);
+
+        let mut handled = false;
+        app.on_key(
+            &mut doc,
+            &Key::Character("r".into()),
+            Some("r"),
+            &Modifiers::default(),
+            &mut handled,
+        );
+        assert!(handled, "'r' is handled as insert-rectangle");
+        // Reload a *fresh* mirror straight from the document to prove the write
+        // landed in the CRDT, not just the widget's cache.
+        let reloaded = crate::doc::SlidesDoc::load(&doc).expect("deck round-trips from the doc");
+        assert_eq!(
+            reloaded.slides[app.cur_slide].elements.len(),
+            before + 1,
+            "the inserted shape is persisted in the document"
+        );
+        assert!(app.sel.is_some(), "the freshly inserted element is selected");
+    }
+
+    #[test]
     fn present_advances_and_reverses_via_real_handler() {
         let mut app = presenting_app();
         assert_eq!(app.mode, Mode::Present);
@@ -3461,6 +4460,52 @@ mod tests {
     }
 
     #[test]
+    fn present_slide_cache_avoids_reshaping_each_frame() {
+        // Present mode pumps animation frames to tick the speaker clock; the
+        // slide underneath must NOT be re-shaped every frame. The first frame
+        // shapes + caches; subsequent frames at the same slide/size just append
+        // the cached scene, and navigation invalidates it.
+        let mut app = presenting_app();
+        app.cur_slide = 1; // a heavier slide (title + multi-line body + figure)
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        let theme = Theme::dark();
+        let pal = app.palette(&theme);
+        let mut tr = TextRenderer::new();
+        let dest = Rect::new(100.0, 50.0, 1180.0, 660.0);
+
+        // Cold frame: shapes every element and fills the cache.
+        let mut scene = Scene::new();
+        let t0 = std::time::Instant::now();
+        app.append_present_slide(&mut scene, Affine::IDENTITY, &mut tr, &theme, &pal, dest);
+        let cold = t0.elapsed();
+        assert!(app.present_cache.is_some(), "first frame populates the cache");
+
+        // Warm frames: same slide/size ⇒ cache hit, a scene append with no
+        // re-shaping.
+        let t1 = std::time::Instant::now();
+        for _ in 0..20 {
+            let mut s = Scene::new();
+            app.append_present_slide(&mut s, Affine::IDENTITY, &mut tr, &theme, &pal, dest);
+        }
+        let warm_avg = t1.elapsed() / 20;
+        assert!(
+            warm_avg * 2 < cold,
+            "cached present frame ({warm_avg:?}) should be far cheaper than the cold reshape ({cold:?})"
+        );
+
+        // Navigation invalidates the cache so edits/advances still re-render.
+        app.cur_slide += 1;
+        assert!(
+            !app
+                .present_cache
+                .as_ref()
+                .unwrap()
+                .matches(dest, app.cur_slide, app.deck_rev, app.deck.palette),
+            "advancing the slide invalidates the cached render"
+        );
+    }
+
+    #[test]
     fn present_output_plan_pairs_audience_with_presenter() {
         // The documented multi-monitor seam: the plan always pairs the clean
         // audience surface with the presenter dashboard.
@@ -3489,7 +4534,7 @@ mod tests {
         s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
         let mut a = app_with(s);
         a.rect = Rect::new(0.0, 0.0, w, 800.0);
-        a.sync_rail_flap(0.0);
+        a.sync_flaps(0.0);
         a
     }
 
@@ -3564,6 +4609,50 @@ mod tests {
     }
 
     #[test]
+    fn wide_window_docks_the_inspector() {
+        let app = app_sized(NARROW_BREAKPOINT + 200.0);
+        assert_eq!(app.inspector_layout(), SplitLayout::Docked);
+        assert!(app.inspector_open(), "docked inspector is open by default");
+        let chrome = app.compute_chrome();
+        assert_eq!(chrome.inspector_layout, SplitLayout::Docked);
+        // Docked inspector is a full-width right column and the canvas ends at
+        // its left edge.
+        assert!(chrome.inspector.width() > INSPECTOR_W - 1.0, "docked inspector is full width");
+        assert!(
+            chrome.slide_dest.x1 < chrome.inspector.x0 + 1.0,
+            "canvas sits to the left of the docked inspector"
+        );
+    }
+
+    #[test]
+    fn narrow_window_collapses_inspector_to_a_closed_overlay() {
+        // Below the inspector breakpoint the inspector becomes a closed flap and
+        // the canvas reclaims its column (spanning to the right edge).
+        let app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
+        assert_eq!(app.inspector_layout(), SplitLayout::Overlay);
+        assert!(!app.inspector_open(), "overlay inspector is closed by default");
+        let chrome = app.compute_chrome();
+        assert!(chrome.inspector.x0 >= app.rect.x1 - 1.0, "closed inspector is off-screen right");
+        // A toggle is offered to summon it.
+        assert!(
+            chrome.buttons.iter().any(|b| matches!(b.hit, Hit::ToggleInspector)),
+            "narrow layout offers an inspector toggle"
+        );
+    }
+
+    #[test]
+    fn inspector_toggle_hit_opens_the_overlay_flap() {
+        let mut app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
+        let mut doc = AutoCommit::new();
+        assert!(!app.inspector_open());
+        // Drive the real action dispatcher, not a private setter.
+        app.apply_hit(&mut doc, Hit::ToggleInspector);
+        assert!(app.inspector_open(), "ToggleInspector opens the collapsed flap");
+        app.apply_hit(&mut doc, Hit::ToggleInspector);
+        assert!(!app.inspector_open(), "ToggleInspector closes it again");
+    }
+
+    #[test]
     fn resizing_across_the_breakpoint_returns_to_the_layout_default() {
         let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
         // User opens the flap while narrow.
@@ -3579,5 +4668,443 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT - 200.0, 800.0);
         app.rail_flap.reconcile(app.rail_layout());
         assert!(!app.rail_open(), "overlay default is closed after re-narrowing");
+    }
+
+    #[test]
+    fn same_instance_reflows_both_panels_wide_then_narrow() {
+        // The breakpoint MUST be re-derived from the *current* width every
+        // frame, not cached at construction — resize a single instance wide,
+        // then narrow, and confirm both panels flip layout.
+        let mut app = app_sized(1280.0);
+        assert_eq!(app.rail_layout(), SplitLayout::Docked);
+        assert_eq!(app.inspector_layout(), SplitLayout::Docked);
+        let wide = app.compute_chrome();
+        assert_eq!(wide.layout, SplitLayout::Docked);
+        assert_eq!(wide.inspector_layout, SplitLayout::Docked);
+
+        // Simulate a resize down to a phone-ish width and run the per-frame
+        // flap sync (the real path) — both panels must become overlay flaps and
+        // the canvas must span the full width.
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.sync_flaps(0.0);
+        assert_eq!(app.rail_layout(), SplitLayout::Overlay, "rail reflows to overlay");
+        assert_eq!(app.inspector_layout(), SplitLayout::Overlay, "inspector reflows to overlay");
+        let narrow = app.compute_chrome();
+        assert_eq!(narrow.layout, SplitLayout::Overlay);
+        assert_eq!(narrow.inspector_layout, SplitLayout::Overlay);
+        assert!(
+            narrow.slide_dest.x1 > 560.0 - RAIL_W,
+            "canvas reclaims the collapsed panels' width when narrow"
+        );
+    }
+
+    // --- scrolling ----------------------------------------------------------
+
+    /// An edit-mode app over a deck long enough to overflow the rail.
+    fn tall_editor(slide_count: usize, h: f64) -> SlidesApp {
+        let mut slides = Vec::new();
+        for _ in 0..slide_count {
+            let mut s = Slide::new(Layout::TitleContent);
+            s.add(Element::text("slide", 96.0, 90.0, 1000.0, 100.0, 40.0));
+            slides.push(s);
+        }
+        let mut a = SlidesApp::new();
+        a.deck = Deck { title: "t".into(), palette: PaletteKind::Indigo, slides };
+        a.cur_slide = 0;
+        a.bootstrapped = true;
+        a.rect = Rect::new(0.0, 0.0, 1280.0, h);
+        a.sync_flaps(0.0);
+        a
+    }
+
+    #[test]
+    fn wheel_scrolls_the_thumbnail_rail_only_over_the_rail() {
+        let mut app = tall_editor(16, 560.0);
+        let m = app.rail_metrics(app.rail_rect());
+        assert!(m.max_scroll > 0.0, "a 16-slide rail overflows a 560px window");
+
+        // Pointer over the rail → wheel scrolls it (down).
+        let rail = app.rail_rect();
+        app.last_mouse = Point::new(rail.center().x, rail.center().y);
+        let mut handled = false;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+        assert!(handled, "wheel over the rail is handled");
+        assert!(app.rail_scroll > 0.0, "wheel over the rail scrolls it");
+
+        // Overscroll clamps to the maximum, so every thumbnail stays reachable.
+        for _ in 0..40 {
+            let mut h = false;
+            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
+        }
+        assert!((app.rail_scroll - m.max_scroll).abs() < 1.0, "rail scroll clamps to max");
+
+        // Pointer over the canvas → the rail does not move.
+        app.rail_scroll = 0.0;
+        app.last_mouse = Point::new(app.rect.x1 - 80.0, app.rect.center().y);
+        let mut h2 = false;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut h2);
+        assert_eq!(app.rail_scroll, 0.0, "wheel over the canvas leaves the rail alone");
+    }
+
+    #[test]
+    fn wheel_scrolls_overview_and_last_slide_becomes_reachable() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        app.bootstrapped = true;
+        app.mode = Mode::Overview;
+        // 800x600 is exactly the size the prior review reported cutting off slide 5.
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let (_, _, max_scroll) = app.compute_overview();
+        assert!(max_scroll > 0.0, "the 5-slide deck overflows the 800x600 overview");
+
+        let mut handled = false;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+        assert!(handled && app.overview_scroll > 0.0, "wheel scrolls the overview");
+
+        // Scroll to the very end and confirm the last slide's card is on-screen.
+        for _ in 0..60 {
+            let mut h = false;
+            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
+        }
+        assert!((app.overview_scroll - max_scroll).abs() < 1.0, "overview scroll clamps to max");
+        let (area, thumbs, _) = app.compute_overview();
+        let last = thumbs.last().expect("a slide").1;
+        assert!(
+            last.y0 < area.y1 && last.y1 > area.y0,
+            "the last slide is inside the viewport once scrolled to the end"
+        );
+    }
+
+    #[test]
+    fn overview_scrollbar_thumb_drag_scrolls_the_grid() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        app.bootstrapped = true;
+        app.mode = Mode::Overview;
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let (area, _, max_scroll) = app.compute_overview();
+        let (_, thumb) = scrollbar_rects(area, 0.0, max_scroll).expect("overflow ⇒ scrollbar");
+        // Start a thumb drag (the real on_press path constructs this), then move.
+        app.drag = Drag::ScrollOverview { start_y: thumb.center().y, orig_scroll: 0.0 };
+        app.drag_move(Point::new(thumb.center().x, thumb.center().y + 120.0));
+        assert!(app.overview_scroll > 0.0, "dragging the thumb down scrolls the grid");
+    }
+
+    // --- present mode rests -------------------------------------------------
+
+    #[test]
+    fn present_mode_rests_when_idle_and_wakes_for_a_transition() {
+        let mut app = presenting_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        // Settle the flaps so nothing is mid-animation.
+        for _ in 0..3 {
+            app.sync_flaps(1.0);
+        }
+        assert!(
+            !app.needs_animation_frame(),
+            "a settled present mode does not request frames at vsync"
+        );
+        // A navigation kicks off a bounded cross-fade → frames pump again.
+        app.next_slide(1);
+        assert!(app.needs_animation_frame(), "a live cross-fade pumps frames");
+    }
+
+    // --- toolbar overflow menu ---------------------------------------------
+
+    fn seeded_doc(app: &SlidesApp) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        doc
+    }
+
+    /// Does any toolbar button or open-menu row carry a hit satisfying `want`?
+    fn insert_reachable(chrome: &Chrome, want: impl Fn(&Hit) -> bool) -> bool {
+        chrome
+            .buttons
+            .iter()
+            .chain(chrome.menu_buttons.iter())
+            .any(|b| want(&b.hit))
+    }
+
+    #[test]
+    fn narrow_toolbar_keeps_every_insert_tool_pointer_reachable() {
+        // At 560px the toolbar can't show every insert tool, so it must offer a
+        // ⋯ overflow button — and opening it must surface ALL of them. Nothing
+        // is ever silently dropped (the old bug).
+        let mut app = app_sized(560.0);
+        app.sel = None;
+        let mut doc = seeded_doc(&app);
+        app.reload(&doc);
+
+        let chrome = app.compute_chrome();
+        let ovf = chrome
+            .buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
+            .expect("a narrow toolbar offers a ⋯ overflow button");
+        let ovf_rect = ovf.rect;
+        assert!(
+            ovf_rect.width() > 1.0 && app.rect.contains(ovf_rect.center()),
+            "the ⋯ button is on-screen and clickable"
+        );
+
+        // Drive a real click on the ⋯ button — it opens the menu.
+        let mut handled = false;
+        app.last_mouse = ovf_rect.center();
+        app.on_press(&mut doc, ovf_rect.center(), &mut handled);
+        assert!(handled && app.toolbar_menu_open, "clicking ⋯ opens the overflow menu");
+
+        // With the menu open, bar + rows together cover every insert tool.
+        let chrome = app.compute_chrome();
+        assert!(chrome.menu_bg.is_some(), "the open menu has a panel");
+        assert!(insert_reachable(&chrome, |h| matches!(h, Hit::NewSlide)), "New slide reachable");
+        for k in [
+            ElementKind::Text,
+            ElementKind::Rect,
+            ElementKind::Ellipse,
+            ElementKind::Line,
+            ElementKind::Image,
+        ] {
+            assert!(
+                insert_reachable(&chrome, |h| matches!(h, Hit::Insert(kk) if *kk == k)),
+                "{k:?} insert tool stays reachable via bar or overflow menu"
+            );
+        }
+        // Every menu row is inside the window (a real pointer target).
+        for b in &chrome.menu_buttons {
+            assert!(app.rect.contains(b.rect.center()), "menu row is on-screen: {:?}", b.rect);
+        }
+    }
+
+    #[test]
+    fn wide_toolbar_shows_every_tool_without_an_overflow_button() {
+        // At the default width all six tools fit, so there is no ⋯ button and no
+        // menu — the overflow affordance appears only when it's actually needed.
+        let mut app = app_sized(1280.0);
+        app.sel = None;
+        let chrome = app.compute_chrome();
+        assert!(
+            !chrome.buttons.iter().any(|b| matches!(b.hit, Hit::ToggleToolbarMenu)),
+            "no ⋯ button when every tool fits"
+        );
+        assert!(chrome.menu_bg.is_none(), "no menu when nothing overflows");
+        for k in [
+            ElementKind::Text,
+            ElementKind::Rect,
+            ElementKind::Ellipse,
+            ElementKind::Line,
+            ElementKind::Image,
+        ] {
+            assert!(
+                chrome.buttons.iter().any(|b| matches!(&b.hit, Hit::Insert(kk) if *kk == k)),
+                "{k:?} sits directly on the wide toolbar"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_an_overflow_menu_row_inserts_that_element() {
+        let mut app = app_sized(560.0);
+        let mut doc = seeded_doc(&app);
+        app.reload(&doc);
+        app.toolbar_menu_open = true;
+        let before = app.slide().unwrap().elements.len();
+
+        let chrome = app.compute_chrome();
+        let row = chrome
+            .menu_buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::Insert(ElementKind::Rect)))
+            .expect("the Rectangle tool is in the overflow menu at 560px");
+        let p = row.rect.center();
+        let mut handled = false;
+        app.last_mouse = p;
+        app.on_press(&mut doc, p, &mut handled);
+        assert!(handled, "clicking a menu row is handled");
+        assert!(!app.toolbar_menu_open, "picking a tool closes the menu");
+        assert_eq!(
+            app.slide().unwrap().elements.len(),
+            before + 1,
+            "the chosen shape was actually inserted"
+        );
+    }
+
+    #[test]
+    fn clicking_outside_the_open_menu_dismisses_it() {
+        let mut app = app_sized(560.0);
+        let mut doc = seeded_doc(&app);
+        app.reload(&doc);
+        app.toolbar_menu_open = true;
+        // A click well below the toolbar (on the empty canvas) closes the menu.
+        let p = Point::new(app.rect.center().x, app.rect.y1 - 20.0);
+        let mut handled = false;
+        app.last_mouse = p;
+        app.on_press(&mut doc, p, &mut handled);
+        assert!(handled && !app.toolbar_menu_open, "a click-away dismisses the overflow menu");
+    }
+
+    // --- deck-theme palette pills ------------------------------------------
+
+    #[test]
+    fn deck_theme_pills_fit_their_full_labels_and_never_overlap() {
+        // Docked inspector, nothing selected → the slide-level inspector shows
+        // the five deck-theme pills. Each must be wide enough that its full name
+        // fits (drawn from `dot.x1 + 6`), and pills on a row must not overlap —
+        // this is the exact geometry `draw_button` paints, so the assertion is
+        // on the real path.
+        let mut app = app_sized(1280.0);
+        app.sel = None;
+        let chrome = app.compute_chrome();
+        let pills: Vec<&UiButton> = chrome
+            .buttons
+            .iter()
+            .filter(|b| matches!(b.kind, ButtonKind::Palette { .. }) && chrome.inspector.contains(b.rect.center()))
+            .collect();
+        assert_eq!(pills.len(), PaletteKind::ALL.len(), "all five theme pills are present");
+        for b in &pills {
+            if let ButtonKind::Palette { kind, .. } = &b.kind {
+                let label_right = b.rect.x0 + 26.0 + chrome::est_width(kind.label(), 12.0);
+                assert!(
+                    label_right <= b.rect.x1 + 0.5,
+                    "'{}' pill is wide enough for its full label (label right {:.1} <= pill right {:.1})",
+                    kind.label(),
+                    label_right,
+                    b.rect.x1
+                );
+            }
+        }
+        for (i, a) in pills.iter().enumerate() {
+            for b in &pills[i + 1..] {
+                let same_row = (a.rect.y0 - b.rect.y0).abs() < 1.0;
+                if same_row {
+                    assert!(
+                        a.rect.x1 <= b.rect.x0 + 0.5 || b.rect.x1 <= a.rect.x0 + 0.5,
+                        "deck-theme pills on the same row must not overlap"
+                    );
+                }
+            }
+        }
+    }
+
+    // --- selection handles clear content -----------------------------------
+
+    #[test]
+    fn selection_handles_never_cover_the_element_content() {
+        // A left-anchored text box: every resize handle's visible pip must sit
+        // outside the content rect, so it can't cover the first glyph (the 'G'
+        // of a left-aligned title was the reported bug).
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::text("Goals for this phase", 100.0, 100.0, 600.0, 90.0, 40.0));
+        let mut app = app_with(s);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sel = Some(id);
+        app.sync_flaps(0.0);
+        let chrome = app.compute_chrome();
+        let el = app.selected_element().expect("a selected element").clone();
+        let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
+        for (h, hr) in app.handles_of(chrome.slide_dest, chrome.scale, &el) {
+            // The painted pip is the grab rect inset by 4 (see `draw_editor`).
+            let vis = hr.inflate(-4.0, -4.0);
+            let overlaps = vis.x0 < er.x1 && vis.x1 > er.x0 && vis.y0 < er.y1 && vis.y1 > er.y0;
+            assert!(
+                !overlaps,
+                "handle {h:?} pip {vis:?} must not overlap the content rect {er:?}"
+            );
+        }
+    }
+
+    // --- image insertion (real decode + real portal seam) -------------------
+
+    fn write_png(name: &str, w: u32, h: u32) -> std::path::PathBuf {
+        use image::{Rgb, RgbImage};
+        let mut img = RgbImage::new(w, h);
+        for (x, _y, px) in img.enumerate_pixels_mut() {
+            *px = Rgb([(x % 256) as u8, 90, 140]);
+        }
+        let path = std::env::temp_dir().join(name);
+        img.save(&path).expect("write test png");
+        path
+    }
+
+    #[test]
+    fn image_store_decodes_a_real_png_and_fails_gracefully() {
+        use crate::assets::{ImageState, ImageStore};
+        let path = write_png("slides-unit-decode.png", 8, 6);
+        let key = path.to_string_lossy().to_string();
+        let store = ImageStore::new();
+        store.load_blocking(&key);
+        match store.get(&key) {
+            ImageState::Ready(img) => {
+                assert_eq!((img.width, img.height), (8, 6), "decoded dimensions match the file");
+            }
+            _ => panic!("a real PNG must decode to Ready"),
+        }
+        store.load_blocking("/no/such/file/anywhere.png");
+        assert!(
+            matches!(store.get("/no/such/file/anywhere.png"), ImageState::Failed),
+            "a missing file resolves to Failed, not a panic"
+        );
+    }
+
+    #[test]
+    fn image_tool_requests_the_host_portal_then_a_pick_inserts_a_real_image() {
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+        let before = app.slide().map(|s| s.elements.len()).unwrap_or(0);
+
+        // The Image tool asks the host portal for a file WITHOUT fabricating an
+        // element and WITHOUT drawing any in-app picker (HIG §5).
+        app.apply_hit(&mut doc, Hit::Insert(ElementKind::Image));
+        assert!(
+            app.portal_rx.is_some(),
+            "the Image tool opens the host portal chooser (a real request is in flight)"
+        );
+        assert_eq!(
+            app.slide().unwrap().elements.len(),
+            before,
+            "no element is inserted until the portal returns a chosen file"
+        );
+
+        // Feed the exact per-frame drain path a chosen-file outcome and confirm
+        // it lands a real image element (with its src) in the CRDT.
+        let path = write_png("slides-unit-insert.png", 12, 8);
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Opened(path.clone()),
+        ));
+        app.drain_portal(&mut doc);
+        assert!(app.portal_rx.is_none(), "a resolved portal request clears the channel");
+
+        let reloaded = crate::doc::SlidesDoc::load(&doc).expect("deck round-trips");
+        let el = reloaded.slides[app.cur_slide]
+            .elements
+            .last()
+            .expect("an element was inserted");
+        assert_eq!(el.kind, ElementKind::Image, "the inserted element is an image");
+        assert_eq!(el.src, path.to_string_lossy(), "the chosen path is persisted as its src");
+        assert_eq!(app.sel.as_deref(), Some(el.id.as_str()), "the new image is selected");
+    }
+
+    #[test]
+    fn a_cancelled_portal_pick_inserts_nothing() {
+        // Dismissing the host chooser must not fabricate a placeholder element.
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+        let before = app.slide().map(|s| s.elements.len()).unwrap_or(0);
+
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Cancelled,
+        ));
+        app.drain_portal(&mut doc);
+        assert!(app.portal_rx.is_none(), "a cancel clears the in-flight channel");
+        app.reload(&doc);
+        assert_eq!(
+            app.slide().unwrap().elements.len(),
+            before,
+            "a cancelled pick leaves the slide untouched"
+        );
     }
 }
