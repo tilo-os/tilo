@@ -31,6 +31,45 @@ fn main() {
     }
     println!();
 
+    println!("== sandbox probes ==");
+    // Paths that bwrap bind-mounts INTO the sandbox but Landlock does NOT
+    // grant. If Landlock is enforcing, opening these fails EACCES/EPERM.
+    // If Landlock is inactive, these succeed (bwrap alone can't stop them).
+    for path in ["/proc/self/status", "/etc/passwd"] {
+        // Bounded read — some /proc entries never EOF.
+        let mut buf = [0u8; 128];
+        match std::fs::File::open(path).and_then(|mut f| {
+            use std::io::Read;
+            f.read(&mut buf)
+        }) {
+            Ok(n) => println!("  read({path:>25}): OK ({n} bytes)"),
+            Err(e) => println!(
+                "  read({path:>25}): {} — blocked (bwrap or Landlock)",
+                e.kind()
+            ),
+        }
+    }
+    // Paths Landlock DOES grant — should succeed.
+    for path in ["/tmp", "/qos-launcher"] {
+        match std::fs::metadata(path) {
+            Ok(_) => println!("  stat({path:>25}): OK"),
+            Err(e) => println!("  stat({path:>25}): {} — unexpected!", e.kind()),
+        }
+    }
+    // Writing to /tmp should succeed (Landlock rw).
+    match std::fs::write("/tmp/qos-hello-probe", b"hello") {
+        Ok(()) => println!("  write(/tmp/qos-hello-probe): OK"),
+        Err(e) => println!("  write(/tmp/qos-hello-probe): {} — unexpected!", e.kind()),
+    }
+    // Writing to a Landlock-denied location should fail. /var/qos-apps
+    // is bind-mounted r/o by bwrap so this would also fail without
+    // Landlock — but Landlock adds defence-in-depth.
+    match std::fs::write("/var/qos-apps/probe", b"hello") {
+        Ok(()) => println!("  write(/var/qos-apps/probe): OK — unexpected!"),
+        Err(e) => println!("  write(/var/qos-apps/probe): {} — blocked (bwrap or Landlock)", e.kind()),
+    }
+    println!();
+
     println!("qos-hello: done.");
 }
 
