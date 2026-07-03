@@ -26,6 +26,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -44,6 +45,28 @@ pub const TILE_PX: f64 = 256.0;
 /// 256 KiB, so 512 tiles ≈ 128 MiB worst case — comfortable, and far more
 /// than any single viewport needs (a 4K screen covers < 150 tiles).
 const MEM_CACHE_CAP: usize = 512;
+
+/// First retry delay for a tile whose fetch failed. The delay doubles on each
+/// consecutive failure (see [`FAIL_BACKOFF_MAX`]).
+const FAIL_BACKOFF_MIN: Duration = Duration::from_secs(2);
+/// Ceiling for the failed-tile backoff. A tile server that is persistently
+/// unreachable is retried at most this often, never per-frame.
+const FAIL_BACKOFF_MAX: Duration = Duration::from_secs(300);
+/// Cap on the negative-cache size so a long pan across an unreachable region
+/// can't grow it without bound.
+const FAIL_CACHE_CAP: usize = 4096;
+
+/// Negative-cache entry for a tile whose fetch failed. It suppresses further
+/// requests for that tile until `retry_at`, backing off exponentially so an
+/// unreachable server is not hammered and the draw loop can idle instead of
+/// re-requesting the same doomed tile every frame.
+#[derive(Clone, Copy)]
+struct FailedFetch {
+    /// Earliest instant at which the tile may be requested again.
+    retry_at: Instant,
+    /// Current backoff window; doubles per failure up to [`FAIL_BACKOFF_MAX`].
+    delay: Duration,
+}
 
 /// Public OSM raster endpoint. The standard tile server; we send a descriptive
 /// User-Agent per the OSM tile usage policy.
@@ -83,8 +106,8 @@ impl TileId {
         PathBuf::from(format!("{}/{}/{}.png", self.z, self.x, self.y))
     }
 
-    fn url(&self) -> String {
-        format!("{TILE_URL}/{}/{}/{}.png", self.z, self.x, self.y)
+    fn url(&self, base: &str) -> String {
+        format!("{base}/{}/{}/{}.png", self.z, self.x, self.y)
     }
 }
 
@@ -144,6 +167,11 @@ pub struct TileLayer {
     /// Tiles already requested and awaiting the worker, so we don't enqueue
     /// the same tile twice per frame.
     inflight: std::collections::HashSet<TileId>,
+    /// Tiles whose most recent fetch failed, with an exponential backoff. A
+    /// tile in here is not re-requested until its backoff elapses — this is
+    /// what stops a doomed tile from being re-fetched every frame (which would
+    /// both spin the CPU and hammer the public tile server).
+    failed: HashMap<TileId, FailedFetch>,
     /// Channel to the worker; `None` in headless/offline mode (no worker).
     job_tx: Option<Sender<Job>>,
     /// Finished tiles + download ticks arrive here.
@@ -164,17 +192,26 @@ impl TileLayer {
     /// worker still runs off the UI thread; the on-disk cache lives under
     /// `cache_dir`. Used by tests to point the cache at a temp dir.
     pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
+        Self::with_cache_dir_and_base(cache_dir, TILE_URL.to_string())
+    }
+
+    /// Live tile layer with an explicit tile-server base URL. The default
+    /// (`with_cache_dir`) uses the public OSM endpoint; a custom base lets a
+    /// test exercise the real fetch→fail→negative-cache path against a local
+    /// (closed-port) server without ever touching the public server.
+    fn with_cache_dir_and_base(cache_dir: PathBuf, base_url: String) -> Self {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
         let dir = cache_dir.clone();
         std::thread::Builder::new()
             .name("maps-tiles".into())
-            .spawn(move || worker(job_rx, done_tx, dir))
+            .spawn(move || worker(job_rx, done_tx, dir, base_url))
             .expect("spawn maps tile worker");
         Self {
             mem: HashMap::new(),
             lru: VecDeque::new(),
             inflight: std::collections::HashSet::new(),
+            failed: HashMap::new(),
             job_tx: Some(job_tx),
             done_rx: Some(done_rx),
             cache_dir,
@@ -189,6 +226,7 @@ impl TileLayer {
             mem: HashMap::new(),
             lru: VecDeque::new(),
             inflight: std::collections::HashSet::new(),
+            failed: HashMap::new(),
             job_tx: None,
             done_rx: None,
             cache_dir: default_cache_dir(),
@@ -279,10 +317,16 @@ impl TileLayer {
             match msg {
                 Done::Tile { id, rgba } => {
                     self.inflight.remove(&id);
-                    if let Some((rgba, w, h)) = rgba {
-                        if let Some(img) = make_image(rgba, w, h) {
-                            self.insert(id, DecodedTile { image: img });
+                    match rgba {
+                        Some((rgba, w, h)) => {
+                            // A successful fetch clears any negative-cache entry
+                            // so a recovered tile loads normally next time.
+                            self.failed.remove(&id);
+                            if let Some(img) = make_image(rgba, w, h) {
+                                self.insert(id, DecodedTile { image: img });
+                            }
                         }
+                        None => self.note_failure(id),
                     }
                 }
                 Done::Download { ok } => {
@@ -315,15 +359,61 @@ impl TileLayer {
         !self.inflight.is_empty()
     }
 
-    /// Request `id` from the worker if it isn't already resident or inflight.
-    /// Returns immediately — the UI thread never blocks on I/O or decode.
+    /// Whether at least one recent tile fetch failed and is backing off. Lets
+    /// the map distinguish "still loading imagery" from "imagery unreachable"
+    /// (egress blocked / offline) for the loading affordance.
+    pub fn has_failures(&self) -> bool {
+        !self.failed.is_empty()
+    }
+
+    /// Request `id` from the worker if it isn't already resident, inflight, or
+    /// suppressed by the failure backoff. Returns immediately — the UI thread
+    /// never blocks on I/O or decode.
     pub fn request(&mut self, id: TileId) {
         if self.mem.contains_key(&id) || self.inflight.contains(&id) {
             return;
         }
+        // Negative cache: a tile whose fetch recently failed is not requested
+        // again until its backoff elapses. Without this, `draw_tiles` would
+        // re-request every non-resident tile every frame, so an unfetchable
+        // tile would spin the loop (it never idles while `has_inflight`) and
+        // hammer the tile server. The entry is kept until a later fetch
+        // succeeds, so repeated failures keep doubling the delay.
+        if let Some(f) = self.failed.get(&id) {
+            if Instant::now() < f.retry_at {
+                return;
+            }
+        }
         if let Some(tx) = &self.job_tx {
             if tx.send(Job::Fetch(id)).is_ok() {
                 self.inflight.insert(id);
+            }
+        }
+    }
+
+    /// Record a failed fetch, extending this tile's backoff. The first failure
+    /// waits [`FAIL_BACKOFF_MIN`]; each consecutive failure doubles the window
+    /// up to [`FAIL_BACKOFF_MAX`].
+    fn note_failure(&mut self, id: TileId) {
+        let now = Instant::now();
+        let delay = match self.failed.get(&id) {
+            Some(f) => (f.delay * 2).min(FAIL_BACKOFF_MAX),
+            None => FAIL_BACKOFF_MIN,
+        };
+        self.failed.insert(
+            id,
+            FailedFetch {
+                retry_at: now + delay,
+                delay,
+            },
+        );
+        if self.failed.len() > FAIL_CACHE_CAP {
+            // Entries whose backoff already elapsed no longer suppress a
+            // request, so dropping them keeps the map bounded without causing a
+            // re-request storm (only visible tiles are ever requested).
+            self.failed.retain(|_, f| f.retry_at > now);
+            if self.failed.len() > FAIL_CACHE_CAP {
+                self.failed.clear();
             }
         }
     }
@@ -381,6 +471,7 @@ impl TileLayer {
         self.mem.clear();
         self.lru.clear();
         self.inflight.clear();
+        self.failed.clear();
         self.progress = DownloadProgress::default();
         let freed = dir_size(&self.cache_dir);
         let _ = std::fs::remove_dir_all(&self.cache_dir);
@@ -413,6 +504,30 @@ impl TileLayer {
             self.lru.remove(pos);
         }
         self.lru.push_back(id);
+    }
+
+    // --- test hooks --------------------------------------------------------
+    /// A live layer whose worker fetches from `base_url` instead of the public
+    /// OSM server — so a test can drive the real fetch→fail→negative-cache path
+    /// against a local (closed-port) endpoint without any external traffic.
+    #[cfg(test)]
+    fn with_cache_dir_url(cache_dir: PathBuf, base_url: String) -> Self {
+        Self::with_cache_dir_and_base(cache_dir, base_url)
+    }
+
+    /// The current backoff window recorded for a failed tile, if any.
+    #[cfg(test)]
+    fn failed_delay(&self, id: TileId) -> Option<Duration> {
+        self.failed.get(&id).map(|f| f.delay)
+    }
+
+    /// Whether a tile is currently suppressed by the failure backoff.
+    #[cfg(test)]
+    fn is_backing_off(&self, id: TileId) -> bool {
+        self.failed
+            .get(&id)
+            .map(|f| Instant::now() < f.retry_at)
+            .unwrap_or(false)
     }
 }
 
@@ -473,7 +588,7 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 
 /// Background worker: services fetch + download jobs entirely off the UI
 /// thread. Disk cache first, then network; decode happens here too.
-fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf) {
+fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: String) {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
@@ -482,7 +597,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf) {
     while let Ok(job) = rx.recv() {
         match job {
             Job::Fetch(id) => {
-                let rgba = load_tile(&client, &cache_dir, id);
+                let rgba = load_tile(&client, &cache_dir, &base_url, id);
                 if tx.send(Done::Tile { id, rgba }).is_err() {
                     break;
                 }
@@ -494,7 +609,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf) {
                 let ok = if path.exists() {
                     true
                 } else {
-                    fetch_to_disk(&client, &cache_dir, id)
+                    fetch_to_disk(&client, &cache_dir, &base_url, id)
                 };
                 if tx.send(Done::Download { ok }).is_err() {
                     break;
@@ -509,6 +624,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf) {
 fn load_tile(
     client: &Option<reqwest::blocking::Client>,
     cache_dir: &std::path::Path,
+    base_url: &str,
     id: TileId,
 ) -> Option<(Vec<u8>, u32, u32)> {
     let path = cache_dir.join(id.cache_rel());
@@ -518,7 +634,11 @@ fn load_tile(
         }
     }
     let client = client.as_ref()?;
-    let bytes = client.get(id.url()).send().ok()?.bytes().ok()?;
+    let resp = client.get(id.url(base_url)).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().ok()?;
     let decoded = decode_png(&bytes).ok()?;
     write_cache(&path, &bytes);
     Some(decoded)
@@ -528,13 +648,14 @@ fn load_tile(
 fn fetch_to_disk(
     client: &Option<reqwest::blocking::Client>,
     cache_dir: &std::path::Path,
+    base_url: &str,
     id: TileId,
 ) -> bool {
     let Some(client) = client.as_ref() else {
         return false;
     };
     let path = cache_dir.join(id.cache_rel());
-    match client.get(id.url()).send().and_then(|r| r.bytes()) {
+    match client.get(id.url(base_url)).send().and_then(|r| r.bytes()) {
         Ok(bytes) if decode_png(&bytes).is_ok() => {
             write_cache(&path, &bytes);
             true
@@ -931,5 +1052,95 @@ mod tests {
         assert_eq!(prog.failed, 0, "cached tiles should not fail");
 
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    // --- Failed-tile negative cache ----------------------------------------
+
+    /// A closed local port: connecting is refused immediately, so a fetch fails
+    /// fast and hermetically — no external server is ever contacted.
+    fn closed_local_base() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port so subsequent connects are refused
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// The core of the fix: a tile whose *real* fetch fails must be
+    /// negative-cached, so a subsequent `request()` (what `draw_tiles` issues
+    /// every frame for each non-resident tile) is suppressed and does NOT
+    /// enqueue new work or mark the tile in-flight. This is what stops the
+    /// per-frame refetch spin and the tile-server hammering. Exercises the full
+    /// production path: request → worker → HTTP failure → drain → suppression.
+    #[test]
+    fn failed_fetch_is_negative_cached_and_suppresses_refetch() {
+        let cache = temp_cache();
+        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+        let id = TileId::new(14, 8801, 5681);
+
+        // First request is dispatched and marked in-flight.
+        layer.request(id);
+        assert!(layer.is_inflight(id), "first request should be in-flight");
+
+        // Wait for the (fast) connection-refused failure to arrive via drain.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && layer.is_inflight(id) {
+            layer.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!layer.is_inflight(id), "a failed fetch must clear in-flight");
+        assert!(layer.get(id).is_none(), "a failed tile is not resident");
+        assert!(layer.is_backing_off(id), "a failed tile must be negative-cached");
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+
+        // The decisive assertion: re-requesting the doomed tile is a no-op while
+        // it is backing off — no new job, nothing in flight. `has_inflight()`
+        // therefore stays false, which is what lets the app's frame loop idle.
+        layer.request(id);
+        assert!(
+            !layer.is_inflight(id),
+            "a backed-off tile must not be re-requested"
+        );
+        assert!(
+            !layer.has_inflight(),
+            "no work should be in flight after a suppressed request — the loop can idle"
+        );
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// The backoff grows exponentially (bounded) across consecutive failures so
+    /// a persistently-unreachable server is retried ever more rarely, and a
+    /// later success clears the entry entirely.
+    #[test]
+    fn failure_backoff_grows_and_clears_on_success() {
+        let mut layer = TileLayer::offline();
+        let id = TileId::new(12, 1, 2);
+        layer.note_failure(id);
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+        layer.note_failure(id);
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
+        layer.note_failure(id);
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
+
+        // A resident tile (success) clears the negative cache. Simulate the
+        // success branch of `drain` by inserting the decoded tile and dropping
+        // the failure entry as that branch does.
+        layer.failed.remove(&id);
+        let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+        layer.insert(id, DecodedTile { image: img });
+        assert!(layer.failed_delay(id).is_none(), "success clears the backoff");
+        assert!(!layer.is_backing_off(id));
+    }
+
+    /// The backoff is capped so it never grows unbounded, even after many
+    /// consecutive failures.
+    #[test]
+    fn failure_backoff_is_capped() {
+        let mut layer = TileLayer::offline();
+        let id = TileId::new(10, 3, 4);
+        for _ in 0..40 {
+            layer.note_failure(id);
+        }
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
     }
 }
