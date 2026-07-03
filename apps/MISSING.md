@@ -100,20 +100,14 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Stale dead comment on `Attachment::Image` (`tint` gradient stand-in) — the
       render path ignores it; remove the misleading comment.
 
-## maps
-- [x] Unbounded failed-tile refetch loop → fixed (negative-cache + backoff; loop
-      idles once tiles resolve).
-- [ ] Directions "swap ends" (⇅) is broken: it sets origin = the selected place,
-      but destination is still read from `selected_place()`, so origin==dest and
-      it routes the destination to itself (0 min / 0 m); the "from" label stays
-      stale. Give directions a proper separate origin AND destination so swap
-      actually swaps.
-- [ ] Transit tab: clicking the Transit tab only switches the view and never
-      triggers a departures fetch, so it always shows "No itineraries found" as if
-      an empty result — actually run the lookup when the tab is selected.
-- [ ] First-run shows a fully blank dark map (no basemap/grid, no loading
-      affordance) until OSM raster tiles arrive; if egress is blocked it's a black
-      void. Show a basemap/grid + a loading/imagery affordance.
+## maps — CLEAR (verified, committed 3045573)
+- [x] Unbounded failed-tile refetch loop → fixed.
+- [x] Swap-ends (separate origin/dest + labels) → fixed.
+- [x] Transit tab triggers the departures fetch → fixed.
+- [x] First-run/offline shows a grid + "Loading map…" affordance → fixed.
+- [ ] Follow-up (not a defect): Directions origin isn't user-typeable (defaults
+      to map centre / prior route / swap); add tap-to-edit-origin + a transit
+      depart/arrive time picker. (Enhancement, not blocking.)
 
 ## typst_editor
 - [x] Horizontal scroll / keep caret in view → fixed.
@@ -132,6 +126,22 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 ## slides (presentation)
 - [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
       overlap → fixed in the last pass.
+- [ ] Deck-theme palette pills truncate labels at the DEFAULT 1280px (docked
+      inspector, nothing selected): 'Indigo'→'Indig', 'Emerald'→'Emer',
+      'Amber'→'Amb' — 5 pills sized (inner_w-32)/5 ≈ 46px but the label is drawn
+      un-clipped from dot.x1+6 and overpainted by the next pill. 3 of 5 theme
+      names unreadable. Size the pills to fit their labels (or shorten/stack).
+- [ ] At 800/560px the element-insert tools drop from the toolbar with NO
+      pointer-reachable overflow (800: Ellipse/Line/Image gone; 560: even
+      +Slide/Text/Rect gone — "reachable via keyboard" only). A pointer/touch user
+      cannot insert any element on narrow. Add an overflow menu / responsive
+      toolbar so every insert tool stays pointer-reachable at all widths.
+- [ ] Selection handles overlap the first glyph of left-anchored text (the 'G' of
+      'Goals for this phase' sits under the corner handle) at every width. Inset
+      the text or offset the handles so they don't cover content.
+- [ ] (Re-confirm the prior fixes held: rail + overview scrolling; rail action
+      buttons never overlapped by thumbnails; Image tool real-or-removed; present
+      mode wakes ~1Hz not every vsync.)
 - [ ] NO SCROLLING anywhere (rail + overview): handle_event ignores MouseWheel and
       neither the rail-thumbnail loop nor the overview applies a scroll offset — a
       deck with more slides than fit vertically loses access to them (overview at
