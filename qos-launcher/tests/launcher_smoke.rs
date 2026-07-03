@@ -116,7 +116,7 @@ fn required_service_missing_fails() {
     let opts = RunOptions {
         no_services: false,
         ..Default::default()
-    };
+        };
     let err = run_with(&m, dir.path(), &opts).unwrap_err();
     assert_eq!(err.to_exit_code(), EXIT_REQUIRED_SERVICE_MISSING);
     let msg = format!("{err}");
@@ -155,7 +155,8 @@ fn hello_world_runs() {
         no_services: false,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
-    };
+        minimal_libs: false,
+        };
     let (status, stdout) =
         run_with_captured(&m, payload.path(), &opts).expect("launch");
     assert!(status.success(), "child exited non-zero: {status:?}");
@@ -185,7 +186,8 @@ fn no_services_flag_skips_required() {
         no_services: true,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
-    };
+        minimal_libs: false,
+        };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success());
 }
@@ -213,7 +215,8 @@ fn optional_service_missing_warns_and_runs() {
         no_services: false,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
-    };
+        minimal_libs: false,
+        };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success(), "optional missing should still run");
 }
@@ -241,7 +244,8 @@ fn read_only_fs_enforced() {
         no_services: false,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
-    };
+        minimal_libs: false,
+        };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success());
 }
