@@ -93,6 +93,7 @@ fn config() -> FlatpakShareConfig {
         max_bitrate_kbps: 8000,
         target_fps: 60, // Requested; clamps to 30 in the session.
         encoder: EncoderChoice::Auto,
+        hdr: None,
     }
 }
 

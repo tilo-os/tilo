@@ -61,59 +61,84 @@ fn ensure_ffmpeg_init() {
 ///    `av_hwdevice_ctx_create`-only probe would report those hosts
 ///    as available and let `SharedFlatpakSession` construct + start
 ///    encoding, only to fail at the first frame.
-pub fn probe() -> ProbeOutcome {
+pub fn probe(codec: super::Codec) -> ProbeOutcome {
     ensure_ffmpeg_init();
-    // Codec-side check: if libavcodec wasn't built against VA-API,
-    // there's no point iterating render nodes.
-    if find_encoder("h264_vaapi").is_none() {
+    let encoder_name = match codec.libav_encoder_name(EncoderKind::VaApi) {
+        Some(name) => name,
+        None => {
+            return ProbeOutcome {
+                kind: EncoderKind::VaApi,
+                codec,
+                available: false,
+                reason: format!("VA-API has no encoder mapping for {:?}", codec),
+            };
+        }
+    };
+    // Codec-side check: if libavcodec wasn't built with this VA-API
+    // codec, there's no point iterating render nodes.
+    if find_encoder(encoder_name).is_none() {
         return ProbeOutcome {
             kind: EncoderKind::VaApi,
+            codec,
             available: false,
-            reason: "libavcodec has no h264_vaapi encoder built in".to_string(),
+            reason: format!("libavcodec has no {encoder_name} encoder built in"),
         };
     }
     let nodes = enumerate_render_nodes();
     if nodes.is_empty() {
         return ProbeOutcome {
             kind: EncoderKind::VaApi,
+            codec,
             available: false,
             reason: "no /dev/dri/renderD* nodes present on this host".to_string(),
         };
     }
-    // Full-open smoke test at 64x64. Even a JPEG-only driver will
-    // fail at avcodec_open2 — that's what we want to catch here so
-    // `SharedFlatpakSession` doesn't wire vaapi and then fail on the
-    // first frame.
-    let smoke_init = EncoderInit {
-        width: 64,
-        height: 64,
-        fps: 30,
-        bitrate_kbps: 1000,
-        keyframe_interval_secs: 2,
+    // Full-open smoke test. Bigger frame for HEVC because some drivers
+    // reject sub-QCIF for 10-bit. Even a JPEG-only driver will fail at
+    // avcodec_open2 for either codec.
+    let (w, h) = match codec {
+        super::Codec::H264 => (64u32, 64u32),
+        super::Codec::HevcMain10 => (320u32, 240u32),
+    };
+    let smoke_init = if codec.bit_depth() == 10 {
+        EncoderInit::hdr10_hevc(
+            w,
+            h,
+            30,
+            2000,
+            2,
+            crate::collab::hdr_metadata::HdrConfig::pq_reference(),
+        )
+    } else {
+        EncoderInit::sdr_h264(w, h, 30, 1000, 2)
     };
     match VaApiBackend::new(smoke_init) {
         Ok(backend) => ProbeOutcome {
             kind: EncoderKind::VaApi,
+            codec,
             available: true,
             reason: format!(
-                "h264_vaapi opened on {} (encoder open smoke test passed)",
+                "{encoder_name} opened on {} (encoder open smoke test passed)",
                 backend.render_node.display()
             ),
         },
         Err(EncoderError::Unavailable { reason, .. }) => ProbeOutcome {
             kind: EncoderKind::VaApi,
+            codec,
             available: false,
             reason: format!("hardware not available: {reason}"),
         },
         Err(EncoderError::ConfigFailed { detail, .. }) => ProbeOutcome {
             kind: EncoderKind::VaApi,
+            codec,
             available: false,
-            reason: format!("h264_vaapi refused to open: {detail}"),
+            reason: format!("{encoder_name} refused to open: {detail}"),
         },
         Err(EncoderError::EncodeFailed { detail, .. }) => ProbeOutcome {
             kind: EncoderKind::VaApi,
+            codec,
             available: false,
-            reason: format!("h264_vaapi encode-probe failed: {detail}"),
+            reason: format!("{encoder_name} encode-probe failed: {detail}"),
         },
     }
 }

@@ -48,30 +48,45 @@ fn find_encoder(name: &str) -> Option<*const ffi::AVCodec> {
 /// 1. Check `/dev/nvidia0` (or `/dev/nvidiactl`) presence.
 /// 2. Ask libavcodec if `h264_nvenc` is registered. Missing = the
 ///    ffmpeg build wasn't linked against the NVENC SDK.
-pub fn probe() -> ProbeOutcome {
+pub fn probe(codec: super::Codec) -> ProbeOutcome {
+    let encoder_name = match codec.libav_encoder_name(EncoderKind::NvEnc) {
+        Some(name) => name,
+        None => {
+            return ProbeOutcome {
+                kind: EncoderKind::NvEnc,
+                codec,
+                available: false,
+                reason: format!("NVENC has no encoder mapping for {:?}", codec),
+            };
+        }
+    };
     if !std::path::Path::new("/dev/nvidiactl").exists()
         && !std::path::Path::new("/dev/nvidia0").exists()
     {
         return ProbeOutcome {
             kind: EncoderKind::NvEnc,
+            codec,
             available: false,
             reason: "no /dev/nvidia* nodes present — non-NVIDIA host".to_string(),
         };
     }
     ensure_ffmpeg_init();
-    if find_encoder("h264_nvenc").is_none() {
+    if find_encoder(encoder_name).is_none() {
         return ProbeOutcome {
             kind: EncoderKind::NvEnc,
+            codec,
             available: false,
-            reason: "libavcodec has no h264_nvenc encoder built in \
-                     (rebuild ffmpeg with --enable-nvenc)"
-                .to_string(),
+            reason: format!(
+                "libavcodec has no {encoder_name} encoder built in \
+                 (rebuild ffmpeg with --enable-nvenc)"
+            ),
         };
     }
     ProbeOutcome {
         kind: EncoderKind::NvEnc,
+        codec,
         available: true,
-        reason: "h264_nvenc via libavcodec (NVIDIA driver present)".to_string(),
+        reason: format!("{encoder_name} via libavcodec (NVIDIA driver present)"),
     }
 }
 
