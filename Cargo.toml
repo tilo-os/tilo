@@ -45,7 +45,7 @@ members = [
     "crates/packaging/notes-cli",
     "apps/file-explorer",
     "apps/terminal",
-    # tmp: "apps/browser",
+    "apps/browser",
     "apps/notes",
     "apps/osk",
     "apps/collab-broker",
