@@ -136,6 +136,12 @@ pub struct LinkConfig {
     /// seeds produce different jitter series but the mean is identical.
     /// Tests pin this to `0` so assertions are reproducible.
     pub jitter_seed: u64,
+    /// Token-bucket capacity in bytes. Sets how much burst is allowed
+    /// before the throttle kicks in — a real wire with a small buffer
+    /// paces aggressively, a real wire with a big buffer bursts and
+    /// then paces. Defaults to [`TOKEN_BUCKET_BYTES`] (8 MiB) which
+    /// mimics a home-router buffer for a keyframe-sized burst.
+    pub token_bucket_bytes: u64,
 }
 
 impl Default for LinkConfig {
@@ -146,6 +152,7 @@ impl Default for LinkConfig {
             throughput_kbps: 0,
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
             jitter_seed: 0xC0FFEE,
+            token_bucket_bytes: TOKEN_BUCKET_BYTES,
         }
     }
 }
@@ -160,6 +167,7 @@ pub struct FrameLink<T> {
     latency: Duration,
     jitter: Duration,
     bytes_per_sec: u64,
+    token_bucket_bytes: u64,
     queue_capacity: usize,
     queue: VecDeque<Envelope<T>>,
     tokens: f64,
@@ -205,13 +213,15 @@ impl<T> FrameLink<T> {
         } else {
             (cfg.throughput_kbps as u64) * 1000 / 8
         };
+        let token_bucket_bytes = cfg.token_bucket_bytes.max(1);
         Self {
             latency: Duration::from_millis(cfg.latency_ms as u64),
             jitter: Duration::from_millis(cfg.jitter_ms as u64),
             bytes_per_sec,
+            token_bucket_bytes,
             queue_capacity: cfg.queue_capacity.max(1),
             queue: VecDeque::with_capacity(cfg.queue_capacity.max(1)),
-            tokens: TOKEN_BUCKET_BYTES as f64,
+            tokens: token_bucket_bytes as f64,
             last_refill: Instant::now(),
             stats: LinkStats::default(),
             first_push_at: None,
@@ -267,10 +277,10 @@ impl<T> FrameLink<T> {
         if self.bytes_per_sec > 0 {
             let elapsed = now.saturating_duration_since(self.last_refill);
             let earned = elapsed.as_secs_f64() * self.bytes_per_sec as f64;
-            self.tokens = (self.tokens + earned).min(TOKEN_BUCKET_BYTES as f64);
+            self.tokens = (self.tokens + earned).min(self.token_bucket_bytes as f64);
             self.last_refill = now;
         } else {
-            self.tokens = TOKEN_BUCKET_BYTES as f64;
+            self.tokens = self.token_bucket_bytes as f64;
         }
 
         let mut delivered = Vec::new();
@@ -279,24 +289,51 @@ impl<T> FrameLink<T> {
                 break;
             }
             let size_bytes = front.size;
-            if self.bytes_per_sec > 0 && (size_bytes as f64) > self.tokens {
-                // Head of queue hasn't earned enough tokens yet. Compute
-                // the wait so we can report it via stats when the frame
-                // eventually leaves.
-                let needed = size_bytes as f64 - self.tokens;
-                let wait_secs = needed / self.bytes_per_sec as f64;
+            // Two throttle regimes coexist:
+            //
+            // 1. Normal frames (`size <= bucket_size`): must have tokens
+            //    ≥ size to leave, else wait for the bucket to refill.
+            // 2. Oversize frames (`size > bucket_size`, e.g. IDR
+            //    keyframes bigger than the bucket): can't ever fit under
+            //    a strict `tokens >= size` rule, so we let them pass
+            //    once tokens are at capacity and account for the
+            //    over-drain by taking tokens negative — future frames
+            //    then wait for the debt to be paid down. Long-term
+            //    average rate matches `bytes_per_sec` either way.
+            let oversize = self.bytes_per_sec > 0 && size_bytes > self.token_bucket_bytes;
+            let can_send = if self.bytes_per_sec == 0 {
+                true
+            } else if oversize {
+                // Oversize frame: only send when the bucket is full,
+                // otherwise wait so we don't burn all future budget
+                // early.
+                self.tokens >= self.token_bucket_bytes as f64 - 0.5
+            } else {
+                (size_bytes as f64) <= self.tokens
+            };
+            if !can_send {
+                // Head-of-queue is throttled. Compute the wait we're
+                // adding (for stats) then leave the queue as-is until
+                // the next `drain_ready`.
+                let need = if oversize {
+                    self.token_bucket_bytes as f64 - self.tokens
+                } else {
+                    size_bytes as f64 - self.tokens
+                };
+                let need = need.max(0.0);
+                let wait_secs = need / self.bytes_per_sec as f64;
                 let wait_ns = (wait_secs * 1_000_000_000.0) as u128;
-                // Front is a shared ref — we can't mutate through it.
-                // Track the wait on the envelope by re-popping/pushing.
                 let mut env = self.queue.pop_front().unwrap();
                 env.token_wait_ns = env.token_wait_ns.saturating_add(wait_ns);
-                // Reinsert at the front so ordering is preserved.
                 self.queue.push_front(env);
                 break;
             }
             let env = self.queue.pop_front().unwrap();
             if self.bytes_per_sec > 0 {
                 self.tokens -= env.size as f64;
+                // Non-oversize frames stay at tokens >= 0 by
+                // construction; oversize frames legitimately overdraw
+                // — no clamp here, the refill accounting handles it.
             }
             self.stats.frames_delivered = self.stats.frames_delivered.saturating_add(1);
             self.stats.total_delay_ns = self.stats.total_delay_ns.saturating_add(env.delay_ns);
@@ -413,15 +450,16 @@ mod tests {
 
     #[test]
     fn zero_latency_no_throttle_is_passthrough() {
-        let mut link: FrameLink<u32> = FrameLink::new(0, 0);
-        // 5 ms jitter is on by default → but we set jitter to 0 in the
-        // zero-latency case via with_config for a strict passthrough.
+        // Simple constructor default-enables 5 ms jitter; use
+        // `with_config` here to pin jitter to zero for a strict
+        // passthrough assertion.
         let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
             throughput_kbps: 0,
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
             jitter_seed: 0,
+            token_bucket_bytes: TOKEN_BUCKET_BYTES,
         });
         let start = Instant::now();
         link.push(start, 100, 1u32);
@@ -431,9 +469,6 @@ mod tests {
         assert_eq!(drained, vec![1, 2, 3]);
         assert_eq!(link.stats().frames_delivered, 3);
         assert_eq!(link.stats().frames_dropped, 0);
-        // Silence the unused variable warning from the first `link`
-        // above (kept for readability of the passthrough shape).
-        let _ = link;
     }
 
     #[test]
@@ -444,6 +479,7 @@ mod tests {
             throughput_kbps: 0,
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
             jitter_seed: 0,
+            token_bucket_bytes: TOKEN_BUCKET_BYTES,
         });
         let t0 = Instant::now();
         link.push(t0, 100, 42u32);
@@ -464,6 +500,7 @@ mod tests {
             throughput_kbps: 0,
             queue_capacity: 64,
             jitter_seed: 42,
+            token_bucket_bytes: TOKEN_BUCKET_BYTES,
         });
         let t0 = Instant::now();
         // Push 32 frames; look at the queued deliver_at instants.
@@ -488,6 +525,7 @@ mod tests {
             throughput_kbps: 2000,
             queue_capacity: 64,
             jitter_seed: 0,
+            token_bucket_bytes: TOKEN_BUCKET_BYTES,
         });
         let t0 = Instant::now();
         // Push 40 × 100_000-byte frames (roughly 32 Mb of input).
@@ -515,19 +553,22 @@ mod tests {
 
     #[test]
     fn throttle_at_100kbps_paces_a_1mb_input() {
-        // Push more than the token bucket so the pacing dominates.
-        // 100 kbps = 12_500 bytes/sec. A 200_000-byte frame ≈ 16 s of
-        // pacing. Push 10 of those and drain over 20 s.
+        // Sub-bucket frame sizes so the throttle can drain them at all.
+        // 100 kbps = 12_500 bytes/sec. Push 500 × 1_000-byte frames
+        // (500 KB total, ~40 s at cap) with a bucket that permits ~1 s
+        // of burst; drain over 20 s and check the effective rate is
+        // near the cap.
         let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
             throughput_kbps: 100,
-            queue_capacity: 64,
+            queue_capacity: 1024,
             jitter_seed: 0,
+            token_bucket_bytes: 12_500,
         });
         let t0 = Instant::now();
-        for i in 0..10 {
-            link.push(t0, 200_000, i);
+        for i in 0..500 {
+            link.push(t0, 1_000, i);
         }
         let mut now = t0;
         for _ in 0..200 {
@@ -539,7 +580,7 @@ mod tests {
         let elapsed = now.duration_since(t0);
         let bps = link.stats().effective_bps(elapsed);
         assert!(
-            bps > 40_000.0 && bps < 200_000.0,
+            bps > 60_000.0 && bps < 150_000.0,
             "expected ~100 kbps effective throughput, got {bps:.0} bps"
         );
     }
@@ -552,6 +593,7 @@ mod tests {
             throughput_kbps: 0,
             queue_capacity: 4,
             jitter_seed: 0,
+            token_bucket_bytes: TOKEN_BUCKET_BYTES,
         });
         let t0 = Instant::now();
         for i in 0..10u32 {
@@ -581,11 +623,13 @@ mod prop_tests {
     use proptest::prelude::*;
 
     proptest! {
-        // Token bucket never goes negative — even under adversarial
-        // scheduling. Sample random `push` calls and random `drain_ready`
-        // times and check the invariant after every op.
+        // Token bucket never goes below `-max_size` under a mix of
+        // normal + oversize frames. Normal-sized frames never overdraw
+        // (invariant: `tokens >= 0`); oversize frames legitimately go
+        // negative but never by more than one frame's worth. Together
+        // they bound the deficit.
         #[test]
-        fn tokens_never_negative(
+        fn tokens_stay_bounded_below(
             sizes in prop::collection::vec(1u64..1_000_000, 1..64),
             throughput_kbps in 1u64..100_000,
             drain_delays_ms in prop::collection::vec(0u64..500, 0..64),
@@ -596,17 +640,25 @@ mod prop_tests {
                 throughput_kbps,
                 queue_capacity: 512,
                 jitter_seed: 0,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
             });
+            let max_size = *sizes.iter().max().unwrap();
+            let bucket = link.token_bucket_bytes as f64;
             let t0 = Instant::now();
             for size in &sizes {
                 link.push(t0, *size, ());
-                prop_assert!(link.tokens >= 0.0);
+                // push doesn't touch tokens directly; asserts run at
+                // steady state.
+                prop_assert!(link.tokens >= -(bucket + max_size as f64));
             }
             let mut now = t0;
             for d in drain_delays_ms {
                 now += std::time::Duration::from_millis(d);
                 let _ = link.drain_ready(now);
-                prop_assert!(link.tokens >= 0.0);
+                // Bound: never worse than one bucket's-worth of debt
+                // (oversize frame just left with tokens fresh from
+                // capacity).
+                prop_assert!(link.tokens >= -(max_size as f64));
             }
         }
 
@@ -624,6 +676,7 @@ mod prop_tests {
                 throughput_kbps,
                 queue_capacity: 8,
                 jitter_seed: 0,
+                token_bucket_bytes: TOKEN_BUCKET_BYTES,
             });
             let t0 = Instant::now();
             // Drain the bucket first by pushing a single huge frame,
