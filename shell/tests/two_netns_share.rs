@@ -362,10 +362,17 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
 #[test]
 #[ignore = "requires ip netns exec setup — see module header"]
 fn netns_host_process() {
-    let video_addr =
-        std::env::var("TWO_NETNS_VIDEO_ADDR").expect("TWO_NETNS_VIDEO_ADDR");
-    let input_addr =
-        std::env::var("TWO_NETNS_INPUT_ADDR").expect("TWO_NETNS_INPUT_ADDR");
+    // Self-skip when the ip-netns-exec driver hasn't set the addresses;
+    // otherwise `cargo test -- --include-ignored` in CI reads them as
+    // "not present" and fails what's really a setup-required test.
+    let Ok(video_addr) = std::env::var("TWO_NETNS_VIDEO_ADDR") else {
+        eprintln!("skipping — TWO_NETNS_VIDEO_ADDR not set (see module header)");
+        return;
+    };
+    let Ok(input_addr) = std::env::var("TWO_NETNS_INPUT_ADDR") else {
+        eprintln!("skipping — TWO_NETNS_INPUT_ADDR not set (see module header)");
+        return;
+    };
     if std::env::var("TWO_NETNS_ROLE").unwrap_or_default() != "host" {
         eprintln!("skipping — TWO_NETNS_ROLE != host");
         return;
@@ -419,10 +426,14 @@ fn netns_host_process() {
 #[test]
 #[ignore = "requires ip netns exec setup — see module header"]
 fn netns_viewer_process() {
-    let video_addr =
-        std::env::var("TWO_NETNS_VIDEO_ADDR").expect("TWO_NETNS_VIDEO_ADDR");
-    let input_addr =
-        std::env::var("TWO_NETNS_INPUT_ADDR").expect("TWO_NETNS_INPUT_ADDR");
+    let Ok(video_addr) = std::env::var("TWO_NETNS_VIDEO_ADDR") else {
+        eprintln!("skipping — TWO_NETNS_VIDEO_ADDR not set (see module header)");
+        return;
+    };
+    let Ok(input_addr) = std::env::var("TWO_NETNS_INPUT_ADDR") else {
+        eprintln!("skipping — TWO_NETNS_INPUT_ADDR not set (see module header)");
+        return;
+    };
     if std::env::var("TWO_NETNS_ROLE").unwrap_or_default() != "viewer" {
         eprintln!("skipping — TWO_NETNS_ROLE != viewer");
         return;
