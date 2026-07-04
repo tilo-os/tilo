@@ -84,6 +84,8 @@ enum Action {
     CycleRepeat,
     SeekFrac(f64),
     VolumeFrac(f64),
+    /// Toggle mute: drop the volume to 0, or restore the pre-mute level.
+    ToggleMute,
     ToggleDownload(String),
     /// Append a track to the end of the play queue.
     AddToQueue(String),
@@ -107,6 +109,9 @@ enum Action {
     CreatePlaylist,
     /// Begin editing a new-playlist name (opens the name input overlay).
     BeginNewPlaylist,
+    /// Begin a new playlist that the given track will be added to on create
+    /// (the "Add to playlist… → New playlist…" flow).
+    BeginNewPlaylistFor(String),
     /// Begin renaming the playlist with this id.
     BeginRenamePlaylist(String),
     /// Commit the pending rename of the named playlist.
@@ -130,7 +135,7 @@ enum Action {
     None,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Drag {
     Scrubber,
     Volume,
@@ -188,6 +193,20 @@ pub struct MusicApp {
     bound_track: Option<String>,
     playhead_ms: f64,
     last_tick: Instant,
+
+    /// Shuffle playback order: a permutation of `pb.queue` indices consulted by
+    /// `advance`/`previous` while `pb.shuffle` is on (empty / stale ⇒ rebuilt
+    /// on demand). Kept in-memory only — the shuffle *flag* round-trips through
+    /// the CRDT, the concrete order is re-derived per session.
+    shuffle_order: Vec<usize>,
+    /// State for the small xorshift PRNG that builds the shuffle permutation.
+    /// Seeded from wall-clock at construction; tests set it for determinism.
+    shuffle_rng: u64,
+    /// Volume level captured before muting, restored when unmuted.
+    premute_volume: Option<u8>,
+    /// The track to drop into a brand-new playlist once its name is committed
+    /// (set by "Add to playlist… → New playlist…"); `None` for a plain create.
+    new_playlist_track: Option<String>,
 
     rect: Rect,
     body_rect: Rect,
@@ -345,6 +364,10 @@ impl MusicApp {
             bound_track: None,
             playhead_ms: 0.0,
             last_tick: Instant::now(),
+            shuffle_order: Vec::new(),
+            shuffle_rng: seed_rng(),
+            premute_volume: None,
+            new_playlist_track: None,
             rect: Rect::ZERO,
             body_rect: Rect::ZERO,
             scroll: 0.0,
@@ -583,6 +606,32 @@ impl MusicApp {
             self.playhead_ms = 0.0;
             return;
         }
+        // Shuffle: walk the shuffled permutation of queue positions instead of
+        // the linear order, so playback genuinely follows a random sequence.
+        if self.pb.shuffle {
+            self.ensure_shuffle_order();
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| i == self.pb.queue_index)
+                .unwrap_or(0);
+            let last = self.shuffle_order.len().saturating_sub(1);
+            if pos >= last {
+                if self.pb.repeat == RepeatMode::All {
+                    // Fresh permutation for the next lap.
+                    self.reshuffle_all();
+                    let first = self.shuffle_order.first().copied().unwrap_or(0);
+                    self.play_index(first);
+                } else {
+                    self.playhead_ms = self.current_duration_ms() as f64;
+                    self.pb.playing = false;
+                }
+            } else {
+                let next_idx = self.shuffle_order[pos + 1];
+                self.play_index(next_idx);
+            }
+            return;
+        }
         let last = self.pb.queue.len() - 1;
         if self.pb.queue_index >= last {
             if self.pb.repeat == RepeatMode::All {
@@ -599,12 +648,91 @@ impl MusicApp {
     }
 
     fn previous(&mut self) {
-        if self.playhead_ms > 3000.0 || self.pb.queue_index == 0 {
+        if self.playhead_ms > 3000.0 {
+            self.playhead_ms = 0.0;
+            return;
+        }
+        // Shuffle: step back through the shuffled permutation.
+        if self.pb.shuffle && !self.pb.queue.is_empty() {
+            self.ensure_shuffle_order();
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| i == self.pb.queue_index)
+                .unwrap_or(0);
+            if pos == 0 {
+                self.playhead_ms = 0.0;
+                return;
+            }
+            let prev_idx = self.shuffle_order[pos - 1];
+            self.play_index(prev_idx);
+            return;
+        }
+        if self.pb.queue_index == 0 {
             self.playhead_ms = 0.0;
             return;
         }
         let prev = self.pb.queue_index - 1;
         self.play_index(prev);
+    }
+
+    // ---- shuffle order ----------------------------------------------------
+
+    /// One step of an xorshift64* PRNG (self-contained; no `rand` dependency).
+    fn next_rand(&mut self) -> u64 {
+        let mut x = if self.shuffle_rng == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            self.shuffle_rng
+        };
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.shuffle_rng = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Rebuild the shuffle order as a permutation of the queue indices, pinned
+    /// so the *currently playing* track stays first (it's already playing —
+    /// only what comes after it is randomised).
+    fn rebuild_shuffle_order(&mut self) {
+        let n = self.pb.queue.len();
+        if n == 0 {
+            self.shuffle_order.clear();
+            return;
+        }
+        let cur = self.pb.queue_index.min(n - 1);
+        let mut rest: Vec<usize> = (0..n).filter(|&i| i != cur).collect();
+        self.fisher_yates(&mut rest);
+        self.shuffle_order = std::iter::once(cur).chain(rest).collect();
+    }
+
+    /// Rebuild the shuffle order as a fresh permutation of *all* queue indices
+    /// (used when a repeating queue laps, so the next lap has a new order).
+    fn reshuffle_all(&mut self) {
+        let n = self.pb.queue.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        self.fisher_yates(&mut order);
+        self.shuffle_order = order;
+    }
+
+    /// In-place Fisher–Yates using the app's PRNG.
+    fn fisher_yates(&mut self, v: &mut [usize]) {
+        if v.len() < 2 {
+            return;
+        }
+        for i in (1..v.len()).rev() {
+            let j = (self.next_rand() % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+    }
+
+    /// Ensure a shuffle order exists that matches the current queue length,
+    /// rebuilding it (current-first) if it's empty or stale after a queue edit.
+    fn ensure_shuffle_order(&mut self) {
+        if self.shuffle_order.len() != self.pb.queue.len() {
+            self.rebuild_shuffle_order();
+        }
     }
 
     /// Insert a track immediately after the current one ("Play next"). If
@@ -687,6 +815,9 @@ impl MusicApp {
             }
             Action::Play { queue, index } => {
                 self.pb.queue = queue;
+                // A fresh queue invalidates any prior shuffle permutation; it's
+                // rebuilt (current-first) on the next shuffled advance.
+                self.shuffle_order.clear();
                 self.play_index(index);
                 if let Some(id) = self.pb.current.clone() {
                     self.persist_live_track(&id, state);
@@ -721,6 +852,14 @@ impl MusicApp {
             }
             Action::ToggleShuffle => {
                 self.pb.shuffle = !self.pb.shuffle;
+                if self.pb.shuffle {
+                    // Randomise the upcoming order now so the next/auto-advance
+                    // follows a shuffled sequence.
+                    self.rebuild_shuffle_order();
+                } else {
+                    // Back to the queue's linear order.
+                    self.shuffle_order.clear();
+                }
                 self.persist_playback(state);
             }
             Action::CycleRepeat => {
@@ -735,6 +874,22 @@ impl MusicApp {
             }
             Action::VolumeFrac(f) => {
                 self.pb.volume = (f.clamp(0.0, 1.0) * 100.0).round() as u8;
+                // Dragging the volume above zero clears a mute.
+                if self.pb.volume > 0 {
+                    self.premute_volume = None;
+                }
+                self.audio.set_volume(self.pb.volume as f32 / 100.0);
+                self.persist_playback(state);
+            }
+            Action::ToggleMute => {
+                if self.pb.volume > 0 {
+                    self.premute_volume = Some(self.pb.volume);
+                    self.pb.volume = 0;
+                } else {
+                    // Restore the pre-mute level (default to a sensible level if
+                    // we were already at zero with nothing captured).
+                    self.pb.volume = self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80);
+                }
                 self.audio.set_volume(self.pb.volume as f32 / 100.0);
                 self.persist_playback(state);
             }
@@ -748,8 +903,8 @@ impl MusicApp {
                 let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
                 self.toast = Some((
                     match new {
-                        CacheState::Cached => format!("Downloaded \u{201c}{label}\u{201d}"),
-                        _ => format!("Removed download \u{201c}{label}\u{201d}"),
+                        CacheState::Cached => format!("Kept \u{201c}{label}\u{201d} for offline"),
+                        _ => format!("Removed \u{201c}{label}\u{201d} from offline"),
                     },
                     Instant::now(),
                 ));
@@ -820,6 +975,13 @@ impl MusicApp {
             Action::BeginNewPlaylist => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
+                self.new_playlist_track = None;
+                self.search_focused = false;
+            }
+            Action::BeginNewPlaylistFor(track) => {
+                self.name_prompt = Some(NamePrompt::NewPlaylist);
+                self.name_input = String::new();
+                self.new_playlist_track = Some(track);
                 self.search_focused = false;
             }
             Action::CreatePlaylist => {
@@ -829,13 +991,26 @@ impl MusicApp {
                     self.name_input.trim().to_string()
                 };
                 let id = doc::create_playlist(state, &name);
+                // If this create came from "Add to playlist… → New playlist…",
+                // drop the target track into the freshly-created playlist.
+                let added_track = self.new_playlist_track.take();
+                if let Some(track) = &added_track {
+                    doc::add_track_to_playlist(state, &id, track);
+                }
                 self.reload_library(state);
                 self.name_prompt = None;
                 self.name_input.clear();
                 self.nav_back.push(self.view.clone());
                 self.view = View::Playlist(id);
                 self.scroll = 0.0;
-                self.toast = Some((format!("Created \u{201c}{name}\u{201d}"), Instant::now()));
+                self.toast = Some((
+                    if added_track.is_some() {
+                        format!("Added to new playlist \u{201c}{name}\u{201d}")
+                    } else {
+                        format!("Created \u{201c}{name}\u{201d}")
+                    },
+                    Instant::now(),
+                ));
             }
             Action::BeginRenamePlaylist(id) => {
                 self.name_input =
@@ -884,6 +1059,7 @@ impl MusicApp {
             Action::CloseNamePrompt => {
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.new_playlist_track = None;
             }
             Action::None => {}
         }
@@ -1381,7 +1557,6 @@ impl MusicApp {
         if let Some(qi) = queue_index {
             self.push_menu("Remove from queue", Action::RemoveFromQueue(qi));
         }
-        self.push_menu("Add to library", Action::ToggleLike(track.clone()));
         self.context.push(MenuItem::separator());
         self.menu_actions.push(Action::Back);
         if let Some(al) = album_id {
@@ -1407,7 +1582,7 @@ impl MusicApp {
         self.menu_actions.clear();
         self.ctx_track = Some(track.clone());
 
-        self.push_menu("New playlist\u{2026}", Action::BeginNewPlaylist);
+        self.push_menu("New playlist\u{2026}", Action::BeginNewPlaylistFor(track.clone()));
         if !self.lib.playlists.is_empty() {
             self.context.push(MenuItem::separator());
             self.menu_actions.push(Action::Back);
@@ -1661,6 +1836,17 @@ fn home_item_to_hit(item: &HomeItem) -> TrackHit {
     }
 }
 
+/// A wall-clock-derived seed for the shuffle PRNG, so each session's shuffle
+/// order differs. Never zero (the xorshift step guards against it anyway).
+fn seed_rng() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x1234_5678);
+    nanos ^ 0x9E37_79B9_7F4A_7C15
+}
+
 /// Lowercase-alnum slug for synthesising a stable id when the source omits one.
 fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1750,6 +1936,7 @@ mod tests {
 
     // ---- synthetic winit events (drive `handle_event` like the real loop) --
     use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+    use winit::keyboard::NamedKey;
 
     fn synth_device() -> DeviceId {
         unsafe { std::mem::zeroed() }
@@ -1765,13 +1952,74 @@ mod tests {
     }
     /// Drive one event through the production `handle_event` path.
     fn send(app: &mut MusicApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
+        send_with(app, ev, &winit::event::Modifiers::default(), doc)
+    }
+
+    /// Drive one event through `handle_event` with explicit modifiers held.
+    fn send_with(
+        app: &mut MusicApp,
+        ev: &WindowEvent,
+        mods: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+    ) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
         let mut focus = None;
         let root = automerge::ROOT;
-        app.handle_event(ev, 1.0, &winit::event::Modifiers::default(), doc, &root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(ev, 1.0, mods, doc, &root, &mut handled, &mut focus, node, &taffy);
         handled
+    }
+
+    fn released(button: MouseButton) -> WindowEvent {
+        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Released, button }
+    }
+
+    fn wheel(lines_y: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: synth_device(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines_y),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+
+    /// A character keypress event (logical key + committed text). `winit`'s
+    /// per-platform `KeyEvent` field is `pub(crate)`, so — like the other app
+    /// event-path tests — we zero the struct and set the public fields (the
+    /// zeroed discriminants land on non-heap enum variants, so this is sound).
+    fn char_key(c: &str) -> WindowEvent {
+        use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(c.into());
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(c.into());
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+
+    /// A named keypress event (Enter, Escape, Space, arrows …).
+    fn named_key(named: winit::keyboard::NamedKey) -> WindowEvent {
+        use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+
+    fn shift_mods() -> winit::event::Modifiers {
+        winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+    }
+
+    /// The captured click rect (center) for the first hit matching `action`,
+    /// so tests can click a control the real draw pass registered.
+    fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
+        app.hits.iter().find(|h| &h.action == action).map(|h| h.rect.center())
     }
 
     #[test]
@@ -1959,11 +2207,15 @@ mod tests {
     fn open_track_menu_lists_expected_actions() {
         let (mut app, _doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.open_track_menu("tk_g1".into(), None, None);
+        // tk_g2 is not liked in the seed, so the toggle row reads "Like".
+        app.open_track_menu("tk_g2".into(), None, None);
         assert!(app.context.is_open());
-        for label in ["Play", "Play next", "Add to queue", "Add to playlist\u{2026}", "Add to library", "Go to album", "Go to artist"] {
+        for label in ["Play", "Play next", "Add to queue", "Add to playlist\u{2026}", "Go to album", "Go to artist", "Like"] {
             assert!(menu_index(&app, label).is_some(), "menu has {label}");
         }
+        // The old "Add to library" row was a duplicate of the Like toggle
+        // (same Action::ToggleLike) — it must not reappear as a separate row.
+        assert!(menu_index(&app, "Add to library").is_none(), "no duplicate library row");
     }
 
     #[test]
@@ -2207,5 +2459,371 @@ mod tests {
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
         assert!(!app.row_menu_hits.is_empty(), "the songs table registers per-row right-click targets");
+    }
+
+    // ---- 10. shuffle actually reorders playback ----------------------------
+
+    /// Build a longer play queue of real seeded tracks (index 0 = current).
+    fn shuffle_queue() -> Vec<String> {
+        ["tk_g1", "tk_g2", "tk_g3", "tk_g4", "tk_g5", "tk_p1", "tk_p2", "tk_p3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn enabling_shuffle_builds_a_permutation_current_first() {
+        let (mut app, mut doc) = app_with_doc();
+        app.shuffle_rng = 0xD1CE_5EED_1234_5678; // deterministic order for the assert
+        let q = shuffle_queue();
+        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(Action::ToggleShuffle, &mut doc);
+        assert!(app.pb.shuffle);
+        assert!(doc::load_playback(&doc).shuffle, "shuffle flag persists to the doc");
+        assert_eq!(app.shuffle_order.len(), q.len());
+        let mut sorted = app.shuffle_order.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..q.len()).collect::<Vec<usize>>(), "shuffle order is a permutation of the queue");
+        assert_eq!(app.shuffle_order[0], 0, "the currently-playing track stays first");
+        assert_ne!(
+            app.shuffle_order,
+            (0..q.len()).collect::<Vec<usize>>(),
+            "the upcoming order is genuinely reshuffled, not the identity"
+        );
+    }
+
+    #[test]
+    fn shuffled_advance_visits_every_track_then_stops() {
+        let (mut app, mut doc) = app_with_doc();
+        app.shuffle_rng = 0xABCD_1234_9876_5432;
+        let q: Vec<String> = ["a", "b", "c", "d", "e", "f"].iter().map(|s| s.to_string()).collect();
+        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(Action::ToggleShuffle, &mut doc);
+        app.pb.repeat = RepeatMode::Off;
+        let order = app.shuffle_order.clone();
+        let mut visited = vec![app.pb.queue_index];
+        for _ in 0..(q.len() - 1) {
+            app.dispatch(Action::Next, &mut doc);
+            visited.push(app.pb.queue_index);
+        }
+        // The production Next path (advance) consults the shuffled order, not the
+        // linear queue: proof the dead shuffle button now drives playback.
+        assert_eq!(visited, order, "Next follows the shuffled permutation");
+        let mut vs = visited.clone();
+        vs.sort();
+        assert_eq!(vs, (0..q.len()).collect::<Vec<usize>>(), "every queued track is visited exactly once");
+        let last = app.pb.current.clone();
+        app.dispatch(Action::Next, &mut doc);
+        assert!(!app.pb.playing, "advancing past the final shuffled track stops (repeat off)");
+        assert_eq!(app.pb.current, last, "playback stays on the final track");
+    }
+
+    #[test]
+    fn shuffled_repeat_all_keeps_playing_after_the_last_track() {
+        let (mut app, mut doc) = app_with_doc();
+        app.shuffle_rng = 0x0F0F_1234_5678_9ABC;
+        let q: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(Action::ToggleShuffle, &mut doc);
+        app.pb.repeat = RepeatMode::All;
+        for _ in 0..q.len() {
+            app.dispatch(Action::Next, &mut doc);
+        }
+        assert!(app.pb.playing, "a repeating shuffled queue laps instead of stopping");
+    }
+
+    #[test]
+    fn disabling_shuffle_returns_to_linear_order() {
+        let (mut app, mut doc) = app_with_doc();
+        app.shuffle_rng = 0x5;
+        let q: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(Action::ToggleShuffle, &mut doc); // on
+        assert!(!app.shuffle_order.is_empty());
+        app.dispatch(Action::ToggleShuffle, &mut doc); // off
+        assert!(!app.pb.shuffle);
+        assert!(app.shuffle_order.is_empty(), "disabling shuffle drops the shuffled order");
+        app.dispatch(Action::Next, &mut doc);
+        assert_eq!(app.pb.queue_index, 1, "linear advance resumes after disabling shuffle");
+        assert_eq!(app.pb.current.as_deref(), Some("b"));
+    }
+
+    // ---- 11. keyboard transport shortcuts (via the real event path) --------
+
+    #[test]
+    fn s_key_toggles_shuffle_via_event_path() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 0 }, &mut doc);
+        assert!(!app.pb.shuffle);
+        assert!(send(&mut app, &char_key("s"), &mut doc), "'s' is consumed");
+        assert!(app.pb.shuffle, "'s' enables shuffle");
+        assert_eq!(app.shuffle_order.len(), 3, "'s' builds the shuffled order");
+        send(&mut app, &char_key("s"), &mut doc);
+        assert!(!app.pb.shuffle, "'s' again disables it");
+    }
+
+    #[test]
+    fn space_key_toggles_play_via_event_path() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::Play { queue: vec!["a".into()], index: 0 }, &mut doc);
+        assert!(app.pb.playing);
+        send(&mut app, &named_key(NamedKey::Space), &mut doc);
+        assert!(!app.pb.playing, "space pauses");
+        send(&mut app, &named_key(NamedKey::Space), &mut doc);
+        assert!(app.pb.playing, "space resumes");
+    }
+
+    #[test]
+    fn n_and_p_keys_change_track() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 0 }, &mut doc);
+        send(&mut app, &char_key("n"), &mut doc);
+        assert_eq!(app.pb.queue_index, 1, "'n' plays the next track");
+        send(&mut app, &char_key("p"), &mut doc);
+        assert_eq!(app.pb.queue_index, 0, "'p' plays the previous track");
+    }
+
+    #[test]
+    fn arrow_keys_seek_and_shift_skips() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::Play { queue: vec!["tk_g1".into(), "tk_g2".into()], index: 0 }, &mut doc);
+        app.playhead_ms = 10_000.0; // tk_g1 is 215s long
+        send(&mut app, &named_key(NamedKey::ArrowRight), &mut doc);
+        assert!((app.playhead_ms - 15_000.0).abs() < 1.0, "right arrow seeks +5s");
+        send(&mut app, &named_key(NamedKey::ArrowLeft), &mut doc);
+        assert!((app.playhead_ms - 10_000.0).abs() < 1.0, "left arrow seeks -5s");
+        send_with(&mut app, &named_key(NamedKey::ArrowRight), &shift_mods(), &mut doc);
+        assert_eq!(app.pb.queue_index, 1, "shift+right skips to the next track");
+        send_with(&mut app, &named_key(NamedKey::ArrowLeft), &shift_mods(), &mut doc);
+        assert_eq!(app.pb.queue_index, 0, "shift+left skips to the previous track");
+    }
+
+    #[test]
+    fn slash_key_focuses_search() {
+        let (mut app, mut doc) = app_with_doc();
+        assert_ne!(app.view, View::Search);
+        send(&mut app, &char_key("/"), &mut doc);
+        assert_eq!(app.view, View::Search);
+        assert!(app.search_focused);
+    }
+
+    // ---- 12. drag-to-seek / drag-volume gestures ---------------------------
+
+    #[test]
+    fn dragging_the_scrubber_seeks() {
+        let (mut app, mut doc) = app_with_doc();
+        app.playback_loaded = true;
+        app.pb.queue = vec!["tk_g1".into()];
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue_index = 0;
+        draw_once(&mut app, &mut doc); // registers the scrubber rect at real geometry
+        let sr = app.scrubber_rect;
+        assert!(sr.width() > 10.0, "the full transport drew a scrubber bar");
+        send(&mut app, &cursor_at(Point::new(sr.x0 + 4.0, sr.center().y)), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        assert_eq!(app.drag, Some(Drag::Scrubber), "pressing the bar begins a scrub drag");
+        let near_start = app.playhead_ms;
+        send(&mut app, &cursor_at(Point::new(sr.x1 - 4.0, sr.center().y)), &mut doc);
+        let near_end = app.playhead_ms;
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert!(app.drag.is_none(), "releasing ends the drag");
+        assert!(near_end > near_start + 100_000.0, "dragging right seeks forward ({near_start} -> {near_end})");
+        assert_eq!(doc::load_playback(&doc).position_ms, app.playhead_ms as u64, "the sought position persists");
+    }
+
+    #[test]
+    fn dragging_the_volume_bar_sets_volume() {
+        let (mut app, mut doc) = app_with_doc();
+        app.playback_loaded = true;
+        draw_once(&mut app, &mut doc);
+        let vr = app.volume_rect;
+        assert!(vr.width() > 10.0, "the full transport drew a volume bar");
+        send(&mut app, &cursor_at(Point::new(vr.x0 + 2.0, vr.center().y)), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        assert_eq!(app.drag, Some(Drag::Volume));
+        let low = app.pb.volume;
+        send(&mut app, &cursor_at(Point::new(vr.x1 - 2.0, vr.center().y)), &mut doc);
+        let high = app.pb.volume;
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert!(high > low, "dragging the volume bar right raises volume ({low} -> {high})");
+        assert!(high >= 95, "the far right is near max volume");
+        assert!(
+            (app.audio.volume() - app.pb.volume as f32 / 100.0).abs() < 1e-6,
+            "the audio engine tracks the dragged volume"
+        );
+    }
+
+    // ---- 13. mouse-wheel scroll + clamp ------------------------------------
+
+    #[test]
+    fn wheel_scrolls_and_clamps_to_content() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Songs;
+        draw_once(&mut app, &mut doc);
+        let max = (app.content_height - app.body_rect.height()).max(0.0);
+        assert!(max > 0.0, "the songs list overflows, so there is room to scroll");
+        send(&mut app, &wheel(-3.0), &mut doc);
+        assert!(app.scroll > 0.0, "wheel down scrolls the content");
+        assert!(app.scroll <= max);
+        send(&mut app, &wheel(-1000.0), &mut doc);
+        assert_eq!(app.scroll, max, "a big scroll clamps at the content bottom");
+        send(&mut app, &wheel(1000.0), &mut doc);
+        assert_eq!(app.scroll, 0.0, "scrolling back up clamps at the top");
+    }
+
+    // ---- 14. mute toggle (speaker icon) ------------------------------------
+
+    #[test]
+    fn toggle_mute_silences_and_restores_volume() {
+        let (mut app, mut doc) = app_with_doc();
+        app.pb.volume = 76;
+        app.audio.set_volume(0.76);
+        app.dispatch(Action::ToggleMute, &mut doc);
+        assert_eq!(app.pb.volume, 0, "mute drops the volume to zero");
+        assert!(app.audio.volume().abs() < 1e-6, "the audio engine is silenced");
+        assert_eq!(doc::load_playback(&doc).volume, 0, "mute persists to the doc");
+        app.dispatch(Action::ToggleMute, &mut doc);
+        assert_eq!(app.pb.volume, 76, "unmute restores the pre-mute level");
+        assert!((app.audio.volume() - 0.76).abs() < 1e-6);
+    }
+
+    #[test]
+    fn speaker_icon_click_toggles_mute() {
+        let (mut app, mut doc) = app_with_doc();
+        draw_once(&mut app, &mut doc);
+        assert!(app.pb.volume > 0);
+        let c = hit_center(&app, &Action::ToggleMute).expect("the speaker icon is a wired mute toggle");
+        send(&mut app, &cursor_at(c), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        assert_eq!(app.pb.volume, 0, "clicking the speaker mutes");
+    }
+
+    // ---- 15. search typing + name-prompt keyboard flow ---------------------
+
+    #[test]
+    fn typing_in_search_builds_query_and_local_results() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot(); // no live worker thread in tests
+        app.dispatch(Action::FocusSearch, &mut doc);
+        assert!(app.search_focused);
+        for ch in ["g", "l", "a", "s", "s"] {
+            send(&mut app, &char_key(ch), &mut doc);
+        }
+        assert_eq!(app.search_query, "glass", "typing builds the query through the event path");
+        // The Search view renders local hits from this exact cache.
+        let res = app.local_search_cached("glass");
+        assert!(res.tracks.contains(&"tk_g1".to_string()), "local search surfaces the matching track (Glasslight)");
+        send(&mut app, &named_key(NamedKey::Backspace), &mut doc);
+        assert_eq!(app.search_query, "glas", "backspace edits the query");
+    }
+
+    #[test]
+    fn name_prompt_typing_and_enter_creates_playlist() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::BeginNewPlaylist, &mut doc);
+        assert!(matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)));
+        for ch in ["J", "a", "z", "z"] {
+            send(&mut app, &char_key(ch), &mut doc);
+        }
+        assert_eq!(app.name_input, "Jazz");
+        send(&mut app, &named_key(NamedKey::Enter), &mut doc);
+        assert!(app.name_prompt.is_none(), "Enter commits and closes the prompt");
+        let pl = app
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.name == "Jazz")
+            .expect("Enter on the name prompt created the playlist");
+        assert!(matches!(&app.view, View::Playlist(id) if id == &pl.id), "opens the freshly-created playlist");
+    }
+
+    // ---- 16. "Add to playlist… → New playlist…" keeps the target track -----
+
+    #[test]
+    fn add_to_playlist_new_playlist_includes_target_track() {
+        let (mut app, mut doc) = app_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.open_add_to_playlist_menu("tk_s2".into());
+        let idx = menu_index(&app, "New playlist\u{2026}").expect("picker offers a New playlist row") as i64;
+        app.pending.store(idx, Ordering::SeqCst);
+        app.drain_menu_selection(&mut doc);
+        assert!(matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)), "opens the name prompt");
+        assert_eq!(app.new_playlist_track.as_deref(), Some("tk_s2"), "remembers the track being added");
+        app.name_input = "Late Night".into();
+        app.dispatch(Action::CreatePlaylist, &mut doc);
+        let pl = app
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.name == "Late Night")
+            .expect("the playlist was created");
+        assert!(pl.track_ids.contains(&"tk_s2".to_string()), "the target track was added to the new playlist");
+        // And it round-trips through the document, not just the snapshot.
+        let saved = doc::load_library(&doc);
+        let spl = saved.playlists.iter().find(|p| p.name == "Late Night").unwrap();
+        assert!(spl.track_ids.contains(&"tk_s2".to_string()), "the add persists to the doc");
+    }
+
+    #[test]
+    fn plain_new_playlist_is_empty() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::BeginNewPlaylist, &mut doc);
+        app.name_input = "Blank".into();
+        app.dispatch(Action::CreatePlaylist, &mut doc);
+        let pl = app.lib.playlists.iter().find(|p| p.name == "Blank").unwrap();
+        assert!(pl.track_ids.is_empty(), "a plain create (no target track) makes an empty playlist");
+    }
+
+    // ---- 17. downloads are honest (no fabricated data) ---------------------
+
+    #[test]
+    fn download_toggle_toast_is_honest_about_offline() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(Action::ToggleDownload("tk_g2".into()), &mut doc);
+        let (msg, _) = app.toast.clone().expect("toggling download shows a toast");
+        assert!(msg.contains("offline"), "the toast describes the real keep-offline action: {msg}");
+        assert!(!msg.contains("Downloaded"), "no fabricated completed-download claim: {msg}");
+    }
+
+    #[test]
+    fn seed_has_no_fabricated_in_progress_download() {
+        let lib = seed::sample_library();
+        assert!(
+            lib.cache.values().all(|s| !matches!(s, CacheState::Downloading(_))),
+            "the seed no longer parks a track at a perpetual fake download progress",
+        );
+    }
+
+    // ---- 18. per-view render smoke test ------------------------------------
+
+    #[test]
+    fn every_view_renders_without_panic() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot(); // hermetic: no worker / cover fetches
+        app.playback_loaded = true;
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue_index = 0;
+        let views = [
+            View::Home,
+            View::Songs,
+            View::Albums,
+            View::Artists,
+            View::Playlists,
+            View::Downloads,
+            View::Liked,
+            View::Search,
+            View::Queue,
+            View::Lyrics,
+            View::Album("al_glasslight".into()),
+            View::Artist("ar_aurora".into()),
+            View::Playlist("pl_focus".into()),
+        ];
+        for v in views {
+            app.view = v.clone();
+            draw_once(&mut app, &mut doc);
+            assert!(app.content_height > 0.0, "{v:?} produced a frame");
+            assert!(!app.hits.is_empty(), "{v:?} registered interactive hits");
+        }
     }
 }
