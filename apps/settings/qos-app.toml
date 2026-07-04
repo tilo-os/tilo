@@ -1,0 +1,99 @@
+# Package manifest for `settings` as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p settings -p pkg-cli -p install --release
+#     mkdir -p target/settings-payload/bin
+#     cp target/release/settings target/settings-payload/bin/settings
+#     target/release/qos-pkg pack \
+#         --manifest apps/settings/qos-app.toml \
+#         --payload  target/settings-payload \
+#         --output   target/settings.qpkg
+#     target/release/qos-install install target/settings.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.settings
+#
+# Settings is a wgpu/vello GUI that owns the shared per-user config
+# under ~/.config/qos (mail/calendar/files/nextcloud accounts,
+# region+locale settings). It shells out via os-actions for
+# display/audio/network/bluetooth panes on a full deployment;
+# under a strict sandbox those actions surface as errors.
+
+[package]
+id      = "dev.qos.settings"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/bin",
+    "/bin",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/usr/share/locale",
+    "/usr/share/i18n",
+    "/etc/locale.conf",
+    "/sys",
+]
+write = [
+    "~/.config/qos",
+    "~/.local/share/dev.qos.settings",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/settings"
+splash-segments = ["bin/settings[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
