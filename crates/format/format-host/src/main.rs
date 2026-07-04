@@ -2,7 +2,7 @@
 //! router, spins up the inotify watcher + epoch ticker, then enters the
 //! Cap'n Proto accept loop on the Unix socket.
 
-use qos_format_host::{
+use format_host::{
     default_registry_path,
     router::{load_into, Router},
     runner::{spawn_epoch_ticker, LoadedComponent},
