@@ -75,6 +75,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
             },
             fs: Fs::default(),
             services,
+            portals: BTreeMap::new(),
         },
     }
 }
@@ -115,9 +116,9 @@ fn required_service_missing_fails() {
     let m = hello_manifest(dir.path(), svcs);
     let opts = RunOptions {
         no_services: false,
-        ..Default::default(),
-                landlock_enforce: true,
-            };
+        landlock_enforce: true,
+        ..Default::default()
+    };
     let err = run_with(&m, dir.path(), &opts).unwrap_err();
     assert_eq!(err.to_exit_code(), EXIT_REQUIRED_SERVICE_MISSING);
     let msg = format!("{err}");
