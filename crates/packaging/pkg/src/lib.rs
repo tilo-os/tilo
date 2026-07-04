@@ -47,9 +47,9 @@ pub mod verify;
 pub use blobs::{BlobHash, BlobStore, BlobStoreError, Collection, MemoryBlobStore};
 pub use id::{Kind, PackageId, ParsePackageIdError};
 pub use manifest::{
-    Entrypoint, Manifest, ManifestParseError, NetMode, Package, PathPattern, Providers, Publisher,
-    Requirement, Sandbox, SandboxFs, SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
-    SplashSegmentError, Trust, TrustAttestation,
+    Cli, Entrypoint, EntrypointType, Manifest, ManifestParseError, NetMode, Package, PathPattern,
+    Providers, Publisher, Requirement, Sandbox, SandboxFs, SandboxNet, ServiceReq,
+    ServiceReqParseError, SplashSegment, SplashSegmentError, Trust, TrustAttestation,
 };
 pub use pack::{PackError, SigningIdentity, pack, pack_with_signature};
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};

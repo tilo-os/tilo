@@ -53,6 +53,9 @@ pub struct MinimalManifest {
     pub version: String,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
+    /// `[cli].commands` — PATH-visible command names the package
+    /// declares. Empty when the package doesn't ship a CLI.
+    pub cli_commands: Vec<String>,
 }
 
 /// Wire-level manifest — accepts both shapes.
@@ -67,6 +70,17 @@ struct RawManifest {
     entrypoint: Entrypoint,
     #[serde(default)]
     sandbox: Sandbox,
+    #[serde(default)]
+    cli: Option<CliBlock>,
+}
+
+/// `[cli]` block — mirrors [`pkg::manifest::Cli`] but decoded
+/// inside this crate to keep the launcher independent of the
+/// full pkg crate.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CliBlock {
+    #[serde(default)]
+    commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,11 +101,13 @@ impl From<RawManifest> for MinimalManifest {
             .version
             .or_else(|| raw.package.and_then(|p| p.version))
             .unwrap_or_default();
+        let cli_commands = raw.cli.map(|c| c.commands).unwrap_or_default();
         MinimalManifest {
             package_id,
             version,
             entrypoint: raw.entrypoint,
             sandbox: raw.sandbox,
+            cli_commands,
         }
     }
 }
@@ -100,8 +116,64 @@ impl From<RawManifest> for MinimalManifest {
 pub struct Entrypoint {
     /// Path of the entrypoint binary, relative to the payload root.
     /// Joined with the in-sandbox payload mount to form the absolute
-    /// path used for `exec`.
+    /// path used for `exec`. Used verbatim when `r#type = "gui"`
+    /// or `"cli"`; falls back for `"both"` when neither split
+    /// path is set.
+    #[serde(default)]
     pub bin: String,
+    /// Which flavour of entrypoint this is. Mirrors
+    /// [`pkg::manifest::EntrypointType`]; kept here so the launcher
+    /// stays independent of the full pkg crate.
+    #[serde(default, rename = "type")]
+    pub r#type: EntrypointType,
+    /// GUI-flavour binary path inside the payload. Only meaningful
+    /// when `r#type = "both"`.
+    #[serde(default, rename = "gui-bin")]
+    pub gui_bin: Option<String>,
+    /// CLI-flavour binary path inside the payload. Only meaningful
+    /// when `r#type = "both"`.
+    #[serde(default, rename = "cli-bin")]
+    pub cli_bin: Option<String>,
+}
+
+/// Which flavour of entrypoint the package exposes. Wire form is
+/// lowercase — `type = "gui"` / `"cli"` / `"both"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntrypointType {
+    #[default]
+    Gui,
+    Cli,
+    Both,
+}
+
+impl Entrypoint {
+    /// Binary the *GUI* launcher path should exec. `None` for a
+    /// pure-CLI package (the launcher's `run` subcommand refuses
+    /// to launch it directly).
+    pub fn gui_bin(&self) -> Option<&str> {
+        match self.r#type {
+            EntrypointType::Gui => Some(self.bin.as_str()),
+            EntrypointType::Cli => None,
+            EntrypointType::Both => self
+                .gui_bin
+                .as_deref()
+                .or_else(|| (!self.bin.is_empty()).then_some(self.bin.as_str())),
+        }
+    }
+
+    /// Binary a CLI command should exec. `None` for a pure-GUI
+    /// package.
+    pub fn cli_bin(&self) -> Option<&str> {
+        match self.r#type {
+            EntrypointType::Gui => None,
+            EntrypointType::Cli => Some(self.bin.as_str()),
+            EntrypointType::Both => self
+                .cli_bin
+                .as_deref()
+                .or_else(|| (!self.bin.is_empty()).then_some(self.bin.as_str())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -293,6 +365,7 @@ collab = "required@1"
         let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
         assert_eq!(m.package_id, "com.example.notes");
         assert_eq!(m.entrypoint.bin, "bin/notes");
+        assert_eq!(m.entrypoint.r#type, EntrypointType::Gui);
         assert_eq!(m.sandbox.net.mode, "off");
         assert_eq!(
             m.sandbox.fs.read,
@@ -301,6 +374,54 @@ collab = "required@1"
         let req = ServiceReq::parse(m.sandbox.services.get("collab").unwrap()).unwrap();
         assert!(req.is_required());
         assert_eq!(req.version(), 1);
+        assert!(m.cli_commands.is_empty(), "no [cli] block → empty commands");
+    }
+
+    #[test]
+    fn parses_a_cli_manifest() {
+        let toml_text = r#"
+package_id = "dev.qos.notes-cli"
+version    = "0.1.0"
+
+[entrypoint]
+bin  = "bin/notes"
+type = "cli"
+
+[sandbox.net]
+mode = "off"
+
+[cli]
+commands = ["notes", "notes-import"]
+"#;
+        let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+        assert_eq!(m.entrypoint.r#type, EntrypointType::Cli);
+        assert_eq!(m.entrypoint.cli_bin(), Some("bin/notes"));
+        assert_eq!(m.entrypoint.gui_bin(), None);
+        assert_eq!(m.cli_commands, vec!["notes".to_string(), "notes-import".to_string()]);
+    }
+
+    #[test]
+    fn parses_a_both_manifest_with_split_bins() {
+        let toml_text = r#"
+package_id = "dev.qos.notes"
+version    = "0.2.0"
+
+[entrypoint]
+type    = "both"
+gui-bin = "bin/notes-gui"
+cli-bin = "bin/notes"
+
+[sandbox.net]
+mode = "off"
+
+[cli]
+commands = ["notes"]
+"#;
+        let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+        assert_eq!(m.entrypoint.r#type, EntrypointType::Both);
+        assert_eq!(m.entrypoint.gui_bin(), Some("bin/notes-gui"));
+        assert_eq!(m.entrypoint.cli_bin(), Some("bin/notes"));
+        assert_eq!(m.cli_commands, vec!["notes".to_string()]);
     }
 
     #[test]
