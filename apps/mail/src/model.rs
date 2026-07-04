@@ -139,9 +139,10 @@ impl Addr {
     }
 }
 
-/// A decoded attachment. For the bundled corpus we keep the bytes inline so
-/// the reader can show size + type; in the live app the bytes are hydrated
-/// on demand (same projection-vs-hydration story as the qOS FUSE layer).
+/// A decoded attachment. When the bytes are present locally (`hydrated`) they
+/// are held in `content`, so the reader can save the real file to disk; in the
+/// live app the bytes are hydrated on demand (same projection-vs-hydration
+/// story as the qOS FUSE layer) and `content` is empty until then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub filename: String,
@@ -149,9 +150,28 @@ pub struct Attachment {
     pub size: u64,
     /// Whether the bytes are present locally (vs. server-side only).
     pub hydrated: bool,
+    /// The decoded bytes, when hydrated. Never serialised into the shared
+    /// settings store (it holds message content, not settings).
+    #[serde(skip, default)]
+    pub content: Vec<u8>,
 }
 
 impl Attachment {
+    /// A metadata-only attachment (no bytes yet — projection, not hydrated).
+    pub fn projected(filename: impl Into<String>, mime: impl Into<String>, size: u64) -> Self {
+        Self { filename: filename.into(), mime: mime.into(), size, hydrated: false, content: Vec::new() }
+    }
+
+    /// A fully-hydrated attachment carrying its decoded bytes.
+    pub fn hydrated(filename: impl Into<String>, mime: impl Into<String>, content: Vec<u8>) -> Self {
+        Self { filename: filename.into(), mime: mime.into(), size: content.len() as u64, hydrated: true, content }
+    }
+
+    /// Whether the bytes are present locally and this attachment can be saved.
+    pub fn is_downloadable(&self) -> bool {
+        self.hydrated && !self.content.is_empty()
+    }
+
     /// Human-readable size, e.g. `14 KB`, `1.2 MB`.
     pub fn size_human(&self) -> String {
         human_bytes(self.size)
@@ -429,10 +449,18 @@ pub struct Draft {
     /// `text/html` part alongside `body` as the `text/plain` alternative.
     #[serde(default)]
     pub html_body: Option<String>,
-    /// Filenames of attachments staged for this draft.
+    /// Filesystem paths of files staged as attachments for this draft. The
+    /// bytes are read from these paths when the message is built (see
+    /// `transport::build_mime`), so what is sent is the real file — no
+    /// fabricated placeholder payload.
     pub attachments: Vec<String>,
     /// If this draft is a reply, the message it answers.
     pub in_reply_to: Option<MessageId>,
+}
+
+/// The display name (final path component) of a staged attachment path.
+pub fn attachment_display_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 /// The whole mailbox aggregate: an account, its messages, and the derived
