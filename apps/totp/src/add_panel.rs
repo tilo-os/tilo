@@ -3,16 +3,14 @@
 //! The flow is built around how people actually add a 2FA account, easiest
 //! path first:
 //!
-//!  1. **Scan a QR code** — the primary, obvious affordance. Live-camera
-//!     capture is pending a shared OS capture pipeline, so the button
-//!     reaches a clean hook ([`crate::qr::scan_with_camera`]) that explains
-//!     the limitation rather than failing silently.
-//!  2. **Import from image** — decode the QR out of a screenshot or photo
-//!     file. This works today, fully offline, via [`crate::qr`].
-//!  3. **Paste a setup link** — drop an `otpauth://` URI in and every field
+//!  1. **Scan a QR image** — the primary, obvious affordance: decode the QR
+//!     out of a screenshot or photo file. This works today, fully offline,
+//!     via [`crate::qr`]. Choosing the file goes through the host file
+//!     chooser (the XDG portal), never an app-drawn picker.
+//!  2. **Paste a setup link** — drop an `otpauth://` URI in and every field
 //!     auto-fills.
 //!
-//! Only when none of those fit does the user reach for **manual entry**:
+//! Only when neither of those fits does the user reach for **manual entry**:
 //! issuer + account label + secret — the three fields almost everyone
 //! needs. The fiddly cryptographic parameters (algorithm, digit count,
 //! rotation period) live behind a collapsed **Advanced options** disclosure
@@ -442,8 +440,8 @@ impl AddAccountPanel {
         })
     }
 
-    /// Apply a decoded `otpauth://` URI (from paste, QR image import, or a
-    /// future camera scan) into the manual fields. On success the manual
+    /// Apply a decoded `otpauth://` URI (from paste or QR image import) into
+    /// the manual fields. On success the manual
     /// section shows the filled values so the user can review before saving;
     /// on failure the reason surfaces inline.
     pub fn apply_uri(&mut self, uri: &str) {
@@ -1352,5 +1350,100 @@ mod tests {
             p.field_order(),
             vec![Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period]
         );
+    }
+
+    // ---- pointer clicks through the real `handle_event` -----------------
+    // The method cards, disclosure, chips and footer buttons are only
+    // reachable through `handle_event`; these drive real synthetic pointer
+    // events so each control's effect is verified end to end, not by calling
+    // the internal handlers directly.
+
+    use crate::test_events::{cursor_at, left_press};
+
+    fn dispatch(p: &mut AddAccountPanel, ev: &WindowEvent) {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = crate::test_events::no_mods();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut handled = false;
+        p.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, node, &taffy);
+    }
+
+    #[test]
+    fn clicking_the_scan_qr_card_emits_pick_image() {
+        let mut p = opened();
+        let at = p.image_card_rect.center();
+        dispatch(&mut p, &cursor_at(at));
+        dispatch(&mut p, &left_press());
+        assert!(
+            matches!(p.take_event(), Some(AddPanelEvent::PickImageForQr)),
+            "the QR card routes to the host image picker"
+        );
+    }
+
+    #[test]
+    fn clicking_the_paste_link_card_discloses_the_uri_field() {
+        let mut p = opened();
+        assert!(!p.uri_expanded);
+        let at = p.link_card_rect.center();
+        dispatch(&mut p, &cursor_at(at));
+        dispatch(&mut p, &left_press());
+        assert!(p.uri_expanded, "the paste-link card discloses the uri row");
+        assert_eq!(p.focused, Some(Field::Uri), "and focuses it");
+    }
+
+    #[test]
+    fn clicking_algorithm_and_digit_chips_selects_them() {
+        let mut p = opened();
+        p.toggle_advanced();
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert_eq!(p.algorithm, Algorithm::Sha1, "defaults to SHA1");
+        assert_eq!(p.digits, 6, "defaults to 6 digits");
+        // Click the SHA512 chip (index 2).
+        let alg = p.alg_rects[2].center();
+        dispatch(&mut p, &cursor_at(alg));
+        dispatch(&mut p, &left_press());
+        assert_eq!(p.algorithm, Algorithm::Sha512, "clicking a chip selects the algorithm");
+        // Click the 8-digit chip (index 1).
+        let dig = p.digit_rects[1].center();
+        dispatch(&mut p, &cursor_at(dig));
+        dispatch(&mut p, &left_press());
+        assert_eq!(p.digits, 8, "clicking a chip selects the digit count");
+    }
+
+    #[test]
+    fn clicking_the_fill_button_parses_the_uri_field() {
+        let mut p = opened();
+        p.expand_uri();
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        p.uri.set_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
+        let at = p.parse_rect.center();
+        dispatch(&mut p, &cursor_at(at));
+        dispatch(&mut p, &left_press());
+        assert_eq!(p.issuer.value(), "Acme", "Fill parses the issuer out of the link");
+        assert_eq!(p.secret.value(), "JBSWY3DPEHPK3PXP", "Fill parses the secret");
+    }
+
+    #[test]
+    fn clicking_cancel_emits_cancel_and_closes() {
+        let mut p = opened();
+        let at = p.cancel_rect.center();
+        dispatch(&mut p, &cursor_at(at));
+        dispatch(&mut p, &left_press());
+        assert!(!p.is_open(), "Cancel closes the modal");
+        assert!(matches!(p.take_event(), Some(AddPanelEvent::Cancel)));
+    }
+
+    #[test]
+    fn clicking_save_with_valid_fields_emits_save() {
+        let mut p = opened();
+        p.issuer.set_text("Acme");
+        p.secret.set_text("JBSWY3DPEHPK3PXP");
+        let at = p.save_rect.center();
+        dispatch(&mut p, &cursor_at(at));
+        dispatch(&mut p, &left_press());
+        assert!(!p.is_open(), "a valid Save closes the modal");
+        assert!(matches!(p.take_event(), Some(AddPanelEvent::Save(_))));
     }
 }

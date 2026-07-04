@@ -5,8 +5,8 @@
 //! A searchable list of accounts, each rendering a large rotating TOTP
 //! code (6 or 8 digits) and a circular countdown ring showing seconds
 //! left in the current period. Click a code to copy it; reorder or
-//! delete accounts inline. Add accounts by scanning a QR code, importing
-//! one from a screenshot, pasting an `otpauth://` setup link, or typing
+//! delete accounts inline. Add accounts by importing a QR code from a
+//! screenshot or photo, pasting an `otpauth://` setup link, or typing
 //! the details by hand — with the cryptographic parameters tucked behind
 //! an Advanced-options disclosure.
 //!
@@ -19,8 +19,7 @@
 //! * [`ring`] — the custom [`ring::CountdownRing`] widget (arc → Vello).
 //! * [`list`] — the [`list::AccountList`] main screen.
 //! * [`add_panel`] — the [`add_panel::AddAccountPanel`] modal.
-//! * [`qr`] — QR ingestion: pure-Rust decode from an image file today,
-//!   plus the clean hook for the pending shared camera-capture pipeline.
+//! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.
 //! * [`app`] — the [`app::AuthenticatorApp`] root that ties them together.
 //! * [`storage`] — plaintext persistence today, with the documented
 //!   encrypted-at-rest plan.
@@ -38,6 +37,9 @@ pub mod qr;
 pub mod ring;
 pub mod storage;
 pub mod totp;
+
+#[cfg(test)]
+pub(crate) mod test_events;
 
 pub use app::AuthenticatorApp;
 pub use model::{Account, Algorithm, Vault};
