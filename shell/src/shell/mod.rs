@@ -49,6 +49,7 @@ pub mod system_monitor;
 pub mod test_support;
 pub mod tile;
 pub mod topbar;
+pub mod typing_indicator;
 pub mod topbar_chrome;
 pub mod workspace_drop;
 pub mod workspace_settings;
