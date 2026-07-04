@@ -399,16 +399,32 @@ impl CompositorHandler for State {
                     match result {
                         Ok(_) => {}
                         Err(crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported) => {
-                            // Not an error — this is the DMABUF branch
-                            // choosing the zero-copy path. The encoder
-                            // reads the buffer directly. Log at debug
-                            // level so we can see the transition
-                            // without alarming the operator.
+                            // The zero-copy DMABUF-direct path is
+                            // recorded via `note_capture_path` above,
+                            // but the fd/fourcc/plane-stride tuple
+                            // isn't yet extracted into the tracker.
+                            //
+                            // TODO(dmabuf-direct-fd-extract): pull the
+                            // Dmabuf handle off `buffer` via
+                            // `smithay::wayland::dmabuf::get_dmabuf`,
+                            // stash the fd + planes on the tracker
+                            // slot, and expose them via
+                            // `SurfaceTracker::take_latest_dmabuf` so
+                            // `SharedFlatpakSession::deposit_captured_dmabuf`
+                            // can build a `FrameInput::DmabufFd` and
+                            // hand it straight to the VA-API backend's
+                            // `av_hwframe_map` import.  Blocked on
+                            // wiring `DmabufState` + `DmabufHandler`
+                            // into the compositor state — until then
+                            // clients that attach a dmabuf stall on
+                            // the encode side (the readback path
+                            // rejects them and the tracker slot stays
+                            // empty).
                             tracing::debug!(
                                 target: "shell::compositor::state",
                                 surface_id,
                                 path = ?path,
-                                "dmabuf buffer routed to direct-import path"
+                                "dmabuf buffer detected; direct-import fd extraction pending"
                             );
                         }
                         Err(err) => {
