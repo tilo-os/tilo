@@ -144,6 +144,32 @@ pub struct TrustAttestation {
     /// over the package id).
     #[serde(rename = "claim")]
     pub claim_hex: String,
+    /// Attestor's Ed25519 signature over the canonical attestation
+    /// preimage — see [`crate::trust::attestation_preimage`]. Hex
+    /// encoded (128 chars for a 64-byte signature). Empty string
+    /// if no signature is attached (legacy claim-only rows).
+    #[serde(default, rename = "signature")]
+    pub signature_hex: String,
+}
+
+impl TrustAttestation {
+    /// Parse the signature hex into raw bytes. `Ok(None)` when
+    /// the `signature` field is empty.
+    pub fn signature_bytes(&self) -> Result<Option<[u8; 64]>, IdentityParseError> {
+        if self.signature_hex.is_empty() {
+            return Ok(None);
+        }
+        let bytes = hex::decode(&self.signature_hex).map_err(IdentityParseError::Hex)?;
+        if bytes.len() != 64 {
+            return Err(IdentityParseError::WrongLength {
+                expected: 64,
+                got: bytes.len(),
+            });
+        }
+        let mut out = [0u8; 64];
+        out.copy_from_slice(&bytes);
+        Ok(Some(out))
+    }
 }
 
 /// `[sandbox]` — the runtime confinement profile.
