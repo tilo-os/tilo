@@ -6,9 +6,9 @@
 //!
 //! ```text
 //! <root>/
-//!   bundle.toml           metadata: version, root hash, payload manifest
+//!   bundle.toml           metadata: version, root hash, payload manifest, signature
 //!   lib/                  host-copied loader + libc + friends
-//!     ld-linux-x86-64.so.2
+//!     ld-linux-x86-64.so.2       (or ld-linux-aarch64.so.1 for aarch64 bundles)
 //!     libc.so.6
 //!     libgcc_s.so.1
 //!     …
@@ -20,13 +20,40 @@
 //! byte change in any file — or in the manifest of paths itself —
 //! flips the root hash.
 //!
+//! ## Cross-architecture
+//!
+//! The set of host source paths depends on target architecture. The
+//! [`host_minimal_paths_for`] table encodes what to copy for each
+//! architecture qOS targets (`x86_64`, `aarch64` today). At build time
+//! we probe the host for existence and silently skip anything absent —
+//! Debian layouts (`/lib/aarch64-linux-gnu/libc.so.6`) and Fedora
+//! layouts (`/usr/lib64/libc.so.6`) are both listed, only what exists
+//! is copied, the manifest records what was actually included.
+//!
+//! ## Signing
+//!
+//! When [`build_bundle_with`] is given a [`BuildOptions::identity`],
+//! it appends a detached ed25519 signature to `bundle.toml`:
+//!
+//! - `publisher_hex` — the identity's 32-byte public key, hex.
+//! - `signature_hex` — the 64-byte signature, hex.
+//!
+//! Preimage: `blake3(b"qos-runtime-bundle-v1\0" || version || root_hash)`.
+//!
+//! [`verify_bundle`] recomputes the hash covenants and (when a
+//! signature is present) checks the signature against the embedded
+//! publisher. Callers can also require a specific publisher via
+//! [`verify_bundle_with`] — see the launcher's `--require-publisher`
+//! passthrough.
+//!
 //! ## Discovery
 //!
 //! The launcher looks a bundle up by its version tag. Search order:
-//! 1. `$XDG_DATA_HOME/qos-runtime/<version>/` — per-user (default when
+//! 1. explicit `--runtime <path>` from the caller (not the library's job)
+//! 2. `$XDG_DATA_HOME/qos-runtime/<version>/` — per-user (default when
 //!    installed with `qos-install runtime install`).
-//! 2. `/usr/lib/qos-runtime/<version>/` — system-wide (baked into the
-//!    OS image).
+//! 3. `/usr/lib/qos-runtime/<version>/` — system-wide (baked into the
+//!    OS image at build time by `os/scripts/bake-runtime-bundle.sh`).
 //!
 //! The `default_bundle_path` and `system_bundle_path` helpers surface
 //! these paths from the library so both the CLI and the launcher agree
@@ -42,6 +69,10 @@ use serde::{Deserialize, Serialize};
 /// Standard bundle manifest filename inside a bundle directory.
 pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
 
+/// Domain-separation prefix for the bundle-signing preimage. Bumped
+/// only on a wire-breaking change.
+pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"qos-runtime-bundle-v1\0";
+
 /// Bundle metadata written into `bundle.toml`. All fields are stable
 /// so that a `verify` roundtrip is meaningful across tool versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +80,11 @@ pub struct BundleManifest {
     /// Human-readable version tag — matches the manifest string
     /// `qos-runtime/<version>` in a package manifest.
     pub version: String,
+    /// Target architecture the bundle was built for. Matches
+    /// `std::env::consts::ARCH` values (`x86_64`, `aarch64`, ...).
+    /// A launcher on the wrong arch refuses the bundle rather than
+    /// getting the loader wrong at exec time.
+    pub arch: String,
     /// BLAKE3 root hash over the sorted `(path, file-hash)` list.
     /// Hex, lowercase, 64 chars.
     pub root_hash: String,
@@ -62,6 +98,15 @@ pub struct BundleManifest {
     /// matters for identity.
     #[serde(default)]
     pub produced_at: u64,
+    /// Optional publisher's Ed25519 public key, hex-encoded (64
+    /// chars). Present iff the bundle was signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_hex: Option<String>,
+    /// Optional Ed25519 signature over
+    /// `blake3(DOMAIN || version || root_hash)`, hex-encoded (128
+    /// chars). Present iff the bundle was signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_hex: Option<String>,
 }
 
 /// One `(payload-relative-path, hash)` entry.
@@ -97,24 +142,68 @@ pub enum BundleError {
     FileUnlisted { path: String },
     #[error("home / data-dir not resolvable — set XDG_DATA_HOME or HOME")]
     NoDataDir,
+    #[error("bundle is not signed — signature required (pass --allow-unsigned-runtime to opt out)")]
+    NotSigned,
+    #[error("bundle signature does not verify against embedded publisher")]
+    BadSignature,
+    #[error("bundle publisher {actual} does not match required {required}")]
+    PublisherMismatch { required: String, actual: String },
+    #[error("bundle arch {actual:?} does not match host arch {host:?}")]
+    ArchMismatch { actual: String, host: String },
+    #[error("no host source table for arch {0} — supported: {}", supported_archs().join(", "))]
+    UnsupportedArch(String),
+    #[error("identity file: {0}")]
+    IdentityIo(String),
+    #[error("identity file: {0}")]
+    IdentityParse(String),
+    #[error("bundle signature field {field} is malformed: {reason}")]
+    SignatureFieldMalformed { field: &'static str, reason: String },
 }
 
-/// The minimal loader + libc set the launcher needs to `execve()` a
-/// dynamically-linked ELF inside the sandbox. Mirrors the historical
-/// list in `launcher::run::minimal_loader_binds` — the two must stay
-/// in sync as long as `--minimal-libs` remains supported.
+/// The set of host source paths for a given target architecture.
 ///
 /// These are absolute paths on the *host*. The builder resolves each
-/// against `--from-host` (default `/`), and any that don't exist are
+/// against `--from` (default `/`), and any that don't exist are
 /// silently skipped so a bundle can be built on a system whose loader
 /// lives at only one of the alternative locations. The result is still
 /// hash-stable — the manifest lists what was actually included.
-pub const HOST_MINIMAL_PATHS: &[&str] = &[
+///
+/// Two layouts are covered per arch:
+///  * Fedora / RHEL-ish: `/lib64` + `/usr/lib64`.
+///  * Debian / Ubuntu-ish: `/lib/<arch>-linux-gnu`.
+///
+/// Only what exists on the source host lands in the bundle. Adding a
+/// new architecture is a matter of adding a row here (and to
+/// `CANONICAL_LOADER_PATHS` in the sandbox side).
+pub fn host_minimal_paths_for(arch: &str) -> Option<&'static [&'static str]> {
+    match arch {
+        "x86_64" => Some(HOST_MINIMAL_PATHS_X86_64),
+        "aarch64" => Some(HOST_MINIMAL_PATHS_AARCH64),
+        _ => None,
+    }
+}
+
+/// List every architecture [`host_minimal_paths_for`] has a table for.
+pub fn supported_archs() -> Vec<&'static str> {
+    vec!["x86_64", "aarch64"]
+}
+
+/// `std::env::consts::ARCH` at build time. The default target for
+/// `build_bundle` when no explicit arch is supplied.
+pub fn host_arch() -> &'static str {
+    std::env::consts::ARCH
+}
+
+/// x86_64 loader + libc set. Covers Fedora (`/lib64`), Debian
+/// (`/lib/x86_64-linux-gnu` via the `/lib64` symlink on modern
+/// distros), and the legacy `/lib/ld-linux.so.2` fallback.
+pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
     // Dynamic loader itself.
     "/lib64/ld-linux-x86-64.so.2",
     "/lib/ld-linux-x86-64.so.2",
     "/lib/ld-linux.so.2",
     "/usr/lib64/ld-linux-x86-64.so.2",
+    "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
     // libc + friends that most Rust binaries need.
     "/lib64/libc.so.6",
     "/lib64/libgcc_s.so.1",
@@ -123,7 +212,56 @@ pub const HOST_MINIMAL_PATHS: &[&str] = &[
     "/lib64/libpthread.so.0",
     "/lib64/librt.so.1",
     "/lib64/libutil.so.1",
+    // Debian-ish alternatives — bundle-hash reflects whichever exist.
+    "/lib/x86_64-linux-gnu/libc.so.6",
+    "/lib/x86_64-linux-gnu/libgcc_s.so.1",
+    "/lib/x86_64-linux-gnu/libm.so.6",
+    "/lib/x86_64-linux-gnu/libdl.so.2",
+    "/lib/x86_64-linux-gnu/libpthread.so.0",
+    "/lib/x86_64-linux-gnu/librt.so.1",
+    "/lib/x86_64-linux-gnu/libutil.so.1",
 ];
+
+/// aarch64 loader + libc set. Covers Debian (`/lib/aarch64-linux-gnu`)
+/// and Fedora (`/lib64` on aarch64 too — same convention as x86_64).
+pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
+    // Dynamic loader itself.
+    "/lib/ld-linux-aarch64.so.1",
+    "/lib64/ld-linux-aarch64.so.1",
+    "/usr/lib64/ld-linux-aarch64.so.1",
+    "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+    // Fedora aarch64 uses `/lib64` just like x86_64. The `/lib64`
+    // dir on aarch64 Fedora is a real directory, not a symlink to
+    // `/usr/lib64`, though `/usr/lib64` exists too — bundle both.
+    "/lib64/libc.so.6",
+    "/lib64/libgcc_s.so.1",
+    "/lib64/libm.so.6",
+    "/lib64/libdl.so.2",
+    "/lib64/libpthread.so.0",
+    "/lib64/librt.so.1",
+    "/lib64/libutil.so.1",
+    "/usr/lib64/libc.so.6",
+    "/usr/lib64/libgcc_s.so.1",
+    "/usr/lib64/libm.so.6",
+    "/usr/lib64/libdl.so.2",
+    "/usr/lib64/libpthread.so.0",
+    "/usr/lib64/librt.so.1",
+    "/usr/lib64/libutil.so.1",
+    // Debian-ish alternatives.
+    "/lib/aarch64-linux-gnu/libc.so.6",
+    "/lib/aarch64-linux-gnu/libgcc_s.so.1",
+    "/lib/aarch64-linux-gnu/libm.so.6",
+    "/lib/aarch64-linux-gnu/libdl.so.2",
+    "/lib/aarch64-linux-gnu/libpthread.so.0",
+    "/lib/aarch64-linux-gnu/librt.so.1",
+    "/lib/aarch64-linux-gnu/libutil.so.1",
+];
+
+/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]. Kept only so
+/// out-of-tree consumers aren't broken by the rename. New code should
+/// use [`host_minimal_paths_for`] — the arch-aware entry point.
+#[deprecated(note = "use host_minimal_paths_for(arch) — HOST_MINIMAL_PATHS is x86_64-only")]
+pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
 
 /// The optional `/etc/ld.so.cache` — the loader falls back to a
 /// slower search without it; still worth including when present.
@@ -159,33 +297,144 @@ pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     None
 }
 
-/// Build (or rebuild) a bundle at `out`.
-///
-/// - `version` names the bundle (also written into `bundle.toml`).
-/// - `from_host` overrides the host-root prefix each source path is
-///   resolved against; defaults to `/`. Useful for tests and for
-///   building against a distrobox rootfs from outside the container.
-/// - Missing source paths are silently skipped; the bundle's hash
-///   reflects what was actually copied. If *no* source resolves, we
-///   return `NoSources` so a build against the wrong `--from-host`
-///   surfaces immediately.
-/// - Existing files at `out/lib/…` are overwritten. Non-payload files
-///   under `out` are left alone (so a bundle dir can hold sibling
-///   metadata beyond `bundle.toml` — future-proofing for
-///   signature files etc.).
+/// Optional knobs for [`build_bundle_with`].
+#[derive(Default, Debug, Clone)]
+pub struct BuildOptions<'a> {
+    /// Host root each source path is resolved against; `None` = `/`.
+    pub from: Option<&'a Path>,
+    /// Target architecture. Defaults to [`host_arch`]. Explicit
+    /// override lets tests fabricate a bundle for a non-host arch by
+    /// pre-populating a fake root.
+    pub arch: Option<&'a str>,
+    /// Path to an identity JSON file (see [`Identity::load`]). If
+    /// provided, the finished bundle is signed and the manifest gains
+    /// `publisher_hex` + `signature_hex`.
+    pub identity: Option<&'a Path>,
+}
+
+/// The signing identity used by [`build_bundle_with`]. Format: JSON
+/// `{ "secret_key_hex": "<64-hex-chars>" }` — matches the shape used
+/// by `qos-pkg` so operators can reuse the same key material.
+#[derive(Clone)]
+pub struct Identity {
+    signing_key: ed25519_dalek::SigningKey,
+}
+
+impl Identity {
+    /// Load from a JSON file on disk.
+    pub fn load(path: &Path) -> Result<Self, BundleError> {
+        let bytes = fs::read(path).map_err(|e| BundleError::IdentityIo(e.to_string()))?;
+        Self::from_json_bytes(&bytes)
+    }
+
+    /// Parse an identity JSON blob directly.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, BundleError> {
+        #[derive(Deserialize)]
+        struct File {
+            secret_key_hex: String,
+        }
+        let f: File = serde_json::from_slice(bytes)
+            .map_err(|e| BundleError::IdentityParse(e.to_string()))?;
+        let raw = hex::decode(&f.secret_key_hex)
+            .map_err(|e| BundleError::IdentityParse(format!("secret_key_hex: {e}")))?;
+        if raw.len() != 32 {
+            return Err(BundleError::IdentityParse(format!(
+                "secret_key_hex must decode to 32 bytes (got {})",
+                raw.len()
+            )));
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&raw);
+        Ok(Self {
+            signing_key: ed25519_dalek::SigningKey::from_bytes(&seed),
+        })
+    }
+
+    /// Generate a fresh random identity. Handy for tests; also used
+    /// by the CLI's `key generate` subcommand.
+    pub fn generate() -> Self {
+        let mut rng = rand::rngs::OsRng;
+        Self {
+            signing_key: ed25519_dalek::SigningKey::generate(&mut rng),
+        }
+    }
+
+    /// Serialise as the same JSON shape [`load`] reads.
+    pub fn to_json_bytes(&self) -> Vec<u8> {
+        let hex = hex::encode(self.signing_key.to_bytes());
+        format!("{{\"secret_key_hex\":\"{hex}\"}}\n").into_bytes()
+    }
+
+    /// The 32-byte Ed25519 public key.
+    pub fn public_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
+    /// Hex encoding of the public key.
+    pub fn public_key_hex(&self) -> String {
+        hex::encode(self.public_key_bytes())
+    }
+}
+
+/// Preimage the publisher signs: `blake3(DOMAIN || version || root_hash)`.
+/// Domain-separated so signatures over other blobs can't collide.
+pub fn signing_preimage(version: &str, root_hash_hex: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(BUNDLE_SIGNING_DOMAIN);
+    hasher.update(version.as_bytes());
+    hasher.update(root_hash_hex.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// Build a bundle at `out` for the host architecture. See
+/// [`build_bundle_with`] for the full-featured entry point.
 pub fn build_bundle(
     out: &Path,
     version: &str,
     from_host: Option<&Path>,
 ) -> Result<BundleManifest, BundleError> {
-    let host_root = from_host.unwrap_or_else(|| Path::new("/"));
+    build_bundle_with(
+        out,
+        version,
+        &BuildOptions {
+            from: from_host,
+            ..Default::default()
+        },
+    )
+}
+
+/// Build (or rebuild) a bundle at `out`.
+///
+/// - `version` names the bundle (also written into `bundle.toml`).
+/// - `opts.from` overrides the host-root prefix each source path is
+///   resolved against; defaults to `/`. Useful for tests and for
+///   building against a distrobox rootfs from outside the container.
+/// - `opts.arch` picks the source-path table. Defaults to
+///   [`host_arch`]; explicit override lets a cross-arch fixture be
+///   built (e.g. an aarch64 bundle from an x86_64 CI runner, as long
+///   as `--from` points at an aarch64 rootfs).
+/// - `opts.identity` signs the bundle. When set, the manifest gains
+///   `publisher_hex` and `signature_hex`.
+/// - Missing source paths are silently skipped; the bundle's hash
+///   reflects what was actually copied. If *no* source resolves, we
+///   return `NoSources` so a build against the wrong `--from` or an
+///   arch mismatch surfaces immediately.
+pub fn build_bundle_with(
+    out: &Path,
+    version: &str,
+    opts: &BuildOptions<'_>,
+) -> Result<BundleManifest, BundleError> {
+    let host_root = opts.from.unwrap_or_else(|| Path::new("/"));
+    let arch: &str = opts.arch.unwrap_or_else(|| host_arch());
+    let paths = host_minimal_paths_for(arch)
+        .ok_or_else(|| BundleError::UnsupportedArch(arch.to_string()))?;
     fs::create_dir_all(out.join("lib"))?;
 
     // Copy each candidate. Track what we got so the manifest is
     // deterministic.
     let mut written: Vec<(String, PathBuf)> = Vec::new(); // relative-in-bundle → absolute-in-bundle
 
-    for src_abs in HOST_MINIMAL_PATHS {
+    for src_abs in paths {
         let src = resolve_from(host_root, src_abs);
         if !src.exists() {
             continue;
@@ -219,7 +468,7 @@ pub fn build_bundle(
 
     if written.is_empty() {
         return Err(BundleError::NoSources {
-            checked: HOST_MINIMAL_PATHS
+            checked: paths
                 .iter()
                 .map(|p| resolve_from(host_root, p))
                 .collect(),
@@ -239,11 +488,29 @@ pub fn build_bundle(
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let root_hash = compute_root_hash(&files);
 
+    // Optional signing.
+    let (publisher_hex, signature_hex) = match opts.identity {
+        Some(id_path) => {
+            let identity = Identity::load(id_path)?;
+            let preimage = signing_preimage(version, &root_hash);
+            use ed25519_dalek::Signer;
+            let sig = identity.signing_key.sign(&preimage);
+            (
+                Some(identity.public_key_hex()),
+                Some(hex::encode(sig.to_bytes())),
+            )
+        }
+        None => (None, None),
+    };
+
     let manifest = BundleManifest {
         version: version.to_string(),
+        arch: arch.to_string(),
         root_hash,
         files,
         produced_at: unix_now(),
+        publisher_hex,
+        signature_hex,
     };
 
     // Persist bundle.toml.
@@ -254,10 +521,42 @@ pub fn build_bundle(
     Ok(manifest)
 }
 
+/// Verification policy — how strict [`verify_bundle_with`] should be.
+///
+/// [`verify_bundle`] uses `default()`, which:
+///   * checks any signature that is present (rejects a bad sig)
+///   * does NOT require a signature (an unsigned bundle passes)
+///   * does NOT enforce a specific publisher
+#[derive(Default, Debug, Clone)]
+pub struct VerifyOptions {
+    /// If set, require the bundle to be signed AND its publisher
+    /// hex to equal this string.
+    pub require_publisher: Option<String>,
+    /// If set, refuse an unsigned bundle even without a specific
+    /// required-publisher.
+    pub require_signature: bool,
+    /// If set, refuse a bundle whose `arch` field disagrees with
+    /// this string. `None` = accept any arch.
+    pub require_arch: Option<String>,
+}
+
 /// Verify an existing bundle: recompute every file's hash + the root
 /// hash, then compare against `bundle.toml`. Returns the parsed
 /// manifest on success so callers can print / inspect it.
+///
+/// Signature policy: any signature present must verify, but a bundle
+/// without a signature is accepted. Use [`verify_bundle_with`] with
+/// `require_signature=true` (or the launcher's default policy) to
+/// refuse unsigned bundles.
 pub fn verify_bundle(root: &Path) -> Result<BundleManifest, BundleError> {
+    verify_bundle_with(root, &VerifyOptions::default())
+}
+
+/// Full-featured verify. See [`VerifyOptions`].
+pub fn verify_bundle_with(
+    root: &Path,
+    opts: &VerifyOptions,
+) -> Result<BundleManifest, BundleError> {
     let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
     if !manifest_path.exists() {
         return Err(BundleError::ManifestMissing {
@@ -267,6 +566,16 @@ pub fn verify_bundle(root: &Path) -> Result<BundleManifest, BundleError> {
     let text = fs::read_to_string(&manifest_path)?;
     let manifest: BundleManifest = toml::from_str(&text)
         .map_err(|e| BundleError::ManifestParse(e.to_string()))?;
+
+    // Optional arch policy.
+    if let Some(required) = opts.require_arch.as_deref() {
+        if manifest.arch != required {
+            return Err(BundleError::ArchMismatch {
+                actual: manifest.arch.clone(),
+                host: required.to_string(),
+            });
+        }
+    }
 
     // Recompute per-file hashes; also compare against what's actually
     // on disk. Any file listed in bundle.toml but missing on disk is
@@ -298,7 +607,10 @@ pub fn verify_bundle(root: &Path) -> Result<BundleManifest, BundleError> {
         return Err(BundleError::FileUnlisted { path });
     }
 
-    // Root hash.
+    // Root hash. This is what a signature covers, so it's checked
+    // BEFORE the signature — a tampered manifest that shifts
+    // root_hash but forgets to update files (or vice versa) fails
+    // here.
     let mut sorted = manifest.files.clone();
     sorted.sort_by(|a, b| a.path.cmp(&b.path));
     let computed = compute_root_hash(&sorted);
@@ -309,7 +621,67 @@ pub fn verify_bundle(root: &Path) -> Result<BundleManifest, BundleError> {
         });
     }
 
+    // Signature policy.
+    let has_sig = manifest.publisher_hex.is_some() && manifest.signature_hex.is_some();
+    let need_sig = opts.require_signature || opts.require_publisher.is_some();
+    if !has_sig && need_sig {
+        return Err(BundleError::NotSigned);
+    }
+
+    if has_sig {
+        let publisher_hex = manifest.publisher_hex.as_deref().unwrap();
+        let sig_hex = manifest.signature_hex.as_deref().unwrap();
+
+        let pub_bytes: [u8; 32] = decode_fixed_hex(publisher_hex, "publisher_hex")?;
+        let sig_bytes: [u8; 64] = decode_fixed_hex(sig_hex, "signature_hex")?;
+
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(&pub_bytes).map_err(|e| {
+            BundleError::SignatureFieldMalformed {
+                field: "publisher_hex",
+                reason: e.to_string(),
+            }
+        })?;
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        let preimage = signing_preimage(&manifest.version, &manifest.root_hash);
+        use ed25519_dalek::Verifier;
+        if vk.verify(&preimage, &sig).is_err() {
+            return Err(BundleError::BadSignature);
+        }
+
+        if let Some(required) = opts.require_publisher.as_deref() {
+            if !eq_hex_ignore_case(publisher_hex, required) {
+                return Err(BundleError::PublisherMismatch {
+                    required: required.to_string(),
+                    actual: publisher_hex.to_string(),
+                });
+            }
+        }
+    }
+
     Ok(manifest)
+}
+
+fn decode_fixed_hex<const N: usize>(
+    s: &str,
+    field: &'static str,
+) -> Result<[u8; N], BundleError> {
+    let raw = hex::decode(s).map_err(|e| BundleError::SignatureFieldMalformed {
+        field,
+        reason: e.to_string(),
+    })?;
+    if raw.len() != N {
+        return Err(BundleError::SignatureFieldMalformed {
+            field,
+            reason: format!("expected {N} bytes, got {}", raw.len()),
+        });
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(&raw);
+    Ok(out)
+}
+
+fn eq_hex_ignore_case(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 
 /// List the immediate contents of the bundle root that constitute the
@@ -400,106 +772,359 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
 
-    /// Fake a host tree with a couple of "loader" files, build a
-    /// bundle from it, then verify.
-    #[test]
-    fn build_then_verify_roundtrips() {
-        let host = tempfile::tempdir().unwrap();
-        // Create fake libc + loader files under a fake host root.
+    fn fake_x86_64_host(root: &Path) {
         for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6", "lib64/libm.so.6"] {
-            let p = host.path().join(rel);
+            let p = root.join(rel);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, format!("fake contents of {rel}")).unwrap();
         }
+    }
+
+    fn fake_aarch64_fedora_host(root: &Path) {
+        // Fedora-style aarch64 rootfs: loader at /lib/, libc at /lib64/.
+        for rel in [
+            "lib/ld-linux-aarch64.so.1",
+            "lib64/libc.so.6",
+            "lib64/libm.so.6",
+            "lib64/libgcc_s.so.1",
+        ] {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, format!("fake contents of {rel}")).unwrap();
+        }
+    }
+
+    fn fake_aarch64_debian_host(root: &Path) {
+        for rel in [
+            "lib/ld-linux-aarch64.so.1",
+            "lib/aarch64-linux-gnu/libc.so.6",
+            "lib/aarch64-linux-gnu/libm.so.6",
+            "lib/aarch64-linux-gnu/libgcc_s.so.1",
+        ] {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, format!("fake contents of {rel}")).unwrap();
+        }
+    }
+
+    #[test]
+    fn build_then_verify_roundtrips_x86_64() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
         let out = tempfile::tempdir().unwrap();
-        let manifest =
-            build_bundle(out.path(), "2026.07", Some(host.path())).expect("build");
+        let manifest = build_bundle_with(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+            },
+        )
+        .expect("build");
         assert_eq!(manifest.version, "2026.07");
+        assert_eq!(manifest.arch, "x86_64");
         assert!(!manifest.files.is_empty());
         assert_eq!(manifest.root_hash.len(), 64);
+        assert!(manifest.signature_hex.is_none());
 
-        // Verify against the same tree.
         let verified = verify_bundle(out.path()).expect("verify");
         assert_eq!(verified.root_hash, manifest.root_hash);
-        assert_eq!(verified.files.len(), manifest.files.len());
+        assert_eq!(verified.arch, "x86_64");
+    }
+
+    #[test]
+    fn build_supports_aarch64_fedora_layout() {
+        let host = tempfile::tempdir().unwrap();
+        fake_aarch64_fedora_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let m = build_bundle_with(
+            out.path(),
+            "1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("aarch64"),
+                identity: None,
+            },
+        )
+        .expect("build");
+        assert_eq!(m.arch, "aarch64");
+        // Fedora layout: loader at /lib/, libc at /lib64/.
+        let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.ends_with("lib/ld-linux-aarch64.so.1")));
+        assert!(paths.iter().any(|p| p.ends_with("lib64/libc.so.6")));
+        verify_bundle(out.path()).expect("verify");
+    }
+
+    #[test]
+    fn build_supports_aarch64_debian_layout() {
+        let host = tempfile::tempdir().unwrap();
+        fake_aarch64_debian_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let m = build_bundle_with(
+            out.path(),
+            "1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("aarch64"),
+                identity: None,
+            },
+        )
+        .expect("build");
+        let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths
+            .iter()
+            .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6")));
+        verify_bundle(out.path()).expect("verify");
+    }
+
+    #[test]
+    fn unsupported_arch_errors() {
+        let host = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let err = build_bundle_with(
+            out.path(),
+            "1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("mips64"),
+                identity: None,
+            },
+        )
+        .unwrap_err();
+        matches!(err, BundleError::UnsupportedArch(_));
     }
 
     #[test]
     fn verify_detects_a_modified_byte() {
         let host = tempfile::tempdir().unwrap();
-        for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
-            let p = host.path().join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, format!("fake contents of {rel}")).unwrap();
-        }
+        fake_x86_64_host(host.path());
         let out = tempfile::tempdir().unwrap();
-        build_bundle(out.path(), "2026.07", Some(host.path())).expect("build");
-        // Tamper with one byte in the copied libc.
-        let libc_in_bundle = out.path().join("lib/lib64/libc.so.6");
-        let mut bytes = fs::read(&libc_in_bundle).unwrap();
+        build_bundle_with(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+            },
+        )
+        .unwrap();
+        let libc = out.path().join("lib/lib64/libc.so.6");
+        let mut bytes = fs::read(&libc).unwrap();
         bytes[0] ^= 0xff;
-        fs::write(&libc_in_bundle, bytes).unwrap();
+        fs::write(&libc, bytes).unwrap();
 
         let err = verify_bundle(out.path()).unwrap_err();
-        match err {
-            BundleError::HashMismatch { .. } => {}
-            other => panic!("expected HashMismatch, got {other:?}"),
-        }
+        matches!(err, BundleError::HashMismatch { .. });
     }
 
     #[test]
     fn verify_detects_unlisted_file() {
         let host = tempfile::tempdir().unwrap();
-        for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
-            let p = host.path().join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, format!("fake contents of {rel}")).unwrap();
-        }
+        fake_x86_64_host(host.path());
         let out = tempfile::tempdir().unwrap();
-        build_bundle(out.path(), "2026.07", Some(host.path())).expect("build");
-        // Inject a bogus file into the payload.
+        build_bundle_with(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+            },
+        )
+        .unwrap();
         fs::write(out.path().join("lib/lib64/extra.so"), b"surprise").unwrap();
         let err = verify_bundle(out.path()).unwrap_err();
-        match err {
-            BundleError::FileUnlisted { .. } => {}
-            other => panic!("expected FileUnlisted, got {other:?}"),
-        }
+        matches!(err, BundleError::FileUnlisted { .. });
     }
 
     #[test]
     fn build_fails_when_no_sources_resolve() {
         let host = tempfile::tempdir().unwrap();
-        // Empty host — nothing to copy.
         let out = tempfile::tempdir().unwrap();
-        let err = build_bundle(out.path(), "0.0.1", Some(host.path())).unwrap_err();
-        match err {
-            BundleError::NoSources { .. } => {}
-            other => panic!("expected NoSources, got {other:?}"),
-        }
+        let err = build_bundle_with(
+            out.path(),
+            "0.0.1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+            },
+        )
+        .unwrap_err();
+        matches!(err, BundleError::NoSources { .. });
     }
 
     #[test]
     fn root_hash_is_deterministic() {
-        // Building twice from identical inputs yields the same root
-        // hash, even though produced_at differs.
         let host = tempfile::tempdir().unwrap();
-        for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
-            let p = host.path().join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, format!("fake contents of {rel}")).unwrap();
-        }
+        fake_x86_64_host(host.path());
         let out1 = tempfile::tempdir().unwrap();
         let out2 = tempfile::tempdir().unwrap();
-        let a = build_bundle(out1.path(), "v", Some(host.path())).unwrap();
-        let b = build_bundle(out2.path(), "v", Some(host.path())).unwrap();
+        let opts = BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: None,
+        };
+        let a = build_bundle_with(out1.path(), "v", &opts).unwrap();
+        let b = build_bundle_with(out2.path(), "v", &opts).unwrap();
         assert_eq!(a.root_hash, b.root_hash);
     }
 
     #[test]
+    fn signed_bundle_roundtrips_and_verify_accepts() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity_path = host.path().join("identity.json");
+        let identity = Identity::generate();
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "signed",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+            },
+        )
+        .expect("build signed");
+        assert_eq!(manifest.publisher_hex.as_deref(), Some(identity.public_key_hex()).as_deref());
+        assert!(manifest.signature_hex.is_some());
+
+        // Default verify accepts a valid signed bundle.
+        let v = verify_bundle(out.path()).expect("verify");
+        assert_eq!(v.publisher_hex, manifest.publisher_hex);
+
+        // require_publisher matching same key accepts.
+        verify_bundle_with(
+            out.path(),
+            &VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: None,
+            },
+        )
+        .expect("required-publisher matches");
+    }
+
+    #[test]
+    fn verify_refuses_bad_publisher() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity_path = host.path().join("identity.json");
+        let identity = Identity::generate();
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        build_bundle_with(
+            out.path(),
+            "signed",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+            },
+        )
+        .unwrap();
+
+        let other = Identity::generate();
+        let err = verify_bundle_with(
+            out.path(),
+            &VerifyOptions {
+                require_publisher: Some(other.public_key_hex()),
+                require_signature: true,
+                require_arch: None,
+            },
+        )
+        .unwrap_err();
+        matches!(err, BundleError::PublisherMismatch { .. });
+    }
+
+    #[test]
+    fn verify_refuses_tampered_signature() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity_path = host.path().join("identity.json");
+        let identity = Identity::generate();
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        build_bundle_with(
+            out.path(),
+            "signed",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+            },
+        )
+        .unwrap();
+
+        // Tamper: rewrite root_hash to something plausible-looking. Bundle
+        // integrity check catches this before the signature — good, but we
+        // want to prove the signature side too. Do it in the other order:
+        // flip a byte in `signature_hex` and re-file the manifest.
+        let bundle_toml = out.path().join(BUNDLE_MANIFEST_FILENAME);
+        let text = fs::read_to_string(&bundle_toml).unwrap();
+        let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
+        let sig = manifest.signature_hex.as_mut().unwrap();
+        // Flip one hex nibble deterministically.
+        let bytes: &mut [u8] = unsafe { sig.as_bytes_mut() };
+        bytes[0] = if bytes[0] == b'0' { b'1' } else { b'0' };
+        fs::write(&bundle_toml, toml::to_string_pretty(&manifest).unwrap()).unwrap();
+
+        let err = verify_bundle(out.path()).unwrap_err();
+        matches!(err, BundleError::BadSignature);
+    }
+
+    #[test]
+    fn require_signature_refuses_unsigned_bundle() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        build_bundle_with(
+            out.path(),
+            "unsigned",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+            },
+        )
+        .unwrap();
+        let err = verify_bundle_with(
+            out.path(),
+            &VerifyOptions {
+                require_signature: true,
+                ..VerifyOptions::default()
+            },
+        )
+        .unwrap_err();
+        matches!(err, BundleError::NotSigned);
+    }
+
+    #[test]
+    fn signing_preimage_is_domain_separated() {
+        let a = signing_preimage("v1", "aa");
+        let b = signing_preimage("v2", "aa");
+        let c = signing_preimage("v1", "bb");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        // Domain prefix cannot be reproduced from bare inputs.
+        let hasher_bare = {
+            let mut h = blake3::Hasher::new();
+            h.update(b"v1");
+            h.update(b"aa");
+            *h.finalize().as_bytes()
+        };
+        assert_ne!(a, hasher_bare);
+    }
+
+    #[test]
     fn default_bundle_path_uses_data_dir() {
-        // Just check the shape: qos-runtime/<v> under the resolved
-        // data dir. If HOME/XDG_DATA_HOME are both unset in CI this
-        // returns an error, which is also fine (we just skip).
         if let Ok(p) = default_bundle_path("v") {
             assert!(p.ends_with("qos-runtime/v"));
         }
