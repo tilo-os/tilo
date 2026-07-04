@@ -180,6 +180,7 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<Event>, usize) {
             color,
             recurrence: Recurrence::from_rrule(&rrule),
             reminder_min: reminder,
+            calendar_id: None,
             project: None,
         }),
         i,
@@ -375,6 +376,7 @@ pub fn sample_ics(today: NaiveDate) -> String {
                 color: Palette::Blue,
                 recurrence: Recurrence::None,
                 reminder_min: Some(15),
+                calendar_id: None,
                 project: None,
             },
             Event {
@@ -387,6 +389,7 @@ pub fn sample_ics(today: NaiveDate) -> String {
                 color: Palette::Violet,
                 recurrence: Recurrence::None,
                 reminder_min: None,
+                calendar_id: None,
                 project: None,
             },
         ],
