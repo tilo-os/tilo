@@ -15,7 +15,7 @@
 //! ## Quick start
 //!
 //! ```ignore
-//! use qos_runtime::{collab, fs, identity};
+//! use runtime::{collab, fs, identity};
 //!
 //! // Signing identity (single-device signing works locally).
 //! let me = identity::load()?;
@@ -51,20 +51,20 @@
 //! Broker daemon → `apps/collab-broker`. FUSE driver → `fs/`.
 //! Launcher → `qos-launcher`. This umbrella is client-side only.
 
-pub use qos_runtime_collab as collab;
-pub use qos_runtime_fs as fs;
-pub use qos_runtime_identity as identity;
-pub use qos_runtime_portal as portal;
+pub use runtime_collab as collab;
+pub use runtime_fs as fs;
+pub use runtime_identity as identity;
+pub use runtime_portal as portal;
 
 /// The shared error type — every fallible SDK entry point returns
 /// `Result<T, NotAvailable>`. Re-exported at the top level so app
 /// code can match on a single import.
-pub use qos_runtime_portal::NotAvailable;
+pub use runtime_portal::NotAvailable;
 
 /// Convenience: are we running inside a qOS session at all? True
 /// iff the launcher set `QOS_WORKSPACE_ID`. Not an authorisation
 /// gate — see [`portal::is_qos_native`] for details.
-pub use qos_runtime_portal::is_qos_native;
+pub use runtime_portal::is_qos_native;
 
 #[cfg(test)]
 mod tests {

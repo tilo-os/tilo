@@ -1,5 +1,5 @@
 [package]
-name = "qos-runtime-collab"
+name = "runtime-collab"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,14 +8,14 @@ edition = "2024"
 # in by the launcher as QOS_SVC_COLLAB_FD.
 
 [lib]
-name = "qos_runtime_collab"
+name = "runtime_collab"
 path = "src/lib.rs"
 
 [build-dependencies]
 capnpc = "0.26"
 
 [dependencies]
-qos-runtime-portal = { path = "../qos-runtime-portal" }
+runtime-portal = { path = "../runtime-portal" }
 capnp = "0.26"
 capnp-rpc = "0.26"
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync"] }
