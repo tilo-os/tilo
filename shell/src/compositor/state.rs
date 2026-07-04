@@ -51,6 +51,7 @@ use smithay::{
     delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
+use crate::collab::flatpak_share::SharedFlatpakSession;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
@@ -58,6 +59,7 @@ use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
+use std::collections::HashMap;
 
 /// The compositor's process-wide state.
 ///
@@ -156,6 +158,21 @@ pub struct State {
     /// a bookkeeping-only no-op — the peer's `RemoteSeat` still
     /// records the target so tests can observe the focus intent.
     pub surface_resolver: Option<Box<dyn Fn(SurfaceId) -> Option<WlSurface> + Send + Sync>>,
+    /// Active share sessions keyed by their target `SurfaceId`.
+    ///
+    /// The [`CompositorHandler::commit`] hook consults this map on
+    /// every surface commit — when the committed surface is in the map,
+    /// the session's `encode_next_frame` is pumped so a freshly-drawn
+    /// buffer flows through the encoder → substream pipeline on the
+    /// same tick it landed in the compositor. Without this hook the
+    /// encoder would wait for the render loop's next damage pass,
+    /// which introduces a per-frame stall.
+    ///
+    /// Sessions are held by `Arc` because
+    /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s
+    /// `encode_next_frame` takes `&self`; the `Arc` also lets the
+    /// share manager keep an independent handle for the stop path.
+    pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
 }
 
 impl State {
@@ -212,7 +229,52 @@ impl State {
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             surface_resolver: None,
+            active_sessions: HashMap::new(),
         }
+    }
+
+    /// Register a share session so the [`CompositorHandler::commit`]
+    /// hook pumps its `encode_next_frame` on every commit of the
+    /// target surface. Replaces any prior session for the same
+    /// surface — the old session's encoder is dropped.
+    pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
+        let surface = session.surface_id;
+        self.active_sessions.insert(surface, session);
+    }
+
+    /// Deregister a share session by surface id. No-op if the surface
+    /// isn't registered. Called when the share ends or the target
+    /// surface is destroyed.
+    pub fn unregister_share_session(&mut self, surface: SurfaceId) {
+        self.active_sessions.remove(&surface);
+    }
+
+    /// Pump the share-session encoder for `surface_id` on a fresh
+    /// commit. Called from [`CompositorHandler::commit`] after
+    /// [`SurfaceTracker::on_commit`] has staged the buffer bytes.
+    ///
+    /// - Returns `false` when no session is registered for
+    ///   `surface_id`, or when the tracker slot is empty (no staged
+    ///   frame this commit — the shared surface committed damage
+    ///   without a new buffer attach, e.g. cursor motion).
+    /// - Returns `true` when the session accepted the deposit and the
+    ///   encode-next-frame tick ran. That does NOT guarantee a frame
+    ///   was emitted — the throttle may have rejected the tick or the
+    ///   encoder may have failed; the frame's absence is surfaced
+    ///   through the session's per-subscriber substream state.
+    ///
+    /// Split out from `commit` so integration tests can drive the
+    /// tick path without spinning up a real `WlSurface`.
+    pub fn tick_share_session_for_surface(&mut self, surface_id: SurfaceId) -> bool {
+        let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
+            return false;
+        };
+        let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
+            return false;
+        };
+        session.deposit_captured_rgba(frame.rgba);
+        let _ = session.encode_next_frame(std::time::Instant::now());
+        true
     }
 
     /// Mint a fresh `Serial` for input events. Wayland clients expect
@@ -508,6 +570,17 @@ impl CompositorHandler for State {
                 }
             }
         });
+
+        // Share-session tick hook: if this surface has an active
+        // Flatpak share session, deposit the freshly-captured RGBA
+        // and pump the encoder in the same tick. Without this hook
+        // the encoder waits for the render loop's next damage sweep,
+        // introducing a full-frame stall between the client's commit
+        // and the frame landing in the substream.
+        //
+        // The delegation to `tick_share_session_for_surface` keeps
+        // the pump logic testable outside of a real `WlSurface`.
+        let _ = self.tick_share_session_for_surface(surface_id);
     }
 }
 
@@ -643,3 +716,153 @@ delegate_shm!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_output!(State);
+
+#[cfg(test)]
+mod tick_hook_tests {
+    use super::*;
+    use crate::collab::flatpak_share::SharedFlatpakSession;
+    use crate::config::{EncoderChoice, FlatpakShareConfig};
+    use crate::network::protocol::{PeerId, SurfaceId};
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn make_state() -> State {
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop");
+        let display: Display<State> =
+            Display::new().expect("display");
+        State::new(event_loop.handle(), display.handle())
+    }
+
+    fn cfg() -> FlatpakShareConfig {
+        FlatpakShareConfig {
+            max_bitrate_kbps: 8000,
+            target_fps: 30,
+            encoder: EncoderChoice::Openh264,
+        }
+    }
+
+    fn gradient(w: u32, h: u32) -> Vec<u8> {
+        let mut v = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                v.push(((x * 255) / w.max(1)) as u8);
+                v.push(((y * 255) / h.max(1)) as u8);
+                v.push(0x80);
+                v.push(0xFF);
+            }
+        }
+        v
+    }
+
+    /// Two commits with a share session registered must produce two
+    /// encoded frames on the session's substream. The commit hook
+    /// pumps `encode_next_frame` once per commit; the substream's
+    /// per-subscriber queue accumulates them.
+    #[test]
+    fn two_commits_produce_two_encoded_frames() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 42;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, cfg())
+                .expect("session"),
+        );
+        session.add_viewer(VIEWER, false);
+
+        let mut state = make_state();
+        state.register_share_session(session.clone());
+
+        // Simulate the sequence a real commit would produce:
+        // `on_commit` deposits bytes into the tracker (mocked here via
+        // `deposit_for_test`), then the commit handler calls
+        // `tick_share_session_for_surface`. Test drives the tick
+        // directly so no real `WlSurface` is needed.
+        state
+            .surface_tracker
+            .deposit_for_test(SURFACE, gradient(W, H), W, H);
+        let ran = state.tick_share_session_for_surface(SURFACE);
+        assert!(ran, "first commit must fire the tick");
+        // Nudge the throttle clock by re-depositing and pumping again
+        // — the throttle is time-based, and in tests two back-to-back
+        // ticks land inside the 33 ms window. Advance the wall clock
+        // by sleeping the interval; the throttle's `should_encode`
+        // reads `Instant::now()` and will accept the second tick.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        state
+            .surface_tracker
+            .deposit_for_test(SURFACE, gradient(W, H), W, H);
+        let ran2 = state.tick_share_session_for_surface(SURFACE);
+        assert!(ran2, "second commit must fire the tick");
+
+        // Both encoded frames land in the subscriber's substream
+        // queue with monotonic sequence numbers.
+        let f0 = session
+            .poll_stream_frame(VIEWER)
+            .expect("first frame on the substream");
+        let f1 = session
+            .poll_stream_frame(VIEWER)
+            .expect("second frame on the substream");
+        assert_eq!(f0.sequence, 0);
+        assert_eq!(f1.sequence, 1);
+        assert!(session.poll_stream_frame(VIEWER).is_none());
+    }
+
+    /// A commit for a surface with no registered share session is a
+    /// no-op (no encoder pumped, no substream traffic).
+    #[test]
+    fn commit_without_active_session_is_noop() {
+        let mut state = make_state();
+        state
+            .surface_tracker
+            .deposit_for_test(999, vec![0; 64], 4, 4);
+        assert!(!state.tick_share_session_for_surface(999));
+    }
+
+    /// A commit with a registered session but no staged frame in the
+    /// tracker returns `false` (nothing to encode). This is the
+    /// damage-only commit path — smithay fires `commit` for cursor
+    /// motion / null-attach without a new buffer.
+    #[test]
+    fn commit_without_staged_frame_returns_false() {
+        const HOST: PeerId = 0xAAAA;
+        const SURFACE: SurfaceId = 55;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg())
+                .expect("session"),
+        );
+        let mut state = make_state();
+        state.register_share_session(session);
+        // Tracker slot is empty.
+        assert!(!state.tick_share_session_for_surface(SURFACE));
+    }
+
+    /// `unregister_share_session` stops the tick hook from pumping.
+    #[test]
+    fn unregister_stops_the_tick_hook() {
+        const HOST: PeerId = 0xAAAA;
+        const SURFACE: SurfaceId = 77;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg())
+                .expect("session"),
+        );
+        let mut state = make_state();
+        state.register_share_session(session);
+        state
+            .surface_tracker
+            .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
+        assert!(state.tick_share_session_for_surface(SURFACE));
+        state.unregister_share_session(SURFACE);
+        // Post-unregister the tick is a no-op even with a staged
+        // frame.
+        state
+            .surface_tracker
+            .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
+        assert!(!state.tick_share_session_for_surface(SURFACE));
+    }
+}
