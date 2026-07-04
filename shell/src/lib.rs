@@ -17,3 +17,8 @@ pub mod notifications;
 // First-boot setup invoked by `quick-desktop-firstboot.service` via
 // `quick-desktop --firstboot`. See `src/firstboot.rs`.
 pub mod firstboot;
+// Global-search backend: SearchSource trait + five concrete
+// implementations (installed / uninstalled qOS apps, installed /
+// uninstalled Flatpaks, PATH commands) + fuzzy ranker. See
+// `src/search/`.
+pub mod search;

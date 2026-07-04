@@ -150,6 +150,16 @@ futures = "0.3"
 # the capnp wire; `postcard` matches what apps and the ui toolkit
 # already use for the same envelopes / keys.
 postcard = { version = "1", features = ["alloc"] }
+# Global-search palette: fuzzy scoring for the multi-source result
+# ranker in `src/search/`. Matches the crate the user's task brief
+# specified; the compiled size is dominated by nucleo's SIMD paths,
+# already carried by our workspace's wgpu-heavy build.
+nucleo-matcher = "0.3"
+# Global-search: HTTP fetch for the two network-backed sources
+# (qOS-registry `.qpkg` entries and Flathub popular apps). Same
+# version as `crates/packaging/registry-server` so Cargo collapses
+# to a single copy.
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 
 [dev-dependencies]
 wayland-client = "0.31"
