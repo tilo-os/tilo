@@ -362,7 +362,14 @@ impl WindowGroup {
     /// shell-side wire-up tests a public entry point into the click
     /// pipeline. Targets the active tab so the drain matches the live
     /// click's id.
-    #[cfg(any(test, debug_assertions))]
+    ///
+    /// The previous `#[cfg(any(test, debug_assertions))]` gate broke the
+    /// downstream shell's `--release` test build: `ui`'s `cfg(test)` is
+    /// only set when the ui crate itself is under test, and in `--release`
+    /// `debug_assertions` is off — so shell's test module lost the
+    /// method. The method is a tiny no-op in production (nothing in the
+    /// non-test path calls it), so exposing it unconditionally is
+    /// cheaper than a `ui` feature flag.
     pub fn publish_maximize_intent_for_tests(&mut self) {
         let active = self.bar.active_id();
         self.bar.pending_max = Some(active);
