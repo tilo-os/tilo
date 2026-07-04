@@ -47,7 +47,7 @@ use crate::compose::{ComposeAction, ComposeWindow};
 use crate::doc::MailDoc;
 use crate::draw::{fill_rect, fill_round, stroke_round};
 use crate::engine::{EngineEvent, EngineRequest};
-use crate::model::{AccountConfig, Addr, ComposeFormat, Folder, Message, MessageId};
+use crate::model::{AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId};
 use crate::pane::{Pane, Role};
 use crate::state::{CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
@@ -87,6 +87,9 @@ pub struct MailApp {
     shared: Shared,
     nav: NavShell,
     compose: ComposeWindow,
+    /// The Drafts-folder message the open composer is editing, if any. On save
+    /// the same message is updated (not duplicated); on send it is removed.
+    editing_draft: Option<MessageId>,
     context_menu: Option<ContextMenu>,
 
     // account-setup sheet (Settings owns this in production; offered in-app too)
@@ -145,6 +148,7 @@ impl MailApp {
             shared,
             nav,
             compose: ComposeWindow::new(ComposeFormat::Html),
+            editing_draft: None,
             context_menu: None,
             setup_open: false,
             setup_inputs: build_setup_inputs(&cfg),
@@ -261,11 +265,14 @@ impl MailApp {
                 Intent::ShowOverview => self.nav.show_overview(),
                 Intent::CloseDrawer => self.nav.close_sidebar(),
                 Intent::Compose => {
+                    self.editing_draft = None;
                     self.compose.open_blank();
                     self.context_menu = None;
                 }
                 Intent::Reply(id) => self.open_reply(id),
+                Intent::ReplyAll(id) => self.open_reply_all(id),
                 Intent::Forward(id) => self.open_forward(id),
+                Intent::EditDraft(id) => self.open_draft(id),
                 Intent::ContextMenu(id, pt) => {
                     let items = self.shared.borrow().context_items_for(id);
                     self.context_menu = Some(ContextMenu { target: id, pos: pt, items });
@@ -283,23 +290,74 @@ impl MailApp {
         self.dirty = true;
     }
 
+    fn reply_subject(msg: &Message) -> String {
+        if msg.subject.to_ascii_lowercase().starts_with("re:") {
+            msg.subject.clone()
+        } else {
+            format!("Re: {}", msg.subject)
+        }
+    }
+
+    fn reply_quote(msg: &Message) -> String {
+        format!(
+            "\n\nOn {}, {} wrote:\n> {}",
+            format_absolute(msg.timestamp_min),
+            msg.from.display(),
+            msg.snippet()
+        )
+    }
+
     fn open_reply(&mut self, id: MessageId) {
         let msg = match self.shared.borrow().mailbox.get(id).cloned() {
             Some(m) => m,
             None => return,
         };
-        let subj = if msg.subject.to_ascii_lowercase().starts_with("re:") {
-            msg.subject.clone()
-        } else {
-            format!("Re: {}", msg.subject)
-        };
-        let quote = format!(
-            "\n\nOn {}, {} wrote:\n> {}",
-            format_absolute(msg.timestamp_min),
-            msg.from.display(),
-            msg.snippet()
-        );
+        self.editing_draft = None;
+        let subj = Self::reply_subject(&msg);
+        let quote = Self::reply_quote(&msg);
         self.compose.open_reply(&msg.from.rfc5322(), &subj, &quote);
+        self.context_menu = None;
+        self.dirty = true;
+    }
+
+    /// Reply to everyone: the original sender in `To`, and every other original
+    /// recipient (To + Cc, minus ourselves and the sender) in `Cc`.
+    fn open_reply_all(&mut self, id: MessageId) {
+        let (msg, my_email) = {
+            let st = self.shared.borrow();
+            match st.mailbox.get(id).cloned() {
+                Some(m) => (m, st.accounts.active_config().email.to_ascii_lowercase()),
+                None => return,
+            }
+        };
+        self.editing_draft = None;
+        let subj = Self::reply_subject(&msg);
+        let quote = Self::reply_quote(&msg);
+        let sender = msg.from.email.to_ascii_lowercase();
+        let mut cc: Vec<String> = Vec::new();
+        for a in msg.to.iter().chain(msg.cc.iter()) {
+            let e = a.email.to_ascii_lowercase();
+            if e == my_email || e == sender || e.is_empty() {
+                continue;
+            }
+            if cc.iter().any(|existing| existing.eq_ignore_ascii_case(&a.rfc5322())) {
+                continue;
+            }
+            cc.push(a.rfc5322());
+        }
+        self.compose.open_reply_all(&msg.from.rfc5322(), &cc.join(", "), &subj, &quote);
+        self.context_menu = None;
+        self.dirty = true;
+    }
+
+    /// Reopen a Drafts-folder message in the composer for further editing.
+    fn open_draft(&mut self, id: MessageId) {
+        let draft = match self.shared.borrow().mailbox.get(id) {
+            Some(m) => draft_from_message(m),
+            None => return,
+        };
+        self.editing_draft = Some(id);
+        self.compose.open_with_draft(&draft);
         self.context_menu = None;
         self.dirty = true;
     }
@@ -309,6 +367,7 @@ impl MailApp {
             Some(m) => m,
             None => return,
         };
+        self.editing_draft = None;
         let subj = format!("Fwd: {}", msg.thread_subject());
         let quote = format!(
             "\n\n---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n{}",
@@ -338,24 +397,21 @@ impl MailApp {
                     cc: crate::transport::parse_addr_list(&draft.cc),
                     subject: draft.subject.clone(),
                     body: draft.body.clone(),
-                    attachments: draft
-                        .attachments
-                        .iter()
-                        .map(|n| crate::model::Attachment {
-                            filename: n.clone(),
-                            mime: crate::transport::mime_from_filename(n).into(),
-                            size: 0,
-                            hydrated: true,
-                        })
-                        .collect(),
+                    attachments: draft.attachments.iter().map(|p| attachment_meta(p)).collect(),
                     timestamp_min: now,
                     read: true,
                     starred: false,
                     folder: Folder::Sent,
                 };
                 let id = msg.id;
+                let edited_draft = self.editing_draft.take();
                 {
                     let mut st = self.shared.borrow_mut();
+                    // Sending a draft removes it from the Drafts folder.
+                    if let Some(draft_id) = edited_draft {
+                        st.mailbox.messages.remove(&draft_id);
+                        st.mailbox.order.retain(|x| *x != draft_id);
+                    }
                     st.mailbox.insert(msg);
                     st.persist_flags(doc, id);
                     let kind = if draft.html_body.is_some() { "HTML" } else { "text" };
@@ -379,11 +435,48 @@ impl MailApp {
 
     fn save_compose_draft(&mut self, doc: &mut AutoCommit) {
         let draft = self.compose.to_draft();
+        // Persist the draft (survives a crash / syncs to peers) …
         MailDoc::store_draft(doc, &draft);
-        self.shared.borrow_mut().status = Some("Draft saved".into());
+        // … and materialise it as a real, visible message in the Drafts folder
+        // so it can be found and reopened — not a write-only slot.
+        let id = self.upsert_draft_message(doc, &draft);
+        self.editing_draft = Some(id);
+        self.shared.borrow_mut().status = Some("Draft saved to Drafts".into());
         self.compose.close();
         self.persist_compose_format(doc);
         self.dirty = true;
+    }
+
+    /// Insert (or, when editing an existing draft, update in place) a Drafts
+    /// folder message reflecting `draft`, and return its id.
+    fn upsert_draft_message(&mut self, doc: &mut AutoCommit, draft: &Draft) -> MessageId {
+        let (from, now) = {
+            let st = self.shared.borrow();
+            let acct = st.accounts.active_config();
+            (Addr::new(acct.display_name.clone(), acct.email.clone()), st.now_min)
+        };
+        let id = self.editing_draft.unwrap_or_else(uuid::Uuid::new_v4);
+        let msg = Message {
+            id,
+            rfc_message_id: None,
+            in_reply_to: None,
+            from,
+            to: crate::transport::parse_addr_list(&draft.to),
+            cc: crate::transport::parse_addr_list(&draft.cc),
+            subject: if draft.subject.trim().is_empty() { "(no subject)".into() } else { draft.subject.clone() },
+            body: draft.body.clone(),
+            attachments: draft.attachments.iter().map(|p| attachment_meta(p)).collect(),
+            timestamp_min: now,
+            read: true,
+            starred: false,
+            folder: Folder::Drafts,
+        };
+        {
+            let mut st = self.shared.borrow_mut();
+            st.mailbox.insert(msg);
+            st.persist_flags(doc, id);
+        }
+        id
     }
 
     fn persist_compose_format(&self, doc: &mut AutoCommit) {
@@ -444,7 +537,48 @@ impl MailApp {
         }
     }
 
+    /// Guess IMAP/SMTP hosts + ports from the typed email when the host fields
+    /// are still blank, using [`AccountConfig::autofill_from_email`]. Runs when
+    /// focus leaves the email field and again on save, so typing an address
+    /// actually fills the connection settings.
+    fn maybe_autofill(&mut self) {
+        let email = self.setup_inputs[1].value().trim().to_string();
+        if !email.contains('@') {
+            return;
+        }
+        let imap_blank = self.setup_inputs[4].value().trim().is_empty();
+        let smtp_blank = self.setup_inputs[6].value().trim().is_empty();
+        if !imap_blank && !smtp_blank {
+            return;
+        }
+        let mut cfg = AccountConfig {
+            email,
+            username: self.setup_inputs[2].value().to_string(),
+            display_name: self.setup_inputs[0].value().to_string(),
+            ..Default::default()
+        };
+        cfg.autofill_from_email();
+        if imap_blank {
+            self.setup_inputs[4].set_text(&cfg.imap_host);
+            self.setup_inputs[5].set_text(&cfg.imap_port.to_string());
+            self.setup_imap_tls = cfg.imap_tls;
+        }
+        if smtp_blank {
+            self.setup_inputs[6].set_text(&cfg.smtp_host);
+            self.setup_inputs[7].set_text(&cfg.smtp_port.to_string());
+            self.setup_smtp_tls = cfg.smtp_tls;
+        }
+        if self.setup_inputs[2].value().trim().is_empty() {
+            self.setup_inputs[2].set_text(&cfg.username);
+        }
+        if self.setup_inputs[0].value().trim().is_empty() {
+            self.setup_inputs[0].set_text(&cfg.display_name);
+        }
+        self.dirty = true;
+    }
+
     fn save_setup(&mut self, doc: &mut AutoCommit) {
+        self.maybe_autofill();
         let cfg = self.read_setup_config();
         if !cfg.is_valid() {
             self.shared.borrow_mut().status = Some("Fix the highlighted fields".into());
@@ -598,6 +732,47 @@ impl MailApp {
         MailDoc::set_active_account(doc, st.accounts.active);
         if let Some(sel) = st.selected {
             MailDoc::set_selected(doc, Some(&sel.to_string()));
+        }
+    }
+
+    /// Restore the session persisted in an already-seeded document: the active
+    /// account, the selected folder, the compose format, per-message flags, the
+    /// current selection, and any in-progress draft (materialised back into the
+    /// visible Drafts folder). Complements [`Self::seed_doc`].
+    fn restore_session(&mut self, doc: &mut AutoCommit) {
+        // Active account (clamped inside `set_active`).
+        if let Some(idx) = MailDoc::get_active_account(doc) {
+            self.shared.borrow_mut().accounts.set_active(idx);
+        }
+        // If the on-disk store had no accounts but the document carries a
+        // synced account config, adopt it.
+        if self.shared.borrow().accounts.is_empty() {
+            if let Some(cfg) = MailDoc::load_account(doc) {
+                if !cfg.email.is_empty() {
+                    self.shared.borrow_mut().accounts.upsert(Account::new(cfg));
+                }
+            }
+        }
+        // Compose body format preference.
+        if let Some(fmt) = MailDoc::get_compose_format(doc) {
+            self.compose.set_format(ComposeFormat::from_key(&fmt));
+        }
+        // Folder + flags + selection.
+        {
+            let mut st = self.shared.borrow_mut();
+            st.folder = MailDoc::get_folder(doc);
+            MailDoc::apply_flags(doc, &mut st.mailbox);
+            let restored = MailDoc::get_selected(doc)
+                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                .filter(|id| st.mailbox.get(*id).is_some());
+            st.selected = restored.or_else(|| {
+                st.current_threads().first().and_then(|t| t.message_ids.last().copied())
+            });
+        }
+        // An in-progress persisted draft becomes a visible Drafts message.
+        let draft = MailDoc::load_draft(doc);
+        if !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty() {
+            self.upsert_draft_message(doc, &draft);
         }
     }
 
@@ -755,6 +930,31 @@ fn context_menu_rect(menu: &ContextMenu, bounds: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
+/// Metadata-only [`Attachment`] for a staged file path: real basename + real
+/// size when the file can be stat'd (never fabricated bytes; the bytes are read
+/// from the path at send time by `transport::build_mime`).
+fn attachment_meta(path: &str) -> Attachment {
+    let name = crate::model::attachment_display_name(path).to_string();
+    let mime = crate::transport::mime_from_filename(&name).to_string();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    Attachment::projected(name, mime, size)
+}
+
+/// Reconstruct an editable [`Draft`] from a Drafts-folder message.
+fn draft_from_message(m: &Message) -> Draft {
+    let join = |addrs: &[Addr]| addrs.iter().map(|a| a.rfc5322()).collect::<Vec<_>>().join(", ");
+    Draft {
+        to: join(&m.to),
+        cc: join(&m.cc),
+        bcc: String::new(),
+        subject: if m.subject == "(no subject)" { String::new() } else { m.subject.clone() },
+        body: m.body.clone(),
+        html_body: None,
+        attachments: Vec::new(),
+        in_reply_to: None,
+    }
+}
+
 /// Load the shared account store from disk (`~/.config/qos/mail/accounts.json`),
 /// or an empty store when it isn't there yet.
 fn load_account_store() -> AccountStore {
@@ -817,13 +1017,19 @@ impl Widget for MailApp {
         // before layout/draw.
         self.drain_engine(state);
 
-        let (seeded, has_accounts) = {
-            let st = self.shared.borrow();
-            (st.seeded, !st.accounts.is_empty())
-        };
-        if !seeded {
-            self.seed_doc(state);
+        let mem_seeded = self.shared.borrow().seeded;
+        if !mem_seeded {
+            if MailDoc::is_seeded(state) {
+                // Reopening an already-persisted document: restore the saved
+                // session (folder / selection / active account / compose format /
+                // in-progress draft) instead of overwriting it from defaults.
+                self.restore_session(state);
+            } else {
+                self.seed_doc(state);
+                MailDoc::set_seeded(state);
+            }
             // Live: kick off a connect + inbox fetch for the active account.
+            let has_accounts = !self.shared.borrow().accounts.is_empty();
             if self.engine.is_some() && has_accounts && !self.connect_requested {
                 let cfg = self.shared.borrow().accounts.active_config();
                 if let Some(h) = &self.engine {
@@ -1050,7 +1256,11 @@ impl MailApp {
             let hit = self.overlay_hits.iter().rev().find(|(rc, _)| rc.contains(pt)).map(|(_, h)| h.clone());
             match hit {
                 Some(OverlayHit::SetupField(i)) => {
+                    let leaving_email = self.setup_focus == Some(1) && i != 1;
                     self.focus_setup(Some(i));
+                    if leaving_email {
+                        self.maybe_autofill();
+                    }
                     *handled = true;
                 }
                 Some(OverlayHit::ToggleImapTls) => {
@@ -1149,13 +1359,26 @@ mod tests {
         WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button: MouseButton::Left }
     }
     fn esc_event() -> WindowEvent {
+        named_key(NamedKey::Escape)
+    }
+    fn named_key(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Escape);
+        ev.logical_key = Key::Named(k);
         ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+    fn char_key(s: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(s.into());
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(s.into());
         WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
     }
 
@@ -1322,5 +1545,182 @@ mod tests {
         // The live constructor must not seed a sample corpus.
         let app = MailApp::new_live();
         assert!(app.shared.borrow().mailbox.messages.is_empty(), "no fabricated startup mail");
+    }
+
+    #[test]
+    fn reply_all_seeds_sender_in_to_and_others_in_cc() {
+        let (mut app, mut doc) = app();
+        // A message with more than one recipient.
+        let id = {
+            let st = app.shared.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.folder == Folder::Inbox && m.to.len() > 1)
+                .expect("a multi-recipient message")
+                .id
+        };
+        app.shared.borrow_mut().apply_message_action(&mut doc, id, CtxAction::ReplyAll);
+        app.process_intents();
+        assert!(app.compose.open, "reply-all opens the composer");
+        let d = app.compose.to_draft();
+        let sender = app.shared.borrow().mailbox.get(id).unwrap().from.email.clone();
+        assert!(d.to.contains(&sender), "sender goes in To: {}", d.to);
+        assert!(!d.cc.is_empty(), "other recipients populate Cc: {}", d.cc);
+        assert!(!d.cc.contains("you@qos.example"), "our own address is excluded from Cc: {}", d.cc);
+        assert!(!d.cc.contains(&sender), "the sender is not duplicated into Cc: {}", d.cc);
+    }
+
+    #[test]
+    fn save_draft_lands_in_drafts_and_reopens() {
+        let (mut app, mut doc) = app();
+        let before = app.shared.borrow().mailbox.count(Folder::Drafts);
+        app.compose.open_blank();
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let draft = crate::model::Draft {
+            to: "dest@there.example".into(),
+            subject: "WIP proposal".into(),
+            body: "half written".into(),
+            html_body: Some("<p>half written</p>".into()),
+            ..Default::default()
+        };
+        app.compose.reattach(&draft);
+        app.save_compose_draft(&mut doc);
+        assert!(!app.compose.open, "save closes the composer");
+        assert_eq!(app.shared.borrow().mailbox.count(Folder::Drafts), before + 1, "the draft appears in Drafts");
+
+        // Reopening the Drafts message re-seeds the composer for editing.
+        let id = {
+            let st = app.shared.borrow();
+            st.mailbox.messages_in(Folder::Drafts).iter().find(|m| m.subject == "WIP proposal").unwrap().id
+        };
+        app.open_draft(id);
+        assert!(app.compose.open, "the draft reopens in the composer");
+        assert_eq!(app.compose.to_draft().subject, "WIP proposal");
+        assert_eq!(app.editing_draft, Some(id));
+    }
+
+    #[test]
+    fn saving_edited_draft_updates_in_place_not_duplicates() {
+        let (mut app, mut doc) = app();
+        app.compose.open_blank();
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        app.compose.reattach(&crate::model::Draft { subject: "First".into(), body: "one".into(), ..Default::default() });
+        app.save_compose_draft(&mut doc);
+        let after_first = app.shared.borrow().mailbox.count(Folder::Drafts);
+        // Re-open + re-save the same draft.
+        let id = app.editing_draft.expect("editing the saved draft");
+        app.open_draft(id);
+        app.save_compose_draft(&mut doc);
+        assert_eq!(app.shared.borrow().mailbox.count(Folder::Drafts), after_first, "re-saving updates in place");
+    }
+
+    #[test]
+    fn session_state_restores_from_persisted_document() {
+        let mut doc = AutoCommit::new();
+        {
+            let mut app = MailApp::new_sample();
+            app.sync(&mut doc, &automerge::ROOT); // seeds the document
+            app.shared.borrow_mut().select_folder(&mut doc, Folder::Sent);
+            app.shared.borrow_mut().set_active_account(&mut doc, 1);
+            app.compose.set_format(ComposeFormat::Text);
+            app.persist_compose_format(&mut doc);
+        }
+        // A second app opening the same document must restore, not overwrite.
+        let mut app2 = MailApp::new_sample();
+        app2.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app2.shared.borrow().folder, Folder::Sent, "folder restored");
+        assert_eq!(app2.shared.borrow().accounts.active, 1, "active account restored");
+        assert_eq!(app2.compose.format(), ComposeFormat::Text, "compose format restored");
+    }
+
+    #[test]
+    fn setup_email_autofills_connection_hosts() {
+        let (mut app, _doc) = app();
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("person@gmail.com");
+        app.maybe_autofill();
+        assert_eq!(app.setup_inputs[4].value(), "imap.gmail.com", "IMAP host autofilled");
+        assert_eq!(app.setup_inputs[6].value(), "smtp.gmail.com", "SMTP host autofilled");
+    }
+
+    #[test]
+    fn context_menu_click_applies_the_action() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        app.shared.borrow_mut().push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
+        app.process_intents();
+        assert!(app.context_menu.is_some(), "menu opened");
+        app.rebuild_overlay_hits();
+        let items = app.context_menu.as_ref().unwrap().items.clone();
+        let idx = items.iter().position(|a| *a == CtxAction::Archive).unwrap();
+        let rect = app
+            .overlay_hits
+            .iter()
+            .find_map(|(r, h)| match h {
+                OverlayHit::CtxItem(i) if *i == idx => Some(*r),
+                _ => None,
+            })
+            .expect("archive item rect");
+        let before = app.shared.borrow().mailbox.count(Folder::Archive);
+        assert!(click_at(&mut app, &mut doc, rect.center()), "menu item click consumed");
+        assert_eq!(app.shared.borrow().mailbox.count(Folder::Archive), before + 1, "clicking Archive archived the message");
+        assert!(app.context_menu.is_none(), "menu dismissed after the action");
+    }
+
+    #[test]
+    fn setup_tls_toggle_flips_the_port() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1100.0, 780.0);
+        app.open_setup_edit(None);
+        app.rebuild_overlay_hits();
+        assert_eq!(app.setup_inputs[5].value(), "993", "IMAP port starts at the TLS default");
+        let toggle = app
+            .overlay_hits
+            .iter()
+            .find(|(_, h)| matches!(h, OverlayHit::ToggleImapTls))
+            .map(|(r, _)| *r)
+            .expect("imap tls toggle");
+        assert!(click_at(&mut app, &mut doc, toggle.center()), "tls toggle consumed");
+        assert!(!app.setup_imap_tls, "TLS turned off");
+        assert_eq!(app.setup_inputs[5].value(), "143", "port switched to the plaintext IMAP port");
+    }
+
+    #[test]
+    fn shortcut_c_opens_compose() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        assert!(!app.compose.open);
+        assert!(dispatch(&mut app, &char_key("c"), &mut doc), "c shortcut consumed");
+        assert!(app.compose.open, "'c' opened the composer");
+    }
+
+    #[test]
+    fn shortcut_e_archives_selected() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let before = app.shared.borrow().mailbox.count(Folder::Archive);
+        assert!(app.shared.borrow().selected.is_some());
+        dispatch(&mut app, &char_key("e"), &mut doc);
+        assert_eq!(app.shared.borrow().mailbox.count(Folder::Archive), before + 1, "'e' archived the selection");
+    }
+
+    #[test]
+    fn shortcut_arrow_down_moves_selection() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let first = app.shared.borrow().selected;
+        dispatch(&mut app, &named_key(NamedKey::ArrowDown), &mut doc);
+        assert_ne!(app.shared.borrow().selected, first, "ArrowDown moved the selection");
+    }
+
+    #[test]
+    fn shortcut_delete_trashes_selected() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let before = app.shared.borrow().mailbox.count(Folder::Trash);
+        dispatch(&mut app, &named_key(NamedKey::Delete), &mut doc);
+        assert_eq!(app.shared.borrow().mailbox.count(Folder::Trash), before + 1, "Delete moved the selection to Trash");
     }
 }

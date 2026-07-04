@@ -95,14 +95,15 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
         builder = builder.bcc(addr_tuples(&bcc));
     }
 
-    // Stage attachments as small placeholder payloads. In the live app the
-    // bytes come from the FUSE-projected file the user attached; here we
-    // emit a representative body so the produced message is structurally a
-    // real multipart/mixed.
-    for name in &draft.attachments {
-        let mime = mime_from_filename(name);
-        let payload = format!("Attachment placeholder for {name}\n").into_bytes();
-        builder = builder.attachment(mime, name.clone(), payload);
+    // Attachments are staged as real filesystem paths (the FUSE-projected file
+    // the user picked). Read the actual bytes so the produced message carries
+    // the genuine file — never a fabricated placeholder. A path that can't be
+    // read is skipped rather than sending fake content.
+    for path in &draft.attachments {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let name = crate::model::attachment_display_name(path).to_string();
+        let mime = mime_from_filename(&name);
+        builder = builder.attachment(mime, name, bytes);
     }
 
     builder.write_to_vec()
@@ -150,11 +151,14 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
                 .unwrap_or("attachment.bin")
                 .to_string();
             let mime = mime_from_filename(&filename).to_string();
+            // Keep the decoded bytes so the reader can save the real file.
+            let content = part.contents().to_vec();
             Attachment {
-                size: part.len() as u64,
+                size: content.len() as u64,
                 mime,
                 filename,
-                hydrated: true,
+                hydrated: !content.is_empty(),
+                content,
             }
         })
         .collect();
@@ -238,12 +242,16 @@ mod tests {
 
     #[test]
     fn build_mime_produces_valid_rfc5322() {
+        // Attachments are real file paths — stage one so the message is a
+        // genuine multipart/mixed with the file's real bytes.
+        let path = std::env::temp_dir().join(format!("mail-report-{}.pdf", Uuid::new_v4()));
+        std::fs::write(&path, b"%PDF-1.4 report body").unwrap();
         let from = Addr::new("Me", "me@qos.example");
         let draft = Draft {
             to: "you@there.example".into(),
             subject: "Hello".into(),
             body: "Body text here.".into(),
-            attachments: vec!["report.pdf".into()],
+            attachments: vec![path.to_string_lossy().into_owned()],
             ..Default::default()
         };
         let bytes = build_mime(&from, &draft).unwrap();
@@ -251,6 +259,7 @@ mod tests {
         assert!(text.contains("Subject: Hello"));
         assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
         assert!(text.contains("me@qos.example"));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -269,6 +278,68 @@ mod tests {
         assert_eq!(msg.subject, "Notes from the Analytical Engine");
         assert_eq!(msg.from.email, "ada@analytical.example");
         assert!(msg.body.contains("algebraic patterns"));
+    }
+
+    #[test]
+    fn build_mime_embeds_real_attachment_bytes_from_path() {
+        // Stage a real file, attach it by path, and confirm the produced
+        // message carries the genuine bytes (no fabricated placeholder).
+        let path = std::env::temp_dir().join(format!("mail-att-{}.txt", Uuid::new_v4()));
+        std::fs::write(&path, b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02").unwrap();
+        let from = Addr::new("Me", "me@qos.example");
+        let draft = Draft {
+            to: "you@there.example".into(),
+            subject: "Files".into(),
+            body: "See attached.".into(),
+            attachments: vec![path.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let bytes = build_mime(&from, &draft).unwrap();
+        let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
+        assert_eq!(parsed.attachments.len(), 1);
+        assert_eq!(parsed.attachments[0].filename, path.file_name().unwrap().to_string_lossy());
+        assert_eq!(parsed.attachments[0].content, b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn build_mime_skips_unreadable_attachment_path() {
+        // A path that can't be read must not fabricate an attachment.
+        let draft = Draft {
+            to: "you@there.example".into(),
+            subject: "Nope".into(),
+            body: "b".into(),
+            attachments: vec!["/no/such/mail/file-definitely-missing".into()],
+            ..Default::default()
+        };
+        let bytes = build_mime(&Addr::new("Me", "me@x.example"), &draft).unwrap();
+        let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
+        assert!(parsed.attachments.is_empty(), "unreadable path must not emit an attachment");
+    }
+
+    #[test]
+    fn parse_eml_hydrates_attachment_content() {
+        let raw = b"From: A <a@x.example>\r\n\
+To: b@y.example\r\n\
+Subject: With file\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+\r\n\
+--BOUND\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+See attached.\r\n\
+--BOUND\r\n\
+Content-Type: application/pdf\r\n\
+Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
+\r\n\
+%PDF-1.4 real body\r\n\
+--BOUND--\r\n";
+        let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
+        let att = &msg.attachments[0];
+        assert!(att.is_downloadable(), "parsed attachment should carry its bytes");
+        assert!(att.content.starts_with(b"%PDF-1.4 real body"));
+        assert_eq!(att.size, att.content.len() as u64);
     }
 
     #[test]

@@ -23,13 +23,12 @@
 //! ## Detach (qOS pop-out)
 //! [`DockState`] models two placements: `Docked` (centred in-app modal) and
 //! `Detached` (parked beside the app content, simulating a separate window).
-//! Both are movable + resizable. **True OS-window detach** — a real second
-//! top-level surface beside the app — needs the qOS compositor's window-group
-//! / multi-window support (`shell`), which is not available on a GNOME dev host
-//! or through the single-window `ui::App`. So the pop-out is fully functional
-//! *within the app canvas* (drag it out to the side region and back), and the
-//! seam to hand the draft to a real OS window is [`ComposeWindow::detach_request`]
-//! / [`ComposeWindow::reattach`]. See the module-level note in `app.rs`.
+//! Both are movable + resizable. The Pop-out button toggles between them, so it
+//! performs a real, visible placement change. **True OS-window detach** — a real
+//! second top-level surface beside the app — needs the qOS compositor's
+//! window-group / multi-window support (`shell`), which is not available through
+//! the single-window `ui::App`; when that lands, a detached draft is handed back
+//! via [`ComposeWindow::reattach`].
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -43,7 +42,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::TextInput;
 
-use crate::model::{ComposeFormat, Draft};
+use crate::model::{attachment_display_name, ComposeFormat, Draft};
 use crate::wysiwyg::{BlockKind, InlineMark, Wysiwyg};
 
 const TITLE_H: f64 = 38.0;
@@ -102,6 +101,30 @@ pub enum ComposeHit {
     Numbered,
     Quote,
     Link,
+    // inline prompt (Attach path / Link URL entry)
+    PromptField,
+    PromptConfirm,
+    PromptCancel,
+}
+
+/// What the inline prompt bar is collecting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PromptKind {
+    /// A filesystem path to attach as a real file.
+    Attach,
+    /// A URL to link the current selection (or insert) to.
+    Link,
+}
+
+/// A small inline entry bar shown inside the compose window when the user needs
+/// to type a value the app can't fabricate: a file path to attach, or a link
+/// target. Confirming an Attach reads the real file; confirming a Link applies
+/// the entered `href`. This exists because `ui` has no file-picker / URL-prompt
+/// primitive yet (see the app-level UI-gap notes).
+struct ComposePrompt {
+    kind: PromptKind,
+    input: TextInput,
+    error: Option<String>,
 }
 
 /// What the host should do after dispatching a window action.
@@ -155,7 +178,10 @@ pub struct ComposeWindow {
     /// a multi-line body, so we own the buffer and render it ourselves.
     plain_body: String,
 
+    /// Filesystem paths of staged attachments (real files read on send).
     attachments: Vec<String>,
+    /// The inline path/URL prompt, when open.
+    prompt: Option<ComposePrompt>,
     focus: Field,
     drag: Option<Drag>,
     last_mouse: Point,
@@ -187,6 +213,7 @@ impl ComposeWindow {
             editor: Wysiwyg::new(),
             plain_body: String::new(),
             attachments: Vec::new(),
+            prompt: None,
             focus: Field::None,
             drag: None,
             last_mouse: Point::ZERO,
@@ -198,6 +225,14 @@ impl ComposeWindow {
 
     pub fn format(&self) -> ComposeFormat {
         self.format
+    }
+
+    /// Set the authoring format directly (used to restore the persisted
+    /// preference on open). Content is not converted; call on a fresh/empty
+    /// window.
+    pub fn set_format(&mut self, format: ComposeFormat) {
+        self.format = format;
+        self.dirty = true;
     }
 
     pub fn dock(&self) -> DockState {
@@ -227,6 +262,7 @@ impl ComposeWindow {
         self.subject.set_text("");
         self.show_cc_bcc = false;
         self.attachments.clear();
+        self.prompt = None;
         self.editor = Wysiwyg::new();
         self.plain_body.clear();
         self.title_hint.clear();
@@ -246,6 +282,35 @@ impl ComposeWindow {
             ComposeFormat::Text => {
                 self.plain_body = quote.to_string();
             }
+        }
+        self.set_focus(Field::Body);
+    }
+
+    /// Seed the window as a reply-all: the sender in `To`, everyone else in
+    /// `Cc` (revealed), the subject, and a quoted body.
+    pub fn open_reply_all(&mut self, to: &str, cc: &str, subject: &str, quote: &str) {
+        self.open_reply(to, subject, quote);
+        if !cc.trim().is_empty() {
+            self.cc.set_text(cc);
+            self.show_cc_bcc = true;
+        }
+    }
+
+    /// Reopen an existing draft for editing (from the Drafts folder).
+    pub fn open_with_draft(&mut self, draft: &Draft) {
+        self.open_blank();
+        self.to.set_text(&draft.to);
+        self.cc.set_text(&draft.cc);
+        self.bcc.set_text(&draft.bcc);
+        self.subject.set_text(&draft.subject);
+        self.show_cc_bcc = !draft.cc.is_empty() || !draft.bcc.is_empty();
+        self.attachments = draft.attachments.clone();
+        match self.format {
+            ComposeFormat::Html => self.editor.set_plain(&draft.body),
+            ComposeFormat::Text => self.plain_body = draft.body.clone(),
+        }
+        if !draft.subject.is_empty() {
+            self.title_hint = draft.subject.clone();
         }
         self.set_focus(Field::Body);
     }
@@ -322,15 +387,8 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Seam for a real OS pop-out: the host hands this draft to the compositor
-    /// to open in a separate window-group beside the app. On a dev host without
-    /// the compositor this is a no-op beyond the in-app `Detached` placement.
-    pub fn detach_request(&self) -> Draft {
-        self.to_draft()
-    }
-
     /// Seam for re-attaching an externally-edited draft back into the in-app
-    /// window (the inverse of [`Self::detach_request`]).
+    /// window (e.g. after a real OS pop-out hands the draft back).
     pub fn reattach(&mut self, draft: &Draft) {
         self.to.set_text(&draft.to);
         self.cc.set_text(&draft.cc);
@@ -514,6 +572,17 @@ impl ComposeWindow {
         self.hits.push((Rect::new(lx, by, lx + 96.0, by + 36.0), ComposeHit::Send));
         self.hits.push((Rect::new(lx + 104.0, by, lx + 104.0 + 110.0, by + 36.0), ComposeHit::SaveDraft));
         self.hits.push((Rect::new(rx - 96.0, by, rx, by + 36.0), ComposeHit::Discard));
+
+        // Inline prompt bar (Attach path / Link URL), sitting just above the
+        // button row when open.
+        if let Some(p) = self.prompt.as_mut() {
+            let py = by - 46.0;
+            let field = Rect::new(lx + 92.0, py, rx - 150.0, py + 30.0);
+            p.input.apply_layout_external(field);
+            self.hits.push((field, ComposeHit::PromptField));
+            self.hits.push((Rect::new(rx - 146.0, py, rx - 80.0, py + 30.0), ComposeHit::PromptConfirm));
+            self.hits.push((Rect::new(rx - 72.0, py, rx, py + 30.0), ComposeHit::PromptCancel));
+        }
     }
 
     fn body_rect(&self) -> Rect {
@@ -560,6 +629,9 @@ impl ComposeWindow {
                 for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
                     inp.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
                 }
+                if let Some(p) = self.prompt.as_mut() {
+                    p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                }
                 self.editor.on_cursor_moved(pt, false);
                 // Consume only if inside the window (so hover outside still
                 // works for the app, but we stay modal for clicks/keys).
@@ -592,6 +664,33 @@ impl ComposeWindow {
                 (self.rect.contains(self.last_mouse), ComposeAction::None)
             }
             WindowEvent::KeyboardInput { .. } => {
+                use winit::event::KeyEvent as WKeyEvent;
+                use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
+                // The inline prompt captures keys while open: Esc cancels it (not
+                // the window), Enter confirms, everything else edits the field.
+                if self.prompt.is_some() {
+                    if let WindowEvent::KeyboardInput { event: WKeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } = event {
+                        match logical_key {
+                            WKey::Named(WNamedKey::Escape) => {
+                                self.prompt = None;
+                                self.dirty = true;
+                                return (true, ComposeAction::None);
+                            }
+                            WKey::Named(WNamedKey::Enter) => {
+                                self.confirm_prompt();
+                                return (true, ComposeAction::None);
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut h = false;
+                    let mut ft: Option<taffy::NodeId> = None;
+                    if let Some(p) = self.prompt.as_mut() {
+                        p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    }
+                    self.dirty = true;
+                    return (true, ComposeAction::None);
+                }
                 // Escape closes.
                 if let WindowEvent::KeyboardInput {
                     event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape), state: ElementState::Pressed, .. },
@@ -656,11 +755,7 @@ impl ComposeWindow {
                 self.show_cc_bcc = !self.show_cc_bcc;
                 self.relayout_regions();
             }
-            ComposeHit::Attach => {
-                let n = self.attachments.len() + 1;
-                self.attachments.push(format!("attachment-{n}.pdf"));
-                self.relayout_regions();
-            }
+            ComposeHit::Attach => self.open_prompt(PromptKind::Attach),
             ComposeHit::FormatToggle => self.toggle_format(),
             ComposeHit::FieldTo => self.focus_and_forward(Field::To, event, scale_factor, modifiers, state, path, node_id, taffy),
             ComposeHit::FieldCc => self.focus_and_forward(Field::Cc, event, scale_factor, modifiers, state, path, node_id, taffy),
@@ -680,10 +775,76 @@ impl ComposeWindow {
             ComposeHit::Bullet => self.editor.set_block_kind(BlockKind::Bullet),
             ComposeHit::Numbered => self.editor.set_block_kind(BlockKind::Numbered),
             ComposeHit::Quote => self.editor.set_block_kind(BlockKind::Quote),
-            ComposeHit::Link => self.editor.set_link("https://"),
+            ComposeHit::Link => self.open_prompt(PromptKind::Link),
+            ComposeHit::PromptConfirm => self.confirm_prompt(),
+            ComposeHit::PromptCancel => self.prompt = None,
+            ComposeHit::PromptField => {
+                if let Some(p) = self.prompt.as_mut() {
+                    p.input.set_focus(true);
+                    let mut h = false;
+                    let mut ft: Option<taffy::NodeId> = None;
+                    p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                }
+            }
         }
         self.dirty = true;
         ComposeAction::None
+    }
+
+    /// Open the inline prompt bar to collect a file path (Attach) or a URL
+    /// (Link). The body/header lose focus so keystrokes land in the prompt.
+    fn open_prompt(&mut self, kind: PromptKind) {
+        let mut input = TextInput::local();
+        input.set_plain_chrome(true);
+        if kind == PromptKind::Link {
+            input.set_text("https://");
+        }
+        input.set_focus(true);
+        self.set_focus(Field::None);
+        self.prompt = Some(ComposePrompt { kind, input, error: None });
+        self.relayout_regions();
+        self.dirty = true;
+    }
+
+    /// Apply the prompt's value: attach the real file at the typed path, or link
+    /// the selection/insert the URL. An unreadable path keeps the prompt open
+    /// with an error rather than staging a fabricated attachment.
+    fn confirm_prompt(&mut self) {
+        let Some(p) = self.prompt.take() else { return };
+        let val = p.input.value().trim().to_string();
+        match p.kind {
+            PromptKind::Link => {
+                if !val.is_empty() {
+                    self.set_focus(Field::Body);
+                    if matches!(self.format, ComposeFormat::Html) {
+                        self.editor.set_link(&val);
+                    }
+                }
+            }
+            PromptKind::Attach => {
+                if val.is_empty() {
+                    return;
+                }
+                match std::fs::metadata(&val) {
+                    Ok(m) if m.is_file() => {
+                        self.attachments.push(val);
+                    }
+                    _ => {
+                        let mut input = TextInput::local();
+                        input.set_plain_chrome(true);
+                        input.set_text(&val);
+                        input.set_focus(true);
+                        self.prompt = Some(ComposePrompt {
+                            kind: PromptKind::Attach,
+                            input,
+                            error: Some("No readable file at that path".into()),
+                        });
+                    }
+                }
+            }
+        }
+        self.relayout_regions();
+        self.dirty = true;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -839,8 +1000,8 @@ impl ComposeWindow {
         }
         self.draw_field(scene, t, tr, theme, "Subject", &self.to_rect_for(ComposeHit::FieldSubject), matches!(self.focus, Field::Subject), self.subject.value().is_empty(), "");
 
-        // Cc/Bcc toggle + Attach buttons.
-        self.draw_chip_button(scene, t, tr, theme, ComposeHit::ToggleCcBcc, if self.show_cc_bcc { "Cc/Bcc" } else { "Cc/Bcc" }, self.show_cc_bcc);
+        // Cc/Bcc toggle + Attach buttons. The active highlight reflects on/off.
+        self.draw_chip_button(scene, t, tr, theme, ComposeHit::ToggleCcBcc, "Cc/Bcc", self.show_cc_bcc);
         self.draw_chip_button(scene, t, tr, theme, ComposeHit::Attach, "\u{1F4CE} Attach", false);
 
         // Toolbar.
@@ -862,11 +1023,12 @@ impl ComposeWindow {
             ComposeFormat::Text => self.draw_plain_body(scene, t, tr, theme, body),
         }
 
-        // Attachment chips.
+        // Attachment chips (staged real files — shown by their basename).
         if !self.attachments.is_empty() {
             let mut ax = r.x0 + PAD;
             let ay = r.y1 - 52.0 - 30.0;
-            for name in &self.attachments {
+            for path in &self.attachments {
+                let name = attachment_display_name(path);
                 let (lw, _) = tr.measure(name, 11.5, None);
                 let chip = Rect::new(ax, ay, ax + lw as f64 + 34.0, ay + 24.0);
                 fill_round(scene, t, chip, 7.0, c.surface_white_10);
@@ -875,6 +1037,9 @@ impl ComposeWindow {
                 ax = chip.x1 + 8.0;
             }
         }
+
+        // Inline prompt bar.
+        self.draw_prompt(scene, t, tr, theme, presence);
 
         // Buttons.
         self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "Send", true);
@@ -980,6 +1145,45 @@ impl ComposeWindow {
             fill(scene, t, Rect::new(cx, cy, cx + 1.6, cy + 16.0), c.accent[5]);
         }
         scene.pop_layer();
+    }
+
+    fn draw_prompt(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        let Some((kind, error)) = self.prompt.as_ref().map(|p| (p.kind, p.error.clone())) else {
+            return;
+        };
+        let field = self.to_rect_for(ComposeHit::PromptField);
+        let confirm = self.to_rect_for(ComposeHit::PromptConfirm);
+        let cancel = self.to_rect_for(ComposeHit::PromptCancel);
+        if field == Rect::ZERO {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let panel = Rect::new(self.rect.x0 + PAD - 6.0, field.y0 - 8.0, self.rect.x1 - PAD + 6.0, field.y1 + 8.0);
+        fill_round(scene, t, panel, 9.0, c.surfaces.raised);
+        stroke_round(scene, t, panel, 9.0, 1.0, if error.is_some() { c.semantic.danger } else { c.border_white_10 });
+        let label = match kind {
+            PromptKind::Attach => "Attach",
+            PromptKind::Link => "Link",
+        };
+        tr.draw_text(scene, label, 12.0, c.text_dim, t * Affine::translate((panel.x0 + 10.0, field.y0 + 8.0)), None);
+        // Input chrome.
+        fill_round(scene, t, Rect::new(field.x0 - 2.0, field.y0 - 1.0, field.x1 + 2.0, field.y1 + 1.0), 6.0, c.surfaces.base);
+        stroke_round(scene, t, Rect::new(field.x0 - 2.0, field.y0 - 1.0, field.x1 + 2.0, field.y1 + 1.0), 6.0, 1.0, c.border_focus);
+        // Buttons.
+        let hov_c = confirm.contains(self.last_mouse);
+        fill_round(scene, t, confirm, 7.0, if hov_c { c.accent[4] } else { c.accent[5] });
+        let (aw, _) = tr.measure_weighted("Add", 12.5, None, TextWeight::Semibold);
+        tr.draw_text_weighted(scene, "Add", 12.5, Color::WHITE, t * Affine::translate(((confirm.x0 + confirm.x1) / 2.0 - aw as f64 / 2.0, confirm.y0 + 7.0)), None, TextWeight::Semibold);
+        let hov_x = cancel.contains(self.last_mouse);
+        fill_round(scene, t, cancel, 7.0, if hov_x { c.surface_white_10 } else { c.surface_white_5 });
+        let (cw, _) = tr.measure("Cancel", 12.0, None);
+        tr.draw_text(scene, "Cancel", 12.0, c.neutral[8], t * Affine::translate(((cancel.x0 + cancel.x1) / 2.0 - cw as f64 / 2.0, cancel.y0 + 7.0)), None);
+        if let Some(e) = &error {
+            tr.draw_text(scene, e, 10.5, c.semantic.danger, t * Affine::translate((panel.x0 + 10.0, panel.y1 - 2.0)), None);
+        }
+        if let Some(p) = self.prompt.as_mut() {
+            p.input.draw(scene, t, tr, theme, presence);
+        }
     }
 
     fn draw_action_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, hit: ComposeHit, label: &str, primary: bool) {
@@ -1100,6 +1304,73 @@ mod tests {
         assert_eq!(w.dock(), DockState::Docked);
         w.toggle_dock();
         assert_eq!(w.dock(), DockState::Detached);
+    }
+
+    fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {
+        let m = winit::event::Modifiers::default();
+        let mut doc = automerge::AutoCommit::new();
+        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        let mv = WindowEvent::CursorMoved { device_id: winit::event::DeviceId::dummy(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) };
+        w.handle_event(&mv, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
+        let pr = WindowEvent::MouseInput { device_id: winit::event::DeviceId::dummy(), state: ElementState::Pressed, button: MouseButton::Left };
+        w.handle_event(&pr, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy)
+    }
+
+    fn hit_rect(w: &ComposeWindow, hit: ComposeHit) -> Rect {
+        w.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r).expect("hit present")
+    }
+
+    #[test]
+    fn attach_button_opens_prompt_and_stages_a_real_file() {
+        // Stage a real file to attach.
+        let path = std::env::temp_dir().join(format!("mail-compose-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"body").unwrap();
+
+        let mut w = win();
+        // Click the Attach button through the real hit path → opens the prompt
+        // (no fabricated filename is staged).
+        let attach = hit_rect(&w, ComposeHit::Attach);
+        let (consumed, _) = press_at(&mut w, attach.center());
+        assert!(consumed);
+        assert!(w.prompt.is_some(), "Attach opens the path prompt");
+        assert!(w.attachments.is_empty(), "no fabricated attachment staged");
+
+        // Type the real path and confirm → the real file is staged.
+        w.prompt.as_mut().unwrap().input.set_text(&path.to_string_lossy());
+        w.confirm_prompt();
+        assert!(w.prompt.is_none(), "a valid path closes the prompt");
+        assert_eq!(w.attachments.len(), 1);
+        assert_eq!(w.to_draft().attachments, vec![path.to_string_lossy().to_string()]);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn attach_prompt_rejects_missing_path() {
+        let mut w = win();
+        w.open_prompt(PromptKind::Attach);
+        w.prompt.as_mut().unwrap().input.set_text("/no/such/mail/file-xyz");
+        w.confirm_prompt();
+        assert!(w.attachments.is_empty(), "a missing path stages nothing");
+        assert!(
+            w.prompt.as_ref().map(|p| p.error.is_some()).unwrap_or(false),
+            "the prompt stays open showing an error"
+        );
+    }
+
+    #[test]
+    fn link_prompt_applies_the_typed_href_not_a_placeholder() {
+        let mut w = win();
+        w.set_focus(Field::Body);
+        w.open_prompt(PromptKind::Link);
+        // Seeded with a scheme the user edits — never a hardcoded final target.
+        assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
+        w.prompt.as_mut().unwrap().input.set_text("https://qos.example/docs");
+        w.confirm_prompt();
+        let html = w.editor.to_html();
+        assert!(html.contains("href=\"https://qos.example/docs\""), "got: {html}");
+        assert!(!html.contains("href=\"https://\""), "must not link the bare scheme");
     }
 
     #[test]
