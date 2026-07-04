@@ -79,8 +79,8 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [x] Responsive reflow re-derives the breakpoint each layout pass (test) → fixed.
 - [x] Narrow view-switcher (Month/Week/Day/Agenda) is pointer-reachable inside the
       overlay drawer → verified.
-- [ ] NOT re-verified this round: week-view period title clipping at 1280px with
-      the detail panel open. Check the Week view + fix if it still clips.
+- [x] Week-view period title no longer clips — reads "29 Jun – 5 Jul" in full at
+      1280px with the detail panel open → verified.
 
 ## email (mail) — CLEAR (verified, committed f917913)
 - [x] Adopted ui::NavShell three-panel: accounts+folders genuine sidebar (chevron
