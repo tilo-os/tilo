@@ -65,9 +65,12 @@ pub enum Intent {
     CloseDrawer,
     /// Open a blank composer.
     Compose,
-    /// Open a reply / forward composer for a message.
+    /// Open a reply / reply-all / forward composer for a message.
     Reply(MessageId),
+    ReplyAll(MessageId),
     Forward(MessageId),
+    /// Open an existing draft (a message in the Drafts folder) for editing.
+    EditDraft(MessageId),
     /// Open the row context menu at a point.
     ContextMenu(MessageId, Point),
     /// Open the account setup sheet for the given account index (`None` = add).
@@ -221,11 +224,45 @@ impl MailState {
     }
 
     pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
+        let was_unread = self.mailbox.get(id).map(|m| !m.read).unwrap_or(false);
         self.selected = Some(id);
         self.mailbox.mark_read(id, true);
         self.persist_flags(doc, id);
         MailDoc::set_selected(doc, Some(&id.to_string()));
+        // Reading a message flips \Seen on the server (no-op offline).
+        if was_unread {
+            self.sync_flag_to_server(id);
+        }
         self.push_intent(Intent::ShowDetail);
+    }
+
+    /// Push a live-path request to mirror a message's flags to the server
+    /// (`UID STORE`). A no-op under the offline stub backend, but it means the
+    /// mark-read/star state genuinely reaches IMAP in the `live` build.
+    fn sync_flag_to_server(&mut self, id: MessageId) {
+        let Some(msg) = self.mailbox.get(id).cloned() else { return };
+        let account_id = self.accounts.active_config().email;
+        if account_id.is_empty() {
+            return;
+        }
+        self.push_intent(Intent::Engine(EngineRequest::StoreFlag {
+            account_id,
+            message: Box::new(msg),
+        }));
+    }
+
+    /// Push a live-path request to move a message to another folder
+    /// (`UID MOVE`). A no-op under the offline stub backend.
+    fn sync_move_to_server(&mut self, id: MessageId, to: Folder) {
+        let account_id = self.accounts.active_config().email;
+        if account_id.is_empty() {
+            return;
+        }
+        self.push_intent(Intent::Engine(EngineRequest::Move {
+            account_id,
+            message_id: id.to_string(),
+            to,
+        }));
     }
 
     pub fn set_active_account(&mut self, doc: &mut AutoCommit, idx: usize) {
@@ -290,34 +327,47 @@ impl MailState {
     /// composer); the rest mutate + persist here.
     pub fn apply_message_action(&mut self, doc: &mut AutoCommit, id: MessageId, action: CtxAction) {
         match action {
-            CtxAction::Reply | CtxAction::ReplyAll => self.push_intent(Intent::Reply(id)),
+            CtxAction::Reply => self.push_intent(Intent::Reply(id)),
+            CtxAction::ReplyAll => self.push_intent(Intent::ReplyAll(id)),
             CtxAction::Forward => self.push_intent(Intent::Forward(id)),
             CtxAction::ToggleRead => {
                 let now = self.mailbox.get(id).map(|m| m.read).unwrap_or(false);
                 self.mailbox.mark_read(id, !now);
                 self.persist_flags(doc, id);
+                self.sync_flag_to_server(id);
                 self.dirty = true;
             }
             CtxAction::ToggleStar => {
                 self.mailbox.toggle_star(id);
                 self.persist_flags(doc, id);
+                self.sync_flag_to_server(id);
                 self.dirty = true;
             }
             CtxAction::Archive => {
                 let was_selected = self.selected == Some(id);
                 self.mailbox.archive(id);
                 self.persist_flags(doc, id);
+                self.sync_move_to_server(id, Folder::Archive);
                 self.after_remove(doc, was_selected);
             }
             CtxAction::Delete => {
                 let was_selected = self.selected == Some(id);
-                self.mailbox.delete(id);
+                // Capture the folder the delete routed the message to (Trash),
+                // or `None` when it was purged (already in Trash).
+                let moved_to = {
+                    self.mailbox.delete(id);
+                    self.mailbox.get(id).map(|m| m.folder)
+                };
                 self.persist_flags(doc, id);
+                if let Some(to) = moved_to {
+                    self.sync_move_to_server(id, to);
+                }
                 self.after_remove(doc, was_selected);
             }
             CtxAction::MoveToInbox => {
                 self.mailbox.move_to(id, Folder::Inbox);
                 self.persist_flags(doc, id);
+                self.sync_move_to_server(id, Folder::Inbox);
                 let was_selected = self.selected == Some(id);
                 self.after_remove(doc, was_selected);
             }
@@ -325,6 +375,7 @@ impl MailState {
                 let was_selected = self.selected == Some(id);
                 self.mailbox.move_to(id, Folder::Junk);
                 self.persist_flags(doc, id);
+                self.sync_move_to_server(id, Folder::Junk);
                 self.after_remove(doc, was_selected);
             }
         }
@@ -358,10 +409,14 @@ impl MailState {
         let id = rows[next].0;
         // Browsing the list with the arrows updates the reader but does not
         // push the narrow detail (that's a tap).
+        let was_unread = self.mailbox.get(id).map(|m| !m.read).unwrap_or(false);
         self.selected = Some(id);
         self.mailbox.mark_read(id, true);
         self.persist_flags(doc, id);
         MailDoc::set_selected(doc, Some(&id.to_string()));
+        if was_unread {
+            self.sync_flag_to_server(id);
+        }
         self.dirty = true;
     }
 }
@@ -372,4 +427,74 @@ pub fn now_minutes() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| (d.as_secs() / 60) as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::EngineRequest;
+
+    fn state() -> MailState {
+        MailState::new_sample(crate::app::avatar_store())
+    }
+
+    fn first_inbox_id(st: &MailState) -> MessageId {
+        st.mailbox.messages_in(Folder::Inbox)[0].id
+    }
+
+    #[test]
+    fn star_action_emits_server_store_flag() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st);
+        st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
+        let intents = st.take_intents();
+        assert!(
+            intents.iter().any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
+            "starring must post a StoreFlag to the engine (UID STORE in the live build)"
+        );
+    }
+
+    #[test]
+    fn archive_action_emits_server_move_to_archive() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st);
+        st.apply_message_action(&mut doc, id, CtxAction::Archive);
+        let intents = st.take_intents();
+        assert!(
+            intents.iter().any(|i| matches!(
+                i,
+                Intent::Engine(EngineRequest::Move { to: Folder::Archive, .. })
+            )),
+            "archiving must post a Move to Archive to the engine (UID MOVE in live)"
+        );
+    }
+
+    #[test]
+    fn junk_action_emits_server_move_to_junk() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st);
+        st.apply_message_action(&mut doc, id, CtxAction::Junk);
+        let intents = st.take_intents();
+        assert!(intents.iter().any(|i| matches!(
+            i,
+            Intent::Engine(EngineRequest::Move { to: Folder::Junk, .. })
+        )));
+    }
+
+    #[test]
+    fn reply_all_action_raises_distinct_reply_all_intent() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st);
+        st.apply_message_action(&mut doc, id, CtxAction::ReplyAll);
+        let intents = st.take_intents();
+        assert!(
+            intents.iter().any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
+            "Reply-all must raise ReplyAll, not the plain Reply intent"
+        );
+        assert!(!intents.iter().any(|i| matches!(i, Intent::Reply(_))));
+    }
 }

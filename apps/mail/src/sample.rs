@@ -20,8 +20,11 @@ pub const SAMPLE_NOW_MIN: i64 = {
     29_713_805
 };
 
+/// A metadata-only (projected, not yet downloaded) sample attachment. Its
+/// bytes aren't present, so the reader shows it but a save requires hydration —
+/// mirroring how a live IMAP fetch lists an attachment before fetching it.
 fn att(filename: &str, mime: &str, size: u64) -> Attachment {
-    Attachment { filename: filename.into(), mime: mime.into(), size, hydrated: true }
+    Attachment::projected(filename, mime, size)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -374,6 +377,27 @@ mod tests {
             .messages
             .values()
             .any(|m| m.from.email == "margaret@apollo.example"));
+    }
+
+    #[test]
+    fn parsed_attachment_is_hydrated_projected_ones_are_not() {
+        let mb = sample_mailbox();
+        // The Radia message was parsed from raw MIME → real bytes present.
+        let radia = mb
+            .messages
+            .values()
+            .find(|m| m.from.email == "radia@spanning.example")
+            .unwrap();
+        assert!(radia.attachments[0].is_downloadable(), "parsed attachment carries bytes");
+        assert!(!radia.attachments[0].content.is_empty());
+        // A hand-built projected attachment has metadata only (not downloaded).
+        let gantt = mb
+            .messages
+            .values()
+            .flat_map(|m| m.attachments.iter())
+            .find(|a| a.filename == "rollout-gantt.pdf")
+            .unwrap();
+        assert!(!gantt.is_downloadable(), "projected attachment has no bytes yet");
     }
 
     #[test]
