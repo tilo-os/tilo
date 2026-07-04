@@ -13,11 +13,10 @@ edition = "2024"
 default = ["hosted-test-control"]
 hosted-test-control = []
 # VA-API hardware H.264 encoder for Intel iGPU / AMD Radeon / ARM SoCs.
-# Opt-in because `cros-libva` links against `libva.so.2` at compile
-# time — hosts without `libva-devel` installed can't build with this
-# feature enabled. Turn on for OS-image builds targeting hardware where
-# libva is guaranteed present.
-vaapi = ["dep:cros-libva"]
+# Opt-in — turns on the render-node probe + backend skeleton in
+# `collab::encoder::vaapi`. See the `cros-libva` note below the
+# openh264 dep for why the wrapper isn't linked in yet.
+vaapi = []
 # NVIDIA NVENC hardware H.264 encoder. Opt-in for NVIDIA-only OS-image
 # variants — non-NVIDIA hosts should leave this off to skip the CUDA
 # SDK compile.
@@ -117,14 +116,16 @@ bs58 = "0.5.1"
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
 openh264 = { version = "0.9", features = ["source"] }
-# VA-API safe wrapper — thin Rust interface around libva.so.2 for
-# `collab::encoder::vaapi`. Picked over `ffmpeg-next` because a full
-# ffmpeg dep (~30 MB of C libs) is overkill for the narrow "H.264
-# encode from RGBA/DMABUF" surface we need; `cros-libva` is ChromeOS's
-# upstream VA-API wrapper, tracks the C ABI directly, and exposes
-# `Surface::from_dma_buf` for the zero-copy import path. Optional
-# behind the `vaapi` feature so hosts without libva-devel still build.
-cros-libva = { version = "0.0.11", optional = true }
+# Note: the natural pick for `collab::encoder::vaapi` was `cros-libva`
+# (ChromeOS's upstream safe wrapper over libva.so.2 — smaller than
+# `ffmpeg-next`, with a first-class DMABUF import surface). It hit a
+# workspace-wide `log` feature conflict: `cros-libva` selects
+# `log/release_max_level_debug` while `ssip-client` (a transitive dep
+# elsewhere in the workspace) selects `log/release_max_level_info`,
+# and the two variants are mutually exclusive at compile time. The
+# vaapi backend currently probes render nodes via `/dev/dri`
+# directly; wiring `cros-libva` in is queued behind either patching
+# one of those upstreams or replacing `ssip-client` in the workspace.
 # Sandbox Phase 4.3 (`docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`):
 # `portal::serve` registers the `org.freedesktop.impl.portal.{FileChooser,
 # ScreenCast,Access}` backend interfaces over D-Bus so xdg-desktop-portal can
