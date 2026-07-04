@@ -1,0 +1,219 @@
+//! Weather — thin binary entry point. All logic lives in the library.
+//!
+//! Modes:
+//!   * default        — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
+//!                       (headless screenshot; identical passes to the live app).
+//!
+//! Optional flags for `--shots` (used to capture interaction states that the
+//! single-frame headless renderer can't reach through live input):
+//!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`);
+//!                          see [`weather::app_root_for_shot`].
+//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 560x720`
+//!                          for the narrow full-screen city list, or pair with
+//!                          `--scenario detail` for the pushed forecast).
+
+use std::collections::HashMap;
+
+use ui::offscreen::OffscreenRenderer;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
+use taffy::prelude::*;
+use vello::Scene;
+use vello::kurbo::{Affine, Point};
+use vello::peniko::Color;
+
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--probe") {
+        return run_probe();
+    }
+    if let Some(out) = parse_shots_arg(&args) {
+        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
+        let viewport = parse_value_arg(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_shot_to_png(weather::app_root_for_shot(&scenario), viewport, &out)?;
+        return Ok(());
+    }
+
+    let state = ui::State::new();
+    let app = ui::App::new(state, weather::app_root());
+    app.run();
+    Ok(())
+}
+
+fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--shots" {
+            return iter.next().map(std::path::PathBuf::from);
+        }
+        if let Some(rest) = arg.strip_prefix("--shots=") {
+            return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Parse `--flag VALUE` or `--flag=VALUE` out of the argv.
+fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    let eq = format!("{flag}=");
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Exercise the exact live networking stack the app uses (`net` + `api`)
+/// against the real keyless Open-Meteo endpoints and print what came back.
+/// This is the same [`weather::net::WeatherService`] the event loop drives —
+/// a standalone proof that the app fetches real data, not a mock. Invoked
+/// with `--probe`; it touches no UI and no window.
+fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use weather::model::SavedLocation;
+    use weather::net::{Request, Response, WeatherService};
+    use weather::units::Units;
+
+    let svc = WeatherService::spawn();
+    // A saved place (real coordinates) + a free-text geocode — the two live
+    // request kinds the app issues.
+    let berlin = SavedLocation::new("Berlin", "Berlin", "Germany", "DE", 52.52, 13.41, "auto");
+    svc.request(Request::Forecast {
+        location_id: berlin.id,
+        lat: berlin.latitude,
+        lon: berlin.longitude,
+        units: Units::METRIC,
+    });
+    svc.request(Request::Geocode { seq: 1, query: "Tokyo".to_string() });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut got_forecast, mut got_geocode) = (false, false);
+    while Instant::now() < deadline && !(got_forecast && got_geocode) {
+        for resp in svc.drain() {
+            match resp {
+                Response::Forecast(snap) => {
+                    got_forecast = true;
+                    println!(
+                        "probe: forecast Berlin — {:.1}°C, code {}, {} hourly pts, {} days (fetched_at={})",
+                        snap.current.temperature,
+                        snap.current.weather_code,
+                        snap.hourly.len(),
+                        snap.daily.len(),
+                        snap.fetched_at,
+                    );
+                }
+                Response::Geocode { results, .. } => {
+                    got_geocode = true;
+                    let names: Vec<String> = results
+                        .iter()
+                        .take(3)
+                        .map(|r| format!("{} ({})", r.name, r.country))
+                        .collect();
+                    println!("probe: geocode 'Tokyo' → {}", names.join(", "));
+                }
+                Response::Error(e) => println!("probe: error — {e}"),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    if got_forecast && got_geocode {
+        println!("probe: OK — live Open-Meteo fetch + parse succeeded");
+        Ok(())
+    } else {
+        Err(format!(
+            "probe: incomplete (forecast={got_forecast}, geocode={got_geocode}) — network unreachable?"
+        )
+        .into())
+    }
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport spec.
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
+/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+fn render_shot_to_png(
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    let mut text_renderer = TextRenderer::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+
+    let mut state = ui::State::new();
+    widget.sync(&mut state.doc, &state.root);
+
+    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
+            ..Default::default()
+        },
+        &[child],
+    )?;
+
+    {
+        let measure_map = node_map.clone();
+        let tr = &mut text_renderer;
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
+    }
+    widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    let mut scene = Scene::new();
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("weather: wrote shot to {}", out.display());
+    Ok(())
+}

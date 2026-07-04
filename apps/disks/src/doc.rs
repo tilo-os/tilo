@@ -1,0 +1,144 @@
+//! Automerge document layer for the Disks app.
+//!
+//! All UI state lives in the CRDT so selection / active-tab / pending
+//! confirmations are undoable and replicate to collaborators for free.
+//! The probed topology is serialised as a JSON string scalar (it is
+//! machine-derived, not collaboratively edited character-by-character,
+//! so a plain scalar is the right granularity).
+//!
+//! ```text
+//! root
+//! ├── "topology"  (Str)   # serde_json of model::Topology
+//! ├── "selected"  (Int)   # index into topology.drives
+//! ├── "tab"       (Str)   # overview | smart | partitions | tools
+//! ├── "pending"   (Str)   # "" or "<action>:<drive>" awaiting confirm
+//! └── "status"    (Str)   # last action / status-line message
+//! ```
+
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+
+use crate::model::Topology;
+
+pub struct DisksDoc;
+
+impl DisksDoc {
+    /// True when the document has never been seeded.
+    pub fn is_empty(doc: &AutoCommit) -> bool {
+        !matches!(doc.get(&ROOT, "topology"), Ok(Some((Value::Scalar(_), _))))
+    }
+
+    /// Seed the document with an initial topology + default UI state.
+    /// Idempotent: only writes fields that are missing.
+    pub fn seed(doc: &mut AutoCommit, topo: &Topology) {
+        Self::write_topology(doc, topo);
+        if Self::get_str(doc, "tab").is_none() {
+            let _ = doc.put(&ROOT, "tab", "overview");
+        }
+        if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
+            let _ = doc.put(&ROOT, "selected", 0i64);
+        }
+        if Self::get_str(doc, "pending").is_none() {
+            let _ = doc.put(&ROOT, "pending", "");
+        }
+        if Self::get_str(doc, "status").is_none() {
+            let _ = doc.put(&ROOT, "status", "");
+        }
+    }
+
+    pub fn write_topology(doc: &mut AutoCommit, topo: &Topology) {
+        let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
+        let _ = doc.put(&ROOT, "topology", json);
+    }
+
+    /// Read the raw topology JSON, if present.
+    pub fn topology_json(doc: &AutoCommit) -> Option<String> {
+        Self::get_str(doc, "topology")
+    }
+
+    pub fn selected(doc: &AutoCommit) -> usize {
+        match doc.get(&ROOT, "selected") {
+            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0).max(0) as usize,
+            _ => 0,
+        }
+    }
+
+    pub fn set_selected(doc: &mut AutoCommit, idx: usize) {
+        let _ = doc.put(&ROOT, "selected", idx as i64);
+    }
+
+    pub fn tab(doc: &AutoCommit) -> String {
+        Self::get_str(doc, "tab").unwrap_or_else(|| "overview".into())
+    }
+
+    pub fn set_tab(doc: &mut AutoCommit, tab: &str) {
+        let _ = doc.put(&ROOT, "tab", tab);
+    }
+
+    pub fn pending(doc: &AutoCommit) -> String {
+        Self::get_str(doc, "pending").unwrap_or_default()
+    }
+
+    pub fn set_pending(doc: &mut AutoCommit, p: &str) {
+        let _ = doc.put(&ROOT, "pending", p);
+    }
+
+    pub fn status(doc: &AutoCommit) -> String {
+        Self::get_str(doc, "status").unwrap_or_default()
+    }
+
+    pub fn set_status(doc: &mut AutoCommit, s: &str) {
+        let _ = doc.put(&ROOT, "status", s);
+    }
+
+    fn get_str(doc: &AutoCommit, key: &str) -> Option<String> {
+        match doc.get(&ROOT, key) {
+            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_then_read_round_trips() {
+        let mut doc = AutoCommit::new();
+        assert!(DisksDoc::is_empty(&doc));
+        let topo = Topology::sample();
+        DisksDoc::seed(&mut doc, &topo);
+        assert!(!DisksDoc::is_empty(&doc));
+        assert_eq!(DisksDoc::selected(&doc), 0);
+        assert_eq!(DisksDoc::tab(&doc), "overview");
+        let json = DisksDoc::topology_json(&doc).unwrap();
+        let back: Topology = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.drives.len(), 4);
+    }
+
+    #[test]
+    fn ui_mutations_persist() {
+        let mut doc = AutoCommit::new();
+        DisksDoc::seed(&mut doc, &Topology::sample());
+        DisksDoc::set_selected(&mut doc, 2);
+        DisksDoc::set_tab(&mut doc, "smart");
+        DisksDoc::set_pending(&mut doc, "format:sdb");
+        assert_eq!(DisksDoc::selected(&doc), 2);
+        assert_eq!(DisksDoc::tab(&doc), "smart");
+        assert_eq!(DisksDoc::pending(&doc), "format:sdb");
+    }
+
+    #[test]
+    fn seed_is_idempotent_for_ui_fields() {
+        let mut doc = AutoCommit::new();
+        DisksDoc::seed(&mut doc, &Topology::sample());
+        DisksDoc::set_selected(&mut doc, 3);
+        // Re-seeding must not clobber an existing selection.
+        DisksDoc::seed(&mut doc, &Topology::sample());
+        assert_eq!(DisksDoc::selected(&doc), 3);
+    }
+}

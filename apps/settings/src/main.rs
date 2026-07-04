@@ -1,23 +1,22 @@
 // Thin binary entry point — all logic lives in the library.
 //
-// Supports two modes (mirroring the sibling terminal / file-explorer
-// binaries):
-//   * default — build a `SettingsApp`, hand it to `ui::App`, run the
-//     live event loop (winit window).
-//   * `--shots <PATH>` — render the settings app at a default size into
-//     a PNG at `<PATH>` and exit. No window, no event loop. Used for
-//     headless screenshot tests and CI snapshots of the cold-start UI.
+// Two modes (mirroring the sibling terminal / file-explorer binaries):
+//   * default — build a `SettingsApp`, hand it to `ui::App`, run the live
+//     event loop (winit window).
+//   * `--shots <PATH>` — render the settings app into a PNG at `<PATH>`
+//     and exit. The scenario (wide vs. narrow) is derived from the output
+//     filename (any name containing `narrow` selects the responsive
+//     single-pane shot), so one binary produces both required snapshots.
 
-use settings::{render_to_path, SettingsApp};
-use settings::shots::DEFAULT_SHOTS_VIEWPORT;
+use settings::shots::render_for_path;
+use settings::SettingsApp;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = SettingsApp::new();
-        render_to_path(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        render_for_path(&out)?;
         return Ok(());
     }
 
@@ -30,7 +29,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
 /// in `args`, otherwise `None`. Same ad-hoc parser the other native apps
-/// use; we avoid pulling in `clap` for a single boolean-with-string.
+/// use; avoids pulling in `clap` for a single string flag.
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
