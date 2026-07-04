@@ -56,6 +56,72 @@ mime = ["application/vnd.oasis.opendocument.text"]
 ext  = ["odt"]
 "#;
 
+/// A CLI-flavour app manifest — declares an `[entrypoint]` with
+/// `type = "cli"` plus a `[cli]` block that publishes a single
+/// command on PATH.
+pub const CLI_APP_MANIFEST_TEMPLATE: &str = r#"
+[package]
+id          = "dev.qos.notes-cli"
+version     = "0.1.0"
+kind        = "app"
+
+[publisher]
+identity    = "ed25519:<HEX>"
+signature   = ""
+
+[sandbox]
+namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp     = "qos-default"
+landlock    = "strict"
+
+[sandbox.fs]
+read  = []
+write = ["~/.local/share/dev.qos.notes-cli"]
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin  = "bin/notes"
+type = "cli"
+
+[cli]
+commands = ["notes"]
+"#;
+
+/// A `type = "both"` manifest — ships separate `gui-bin` and
+/// `cli-bin` under the payload.
+pub const BOTH_APP_MANIFEST_TEMPLATE: &str = r#"
+[package]
+id          = "dev.qos.notes"
+version     = "0.2.0"
+kind        = "app"
+
+[publisher]
+identity    = "ed25519:<HEX>"
+signature   = ""
+
+[sandbox]
+namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp     = "qos-default"
+landlock    = "strict"
+
+[sandbox.fs]
+read  = []
+write = ["~/.local/share/dev.qos.notes"]
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+type    = "both"
+gui-bin = "bin/notes-gui"
+cli-bin = "bin/notes"
+
+[cli]
+commands = ["notes"]
+"#;
+
 /// Plug a 32-byte pubkey hex into the template.
 pub fn render_template(template: &str, identity_hex: &str) -> String {
     template.replace("<HEX>", identity_hex)

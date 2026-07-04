@@ -1,0 +1,38 @@
+[package]
+name = "runtime-portal-xdg"
+version = "0.1.0"
+edition = "2024"
+
+# qOS runtime — XDG portal client. Idiomatic Rust wrapper around
+# `ashpd` for the standard freedesktop portals: file-chooser, screencast,
+# notifications, secret service, open-uri. Every call gracefully falls
+# back to `PortalError::NotAvailable` when no D-Bus session bus is
+# reachable — same graceful-degradation contract as the rest of the
+# qOS runtime SDK, so apps built here run cleanly as Flatpaks on stock
+# Linux AND inside qOS sandboxes where the launcher plumbed the bus in.
+#
+# The layer is intentionally thin: state on the returned response type
+# is passed straight through from `ashpd`. Apps that want deeper
+# portal semantics can depend on `ashpd` directly.
+
+[lib]
+name = "runtime_portal_xdg"
+path = "src/lib.rs"
+
+[dependencies]
+# ashpd with the tokio backend — matches the rest of the qOS runtime
+# stack (runtime-portal, runtime-collab, runtime-fs all sit on tokio).
+# `default-features = false` drops the async-std default; the `tokio`
+# feature swaps zbus's executor over.
+ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+# tokio: a small `current_thread` runtime is what we block_on inside
+# the sync wrapper. Apps that already own a tokio runtime should call
+# the `*_async` variants and drive the future themselves.
+tokio = { version = "1", features = ["rt", "net", "macros", "sync"] }
+thiserror = "1"
+tracing = "0.1"
+# For the URL type in `OpenUri::open`.
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"
