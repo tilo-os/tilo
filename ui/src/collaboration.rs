@@ -21,6 +21,26 @@
 //! `legacy-broker` feature flag (default on) so the in-tree test
 //! suites, the `collab-broker` binary and the shell's production
 //! broker keep compiling while the fleet migrates onto the SDK.
+//!
+//! ## Flipping the feature off
+//!
+//! Once every app in the fleet talks the SDK, the `legacy-broker`
+//! default can be dropped. The recipe is:
+//!
+//! 1. Verify `cargo build -p ui --no-default-features` succeeds
+//!    (currently exercised on every push; the SDK code path resolves
+//!    without the JSON transport). The shell now serves the SDK's
+//!    capnp interface natively via `shell::shell::collab_broker_capnp`,
+//!    so every downstream app can pick up its connection from
+//!    `QOS_SVC_COLLAB_FD` without going through the JSON socket.
+//! 2. Change this crate's `Cargo.toml` `default` line to `[]`
+//!    (or a set that excludes `legacy-broker`).
+//! 3. Delete the `#[cfg(feature = "legacy-broker")]` gates in this
+//!    module and the `broker` sub-module once no consumer depends on
+//!    them.
+//!
+//! Downstream apps flip transparently — the public `send` / `poll`
+//! surface is unchanged; only the underlying transport differs.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

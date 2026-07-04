@@ -74,7 +74,21 @@ interface ChannelHandle {
   # `seq < beforeSeq` on the join'd channel. Backing the "scroll
   # up to older edits after late-join" UX; see
   # `ScrollbackBatch` for the response shape.
+  #
+  # LEGACY — this method does not carry an artifact id, so the
+  # broker keys the read on a `nil` artifact (`ArtifactId::default()`).
+  # Callers that hold a specific artifact should prefer
+  # `fetchScrollbackFor @7`. Kept so schema-v1 clients still resolve.
   fetchScrollback @6 (beforeSeq :UInt64, max :UInt32) -> (batch :ScrollbackBatch);
+
+  # Fetch a page of previously-validated signed ops on a specific
+  # artifact. `artifactId` is the 16-byte encoding of the artifact
+  # uuid; the broker resolves ops with `seq < beforeSeq` on that
+  # artifact only. Introduced so scrollback fetches no longer need
+  # to fall back to the nil-uuid placeholder the schema-v1 method
+  # forced.
+  fetchScrollbackFor @7 (artifactId :Data, beforeSeq :UInt64, max :UInt32)
+      -> (batch :ScrollbackBatch);
 }
 
 interface Stream {
