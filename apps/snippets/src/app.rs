@@ -1,0 +1,1783 @@
+//! Root widget for the snippet manager.
+//!
+//! Owns the in-memory [`Library`], the per-peer view state (selection,
+//! search, focus), and renders the three-pane layout directly into the
+//! Vello scene:
+//!
+//! ```text
+//! ┌──────────┬──────────────────┬─────────────────────────────┐
+//! │ sidebar  │  snippet list    │  detail / editor pane       │
+//! │ folders  │  (search above)  │  title · language · tags    │
+//! │ tags     │                  │  syntax-highlighted body    │
+//! └──────────┴──────────────────┴─────────────────────────────┘
+//! ```
+//!
+//! The library is mirrored into the shared Automerge document by
+//! [`crate::doc`] so two instances converge. Selection / search / the
+//! open expand-modal are view state and stay local to each peer.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, Style, TaffyTree};
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use ui::ColorCompat;
+use ui::widget::{FlapState, PushPane, SplitLayout};
+
+use crate::doc::SnippetsDoc;
+use crate::draw;
+use crate::expand::ExpandModal;
+use crate::highlight;
+use crate::model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
+use crate::seed;
+
+const SIDEBAR_W: f64 = 232.0;
+const LIST_W: f64 = 340.0;
+const ROW_H: f64 = 64.0;
+const SIDEBAR_ROW_H: f64 = 32.0;
+const SEARCH_H: f64 = 52.0;
+const BODY_FONT: f32 = 13.5;
+const BODY_LINE: f64 = 20.0;
+
+/// Below this allocated width (logical px) the primary sidebar (smart
+/// folders + folders + tags) stops sitting beside the list and detail and
+/// collapses into an overlay flap that slides over the content behind a
+/// dimming scrim — closed by default, summoned by the hamburger. Chosen so
+/// the 232px rail + 340px list + a readable detail pane stop fitting
+/// comfortably side by side.
+const SIDEBAR_BREAKPOINT: f64 = 820.0;
+
+/// Below this width even the list and the detail can't share the row, so the
+/// master-detail flow switches to single-pane push: the list OR the detail
+/// fills the pane, and opening a snippet slides the detail in with a Back
+/// affordance. Set so the 340px list + a usable code card stop coexisting.
+const PUSH_BREAKPOINT: f64 = 560.0;
+
+/// Top-left toggle (hamburger / Back / close) hit size, logical px.
+const TOGGLE_SIZE: f64 = 34.0;
+
+/// What kind of toast is currently showing (auto-dismisses on next event
+/// tick after a short hold — for the headless shot it simply persists).
+#[derive(Clone)]
+struct Toast {
+    message: String,
+    /// Frames remaining before the toast fades. Decremented on idle.
+    ttl: u32,
+}
+
+pub struct SnippetsApp {
+    library: Library,
+    selection: Selection,
+    search: String,
+    /// Whether the search field has keyboard focus (captures typing).
+    search_focused: bool,
+    /// Currently open snippet in the detail pane.
+    open: Option<SnippetId>,
+    /// Ordered ids currently shown in the list pane (result of `query`).
+    visible: Vec<SnippetId>,
+    /// The expand-with-variables modal, when open.
+    expand: Option<ExpandModal>,
+    toast: Option<Toast>,
+    /// Whether we've mirrored the local library into the shared doc.
+    seeded: bool,
+
+    // Layout / hit-testing caches, recomputed each frame in `draw` so
+    // `handle_event` can map clicks to actions without a second layout
+    // pass. Each entry is (rect, action).
+    rect: Rect,
+    last_mouse: Point,
+    hit: Vec<(Rect, Action)>,
+    scroll: f64,
+
+    // ---- responsive layout (shared `ui` flap kernel) -------------------
+    /// Primary sidebar flap: docked beside the content on wide windows,
+    /// an overlay flap over the content behind a scrim on narrow ones.
+    /// Defaults open when docked, closed (summon-on-demand) when overlay.
+    sidebar: FlapState,
+    /// Single-pane master-detail push for the very-narrow case: animates
+    /// the list↔detail slide. `reveal == 1` means the detail is shown.
+    push: FlapState,
+    /// Which pane the push flow currently shows (list = master, detail).
+    push_pane: PushPane,
+    /// `false` until the first laid-out frame snaps the sidebar reveal to the
+    /// resolved layout default. Without this, a window that first appears at
+    /// narrow width would render one frame with the docked-default reveal
+    /// (1.0) before the animation ticks it closed — the overlay would flash
+    /// open. A staged `--shots` scenario sets this so its snap isn't undone.
+    settled_layout: bool,
+}
+
+/// A clickable region recorded during draw and resolved on mouse-down.
+#[derive(Clone, Debug, PartialEq)]
+enum Action {
+    Select(Selection),
+    OpenSnippet(SnippetId),
+    NewSnippet,
+    Copy(SnippetId),
+    Expand(SnippetId),
+    ToggleFavorite(SnippetId),
+    Duplicate(SnippetId),
+    Delete(SnippetId),
+    FocusSearch,
+    ClearSearch,
+    SetLanguage(SnippetId, Language),
+    /// Toggle the primary sidebar flap (hamburger / overlay close).
+    ToggleSidebar,
+    /// Dismiss the open overlay sidebar (scrim tap).
+    DismissSidebar,
+    /// Return from the detail pane to the list in single-pane push mode.
+    PushBack,
+}
+
+impl SnippetsApp {
+    /// Build the app with the starter library seeded locally. The library
+    /// is pushed into the shared CRDT on the first `sync`.
+    pub fn new() -> Self {
+        let mut library = Library::new();
+        for s in seed::starter_library() {
+            library.insert(s);
+        }
+        let mut app = Self {
+            library,
+            selection: Selection::default(),
+            search: String::new(),
+            search_focused: false,
+            open: None,
+            visible: Vec::new(),
+            expand: None,
+            toast: None,
+            seeded: false,
+            rect: Rect::ZERO,
+            last_mouse: Point::ZERO,
+            hit: Vec::new(),
+            scroll: 0.0,
+            sidebar: FlapState::open_when_docked(),
+            push: FlapState::closed_by_default(),
+            push_pane: PushPane::Master,
+            settled_layout: false,
+        };
+        app.recompute_visible();
+        // Open a substantial, templated snippet so the detail pane shows
+        // off the highlighter, line gutter and variable affordance on
+        // first launch. Prefer the visible snippet with the most body
+        // lines that also carries placeholders.
+        app.open = app
+            .visible
+            .iter()
+            .copied()
+            .max_by_key(|id| {
+                let s = app.library.get(*id);
+                let lines = s.map(|s| s.body.lines().count()).unwrap_or(0);
+                let templated = s.map(|s| s.has_placeholders()).unwrap_or(false) as usize;
+                (templated, lines)
+            })
+            .or_else(|| app.visible.first().copied());
+        app
+    }
+
+    /// Empty constructor for the screenshot harness — identical to
+    /// [`Self::new`] since the starter library is the realistic default.
+    pub fn for_shot() -> Self {
+        Self::new()
+    }
+
+    fn recompute_visible(&mut self) {
+        self.visible = self.library.query(&self.selection, &self.search);
+        // Keep the open snippet valid; otherwise open the first result.
+        if let Some(open) = self.open {
+            if !self.visible.contains(&open) {
+                self.open = self.visible.first().copied();
+            }
+        } else {
+            self.open = self.visible.first().copied();
+        }
+    }
+
+    fn select(&mut self, sel: Selection) {
+        self.selection = sel;
+        self.scroll = 0.0;
+        self.recompute_visible();
+    }
+
+    fn open_snippet(&mut self, id: SnippetId) {
+        self.open = Some(id);
+        // In single-pane push mode, opening a snippet slides the detail in.
+        // (No-op in docked / overlay layouts, where both panes are visible.)
+        if self.is_push_layout() {
+            self.push_pane = PushPane::Detail;
+            self.push.open();
+        }
+    }
+
+    fn new_snippet(&mut self) {
+        let folder = match &self.selection {
+            Selection::Folder(f) => f.clone(),
+            _ => String::new(),
+        };
+        let s = Snippet::blank(&folder);
+        let id = s.id;
+        self.library.insert(s);
+        self.recompute_visible();
+        self.open = Some(id);
+        self.toast("New snippet created");
+    }
+
+    fn copy(&mut self, id: SnippetId) {
+        // If the body has placeholders, route through the expand flow so
+        // we never paste raw `${...}` onto the clipboard.
+        let needs_expand = self
+            .library
+            .get(id)
+            .map(|s| s.has_placeholders())
+            .unwrap_or(false);
+        if needs_expand {
+            self.start_expand(id);
+            return;
+        }
+        if let Some(s) = self.library.get_mut(id) {
+            ui::clipboard_copy(&s.body);
+            s.uses += 1;
+            self.toast("Copied to clipboard");
+        }
+    }
+
+    fn start_expand(&mut self, id: SnippetId) {
+        if let Some(s) = self.library.get(id) {
+            self.expand = Some(ExpandModal::new(s));
+        }
+    }
+
+    fn toggle_favorite(&mut self, id: SnippetId) {
+        if let Some(s) = self.library.get_mut(id) {
+            s.favorite = !s.favorite;
+        }
+        self.recompute_visible();
+    }
+
+    fn duplicate(&mut self, id: SnippetId) {
+        if let Some(src) = self.library.get(id).cloned() {
+            let mut copy = src.clone();
+            copy.id = uuid::Uuid::new_v4();
+            copy.title = format!("{} (copy)", src.title);
+            copy.favorite = false;
+            copy.uses = 0;
+            let new_id = copy.id;
+            self.library.insert(copy);
+            self.recompute_visible();
+            self.open = Some(new_id);
+            self.toast("Duplicated");
+        }
+    }
+
+    fn delete(&mut self, id: SnippetId) {
+        self.library.remove(id);
+        if self.open == Some(id) {
+            self.open = None;
+        }
+        self.recompute_visible();
+        self.toast("Deleted");
+    }
+
+    fn set_language(&mut self, id: SnippetId, lang: Language) {
+        if let Some(s) = self.library.get_mut(id) {
+            s.language = lang;
+        }
+        self.recompute_visible();
+    }
+
+    fn toast(&mut self, message: &str) {
+        self.toast = Some(Toast { message: message.to_string(), ttl: 90 });
+    }
+
+    /// Mirror the whole in-memory library into the shared doc (idempotent
+    /// upserts). Pulls in any snippets a peer added that we don't have.
+    fn sync_library(&mut self, doc: &mut AutoCommit) {
+        let remote = SnippetsDoc::list(doc);
+        if !self.seeded {
+            if remote.is_empty() {
+                // We're the origin — seed our starter set.
+                for s in self.library.snippets.clone() {
+                    SnippetsDoc::upsert(doc, &s);
+                }
+            } else {
+                // A peer is already sharing — adopt their library.
+                self.library.snippets = remote.clone();
+                self.recompute_visible();
+            }
+            self.seeded = true;
+            return;
+        }
+        // Steady state: push local snippets, pull remote-only ones.
+        let local_ids: std::collections::HashSet<SnippetId> =
+            self.library.snippets.iter().map(|s| s.id).collect();
+        for s in self.library.snippets.clone() {
+            SnippetsDoc::upsert(doc, &s);
+        }
+        let mut changed = false;
+        for r in remote {
+            if !local_ids.contains(&r.id) {
+                self.library.insert(r);
+                changed = true;
+            }
+        }
+        if changed {
+            self.recompute_visible();
+        }
+    }
+
+    fn apply(&mut self, action: Action) {
+        match action {
+            Action::Select(sel) => self.select(sel),
+            Action::OpenSnippet(id) => self.open_snippet(id),
+            Action::NewSnippet => self.new_snippet(),
+            Action::Copy(id) => self.copy(id),
+            Action::Expand(id) => self.start_expand(id),
+            Action::ToggleFavorite(id) => self.toggle_favorite(id),
+            Action::Duplicate(id) => self.duplicate(id),
+            Action::Delete(id) => self.delete(id),
+            Action::FocusSearch => self.search_focused = true,
+            Action::ClearSearch => {
+                self.search.clear();
+                self.recompute_visible();
+            }
+            Action::SetLanguage(id, lang) => self.set_language(id, lang),
+            Action::ToggleSidebar => self.sidebar.toggle(self.sidebar_layout()),
+            Action::DismissSidebar => self.sidebar.close(),
+            Action::PushBack => {
+                self.push_pane = PushPane::Master;
+                self.push.close();
+            }
+        }
+    }
+
+    /// Resolve a click at `p` against the recorded hit regions. Topmost
+    /// (last-recorded) match wins.
+    fn action_at(&self, p: Point) -> Option<Action> {
+        self.hit
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, a)| a.clone())
+    }
+
+    fn record(&mut self, rect: Rect, action: Action) {
+        self.hit.push((rect, action));
+    }
+
+    // ---- responsive geometry -------------------------------------------
+
+    /// How the primary sidebar resolves at the current allocated width:
+    /// docked beside the content (wide) or an overlay flap (narrow).
+    fn sidebar_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), SIDEBAR_BREAKPOINT)
+    }
+
+    /// Whether the window is narrow enough that the list and detail switch
+    /// to single-pane push navigation (show one or the other).
+    fn is_push_layout(&self) -> bool {
+        self.rect.width() < PUSH_BREAKPOINT
+    }
+
+    /// `true` while the sidebar flap is (resolved) open.
+    fn sidebar_open(&self) -> bool {
+        self.sidebar.is_open(self.sidebar_layout())
+    }
+
+    /// The sidebar's on-screen rect for this frame. Docked: a fixed rail at
+    /// the left whose width eases with the reveal. Overlay: a fixed-width
+    /// rail that slides in from the left edge over the content.
+    fn sidebar_rect(&self) -> Rect {
+        let r = self.rect;
+        match self.sidebar_layout() {
+            SplitLayout::Docked => {
+                let w = SIDEBAR_W * self.sidebar.reveal();
+                Rect::new(r.x0, r.y0, r.x0 + w, r.y1)
+            }
+            SplitLayout::Overlay => {
+                let slide = self.sidebar.slide();
+                let x0 = r.x0 - SIDEBAR_W * (1.0 - slide);
+                Rect::new(x0, r.y0, x0 + SIDEBAR_W, r.y1)
+            }
+        }
+    }
+
+    /// The horizontal band the list + detail occupy. Docked: inset by the
+    /// eased sidebar width so the rail doesn't overlap. Overlay/push: the
+    /// full width (the sidebar floats above it).
+    fn content_band(&self) -> Rect {
+        let r = self.rect;
+        match self.sidebar_layout() {
+            SplitLayout::Docked => {
+                let inset = SIDEBAR_W * self.sidebar.reveal();
+                Rect::new(r.x0 + inset, r.y0, r.x1, r.y1)
+            }
+            SplitLayout::Overlay => r,
+        }
+    }
+
+    /// Whether the primary sidebar should paint anything this frame.
+    fn sidebar_visible(&self) -> bool {
+        self.sidebar.reveal() > 0.001
+    }
+
+    // ---- shot scenarios -------------------------------------------------
+
+    /// Snap the responsive state to a deterministic configuration for the
+    /// single-frame `--shots` renderer (the live app eases via `update`).
+    ///
+    /// * `"narrow"` — open the overlay sidebar over the content + scrim.
+    /// * `"detail"` — single-pane push showing the detail with a Back chip.
+    /// * anything else — the default frame.
+    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "narrow" => {
+                self.sidebar.snap(true);
+                // Keep the staged open flap from being re-settled to the
+                // overlay default on the first laid-out frame.
+                self.settled_layout = true;
+            }
+            "detail" => {
+                self.push_pane = PushPane::Detail;
+                self.push.snap(true);
+                self.sidebar.snap(false);
+                self.settled_layout = true;
+            }
+            _ => {}
+        }
+    }
+
+    // ---- test accessors -------------------------------------------------
+
+    #[doc(hidden)]
+    pub fn open_id_for_test(&self) -> Option<SnippetId> {
+        self.open
+    }
+
+    #[doc(hidden)]
+    pub fn visible_count_for_test(&self) -> usize {
+        self.visible.len()
+    }
+
+    #[doc(hidden)]
+    pub fn set_search_for_test(&mut self, q: &str) {
+        self.search = q.to_string();
+        self.recompute_visible();
+    }
+
+    #[doc(hidden)]
+    pub fn library_len_for_test(&self) -> usize {
+        self.library.snippets.len()
+    }
+
+    #[doc(hidden)]
+    pub fn expand_open_for_test(&self) -> bool {
+        self.expand.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn copy_for_test(&mut self, id: SnippetId) {
+        self.copy(id);
+    }
+
+    #[doc(hidden)]
+    pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
+        self.library.get(id).map(|s| s.uses).unwrap_or(0)
+    }
+
+    // ---- responsive test accessors -------------------------------------
+
+    /// Lay the app out at `width` x 800 through the real `build_layout` /
+    /// `apply_layout` passes (so `rect` + the layout reconcile run exactly as
+    /// in a live frame), then settle any pending reveal animation.
+    #[doc(hidden)]
+    pub fn layout_at_width_for_test(&mut self, width: f64) {
+        use ui::widget::Widget;
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width as f32),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        self.apply_layout(&taffy, node, Point::ZERO);
+        // Settle the reveal so `sidebar_open`/reveal reflect the target.
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        for _ in 0..240 {
+            if !Widget::update(self, &mut doc, &root) {
+                break;
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn sidebar_is_overlay_for_test(&self) -> bool {
+        self.sidebar_layout() == SplitLayout::Overlay
+    }
+
+    #[doc(hidden)]
+    pub fn sidebar_open_for_test(&self) -> bool {
+        self.sidebar_open()
+    }
+
+    #[doc(hidden)]
+    pub fn is_push_for_test(&self) -> bool {
+        self.is_push_layout()
+    }
+
+    #[doc(hidden)]
+    pub fn push_showing_detail_for_test(&self) -> bool {
+        self.push_pane == PushPane::Detail
+    }
+
+    #[doc(hidden)]
+    pub fn toggle_sidebar_for_test(&mut self) {
+        self.apply(Action::ToggleSidebar);
+    }
+
+    #[doc(hidden)]
+    pub fn open_first_for_test(&mut self) {
+        if let Some(id) = self.visible.first().copied() {
+            self.open_snippet(id);
+        }
+    }
+}
+
+impl Default for SnippetsApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ui::widget::Widget for SnippetsApp {
+    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        self.sync_library(state);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        !self.seeded
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn ui::widget::Widget>,
+    ) -> NodeId {
+        // The app paints itself; it just needs one full-bleed leaf node.
+        let node = taffy
+            .new_leaf(Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn ui::widget::Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+        // Crossing a breakpoint (a window resize) drops any stale user
+        // preference so the sidebar adopts the new layout's natural default.
+        let layout = self.sidebar_layout();
+        self.sidebar.reconcile(layout);
+        // On the first laid-out frame, snap the reveal to the resolved
+        // default so a window that opens narrow doesn't flash the overlay
+        // open before the animation settles. Subsequent frames ease via
+        // `update`. A staged shot scenario marks this already-settled.
+        if !self.settled_layout {
+            self.sidebar.snap(self.sidebar.is_open(layout));
+            self.settled_layout = true;
+        }
+        // Leaving the very-narrow push range collapses the single-pane stack
+        // back so both panes show again on the next wider frame.
+        if !self.is_push_layout() && self.push_pane == PushPane::Detail {
+            self.push_pane = PushPane::Master;
+            self.push.snap(false);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.hit.clear();
+        let c = &theme.tokens.colors;
+        // Whole-window background.
+        draw::fill_rect(scene, t, self.rect, c.surfaces.base);
+
+        // The content band (list + detail) is inset by the docked sidebar,
+        // or spans the full width when the sidebar is an overlay flap.
+        let band = self.content_band();
+        self.draw_content_band(scene, t, tr, theme, band);
+
+        // The primary sidebar: a docked rail beside the content, or — when
+        // narrow — an overlay flap that slides in over the content behind a
+        // dimming scrim. Painted last so it sits above the content.
+        if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_visible() {
+            // Scrim: fades in with the reveal, behind the sliding rail.
+            let scrim = c.surfaces.overlay.with_alpha_factor((self.sidebar.reveal() * 0.55) as f32);
+            draw::fill_rect(scene, t, self.rect, scrim);
+            self.record(self.rect, Action::DismissSidebar);
+        }
+        if self.sidebar_visible() {
+            let rail = self.sidebar_rect();
+            self.draw_sidebar(scene, t, tr, theme, rail);
+            // Right-edge divider for the rail.
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(rail.x1 - 0.5, rail.y0, rail.x1 + 0.5, rail.y1),
+                c.border_standard,
+            );
+        }
+
+        // The hamburger toggle is shown whenever the sidebar isn't fully
+        // docked-open, so a collapsed rail can be summoned and an overlay
+        // rail dismissed. It records its own hit region.
+        if self.show_toggle() {
+            self.draw_toggle(scene, t, theme, band);
+        }
+
+        if let Some(toast) = &self.toast {
+            draw_toast(scene, t, tr, theme, self.rect, &toast.message);
+        }
+
+        // The expand modal renders above everything. While it's open the
+        // panes beneath are inert, so the modal records hit regions
+        // internally and the app's hit list isn't consulted.
+        if let Some(mut expand) = self.expand.take() {
+            expand.draw(scene, t, tr, theme, self.rect);
+            self.expand = Some(expand);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        // Track the cursor for hit-testing.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        // The expand modal is modal: it owns all input while open.
+        if let Some(mut modal) = self.expand.take() {
+            let outcome = modal.handle_event(event, self.last_mouse, modifiers);
+            match outcome {
+                ExpandOutcome::Stay => {
+                    self.expand = Some(modal);
+                    *handled = true;
+                    return;
+                }
+                ExpandOutcome::Cancel => {
+                    *handled = true;
+                    return;
+                }
+                ExpandOutcome::Copy(text, id) => {
+                    ui::clipboard_copy(&text);
+                    if let Some(s) = self.library.get_mut(id) {
+                        s.uses += 1;
+                    }
+                    self.toast("Expanded and copied");
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(action) = self.action_at(self.last_mouse) {
+                    // Clicking anywhere that isn't the search field blurs it.
+                    if !matches!(action, Action::FocusSearch) {
+                        self.search_focused = false;
+                    }
+                    self.apply(action);
+                    *handled = true;
+                } else {
+                    self.search_focused = false;
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64 * BODY_LINE,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                self.scroll = (self.scroll - dy).max(0.0);
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let mods = modifiers.state();
+                // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
+                // Cmd/Ctrl-C copies the open snippet.
+                if mods.control_key() || mods.super_key() {
+                    if let Key::Character(ch) = logical_key {
+                        match ch.to_lowercase().as_str() {
+                            "f" => {
+                                self.search_focused = true;
+                                *handled = true;
+                                return;
+                            }
+                            "n" => {
+                                self.new_snippet();
+                                *handled = true;
+                                return;
+                            }
+                            "c" => {
+                                if let Some(id) = self.open {
+                                    self.copy(id);
+                                }
+                                *handled = true;
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if self.search_focused {
+                    self.handle_search_key(logical_key, handled);
+                    return;
+                }
+
+                // Escape walks back through the responsive layers, then
+                // finally clears the search. In single-pane push showing the
+                // detail it returns to the list; with the overlay sidebar
+                // open it dismisses the flap; otherwise it clears the search.
+                if let Key::Named(NamedKey::Escape) = logical_key {
+                    if self.is_push_layout() && self.push.reveal() > 0.5 {
+                        self.apply(Action::PushBack);
+                        *handled = true;
+                    } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
+                        self.apply(Action::DismissSidebar);
+                        *handled = true;
+                    } else if !self.search.is_empty() {
+                        self.search.clear();
+                        self.recompute_visible();
+                        *handled = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.toast.is_some()
+            || self.sidebar.is_animating(self.sidebar_layout())
+            || self.push.is_animating(SplitLayout::Docked)
+    }
+
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Advance the sidebar reveal + the push (list↔detail) slide toward
+        // their targets. Frame-rate-independent; the host re-pumps frames
+        // while `needs_animation_frame` stays true.
+        let dt = 1.0 / 60.0;
+        self.sidebar.tick(self.sidebar_layout(), dt);
+        self.push.tick(SplitLayout::Docked, dt);
+
+        // Age out the toast.
+        if let Some(toast) = &mut self.toast {
+            if toast.ttl == 0 {
+                self.toast = None;
+            } else {
+                toast.ttl -= 1;
+            }
+        }
+        false
+    }
+
+    fn name(&self) -> &str {
+        "SnippetsApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+/// Result of routing an event to the expand modal.
+pub enum ExpandOutcome {
+    /// Keep the modal open.
+    Stay,
+    /// User dismissed it.
+    Cancel,
+    /// User confirmed; the expanded text + originating snippet id.
+    Copy(String, SnippetId),
+}
+
+impl SnippetsApp {
+    // ---- content band (list + detail) ----------------------------------
+
+    /// Paint the list and the detail within `band`. Wide / medium: the two
+    /// panes sit side by side (list fixed-width, detail fills the rest).
+    /// Very narrow: a single-pane push stack shows the list OR the detail,
+    /// sliding between them, with a Back affordance on the detail.
+    fn draw_content_band(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        band: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        if self.is_push_layout() {
+            // Single pane: list and detail each span the full band, offset
+            // horizontally by the eased push amount (0 = list, 1 = detail).
+            let w = band.width();
+            let p = self.push.slide();
+            let list = Rect::new(band.x0 - w * p, band.y0, band.x1 - w * p, band.y1);
+            let detail = Rect::new(band.x0 + w * (1.0 - p), band.y0, band.x1 + w * (1.0 - p), band.y1);
+            // Draw the off-screen pane first so the incoming one sits on top.
+            if p < 0.999 {
+                self.draw_list(scene, t, tr, theme, list);
+            }
+            if p > 0.001 {
+                self.draw_detail(scene, t, tr, theme, detail);
+            }
+            return;
+        }
+
+        // Side-by-side: list rail + detail fills the remainder. The list
+        // narrows gracefully if the band can't fit the full fixed width.
+        let list_w = LIST_W.min((band.width() - 240.0).max(200.0));
+        let list = Rect::new(band.x0, band.y0, band.x0 + list_w, band.y1);
+        let detail = Rect::new(list.x1, band.y0, band.x1, band.y1);
+        self.draw_list(scene, t, tr, theme, list);
+        self.draw_detail(scene, t, tr, theme, detail);
+        // Divider between list and detail.
+        draw::fill_rect(
+            scene,
+            t,
+            Rect::new(list.x1 - 0.5, band.y0, list.x1 + 0.5, band.y1),
+            c.border_standard,
+        );
+    }
+
+    // ---- toggles --------------------------------------------------------
+
+    /// Whether the top-left toggle (hamburger / Back) should be shown. It
+    /// appears whenever the primary sidebar isn't fully docked-open (so it
+    /// can be summoned / dismissed), or while the push stack shows the detail
+    /// (so the user can go Back to the list).
+    fn show_toggle(&self) -> bool {
+        let sidebar_collapsed = self.sidebar.reveal() < 0.999
+            || self.sidebar_layout() == SplitLayout::Overlay;
+        let push_in_detail = self.is_push_layout() && self.push.reveal() > 0.5;
+        sidebar_collapsed || push_in_detail
+    }
+
+    /// Draw the top-left toggle button + glyph and record its hit region.
+    /// In single-pane push showing the detail it's a Back chevron (returns to
+    /// the list); otherwise it's a hamburger (open) / close-X (dismiss the
+    /// overlay sidebar).
+    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
+        let c = &theme.tokens.colors;
+        let pad = 10.0;
+        let bx = band.x0 + pad;
+        let by = band.y0 + pad;
+        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
+        draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
+        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
+
+        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
+        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
+        let push_back = self.is_push_layout() && self.push.reveal() > 0.5;
+        let overlay_open =
+            self.sidebar_layout() == SplitLayout::Overlay && self.sidebar.reveal() > 0.5;
+
+        if push_back {
+            // Back chevron "‹".
+            let r = 5.0;
+            draw::stroke_line(scene, t, Point::new(cx + r * 0.6, cy - r), Point::new(cx - r * 0.6, cy), 1.8, c.text_primary);
+            draw::stroke_line(scene, t, Point::new(cx - r * 0.6, cy), Point::new(cx + r * 0.6, cy + r), 1.8, c.text_primary);
+            self.record(btn, Action::PushBack);
+        } else if overlay_open {
+            // Close "X" when the overlay sidebar is showing.
+            let r = 6.0;
+            draw::stroke_line(scene, t, Point::new(cx - r, cy - r), Point::new(cx + r, cy + r), 1.8, c.text_primary);
+            draw::stroke_line(scene, t, Point::new(cx + r, cy - r), Point::new(cx - r, cy + r), 1.8, c.text_primary);
+            self.record(btn, Action::ToggleSidebar);
+        } else {
+            // Three-line hamburger to summon the sidebar.
+            let half = 7.0;
+            for i in 0..3 {
+                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
+                draw::stroke_line(scene, t, Point::new(cx - half, ly), Point::new(cx + half, ly), 1.8, c.text_primary);
+            }
+            self.record(btn, Action::ToggleSidebar);
+        }
+    }
+
+    fn handle_search_key(&mut self, key: &Key, handled: &mut bool) {
+        match key {
+            Key::Character(s) => {
+                self.search.push_str(s.as_str());
+                self.recompute_visible();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                self.search.push(' ');
+                self.recompute_visible();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.search.pop();
+                self.recompute_visible();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.search.clear();
+                self.search_focused = false;
+                self.recompute_visible();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.search_focused = false;
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    // ---- sidebar --------------------------------------------------------
+
+    fn draw_sidebar(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        draw::fill_rect(scene, t, area, c.surfaces.base);
+        let pad = 16.0;
+        let mut y = area.y0 + 18.0;
+
+        // App title.
+        draw::text(
+            scene,
+            tr,
+            t,
+            "Snippets",
+            area.x0 + pad,
+            y,
+            20.0,
+            c.text_primary,
+            TextWeight::Bold,
+        );
+        y += 34.0;
+
+        // Smart folders.
+        for smart in [SmartFolder::All, SmartFolder::Favorites, SmartFolder::MostUsed] {
+            let active = matches!(&self.selection, Selection::Smart(s) if *s == smart);
+            let count = self
+                .library
+                .query(&Selection::Smart(smart), "")
+                .len();
+            let row = self.sidebar_row(
+                scene, t, tr, theme, area, y, smart.label(), Some(count), active, 0,
+            );
+            self.record(row, Action::Select(Selection::Smart(smart)));
+            y += SIDEBAR_ROW_H;
+        }
+
+        y += 10.0;
+        section_header(scene, t, tr, theme, "FOLDERS", area.x0 + pad, y);
+        y += 22.0;
+        for folder in self.library.folders() {
+            let active = matches!(&self.selection, Selection::Folder(f) if *f == folder);
+            let count = self
+                .library
+                .query(&Selection::Folder(folder.clone()), "")
+                .len();
+            let row =
+                self.sidebar_row(scene, t, tr, theme, area, y, &folder, Some(count), active, 1);
+            self.record(row, Action::Select(Selection::Folder(folder.clone())));
+            y += SIDEBAR_ROW_H;
+        }
+
+        y += 10.0;
+        section_header(scene, t, tr, theme, "TAGS", area.x0 + pad, y);
+        y += 22.0;
+        for (tag, cnt) in self.library.tags() {
+            let active = matches!(&self.selection, Selection::Tag(x) if *x == tag);
+            let label = format!("#{tag}");
+            let row =
+                self.sidebar_row(scene, t, tr, theme, area, y, &label, Some(cnt), active, 1);
+            self.record(row, Action::Select(Selection::Tag(tag.clone())));
+            y += SIDEBAR_ROW_H;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sidebar_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        y: f64,
+        label: &str,
+        count: Option<usize>,
+        active: bool,
+        indent: u32,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
+        let pad = 10.0;
+        let row = Rect::new(area.x0 + 8.0, y, area.x1 - 8.0, y + SIDEBAR_ROW_H - 4.0);
+        if active {
+            draw::fill_round(scene, t, row, theme.radii_md(), c.accent[5]);
+        } else if row.contains(self.last_mouse) {
+            draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
+        }
+        let fg = if active { c.text_primary } else { c.neutral[7] };
+        let x = row.x0 + pad + indent as f64 * 12.0;
+        let ty = y + (SIDEBAR_ROW_H - 4.0 - 15.0) / 2.0;
+        draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
+        if let Some(n) = count {
+            let s = n.to_string();
+            let w = tr.measure(&s, 12.0, None).0 as f64;
+            let cfg = if active { c.accent[8] } else { c.text_dim };
+            draw::text(scene, tr, t, &s, row.x1 - pad - w, ty + 1.0, 12.0, cfg, TextWeight::Regular);
+        }
+        row
+    }
+
+    // ---- list pane ------------------------------------------------------
+
+    fn draw_list(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        draw::fill_rect(scene, t, area, c.neutral[1]);
+
+        // Search bar.
+        let pad = 12.0;
+        let search_rect = Rect::new(
+            area.x0 + pad,
+            area.y0 + 10.0,
+            area.x1 - pad,
+            area.y0 + 10.0 + SEARCH_H - 16.0,
+        );
+        let focused = self.search_focused;
+        let border = if focused { c.border_focus } else { c.border_standard };
+        draw::fill_round(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
+        draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, border);
+        let placeholder = self.search.is_empty();
+        let shown = if placeholder {
+            "Search  ·  try language:rust  or  tag:k8s".to_string()
+        } else {
+            self.search.clone()
+        };
+        let scolor = if placeholder { c.text_dim } else { c.text_primary };
+        let sy = search_rect.y0 + (search_rect.height() - 15.0) / 2.0;
+        draw::text(
+            scene,
+            tr,
+            t,
+            &shown,
+            search_rect.x0 + 12.0,
+            sy,
+            14.0,
+            scolor,
+            TextWeight::Regular,
+        );
+        // Caret when focused.
+        if focused {
+            let tw = if placeholder {
+                0.0
+            } else {
+                tr.measure(&self.search, 14.0, None).0 as f64
+            };
+            let cx = search_rect.x0 + 12.0 + tw + 1.0;
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(cx, sy - 1.0, cx + 1.5, sy + 16.0),
+                c.border_focus,
+            );
+        }
+        self.record(search_rect, Action::FocusSearch);
+        if !placeholder {
+            // A small clear affordance.
+            let clear = Rect::new(search_rect.x1 - 26.0, search_rect.y0, search_rect.x1, search_rect.y1);
+            draw::text(
+                scene,
+                tr,
+                t,
+                "×",
+                clear.x0 + 6.0,
+                sy - 2.0,
+                18.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
+            self.record(clear, Action::ClearSearch);
+        }
+
+        // "+ New" header row with the result count.
+        let header_y = area.y0 + SEARCH_H + 4.0;
+        let count_label = format!("{} snippets", self.visible.len());
+        draw::text(
+            scene,
+            tr,
+            t,
+            &count_label,
+            area.x0 + pad,
+            header_y,
+            12.0,
+            c.text_dim,
+            TextWeight::Medium,
+        );
+        let new_label = "+ New";
+        let nw = tr.measure(new_label, 13.0, None).0 as f64 + 20.0;
+        let new_rect = Rect::new(area.x1 - pad - nw, header_y - 4.0, area.x1 - pad, header_y + 18.0);
+        draw::fill_round(scene, t, new_rect, theme.radii_md(), c.accent[5]);
+        draw::text(
+            scene,
+            tr,
+            t,
+            new_label,
+            new_rect.x0 + 10.0,
+            new_rect.y0 + 4.0,
+            13.0,
+            c.text_primary,
+            TextWeight::Semibold,
+        );
+        self.record(new_rect, Action::NewSnippet);
+
+        // Snippet rows (scrollable region).
+        let list_top = header_y + 26.0;
+        let mut y = list_top - self.scroll;
+        let ids = self.visible.clone();
+        for id in ids {
+            let Some(s) = self.library.get(id).cloned() else { continue };
+            let row = Rect::new(area.x0 + 6.0, y, area.x1 - 6.0, y + ROW_H - 6.0);
+            // Cull rows scrolled out of view but still record the hit so
+            // clicks resolve; skip drawing if fully off-pane.
+            if row.y1 >= list_top - 4.0 && row.y0 <= area.y1 {
+                self.draw_list_row(scene, t, tr, theme, row, &s, self.open == Some(id));
+            }
+            self.record(row, Action::OpenSnippet(id));
+            y += ROW_H;
+        }
+
+        if self.visible.is_empty() {
+            draw::text(
+                scene,
+                tr,
+                t,
+                "No snippets match.",
+                area.x0 + pad,
+                list_top + 8.0,
+                14.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
+        }
+    }
+
+    fn draw_list_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        s: &Snippet,
+        active: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        if active {
+            draw::fill_round(scene, t, row, theme.radii_md(), c.surfaces.raised);
+            draw::stroke_round(scene, t, row, theme.radii_md(), 1.0, c.accent[5]);
+        } else if row.contains(self.last_mouse) {
+            draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
+        }
+        let pad = 12.0;
+        // Language sigil badge.
+        let badge = Rect::new(row.x0 + pad, row.y0 + 12.0, row.x0 + pad + 30.0, row.y0 + 32.0);
+        draw::fill_round(scene, t, badge, 6.0, lang_tint(theme, s.language));
+        let sig = s.language.sigil();
+        let sw = tr.measure(sig, 11.0, None).0 as f64;
+        draw::text(
+            scene,
+            tr,
+            t,
+            sig,
+            badge.x0 + (badge.width() - sw) / 2.0,
+            badge.y0 + 3.0,
+            11.0,
+            c.neutral[0],
+            TextWeight::Bold,
+        );
+
+        let tx = badge.x1 + 10.0;
+        // Title (+ star if favorite).
+        let title = if s.favorite {
+            format!("★ {}", s.title)
+        } else {
+            s.title.clone()
+        };
+        let tcolor = if s.favorite { c.semantic.warning } else { c.text_primary };
+        draw::text(scene, tr, t, &title, tx, row.y0 + 10.0, 14.5, tcolor, TextWeight::Semibold);
+
+        // Subtitle: first body line, dimmed and clipped.
+        let first_line = s.body.lines().next().unwrap_or("").trim();
+        let preview = clip(first_line, 42);
+        draw::mono(
+            scene,
+            tr,
+            t,
+            &preview,
+            tx,
+            row.y0 + 30.0,
+            12.0,
+            c.text_dim,
+            TextWeight::Regular,
+        );
+
+        // Trailing usage / placeholder hint.
+        let hint = if s.has_placeholders() {
+            format!("{} vars", s.placeholders().len())
+        } else if s.uses > 0 {
+            format!("{}×", s.uses)
+        } else {
+            String::new()
+        };
+        if !hint.is_empty() {
+            let hw = tr.measure(&hint, 11.0, None).0 as f64;
+            draw::text(
+                scene,
+                tr,
+                t,
+                &hint,
+                row.x1 - pad - hw,
+                row.y0 + 11.0,
+                11.0,
+                c.text_dim,
+                TextWeight::Medium,
+            );
+        }
+    }
+
+    // ---- detail pane ----------------------------------------------------
+
+    fn draw_detail(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        draw::fill_rect(scene, t, area, c.surfaces.base);
+        let Some(open) = self.open else {
+            draw::text(
+                scene,
+                tr,
+                t,
+                "Select a snippet, or press + New",
+                area.x0 + 32.0,
+                area.y0 + 40.0,
+                15.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
+            return;
+        };
+        let Some(s) = self.library.get(open).cloned() else { return };
+        let pad = 28.0;
+        let mut y = area.y0 + 24.0;
+
+        // Title.
+        draw::text(scene, tr, t, &s.title, area.x0 + pad, y, 24.0, c.text_primary, TextWeight::Bold);
+        y += 36.0;
+
+        // Meta row: language pill + folder + tags.
+        let mut x = area.x0 + pad;
+        let lp = draw::pill(
+            scene,
+            tr,
+            t,
+            s.language.label(),
+            x,
+            y,
+            22.0,
+            12.0,
+            c.neutral[0],
+            lang_tint(theme, s.language),
+        );
+        // Clicking the language pill cycles to the next language.
+        let next = next_language(s.language);
+        self.record(lp, Action::SetLanguage(open, next));
+        x = lp.x1 + 8.0;
+        if !s.folder.is_empty() {
+            let fp = draw::pill(scene, tr, t, &s.folder, x, y, 22.0, 12.0, c.text_dim, c.neutral[2]);
+            x = fp.x1 + 8.0;
+        }
+        for tag in &s.tags {
+            let label = format!("#{tag}");
+            let tp = draw::pill(scene, tr, t, &label, x, y, 22.0, 12.0, c.accent[7], c.accent[1]);
+            self.record(tp, Action::Select(Selection::Tag(tag.clone())));
+            x = tp.x1 + 8.0;
+        }
+        y += 34.0;
+
+        // Description.
+        if !s.description.is_empty() {
+            draw::text(
+                scene,
+                tr,
+                t,
+                &s.description,
+                area.x0 + pad,
+                y,
+                14.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
+            y += 26.0;
+        }
+
+        // Action toolbar: Copy / Expand / Favorite / Duplicate / Delete.
+        y += 4.0;
+        let mut bx = area.x0 + pad;
+        let primary_label = if s.has_placeholders() { "Fill & Copy" } else { "Copy" };
+        bx = self.toolbar_button(scene, t, tr, theme, bx, y, primary_label, true, Action::Copy(open));
+        if s.has_placeholders() {
+            bx = self.toolbar_button(scene, t, tr, theme, bx, y, "Variables…", false, Action::Expand(open));
+        }
+        let star_label = if s.favorite { "★ Starred" } else { "☆ Star" };
+        bx = self.toolbar_button(scene, t, tr, theme, bx, y, star_label, false, Action::ToggleFavorite(open));
+        bx = self.toolbar_button(scene, t, tr, theme, bx, y, "Duplicate", false, Action::Duplicate(open));
+        let _ = self.toolbar_button(scene, t, tr, theme, bx, y, "Delete", false, Action::Delete(open));
+        y += 44.0;
+
+        // Code card with syntax-highlighted body.
+        let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
+        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
+        draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
+        self.draw_code(scene, t, tr, theme, card, &s);
+    }
+
+    /// Draw a toolbar button, record its hit region against `action`, and
+    /// return the x-coordinate the next button should start at.
+    #[allow(clippy::too_many_arguments)]
+    fn toolbar_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        y: f64,
+        label: &str,
+        primary: bool,
+        action: Action,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let tw = tr.measure(label, 13.0, None).0 as f64;
+        let w = tw + 24.0;
+        let rect = Rect::new(x, y, x + w, y + 32.0);
+        let hovered = rect.contains(self.last_mouse);
+        let (bg, fg) = if primary {
+            (if hovered { c.accent[4] } else { c.accent[5] }, c.text_primary)
+        } else if hovered {
+            (c.surfaces.raised, c.text_primary)
+        } else {
+            (c.neutral[2], c.neutral[7])
+        };
+        draw::fill_round(scene, t, rect, theme.radii_md(), bg);
+        if !primary {
+            draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.border_standard);
+        }
+        let ty = y + (32.0 - 14.0) / 2.0;
+        draw::text(scene, tr, t, label, x + 12.0, ty, 13.0, fg, TextWeight::Semibold);
+        self.record(rect, action);
+        rect.x1 + 8.0
+    }
+
+    fn draw_code(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        s: &Snippet,
+    ) {
+        let c = &theme.tokens.colors;
+        let pad = 16.0;
+        let gutter_w = 36.0;
+        let x0 = card.x0 + pad;
+        // Gutter background.
+        let gutter = Rect::new(card.x0, card.y0, card.x0 + gutter_w + pad, card.y1);
+        draw::fill_round(scene, t, gutter, theme.radii_md(), c.neutral[1]);
+        // Re-cover the right side so only the left edge keeps the radius.
+        draw::fill_rect(
+            scene,
+            t,
+            Rect::new(card.x0 + 10.0, card.y0, card.x0 + gutter_w + pad, card.y1),
+            c.neutral[1],
+        );
+
+        let mut y = card.y0 + pad;
+        let line_h = BODY_LINE;
+        let code_x = x0 + gutter_w;
+        for (i, line) in s.body.lines().enumerate() {
+            if y > card.y1 - line_h {
+                break;
+            }
+            // Line number.
+            let num = (i + 1).to_string();
+            let nw = draw::mono_width(tr, &num, 11.0);
+            draw::mono(
+                scene,
+                tr,
+                t,
+                &num,
+                x0 + gutter_w - 10.0 - nw,
+                y,
+                11.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
+            // Highlighted spans.
+            let mut sx = code_x;
+            for span in highlight::highlight_line(line, s.language) {
+                let color = span.kind.color(theme);
+                let weight = if matches!(span.kind, highlight::TokenKind::Keyword) {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                };
+                draw::mono(scene, tr, t, &span.text, sx, y, BODY_FONT, color, weight);
+                sx += draw::mono_width(tr, &span.text, BODY_FONT);
+            }
+            y += line_h;
+        }
+    }
+}
+
+/// Cycle to the next language in the canonical order (wraps).
+fn next_language(lang: Language) -> Language {
+    let i = Language::ALL.iter().position(|l| *l == lang).unwrap_or(0);
+    Language::ALL[(i + 1) % Language::ALL.len()]
+}
+
+/// A per-language accent tint for the badge. Derived from theme ramps so
+/// it tracks the active palette (never a hard-coded hex).
+fn lang_tint(theme: &Theme, lang: Language) -> vello::peniko::Color {
+    let c = &theme.tokens.colors;
+    match lang {
+        Language::Rust | Language::Toml => c.semantic.warning,
+        Language::Shell | Language::Dockerfile => c.semantic.info,
+        Language::Sql | Language::Yaml | Language::Json => c.accent[5],
+        Language::Git => c.semantic.danger,
+        Language::Python => c.semantic.success,
+        Language::JavaScript => c.accent[6],
+        Language::Markdown | Language::Html | Language::Css => c.neutral[5],
+        Language::PlainText => c.neutral[4],
+    }
+}
+
+fn section_header(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+    x: f64,
+    y: f64,
+) {
+    draw::text(
+        scene,
+        tr,
+        t,
+        label,
+        x,
+        y,
+        11.0,
+        theme.tokens.colors.text_dim,
+        TextWeight::Bold,
+    );
+}
+
+fn draw_toast(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    message: &str,
+) {
+    let c = &theme.tokens.colors;
+    let w = tr.measure(message, 14.0, None).0 as f64 + 40.0;
+    let h = 40.0;
+    let x = area.x1 - w - 24.0;
+    let y = area.y1 - h - 24.0;
+    let rect = Rect::new(x, y, x + w, y + h);
+    draw::fill_round(scene, t, rect, theme.radii_md(), c.surfaces.raised);
+    draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.accent[5]);
+    draw::text(
+        scene,
+        tr,
+        t,
+        message,
+        x + 20.0,
+        y + (h - 15.0) / 2.0,
+        14.0,
+        c.text_primary,
+        TextWeight::Medium,
+    );
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Convenience radius accessor used throughout the panes.
+trait Radii {
+    fn radii_md(&self) -> f64;
+}
+impl Radii for Theme {
+    fn radii_md(&self) -> f64 {
+        self.tokens.radii.md as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_app_seeds_and_opens_a_snippet() {
+        let app = SnippetsApp::new();
+        assert!(app.library_len_for_test() >= 10);
+        assert!(app.open_id_for_test().is_some());
+        assert!(app.visible_count_for_test() >= 10);
+    }
+
+    #[test]
+    fn search_narrows_results() {
+        let mut app = SnippetsApp::new();
+        let before = app.visible_count_for_test();
+        app.set_search_for_test("language:rust");
+        let after = app.visible_count_for_test();
+        assert!(after < before);
+        assert!(after >= 1);
+    }
+
+    #[test]
+    fn copying_a_plain_snippet_bumps_uses() {
+        let mut app = SnippetsApp::new();
+        // Find a snippet without placeholders.
+        let id = app
+            .library
+            .snippets
+            .iter()
+            .find(|s| !s.has_placeholders())
+            .map(|s| s.id)
+            .expect("a placeholder-free snippet exists");
+        let before = app.snippet_uses_for_test(id);
+        app.copy_for_test(id);
+        assert_eq!(app.snippet_uses_for_test(id), before + 1);
+        assert!(!app.expand_open_for_test());
+    }
+
+    #[test]
+    fn copying_a_templated_snippet_opens_expand() {
+        let mut app = SnippetsApp::new();
+        let id = app
+            .library
+            .snippets
+            .iter()
+            .find(|s| s.has_placeholders())
+            .map(|s| s.id)
+            .expect("a templated snippet exists");
+        app.copy_for_test(id);
+        assert!(app.expand_open_for_test(), "templated copy routes through expand");
+    }
+
+    #[test]
+    fn new_snippet_grows_library_and_opens_it() {
+        let mut app = SnippetsApp::new();
+        let before = app.library_len_for_test();
+        app.new_snippet();
+        assert_eq!(app.library_len_for_test(), before + 1);
+        assert!(app.open_id_for_test().is_some());
+    }
+
+    #[test]
+    fn next_language_wraps() {
+        let last = *Language::ALL.last().unwrap();
+        assert_eq!(next_language(last), Language::ALL[0]);
+    }
+
+    #[test]
+    fn sync_seeds_into_empty_doc() {
+        use ui::widget::Widget;
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        assert_eq!(SnippetsDoc::list(&doc).len(), app.library_len_for_test());
+    }
+
+    // ---- responsive layout ---------------------------------------------
+
+    #[test]
+    fn wide_keeps_sidebar_docked_and_open() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(1280.0);
+        assert!(!app.sidebar_is_overlay_for_test(), "wide window docks the sidebar");
+        assert!(app.sidebar_open_for_test(), "docked sidebar is open beside the content");
+        assert!(!app.is_push_for_test(), "wide window keeps list + detail side by side");
+    }
+
+    #[test]
+    fn narrow_collapses_sidebar_to_overlay_closed_by_default() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(720.0);
+        assert!(app.sidebar_is_overlay_for_test(), "narrow window overlays the sidebar");
+        assert!(
+            !app.sidebar_open_for_test(),
+            "the overlay sidebar is closed by default, summoned by the hamburger"
+        );
+    }
+
+    #[test]
+    fn hamburger_toggles_the_overlay_sidebar() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(720.0);
+        assert!(!app.sidebar_open_for_test());
+        app.toggle_sidebar_for_test();
+        assert!(app.sidebar_open_for_test(), "the toggle summons the overlay flap");
+        app.toggle_sidebar_for_test();
+        assert!(!app.sidebar_open_for_test(), "toggling again dismisses it");
+    }
+
+    #[test]
+    fn very_narrow_uses_single_pane_push() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(480.0);
+        assert!(app.is_push_for_test(), "very-narrow window switches to single-pane push");
+        assert!(
+            !app.push_showing_detail_for_test(),
+            "push starts on the master list"
+        );
+    }
+
+    #[test]
+    fn opening_a_snippet_pushes_the_detail_when_very_narrow() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(480.0);
+        assert!(!app.push_showing_detail_for_test());
+        app.open_first_for_test();
+        assert!(
+            app.push_showing_detail_for_test(),
+            "selecting a snippet pushes the detail pane in"
+        );
+    }
+
+    #[test]
+    fn opening_a_snippet_does_not_push_when_wide() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(1280.0);
+        app.open_first_for_test();
+        assert!(
+            !app.push_showing_detail_for_test(),
+            "wide layout shows both panes; opening must not trigger a push"
+        );
+    }
+
+    #[test]
+    fn resizing_wide_again_restores_the_docked_default() {
+        let mut app = SnippetsApp::new();
+        // Narrow first (overlay, closed), then widen back.
+        app.layout_at_width_for_test(720.0);
+        assert!(!app.sidebar_open_for_test());
+        app.layout_at_width_for_test(1280.0);
+        assert!(
+            app.sidebar_open_for_test() && !app.sidebar_is_overlay_for_test(),
+            "crossing back over the breakpoint restores the docked-open default"
+        );
+    }
+}

@@ -21,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::Widget;
+use ui::color_compat::ColorCompat;
 use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
@@ -37,10 +38,21 @@ use crate::sidebar::{NoteTreeView, OutEvent};
 use crate::status_bar::{count_words, StatusBar, StatusBarState};
 use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
-/// Fixed sidebar width for Phase 1 (we ship a collapsible drawer in
-/// a later phase — see the roadmap). 240 px reads as "comfortable but
-/// not greedy" against the dashboard widgets in the existing apps.
+/// Sidebar width when the window is wide enough to show it inline.
+/// 240 px reads as "comfortable but not greedy" next to the editor.
 const SIDEBAR_WIDTH: f64 = 240.0;
+/// Width of the page tree when it slides in as an overlay drawer on a
+/// narrow window. Slightly wider than the inline sidebar so titles and
+/// the disclosure triangles have room on a small screen.
+const DRAWER_WIDTH: f64 = 264.0;
+/// Below this logical window width the sidebar stops taking a fixed
+/// column and becomes a closed overlay drawer, reached from the
+/// top-bar menu button. Chosen so 800 px keeps the sidebar inline but
+/// 560 px collapses it.
+const NARROW_BREAKPOINT: f64 = 720.0;
+/// Height of the top bar shown only in narrow mode. Hosts the drawer
+/// toggle and the current page title.
+const TOPBAR_HEIGHT: f64 = 44.0;
 /// Debounce window for the background save thread. Long enough that
 /// a burst of keystrokes during inline rename coalesces, short enough
 /// that the user's next "is this saved yet" sanity check doesn't have
@@ -102,6 +114,30 @@ pub struct NotesApp {
     /// The page the MainPanel editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
+    /// Desired layout mode derived from the last observed window width.
+    /// Updated in `apply_layout`; consumed at the next `build_layout`.
+    want_narrow: bool,
+    /// The mode the current taffy tree was actually built with. `draw`
+    /// and `handle_event` read this so they always match the live tree,
+    /// even for the one frame before a breakpoint crossing rebuilds.
+    built_narrow: bool,
+    /// Whether the narrow-mode overlay drawer is currently open.
+    drawer_open: bool,
+    /// Set when the window crossed the narrow breakpoint so the tree
+    /// needs a structural rebuild. Drained by `take_structure_dirty`.
+    pending_relayout: bool,
+    /// Forces a redraw when our own chrome (top bar / drawer) changes
+    /// without any child widget flagging itself dirty.
+    self_dirty: bool,
+    /// Top-bar taffy node — present only while `built_narrow`.
+    topbar_node: Option<NodeId>,
+    /// Rect of the narrow-mode top bar, from `apply_layout`.
+    topbar_rect: Rect,
+    /// Hit rect of the drawer toggle (hamburger) button.
+    menu_btn_rect: Rect,
+    /// Rect of the content area (between top bar and status bar). Used
+    /// to place the drawer scrim in narrow mode.
+    content_rect: Rect,
 }
 
 impl NotesApp {
@@ -172,6 +208,15 @@ impl NotesApp {
             adopted: false,
             seeded: false,
             bound_page: None,
+            want_narrow: false,
+            built_narrow: false,
+            drawer_open: false,
+            pending_relayout: false,
+            self_dirty: false,
+            topbar_node: None,
+            topbar_rect: Rect::ZERO,
+            menu_btn_rect: Rect::ZERO,
+            content_rect: Rect::ZERO,
         };
         app.refresh_link_pages();
         app.refresh_status();
@@ -304,6 +349,101 @@ impl NotesApp {
             }
         }
         None
+    }
+
+    /// Paint the narrow-mode top bar: a drawer-toggle (hamburger)
+    /// button on the left and the current page title beside it.
+    fn draw_topbar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        // Bar background + bottom hairline so it reads as chrome.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &self.topbar_rect,
+        );
+        let hairline = Rect::new(
+            self.topbar_rect.x0,
+            self.topbar_rect.y1 - 1.0,
+            self.topbar_rect.x1,
+            self.topbar_rect.y1,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &hairline,
+        );
+
+        // Hamburger glyph: three evenly-spaced rounded bars centred in
+        // the button hit rect. Highlight the button while the drawer is
+        // open so the toggle state reads.
+        if self.drawer_open {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.accent_primary.with_alpha_factor(0.18),
+                None,
+                &self.menu_btn_rect,
+            );
+        }
+        let cx = self.menu_btn_rect.center().x;
+        let cy = self.menu_btn_rect.center().y;
+        let bar_w = 18.0;
+        let bar_h = 2.0;
+        for dy in [-6.0f64, 0.0, 6.0] {
+            let bar = vello::kurbo::RoundedRect::new(
+                cx - bar_w / 2.0,
+                cy + dy - bar_h / 2.0,
+                cx + bar_w / 2.0,
+                cy + dy + bar_h / 2.0,
+                1.0,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.text_primary,
+                None,
+                &bar,
+            );
+        }
+
+        // Current page title, vertically centred, to the right of the
+        // button.
+        let title = self
+            .workspace
+            .selected()
+            .and_then(|id| self.workspace.get(id))
+            .map(|m| m.title.clone())
+            .unwrap_or_else(|| "notes".to_string());
+        let size = tokens.typography.scale.base;
+        let text_x = self.menu_btn_rect.x1 + 4.0;
+        let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - size as f64) / 2.0;
+        let avail = (self.topbar_rect.x1 - text_x - 12.0).max(0.0) as f32;
+        text_renderer.draw_text(
+            scene,
+            &title,
+            size,
+            tokens.colors.text_primary,
+            transform * Affine::translate((text_x, text_y)),
+            Some(avail),
+        );
+    }
+
+    /// Open or close the narrow-mode overlay drawer. No-op in wide mode.
+    fn set_drawer_open(&mut self, open: bool) {
+        if self.drawer_open != open {
+            self.drawer_open = open;
+            self.self_dirty = true;
+        }
     }
 
     /// Default constructor — resolves the workspace root via `dirs`,
@@ -662,26 +802,61 @@ impl NotesApp {
     pub fn apply_event_for_test(&mut self, ev: OutEvent) {
         self.apply_event(ev);
     }
+
+    /// Test hook: whether the current tree is the narrow (drawer) layout.
+    #[doc(hidden)]
+    pub fn built_narrow_for_test(&self) -> bool {
+        self.built_narrow
+    }
+
+    /// Test hook: whether the narrow-mode overlay drawer is open.
+    #[doc(hidden)]
+    pub fn drawer_open_for_test(&self) -> bool {
+        self.drawer_open
+    }
+
+    /// Test hook: centre of the drawer-toggle button (narrow mode).
+    #[doc(hidden)]
+    pub fn menu_btn_center_for_test(&self) -> Point {
+        self.menu_btn_rect.center()
+    }
+
+    /// Test hook: centre of sidebar row `idx`, for click targeting.
+    #[doc(hidden)]
+    pub fn sidebar_row_center_for_test(&self, idx: usize) -> Option<Point> {
+        self.sidebar.row_center_for_test(idx)
+    }
+
+    /// Test hook: mirror the workspace into the sidebar's row list, the
+    /// same refresh `drain_sidebar_events` does after applying an event.
+    #[doc(hidden)]
+    pub fn sync_sidebar_for_test(&mut self) {
+        self.sidebar.sync_from_workspace(&self.workspace);
+    }
+
+    /// Snapshot hook: force the narrow-mode drawer open so a headless
+    /// shot can show the overlay. No effect on a wide layout.
+    #[doc(hidden)]
+    pub fn open_drawer_for_shots(&mut self) {
+        self.set_drawer_open(true);
+    }
 }
 
-/// First-launch seed: one page titled "Welcome" that doubles as a
-/// guided tour. Each section opens with a paragraph caption so the
-/// downstream block reads as a labelled demo rather than a test
-/// fixture. The body must round-trip through
-/// `notes::markdown::{parse,serialize}` byte-stably —
-/// `welcome_page_renders_all_block_kinds` pins that.
+/// First-launch seed: a single starter note the user can edit or
+/// delete. It doubles as a quick reference for the editing syntax, so
+/// it deliberately uses each block kind at least once. The body must
+/// round-trip through `notes::markdown::{parse,serialize}` byte-stably
+/// — `welcome_page_renders_all_block_kinds` pins that.
 pub const WELCOME_BODY: &str = "\
-# Welcome to notes
+# Welcome
 
-A collaborative notes app for qOS. Edit anywhere; the page tree on the left organises your pages, the panel on the right is for typing.
+This is your first note. Edit it, or add a page from the left.
 
-You can have **bold**, *italic*, `inline code`, and a [[Welcome]] link to any other page right in the middle of a paragraph.
+Type here. **Bold**, *italic*, `code`, and [[Welcome]] links work inline.
 
-## Block types
+## Formatting
 
-Headings look like this — type `#`, `##`, or `###` followed by a space at the start of a line.
-
-Bullet lists look like this:
+Start a line with `#` for a heading, or `- ` for a bullet:
 
 - Coffee
 
@@ -691,43 +866,33 @@ Bullet lists look like this:
 
   - With marshmallows
 
-Checklists track open work:
+Add `[ ]` after the dash to track to-dos:
 
-- [ ] Open todo
+- [ ] Something to finish
 
-- [x] Completed item
+- [x] Something already done
 
-Code blocks are great for snippets:
+Triple backticks make a code block:
 
 ```rust
-fn hello() { println!(\"slash to open the menu\"); }
+fn hello() {}
 ```
 
-A divider separates sections:
+Three dashes make a divider:
 
 ---
 
-## Keyboard
+## Shortcuts
 
-The essentials, in roughly the order you'll need them:
+- `Cmd-K` jumps to any page by name
 
-- `Cmd-N` / `Ctrl-N` creates a new page under the selected one
+- `Cmd-N` adds a page under the selection
 
-- `Cmd-K` / `Ctrl-K` jumps to any page by name
+- `/` opens the block menu; `[[` links a page
 
-- `/` opens the block menu wherever the cursor is
+- `?` opens the full shortcuts list
 
-- `[[` opens a link picker — start typing a page title
-
-- `**bold**`, `*italic*`, and backtick-code work inline as you type
-
-- `Tab` / `Shift-Tab` indents and outdents list items
-
-- `Delete` (with the sidebar focused) removes the selected page
-
-- `?` opens the full shortcuts overlay
-
-Create your first page from the sidebar — double-click any title to rename it.
+Double-click a title in the sidebar to rename it.
 ";
 
 fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
@@ -766,8 +931,11 @@ impl Widget for NotesApp {
         // Forward the main panel's editor structure-dirty flag so the App
         // rebuilds the taffy tree when the block count changes (local
         // split/merge OR a remote peer adding a block via sync). Without
-        // this the new block gets no taffy node and isn't laid out.
-        self.main.take_structure_dirty()
+        // this the new block gets no taffy node and isn't laid out. Also
+        // rebuild when the window crossed the narrow breakpoint, since the
+        // sidebar-vs-drawer split changes the tree shape.
+        let relayout = std::mem::take(&mut self.pending_relayout);
+        self.main.take_structure_dirty() || relayout
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -785,24 +953,53 @@ impl Widget for NotesApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Commit the mode the tree is built with so draw/event routing
+        // stays in lock-step with the live taffy structure.
+        self.built_narrow = self.want_narrow;
+        let narrow = self.built_narrow;
+
         let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        // Wrap the sidebar in a fixed-width container so the split is
-        // deterministic (no flexbox squeezing).
-        let _ = taffy.set_style(
-            sidebar_node,
-            Style {
-                size: Size {
-                    width: Dimension::length(SIDEBAR_WIDTH as f32),
-                    height: Dimension::percent(1.0),
+        if narrow {
+            // Overlay drawer: pinned to the left edge of the content row,
+            // full height, taken out of flow so the editor keeps the
+            // whole width underneath it.
+            let _ = taffy.set_style(
+                sidebar_node,
+                Style {
+                    position: taffy::Position::Absolute,
+                    inset: taffy::Rect {
+                        left: length(0.0),
+                        right: taffy::LengthPercentageAuto::auto(),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    size: Size {
+                        width: Dimension::length(DRAWER_WIDTH as f32),
+                        height: Dimension::percent(1.0),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
                 },
-                min_size: Size {
-                    width: Dimension::length(160.0),
-                    height: Dimension::auto(),
+            );
+        } else {
+            // Fixed-width column so the split is deterministic (no
+            // flexbox squeezing).
+            let _ = taffy.set_style(
+                sidebar_node,
+                Style {
+                    size: Size {
+                        width: Dimension::length(SIDEBAR_WIDTH as f32),
+                        height: Dimension::percent(1.0),
+                    },
+                    min_size: Size {
+                        width: Dimension::length(160.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
                 },
-                flex_shrink: 0.0,
-                ..Default::default()
-            },
-        );
+            );
+        }
         self.sidebar_node = Some(sidebar_node);
 
         let main_node = self.main.build_layout(taffy, theme, node_map);
@@ -827,8 +1024,14 @@ impl Widget for NotesApp {
         }
         self.main_node = Some(main_node);
 
-        // Content row: sidebar + main, side-by-side. Lives inside the
-        // outer column so the status bar sits beneath it.
+        // Content row. Wide: [sidebar | main] side-by-side. Narrow: the
+        // editor takes the full width and the drawer floats over it as
+        // an absolutely-positioned child (out of flow).
+        let content_children: Vec<NodeId> = if narrow {
+            vec![main_node, sidebar_node]
+        } else {
+            vec![sidebar_node, main_node]
+        };
         let content_node = taffy
             .new_with_children(
                 Style {
@@ -846,16 +1049,36 @@ impl Widget for NotesApp {
                     },
                     ..Default::default()
                 },
-                &[sidebar_node, main_node],
+                &content_children,
             )
             .unwrap();
         self.content_node = Some(content_node);
 
-        // Status bar.
+        // Outer column children: an optional top bar (narrow only), the
+        // content row, then the status bar.
+        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
+        if narrow {
+            let topbar_node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(TOPBAR_HEIGHT as f32),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                })
+                .unwrap();
+            self.topbar_node = Some(topbar_node);
+            column_children.push(topbar_node);
+        } else {
+            self.topbar_node = None;
+        }
+        column_children.push(content_node);
+
         let status_node = self.status.build_layout(taffy, theme, node_map);
         self.status_node = Some(status_node);
+        column_children.push(status_node);
 
-        // Outer column: content row + status bar.
         let root = taffy
             .new_with_children(
                 Style {
@@ -871,7 +1094,7 @@ impl Widget for NotesApp {
                     },
                     ..Default::default()
                 },
-                &[content_node, status_node],
+                &column_children,
             )
             .unwrap();
         node_map.insert(root, self as *mut dyn Widget);
@@ -887,6 +1110,26 @@ impl Widget for NotesApp {
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
+
+        // Decide the responsive mode from the real width. `> 0.0` guards
+        // the very first frame, where the window size isn't known yet.
+        let width = self.rect.width();
+        let want = width > 0.0 && width < NARROW_BREAKPOINT;
+        if want != self.want_narrow {
+            self.want_narrow = want;
+            self.self_dirty = true;
+            // Entering narrow always starts with the drawer closed.
+            if want {
+                self.drawer_open = false;
+            }
+        }
+        // If the desired mode drifted from what's actually built, ask the
+        // host to rebuild the tree on the next frame.
+        if self.want_narrow != self.built_narrow {
+            self.pending_relayout = true;
+            self.self_dirty = true;
+        }
+
         // The content row sits inside the root column; sidebar + main
         // are children of it. Each child widget's `apply_layout` adds
         // its own `layout.location` to the origin we pass, so we need
@@ -897,6 +1140,12 @@ impl Widget for NotesApp {
                 new_origin.x + content_layout.location.x as f64,
                 new_origin.y + content_layout.location.y as f64,
             );
+            self.content_rect = Rect::new(
+                content_origin.x,
+                content_origin.y,
+                content_origin.x + content_layout.size.width as f64,
+                content_origin.y + content_layout.size.height as f64,
+            );
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
             }
@@ -904,6 +1153,27 @@ impl Widget for NotesApp {
                 self.main.apply_layout(taffy, n, content_origin);
             }
         }
+
+        // Top bar (narrow only) and its drawer-toggle button rect.
+        if let Some(n) = self.topbar_node {
+            let l = taffy.layout(n).unwrap();
+            self.topbar_rect = Rect::new(
+                new_origin.x + l.location.x as f64,
+                new_origin.y + l.location.y as f64,
+                new_origin.x + l.location.x as f64 + l.size.width as f64,
+                new_origin.y + l.location.y as f64 + l.size.height as f64,
+            );
+            self.menu_btn_rect = Rect::new(
+                self.topbar_rect.x0,
+                self.topbar_rect.y0,
+                self.topbar_rect.x0 + TOPBAR_HEIGHT,
+                self.topbar_rect.y1,
+            );
+        } else {
+            self.topbar_rect = Rect::ZERO;
+            self.menu_btn_rect = Rect::ZERO;
+        }
+
         if let Some(n) = self.status_node {
             self.status.apply_layout(taffy, n, new_origin);
         }
@@ -928,14 +1198,42 @@ impl Widget for NotesApp {
             None,
             &self.rect,
         );
-        self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+        // Editor always paints first; on a narrow window the drawer (if
+        // open) composites over it below.
         self.main.draw(scene, transform, text_renderer, theme, presence);
-        // v0.1: status bar across the bottom edge of the window.
+        if self.built_narrow {
+            self.draw_topbar(scene, transform, text_renderer, theme);
+            if self.drawer_open {
+                // Dim the content area, then paint the drawer on top so
+                // the page tree reads over the editor underneath.
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.overlay,
+                    None,
+                    &self.content_rect,
+                );
+                self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+                // Hairline on the drawer's trailing edge so it separates
+                // cleanly from the dimmed editor behind it.
+                let edge = self.sidebar.get_rect();
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.border_standard,
+                    None,
+                    &Rect::new(edge.x1 - 1.0, edge.y0, edge.x1, edge.y1),
+                );
+            }
+        } else {
+            self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+        }
+        // Status bar across the bottom edge of the window.
         self.status.draw(scene, transform, text_renderer, theme, presence);
-        // Phase 4: page-jump palette renders on top of everything.
+        // Page-jump palette renders on top of everything.
         if self.palette.is_visible() {
             // Dim backdrop — `surfaces.overlay` is `bg-black/80` (the
-            // concept's modal scrim alpha). Reuse it rather than
+            // modal scrim alpha). Reuse it rather than
             // hand-rolling a colour literal.
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -946,7 +1244,7 @@ impl Widget for NotesApp {
             );
             self.palette.draw_overlay(scene, transform, text_renderer, theme);
         }
-        // v0.1: shortcuts overlay sits above every other layer when
+        // Shortcuts overlay sits above every other layer when
         // visible. Drawn last so it covers the palette too.
         self.shortcuts.draw_overlay(scene, transform, text_renderer, theme);
     }
@@ -964,9 +1262,9 @@ impl Widget for NotesApp {
         taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
-        use winit::keyboard::Key;
+        use winit::keyboard::{Key, NamedKey};
 
-        // v0.1: shortcuts overlay is fully blocking when visible.
+        // The shortcuts overlay is fully blocking when visible.
         if self.shortcuts.is_visible() {
             if self.shortcuts.handle_key(event, scale_factor) {
                 *handled = true;
@@ -979,7 +1277,7 @@ impl Widget for NotesApp {
             return;
         }
 
-        // v0.1: `?` (Shift+/) opens the shortcuts overlay. Two flavours:
+        // `?` (Shift+/) opens the shortcuts overlay. Two flavours:
         // a literal `?` character commit (most layouts) and the named
         // key Slash with shift held (some IME / mobile-keyboard paths).
         if let WindowEvent::KeyboardInput {
@@ -995,7 +1293,7 @@ impl Widget for NotesApp {
             }
         }
 
-        // Phase 4: Cmd-K / Ctrl-K opens the page jump palette.
+        // Cmd-K / Ctrl-K opens the page jump palette.
         // Intercepted BEFORE child widgets so a focused input
         // doesn't swallow the keystroke.
         if !self.palette.is_visible() {
@@ -1031,7 +1329,76 @@ impl Widget for NotesApp {
             }
         }
 
-        // Phase 4: click on a link mark navigates.
+        // Narrow-mode overlay drawer. The top-bar button toggles it;
+        // while open it captures pointer/keys so the page tree behaves
+        // like a modal flyout over the editor.
+        if self.built_narrow {
+            // Toggle button — hit-test the hamburger in the top bar.
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                if self.menu_btn_rect.contains(self.last_mouse) {
+                    self.set_drawer_open(!self.drawer_open);
+                    *handled = true;
+                    return;
+                }
+            }
+            if self.drawer_open {
+                // Escape closes the drawer.
+                if let WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            logical_key: Key::Named(NamedKey::Escape),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                    ..
+                } = event
+                {
+                    self.set_drawer_open(false);
+                    *handled = true;
+                    return;
+                }
+                // A press on the scrim (outside the drawer) closes it.
+                if let WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } = event
+                {
+                    if !self.sidebar.get_rect().contains(self.last_mouse) {
+                        self.set_drawer_open(false);
+                        *handled = true;
+                        return;
+                    }
+                }
+                // Route to the page tree; auto-close once a page is picked.
+                let sel_before = self.workspace.selected();
+                if let Some(n) = self.sidebar_node {
+                    self.sidebar.handle_event(
+                        event, scale_factor, modifiers, state, path, handled,
+                        focus_target, n, taffy,
+                    );
+                }
+                self.drain_sidebar_events();
+                if self.workspace.selected() != sel_before {
+                    self.set_drawer_open(false);
+                }
+                if let WindowEvent::CursorMoved { position, .. } = event {
+                    self.last_mouse = Point::new(
+                        position.x / scale_factor,
+                        position.y / scale_factor,
+                    );
+                }
+                self.refresh_status();
+                return;
+            }
+        }
+
+        // Click on a link mark navigates.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -1045,21 +1412,25 @@ impl Widget for NotesApp {
             }
         }
 
-        if let Some(n) = self.sidebar_node {
-            self.sidebar.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+        // Route to the inline sidebar only when it's actually on screen
+        // (wide mode). In narrow mode the drawer block above owns it.
+        if !self.built_narrow {
+            if let Some(n) = self.sidebar_node {
+                self.sidebar.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            // Drain any commands the sidebar produced.
+            self.drain_sidebar_events();
         }
-        // Drain any commands the sidebar produced.
-        self.drain_sidebar_events();
         if let Some(n) = self.main_node {
             self.main.handle_event(
                 event,
@@ -1101,13 +1472,15 @@ impl Widget for NotesApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.sidebar.needs_redraw()
+        self.self_dirty
+            || self.sidebar.needs_redraw()
             || self.main.needs_redraw()
             || self.status.needs_redraw()
             || self.shortcuts.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
+        self.self_dirty = false;
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
         self.status.mark_drawn();

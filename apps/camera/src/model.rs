@@ -1,0 +1,621 @@
+//! Pure data model for the Camera app.
+//!
+//! Everything here is plain data + pure logic — no rendering, no CRDT, no
+//! IO. The CRDT bridge lives in [`crate::doc`]; the widget in
+//! [`crate::app`]. Keeping the model pure makes it unit-testable without a
+//! GPU or an event loop.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+/// Top-level screen / mode the app is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Screen {
+    Camera,
+    Scanner,
+    Gallery,
+    Settings,
+}
+
+impl Screen {
+    pub const ALL: [Screen; 4] = [Screen::Camera, Screen::Scanner, Screen::Gallery, Screen::Settings];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Screen::Camera => "Camera",
+            Screen::Scanner => "Scan",
+            Screen::Gallery => "Gallery",
+            Screen::Settings => "Settings",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Screen::Camera => "camera",
+            Screen::Scanner => "scanner",
+            Screen::Gallery => "gallery",
+            Screen::Settings => "settings",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Screen> {
+        match s {
+            "camera" => Some(Screen::Camera),
+            "scanner" => Some(Screen::Scanner),
+            "gallery" => Some(Screen::Gallery),
+            "settings" => Some(Screen::Settings),
+            _ => None,
+        }
+    }
+}
+
+/// Photo vs. video capture sub-mode within the Camera screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureMode {
+    Photo,
+    Video,
+}
+
+impl CaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureMode::Photo => "photo",
+            CaptureMode::Video => "video",
+        }
+    }
+    pub fn from_str(s: &str) -> CaptureMode {
+        match s {
+            "video" => CaptureMode::Video,
+            _ => CaptureMode::Photo,
+        }
+    }
+}
+
+/// Which physical camera is selected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Facing {
+    Back,
+    Front,
+    Wide,
+}
+
+impl Facing {
+    pub const ALL: [Facing; 3] = [Facing::Back, Facing::Front, Facing::Wide];
+    pub fn label(self) -> &'static str {
+        match self {
+            // "Rear" rather than "Back" so the lens selector never reads as a
+            // navigational back button.
+            Facing::Back => "Rear",
+            Facing::Front => "Front",
+            Facing::Wide => "Ultra-wide",
+        }
+    }
+    pub fn short(self) -> &'static str {
+        match self {
+            Facing::Back => "1×",
+            Facing::Front => "Front",
+            Facing::Wide => "0.5×",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Facing::Back => "back",
+            Facing::Front => "front",
+            Facing::Wide => "wide",
+        }
+    }
+    pub fn from_str(s: &str) -> Facing {
+        match s {
+            "front" => Facing::Front,
+            "wide" => Facing::Wide,
+            _ => Facing::Back,
+        }
+    }
+    pub fn next(self) -> Facing {
+        match self {
+            Facing::Back => Facing::Front,
+            Facing::Front => Facing::Wide,
+            Facing::Wide => Facing::Back,
+        }
+    }
+}
+
+/// Capture resolution preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Resolution {
+    R12MP,
+    R4K,
+    R1080p,
+    R720p,
+}
+
+impl Resolution {
+    pub const ALL: [Resolution; 4] =
+        [Resolution::R12MP, Resolution::R4K, Resolution::R1080p, Resolution::R720p];
+    pub fn label(self) -> &'static str {
+        match self {
+            Resolution::R12MP => "12 MP",
+            Resolution::R4K => "4K",
+            Resolution::R1080p => "1080p",
+            Resolution::R720p => "720p",
+        }
+    }
+    /// Capture dimensions (w, h) for stored metadata.
+    pub fn dims(self) -> (u32, u32) {
+        match self {
+            Resolution::R12MP => (4032, 3024),
+            Resolution::R4K => (3840, 2160),
+            Resolution::R1080p => (1920, 1080),
+            Resolution::R720p => (1280, 720),
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Resolution::R12MP => "12mp",
+            Resolution::R4K => "4k",
+            Resolution::R1080p => "1080p",
+            Resolution::R720p => "720p",
+        }
+    }
+    pub fn from_str(s: &str) -> Resolution {
+        match s {
+            "4k" => Resolution::R4K,
+            "1080p" => Resolution::R1080p,
+            "720p" => Resolution::R720p,
+            _ => Resolution::R12MP,
+        }
+    }
+}
+
+/// Self-timer delay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Timer {
+    Off,
+    S3,
+    S10,
+}
+
+impl Timer {
+    pub const ALL: [Timer; 3] = [Timer::Off, Timer::S3, Timer::S10];
+    pub fn label(self) -> &'static str {
+        match self {
+            Timer::Off => "Off",
+            Timer::S3 => "3s",
+            Timer::S10 => "10s",
+        }
+    }
+    pub fn seconds(self) -> i64 {
+        match self {
+            Timer::Off => 0,
+            Timer::S3 => 3,
+            Timer::S10 => 10,
+        }
+    }
+    pub fn from_seconds(s: i64) -> Timer {
+        match s {
+            3 => Timer::S3,
+            10 => Timer::S10,
+            _ => Timer::Off,
+        }
+    }
+}
+
+/// Photo storage format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PhotoFormat {
+    Jpeg,
+    Heif,
+    Png,
+    RawDng,
+}
+
+impl PhotoFormat {
+    pub const ALL: [PhotoFormat; 4] =
+        [PhotoFormat::Heif, PhotoFormat::Jpeg, PhotoFormat::Png, PhotoFormat::RawDng];
+    pub fn label(self) -> &'static str {
+        match self {
+            PhotoFormat::Jpeg => "JPEG",
+            PhotoFormat::Heif => "HEIF",
+            PhotoFormat::Png => "PNG",
+            PhotoFormat::RawDng => "RAW",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PhotoFormat::Jpeg => "jpeg",
+            PhotoFormat::Heif => "heif",
+            PhotoFormat::Png => "png",
+            PhotoFormat::RawDng => "raw",
+        }
+    }
+    pub fn from_str(s: &str) -> PhotoFormat {
+        match s {
+            "jpeg" => PhotoFormat::Jpeg,
+            "png" => PhotoFormat::Png,
+            "raw" => PhotoFormat::RawDng,
+            _ => PhotoFormat::Heif,
+        }
+    }
+}
+
+/// User-tunable capture settings. Lives in the CRDT (see [`crate::doc`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    pub resolution: Resolution,
+    pub photo_format: PhotoFormat,
+    pub timer: Timer,
+    pub grid: bool,
+    pub level: bool,
+    pub mirror_front: bool,
+    pub geotag: bool,
+    pub hdr: bool,
+    pub default_facing: Facing,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            resolution: Resolution::R12MP,
+            photo_format: PhotoFormat::Heif,
+            timer: Timer::Off,
+            grid: true,
+            level: false,
+            mirror_front: true,
+            geotag: false,
+            hdr: true,
+            default_facing: Facing::Back,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureKind {
+    Photo,
+    Video,
+}
+
+impl CaptureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureKind::Photo => "photo",
+            CaptureKind::Video => "video",
+        }
+    }
+    pub fn from_str(s: &str) -> CaptureKind {
+        match s {
+            "video" => CaptureKind::Video,
+            _ => CaptureKind::Photo,
+        }
+    }
+}
+
+/// One item in the library.
+///
+/// A capture is backed by a real file on disk (`path` is `Some`) whose
+/// pixels are decoded for the thumbnail/preview. The hermetic screenshot
+/// and test path uses `path = None`, in which case the thumbnail is
+/// synthesized procedurally from `scene` so no binary assets are bundled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capture {
+    /// Stable identity — the file name for disk-backed items.
+    pub id: String,
+    pub kind: CaptureKind,
+    /// Unix epoch seconds (file mtime for disk-backed items).
+    pub ts: i64,
+    pub w: u32,
+    pub h: u32,
+    /// Video duration in milliseconds (0 for photos / unknown).
+    pub dur_ms: i64,
+    pub label: String,
+    pub favorite: bool,
+    pub facing: Facing,
+    /// Procedural scene seed for the sample/hermetic path only.
+    pub scene: u8,
+    /// Absolute path to the backing file, when disk-backed.
+    pub path: Option<PathBuf>,
+}
+
+impl Capture {
+    pub fn is_video(&self) -> bool {
+        matches!(self.kind, CaptureKind::Video)
+    }
+}
+
+/// One entry in the scan history — the raw decoded text plus when it was
+/// seen. The [`CodeKind`] and display summary are derived on demand via
+/// [`classify`], so only the ground-truth payload is persisted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanEntry {
+    pub raw: String,
+    pub ts: i64,
+}
+
+/// Gallery filter chip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GalleryFilter {
+    All,
+    Photos,
+    Videos,
+    Favorites,
+}
+
+impl GalleryFilter {
+    pub const ALL: [GalleryFilter; 4] =
+        [GalleryFilter::All, GalleryFilter::Photos, GalleryFilter::Videos, GalleryFilter::Favorites];
+    pub fn label(self) -> &'static str {
+        match self {
+            GalleryFilter::All => "All",
+            GalleryFilter::Photos => "Photos",
+            GalleryFilter::Videos => "Videos",
+            GalleryFilter::Favorites => "Favorites",
+        }
+    }
+    pub fn matches(self, c: &Capture) -> bool {
+        match self {
+            GalleryFilter::All => true,
+            GalleryFilter::Photos => matches!(c.kind, CaptureKind::Photo),
+            GalleryFilter::Videos => matches!(c.kind, CaptureKind::Video),
+            GalleryFilter::Favorites => c.favorite,
+        }
+    }
+}
+
+/// Classified payload of a decoded code, used to surface contextual
+/// actions in the scanner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeKind {
+    Url,
+    Wifi { ssid: String, auth: String, password: String, hidden: bool },
+    Contact { name: String, phone: String, email: String, org: String },
+    Email,
+    Phone,
+    Geo,
+    Text,
+}
+
+impl CodeKind {
+    /// Human-readable kind for the scanner header.
+    pub fn title(&self) -> &'static str {
+        match self {
+            CodeKind::Url => "Website",
+            CodeKind::Wifi { .. } => "Wi-Fi network",
+            CodeKind::Contact { .. } => "Contact card",
+            CodeKind::Email => "Email address",
+            CodeKind::Phone => "Phone number",
+            CodeKind::Geo => "Location",
+            CodeKind::Text => "Plain text",
+        }
+    }
+
+    /// Contextual action labels offered for this payload, primary first.
+    pub fn actions(&self) -> Vec<&'static str> {
+        match self {
+            CodeKind::Url => vec!["Open link", "Copy", "Share"],
+            CodeKind::Wifi { .. } => vec!["Connect", "Copy password", "Save"],
+            CodeKind::Contact { .. } => vec!["Add contact", "Call", "Copy"],
+            CodeKind::Email => vec!["Compose", "Copy"],
+            CodeKind::Phone => vec!["Call", "Copy"],
+            CodeKind::Geo => vec!["Open map", "Copy"],
+            CodeKind::Text => vec!["Copy", "Search"],
+        }
+    }
+
+    /// A short, friendly one-line summary of the payload.
+    pub fn summary(&self, raw: &str) -> String {
+        match self {
+            CodeKind::Wifi { ssid, auth, .. } => {
+                format!("\"{ssid}\"  ·  {auth}")
+            }
+            CodeKind::Contact { name, phone, .. } => {
+                if phone.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name}  ·  {phone}")
+                }
+            }
+            _ => raw.to_string(),
+        }
+    }
+}
+
+/// A code detected in the viewfinder: its raw text, classification, the
+/// barcode-symbology label, and the four corner points (in frame pixel
+/// coordinates) returned by the real decode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScannedCode {
+    pub raw: String,
+    pub kind: CodeKind,
+    pub symbology: String,
+    /// Four corners in frame pixel space, clockwise from top-left.
+    pub corners: [(f32, f32); 4],
+}
+
+impl ScannedCode {
+    /// Bounding-box center in frame pixel coordinates.
+    pub fn center(&self) -> (f32, f32) {
+        let mut cx = 0.0;
+        let mut cy = 0.0;
+        for (x, y) in self.corners {
+            cx += x;
+            cy += y;
+        }
+        (cx / 4.0, cy / 4.0)
+    }
+}
+
+/// Classify a raw decoded string into a [`CodeKind`].
+pub fn classify(raw: &str) -> CodeKind {
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        CodeKind::Url
+    } else if lower.starts_with("wifi:") {
+        let (ssid, auth, password, hidden) = parse_wifi(raw);
+        CodeKind::Wifi { ssid, auth, password, hidden }
+    } else if lower.starts_with("begin:vcard") || lower.starts_with("mecard:") {
+        let (name, phone, email, org) = parse_contact(raw);
+        CodeKind::Contact { name, phone, email, org }
+    } else if lower.starts_with("mailto:") {
+        CodeKind::Email
+    } else if lower.starts_with("tel:") {
+        CodeKind::Phone
+    } else if lower.starts_with("geo:") {
+        CodeKind::Geo
+    } else {
+        CodeKind::Text
+    }
+}
+
+/// Parse a `WIFI:T:WPA;S:SSID;P:pass;H:false;;` payload.
+fn parse_wifi(raw: &str) -> (String, String, String, bool) {
+    let body = raw.strip_prefix("WIFI:").or_else(|| raw.strip_prefix("wifi:")).unwrap_or(raw);
+    let mut ssid = String::new();
+    let mut auth = String::from("Open");
+    let mut password = String::new();
+    let mut hidden = false;
+    for field in body.split(';') {
+        if let Some((k, v)) = field.split_once(':') {
+            match k.to_ascii_uppercase().as_str() {
+                "S" => ssid = v.to_string(),
+                "T" => auth = if v.is_empty() { "Open".into() } else { v.to_string() },
+                "P" => password = v.to_string(),
+                "H" => hidden = v.eq_ignore_ascii_case("true"),
+                _ => {}
+            }
+        }
+    }
+    (ssid, auth, password, hidden)
+}
+
+/// Parse the handful of vCard / MECARD fields we surface.
+fn parse_contact(raw: &str) -> (String, String, String, String) {
+    let mut name = String::new();
+    let mut phone = String::new();
+    let mut email = String::new();
+    let mut org = String::new();
+    // vCard: line-oriented `FN:`, `TEL:`, `EMAIL:`, `ORG:`.
+    for line in raw.lines() {
+        let line = line.trim();
+        if let Some(v) = field_after(line, "FN") {
+            name = v;
+        } else if let Some(v) = field_after(line, "TEL") {
+            if phone.is_empty() {
+                phone = v;
+            }
+        } else if let Some(v) = field_after(line, "EMAIL") {
+            email = v;
+        } else if let Some(v) = field_after(line, "ORG") {
+            org = v;
+        } else if let Some(v) = field_after(line, "N") {
+            if name.is_empty() {
+                name = v.replace(';', " ").trim().to_string();
+            }
+        }
+    }
+    // MECARD: `MECARD:N:Name;TEL:123;EMAIL:a@b;;`
+    if name.is_empty() {
+        for field in raw.split(';') {
+            if let Some(v) = field.strip_prefix("MECARD:N:").or_else(|| field.strip_prefix("N:")) {
+                name = v.to_string();
+            }
+        }
+    }
+    (name, phone, email, org)
+}
+
+/// Match a vCard property line `KEY[;params]:value`, returning `value`.
+fn field_after(line: &str, key: &str) -> Option<String> {
+    let (head, value) = line.split_once(':')?;
+    let prop = head.split(';').next().unwrap_or(head);
+    if prop.eq_ignore_ascii_case(key) {
+        Some(value.trim().to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_round_trips() {
+        for s in Screen::ALL {
+            assert_eq!(Screen::from_str(s.as_str()), Some(s));
+        }
+        assert_eq!(Screen::from_str("nope"), None);
+    }
+
+    #[test]
+    fn facing_cycles_through_all() {
+        let mut f = Facing::Back;
+        f = f.next();
+        assert_eq!(f, Facing::Front);
+        f = f.next();
+        assert_eq!(f, Facing::Wide);
+        f = f.next();
+        assert_eq!(f, Facing::Back);
+    }
+
+    #[test]
+    fn classify_url() {
+        assert_eq!(classify("https://qos.example/app"), CodeKind::Url);
+        assert_eq!(classify("HTTP://X"), CodeKind::Url);
+    }
+
+    #[test]
+    fn classify_and_parse_wifi() {
+        let k = classify("WIFI:T:WPA2;S:qOS Guest;P:hunter2;H:false;;");
+        match k {
+            CodeKind::Wifi { ssid, auth, password, hidden } => {
+                assert_eq!(ssid, "qOS Guest");
+                assert_eq!(auth, "WPA2");
+                assert_eq!(password, "hunter2");
+                assert!(!hidden);
+            }
+            other => panic!("expected wifi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_and_parse_contact_vcard() {
+        let v = "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nTEL:+1-555-0100\nEMAIL:ada@analytical.engine\nORG:Analytical Engines\nEND:VCARD";
+        match classify(v) {
+            CodeKind::Contact { name, phone, email, org } => {
+                assert_eq!(name, "Ada Lovelace");
+                assert_eq!(phone, "+1-555-0100");
+                assert_eq!(email, "ada@analytical.engine");
+                assert_eq!(org, "Analytical Engines");
+            }
+            other => panic!("expected contact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gallery_filter_matches() {
+        let photo = Capture {
+            id: "a".into(),
+            kind: CaptureKind::Photo,
+            ts: 0,
+            w: 4032,
+            h: 3024,
+            dur_ms: 0,
+            label: String::new(),
+            favorite: true,
+            facing: Facing::Back,
+            scene: 0,
+            path: None,
+        };
+        assert!(GalleryFilter::All.matches(&photo));
+        assert!(GalleryFilter::Photos.matches(&photo));
+        assert!(!GalleryFilter::Videos.matches(&photo));
+        assert!(GalleryFilter::Favorites.matches(&photo));
+    }
+
+    #[test]
+    fn actions_match_kind() {
+        assert_eq!(classify("https://x").actions()[0], "Open link");
+        assert_eq!(classify("WIFI:S:x;;").actions()[0], "Connect");
+        assert_eq!(classify("tel:+15550100").actions()[0], "Call");
+    }
+}

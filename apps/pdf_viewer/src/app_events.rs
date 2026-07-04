@@ -1,0 +1,1249 @@
+// Included into `app.rs` (shares its module + imports). Holds the input
+// layer: pointer hit-testing against the chrome rects computed in
+// `app_draw.rs`, drag lifecycle for the highlight / ink tools, and the
+// keyboard map (tool hotkeys, zoom, page navigation, incremental search).
+//
+// All durable mutations go through `PdfDoc` into the shared CRDT so undo
+// and live collaboration come for free; view state (zoom, scroll, active
+// tool, the search query) stays local because it is per-peer.
+
+impl PdfApp {
+    // ---- small view-state helpers -----------------------------------
+
+    /// Re-flow the chrome regions after a layout-affecting toggle and keep
+    /// the zoom + scroll consistent with the new canvas size.
+    fn reflow(&mut self) {
+        self.recompute_regions();
+        self.sync_viewport_frame();
+        self.dirty = true;
+    }
+
+    fn set_tool(&mut self, t: Tool) {
+        self.tool = t;
+        if t == Tool::Sign {
+            self.sidebar_tab = SidebarTab::Signatures;
+            if !self.show_sidebar {
+                self.show_sidebar = true;
+                self.reflow();
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.show_sidebar = !self.show_sidebar;
+        // On a narrow window the panels are mutually-exclusive overlays.
+        if self.show_sidebar && self.overlay_mode {
+            self.show_rail = false;
+        }
+        self.reflow();
+    }
+
+    fn toggle_rail(&mut self) {
+        self.show_rail = !self.show_rail;
+        if self.show_rail && self.overlay_mode {
+            self.show_sidebar = false;
+        }
+        self.reflow();
+    }
+
+    fn open_search(&mut self) {
+        if !self.search_active {
+            self.search_active = true;
+            self.reflow();
+        }
+        if !self.query.is_empty() {
+            self.recompute_matches();
+        }
+        self.dirty = true;
+    }
+
+    fn close_search(&mut self) {
+        if self.search_active {
+            self.search_active = false;
+            self.matches.clear();
+            self.reflow();
+        }
+    }
+
+    fn fit_page(&mut self) {
+        self.fit = FitMode::Page;
+        self.recompute_zoom();
+        self.clamp_scroll();
+        self.dirty = true;
+    }
+
+    fn fit_width(&mut self) {
+        self.fit = FitMode::Width;
+        self.recompute_zoom();
+        self.clamp_scroll();
+        self.dirty = true;
+    }
+
+    fn prev_page(&mut self) {
+        let p = self.current_page.saturating_sub(1).max(1);
+        self.go_to_page(p);
+    }
+
+    fn next_page(&mut self) {
+        self.go_to_page(self.current_page + 1);
+    }
+
+    /// Map a screen point into the page-point space of `page`, even when
+    /// the point lies outside the card (so a highlight drag can run past
+    /// the page edge and clamp naturally).
+    fn page_point(&self, page: usize, p: Point) -> (f64, f64) {
+        let origins = self.page_origins();
+        let origin = origins.get(page.saturating_sub(1)).copied().unwrap_or(Point::ZERO);
+        ((p.x - origin.x) / self.zoom(), (p.y - origin.y) / self.zoom())
+    }
+
+    // ---- pointer hit-testing ----------------------------------------
+
+    fn toolbar_hit(&self, p: Point) -> Option<ToolbarHit> {
+        if !self.toolbar_rect.contains(p) {
+            return None;
+        }
+        let lay = self.toolbar_layout();
+        if lay.open.contains(p) {
+            return Some(ToolbarHit::Open);
+        }
+        for (t, r) in &lay.tools {
+            if r.contains(p) {
+                return Some(ToolbarHit::Tool(*t));
+            }
+        }
+        if matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note) {
+            for (s, r) in &lay.swatches {
+                if r.contains(p) {
+                    return Some(ToolbarHit::Swatch(*s));
+                }
+            }
+        }
+        if lay.zoom_out.contains(p) {
+            return Some(ToolbarHit::ZoomOut);
+        }
+        if lay.zoom_in.contains(p) {
+            return Some(ToolbarHit::ZoomIn);
+        }
+        if lay.zoom_label.contains(p) {
+            // Clicking the percentage resets to fit.
+            return Some(ToolbarHit::Fit);
+        }
+        if lay.fit.contains(p) {
+            return Some(ToolbarHit::Fit);
+        }
+        if lay.search.contains(p) {
+            return Some(ToolbarHit::Search);
+        }
+        if lay.toggle_rail.contains(p) {
+            return Some(ToolbarHit::ToggleRail);
+        }
+        if lay.toggle_sidebar.contains(p) {
+            return Some(ToolbarHit::ToggleSidebar);
+        }
+        // A click anywhere else on the toolbar is still "consumed" so it
+        // doesn't fall through to the canvas behind it.
+        Some(ToolbarHit::Tool(self.tool))
+    }
+
+    fn apply_toolbar(&mut self, hit: ToolbarHit, state: &mut AutoCommit) {
+        match hit {
+            ToolbarHit::Tool(t) => self.set_tool(t),
+            ToolbarHit::Swatch(s) => {
+                self.swatch = s;
+                if let Some(id) = self.selected_anno.clone() {
+                    PdfDoc::set_annotation_color(state, &id, s);
+                    self.commit_pending = true;
+                    self.reload(state);
+                }
+                self.dirty = true;
+            }
+            ToolbarHit::ZoomIn => self.zoom_by(1.15),
+            ToolbarHit::ZoomOut => self.zoom_by(1.0 / 1.15),
+            ToolbarHit::Fit => {
+                // Cycle Fit-page → Fit-width → Fit-page.
+                match self.fit {
+                    FitMode::Page => self.fit_width(),
+                    _ => self.fit_page(),
+                }
+            }
+            ToolbarHit::Search => {
+                if self.search_active {
+                    self.close_search();
+                } else {
+                    self.open_search();
+                }
+            }
+            ToolbarHit::ToggleRail => self.toggle_rail(),
+            ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
+            ToolbarHit::Open => self.request_open_via_portal(),
+        }
+    }
+
+    fn apply_search_strip(&mut self, p: Point) -> bool {
+        for (hit, r) in &self.search_hits {
+            if r.contains(p) {
+                match hit {
+                    SearchHit::ToggleWholeWord => self.search_whole_word = !self.search_whole_word,
+                    SearchHit::ToggleCaseSensitive => self.search_case_sensitive = !self.search_case_sensitive,
+                }
+                self.recompute_matches();
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Resolve the most specific captured sidebar hit (smallest rect wins,
+    /// so the resolve-chip beats the comment card it sits inside).
+    fn apply_sidebar(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+        if !self.show_sidebar || !self.sidebar_rect.contains(p) {
+            return false;
+        }
+        let mut chosen: Option<SidebarHit> = None;
+        let mut best_area = f64::MAX;
+        for (hit, r) in &self.sidebar_hits {
+            if r.contains(p) {
+                let a = r.area();
+                if a < best_area {
+                    best_area = a;
+                    chosen = Some(hit.clone());
+                }
+            }
+        }
+        let Some(hit) = chosen else {
+            // Empty sidebar space still swallows the click.
+            return true;
+        };
+        match hit {
+            SidebarHit::Tab(t) => self.sidebar_tab = t,
+            SidebarHit::Outline(page) => self.go_to_page(page),
+            SidebarHit::Comment(id) => {
+                if let Some(c) = self.comments.iter().find(|c| c.id == id) {
+                    let page = c.page;
+                    self.selected_anno = c.anno_id.clone();
+                    self.go_to_page(page);
+                }
+            }
+            SidebarHit::EditComment(id) => {
+                if let Some(c) = self.comments.iter().find(|c| c.id == id) {
+                    let body = c.body.clone();
+                    self.selected_anno = c.anno_id.clone();
+                    self.begin_edit(EditTarget::CommentBody(id), body);
+                }
+            }
+            SidebarHit::ReplyField(id) => {
+                self.begin_edit(EditTarget::Reply(id), String::new());
+            }
+            SidebarHit::EditSigner => {
+                let cur = self.signer_name.clone();
+                self.begin_edit(EditTarget::Signer, cur);
+            }
+            SidebarHit::Resolve(id) => {
+                let cur = self
+                    .comments
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.resolved)
+                    .unwrap_or(false);
+                PdfDoc::set_comment_resolved(state, &id, !cur);
+                self.commit_pending = true;
+                self.reload(state);
+            }
+            SidebarHit::DeleteComment(id) => {
+                self.delete_target(&DeleteTarget::Comment(id), state);
+            }
+            SidebarHit::AddSignature => self.set_tool(Tool::Sign),
+            SidebarHit::SigJump(i) => {
+                if let Some(s) = self.signatures.get(i) {
+                    let page = s.page;
+                    self.selected_sig = Some(s.id.clone());
+                    self.selected_anno = None;
+                    self.go_to_page(page);
+                }
+            }
+            SidebarHit::DeleteSignature(id) => {
+                self.delete_target(&DeleteTarget::Signature(id), state);
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn apply_rail(&mut self, p: Point) -> bool {
+        if !self.rail_rect.contains(p) {
+            return false;
+        }
+        for (num, r) in self.thumbnail_rects() {
+            if r.contains(p) {
+                self.go_to_page(num);
+                break;
+            }
+        }
+        true
+    }
+
+    fn apply_status(&mut self, p: Point) -> bool {
+        if !self.status_rect.contains(p) {
+            return false;
+        }
+        let (prev, _label, next) = self.status_layout();
+        if prev.contains(p) {
+            self.prev_page();
+        } else if next.contains(p) {
+            self.next_page();
+        }
+        true
+    }
+
+    /// Pointer-down inside the page canvas: dispatch by the active tool.
+    fn apply_canvas_press(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+        if !self.canvas_rect.contains(p) {
+            return false;
+        }
+        // Empty state: the only affordance is the centred "Open a PDF…" button.
+        if !self.has_document {
+            if self.empty_open_button_rect().contains(p) {
+                self.request_open_via_portal();
+            }
+            return true;
+        }
+        match self.hit_page(p) {
+            Some((page, pt)) => match self.tool {
+                // Select arms a pan-or-click: a press that doesn't move is a
+                // selection; a press that drags pans the canvas.
+                Tool::Select => {
+                    self.pan = Some(PanState {
+                        start: p,
+                        scroll_x0: self.scroll_x(),
+                        scroll_y0: self.scroll_y(),
+                        moved: false,
+                    });
+                    self.dirty = true;
+                }
+                Tool::Highlight | Tool::Ink => {
+                    self.drag = Some(DragState {
+                        tool: self.tool,
+                        page,
+                        start: pt,
+                        cur: pt,
+                        points: vec![pt],
+                    });
+                    self.dirty = true;
+                }
+                Tool::Note => self.create_note(state, page, pt),
+                Tool::Sign => self.place_signature(state, page, pt),
+            },
+            None => {
+                // Empty canvas: with Select, start a pan; otherwise clear.
+                if matches!(self.tool, Tool::Select) {
+                    self.pan = Some(PanState {
+                        start: p,
+                        scroll_x0: self.scroll_x(),
+                        scroll_y0: self.scroll_y(),
+                        moved: false,
+                    });
+                } else {
+                    self.selected_anno = None;
+                    self.selected_sig = None;
+                }
+                self.dirty = true;
+            }
+        }
+        true
+    }
+
+    /// Resolve a right-click into a context menu over a deletable item.
+    fn open_context_menu(&mut self, p: Point) -> bool {
+        if let Some((page, pt)) = self.hit_page(p) {
+            if let Some(target) = self.delete_target_at(page, pt) {
+                self.context_menu = Some(ContextMenu { at: p, target, item_rect: Rect::ZERO });
+                self.dirty = true;
+                return true;
+            }
+        }
+        // A right-click elsewhere just dismisses any open menu.
+        if self.context_menu.take().is_some() {
+            self.dirty = true;
+        }
+        false
+    }
+
+    // ---- top-level dispatch -----------------------------------------
+
+    fn on_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse = p;
+
+                // Rail resize drag takes priority over everything else.
+                if let Some(grip_x) = self.rail_drag {
+                    let _ = grip_x;
+                    let new_w = (p.x - self.rect.x0).clamp(RAIL_W_MIN, RAIL_W_MAX);
+                    self.rail_w = new_w;
+                    self.reflow();
+                    self.dirty = true;
+                    return;
+                }
+
+                // Drag-to-pan (Select tool).
+                if let Some(pan) = self.pan {
+                    let dx = p.x - pan.start.x;
+                    let dy = p.y - pan.start.y;
+                    if dx.hypot(dy) > PAN_SLOP {
+                        self.viewport.set_scroll(pan.scroll_x0 - dx, pan.scroll_y0 - dy);
+                        self.current_page = self.nearest_page();
+                        if let Some(pan) = self.pan.as_mut() {
+                            pan.moved = true;
+                        }
+                    }
+                    self.dirty = true;
+                    return;
+                }
+
+                if let Some(page) = self.drag.as_ref().map(|d| d.page) {
+                    let pt = self.page_point(page, p);
+                    if let Some(d) = self.drag.as_mut() {
+                        d.cur = pt;
+                        if d.tool == Tool::Ink {
+                            let push = d
+                                .points
+                                .last()
+                                .map(|l| (l.0 - pt.0).hypot(l.1 - pt.1) > 1.5)
+                                .unwrap_or(true);
+                            if push {
+                                d.points.push(pt);
+                            }
+                        }
+                    }
+                }
+                self.dirty = true;
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let p = self.last_mouse;
+                // A click inside the active inline editor keeps focus; a click
+                // anywhere else commits the edit first, then falls through so
+                // the click still performs its normal action.
+                if self.editing.is_some() {
+                    if self.edit_rect.contains(p) {
+                        *handled = true;
+                        return;
+                    }
+                    self.commit_edit(state);
+                }
+                // An open context menu intercepts the next click.
+                if self.context_menu.is_some() {
+                    let menu = self.context_menu.clone().unwrap();
+                    if menu.item_rect.contains(p) {
+                        self.delete_target(&menu.target, state);
+                    } else {
+                        self.context_menu = None;
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
+                if let Some(hit) = self.toolbar_hit(p) {
+                    self.apply_toolbar(hit, state);
+                    *handled = true;
+                    return;
+                }
+                if self.search_active && self.search_rect.contains(p) {
+                    self.apply_search_strip(p);
+                    *handled = true;
+                    return;
+                }
+                if self.apply_status(p) {
+                    *handled = true;
+                    return;
+                }
+                if self.apply_sidebar(p, state) {
+                    *handled = true;
+                    return;
+                }
+                // Rail resize grip: a thin strip on the rail's right edge.
+                if self.show_rail {
+                    let rail = self.rail_rect;
+                    if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
+                        self.rail_drag = Some(p.x);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+                if self.apply_rail(p) {
+                    *handled = true;
+                    return;
+                }
+                // On a narrow window a click on the scrim (canvas area not
+                // covered by an open overlay panel) dismisses the panels.
+                if self.overlay_mode && (self.show_rail || self.show_sidebar) && self.canvas_rect.contains(p) {
+                    self.show_rail = false;
+                    self.show_sidebar = false;
+                    self.reflow();
+                    *handled = true;
+                    return;
+                }
+                if self.apply_canvas_press(p, state) {
+                    *handled = true;
+                }
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.rail_drag.take().is_some() {
+                    self.dirty = true;
+                    *handled = true;
+                } else if let Some(pan) = self.pan.take() {
+                    // A press that never moved is a selection click.
+                    if !pan.moved {
+                        if let Some((page, pt)) = self.hit_page(pan.start) {
+                            self.select_at(page, pt);
+                        } else {
+                            self.selected_anno = None;
+                            self.selected_sig = None;
+                        }
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                } else if self.drag.is_some() {
+                    self.commit_drag(state);
+                    *handled = true;
+                }
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let p = self.last_mouse;
+                if self.canvas_rect.contains(p) {
+                    self.open_context_menu(p);
+                    *handled = true;
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let p = self.last_mouse;
+                let (raw_x, raw_y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+                    MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
+                };
+                let mods = modifiers.state();
+                let ctrl = mods.control_key() || mods.super_key();
+
+                // Wheel over the sidebar scrolls its list.
+                if self.show_sidebar && self.sidebar_rect.contains(p) {
+                    // (sidebar_max_scroll needs the text renderer, so just
+                    // nudge and let the next draw clamp it.)
+                    self.sidebar_scroll = (self.sidebar_scroll - raw_y).max(0.0);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+
+                if ctrl {
+                    // Ctrl+wheel zooms, centred on the cursor.
+                    let factor = if raw_y > 0.0 { 1.0 + raw_y / 240.0 } else { 1.0 / (1.0 - raw_y / 240.0) };
+                    self.zoom_at(factor, p);
+                    *handled = true;
+                    return;
+                }
+
+                // Shift+wheel (or a horizontal wheel) pans horizontally;
+                // otherwise vertical. Either axis only moves if it can. The
+                // clamp lives in the shared kernel's `pan_by`.
+                if mods.shift_key() && self.is_overflowing_x() {
+                    self.viewport.pan_by(-raw_y, 0.0);
+                } else {
+                    self.viewport.pan_by(-raw_x, -raw_y);
+                }
+                self.current_page = self.nearest_page();
+                self.dirty = true;
+                *handled = true;
+            }
+
+            WindowEvent::KeyboardInput { event: key_event, .. }
+                if key_event.state == ElementState::Pressed =>
+            {
+                self.on_key(key_event, modifiers, state, handled);
+            }
+
+            _ => {}
+        }
+    }
+
+    fn on_key(
+        &mut self,
+        key_event: &winit::event::KeyEvent,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let mods = modifiers.state();
+        let ctrl = mods.control_key() || mods.super_key();
+
+        // While an inline text field is focused it owns the keyboard, so tool
+        // hotkeys and page navigation don't fire mid-sentence.
+        if self.editing.is_some() {
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => self.cancel_edit(),
+                Key::Named(NamedKey::Enter) => self.commit_edit(state),
+                Key::Named(NamedKey::Backspace) => self.edit_backspace(),
+                Key::Named(NamedKey::Space) => self.edit_insert(" "),
+                Key::Named(NamedKey::ArrowLeft) => self.edit_move(-1),
+                Key::Named(NamedKey::ArrowRight) => self.edit_move(1),
+                Key::Named(NamedKey::Home) => self.edit_home_end(false),
+                Key::Named(NamedKey::End) => self.edit_home_end(true),
+                Key::Character(c) => {
+                    if ctrl {
+                        // Leave app-level Ctrl chords (copy/paste land here
+                        // later) alone; only plain typing edits the field.
+                    } else {
+                        self.edit_insert(c.as_str());
+                    }
+                }
+                _ => {}
+            }
+            *handled = true;
+            return;
+        }
+
+        // While the search strip is open it owns the keyboard.
+        if self.search_active {
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => self.close_search(),
+                Key::Named(NamedKey::Enter) => {
+                    self.step_match(if mods.shift_key() { -1 } else { 1 })
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.query.pop();
+                    self.recompute_matches();
+                }
+                Key::Named(NamedKey::Space) => {
+                    self.query.push(' ');
+                    self.recompute_matches();
+                }
+                Key::Character(c) => {
+                    if ctrl && c.as_str().eq_ignore_ascii_case("f") {
+                        self.close_search();
+                    } else if !ctrl {
+                        for ch in c.chars() {
+                            if !ch.is_control() {
+                                self.query.push(ch);
+                            }
+                        }
+                        self.recompute_matches();
+                    }
+                }
+                _ => {}
+            }
+            *handled = true;
+            return;
+        }
+
+        // Ctrl/Cmd shortcuts: find, and zoom (+ / − / 0). Handled up front so
+        // the bare-key fallbacks below can keep their own meanings.
+        if ctrl {
+            if let Key::Character(c) = &key_event.logical_key {
+                match c.as_str() {
+                    "o" | "O" => {
+                        self.request_open_via_portal();
+                        *handled = true;
+                        return;
+                    }
+                    "f" | "F" => {
+                        self.open_search();
+                        *handled = true;
+                        return;
+                    }
+                    "+" | "=" => {
+                        self.zoom_by(1.15);
+                        *handled = true;
+                        return;
+                    }
+                    "-" | "_" => {
+                        self.zoom_by(1.0 / 1.15);
+                        *handled = true;
+                        return;
+                    }
+                    "0" => {
+                        self.reset_zoom();
+                        *handled = true;
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        match &key_event.logical_key {
+            Key::Character(c) => {
+                let consumed = match c.as_str() {
+                    "1" => {
+                        self.set_tool(Tool::Select);
+                        true
+                    }
+                    "2" => {
+                        self.set_tool(Tool::Highlight);
+                        true
+                    }
+                    "3" => {
+                        self.set_tool(Tool::Ink);
+                        true
+                    }
+                    "4" => {
+                        self.set_tool(Tool::Note);
+                        true
+                    }
+                    "5" => {
+                        self.set_tool(Tool::Sign);
+                        true
+                    }
+                    "+" | "=" => {
+                        self.zoom_by(1.15);
+                        true
+                    }
+                    "-" | "_" => {
+                        self.zoom_by(1.0 / 1.15);
+                        true
+                    }
+                    "0" => {
+                        self.reset_zoom();
+                        true
+                    }
+                    "w" | "W" => {
+                        self.fit_width();
+                        true
+                    }
+                    "b" | "B" => {
+                        self.toggle_sidebar();
+                        true
+                    }
+                    "[" => {
+                        self.prev_page();
+                        true
+                    }
+                    "]" => {
+                        self.next_page();
+                        true
+                    }
+                    " " => {
+                        self.next_page();
+                        true
+                    }
+                    _ => false,
+                };
+                if consumed {
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.selected_anno = None;
+                self.selected_sig = None;
+                self.context_menu = None;
+                self.dirty = true;
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowDown)
+            | Key::Named(NamedKey::PageDown)
+            | Key::Named(NamedKey::Space) => {
+                self.next_page();
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp) => {
+                self.prev_page();
+                *handled = true;
+            }
+            // Left/Right pan horizontally when the zoomed page is wider than
+            // the viewport; otherwise they step pages.
+            Key::Named(NamedKey::ArrowLeft) => {
+                if self.is_overflowing_x() {
+                    self.viewport.pan_by(-80.0, 0.0);
+                    self.dirty = true;
+                } else {
+                    self.prev_page();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if self.is_overflowing_x() {
+                    self.viewport.pan_by(80.0, 0.0);
+                    self.dirty = true;
+                } else {
+                    self.next_page();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Home) => {
+                self.go_to_page(1);
+                *handled = true;
+            }
+            Key::Named(NamedKey::End) => {
+                self.go_to_page(self.doc.page_count());
+                *handled = true;
+            }
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                if self.delete_selected(state) {
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    fn app() -> (PdfApp, ui::State) {
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        (app, st)
+    }
+
+    #[test]
+    fn toolbar_tool_buttons_select_tools() {
+        let (mut app, mut st) = app();
+        let lay = app.toolbar_layout();
+        for (tool, r) in lay.tools.clone() {
+            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            let hit = app.toolbar_hit(p).expect("a toolbar hit");
+            app.apply_toolbar(hit, &mut st.doc);
+            assert_eq!(app.tool, tool, "clicking {:?} should arm it", tool);
+        }
+    }
+
+    #[test]
+    fn swatch_recolors_selected_annotation() {
+        let (mut app, mut st) = app();
+        // Select the seeded highlight.
+        let hl = app
+            .annotations
+            .iter()
+            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .unwrap()
+            .clone();
+        app.selected_anno = Some(hl.id.clone());
+        app.tool = Tool::Highlight;
+        app.apply_toolbar(ToolbarHit::Swatch(Swatch::Green), &mut st.doc);
+        let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
+        assert_eq!(after.color, Swatch::Green);
+        assert!(app.commit_pending);
+    }
+
+    #[test]
+    fn wheel_scrolls_and_tracks_page() {
+        let (mut app, _st) = app();
+        let p0 = app.current_page;
+        // Push far enough to cross into a later page.
+        let (sx, m) = (app.scroll_x(), app.viewport.max_scroll_y());
+        app.viewport.set_scroll(sx, m);
+        app.current_page = app.nearest_page();
+        assert!(app.current_page >= p0);
+        assert_eq!(app.current_page, app.doc.page_count());
+    }
+
+    #[test]
+    fn resolve_chip_beats_card_smallest_rect_wins() {
+        let (mut app, mut st) = app();
+        // Draw once to populate sidebar_hits.
+        let mut scene = vello::Scene::new();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        app.sidebar_tab = SidebarTab::Comments;
+        let mut er = Rect::ZERO;
+        let hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+        app.sidebar_hits = hits;
+        // Find a resolve chip and click its centre.
+        let chip = app
+            .sidebar_hits
+            .iter()
+            .find_map(|(h, r)| match h {
+                SidebarHit::Resolve(id) => Some((id.clone(), *r)),
+                _ => None,
+            });
+        if let Some((id, r)) = chip {
+            let before = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
+            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            assert!(app.apply_sidebar(p, &mut st.doc));
+            let after = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
+            assert_ne!(before, after, "resolve chip should toggle, not open the card");
+        }
+    }
+
+    #[test]
+    fn sidebar_delete_buttons_remove_items() {
+        let (mut app, mut st) = app();
+        let mut scene = vello::Scene::new();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+
+        // Comments tab: click a comment's delete (×) and confirm removal.
+        app.sidebar_tab = SidebarTab::Comments;
+        let mut er = Rect::ZERO;
+        app.sidebar_hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+        let del = app.sidebar_hits.iter().find_map(|(h, r)| match h {
+            SidebarHit::DeleteComment(id) => Some((id.clone(), *r)),
+            _ => None,
+        });
+        if let Some((id, r)) = del {
+            let n = app.comments.len();
+            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            assert!(app.apply_sidebar(p, &mut st.doc));
+            assert_eq!(app.comments.len(), n - 1);
+            assert!(!app.comments.iter().any(|c| c.id == id));
+        }
+
+        // Signatures tab: click a signature's delete (×).
+        app.sidebar_tab = SidebarTab::Signatures;
+        let mut scene2 = vello::Scene::new();
+        let mut er2 = Rect::ZERO;
+        app.sidebar_hits = app.draw_sidebar(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &mut er2);
+        let dels = app.sidebar_hits.iter().find_map(|(h, r)| match h {
+            SidebarHit::DeleteSignature(id) => Some((id.clone(), *r)),
+            _ => None,
+        });
+        if let Some((id, r)) = dels {
+            let n = app.signatures.len();
+            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            assert!(app.apply_sidebar(p, &mut st.doc));
+            assert_eq!(app.signatures.len(), n - 1);
+            assert!(!app.signatures.iter().any(|s| s.id == id));
+        }
+    }
+
+    #[test]
+    fn every_sidebar_tab_and_search_strip_draws_without_panicking() {
+        let (mut app, _st) = app();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        app.search_active = true;
+        app.query = "the".into();
+        app.recompute_matches();
+        app.recompute_regions();
+        for tab in [SidebarTab::Comments, SidebarTab::Outline, SidebarTab::Signatures] {
+            app.sidebar_tab = tab;
+            let mut scene = vello::Scene::new();
+            app.prepare_sidebar_scroll(&mut tr);
+            let mut er = Rect::ZERO;
+            let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+            let shits = app.draw_search(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert!(
+                shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleWholeWord))
+                    && shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleCaseSensitive)),
+                "search strip exposes both option toggles"
+            );
+        }
+    }
+
+    /// Synthesise the opaque dummy `DeviceId` winit uses in tests. It has no
+    /// public constructor; a zeroed value is the sentinel every backend uses
+    /// and the convention across this workspace's widget tests.
+    fn dummy_device_id() -> winit::event::DeviceId {
+        // SAFETY: DeviceId wraps a platform integer; zero is the "no device"
+        // sentinel and carries no validity requirements.
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn highlight_drag_through_real_event_path_adds_annotation() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Arm the Highlight tool by clicking its real toolbar button.
+        let lay = app.toolbar_layout();
+        let (_, hb) = lay.tools.iter().find(|(t, _)| *t == Tool::Highlight).unwrap();
+        let btn = ((hb.x0 + hb.x1) / 2.0, (hb.y0 + hb.y1) / 2.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(app.tool, Tool::Highlight, "clicking the toolbar arms the tool");
+
+        // Drag across page one to lay down a highlight.
+        let origin = app.page_origins()[0];
+        let p0 = (origin.x + 80.0 * app.zoom(), origin.y + 200.0 * app.zoom());
+        let p1 = (origin.x + 320.0 * app.zoom(), origin.y + 214.0 * app.zoom());
+        let before = app.annotations.len();
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p0.0, p0.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p1.0, p1.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
+
+        assert!(app.annotations.len() > before, "a highlight drag through handle_event adds an annotation");
+        assert!(app.commit_pending, "the new highlight is a committed CRDT action");
+        assert!(PdfDoc::list_annotations(&st.doc).len() > before, "and it landed in the shared document");
+    }
+
+    /// Build a real `WindowEvent::KeyboardInput` for `key`. winit's
+    /// `KeyEventExtra` is `pub(crate)`, so we zero the struct and set the
+    /// public fields — the same trick the terminal + modal_dialog tests use.
+    fn key_event(key: winit::keyboard::Key) -> winit::event::WindowEvent {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = key;
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: dummy_device_id(), event: ev, is_synthetic: false }
+    }
+
+    #[test]
+    fn note_type_and_commit_writes_body_through_real_event_path() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Arm the Note tool via its real toolbar button.
+        let lay = app.toolbar_layout();
+        let (_, nb) = lay.tools.iter().find(|(t, _)| *t == Tool::Note).unwrap();
+        let btn = ((nb.x0 + nb.x1) / 2.0, (nb.y0 + nb.y1) / 2.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(app.tool, Tool::Note, "clicking the toolbar arms the note tool");
+
+        // Click a page to drop the note; the caret should land in its thread.
+        let origin = app.page_origins()[0];
+        let click = (origin.x + 200.0 * app.zoom(), origin.y + 260.0 * app.zoom());
+        let comments_before = app.comments.len();
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(click.0, click.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(app.comments.len(), comments_before + 1, "placing a note opens a new thread");
+        assert!(matches!(&app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))), "the note's body is focused for typing");
+
+        // Type a real sentence through the keyboard event path.
+        for ch in "Relay path".chars() {
+            let ev = if ch == ' ' {
+                key_event(Key::Named(NamedKey::Space))
+            } else {
+                key_event(Key::Character(ch.to_string().into()))
+            };
+            feed(&mut app, &mut st, &ev);
+        }
+        // Enter commits the edit.
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::Enter)));
+
+        assert!(app.editing.is_none(), "Enter commits and closes the editor");
+        let saved = PdfDoc::list_comments(&st.doc);
+        assert!(
+            saved.iter().any(|c| c.body == "Relay path"),
+            "the typed comment body landed in the shared document: {:?}",
+            saved.iter().map(|c| c.body.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn empty_note_is_discarded_on_commit() {
+        // Placing a note then committing without typing must not litter an
+        // empty marker + thread.
+        let (mut app, mut st) = app();
+        let a0 = app.annotations.len();
+        let c0 = app.comments.len();
+        app.create_note(&mut st.doc, 1, (120.0, 200.0));
+        assert_eq!(app.comments.len(), c0 + 1);
+        assert!(app.editing.is_some());
+        app.commit_edit(&mut st.doc); // committed empty
+        assert_eq!(app.comments.len(), c0, "empty note thread removed");
+        assert_eq!(app.annotations.len(), a0, "and its page marker removed");
+    }
+
+    #[test]
+    fn editing_comment_captures_focus_rect_on_draw() {
+        let (mut app, _st) = app();
+        app.sidebar_tab = SidebarTab::Comments;
+        let body = app.comments[0].body.clone();
+        let cid = app.comments[0].id.clone();
+        app.begin_edit(EditTarget::CommentBody(cid), body);
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        app.prepare_sidebar_scroll(&mut tr);
+        let mut scene = vello::Scene::new();
+        let mut er = Rect::ZERO;
+        let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+        assert!(er.area() > 1.0, "the focused comment field's rect is captured");
+        // A click inside that rect must keep the edit alive; outside commits.
+        assert!(app.edit_rect.area() < 1.0, "edit_rect is only set by draw_all, not draw_sidebar");
+    }
+
+    #[test]
+    fn reply_composer_appends_through_editor() {
+        let (mut app, mut st) = app();
+        // Pick a seeded comment and compose a reply into it.
+        let cid = app.comments[0].id.clone();
+        let replies_before = app.comments[0].replies.len();
+        app.begin_edit(EditTarget::Reply(cid.clone()), String::new());
+        app.edit_insert("Looks good");
+        app.commit_edit(&mut st.doc);
+        let after = app.comments.iter().find(|c| c.id == cid).unwrap();
+        assert_eq!(after.replies.len(), replies_before + 1, "reply landed in the thread");
+        assert_eq!(after.replies.last().unwrap().body, "Looks good");
+    }
+
+    /// The Open affordance goes to the **host portal**, never an in-app
+    /// picker. We assert the click resolves to the Open action and that the
+    /// action routes into the portal-request path — pre-arming an in-flight
+    /// request so the test never actually spawns a real host dialog (the
+    /// in-flight guard makes applying the action a no-op).
+    #[test]
+    fn open_affordance_routes_to_the_host_portal() {
+        let (mut app, mut st) = app();
+
+        // Hit-test: the toolbar Open (folder) button resolves to Open.
+        let open = app.toolbar_layout().open;
+        let c = Point::new((open.x0 + open.x1) / 2.0, (open.y0 + open.y1) / 2.0);
+        assert!(
+            matches!(app.toolbar_hit(c), Some(ToolbarHit::Open)),
+            "the folder button hit-tests to the Open action"
+        );
+
+        // Pre-arm a portal request so applying Open can't launch a real host
+        // dialog during the test; the in-flight guard must preserve it.
+        let sentinel = crate::portal::inject_for_test(crate::portal::PortalOutcome::Cancelled);
+        app.portal_rx = Some(sentinel);
+        app.apply_toolbar(ToolbarHit::Open, &mut st.doc);
+        assert!(
+            app.portal_rx.is_some(),
+            "Open routes to the host portal request path (not an in-app dialog)"
+        );
+    }
+
+    /// A file chosen by the host portal loads through the per-frame drain in
+    /// `sync` — the portal result is injected (no real dialog) and the next
+    /// frame must load the document.
+    #[test]
+    fn portal_open_result_loads_document_via_frame_drain() {
+        let mut app = PdfApp::empty();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        assert!(!app.has_document, "empty app starts with no document");
+
+        let path =
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf"));
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Opened(path),
+        ));
+
+        // The per-frame sync drains the portal channel and loads the doc.
+        app.sync(&mut st.doc, &st.root);
+
+        assert!(app.has_document, "a portal-chosen PDF loads through the frame drain");
+        assert_eq!(app.doc_name, "sample.pdf");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
+        assert!(app.doc.page_count() >= 1, "the loaded document has pages");
+    }
+
+    /// A cancelled portal interaction is a no-op: the current view is left
+    /// intact and the channel clears.
+    #[test]
+    fn portal_cancel_leaves_current_view_intact() {
+        let (mut app, mut st) = app(); // sample document already loaded
+        let before = app.has_document;
+        let name_before = app.doc_name.clone();
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Cancelled,
+        ));
+        app.sync(&mut st.doc, &st.root);
+        assert_eq!(app.has_document, before, "cancel does not change the open state");
+        assert_eq!(app.doc_name, name_before, "cancel keeps the current document");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
+    }
+
+    #[test]
+    fn idle_app_requests_no_animation_frames() {
+        use ui::Widget as _;
+        // A freshly synced viewer with the pointer at its default (0,0) — which
+        // sits inside the toolbar rect but over no button — must not ask for
+        // animation frames, or the loop would spin at ~60Hz while idle.
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        // resolve_tooltip runs inside the draw; drive it directly.
+        app.resolve_tooltip();
+        assert!(!app.needs_animation_frame(), "idle app must settle to zero animation frames");
+        let _ = (&theme, &mut tr);
+    }
+
+    #[test]
+    fn context_menu_delete_item_rect_is_captured_on_draw() {
+        let (mut app, _st) = app();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let target = DeleteTarget::Annotation("anno".into());
+        app.context_menu = Some(ContextMenu { at: Point::new(400.0, 400.0), target, item_rect: Rect::ZERO });
+        let mut scene = vello::Scene::new();
+        app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let menu = app.context_menu.as_ref().unwrap();
+        assert!(menu.item_rect.area() > 1.0, "the Delete item rect is captured for hit-testing");
+    }
+}

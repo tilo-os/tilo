@@ -1,0 +1,85 @@
+[package]
+name = "tube"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "tube"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tube"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+# Live fetch (Invidious / SponsorBlock / DeArrow). Blocking client driven
+# from a background worker thread; never touched on the `--shots` path.
+# rustls-tls because the distrobox image has no openssl/native-tls.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# blake3 used by the SponsorBlock privacy-preserving hash-prefix query.
+sha2 = "0.10"
+# H.264 decode for real video playback. Same pin + `source` feature as `ui`'s
+# `VideoPlayer`, so this reuses the already-compiled artifact (no extra build).
+# Tube drives the decoder directly (not through `VideoPlayer`) so it can disable
+# openh264's default flush-after-every-decode — that default flushes a frame per
+# call, prematurely releasing the reference frames P-slices depend on and
+# cascading into dsRefLost errors that drop ~95% of a real stream's frames.
+openh264 = { version = "0.9", features = ["source"] }
+
+# --- live YouTube backend (off by default) ---------------------------------
+# rustypipe is a pure-Rust InnerTube client (search/channel/video/streams/
+# trending); rustypipe-botguard mints PoTokens. Both are async (tokio) and pull
+# a network stack, so they are gated behind the `live` feature: the default
+# build (and every `--shots`/test run) stays hermetic on the offline sample.
+# No ffmpeg / yt-dlp — rustypipe embeds rquickjs.
+#
+# rustls (webpki roots) rather than rustypipe's default native-tls: the
+# distrobox build image has no OpenSSL, and it keeps the TLS stack identical to
+# the `reqwest` above (one rustls, no openssl-sys). webpki-roots bundles the
+# Mozilla CA set so YouTube's chain verifies with zero system trust store.
+rustypipe = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls-webpki-roots"] }
+# `rt-multi-thread` so the live backend's runtime can drive rustypipe's internal
+# `tokio::spawn` (visitor-data prefetch) — a current-thread runtime cannot.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
+
+# --- Grayjay device sync (Noise Protocol Framework) — off by default --------
+# Real interop with a phone/desktop running Grayjay's "Sync" feature. The wire
+# protocol is the Noise Protocol Framework over TCP (Android listens on 12315),
+# reimplemented clean-room from the OPEN grayjay-android sources (see
+# `src/sync/protocol.rs` for per-fact citations). `snow` is the Rust Noise
+# implementation; its default resolver is pure-Rust (x25519-dalek /
+# chacha20poly1305 / blake2) so it needs no OpenSSL — matching the rest of tube.
+# `flate2` handles the ContentEncoding.Gzip that Grayjay uses for DATA payloads;
+# `base64` decodes the standard/url-safe device public keys in the pairing blob.
+# All three are gated behind `grayjay-sync`: the default build (and every
+# `--shots`/hermetic test run) never pulls in a network/Noise/socket stack.
+snow = { version = "0.9", optional = true }
+flate2 = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+# Encoding-level assertions in the video-surface test: prove a decoded frame
+# actually emits an IMAGE draw command into the scene (mirrors ui's own
+# VideoPlayer paint test). Same version as the `vello` above.
+vello_encoding = "0.9"
+
+[features]
+default = []
+# Real YouTube data via rustypipe + a tokio runtime owned by the live backend.
+# `--features live` must check-compile; it is never part of the shots path.
+live = ["dep:rustypipe", "dep:tokio"]
+# Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
+# the live `GrayjaySyncTransport`; the default build keeps only the deterministic
+# `StubTransport`, so nothing here can touch the hermetic path.
+grayjay-sync = ["dep:snow", "dep:flate2", "dep:base64"]
