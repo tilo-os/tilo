@@ -1,0 +1,639 @@
+//! Screen 4 — pair this device with an existing identity.
+//!
+//! Counterpart of screen 3. Shows:
+//! - A 6-box monospace input for the pairing code.
+//! - A textarea fallback for pasting the QR payload JSON (cameras
+//!   aren't available in our test env; we accept the pasted JSON
+//!   instead of running a scanner).
+//! - Status + error banners.
+//!
+//! When the user enters the code + payload combo:
+//! 1. The screen verifies the code matches the payload's derived
+//!    short code (defence against typing the wrong code into the
+//!    right payload).
+//! 2. It decodes the payload, builds its own DKG round-1 + round-2
+//!    contributions, and publishes the round-2 reply onto the
+//!    pairing channel with an HMAC.
+//! 3. The host completes its half; the pairer waits for the host's
+//!    round-2 reply, then adopts the DKG outcome.
+//!
+//! The end-to-end test exercises the full state machine via the
+//! in-memory `PairingHandshake`.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use qos_threshold_identity::{
+    DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity,
+};
+use rand_core::OsRng;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
+use crate::widget::identity_flow::{
+    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, compute_pairing_mac,
+    derive_pairing_code, derive_pairing_mac_key, format_pairing_code,
+};
+
+/// Screen 4: pair this device with an existing identity.
+pub struct PairDeviceScreen {
+    rect: Rect,
+    /// 6-digit code, one box per digit.
+    code_digits: [char; 6],
+    code_focus: usize,
+    code_box_rects: [Rect; 6],
+    /// Pasted JSON payload from the QR (textarea fallback).
+    payload_text: String,
+    payload_focus: bool,
+    payload_rect: Rect,
+    submit_hovered: bool,
+    submit_rect: Rect,
+    last_cursor: Point,
+    status: String,
+    error: Option<String>,
+    /// Whether the screen has completed its half of the DKG. Once
+    /// `true`, the container advances on the next event tick.
+    completed: bool,
+}
+
+impl PairDeviceScreen {
+    pub fn new() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            code_digits: ['_'; 6],
+            code_focus: 0,
+            code_box_rects: [Rect::ZERO; 6],
+            payload_text: String::new(),
+            payload_focus: false,
+            payload_rect: Rect::ZERO,
+            submit_hovered: false,
+            submit_rect: Rect::ZERO,
+            last_cursor: Point::ZERO,
+            status: "Enter the 6-digit code shown on the other device.".to_string(),
+            error: None,
+            completed: false,
+        }
+    }
+
+    /// Inject the 6-digit code (used by tests + the QR-scanner shim).
+    pub fn set_code(&mut self, code: &str) {
+        let digits: Vec<char> = code.chars().filter(|c| c.is_ascii_digit()).collect();
+        for i in 0..6 {
+            self.code_digits[i] = digits.get(i).copied().unwrap_or('_');
+        }
+    }
+
+    /// Current code rendered as a 6-character string. Returns
+    /// `"------"` (placeholder dashes) when the user hasn't typed
+    /// anything yet.
+    pub fn code_string(&self) -> String {
+        self.code_digits
+            .iter()
+            .map(|c| if *c == '_' { '-' } else { *c })
+            .collect()
+    }
+
+    /// Parse the user-entered code to a u32. Returns `None` if any
+    /// slot is still empty.
+    pub fn parse_code(&self) -> Option<u32> {
+        let mut acc: u32 = 0;
+        for c in &self.code_digits {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            acc = acc.saturating_mul(10) + (*c as u32 - '0' as u32);
+        }
+        Some(acc)
+    }
+
+    pub fn set_payload_text(&mut self, payload: impl Into<String>) {
+        self.payload_text = payload.into();
+        self.error = None;
+    }
+
+    pub fn payload_text(&self) -> &str {
+        &self.payload_text
+    }
+
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.completed
+    }
+
+    /// Validate that the typed code matches the payload's derived
+    /// code. Used as a sanity check before launching the DKG.
+    pub fn validate_code_against_payload(
+        code: u32,
+        payload: &PairingPayload,
+    ) -> Result<(), IdentityFlowError> {
+        let nonce = payload.nonce()?;
+        let derived = derive_pairing_code(&nonce);
+        if derived != code {
+            return Err(IdentityFlowError::DecodeFailed(format!(
+                "code mismatch: got {}, payload derives {}",
+                format_pairing_code(code),
+                format_pairing_code(derived)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Drive the pairer's half of the DKG.
+    ///
+    /// Builds a fresh share-2 DKG session on this device, exchanges
+    /// the round-1/round-2 packages with the host via the supplied
+    /// `PairingHandshake`, and adopts the resulting threshold
+    /// identity. On success returns the new `ThresholdIdentity`.
+    pub fn perform_pairing(
+        &mut self,
+        payload: &PairingPayload,
+        hs: &PairingHandshake,
+    ) -> Result<ThresholdIdentity, IdentityFlowError> {
+        let nonce = payload.nonce()?;
+        let mac_key = derive_pairing_mac_key(&nonce);
+        let host_round1 = payload.initiator_round1()?;
+        // Build the pairer's own DKG session (share index 2 in a 2-of-2
+        // group).
+        let mut rng = OsRng;
+        let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+        let (mut my_session, _my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
+        // Process the host's round-1 → produce our round-2 to send
+        // back.
+        let outgoing = my_session.receive_round1(&[host_round1.clone()])?;
+        let reply = outgoing
+            .into_iter()
+            .find(|(idx, _)| *idx == 1)
+            .map(|(_, r)| r)
+            .ok_or_else(|| {
+                IdentityFlowError::DecodeFailed("DKG produced no round-2 reply to share 1".into())
+            })?;
+        let reply_bytes = postcard::to_allocvec(&reply)
+            .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
+        let mac = compute_pairing_mac(&mac_key, &reply_bytes);
+        hs.publish_pairer_reply(&nonce, reply, mac);
+        // For v1 the pairer also needs the host's round-1 contribution
+        // (sent as the host's own round-2 message to the pairer). The
+        // in-memory shim provides it. We block-poll a few times.
+        let mut host_reply: Option<EnrolmentRound2> = None;
+        for _ in 0..16 {
+            if let Some((r, _mac)) = hs.take_host_round2(&nonce) {
+                host_reply = Some(r);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let host_reply = host_reply.ok_or_else(|| {
+            IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
+        })?;
+        // Finalise.
+        my_session.receive_round2(&[host_reply])?;
+        my_identity.adopt_dkg_outcome(my_session)?;
+        self.completed = true;
+        self.status = "Paired.".to_string();
+        Ok(my_identity)
+    }
+
+    /// Companion to `perform_pairing` that *exposes* the round-1 the
+    /// pairer would send (useful for tests that want to inspect the
+    /// wire format).
+    pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
+        let mut rng = OsRng;
+        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+        Ok(id.begin_enrolment(2, 2, 2, &mut rng)?)
+    }
+
+    pub fn handle_event_screen(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) -> ScreenOutcome {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = p;
+                let h = self.submit_rect.contains(p);
+                if h != self.submit_hovered {
+                    self.submit_hovered = h;
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                for (i, r) in self.code_box_rects.iter().enumerate() {
+                    if r.contains(self.last_cursor) {
+                        self.code_focus = i;
+                        self.payload_focus = false;
+                        *handled = true;
+                        return ScreenOutcome::Stay;
+                    }
+                }
+                if self.payload_rect.contains(self.last_cursor) {
+                    self.payload_focus = true;
+                    *handled = true;
+                    return ScreenOutcome::Stay;
+                }
+                if self.submit_rect.contains(self.last_cursor) {
+                    *handled = true;
+                    if self.completed {
+                        return ScreenOutcome::Advance;
+                    }
+                    self.error = None;
+                    self.status = "Pairing…".to_string();
+                    // Driving the actual pairing handshake from the
+                    // event loop would need access to the
+                    // `PairingHandshake` the shell owns; the screen
+                    // exposes `perform_pairing` for the shell to call
+                    // with the right handle. Click here just nudges
+                    // the user to ensure both fields are filled.
+                    if self.parse_code().is_none() || self.payload_text.is_empty() {
+                        self.error = Some("Enter both the code and the QR payload.".to_string());
+                    }
+                    return ScreenOutcome::Stay;
+                }
+                ScreenOutcome::Stay
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        text,
+                        ..
+                    },
+                ..
+            } => {
+                if self.payload_focus {
+                    match logical_key {
+                        Key::Named(NamedKey::Backspace) => {
+                            self.payload_text.pop();
+                            *handled = true;
+                        }
+                        _ => {
+                            if let Some(t) = text {
+                                for c in t.chars() {
+                                    if c == '\u{8}' || c == '\u{7f}' {
+                                        continue;
+                                    }
+                                    self.payload_text.push(c);
+                                    *handled = true;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Code box editing.
+                    match logical_key {
+                        Key::Named(NamedKey::Backspace) => {
+                            if self.code_focus > 0 {
+                                self.code_digits[self.code_focus - 1] = '_';
+                                self.code_focus -= 1;
+                                *handled = true;
+                            }
+                        }
+                        _ => {
+                            if let Some(t) = text {
+                                for c in t.chars() {
+                                    if !c.is_ascii_digit() {
+                                        continue;
+                                    }
+                                    if self.code_focus < 6 {
+                                        self.code_digits[self.code_focus] = c;
+                                        self.code_focus += 1;
+                                        *handled = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ScreenOutcome::Stay
+            }
+            _ => ScreenOutcome::Stay,
+        }
+    }
+}
+
+impl Widget for PairDeviceScreen {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(720.0),
+                    height: Dimension::length(560.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x as f64 + layout.location.x as f64,
+            origin.y as f64 + layout.location.y as f64,
+            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
+            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+        );
+        let card_w = 560.0;
+        let card_h = 460.0;
+        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
+        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
+        let pad = 32.0;
+        let box_w = 56.0;
+        let box_h = 64.0;
+        let gap = 8.0;
+        let total = 6.0 * box_w + 5.0 * gap;
+        let start_x = card_x + (card_w - total) / 2.0;
+        let row_y = card_y + 100.0;
+        for i in 0..6 {
+            let x = start_x + i as f64 * (box_w + gap);
+            self.code_box_rects[i] = Rect::new(x, row_y, x + box_w, row_y + box_h);
+        }
+        self.payload_rect = Rect::new(
+            card_x + pad,
+            card_y + 220.0,
+            card_x + card_w - pad,
+            card_y + 220.0 + 120.0,
+        );
+        self.submit_rect = Rect::new(
+            card_x + card_w - pad - 160.0,
+            card_y + card_h - pad - 44.0,
+            card_x + card_w - pad,
+            card_y + card_h - pad,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let backdrop = Color::from_rgba8(0, 0, 0, 180);
+        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
+        let card_w = 560.0;
+        let card_h = 460.0;
+        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
+        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
+        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
+        let pad = 32.0;
+        let radius = 12.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Pair with existing identity",
+            22.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            &self.status,
+            13.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((card.x0 + pad, card.y0 + pad + 28.0)),
+            None,
+        );
+        // Code boxes.
+        for (i, r) in self.code_box_rects.iter().enumerate() {
+            let focused = self.code_focus == i && !self.payload_focus;
+            let border = if focused {
+                theme.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
+            scene.stroke(
+                &Stroke::new(if focused { 2.0 } else { 1.0 }),
+                transform,
+                border,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
+            let ch = self.code_digits[i];
+            let display: String = if ch == '_' { String::new() } else { ch.to_string() };
+            let (w, _) = text_renderer.measure(&display, 26.0, None);
+            text_renderer.draw_text(
+                scene,
+                &display,
+                26.0,
+                theme.tokens.colors.text_primary,
+                transform
+                    * Affine::translate((
+                        r.x0 + (r.width() - w as f64) / 2.0,
+                        r.y0 + (r.height() - 26.0) / 2.0,
+                    )),
+                None,
+            );
+        }
+        // Payload textarea.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.payload_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(if self.payload_focus { 2.0 } else { 1.0 }),
+            transform,
+            if self.payload_focus {
+                theme.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            },
+            None,
+            &RoundedRect::from_rect(self.payload_rect, 8.0),
+        );
+        let placeholder = if self.payload_text.is_empty() {
+            "Paste the QR payload here (TODO: real scanner)"
+        } else {
+            self.payload_text.as_str()
+        };
+        let color = if self.payload_text.is_empty() {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
+        text_renderer.draw_text(
+            scene,
+            placeholder,
+            13.0,
+            color,
+            transform
+                * Affine::translate((self.payload_rect.x0 + 12.0, self.payload_rect.y0 + 12.0)),
+            None,
+        );
+        // Submit button.
+        let bg = if self.submit_hovered {
+            theme.bg_active
+        } else {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            bg,
+            None,
+            &RoundedRect::from_rect(self.submit_rect, 8.0),
+        );
+        let label = if self.completed { "Continue" } else { "Pair" };
+        let (lw, _) = text_renderer.measure(label, 14.0, None);
+        text_renderer.draw_text(
+            scene,
+            label,
+            14.0,
+            Color::from_rgb8(255, 255, 255),
+            transform
+                * Affine::translate((
+                    self.submit_rect.x0 + (self.submit_rect.width() - lw as f64) / 2.0,
+                    self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
+                )),
+            None,
+        );
+        if let Some(err) = &self.error {
+            text_renderer.draw_text(
+                scene,
+                err,
+                12.0,
+                Color::from_rgb8(220, 80, 80),
+                transform * Affine::translate((card.x0 + pad, self.submit_rect.y0 - 24.0)),
+                None,
+            );
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
+
+    fn name(&self) -> &str {
+        "PairDeviceScreen"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("identity_flow_pair_device")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_code_handles_partial_input() {
+        let mut s = PairDeviceScreen::new();
+        s.set_code("123");
+        assert_eq!(s.code_string(), "123---");
+        s.set_code("987654");
+        assert_eq!(s.code_string(), "987654");
+    }
+
+    #[test]
+    fn parse_code_requires_six_digits() {
+        let mut s = PairDeviceScreen::new();
+        assert!(s.parse_code().is_none());
+        s.set_code("12345");
+        assert!(s.parse_code().is_none());
+        s.set_code("000042");
+        assert_eq!(s.parse_code(), Some(42));
+    }
+
+    #[test]
+    fn validate_code_against_payload_round_trip() {
+        let mut rng = rand_core::OsRng;
+        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+        let nonce = [0x77u8; 16];
+        let payload = PairingPayload::new(nonce, id.group_public_key(), &r1).unwrap();
+        let derived = derive_pairing_code(&nonce);
+        // Correct code accepted.
+        PairDeviceScreen::validate_code_against_payload(derived, &payload).unwrap();
+        // Wrong code rejected.
+        let err = PairDeviceScreen::validate_code_against_payload(
+            derived.wrapping_add(1),
+            &payload,
+        )
+        .unwrap_err();
+        assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
+    }
+}
