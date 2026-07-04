@@ -63,6 +63,16 @@ fn char_to_byte(s: &str, ci: usize) -> usize {
     s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
 }
 
+/// Human label for a presence state, shown under a member in the roster.
+fn presence_label(p: Presence) -> &'static str {
+    match p {
+        Presence::Online => "Online",
+        Presence::Idle => "Idle",
+        Presence::Dnd => "Do not disturb",
+        Presence::Offline => "Offline",
+    }
+}
+
 impl ChatApp {
     // ---------------------------------------------------------------- rail
     pub(crate) fn draw_rail(
@@ -103,7 +113,7 @@ impl ChatApp {
             y += btn + 12.0;
         }
 
-        // add-workspace affordance
+        // add-workspace affordance — creates a new workspace and switches to it.
         let add = Rect::new(cx - btn / 2.0, y, cx + btn / 2.0, y + btn);
         fill_round(scene, tf, add, btn / 2.0, c.neutral[2]);
         let (aw, ah) = tr.measure_weighted("+", 24.0, None, TextWeight::Regular);
@@ -112,6 +122,7 @@ impl ChatApp {
             add.center().x - aw as f64 / 2.0, add.center().y - ah as f64 / 2.0,
             TextWeight::Regular, None,
         );
+        ChatApp::push_hit(hits, add, Hit::AddWorkspace);
         // The single user avatar lives in the sidebar identity bar (drawn in
         // `draw_sidebar`), not here — the rail foot intentionally has none.
     }
@@ -207,20 +218,25 @@ impl ChatApp {
             let sub = if self.call.active { "In voice" } else { "Available" };
             label(scene, tr, tf, sub, 11.0, c.text_dim, bar.x0 + 50.0, bar.center().y + 2.0);
         }
-        // deafen + mute toggles.
-        let deaf = Rect::new(bar.x1 - 80.0, bar.center().y - 16.0, bar.x1 - 48.0, bar.center().y + 16.0);
-        fill_round(scene, tf, deaf, 8.0, if self.call.deafened { c.semantic.danger } else { c.surface_white_10 });
-        let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
-        let (dw, dh) = tr.measure(dglyph, 14.0, None);
-        text(scene, tr, tf, dglyph, 14.0, c.text_primary, deaf.center().x - dw as f64 / 2.0, deaf.center().y - dh as f64 / 2.0, TextWeight::Regular, None);
-        ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
+        // Deafen + mute toggles — only while in a call, where they write
+        // through to the shared voice membership (`sync_local_voice`). Outside
+        // a call there is no mic stream to gate, so the controls are hidden
+        // rather than presented as toggling something they don't.
+        if self.call.active {
+            let deaf = Rect::new(bar.x1 - 80.0, bar.center().y - 16.0, bar.x1 - 48.0, bar.center().y + 16.0);
+            fill_round(scene, tf, deaf, 8.0, if self.call.deafened { c.semantic.danger } else { c.surface_white_10 });
+            let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
+            let (dw, dh) = tr.measure(dglyph, 14.0, None);
+            text(scene, tr, tf, dglyph, 14.0, c.text_primary, deaf.center().x - dw as f64 / 2.0, deaf.center().y - dh as f64 / 2.0, TextWeight::Regular, None);
+            ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
 
-        let mute = Rect::new(bar.x1 - 44.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
-        fill_round(scene, tf, mute, 8.0, if self.call.muted { c.semantic.danger } else { c.surface_white_10 });
-        let mglyph = if self.call.muted { "🔇" } else { "🎤" };
-        let (mw, mh) = tr.measure(mglyph, 14.0, None);
-        text(scene, tr, tf, mglyph, 14.0, c.text_primary, mute.center().x - mw as f64 / 2.0, mute.center().y - mh as f64 / 2.0, TextWeight::Regular, None);
-        ChatApp::push_hit(hits, mute, Hit::CallMute);
+            let mute = Rect::new(bar.x1 - 44.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
+            fill_round(scene, tf, mute, 8.0, if self.call.muted { c.semantic.danger } else { c.surface_white_10 });
+            let mglyph = if self.call.muted { "🔇" } else { "🎤" };
+            let (mw, mh) = tr.measure(mglyph, 14.0, None);
+            text(scene, tr, tf, mglyph, 14.0, c.text_primary, mute.center().x - mw as f64 / 2.0, mute.center().y - mh as f64 / 2.0, TextWeight::Regular, None);
+            ChatApp::push_hit(hits, mute, Hit::CallMute);
+        }
     }
 
     /// Draw the channels of one group (a category id, or `None` for the
@@ -1062,6 +1078,80 @@ impl ChatApp {
             yy += 28.0;
         }
         yy + 10.0
+    }
+
+    // ---------------------------------------------------------- members roster
+    /// The workspace members roster — the other half of the right flap, shown
+    /// when no thread is open (the "👥 N" header pill's panel). Every user in
+    /// the workspace with their presence and, when connected, the voice channel
+    /// they're in. Pure projection of the shared user list + voice membership;
+    /// nothing here is placeholder.
+    pub(crate) fn draw_members(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let panel = self.thread_rect();
+        fill_rect(scene, tf, panel, c.surfaces.raised);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            tf,
+            c.border_standard,
+            None,
+            &vello::kurbo::Line::new(Point::new(panel.x0, panel.y0), Point::new(panel.x0, panel.y1)),
+        );
+
+        let rows = self.roster_rows();
+        // Header: "Members" + the workspace name, with a close control.
+        label(scene, tr, tf, "Members", 15.0, c.text_primary, panel.x0 + 16.0, panel.y0 + 12.0);
+        let ws_name = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == self.active_ws)
+            .map(|w| w.name.clone())
+            .unwrap_or_default();
+        let sub = format!("{} · {}", ws_name, rows.len());
+        let sub = truncate_to(tr, &sub, 11.5, panel.width() - 70.0);
+        label(scene, tr, tf, &sub, 11.5, c.text_dim, panel.x0 + 16.0, panel.y0 + 31.0);
+        let close = Rect::new(panel.x1 - 40.0, panel.y0 + 12.0, panel.x1 - 12.0, panel.y0 + 40.0);
+        fill_round(scene, tf, close, 8.0, c.surface_white_10);
+        let (xw, xh) = tr.measure("✕", 14.0, None);
+        text(scene, tr, tf, "✕", 14.0, c.text_primary, close.center().x - xw as f64 / 2.0, close.center().y - xh as f64 / 2.0, TextWeight::Regular, None);
+        ChatApp::push_hit(hits, close, Hit::ToggleRightFlap);
+        let head_y1 = panel.y0 + 52.0;
+        hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, head_y1, c.border_standard);
+
+        let body = Rect::new(panel.x0, head_y1, panel.x1, panel.y1);
+        push_clip(scene, tf, body);
+        let row_h = 46.0;
+        let mut y = head_y1 + 8.0;
+        for (u, voice) in &rows {
+            if y + row_h > panel.y1 {
+                break;
+            }
+            let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
+            draw_avatar(scene, tf, tr, theme, avc, 16.0, &u.initials, u.color_idx, Some(u.status));
+            let nx = avc.x + 16.0 + 12.0;
+            let display = if u.id == model::ME {
+                format!("{} (you)", u.name)
+            } else {
+                u.name.clone()
+            };
+            let name = truncate_to(tr, &display, 14.0, panel.x1 - nx - 14.0);
+            text(scene, tr, tf, &name, 14.0, c.text_primary, nx, avc.y - 14.0, TextWeight::Semibold, None);
+            let (status_txt, col) = match voice {
+                Some(ch) => (format!("🔊 In voice · {ch}"), c.semantic.success),
+                None => (presence_label(u.status).to_string(), c.text_dim),
+            };
+            let status_txt = truncate_to(tr, &status_txt, 11.5, panel.x1 - nx - 14.0);
+            label(scene, tr, tf, &status_txt, 11.5, col, nx, avc.y + 2.0);
+            y += row_h;
+        }
+        scene.pop_layer();
     }
 
     // ------------------------------------------------------- attach picker

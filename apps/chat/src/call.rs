@@ -97,9 +97,6 @@ pub struct CallState {
     pub deafened: bool,
     /// Camera off / audio-only.
     pub audio_only: bool,
-    /// Whether the user is "following the host" through the shared
-    /// workspace (chat shares spatial presence, not a screen video).
-    pub follow_host: bool,
 }
 
 impl Default for CallState {
@@ -113,7 +110,6 @@ impl Default for CallState {
             muted: false,
             deafened: false,
             audio_only: false,
-            follow_host: true,
         }
     }
 }
