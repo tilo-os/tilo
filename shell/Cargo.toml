@@ -127,6 +127,15 @@ png = "0.18.1"
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
+# `firstboot` provisions a fresh single-device identity at first login
+# via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
+# which yields the raw dalek-compatible seed + pubkey that the
+# on-disk identity record (loaded by `runtime-identity`) needs.
+threshold-identity = { path = "../crates/collab/threshold-identity" }
+# `firstboot` calls `rand_core::OsRng` for identity key generation.
+# Version matched to `threshold-identity`'s direct dep (rand_core 0.6,
+# which frost-ed25519 consumes) so the workspace collapses to one copy.
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 wayland-client = "0.31"
@@ -146,7 +155,6 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 # single end-to-end flow — threshold-signed, MLS-encrypted op crossing
 # the broker, validated, decrypted, then compacted.
 channel-crypto = { path = "../crates/collab/channel-crypto" }
-threshold-identity = { path = "../crates/collab/threshold-identity" }
 # Deterministic RNG used by the FROST signing fixture in
 # `tests/everything_composes.rs`. Pinned to the same major as
 # `qos-threshold-identity`'s direct dep so the FROST primitives
@@ -155,11 +163,11 @@ threshold-identity = { path = "../crates/collab/threshold-identity" }
 # unit for the production code path.)
 rand_08 = { package = "rand", version = "0.8" }
 rand_chacha = "0.3"
-# Identity-provisioning unit tests in `shell::shell::identity_provisioning`
-# bootstrap a `ThresholdIdentity` via OsRng. Versioned to match
-# `qos-threshold-identity`'s direct dep (rand_core 0.6) so the FROST
-# primitives collapse to one copy in the lock.
-rand_core = { version = "0.6", features = ["getrandom"] }
+# Test-only: exercise a round-trip through the on-disk identity
+# schema `runtime-identity::load` reads. Not a runtime dep — the
+# firstboot provisioning path writes JSON directly to avoid pulling
+# in an SDK-layer crate that reads back the file it just wrote.
+runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
 # mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster = "0.4.0"
