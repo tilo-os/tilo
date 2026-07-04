@@ -3,9 +3,8 @@
 //! picker + edit history). The host tile is a real [`ui::widget::VideoPlayer`]
 //! laid out by the app; everything here is the chrome around it.
 //!
-//! Screenshare is intentionally absent: peers "follow the host" through the
-//! shared workspace rather than watching a video of a screen, so the
-//! controls expose a Follow-host toggle instead.
+//! Screenshare is intentionally absent: peers share the workspace spatially
+//! rather than watching a video of a screen, so there is no screen-feed tile.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -154,7 +153,7 @@ impl ChatApp {
         } else {
             stroke_round(scene, tf, v, 10.0, c.border_white_20, 1.0);
         }
-        self.name_plate(scene, tf, tr, theme, v, "You", self.call.muted, self.call.follow_host);
+        self.name_plate(scene, tf, tr, theme, v, "You", self.call.muted);
 
         // Participant strip header with an expand/collapse toggle.
         let parts = self.call_participants();
@@ -277,7 +276,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let host = self.overlay_host_rect();
-        self.name_plate(scene, tf, tr, theme, host, "You (host)", self.call.muted, self.call.follow_host);
+        self.name_plate(scene, tf, tr, theme, host, "You (host)", self.call.muted);
 
         // Controls bar: auto-sized to its buttons and wrapped onto extra rows
         // when the window is too narrow to hold them all in one line, so it
@@ -332,11 +331,10 @@ impl ChatApp {
     /// are derived from the fixed label lengths rather than measured, which
     /// keeps the whole call layout resolvable on a single headless frame.
     pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
-        let specs: [(&'static str, bool, bool, Hit); 6] = [
+        let specs: [(&'static str, bool, bool, Hit); 5] = [
             (if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false, Hit::CallMute),
             (if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false, Hit::CallDeafen),
             ("Audio only", self.call.audio_only, false, Hit::CallAudioOnly),
-            ("Follow host", self.call.follow_host, false, Hit::CallFollow),
             ("Collapse", false, false, Hit::CallExpand),
             ("Leave", false, true, Hit::CallLeave),
         ];
@@ -430,13 +428,11 @@ impl ChatApp {
             stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
         }
         let name = u.map(|u| u.name.clone()).unwrap_or_default();
-        self.name_plate(scene, tf, tr, theme, rect, &name, p.muted, false);
+        self.name_plate(scene, tf, tr, theme, rect, &name, p.muted);
         stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
     }
 
-    /// Bottom-left name plate over a tile: name + mic state (+ optional
-    /// "following" badge for the host).
-    #[allow(clippy::too_many_arguments)]
+    /// Bottom-left name plate over a tile: name + mic state.
     fn name_plate(
         &self,
         scene: &mut Scene,
@@ -446,7 +442,6 @@ impl ChatApp {
         tile: Rect,
         name: &str,
         muted: bool,
-        following: bool,
     ) {
         let c = &theme.tokens.colors;
         let mic = if muted { "🔇" } else { "🎤" };
@@ -456,11 +451,6 @@ impl ChatApp {
         fill_round(scene, tf, plate, 8.0, Color::from_rgba8(0, 0, 0, 150));
         let col = if muted { c.semantic.danger } else { Color::WHITE };
         label(scene, tr, tf, &label_txt, 12.0, col, plate.x0 + 10.0, plate.center().y - 8.0);
-        if following {
-            let fb = Rect::new(tile.x1 - 96.0, tile.y1 - 30.0, tile.x1 - 8.0, tile.y1 - 8.0);
-            fill_round(scene, tf, fb, 8.0, c.accent[5]);
-            label(scene, tr, tf, "Following", 11.0, Color::WHITE, fb.x0 + 9.0, fb.center().y - 7.0);
-        }
     }
 
     /// A pill control button. `on` = active/highlighted, `danger` = red.
