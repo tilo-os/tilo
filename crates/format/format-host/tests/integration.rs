@@ -14,10 +14,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use capnp_rpc::{rpc_twoparty_capnp, twoparty, RpcSystem};
-use qos_format_host::format_router_capnp::format_router;
-use qos_format_host::router::{load_into, Router};
-use qos_format_host::runner::{spawn_epoch_ticker, LoadedComponent};
-use qos_format_host::{transport, watch::spawn_watcher};
+use format_host::format_router_capnp::format_router;
+use format_host::router::{load_into, Router};
+use format_host::runner::{spawn_epoch_ticker, LoadedComponent};
+use format_host::{transport, watch::spawn_watcher};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Path to the markdown wasm component built in this worktree. Skips the
