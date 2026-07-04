@@ -1,9 +1,13 @@
 //! `qos-runtime-bundle` — CLI over the [`runtime_bundle`] crate.
 //!
 //! ```text
-//! qos-runtime-bundle build   --version <ver> --out <dir> [--from <host-path>]
-//! qos-runtime-bundle verify  <dir>
+//! qos-runtime-bundle build   --version <ver> --out <dir> [--from <host-path>] \
+//!                            [--arch <arch>] [--identity <path>]
+//! qos-runtime-bundle verify  <dir> [--require-publisher <hex>]
+//!                                  [--require-signature]
+//!                                  [--require-arch <arch>]
 //! qos-runtime-bundle path    --version <ver>            # print resolved default
+//! qos-runtime-bundle key generate --out <path>          # write a fresh identity
 //! ```
 //!
 //! The default `path` lookup order matches the launcher:
@@ -16,7 +20,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use runtime_bundle::{
-    build_bundle, default_bundle_path, resolve_bundle_path, system_bundle_path, verify_bundle,
+    BuildOptions, Identity, VerifyOptions, build_bundle_with, default_bundle_path,
+    resolve_bundle_path, system_bundle_path, verify_bundle_with,
 };
 
 #[derive(Debug, Parser)]
@@ -45,11 +50,35 @@ enum Cmd {
         /// Host root to resolve source paths against. Defaults to `/`.
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Target architecture. Defaults to the host arch
+        /// (`std::env::consts::ARCH`). Explicit override lets you
+        /// build a cross-arch bundle from a fabricated rootfs (e.g.
+        /// an aarch64 sysroot on an x86_64 CI runner).
+        #[arg(long)]
+        arch: Option<String>,
+        /// Path to an identity JSON file for signing the bundle.
+        /// Format: `{ "secret_key_hex": "<64-hex>" }`. When set, the
+        /// finished `bundle.toml` gains `publisher_hex` +
+        /// `signature_hex`. Same shape as `qos-pkg`'s identity files.
+        #[arg(long)]
+        identity: Option<PathBuf>,
     },
-    /// Verify an existing bundle by recomputing hashes.
+    /// Verify an existing bundle by recomputing hashes (and, when
+    /// signed, checking the signature).
     Verify {
         /// Path to the bundle root (contains `bundle.toml`).
         dir: PathBuf,
+        /// If set, refuse the bundle unless it is signed by this
+        /// exact publisher (Ed25519 public key, hex-encoded).
+        #[arg(long)]
+        require_publisher: Option<String>,
+        /// If set, refuse an unsigned bundle.
+        #[arg(long)]
+        require_signature: bool,
+        /// If set, refuse a bundle whose declared `arch` differs.
+        /// Defaults to no arch enforcement.
+        #[arg(long)]
+        require_arch: Option<String>,
     },
     /// Print the resolved bundle path for a given version.
     Path {
@@ -61,32 +90,86 @@ enum Cmd {
         #[arg(long)]
         system: bool,
     },
+    /// Signing-key utilities.
+    Key {
+        #[command(subcommand)]
+        cmd: KeyCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum KeyCmd {
+    /// Write a fresh signing identity JSON file to `--out`.
+    Generate {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Print the public key of an identity JSON file (hex).
+    Pubkey {
+        #[arg(long)]
+        identity: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Build { version, out, from } => {
-            match build_bundle(&out, &version, from.as_deref()) {
-                Ok(manifest) => {
-                    println!("built bundle at {}", out.display());
-                    println!("  version  : {}", manifest.version);
-                    println!("  files    : {}", manifest.files.len());
-                    println!("  root-hash: blake3:{}", manifest.root_hash);
-                    ExitCode::SUCCESS
+        Cmd::Build {
+            version,
+            out,
+            from,
+            arch,
+            identity,
+        } => match build_bundle_with(
+            &out,
+            &version,
+            &BuildOptions {
+                from: from.as_deref(),
+                arch: arch.as_deref(),
+                identity: identity.as_deref(),
+            },
+        ) {
+            Ok(manifest) => {
+                println!("built bundle at {}", out.display());
+                println!("  version  : {}", manifest.version);
+                println!("  arch     : {}", manifest.arch);
+                println!("  files    : {}", manifest.files.len());
+                println!("  root-hash: blake3:{}", manifest.root_hash);
+                if let Some(pk) = &manifest.publisher_hex {
+                    println!("  publisher: ed25519:{pk}");
                 }
-                Err(e) => {
-                    eprintln!("qos-runtime-bundle build: {e}");
-                    ExitCode::from(1)
+                if manifest.signature_hex.is_some() {
+                    println!("  signed   : yes");
                 }
+                ExitCode::SUCCESS
             }
-        }
-        Cmd::Verify { dir } => match verify_bundle(&dir) {
+            Err(e) => {
+                eprintln!("qos-runtime-bundle build: {e}");
+                ExitCode::from(1)
+            }
+        },
+        Cmd::Verify {
+            dir,
+            require_publisher,
+            require_signature,
+            require_arch,
+        } => match verify_bundle_with(
+            &dir,
+            &VerifyOptions {
+                require_publisher,
+                require_signature,
+                require_arch,
+            },
+        ) {
             Ok(manifest) => {
                 println!("bundle {} verified", dir.display());
                 println!("  version  : {}", manifest.version);
+                println!("  arch     : {}", manifest.arch);
                 println!("  files    : {}", manifest.files.len());
                 println!("  root-hash: blake3:{}", manifest.root_hash);
+                if let Some(pk) = &manifest.publisher_hex {
+                    println!("  publisher: ed25519:{pk}");
+                }
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -103,8 +186,6 @@ fn main() -> ExitCode {
                 println!("{}", p.display());
                 return ExitCode::SUCCESS;
             }
-            // Nothing installed. Print the per-user default so callers
-            // know where an install *would* go.
             match default_bundle_path(&version) {
                 Ok(p) => {
                     println!("{}", p.display());
@@ -116,5 +197,42 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Cmd::Key { cmd } => match cmd {
+            KeyCmd::Generate { out } => {
+                let identity = Identity::generate();
+                if let Some(parent) = out.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        eprintln!("qos-runtime-bundle key generate: {e}");
+                        return ExitCode::from(1);
+                    }
+                }
+                if let Err(e) = std::fs::write(&out, identity.to_json_bytes()) {
+                    eprintln!("qos-runtime-bundle key generate: {e}");
+                    return ExitCode::from(1);
+                }
+                // Best-effort restrict permissions on the secret file.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &out,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+                println!("wrote identity to {}", out.display());
+                println!("public-key: ed25519:{}", identity.public_key_hex());
+                ExitCode::SUCCESS
+            }
+            KeyCmd::Pubkey { identity } => match Identity::load(&identity) {
+                Ok(id) => {
+                    println!("{}", id.public_key_hex());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("qos-runtime-bundle key pubkey: {e}");
+                    ExitCode::from(1)
+                }
+            },
+        },
     }
 }
