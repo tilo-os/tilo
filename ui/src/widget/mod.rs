@@ -492,7 +492,7 @@ pub mod conflict_picker;
 // The user-facing ceremony from
 // `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
 // Phase 8 ("Threshold-shared identity + invite ceremony"). Wraps the
-// `qos-threshold-identity` engine in a six-screen ceremony plus a QR
+// `threshold-identity` engine in a six-screen ceremony plus a QR
 // widget. See `identity_flow/mod.rs` for the state-machine entry
 // point.
 pub mod qr;

@@ -2,7 +2,7 @@
 
 A spatial, collaborative Linux desktop built as a vertically-integrated stack:
 
-- **`shell/`** — Wayland compositor. 2D tile-first window model; no overlapping windows. Per-workspace bubblewrap sandbox with seccomp deny-by-default. Built on `smithay` + `vello` + `wgpu`. Collaboration over `libp2p` (gossipsub + mDNS) + `automerge` incremental sync.
+- **`shell/`** — Wayland compositor. Niri-inspired scrollable strips of tiled window-groups; wheel-disc workspace switcher; no overlapping windows. Per-workspace bubblewrap sandbox with seccomp deny-by-default. Built on `smithay` + `vello` + `wgpu`. Collaboration over `libp2p` (gossipsub + mDNS) + `automerge` incremental sync.
 - **`ui/`** — Retained-mode CRDT-native UI toolkit. Every widget reads/writes a shared automerge document, so undo, redo, persistence, and remote collaboration all share one mechanism. Stack: `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`.
 - **`fs/`** — FUSE3 driver. Iroh content addressing, `blake3` hashes, `moka` cache. Mounted at `/var/workspace`; cache at `/var/cache/qos-fs`. Projects metadata on first byte; hydrates content on demand.
 - **`apps/{terminal,file-explorer,browser}/`** — Native applications. All three use `ui`. The browser embeds Servo for page rendering.
@@ -10,19 +10,18 @@ A spatial, collaborative Linux desktop built as a vertically-integrated stack:
 
 ## Repository layout
 
-This is a Cargo workspace with git submodules. The members are:
+Single Cargo workspace (monorepo) — no submodules. Key members:
 
-| Path | Kind | Repo | Binary |
-|---|---|---|---|
-| `shell/` | submodule | `qos/shell.git` | `shell` (compositor), `qos-control` (test CLI), `shots` (screenshot tool) |
-| `fs/` | submodule | `qos/fs.git` | `fs` (FUSE driver) |
-| `ui/` | submodule | `qos/ui.git` | library only |
-| `apps/` | submodule | `qos/apps.git` | `terminal`, `file-explorer`, `browser` (each its own crate) |
-| `os/` | in-tree | (this repo) | Containerfile + systemd units + image build scripts |
+| Path | Binary |
+|---|---|
+| `shell/` | `shell` (compositor), `qos-control` (test CLI), `shots` (screenshot tool) |
+| `fs/` | `fs` (FUSE driver) |
+| `ui/` | library only |
+| `apps/` | `terminal`, `file-explorer`, `browser`, and more (each its own crate) |
+| `crates/` | supporting libraries grouped by domain (collab, doc, runtime, packaging, …) |
+| `os/` | Containerfile + systemd units + image build scripts |
 
-This repo (`qos/qos.git`) owns the workspace Cargo.toml, the docs, and the OS image build. Source components are peer submodules.
-
-After cloning, run `git submodule update --init --recursive` once.
+This repo owns the workspace Cargo.toml, the docs, and the OS image build.
 
 ## Building
 
@@ -88,7 +87,7 @@ Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
 - [`docs/architecture.md`](docs/architecture.md) — component overview
 - [`docs/testing.md`](docs/testing.md) — VM + headless test workflow
 - [`plan/architecture.md`](plan/architecture.md), [`plan/compositor.md`](plan/compositor.md), [`plan/collaboration.md`](plan/collaboration.md), [`plan/security.md`](plan/security.md) — design intent
-- [`DEVELOPMENT.md`](DEVELOPMENT.md) — submodule and build setup
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — build setup
 - [`CLAUDE.md`](CLAUDE.md) — conventions used when AI agents work in this repo
 
 ## Status

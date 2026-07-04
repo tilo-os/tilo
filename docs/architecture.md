@@ -8,9 +8,9 @@ qOS is a bootable, container-based operating system built on the **Fedora Bootc*
 A Wayland compositor responsible for the spatial desktop environment. It handles window management, input, and basic UI elements. Located in `shell/`.
 
 **Window Management Paradigm:**
-- **2D Clusters:** Windows cannot overlap; the compositor is strictly cluster-tiled in 2D. Applications are organized into "Clusters"—2D arrangements of adjoining tiles.
-- **Cluster Sandboxing:** Each cluster operates in an isolated Bubblewrap sandbox. A cluster is associated with a specific list of directories/files. When apps request file access, the host prompts the user, who can grant permissions temporarily or permanently to the entire cluster.
-- **Collaboration:** Users can invite peers to a specific cluster. This allows sharing the cluster's context via Wayland buffer streaming and remote input injection.
+- **Spatial model:** Windows cannot overlap. Apps are organized as `Workspace → Strip → WindowGroup → Tab`: tabs tile within a group, groups scroll horizontally within a strip (Niri-inspired), strips stack within a workspace, and workspaces are switched via a wheel disc.
+- **Per-workspace sandboxing:** Each workspace runs in an isolated Bubblewrap sandbox with its own file-access allowlist. When an app requests a path outside it, the compositor prompts the user, who can grant access temporarily or permanently to the workspace.
+- **Collaboration:** Users can invite peers to a specific workspace, sharing its context via Wayland buffer streaming and remote input injection.
 
 ### 2. FUSE Filesystem (`fs`)
 A P2P collaborative filesystem mounted at `/var/workspace`.

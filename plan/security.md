@@ -2,7 +2,7 @@
 
 The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
-Implementation tracked in `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md` (sandbox phases 1-6 + portal 4.3 landed). Where this design diverges from earlier "global host" framings, the current code wins.
+Implementation tracked in `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` (sandbox phases 1-6 + portal 4.3 landed). Where this design diverges from earlier "global host" framings, the current code wins.
 
 ## Threat model
 
@@ -188,4 +188,4 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 - `shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, camera.rs}` — D-Bus impls.
 - `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `shell/src/network/invite.rs` — invite tokens.
-- `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.
+- `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.

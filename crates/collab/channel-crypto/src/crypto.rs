@@ -8,7 +8,7 @@
 //!
 //! - **Ed25519** lines up with the rest of qOS: identity keys
 //!   (`qos-collab-types::Ed25519PublicKey`), the FROST threshold
-//!   crate (`qos-threshold-identity`), and libp2p's transport key
+//!   crate (`threshold-identity`), and libp2p's transport key
 //!   all use Ed25519. Picking a different signature scheme inside
 //!   MLS would force callers to maintain two key materials per
 //!   member, defeating the "identity is one keypair" intent of the
@@ -116,7 +116,7 @@ impl MemberKey {
 
     /// The 32-byte Ed25519 public key half of this member's signer.
     ///
-    /// Useful for tying an MLS member back to a `qos-collab-types`
+    /// Useful for tying an MLS member back to a `collab-types`
     /// `Identity` (the broker keeps a map from identity pubkey →
     /// member-of-channel state).
     pub fn signature_public_key(&self) -> &[u8] {

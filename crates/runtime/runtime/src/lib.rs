@@ -1,13 +1,13 @@
-//! `qos-runtime` — the qOS app SDK umbrella crate.
+//! `runtime` — the qOS app SDK umbrella crate.
 //!
-//! Apps typically depend on `qos-runtime` and use the re-exported
+//! Apps typically depend on `runtime` and use the re-exported
 //! submodules ([`collab`], [`fs`], [`identity`], [`portal`]) instead
 //! of pulling in each sub-crate individually.
 //!
 //! ## Design intent
 //!
 //! Every service reachable through this SDK is optional. Apps built
-//! against `qos-runtime` MUST run as Flatpaks on stock Linux with no
+//! against `runtime` MUST run as Flatpaks on stock Linux with no
 //! qOS services present — every `try_connect` / `load` returns
 //! `Result<_, NotAvailable>` rather than panicking, so the app can
 //! fall back to a local-only mode.

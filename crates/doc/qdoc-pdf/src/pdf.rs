@@ -7,7 +7,7 @@
 //!
 //! Objects are allocated lazily and serialized with a classic cross-reference
 //! table, so the result is a self-contained file that opens in any conformant
-//! viewer. There is no `printpdf` dependency — this keeps `docpdf` lockfile-
+//! viewer. There is no `printpdf` dependency — this keeps `qdoc-pdf` lockfile-
 //! stable and gives full control over pagination and image embedding.
 
 use flate2::Compression;

@@ -23,11 +23,11 @@ pub fn builtin_registry() -> Registry {
     r.register("odt", ProviderTier::Builtin, Box::new(OdtCodec));
     r.register("docx", ProviderTier::Builtin, Box::new(DocxCodec));
     // RTF is import-only via this codec (its `export` returns Unsupported; RTF
-    // writing lives in the editor's `docrtf` crate). Registering it still makes
+    // writing lives in the editor's `qdoc-rtf` crate). Registering it still makes
     // `.rtf` an openable document type.
     r.register("rtf", ProviderTier::Builtin, Box::new(RtfCodec));
     // HTML is import-only via this codec (its `export` returns Unsupported; HTML
-    // writing lives in the editor's `dochtml` crate — `qdoc` can't depend on it
+    // writing lives in the editor's `qdoc-html` crate — `qdoc` can't depend on it
     // without a cycle). Registering it makes `.html`/`.htm` openable.
     r.register("html", ProviderTier::Builtin, Box::new(HtmlCodec));
     r.register("htm", ProviderTier::Builtin, Box::new(HtmlCodec));

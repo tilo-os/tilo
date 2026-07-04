@@ -1,6 +1,6 @@
 # Collaboration & Peer Sync
 
-This document describes the design intent of the collaboration layer: how two `shell` instances on different hosts share a workspace's CRDT state, presence, and foreign-client surfaces. The implementation is tracked in `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md` (phases 1-6 landed).
+This document describes the design intent of the collaboration layer: how two `shell` instances on different hosts share a workspace's CRDT state, presence, and foreign-client surfaces. The implementation is tracked in `docs/superpowers/archive/2026-05-02-peer-sync-end-to-end.md` (phases 1-6 landed). The evolving sync/host model is specified in `docs/superpowers/specs/2026-07-04-sync-host-model-design.md`.
 
 ## 1. Core philosophy
 
@@ -136,6 +136,6 @@ Tests in `shell/tests/peer_sync_test.rs` exercise the convergence path.
 ## Where to read first
 
 - `shell/src/network/{actor.rs, behaviour.rs, hub.rs, replica.rs, protocol.rs, invite.rs}` — the live wiring.
-- `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md` — phase-by-phase implementation log.
+- `docs/superpowers/archive/2026-05-02-peer-sync-end-to-end.md` — phase-by-phase implementation log.
 - `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md` — why the cache + backing doc.
 - `ui/src/collaboration.rs` — the in-process channel between toolkit and shell.

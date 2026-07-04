@@ -113,7 +113,7 @@ pub struct SignedOp {
     pub seq: u64,
     /// Encryption mode. `None` is the Phase 2-6 legacy form
     /// (`payload` is cleartext). `Some(meta)` is the Phase 7+ form
-    /// (`payload` is `qos-channel-crypto` ciphertext). The field is
+    /// (`payload` is `channel-crypto` ciphertext). The field is
     /// part of the signed bytes so a peer cannot rewrite the
     /// metadata to mis-route a ciphertext.
     ///

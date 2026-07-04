@@ -8,7 +8,7 @@ name: Build qOS image (publish on tags + dispatch)
 
 on:
   push:
-    branches: ["main", "monorepo-staging"]
+    branches: ["main"]
     tags: ["v*"]
   pull_request:
     branches: ["main"]

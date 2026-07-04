@@ -22,7 +22,7 @@
 //!
 //! The module is intentionally thin — it bridges the pure-logic
 //! `ui::widget::identity_flow` types to the shell's process. Anything
-//! cryptographic stays in `qos-threshold-identity`; anything visual
+//! cryptographic stays in `threshold-identity`; anything visual
 //! stays in `ui`.
 
 use std::fs;

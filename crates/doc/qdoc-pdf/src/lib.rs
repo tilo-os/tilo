@@ -1,4 +1,4 @@
-//! `docpdf` — render a [`qdoc::DocSnapshot`] to a paginated PDF.
+//! `qdoc-pdf` — render a [`qdoc::DocSnapshot`] to a paginated PDF.
 //!
 //! This is the export *engine*. It takes the materialized, read-only view of a
 //! qdoc document (headings, paragraphs, lists, tables, images) and lays it out

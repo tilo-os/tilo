@@ -217,7 +217,7 @@ peers downstream see the same redacted-marker. The reason:
   metadata available for the UI's audit timeline (so a reviewer can see
   "alice removed this at 14:32" without seeing the content).
 - The redacted-marker is itself a typed payload (`RedactedMarker`) decodable
-  by `qos-collab-types`, so widget code can render the strike-through
+  by `collab-types`, so widget code can render the strike-through
   without special-casing "missing payload".
 
 ---
