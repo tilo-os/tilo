@@ -88,6 +88,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
             fs: Fs::default(),
             services,
             portals: BTreeMap::new(),
+            workspace_grants: None,
         },
         cli_commands: Vec::new(),
     }
@@ -400,6 +401,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
+            workspace_grants: None,
         },
         cli_commands: Vec::new(),
     };

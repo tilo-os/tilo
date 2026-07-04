@@ -214,6 +214,18 @@ pub struct Sandbox {
     /// exposed (so apps that didn't declare a portal can't reach it).
     #[serde(default)]
     pub portals: BTreeMap<String, PortalPolicy>,
+    /// Per-workspace portal grants. When set to `"auto"`, the
+    /// launcher inspects the compositor's grant store at
+    /// `$XDG_STATE_HOME/qos-shell/grants/<QOS_WORKSPACE_ID>.toml`
+    /// and adds every `(pkg_id, path)` row it finds for this
+    /// package to the sandbox's read/write bind list. Absent /
+    /// any other value == the grant store is ignored (equivalent
+    /// to the pre-integration behaviour). This is how the shell's
+    /// portal prompt persists across app launches: the user
+    /// approves once, and subsequent launches in the same
+    /// workspace never prompt again.
+    #[serde(default)]
+    pub workspace_grants: Option<String>,
 }
 
 /// How the launcher should route a portal request. Kebab-case wire

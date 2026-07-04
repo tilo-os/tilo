@@ -289,6 +289,20 @@ pub fn build_bwrap_argv_for_entry(
         push_bind(&mut argv, flag, &host, &host);
     }
 
+    // Per-workspace grants. When the manifest opts in with
+    // `sandbox.workspace_grants = "auto"` and the compositor set
+    // `QOS_WORKSPACE_ID`, mount every path the shell has recorded
+    // as granted for this (workspace_id, package_id) pair. Same
+    // host-side path is used for the sandbox path so the app sees
+    // the same path it originally requested — that's the property
+    // that lets a portal FileChooser "open" flow round-trip a
+    // path across the sandbox boundary.
+    for granted in resolve_workspace_grants(manifest) {
+        let host = &granted.path;
+        let flag = pick_bind_flag(host, granted.write);
+        push_bind(&mut argv, flag, host, host);
+    }
+
     // XDG portals: if the caller supplied a bind plan (either the
     // preferred `xdg-dbus-proxy` socket or a direct-bind fallback),
     // wire it in. If NO plan is supplied, the bus is NOT exposed —
@@ -366,6 +380,125 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
+/// A single resolved workspace-grant path, plus its read/write mode.
+/// Exposed so `run.rs` can also feed it into the Landlock ruleset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedGrant {
+    pub path: PathBuf,
+    pub write: bool,
+}
+
+fn pick_bind_flag(path: &Path, write: bool) -> &'static str {
+    if path.starts_with("/dev") {
+        "--dev-bind-try"
+    } else if write {
+        "--bind"
+    } else {
+        "--ro-bind"
+    }
+}
+
+/// Read the grant file the shell writes at
+/// `$XDG_STATE_HOME/qos-shell/grants/<QOS_WORKSPACE_ID>.toml` and
+/// return every path it authorises for this package.
+///
+/// Silently returns an empty vec when
+///   * the manifest doesn't opt in (`workspace_grants` != "auto"),
+///   * `QOS_WORKSPACE_ID` isn't set (running outside a workspace),
+///   * the grant file is missing or unreadable.
+///
+/// This is intentionally best-effort: a torn grant file must not
+/// prevent an app from launching — the launcher's manifest binds
+/// are still applied and the app is still functional, just without
+/// its previously-granted paths. The user is asked again on next
+/// portal call.
+pub fn resolve_workspace_grants(manifest: &MinimalManifest) -> Vec<ResolvedGrant> {
+    let Some(mode) = manifest.sandbox.workspace_grants.as_deref() else {
+        return Vec::new();
+    };
+    if mode != "auto" {
+        return Vec::new();
+    }
+    let Some(ws) = std::env::var_os("QOS_WORKSPACE_ID") else {
+        return Vec::new();
+    };
+    let ws = ws.to_string_lossy().to_string();
+    if ws.is_empty() {
+        return Vec::new();
+    }
+    let Ok(dir) = workspace_grants_dir() else {
+        return Vec::new();
+    };
+    let file = dir.join(format!("{}.toml", sanitise_id(&ws)));
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return Vec::new();
+    };
+    let Ok(raw) = toml::from_str::<RawGrantFile>(&text) else {
+        return Vec::new();
+    };
+    raw.entries
+        .into_iter()
+        .filter(|e| e.pkg_id == manifest.package_id)
+        .filter(|e| e.grant.path.is_absolute())
+        .map(|e| ResolvedGrant {
+            path: e.grant.path,
+            write: matches!(e.grant.mode.as_deref(), Some("write")),
+        })
+        .collect()
+}
+
+/// Public wrapper so an external caller (a test or `run.rs`
+/// building the Landlock ro/rw list) can turn one raw entry into
+/// its host-side bind flag string. Small enough to sit next to
+/// [`resolve_workspace_grants`].
+pub fn workspace_grant_bind_flag(grant: &ResolvedGrant) -> &'static str {
+    pick_bind_flag(&grant.path, grant.write)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawGrantFile {
+    #[serde(default, rename = "entry")]
+    entries: Vec<RawGrantEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawGrantEntry {
+    pkg_id: String,
+    grant: RawGrant,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawGrant {
+    path: PathBuf,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+fn sanitise_id(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '-' => c,
+            _ => '_',
+        })
+        .collect()
+}
+
+fn workspace_grants_dir() -> Result<PathBuf, ()> {
+    if let Some(dir) = std::env::var_os("QOS_SHELL_STATE_DIR") {
+        return Ok(PathBuf::from(dir).join("grants"));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_STATE_HOME") {
+        if !xdg.is_empty() {
+            return Ok(PathBuf::from(xdg).join("qos-shell").join("grants"));
+        }
+    }
+    let home = std::env::var_os("HOME").ok_or(())?;
+    Ok(Path::new(&home)
+        .join(".local/state")
+        .join("qos-shell")
+        .join("grants"))
+}
+
 /// If the manifest declared at least one portal as `ViaHost`, return
 /// the current `$DBUS_SESSION_BUS_ADDRESS` — else `None` (bus stays
 /// out of the sandbox).
@@ -431,6 +564,7 @@ mod tests {
                 },
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
+                workspace_grants: None,
             },
             cli_commands: Vec::new(),
         }
@@ -720,5 +854,101 @@ mod tests {
             .position(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17")
             .expect("service env var");
         let _ = env_pos;
+    }
+
+    #[test]
+    fn resolve_workspace_grants_ignored_when_manifest_does_not_opt_in() {
+        let m = mk_manifest("off");
+        // sandbox.workspace_grants is None — no lookup happens.
+        assert!(resolve_workspace_grants(&m).is_empty());
+    }
+
+    #[test]
+    fn resolve_workspace_grants_reads_shell_state_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grants_dir = tmp.path().join("grants");
+        std::fs::create_dir_all(&grants_dir).unwrap();
+        // Two entries — one for our pkg, one for a different pkg.
+        // Only the matching one should surface.
+        let file = grants_dir.join("ws-a.toml");
+        std::fs::write(
+            &file,
+            "[[entry]]\n\
+             pkg_id = 'com.example.notes'\n\
+             [entry.grant]\n\
+             path = '/home/alice/Documents'\n\
+             mode = 'read'\n\
+             [[entry]]\n\
+             pkg_id = 'com.example.other'\n\
+             [entry.grant]\n\
+             path = '/home/alice/Music'\n\
+             mode = 'write'\n",
+        )
+        .unwrap();
+
+        let mut m = mk_manifest("off");
+        m.sandbox.workspace_grants = Some("auto".to_string());
+
+        // Point the sandbox helper at our tempdir + fake workspace.
+        // SAFETY: single-thread env mutation for this test only.
+        unsafe {
+            std::env::set_var("QOS_SHELL_STATE_DIR", tmp.path());
+            std::env::set_var("QOS_WORKSPACE_ID", "ws-a");
+        }
+        let out = resolve_workspace_grants(&m);
+        unsafe {
+            std::env::remove_var("QOS_SHELL_STATE_DIR");
+            std::env::remove_var("QOS_WORKSPACE_ID");
+        }
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, PathBuf::from("/home/alice/Documents"));
+        assert!(!out[0].write);
+    }
+
+    #[test]
+    fn build_bwrap_argv_binds_workspace_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grants_dir = tmp.path().join("grants");
+        std::fs::create_dir_all(&grants_dir).unwrap();
+        std::fs::write(
+            grants_dir.join("ws-b.toml"),
+            "[[entry]]\n\
+             pkg_id = 'com.example.notes'\n\
+             [entry.grant]\n\
+             path = '/home/alice/Pictures'\n\
+             mode = 'read'\n\
+             [[entry]]\n\
+             pkg_id = 'com.example.notes'\n\
+             [entry.grant]\n\
+             path = '/home/alice/Videos'\n\
+             mode = 'write'\n",
+        )
+        .unwrap();
+        let mut m = mk_manifest("off");
+        m.sandbox.workspace_grants = Some("auto".to_string());
+        unsafe {
+            std::env::set_var("QOS_SHELL_STATE_DIR", tmp.path());
+            std::env::set_var("QOS_WORKSPACE_ID", "ws-b");
+        }
+        let argv =
+            build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None);
+        unsafe {
+            std::env::remove_var("QOS_SHELL_STATE_DIR");
+            std::env::remove_var("QOS_WORKSPACE_ID");
+        }
+        // Read grant becomes --ro-bind ...
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/home/alice/Pictures"
+                && w[2] == "/home/alice/Pictures"),
+            "expected ro-bind of Pictures in argv: {argv:?}"
+        );
+        // Write grant becomes --bind ...
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--bind"
+                && w[1] == "/home/alice/Videos"
+                && w[2] == "/home/alice/Videos"),
+            "expected --bind of Videos in argv: {argv:?}"
+        );
     }
 }

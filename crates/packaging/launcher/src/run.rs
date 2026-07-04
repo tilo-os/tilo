@@ -563,6 +563,13 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(expanded.display().to_string());
         }
+        // Same story for per-workspace grants: Landlock must know
+        // about them or the sandbox's bwrap-side --bind is
+        // shadowed by the shim's default-deny FS ruleset.
+        for granted in crate::sandbox::resolve_workspace_grants(manifest) {
+            argv.push(if granted.write { "--rw" } else { "--ro" }.to_string());
+            argv.push(granted.path.display().to_string());
+        }
         // Standard tmpfs mounts inside the sandbox — the app expects
         // these to be writable. Marking them --rw grants Landlock's
         // full FS access set on them.
