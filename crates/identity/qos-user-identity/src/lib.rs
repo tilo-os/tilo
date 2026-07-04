@@ -65,9 +65,11 @@ pub mod canonical;
 pub mod cert;
 pub mod directory;
 pub mod enrollment;
+pub mod persist;
 pub mod revocation;
 
 pub use canonical::CanonicalError;
+pub use persist::{IdentityPaths, PersistError};
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError, sign_device_cert,
     verify_device_cert, verify_device_cert_at,
