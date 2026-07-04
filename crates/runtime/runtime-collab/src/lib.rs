@@ -6,7 +6,7 @@
 //! ```ignore
 //! let local = tokio::task::LocalSet::new();
 //! local.run_until(async {
-//!     let broker = qos_runtime_collab::try_connect()
+//!     let broker = runtime_collab::try_connect()
 //!         .map_err(|e| { eprintln!("collab unavailable: {e}"); e })?;
 //!     let channel = broker
 //!         .join_channel("channel-id", identity_bytes)
@@ -24,7 +24,7 @@
 
 use std::rc::Rc;
 
-use qos_runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
+use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
 // Generated schema lands in OUT_DIR with the filename
 // `<schema>_capnp.rs`. The generated code references its own module
