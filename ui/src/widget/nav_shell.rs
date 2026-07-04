@@ -1,0 +1,1422 @@
+//! `NavShell` — the HIG §1 navigation primitive.
+//!
+//! Where [`crate::widget::NavSplit`] is a *single* responsive split (one
+//! sidebar + one content pane), `NavShell` bakes in the full HIG §1 model,
+//! which has **two distinct kinds of panel that must not be conflated**:
+//!
+//! 1. A **genuine sidebar / menu** (pure navigation — a list of
+//!    calendars, accounts, folders). §1a.
+//!    * **Wide:** SOLID, **docked** beside the content, collapsible via a
+//!      proper **collapse / hamburger button** (never an `X`). Reads as part
+//!      of the frame. Smooth collapse animation.
+//!    * **Narrow:** it **stays a sidebar** — an **overlay drawer** over the
+//!      content behind a scrim, summoned/dismissed by the *same* button. It
+//!      does **not** become a full-screen page.
+//!
+//! 2. A **content master / detail** region (overview + detail are *content*
+//!    the user reads and acts on — a month grid + an event, a message list +
+//!    a message, a city list + a forecast). §1b.
+//!    * **Wide:** overview and detail shown **side by side** (alongside the
+//!      sidebar, if any). Only the sidebar collapses.
+//!    * **Narrow:** only ONE of {overview, detail} at a time. Overview is the
+//!      default full-screen view; selecting an entry **slides the detail in
+//!      from the right** over the overview, with a **back button top-left**.
+//!      Back returns. **Push** navigation — never a scrim-overlay of content
+//!      over content.
+//!
+//! A full app (calendar / email) composes BOTH: `[ sidebar | overview |
+//! detail ]` — desktop all three abreast (only the sidebar collapses); mobile
+//! the sidebar is an overlay drawer AND the overview↔detail use push/slide. A
+//! simpler app (weather) uses only the content master/detail piece via
+//! [`NavShell::new`] with no sidebar.
+//!
+//! ## Why this is a primitive, not per-app code
+//! The HIG's rule of thumb: *if an app can express a bad-UX layout without
+//! effort, that is a toolkit bug.* `NavShell` makes the correct behaviour the
+//! default — the collapse affordance is a hamburger/chevron (the widget
+//! **refuses** to render an `X`), content pushes instead of scrim-overlaying,
+//! and the sidebar-drawer scrim is reserved for the *menu* only. Apps supply
+//! the three child elements and react to selection; the shell owns the
+//! breakpoint, the eased collapse + push slides, the scrim, and the
+//! button/scrim/Esc self-routing.
+//!
+//! ## Easing
+//! Reuses the frame-rate-independent [`FlapState`] kernel proven in
+//! [`crate::widget::NavSplit`] (exponential approach, ease-out-cubic slide),
+//! so a collapse and a push decelerate into place and settle to *no frames at
+//! rest* (HIG §5 — no idle spin).
+
+use automerge::{AutoCommit, ObjId};
+use std::collections::HashMap;
+use std::time::Instant;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::color_compat::ColorCompat;
+use crate::icons::{Icon, draw_icon};
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::nav_split::{FlapState, SplitLayout};
+use crate::widget::{Element, Widget};
+
+/// Default docked / fully-revealed sidebar width (logical px).
+pub const DEFAULT_NAVSHELL_SIDEBAR_WIDTH: f64 = 280.0;
+/// Default overview (master) width in the side-by-side layout (logical px).
+/// The detail pane takes the remaining width.
+pub const DEFAULT_NAVSHELL_OVERVIEW_WIDTH: f64 = 340.0;
+/// Default width breakpoint (logical px). At or above this the shell is
+/// **wide** (docked sidebar + side-by-side content); below it the shell is
+/// **narrow** (overlay-drawer sidebar + push content).
+pub const DEFAULT_NAVSHELL_BREAKPOINT: f64 = 700.0;
+/// The detail pane never shrinks below this in the side-by-side layout — the
+/// overview gives up width first.
+const MIN_DETAIL_WIDTH: f64 = 260.0;
+/// Upper bound (seconds) on the per-frame delta used to advance a slide, so a
+/// stale `Instant` (first frame, or a parked event loop) can't teleport a
+/// slide past its animation.
+const MAX_FRAME_DT: f64 = 0.1;
+/// Logical size of the square collapse/hamburger chip.
+const CHIP_SIZE: f64 = 36.0;
+/// Inset of the top-left affordance chip from the shell's top-left corner.
+const CHIP_INSET: f64 = 12.0;
+/// Extra width the "Back" chip needs for its label beside the chevron.
+const BACK_CHIP_WIDTH: f64 = 104.0;
+
+/// The shell's responsive mode, resolved from its allocated width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellMode {
+    /// Docked sidebar + side-by-side content (`>=` breakpoint).
+    Wide,
+    /// Overlay-drawer sidebar + push content (`<` breakpoint).
+    Narrow,
+}
+
+impl ShellMode {
+    /// Resolve from the allocated width. Boundary is inclusive at the
+    /// breakpoint → [`ShellMode::Wide`].
+    pub fn from_width(total_w: f64, breakpoint: f64) -> Self {
+        if total_w >= breakpoint { ShellMode::Wide } else { ShellMode::Narrow }
+    }
+}
+
+/// How the **content** master/detail region resolves at the current width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentLayout {
+    /// Overview + detail shown abreast (wide).
+    SideBySide,
+    /// One pane at a time; detail pushes in from the right (narrow).
+    Push,
+}
+
+/// Which content pane the push flow is targeting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavPane {
+    /// The overview (master list / grid).
+    Overview,
+    /// The detail, with a Back affordance in narrow mode.
+    Detail,
+}
+
+/// What the single top-left affordance is doing this frame. Exactly one
+/// affordance ever occupies the corner, so it is never ambiguous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Affordance {
+    /// No affordance (e.g. wide content-only app, or a narrow full-screen
+    /// overview with no sidebar).
+    None,
+    /// The sidebar collapse / summon button (hamburger when closed,
+    /// chevron when open) — **never** an `X`.
+    SidebarToggle,
+    /// The push "Back" button that pops the detail back to the overview.
+    Back,
+}
+
+/// The HIG §1 navigation shell. See the module docs.
+pub struct NavShell {
+    /// The genuine menu sidebar (§1a). `None` for content-only apps.
+    sidebar: Option<Element>,
+    /// The content overview / master (§1b).
+    overview: Element,
+    /// The content detail (§1b).
+    detail: Element,
+
+    breakpoint: f64,
+    sidebar_width: f64,
+    overview_width: f64,
+
+    /// Reveal easing for the sidebar (collapse when docked, slide when
+    /// overlay). Open-when-docked by default.
+    sidebar_flap: FlapState,
+    /// Push target for the content region.
+    pane: NavPane,
+    /// Push easing: `0` = overview front, `1` = detail front. Closed
+    /// (overview) by default.
+    push: FlapState,
+
+    // --- resolved geometry (recomputed each layout / animation frame) ---
+    rect: Rect,
+    sidebar_rect: Rect,
+    overview_rect: Rect,
+    detail_rect: Rect,
+    scrim_rect: Rect,
+    /// The active top-left affordance chip's hit rect (zero when None).
+    affordance_rect: Rect,
+    affordance: Affordance,
+
+    last_cursor: Point,
+
+    // --- inner taffy for the children ---
+    inner_taffy: Option<TaffyTree<()>>,
+    sidebar_node: Option<NodeId>,
+    overview_node: Option<NodeId>,
+    detail_node: Option<NodeId>,
+
+    animating: bool,
+    dirty: bool,
+    last_tick: Option<Instant>,
+}
+
+impl NavShell {
+    /// Build a **content-only** shell (no genuine sidebar) — the weather
+    /// case: an overview master + a detail. Side-by-side when wide, push when
+    /// narrow.
+    pub fn new(overview: Element, detail: Element) -> Self {
+        Self {
+            sidebar: None,
+            overview,
+            detail,
+            breakpoint: DEFAULT_NAVSHELL_BREAKPOINT,
+            sidebar_width: DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
+            overview_width: DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
+            sidebar_flap: FlapState::open_when_docked(),
+            pane: NavPane::Overview,
+            push: FlapState::closed_by_default(),
+            rect: Rect::ZERO,
+            sidebar_rect: Rect::ZERO,
+            overview_rect: Rect::ZERO,
+            detail_rect: Rect::ZERO,
+            scrim_rect: Rect::ZERO,
+            affordance_rect: Rect::ZERO,
+            affordance: Affordance::None,
+            last_cursor: Point::ZERO,
+            inner_taffy: None,
+            sidebar_node: None,
+            overview_node: None,
+            detail_node: None,
+            animating: false,
+            dirty: false,
+            last_tick: None,
+        }
+    }
+
+    /// Attach a genuine menu sidebar (§1a) — the calendar / email case:
+    /// `[ sidebar | overview | detail ]`.
+    pub fn with_sidebar(mut self, sidebar: Element) -> Self {
+        self.sidebar = Some(sidebar);
+        self
+    }
+
+    /// Override the width breakpoint (logical px).
+    pub fn with_breakpoint(mut self, px: f64) -> Self {
+        self.breakpoint = px;
+        self
+    }
+
+    /// Override the docked / revealed sidebar width (logical px).
+    pub fn with_sidebar_width(mut self, px: f64) -> Self {
+        self.sidebar_width = px;
+        self
+    }
+
+    /// Override the overview (master) width in the side-by-side layout.
+    pub fn with_overview_width(mut self, px: f64) -> Self {
+        self.overview_width = px;
+        self
+    }
+
+    /// Start with the sidebar collapsed even when docked.
+    pub fn with_sidebar_collapsed(mut self) -> Self {
+        self.sidebar_flap = FlapState::closed_by_default();
+        self
+    }
+
+    // --- layout-mode queries ---------------------------------------------
+
+    /// Whether this shell has a genuine sidebar.
+    pub fn has_sidebar(&self) -> bool {
+        self.sidebar.is_some()
+    }
+
+    /// The shell's responsive mode at the current width.
+    pub fn mode(&self) -> ShellMode {
+        ShellMode::from_width(self.rect.width(), self.breakpoint)
+    }
+
+    /// The content region's layout at the current width.
+    pub fn content_layout(&self) -> ContentLayout {
+        match self.mode() {
+            ShellMode::Wide => ContentLayout::SideBySide,
+            ShellMode::Narrow => ContentLayout::Push,
+        }
+    }
+
+    /// The sidebar's presentation at the current width — [`SplitLayout::Docked`]
+    /// (solid, wide) or [`SplitLayout::Overlay`] (drawer, narrow). `None` when
+    /// there is no sidebar.
+    pub fn sidebar_layout(&self) -> Option<SplitLayout> {
+        self.sidebar.as_ref().map(|_| self.sidebar_split_layout())
+    }
+
+    /// Internal: the sidebar's [`SplitLayout`] regardless of whether one is
+    /// attached (drives the reveal flap).
+    fn sidebar_split_layout(&self) -> SplitLayout {
+        match self.mode() {
+            ShellMode::Wide => SplitLayout::Docked,
+            ShellMode::Narrow => SplitLayout::Overlay,
+        }
+    }
+
+    /// The content pane the push flow is targeting.
+    pub fn pane(&self) -> NavPane {
+        self.pane
+    }
+
+    /// Whether the detail pane is the push target.
+    pub fn is_detail_shown(&self) -> bool {
+        self.pane == NavPane::Detail
+    }
+
+    /// Whether the sidebar is (resolved) open. `false` when there is none.
+    pub fn is_sidebar_open(&self) -> bool {
+        self.has_sidebar() && self.sidebar_flap.is_open(self.sidebar_split_layout())
+    }
+
+    /// Which affordance occupies the top-left corner this frame.
+    pub fn top_left_affordance(&self) -> Affordance {
+        // Back always wins while the detail is pushed in a narrow layout.
+        if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
+            Affordance::Back
+        } else if self.has_sidebar() {
+            Affordance::SidebarToggle
+        } else {
+            Affordance::None
+        }
+    }
+
+    // --- runtime control -------------------------------------------------
+
+    /// Toggle the sidebar open/closed (the collapse / hamburger button).
+    pub fn toggle_sidebar(&mut self) {
+        if !self.has_sidebar() {
+            return;
+        }
+        self.sidebar_flap.toggle(self.sidebar_split_layout());
+        self.dirty = true;
+    }
+
+    /// Open the sidebar.
+    pub fn open_sidebar(&mut self) {
+        if !self.has_sidebar() {
+            return;
+        }
+        self.sidebar_flap.open();
+        self.dirty = true;
+    }
+
+    /// Close the sidebar (scrim / Esc / the collapse button).
+    pub fn close_sidebar(&mut self) {
+        if !self.has_sidebar() {
+            return;
+        }
+        self.sidebar_flap.close();
+        self.dirty = true;
+    }
+
+    /// Push the detail pane in (call from the overview's selection handler).
+    /// In the side-by-side (wide) layout both panes are already visible, so
+    /// this only sets the push target for when the layout is narrow.
+    pub fn show_detail(&mut self) {
+        self.pane = NavPane::Detail;
+        self.push.open();
+        self.dirty = true;
+    }
+
+    /// Pop back to the overview (the Back button / Esc).
+    pub fn show_overview(&mut self) {
+        self.pane = NavPane::Overview;
+        self.push.close();
+        self.dirty = true;
+    }
+
+    /// Alias for [`Self::show_overview`] — master/detail vocabulary.
+    pub fn show_master(&mut self) {
+        self.show_overview();
+    }
+
+    /// Snap **all** animation straight to its endpoint — deterministic
+    /// `--shots` / headless. Call after setting the desired open/pane state.
+    pub fn snap(&mut self) {
+        let open = self.sidebar_flap.is_open(self.sidebar_split_layout());
+        self.sidebar_flap.snap(open);
+        self.push.snap(self.pane == NavPane::Detail);
+        self.recompute_rects();
+    }
+
+    /// Snap the sidebar open/closed with no animation (deterministic shots).
+    pub fn snap_sidebar(&mut self, open: bool) {
+        self.sidebar_flap.snap(open);
+        self.recompute_rects();
+    }
+
+    /// Snap the content push to a pane with no animation (deterministic shots).
+    pub fn snap_pane(&mut self, pane: NavPane) {
+        self.pane = pane;
+        self.push.snap(pane == NavPane::Detail);
+        self.recompute_rects();
+    }
+
+    // --- resolved rects (for hit-testing) --------------------------------
+
+    /// Resolved sidebar rect.
+    pub fn sidebar_rect(&self) -> Rect {
+        self.sidebar_rect
+    }
+    /// Resolved overview (master) rect.
+    pub fn overview_rect(&self) -> Rect {
+        self.overview_rect
+    }
+    /// Resolved detail rect.
+    pub fn detail_rect(&self) -> Rect {
+        self.detail_rect
+    }
+    /// Resolved scrim rect (zero unless a narrow sidebar drawer is open).
+    pub fn scrim_rect(&self) -> Rect {
+        self.scrim_rect
+    }
+    /// Resolved rect of the collapse / hamburger button (zero unless that
+    /// affordance is active this frame).
+    pub fn collapse_button_rect(&self) -> Rect {
+        if self.affordance == Affordance::SidebarToggle {
+            self.affordance_rect
+        } else {
+            Rect::ZERO
+        }
+    }
+    /// Resolved rect of the Back button (zero unless active this frame).
+    pub fn back_button_rect(&self) -> Rect {
+        if self.affordance == Affordance::Back {
+            self.affordance_rect
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    // --- geometry --------------------------------------------------------
+
+    /// Recompute every sub-rect from the outer rect, the resolved mode, and
+    /// the eased reveal/push values.
+    fn recompute_rects(&mut self) {
+        let r = self.rect;
+        let w = r.width();
+        let has_sidebar = self.has_sidebar();
+        let sw = self.sidebar_width.min(w);
+
+        match self.mode() {
+            ShellMode::Wide => {
+                // Sidebar docked: content is inset by the eased sidebar width
+                // so the collapse plays smoothly without overlap.
+                let inset = if has_sidebar { sw * self.sidebar_flap.reveal() } else { 0.0 };
+                self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
+
+                // Remaining width → overview (fixed) + detail (rest), detail
+                // never below MIN_DETAIL_WIDTH.
+                let content_x0 = r.x0 + inset;
+                let content_w = (r.x1 - content_x0).max(0.0);
+                let ow = self
+                    .overview_width
+                    .min((content_w - MIN_DETAIL_WIDTH).max(0.0))
+                    .max(0.0);
+                self.overview_rect = Rect::new(content_x0, r.y0, content_x0 + ow, r.y1);
+                self.detail_rect = Rect::new(content_x0 + ow, r.y0, r.x1, r.y1);
+                self.scrim_rect = Rect::ZERO;
+            }
+            ShellMode::Narrow => {
+                // Content pushes: overview slides left off-screen as the
+                // detail slides in from the right.
+                let p = self.push.slide(); // 0 = overview, 1 = detail
+                self.overview_rect =
+                    Rect::new(r.x0 - w * p, r.y0, r.x1 - w * p, r.y1);
+                self.detail_rect = Rect::new(
+                    r.x0 + w * (1.0 - p),
+                    r.y0,
+                    r.x1 + w * (1.0 - p),
+                    r.y1,
+                );
+
+                // Sidebar overlay drawer over the content behind a scrim.
+                if has_sidebar {
+                    let slide = self.sidebar_flap.slide();
+                    let x0 = r.x0 - sw * (1.0 - slide);
+                    self.sidebar_rect = Rect::new(x0, r.y0, x0 + sw, r.y1);
+                    self.scrim_rect = if self.sidebar_flap.reveal() > 0.001 {
+                        r
+                    } else {
+                        Rect::ZERO
+                    };
+                } else {
+                    self.sidebar_rect = Rect::ZERO;
+                    self.scrim_rect = Rect::ZERO;
+                }
+            }
+        }
+
+        self.recompute_affordance();
+    }
+
+    /// Resolve which affordance owns the top-left corner and its hit rect.
+    fn recompute_affordance(&mut self) {
+        let r = self.rect;
+        self.affordance = self.top_left_affordance();
+        self.affordance_rect = match self.affordance {
+            Affordance::None => Rect::ZERO,
+            Affordance::SidebarToggle => Rect::new(
+                r.x0 + CHIP_INSET,
+                r.y0 + CHIP_INSET,
+                r.x0 + CHIP_INSET + CHIP_SIZE,
+                r.y0 + CHIP_INSET + CHIP_SIZE,
+            ),
+            Affordance::Back => Rect::new(
+                r.x0 + CHIP_INSET,
+                r.y0 + CHIP_INSET,
+                r.x0 + CHIP_INSET + BACK_CHIP_WIDTH,
+                r.y0 + CHIP_INSET + CHIP_SIZE,
+            ),
+        };
+    }
+
+    /// Whether the sidebar pane should be drawn this frame.
+    fn sidebar_visible(&self) -> bool {
+        self.has_sidebar() && self.sidebar_flap.reveal() > 0.001
+    }
+
+    /// Build the inner taffy tree for the present children at their resolved
+    /// rects so they lay out + receive events.
+    fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+
+        let o_node = self.overview.build_layout(&mut taffy, theme, &mut map);
+        let d_node = self.detail.build_layout(&mut taffy, theme, &mut map);
+        let s_node = self
+            .sidebar
+            .as_mut()
+            .map(|s| s.build_layout(&mut taffy, theme, &mut map));
+
+        let mut jobs: Vec<(NodeId, Rect)> =
+            vec![(o_node, self.overview_rect), (d_node, self.detail_rect)];
+        if let Some(sn) = s_node {
+            jobs.push((sn, self.sidebar_rect));
+        }
+        for (node, rect) in jobs {
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                continue;
+            }
+            let _ = taffy.compute_layout_with_measure(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                    height: taffy::AvailableSpace::Definite(rect.height() as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, text_renderer) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            );
+        }
+
+        self.overview
+            .apply_layout(&taffy, o_node, Point::new(self.overview_rect.x0, self.overview_rect.y0));
+        self.detail
+            .apply_layout(&taffy, d_node, Point::new(self.detail_rect.x0, self.detail_rect.y0));
+        if let (Some(sb), Some(sn)) = (self.sidebar.as_mut(), s_node) {
+            sb.apply_layout(&taffy, sn, Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0));
+        }
+
+        self.inner_taffy = Some(taffy);
+        self.overview_node = Some(o_node);
+        self.detail_node = Some(d_node);
+        self.sidebar_node = s_node;
+    }
+
+    /// Advance the reveal + push animations off a real wall-clock delta,
+    /// recomputing + re-placing children while something moves. Driven from
+    /// the draw path (never `update`, which `ui::App` never calls) so the
+    /// slides actually play and settle to no frames at rest (HIG §5).
+    fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        let now = Instant::now();
+        let dt = self
+            .last_tick
+            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
+            .unwrap_or(0.0);
+        self.last_tick = Some(now);
+
+        let a = self.sidebar_flap.tick(self.sidebar_split_layout(), dt);
+        let b = self.push.tick(SplitLayout::Docked, dt);
+        self.animating = a || b;
+        if self.animating {
+            self.recompute_rects();
+            self.place_children(theme, text_renderer);
+        }
+    }
+
+    // --- chrome painting -------------------------------------------------
+
+    /// Paint the collapse/hamburger or Back chip. The widget structurally
+    /// **cannot** draw an `X` here — the glyph is always a hamburger, a
+    /// chevron, or a back-arrow.
+    fn draw_affordance(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.affordance == Affordance::None {
+            return;
+        }
+        let rect = self.affordance_rect;
+
+        // Rounded chip background so the affordance reads as a control.
+        let bg = RoundedRect::from_rect(rect, 8.0);
+        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &bg);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &bg,
+        );
+
+        // The glyph sits in a leading CHIP_SIZE square of the chip.
+        let glyph_box = Rect::new(
+            rect.x0,
+            rect.y0,
+            rect.x0 + CHIP_SIZE,
+            rect.y1,
+        );
+        match self.affordance {
+            Affordance::None => {}
+            Affordance::Back => {
+                draw_icon(
+                    scene,
+                    transform,
+                    glyph_box.inflate(-9.0, -9.0),
+                    Icon::ChevronLeft,
+                    theme.text_primary,
+                    1.75,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "Back",
+                    14.0,
+                    theme.text_primary,
+                    transform
+                        * Affine::translate((glyph_box.x1 - 2.0, rect.y0 + CHIP_SIZE / 2.0 - 9.0)),
+                    None,
+                );
+            }
+            Affordance::SidebarToggle => {
+                if self.is_sidebar_open() {
+                    // Open → offer to collapse: a chevron pointing back at
+                    // the edge the sidebar tucks into. Never an `X`.
+                    draw_icon(
+                        scene,
+                        transform,
+                        glyph_box.inflate(-9.0, -9.0),
+                        Icon::ChevronLeft,
+                        theme.text_primary,
+                        1.75,
+                    );
+                } else {
+                    // Closed → offer to summon: the universal hamburger.
+                    Self::draw_hamburger(scene, transform, glyph_box, theme.text_primary);
+                }
+            }
+        }
+    }
+
+    /// Draw a three-line hamburger centred in `box_rect`.
+    fn draw_hamburger(scene: &mut Scene, transform: Affine, box_rect: Rect, color: Color) {
+        let cx = box_rect.center().x;
+        let cy = box_rect.center().y;
+        let half_w = 9.0;
+        let gap = 5.5;
+        let stroke = Stroke::new(2.0).with_caps(Cap::Round).with_join(Join::Round);
+        for dy in [-gap, 0.0, gap] {
+            let line = Line::new(
+                Point::new(cx - half_w, cy + dy),
+                Point::new(cx + half_w, cy + dy),
+            );
+            scene.stroke(&stroke, transform, color, None, &line);
+        }
+    }
+}
+
+impl Widget for NavShell {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.overview.sync(state, path);
+        self.detail.sync(state, path);
+        if let Some(s) = self.sidebar.as_mut() {
+            s.sync(state, path);
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // The shell fills its whole allocation; children live in an isolated
+        // inner tree (their rects escape normal flow in overlay/push mode).
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        // A window resize that crosses the breakpoint drops a stale sidebar
+        // preference so the sidebar returns to its auto behaviour.
+        self.sidebar_flap.reconcile(self.sidebar_split_layout());
+        self.recompute_rects();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        self.place_children(&theme, &mut tr);
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        // Slides advance from the draw path (`self_tick`), not here — `ui::App`
+        // never calls `Widget::update`. Forward to children and report whether
+        // anything still needs frames.
+        let mut any = self.overview.update(state, path);
+        any |= self.detail.update(state, path);
+        if let Some(s) = self.sidebar.as_mut() {
+            any |= s.update(state, path);
+        }
+        any || self.sidebar_flap.is_animating(self.sidebar_split_layout())
+            || self.push.is_animating(SplitLayout::Docked)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.self_tick(theme, text_renderer);
+
+        // Content panes first (behind the overlay drawer). Off-screen panes
+        // in push mode simply fall outside the framebuffer.
+        self.overview.draw(scene, transform, text_renderer, theme, presence);
+        self.detail.draw(scene, transform, text_renderer, theme, presence);
+        if self.sidebar_visible() {
+            if let Some(s) = self.sidebar.as_mut() {
+                // Scrim must sit between content and the drawer; draw it here.
+                if self.scrim_rect.width() > 0.0 {
+                    let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
+                    let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
+                    scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
+                }
+                s.draw(scene, transform, text_renderer, theme, presence);
+            }
+        }
+        // Dividers + affordance on top (skip the scrim — already drawn above).
+        self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.self_tick(theme, text_renderer);
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.overview
+            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.detail
+            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        if self.sidebar_visible() {
+            if self.scrim_rect.width() > 0.0 {
+                let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
+                let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
+                scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
+            }
+            if let Some(s) = self.sidebar.as_mut() {
+                s.draw_with_presence(
+                    scene, transform, text_renderer, theme, presence, permissions,
+                );
+            }
+        }
+        self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor =
+                    Point::new(position.x / scale_factor, position.y / scale_factor);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                // Esc: dismiss the overlay drawer, else pop the pushed detail.
+                if self.is_sidebar_open()
+                    && self.sidebar_split_layout() == SplitLayout::Overlay
+                {
+                    self.close_sidebar();
+                    *handled = true;
+                    return;
+                }
+                if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
+                    self.show_overview();
+                    *handled = true;
+                    return;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // 1. The top-left affordance owns its chip.
+                if self.affordance != Affordance::None
+                    && self.affordance_rect.contains(self.last_cursor)
+                {
+                    match self.affordance {
+                        Affordance::SidebarToggle => self.toggle_sidebar(),
+                        Affordance::Back => self.show_overview(),
+                        Affordance::None => {}
+                    }
+                    *handled = true;
+                    return;
+                }
+                // 2. A scrim click dismisses the overlay drawer.
+                if self.is_sidebar_open()
+                    && self.sidebar_split_layout() == SplitLayout::Overlay
+                    && self.scrim_rect.width() > 0.0
+                    && self.scrim_rect.contains(self.last_cursor)
+                    && !self.sidebar_rect.contains(self.last_cursor)
+                {
+                    self.close_sidebar();
+                    *handled = true;
+                    return;
+                }
+            }
+            _ => {}
+        }
+        if *handled {
+            return;
+        }
+
+        // Route to children via the inner tree. The overlay drawer (when
+        // open) is topmost, so route it first; otherwise route the front
+        // content pane first.
+        let (Some(taffy), Some(o_node), Some(d_node)) = (
+            self.inner_taffy.as_ref(),
+            self.overview_node,
+            self.detail_node,
+        ) else {
+            return;
+        };
+        let sidebar_first = self.is_sidebar_open()
+            && self.sidebar_split_layout() == SplitLayout::Overlay;
+
+        // Build the routing order. Each entry is (which child, its node).
+        enum Which {
+            Sidebar,
+            Overview,
+            Detail,
+        }
+        let mut order: Vec<(Which, NodeId)> = Vec::new();
+        if sidebar_first {
+            if let Some(sn) = self.sidebar_node {
+                order.push((Which::Sidebar, sn));
+            }
+        }
+        // Front content pane first for narrow push; harmless order in wide.
+        if self.pane == NavPane::Detail {
+            order.push((Which::Detail, d_node));
+            order.push((Which::Overview, o_node));
+        } else {
+            order.push((Which::Overview, o_node));
+            order.push((Which::Detail, d_node));
+        }
+        if !sidebar_first {
+            if let Some(sn) = self.sidebar_node {
+                order.push((Which::Sidebar, sn));
+            }
+        }
+
+        for (which, child_node) in order {
+            if *handled {
+                break;
+            }
+            let target: &mut dyn Widget = match which {
+                Which::Sidebar => match self.sidebar.as_mut() {
+                    Some(s) => s.as_mut(),
+                    None => continue,
+                },
+                Which::Overview => self.overview.as_mut(),
+                Which::Detail => self.detail.as_mut(),
+            };
+            target.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut v: Vec<&dyn Widget> = vec![self.overview.as_ref(), self.detail.as_ref()];
+        if let Some(s) = self.sidebar.as_ref() {
+            v.push(s.as_ref());
+        }
+        v
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut v: Vec<&mut (dyn Widget + '_)> =
+            vec![self.overview.as_mut(), self.detail.as_mut()];
+        if let Some(s) = self.sidebar.as_mut() {
+            v.push(s.as_mut());
+        }
+        v
+    }
+
+    fn name(&self) -> &str {
+        "NavShell"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.animating
+            || self.sidebar_flap.is_animating(self.sidebar_split_layout())
+            || self.push.is_animating(SplitLayout::Docked)
+            || self.overview.needs_animation_frame()
+            || self.detail.needs_animation_frame()
+            || self
+                .sidebar
+                .as_ref()
+                .map(|s| s.needs_animation_frame())
+                .unwrap_or(false)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut d = self.overview.take_structure_dirty();
+        d |= self.detail.take_structure_dirty();
+        if let Some(s) = self.sidebar.as_mut() {
+            d |= s.take_structure_dirty();
+        }
+        d
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.animating
+            || self.overview.needs_idle_sync()
+            || self.detail.needs_idle_sync()
+            || self
+                .sidebar
+                .as_ref()
+                .map(|s| s.needs_idle_sync())
+                .unwrap_or(false)
+    }
+}
+
+impl NavShell {
+    /// Chrome minus the scrim (the scrim is painted inline between content
+    /// and the drawer in each draw path so its z-order is correct).
+    fn draw_chrome_no_scrim(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.mode() == ShellMode::Wide {
+            let stroke = Stroke::new(1.0);
+            if self.sidebar_visible() {
+                let x = self.sidebar_rect.x1;
+                scene.stroke(
+                    &stroke,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
+                );
+            }
+            let x = self.overview_rect.x1;
+            scene.stroke(
+                &stroke,
+                transform,
+                theme.border_standard,
+                None,
+                &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
+            );
+        }
+        self.draw_affordance(scene, transform, text_renderer, theme);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Text;
+    use vello_encoding::DrawTag;
+
+    fn shell(w: f64, with_sidebar: bool) -> NavShell {
+        let mut ns = if with_sidebar {
+            NavShell::new(Box::new(Text::new("overview")), Box::new(Text::new("detail")))
+                .with_sidebar(Box::new(Text::new("sidebar")))
+        } else {
+            NavShell::new(Box::new(Text::new("overview")), Box::new(Text::new("detail")))
+        };
+        lay_out(&mut ns, w, 640.0);
+        ns
+    }
+
+    fn lay_out(ns: &mut NavShell, w: f64, h: f64) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(w as f32),
+                    height: taffy::AvailableSpace::Definite(h as f32),
+                },
+            )
+            .unwrap();
+        ns.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    // --- mode resolution -------------------------------------------------
+
+    #[test]
+    fn breakpoint_boundary_is_inclusive_wide() {
+        assert_eq!(ShellMode::from_width(700.0, 700.0), ShellMode::Wide);
+        assert_eq!(ShellMode::from_width(699.0, 700.0), ShellMode::Narrow);
+    }
+
+    #[test]
+    fn wide_is_side_by_side_with_docked_sidebar() {
+        let ns = shell(1200.0, true);
+        assert_eq!(ns.mode(), ShellMode::Wide);
+        assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
+        assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Docked));
+        assert!(ns.is_sidebar_open(), "docked sidebar opens by default");
+        // Three abreast: sidebar, then overview, then detail, left→right.
+        assert!(ns.sidebar_rect().width() > 1.0, "docked sidebar has width");
+        assert!(
+            ns.overview_rect().x0 >= ns.sidebar_rect().x1 - 0.5,
+            "overview sits right of the sidebar"
+        );
+        assert!(
+            ns.detail_rect().x0 >= ns.overview_rect().x1 - 0.5,
+            "detail sits right of the overview"
+        );
+        assert!(ns.detail_rect().width() >= MIN_DETAIL_WIDTH - 1.0);
+        assert_eq!(ns.scrim_rect(), Rect::ZERO, "no scrim in wide mode");
+    }
+
+    #[test]
+    fn narrow_is_push_with_overlay_sidebar() {
+        let ns = shell(420.0, true);
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert_eq!(ns.content_layout(), ContentLayout::Push);
+        assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
+        assert!(!ns.is_sidebar_open(), "overlay sidebar is closed by default");
+        // Overview is full-screen by default (detail parked off to the right).
+        assert!(
+            (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
+            "overview is full-width by default"
+        );
+        assert!(
+            ns.detail_rect().x0 >= ns.get_rect().x1 - 1.0,
+            "detail is parked off-screen to the right until pushed"
+        );
+    }
+
+    #[test]
+    fn content_only_shell_has_no_sidebar() {
+        let ns = shell(1200.0, false);
+        assert!(!ns.has_sidebar());
+        assert_eq!(ns.sidebar_layout(), None);
+        assert!(!ns.is_sidebar_open());
+        // Wide content-only: overview flush left (no sidebar inset).
+        assert!((ns.overview_rect().x0 - ns.get_rect().x0).abs() < 0.5);
+    }
+
+    // --- push / pop ------------------------------------------------------
+
+    #[test]
+    fn narrow_push_shows_detail_then_pops_back() {
+        let mut ns = shell(420.0, true);
+        assert_eq!(ns.pane(), NavPane::Overview);
+        ns.show_detail();
+        ns.snap_pane(NavPane::Detail);
+        assert_eq!(ns.pane(), NavPane::Detail);
+        assert!(ns.is_detail_shown());
+        // Detail now fills the pane; overview slid off to the left.
+        assert!(
+            (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+            "pushed detail occupies the pane"
+        );
+        assert!(
+            ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
+            "overview slid off-screen left"
+        );
+        ns.show_overview();
+        ns.snap_pane(NavPane::Overview);
+        assert_eq!(ns.pane(), NavPane::Overview);
+        assert!(
+            (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+            "overview back in place"
+        );
+    }
+
+    #[test]
+    fn wide_shows_both_content_panes_regardless_of_push_target() {
+        let mut ns = shell(1200.0, true);
+        ns.show_detail(); // sets target, but wide keeps both abreast
+        ns.snap();
+        assert!(ns.overview_rect().width() > 1.0, "overview still visible wide");
+        assert!(ns.detail_rect().width() > 1.0, "detail still visible wide");
+    }
+
+    // --- affordance is a collapse control, NEVER an X --------------------
+
+    #[test]
+    fn affordance_is_sidebar_toggle_in_wide_with_sidebar() {
+        let ns = shell(1200.0, true);
+        assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
+        assert!(ns.collapse_button_rect().width() > 0.0);
+        assert_eq!(ns.back_button_rect(), Rect::ZERO);
+    }
+
+    #[test]
+    fn affordance_is_hamburger_to_summon_narrow_drawer() {
+        let ns = shell(420.0, true);
+        // Overview front + closed sidebar → summon affordance present.
+        assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
+        assert!(!ns.is_sidebar_open(), "glyph should be the hamburger (closed)");
+    }
+
+    #[test]
+    fn affordance_becomes_back_when_detail_pushed_narrow() {
+        let mut ns = shell(420.0, true);
+        ns.snap_pane(NavPane::Detail);
+        assert_eq!(ns.top_left_affordance(), Affordance::Back);
+        assert!(ns.back_button_rect().width() > 0.0);
+        assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
+    }
+
+    #[test]
+    fn content_only_wide_has_no_affordance() {
+        let ns = shell(1200.0, false);
+        assert_eq!(ns.top_left_affordance(), Affordance::None);
+        assert_eq!(ns.collapse_button_rect(), Rect::ZERO);
+        assert_eq!(ns.back_button_rect(), Rect::ZERO);
+    }
+
+    // --- collapse -------------------------------------------------------
+
+    #[test]
+    fn toggle_collapses_docked_sidebar_and_reclaims_width() {
+        let mut ns = shell(1200.0, true);
+        let overview_x_open = ns.overview_rect().x0;
+        ns.toggle_sidebar();
+        ns.snap_sidebar(false);
+        assert!(!ns.is_sidebar_open());
+        assert!(
+            ns.overview_rect().x0 < overview_x_open - 1.0,
+            "collapsing the docked sidebar reclaims its width for content"
+        );
+        assert_eq!(ns.scrim_rect(), Rect::ZERO, "docked collapse shows no scrim");
+    }
+
+    #[test]
+    fn toggle_opens_narrow_drawer_with_scrim() {
+        let mut ns = shell(420.0, true);
+        ns.toggle_sidebar();
+        ns.snap_sidebar(true);
+        assert!(ns.is_sidebar_open());
+        assert!(ns.scrim_rect().width() > 0.0, "open drawer dims the content");
+        assert!(
+            (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+            "revealed drawer sits flush at the left edge"
+        );
+    }
+
+    // --- self-routing ----------------------------------------------------
+
+    #[test]
+    fn esc_dismisses_open_narrow_drawer() {
+        let mut ns = shell(420.0, true);
+        ns.open_sidebar();
+        ns.snap_sidebar(true);
+        assert!(ns.is_sidebar_open());
+        let mut handled = false;
+        dispatch(&mut ns, &esc_event(), &mut handled);
+        assert!(handled, "Esc on an open drawer is consumed");
+        assert!(!ns.is_sidebar_open(), "Esc closes the drawer");
+    }
+
+    #[test]
+    fn esc_pops_pushed_detail() {
+        let mut ns = shell(420.0, true);
+        ns.snap_pane(NavPane::Detail);
+        let mut handled = false;
+        dispatch(&mut ns, &esc_event(), &mut handled);
+        assert!(handled, "Esc on a pushed detail is consumed");
+        assert_eq!(ns.pane(), NavPane::Overview, "Esc pops back to overview");
+    }
+
+    #[test]
+    fn scrim_click_dismisses_narrow_drawer() {
+        let mut ns = shell(420.0, true);
+        ns.open_sidebar();
+        ns.snap_sidebar(true);
+        // Click to the right of the drawer, in the scrim.
+        let pt = Point::new(ns.get_rect().x1 - 20.0, 320.0);
+        let mut handled = false;
+        dispatch(&mut ns, &cursor_at(pt), &mut handled);
+        dispatch(&mut ns, &left_press(), &mut handled);
+        assert!(handled, "scrim click is consumed");
+        assert!(!ns.is_sidebar_open(), "scrim click closes the drawer");
+    }
+
+    #[test]
+    fn collapse_button_click_toggles_sidebar() {
+        let mut ns = shell(1200.0, true);
+        assert!(ns.is_sidebar_open());
+        let c = ns.collapse_button_rect().center();
+        let mut handled = false;
+        dispatch(&mut ns, &cursor_at(c), &mut handled);
+        dispatch(&mut ns, &left_press(), &mut handled);
+        assert!(handled, "the collapse chip owns its click");
+        assert!(!ns.is_sidebar_open(), "clicking the collapse button collapses the sidebar");
+    }
+
+    #[test]
+    fn back_button_click_pops_detail() {
+        let mut ns = shell(420.0, true);
+        ns.snap_pane(NavPane::Detail);
+        let c = ns.back_button_rect().center();
+        let mut handled = false;
+        dispatch(&mut ns, &cursor_at(c), &mut handled);
+        dispatch(&mut ns, &left_press(), &mut handled);
+        assert!(handled, "the back chip owns its click");
+        assert_eq!(ns.pane(), NavPane::Overview, "Back pops to overview");
+    }
+
+    // --- breakpoint reconcile -------------------------------------------
+
+    #[test]
+    fn resize_across_breakpoint_returns_sidebar_to_auto() {
+        // Start wide + open, user collapses, then resize narrow → auto closed,
+        // resize back wide → auto open again (stale preference dropped).
+        let mut ns = shell(1200.0, true);
+        ns.toggle_sidebar(); // user collapse
+        assert!(!ns.is_sidebar_open());
+        lay_out(&mut ns, 420.0, 640.0); // cross to narrow
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert!(!ns.is_sidebar_open(), "narrow default is closed");
+        lay_out(&mut ns, 1200.0, 640.0); // cross back to wide
+        assert!(
+            ns.is_sidebar_open(),
+            "crossing the breakpoint drops the stale collapse preference"
+        );
+    }
+
+    // --- rendering -------------------------------------------------------
+
+    #[test]
+    fn draw_emits_fills() {
+        let mut ns = shell(1200.0, true);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let perms = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(fills >= 1, "a laid-out shell must paint something");
+    }
+
+    /// The push slide must *animate* across frames from the draw path, not
+    /// teleport — and settle to no-frames at rest (HIG §5).
+    #[test]
+    fn push_slides_across_frames_then_settles() {
+        let mut ns = shell(420.0, true);
+        ns.snap_pane(NavPane::Overview); // deterministic closed start
+        ns.show_detail(); // target flips to detail (push 0 → 1)
+
+        draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
+        assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
+
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        draw_frame(&mut ns);
+        let r = ns.push.reveal();
+        assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
+        assert!(ns.needs_animation_frame(), "mid-slide keeps requesting frames");
+
+        for _ in 0..240 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            draw_frame(&mut ns);
+            if !ns.push.is_animating(SplitLayout::Docked) {
+                break;
+            }
+        }
+        assert!((ns.push.reveal() - 1.0).abs() < 0.01, "slide settles fully in");
+        assert!(!ns.needs_animation_frame(), "a settled shell requests no frames");
+    }
+
+    #[test]
+    fn snap_stays_deterministic_through_draw() {
+        let mut ns = shell(420.0, true);
+        ns.show_detail();
+        ns.snap();
+        assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        draw_frame(&mut ns);
+        assert_eq!(ns.push.reveal(), 1.0, "a snapped shell must not drift on draw");
+        assert!(!ns.needs_animation_frame(), "a settled shell requests no frames");
+    }
+
+    // --- scaffolding -----------------------------------------------------
+
+    fn draw_frame(ns: &mut NavShell) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let perms = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+    }
+
+    use winit::event::DeviceId;
+    fn synth_device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn esc_event() -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Escape);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn dispatch(ns: &mut NavShell, event: &WindowEvent, handled: &mut bool) {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut focus_target = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        ns.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+    }
+}

@@ -53,6 +53,15 @@ pub enum ColumnWidth {
 pub type CellTextRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
 
+/// Type-erased cell renderer. Receives `(&Row, &mut Scene, &Theme, &mut
+/// TextRenderer, Rect)` — the row, the scene to paint into, the active
+/// theme, the shared text renderer (so a cell can measure + draw real
+/// text), and the resolved on-screen cell rectangle (so the closure knows
+/// where to anchor its content). Coordinates are absolute scene space;
+/// the table-level transform has already been applied.
+pub type CellRender<Row> =
+    Box<dyn Fn(&Row, &mut Scene, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
+
 /// Definition of a single column.
 pub struct ColumnDef<Row> {
     pub key: String,
@@ -61,6 +70,9 @@ pub struct ColumnDef<Row> {
     pub sortable: bool,
     /// Per-row cell renderer. `None` renders an empty cell.
     pub text_render: Option<CellTextRender<Row>>,
+    /// Always-present per-row cell renderer (no-op by default). Invoked for
+    /// every visible cell in the `draw` pass; set via [`ColumnDef::with_render`].
+    pub render_cell: CellRender<Row>,
     /// Width in px of the right-edge resize hit area. Used by T5.
     #[allow(dead_code)]
     pub(crate) resize_handle_px: f32,
@@ -78,6 +90,7 @@ impl<Row> ColumnDef<Row> {
             width,
             sortable: false,
             text_render: None,
+            render_cell: Box::new(|_, _, _, _, _| {}),
             resize_handle_px: 6.0,
         }
     }
@@ -90,6 +103,13 @@ impl<Row> ColumnDef<Row> {
     /// Register a text-capable cell renderer.
     pub fn with_text_render(mut self, f: CellTextRender<Row>) -> Self {
         self.text_render = Some(f);
+        self
+    }
+
+    /// Register the always-present cell renderer, invoked for every visible
+    /// cell in `draw` with `(row, scene, theme, text_renderer, rect)`.
+    pub fn with_render(mut self, f: CellRender<Row>) -> Self {
+        self.render_cell = f;
         self
     }
 }
@@ -592,13 +612,27 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     &row_rect,
                 );
             }
-            // Per-column cell render — the text-capable closure gets the
-            // TextRenderer + resolved cell rect + selected flag. Columns
-            // without a renderer draw nothing.
+            // Per-column cell render. Both renderers receive the resolved
+            // cell rect (column x-range × this row's y-band, clamped to the
+            // table's bottom edge), painting in absolute scene coordinates.
+            // `render_cell` is the always-present closure (no-op by default)
+            // set via `with_render`; `text_render` is the optional
+            // text-capable closure (set via `with_text_render`) that also
+            // gets the `selected` flag so it can flip the text colour for
+            // contrast on the selection fill.
             for (i, col) in self.columns.iter().enumerate() {
+                let cell_rect = match self.col_rects.get(i) {
+                    Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(self.rect.y1)),
+                    None => continue,
+                };
+                (col.render_cell)(
+                    &self.rows[row_idx],
+                    scene,
+                    theme,
+                    text_renderer,
+                    cell_rect,
+                );
                 if let Some(tr) = &col.text_render {
-                    let cell_x = self.col_rects.get(i).map(|c| (c.x0, c.x1)).unwrap_or((self.rect.x0, self.rect.x1));
-                    let cell_rect = Rect::new(cell_x.0, y0, cell_x.1, y1);
                     tr(&self.rows[row_idx], scene, text_renderer, cell_rect, theme, selected);
                 }
             }

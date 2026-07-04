@@ -180,6 +180,13 @@ pub fn spawn_render_thread(
     let join = std::thread::Builder::new()
         .name("ui-render".into())
         .spawn(move || {
+            // Diagnostic: `QUICK_UI_PRESENT=1` logs per-frame GPU-encode /
+            // swapchain-acquire / present timings from the worker so we can see
+            // where the live present spends time (a slow compositor/present path
+            // shows up as a large acquire or present, invisible to offscreen
+            // benches). Read once; off by default, zero hot-path cost otherwise.
+            let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
+            let mut frame_ix: u64 = 0;
             while let Ok(msg) = rx.recv() {
                 let (mut scene, width, height, base_color) = match msg {
                     RenderRequest::Frame { scene, width, height, base_color } => {
@@ -206,7 +213,10 @@ pub fn spawn_render_thread(
                     width,
                     height,
                     base_color,
+                    present_dbg,
+                    frame_ix,
                 );
+                frame_ix += 1;
 
                 // Reset the scene's encoding buffer in-place so
                 // main doesn't pay reallocation cost when it picks
@@ -256,7 +266,11 @@ fn render_one_frame(
     width: u32,
     height: u32,
     base_color: Color,
+    present_dbg: bool,
+    frame_ix: u64,
 ) -> FrameOutcome {
+    use std::time::Instant;
+    let t_encode = present_dbg.then(Instant::now);
     let device_handle = &render_cx.devices[surface.dev_id];
 
     // 1. Encode the scene into the target_view intermediate texture.
@@ -280,7 +294,10 @@ fn render_one_frame(
         return FrameOutcome::Skipped;
     }
 
+    let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
+
     // 2. Block on the swapchain image.
+    let t_acquire = present_dbg.then(Instant::now);
     let surface_texture = match surface.surface.get_current_texture() {
         vello::wgpu::CurrentSurfaceTexture::Success(t) => t,
         vello::wgpu::CurrentSurfaceTexture::Outdated
@@ -305,7 +322,10 @@ fn render_one_frame(
         }
     };
 
+    let acquire_us = t_acquire.map(|t| t.elapsed().as_secs_f64() * 1e6);
+
     // 3. Encoder + 4. blit + 5. submit.
+    let t_submit = present_dbg.then(Instant::now);
     let mut encoder = device_handle.device.create_command_encoder(
         &vello::wgpu::CommandEncoderDescriptor {
             label: Some("ui-render-thread blit-to-surface"),
@@ -321,8 +341,23 @@ fn render_one_frame(
     );
     device_handle.queue.submit([encoder.finish()]);
 
+    let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
+
     // 6. Present.
+    let t_present = present_dbg.then(Instant::now);
     surface_texture.present();
+    if present_dbg {
+        let present_us = t_present.map(|t| t.elapsed().as_secs_f64() * 1e6).unwrap_or(0.0);
+        eprintln!(
+            "present-frame {frame_ix}: encode={:.0}us acquire={:.0}us submit={:.0}us present={:.0}us  ({}x{})",
+            encode_us.unwrap_or(0.0),
+            acquire_us.unwrap_or(0.0),
+            submit_us.unwrap_or(0.0),
+            present_us,
+            width,
+            height,
+        );
+    }
     // 7. Drive the wgpu polling loop forward so submitted command
     //    buffers actually complete. `Poll` is the non-blocking
     //    variant — we don't want the worker to stall here, just to

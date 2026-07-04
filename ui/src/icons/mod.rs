@@ -98,6 +98,15 @@ pub enum Icon {
     Info,
     CloudDownload,
     ArrowUpDown,
+    // --- Extended core set ---
+    Bell,
+    Play,
+    Pause,
+    Refresh,
+    ExternalLink,
+    Trash,
+    /// Horizontal "…" overflow / more-actions affordance.
+    MoreHorizontal,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -369,6 +378,54 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M21 3v5h-5"),
         ],
         // Copy: foreground sheet rect + background sheet outline.
+        // Star: single five-point star outline. Transcribed from
+        // lucide's `star.js` (v0.546.0).
+        Icon::Star => vec![path_from_d(
+            "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.85a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 10.633a.53.53 0 0 1 .294-.904l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
+        )],
+        // Bell: dome body + the clapper arc at the base. Transcribed
+        // from lucide's `bell.js` (v0.546.0).
+        Icon::Bell => vec![
+            path_from_d("M10.268 21a2 2 0 0 0 3.464 0"),
+            path_from_d("M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"),
+        ],
+        // Play: single filled-look triangle traced as a stroked path so
+        // it matches the lucide stroke aesthetic. From `play.js`.
+        Icon::Play => vec![path_from_d(
+            "M6 3a1 1 0 0 1 1.514-.857l13 7a1 1 0 0 1 0 1.714l-13 7A1 1 0 0 1 6 21z",
+        )],
+        // Pause: two rounded vertical bars. From lucide's `pause.js`.
+        Icon::Pause => vec![
+            rect_path(14.0, 4.0, 4.0, 16.0, 1.0),
+            rect_path(6.0, 4.0, 4.0, 16.0, 1.0),
+        ],
+        // Check: single tick polyline. From lucide's `check.js`.
+        Icon::Check => vec![path_from_d("M20 6 9 17l-5-5")],
+        // Refresh / rotate-cw: two quarter-arc heads + the circular
+        // sweep. Transcribed from lucide's `refresh-cw.js`.
+        Icon::Refresh => vec![
+            path_from_d("M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"),
+            path_from_d("M21 3v5h-5"),
+            path_from_d("M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"),
+            path_from_d("M8 16H3v5"),
+        ],
+        // External-link: box (open corner) + the diagonal out-arrow.
+        // Transcribed from lucide's `external-link.js`.
+        Icon::ExternalLink => vec![
+            path_from_d("M15 3h6v6"),
+            path_from_d("M10 14 21 3"),
+            path_from_d("M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"),
+        ],
+        // Trash (trash-2): lid line + can body + the two inner streaks.
+        // Transcribed from lucide's `trash-2.js`.
+        Icon::Trash => vec![
+            path_from_d("M3 6h18"),
+            path_from_d("M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"),
+            line_path(10.0, 11.0, 10.0, 17.0),
+            line_path(14.0, 11.0, 14.0, 17.0),
+        ],
+        // Copy: foreground rounded rect + the offset background corner.
+        // Transcribed from lucide's `copy.js`.
         Icon::Copy => vec![
             rect_path(8.0, 8.0, 14.0, 14.0, 2.0),
             path_from_d("M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"),
@@ -424,10 +481,6 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M8 12h13"),
             path_from_d("M8 19h13"),
         ],
-        // Star: single five-point star outline.
-        Icon::Star => vec![path_from_d(
-            "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
-        )],
         // Hard-drive: divider line + body + two indicator dots.
         Icon::HardDrive => vec![
             line_path(22.0, 12.0, 2.0, 12.0),
@@ -435,8 +488,6 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             line_path(6.0, 16.0, 6.01, 16.0),
             line_path(10.0, 16.0, 10.01, 16.0),
         ],
-        // Check: single tick stroke.
-        Icon::Check => vec![path_from_d("M20 6 9 17l-5-5")],
         // Info: ring + stem + dot.
         Icon::Info => vec![
             circle_path(12.0, 12.0, 10.0),
@@ -455,6 +506,13 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M17 20V4"),
             path_from_d("m3 8 4-4 4 4"),
             path_from_d("M7 4v16"),
+        ],
+        // More-horizontal: three dots. lucide draws these as r≈1
+        // circles at x=12, x=19, x=5 on the centre line.
+        Icon::MoreHorizontal => vec![
+            circle_path(12.0, 12.0, 1.0),
+            circle_path(19.0, 12.0, 1.0),
+            circle_path(5.0, 12.0, 1.0),
         ],
     }
 }
@@ -500,6 +558,32 @@ pub fn icon_for_path(path: &std::path::Path, is_dir: bool) -> Icon {
             Icon::FileText
         }
         _ => Icon::File,
+    }
+}
+
+impl Icon {
+    /// Convenience: paint this glyph centred inside `rect`, stroked in
+    /// `color` at the concept's default 1.5 px lucide width. Equivalent
+    /// to [`draw_icon`] with `self` and [`LUCIDE_DEFAULT_STROKE_PX`].
+    ///
+    /// `transform` maps the icon's local (`rect`) coordinates into scene
+    /// space — pass `Affine::IDENTITY` when `rect` is already absolute.
+    pub fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
+        draw_icon(scene, transform, rect, self, color, LUCIDE_DEFAULT_STROKE_PX);
+    }
+
+    /// Same as [`Icon::draw`] but with an explicit output stroke width in
+    /// pixels — use when a call site needs a heavier or lighter glyph than
+    /// the 1.5 px default (e.g. a large hero icon).
+    pub fn draw_with_stroke(
+        self,
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        color: Color,
+        stroke_px: f64,
+    ) {
+        draw_icon(scene, transform, rect, self, color, stroke_px);
     }
 }
 
@@ -668,6 +752,18 @@ mod tests {
             Icon::Home,
             Icon::Camera,
             Icon::Power,
+            Icon::Star,
+            Icon::Bell,
+            Icon::Play,
+            Icon::Pause,
+            Icon::Check,
+            Icon::Refresh,
+            Icon::ExternalLink,
+            Icon::Trash,
+            Icon::Copy,
+            Icon::Folder,
+            Icon::ChevronRight,
+            Icon::MoreHorizontal,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
@@ -675,6 +771,48 @@ mod tests {
                 assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
             }
         }
+    }
+
+    /// `Icon::draw` is a thin convenience over `draw_icon` — it must emit
+    /// the same stroked subpaths into the scene as the free function. We
+    /// assert it produces at least one stroke (LINE/STROKE draw tag) for a
+    /// multi-segment glyph rather than silently no-op-ing.
+    #[test]
+    fn icon_draw_method_emits_strokes() {
+        use vello_encoding::DrawTag;
+        let mut scene = Scene::new();
+        Icon::Check.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 24.0, 24.0),
+            Color::WHITE,
+        );
+        // A stroked glyph emits at least one COLOR draw tag for its path.
+        let color_tags = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(color_tags >= 1, "Icon::draw must stroke at least one subpath");
+    }
+
+    /// The extended core set must have the expected subpath counts so a
+    /// future lucide-upstream restructure of any glyph trips here.
+    #[test]
+    fn extended_icon_subpath_counts() {
+        assert_eq!(icon_subpaths(Icon::Star).len(), 1, "star = 1 outline");
+        assert_eq!(icon_subpaths(Icon::Bell).len(), 2, "bell = dome + clapper");
+        assert_eq!(icon_subpaths(Icon::Play).len(), 1, "play = 1 triangle path");
+        assert_eq!(icon_subpaths(Icon::Pause).len(), 2, "pause = 2 bars");
+        assert_eq!(icon_subpaths(Icon::Check).len(), 1, "check = 1 tick");
+        assert_eq!(icon_subpaths(Icon::Refresh).len(), 4, "refresh = 2 arcs + 2 heads");
+        assert_eq!(icon_subpaths(Icon::ExternalLink).len(), 3, "external-link = box + arrow + diag");
+        assert_eq!(icon_subpaths(Icon::Trash).len(), 4, "trash = lid + body + 2 streaks");
+        assert_eq!(icon_subpaths(Icon::Copy).len(), 2, "copy = fg rect + bg corner");
+        assert_eq!(icon_subpaths(Icon::Folder).len(), 1, "folder = 1 outline");
+        assert_eq!(icon_subpaths(Icon::ChevronRight).len(), 1, "chevron-right = 1 path");
+        assert_eq!(icon_subpaths(Icon::MoreHorizontal).len(), 3, "more = 3 dots");
     }
 
     #[test]

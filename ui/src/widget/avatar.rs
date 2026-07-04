@@ -152,6 +152,68 @@ impl Avatar {
         scene.pop_layer();
     }
 
+    /// Immediate-mode initials avatar — paint a coloured circle with
+    /// centred initials directly into `scene` at `rect`, with no layout
+    /// node, caching, or widget instance.
+    ///
+    /// This is the helper a list/roster reaches for when it lays out its
+    /// own rows and just needs a chip painted at a known rect (peer lists,
+    /// mention chips, comment gutters). `initials` is uppercased and
+    /// clamped to two chars exactly like [`Avatar::from_initials`]; `color`
+    /// is the circle fill (callers typically pass a per-user accent from
+    /// the theme ramp, e.g. via a hash). Initials render in `Color::WHITE`.
+    /// An empty `initials` paints just the circle.
+    pub fn draw_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        initials: &str,
+        color: Color,
+        _theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let centre = rect.center();
+        let radius = rect.width().min(rect.height()) * 0.5;
+        let circle = Circle::new(centre, radius);
+        scene.fill(Fill::NonZero, transform, color, None, &circle);
+
+        let initials: String = initials.to_uppercase().chars().take(2).collect();
+        if initials.is_empty() {
+            return;
+        }
+        // Same 0.4× ratio the widget uses, but keyed off the rect rather
+        // than a stored `size` field so callers don't have to thread one.
+        let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
+        let (tw, th) = text_renderer.measure(&initials, text_size, None);
+        let tx = centre.x - tw as f64 / 2.0;
+        let ty = centre.y - th as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            &initials,
+            text_size,
+            Color::WHITE,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
+    }
+
+    /// Deterministic accent colour for `initials` against `theme`'s accent
+    /// ramp — the same hash [`Avatar::from_initials`] uses, exposed as an
+    /// associated function so immediate-mode callers of [`Avatar::draw_at`]
+    /// can derive a stable per-identity colour without constructing an
+    /// `Avatar`.
+    pub fn color_for_initials(initials: &str, theme: &Theme) -> Color {
+        let initials: String = initials.to_uppercase().chars().take(2).collect();
+        let ramp = &theme.tokens.colors.accent;
+        let mut hasher = DefaultHasher::new();
+        initials.hash(&mut hasher);
+        let idx = (hasher.finish() as usize) % ramp.len();
+        ramp[idx]
+    }
+
     /// Paint the initials variant: filled circle in the deterministic
     /// accent colour, then the (already-normalised) initials in
     /// `Color::WHITE`, centred.
@@ -438,6 +500,73 @@ mod tests {
             "background_color collapsed all initials to one ramp stop — \
              hash distribution is broken or the modulo is wrong",
         );
+    }
+
+    /// `Avatar::draw_at` paints a circle + initials glyph run into a
+    /// scene immediately, with no widget instance. The encoding must show
+    /// at least one COLOR fill (circle) and a glyph run (initials).
+    #[test]
+    fn draw_at_paints_circle_and_initials() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Avatar::draw_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            "qd",
+            Avatar::color_for_initials("qd", &theme),
+            &theme,
+            &mut tr,
+        );
+        let enc = scene.encoding();
+        let color_fills = enc
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(color_fills >= 1, "draw_at must fill the background circle");
+        assert!(
+            !enc.resources.glyph_runs.is_empty(),
+            "draw_at must paint the initials glyph run",
+        );
+    }
+
+    /// `color_for_initials` is deterministic and agrees with a constructed
+    /// `Avatar`'s `background_color` for the same (normalised) initials —
+    /// so an immediate-mode chip and a widget chip for the same user match.
+    #[test]
+    fn draw_at_color_matches_widget_background() {
+        let theme = Theme::dark();
+        let a = Avatar::from_initials("QD", 40.0);
+        assert_eq!(
+            Avatar::color_for_initials("qd", &theme),
+            a.background_color(&theme),
+            "immediate-mode colour must equal the widget's background colour",
+        );
+        // Deterministic across calls.
+        assert_eq!(
+            Avatar::color_for_initials("AB", &theme),
+            Avatar::color_for_initials("ab", &theme),
+        );
+    }
+
+    /// A zero-size rect is a no-op for `draw_at` (no panic, no draw).
+    #[test]
+    fn draw_at_zero_rect_is_noop() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Avatar::draw_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::ZERO,
+            "QD",
+            Color::WHITE,
+            &theme,
+            &mut tr,
+        );
+        assert_eq!(scene.encoding().draw_tags.len(), 0);
     }
 
     /// Image variant: the draw stream must contain a BEGIN_CLIP →
