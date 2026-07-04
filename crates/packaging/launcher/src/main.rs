@@ -185,12 +185,31 @@ fn run_installed(
         return ExitCode::from(2);
     }
 
+    // QOS_LAUNCHER_DISABLE_LANDLOCK=1 is a debug escape hatch —
+    // matches the equivalent knob threaded through `run` today
+    // via the `--no-landlock` flag (unimplemented in the CLI but
+    // wired through RunOptions.landlock_enforce). Once the
+    // landlock shim is fully wired, drop the env var.
+    let landlock_enforce = !matches!(
+        std::env::var("QOS_LAUNCHER_DISABLE_LANDLOCK").as_deref(),
+        Ok("1") | Ok("true")
+    );
+    // For CLI-flavour launches through the PATH shim we default
+    // --minimal-libs on: shim invocations don't have a good place
+    // to pass launcher flags, and CLI apps are dynamically-linked
+    // ELFs today until qos-runtime bundles land. The user can
+    // still opt out via `qos-launcher run-installed --command X`
+    // directly without --minimal-libs.
+    let minimal_libs = minimal_libs || !matches!(
+        std::env::var("QOS_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
+        Ok("1") | Ok("true")
+    );
     let opts = RunOptions {
         no_services,
         runtime_root: None,
         bwrap_bin: None,
         minimal_libs,
-        landlock_enforce: true,
+        landlock_enforce,
         mode: LaunchMode::Cli {
             command: command.to_string(),
             passthrough_argv: rest,
