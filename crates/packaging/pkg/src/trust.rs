@@ -1,0 +1,511 @@
+//! Consumer-side trust policy — trusted attestors + revoked
+//! publisher keys.
+//!
+//! Both are loaded from user config files by the caller (usually
+//! `qos-install`) and threaded into [`crate::verify::verify`] as
+//! parameters. The foundation crate itself never touches
+//! `$HOME` — it stays deterministic and testable.
+//!
+//! ## File layout
+//!
+//! ```text
+//! ~/.config/qos/trusted-attestors.toml
+//! ~/.config/qos/revoked-keys.toml
+//! ```
+//!
+//! `trusted-attestors.toml` schema:
+//!
+//! ```toml
+//! [[attestor]]
+//! id = "qos-curated/2026.07"
+//! pubkey_hex = "..."           # ed25519 pubkey (32-byte hex)
+//! scope = "all"                # or "mime:<a>,<b>" / "prefix:<a>,<b>"
+//! ```
+//!
+//! `revoked-keys.toml` schema:
+//!
+//! ```toml
+//! [[revoked]]
+//! pubkey_hex = "..."
+//! reason = "compromised 2026-07-05"
+//! ```
+//!
+//! ## Attestation signature format
+//!
+//! An attestor's signature covers a domain-separated message:
+//!
+//! ```text
+//! b"qos-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]
+//! ```
+//!
+//! Total 82 bytes; signed with Ed25519 → 64-byte signature.
+//!
+//! **Why `payload_root_hash` and not `package_id`?** The
+//! `package_id` transitively includes the manifest bytes, which
+//! include the attestation signatures themselves — signing over
+//! `package_id` creates a fixed-point loop. `payload_root_hash`
+//! is the BLAKE3 of the payload collection; it is stable across
+//! attestation-signature updates and identifies the same
+//! payload content. Combined with `publisher_pubkey` it binds
+//! the attestation to "this payload, signed by this publisher"
+//! — exactly the intent of the attestor's claim.
+//!
+//! The `signature_hex` field on `[[trust.attested_by]]` in the
+//! manifest holds the hex encoding of this 64-byte signature.
+//! Threshold-Ed25519 aggregated signatures verify identically —
+//! FROST group signatures ARE Ed25519 signatures at the wire.
+//! For k-of-n attestation (multiple attestors required), add
+//! multiple `[[trust.attested_by]]` rows; `verify_with_trust`
+//! returns after the first trusted-attestor match, so a strict
+//! consumer policy can walk the manifest and check each row
+//! independently.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::blobs::BlobHash;
+
+/// Domain-separation prefix for attestation signatures.
+pub const ATTESTATION_DOMAIN: &[u8] = b"qos-pkg-attest-v1\0";
+
+/// Compute the preimage the attestor signs. See module docs for
+/// the exact layout: `DOMAIN || payload_root_hash || publisher_pubkey`.
+pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8; 32]) -> [u8; 82] {
+    // 18 (domain) + 32 (payload root) + 32 (pubkey) = 82.
+    let mut out = [0u8; 82];
+    out[..ATTESTATION_DOMAIN.len()].copy_from_slice(ATTESTATION_DOMAIN);
+    let mut off = ATTESTATION_DOMAIN.len();
+    out[off..off + 32].copy_from_slice(&payload_root_hash.0);
+    off += 32;
+    out[off..off + 32].copy_from_slice(publisher_pubkey);
+    out
+}
+
+/// The scope an attestor is trusted for. Parsed from the
+/// `scope` string:
+///
+/// - `"all"` → [`AttestorScope::All`]
+/// - `"mime:<mime>[,<mime>...]"` → [`AttestorScope::Mime`]
+/// - `"prefix:<pref>[,<pref>...]"` → [`AttestorScope::Prefix`]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttestorScope {
+    /// Trusts every package the attestor signs.
+    All,
+    /// Only trusts packages whose manifest declares one of these
+    /// MIME types in `[providers].mime`.
+    Mime(Vec<String>),
+    /// Only trusts packages whose `[package].id` starts with one
+    /// of these prefixes.
+    Prefix(Vec<String>),
+}
+
+impl Default for AttestorScope {
+    fn default() -> Self {
+        AttestorScope::All
+    }
+}
+
+impl AttestorScope {
+    /// Parse the scope string in the TOML config.
+    pub fn parse(raw: &str) -> Result<Self, TrustLoadError> {
+        let raw = raw.trim();
+        if raw == "all" {
+            return Ok(AttestorScope::All);
+        }
+        if let Some(rest) = raw.strip_prefix("mime:") {
+            let items: Vec<String> = rest.split(',').map(|s| s.trim().to_string()).collect();
+            if items.is_empty() || items.iter().any(|s| s.is_empty()) {
+                return Err(TrustLoadError::BadScope(raw.to_string()));
+            }
+            return Ok(AttestorScope::Mime(items));
+        }
+        if let Some(rest) = raw.strip_prefix("prefix:") {
+            let items: Vec<String> = rest.split(',').map(|s| s.trim().to_string()).collect();
+            if items.is_empty() || items.iter().any(|s| s.is_empty()) {
+                return Err(TrustLoadError::BadScope(raw.to_string()));
+            }
+            return Ok(AttestorScope::Prefix(items));
+        }
+        Err(TrustLoadError::BadScope(raw.to_string()))
+    }
+
+    /// Render back to the string form, for CLI printing + on-disk
+    /// round-trip.
+    pub fn render(&self) -> String {
+        match self {
+            AttestorScope::All => "all".into(),
+            AttestorScope::Mime(items) => format!("mime:{}", items.join(",")),
+            AttestorScope::Prefix(items) => format!("prefix:{}", items.join(",")),
+        }
+    }
+
+    /// Does this scope match a package with the given id + mime
+    /// list from `[providers].mime`?
+    pub fn covers(&self, package_id: &str, mime: &[String]) -> bool {
+        match self {
+            AttestorScope::All => true,
+            AttestorScope::Mime(allowed) => mime.iter().any(|m| allowed.iter().any(|a| a == m)),
+            AttestorScope::Prefix(prefixes) => prefixes.iter().any(|p| package_id.starts_with(p)),
+        }
+    }
+}
+
+/// One row of `trusted-attestors.toml` — an attestor we accept
+/// third-party attestations from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedAttestor {
+    /// Human-readable id, e.g. `qos-curated/2026.07`. Must match
+    /// the `attestor` field in `[[trust.attested_by]]` for a
+    /// signature to count.
+    pub id: String,
+    /// The attestor's Ed25519 public key, hex encoded (64 chars).
+    pub pubkey_hex: String,
+    /// Scope of trust.
+    pub scope: AttestorScope,
+}
+
+impl TrustedAttestor {
+    /// Parse the hex pubkey into raw bytes.
+    pub fn pubkey_bytes(&self) -> Result<[u8; 32], TrustLoadError> {
+        parse_pubkey_hex(&self.pubkey_hex)
+    }
+}
+
+// Custom TOML shape — `scope` is a bare string on disk but a
+// typed enum in memory.
+#[derive(Serialize, Deserialize)]
+struct TrustedAttestorToml {
+    id: String,
+    pubkey_hex: String,
+    #[serde(default = "default_scope_str")]
+    scope: String,
+}
+
+fn default_scope_str() -> String {
+    "all".into()
+}
+
+impl<'de> Deserialize<'de> for TrustedAttestor {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = TrustedAttestorToml::deserialize(d)?;
+        let scope = AttestorScope::parse(&raw.scope).map_err(serde::de::Error::custom)?;
+        Ok(TrustedAttestor { id: raw.id, pubkey_hex: raw.pubkey_hex, scope })
+    }
+}
+
+impl Serialize for TrustedAttestor {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let raw = TrustedAttestorToml {
+            id: self.id.clone(),
+            pubkey_hex: self.pubkey_hex.clone(),
+            scope: self.scope.render(),
+        };
+        raw.serialize(s)
+    }
+}
+
+/// The full contents of `trusted-attestors.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedAttestors {
+    #[serde(default)]
+    pub attestor: Vec<TrustedAttestor>,
+}
+
+impl TrustedAttestors {
+    /// Empty registry (nothing trusted).
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Decode from TOML source.
+    pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
+        toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
+    }
+
+    /// Encode to TOML source.
+    pub fn to_toml_string(&self) -> Result<String, TrustLoadError> {
+        toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
+    }
+
+    /// Load from disk. If the file doesn't exist, returns an
+    /// empty registry (no trusted attestors).
+    pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
+        if !path.exists() {
+            return Ok(Self::empty());
+        }
+        let bytes = std::fs::read(path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        let text = String::from_utf8(bytes).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        Self::from_toml_str(&text)
+    }
+
+    /// Atomic-rename-based save.
+    pub fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        }
+        let text = self.to_toml_string()?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        std::fs::rename(&tmp, path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Look up an attestor by id.
+    pub fn get(&self, id: &str) -> Option<&TrustedAttestor> {
+        self.attestor.iter().find(|a| a.id == id)
+    }
+
+    /// Return the slice of attestors as a plain slice — convenience
+    /// for `verify()`.
+    pub fn as_slice(&self) -> &[TrustedAttestor] {
+        &self.attestor
+    }
+}
+
+/// One revoked publisher key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokedKey {
+    /// Ed25519 public key of the revoked publisher, hex encoded.
+    pub pubkey_hex: String,
+    /// Free-form human-readable reason for the record.
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl RevokedKey {
+    /// Parse the hex pubkey into raw bytes.
+    pub fn pubkey_bytes(&self) -> Result<[u8; 32], TrustLoadError> {
+        parse_pubkey_hex(&self.pubkey_hex)
+    }
+}
+
+/// The full contents of `revoked-keys.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevocationList {
+    #[serde(default)]
+    pub revoked: Vec<RevokedKey>,
+}
+
+impl RevocationList {
+    /// Empty list (nothing revoked).
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Decode from TOML.
+    pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
+        toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
+    }
+
+    /// Encode to TOML.
+    pub fn to_toml_string(&self) -> Result<String, TrustLoadError> {
+        toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
+    }
+
+    /// Load from disk. If the file doesn't exist, returns an
+    /// empty list.
+    pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
+        if !path.exists() {
+            return Ok(Self::empty());
+        }
+        let bytes = std::fs::read(path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        let text = String::from_utf8(bytes).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        Self::from_toml_str(&text)
+    }
+
+    /// Atomic-rename-based save.
+    pub fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        }
+        let text = self.to_toml_string()?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        std::fs::rename(&tmp, path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Test a raw pubkey against the revocation list. Returns
+    /// the matching `RevokedKey` if any.
+    pub fn find(&self, pubkey: &[u8; 32]) -> Option<&RevokedKey> {
+        for entry in &self.revoked {
+            if let Ok(bytes) = entry.pubkey_bytes() {
+                if &bytes == pubkey {
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Return the standard config-directory paths for the trust
+/// registry + revocation list. Follows XDG (`$XDG_CONFIG_HOME`
+/// falling back to `~/.config`) with a `qos/` subdir.
+pub fn default_trusted_attestors_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("trusted-attestors.toml"))
+}
+
+/// Sibling of [`default_trusted_attestors_path`].
+pub fn default_revoked_keys_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("revoked-keys.toml"))
+}
+
+fn config_dir() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("qos"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Some(PathBuf::from(home).join(".config").join("qos"));
+        }
+    }
+    None
+}
+
+fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], TrustLoadError> {
+    let bytes = hex::decode(s).map_err(|e| TrustLoadError::BadHex(e.to_string()))?;
+    if bytes.len() != 32 {
+        return Err(TrustLoadError::BadPubkeyLength { got: bytes.len() });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Errors surfaced by config load / save + hex parsing.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TrustLoadError {
+    #[error("TOML parse: {0}")]
+    Parse(String),
+    #[error("TOML encode: {0}")]
+    Encode(String),
+    #[error("I/O: {0}")]
+    Io(String),
+    #[error("bad pubkey hex: {0}")]
+    BadHex(String),
+    #[error("pubkey length {got}, expected 32")]
+    BadPubkeyLength { got: usize },
+    #[error("bad scope {0:?} — expected 'all', 'mime:<list>', or 'prefix:<list>'")]
+    BadScope(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_roundtrip_all() {
+        let s = AttestorScope::All;
+        assert_eq!(s.render(), "all");
+        assert_eq!(AttestorScope::parse("all").unwrap(), s);
+    }
+
+    #[test]
+    fn scope_roundtrip_mime() {
+        let s = AttestorScope::Mime(vec!["application/pdf".into()]);
+        assert_eq!(s.render(), "mime:application/pdf");
+        assert_eq!(AttestorScope::parse("mime:application/pdf").unwrap(), s);
+    }
+
+    #[test]
+    fn scope_roundtrip_prefix() {
+        let s = AttestorScope::Prefix(vec!["dev.qos.".into(), "dev.example.".into()]);
+        assert_eq!(s.render(), "prefix:dev.qos.,dev.example.");
+        assert_eq!(
+            AttestorScope::parse("prefix:dev.qos.,dev.example.").unwrap(),
+            s
+        );
+    }
+
+    #[test]
+    fn scope_rejects_garbage() {
+        assert!(matches!(
+            AttestorScope::parse("hello"),
+            Err(TrustLoadError::BadScope(_))
+        ));
+        assert!(matches!(
+            AttestorScope::parse("mime:"),
+            Err(TrustLoadError::BadScope(_))
+        ));
+    }
+
+    #[test]
+    fn scope_covers_matches_prefix() {
+        let s = AttestorScope::Prefix(vec!["dev.qos.".into()]);
+        assert!(s.covers("dev.qos.editor", &[]));
+        assert!(!s.covers("com.example.foo", &[]));
+    }
+
+    #[test]
+    fn scope_covers_matches_mime() {
+        let s = AttestorScope::Mime(vec!["application/pdf".into()]);
+        assert!(s.covers("dev.foo", &["application/pdf".into()]));
+        assert!(!s.covers("dev.foo", &["text/plain".into()]));
+    }
+
+    #[test]
+    fn trusted_attestors_toml_roundtrip() {
+        let orig = TrustedAttestors {
+            attestor: vec![
+                TrustedAttestor {
+                    id: "qos-curated/2026.07".into(),
+                    pubkey_hex: "aa".repeat(32),
+                    scope: AttestorScope::All,
+                },
+                TrustedAttestor {
+                    id: "acme/1".into(),
+                    pubkey_hex: "bb".repeat(32),
+                    scope: AttestorScope::Prefix(vec!["com.acme.".into()]),
+                },
+            ],
+        };
+        let text = orig.to_toml_string().unwrap();
+        let decoded = TrustedAttestors::from_toml_str(&text).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    #[test]
+    fn revocation_toml_roundtrip() {
+        let orig = RevocationList {
+            revoked: vec![RevokedKey {
+                pubkey_hex: "cc".repeat(32),
+                reason: "compromised 2026-07-05".into(),
+            }],
+        };
+        let text = orig.to_toml_string().unwrap();
+        let decoded = RevocationList::from_toml_str(&text).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    #[test]
+    fn revocation_list_finds_by_pubkey() {
+        let list = RevocationList {
+            revoked: vec![RevokedKey {
+                pubkey_hex: "de".repeat(32),
+                reason: "test".into(),
+            }],
+        };
+        assert!(list.find(&[0xde; 32]).is_some());
+        assert!(list.find(&[0x00; 32]).is_none());
+    }
+
+    #[test]
+    fn attestation_preimage_is_domain_separated() {
+        let root = BlobHash([1u8; 32]);
+        let pk = [2u8; 32];
+        let msg = attestation_preimage(&root, &pk);
+        assert!(msg.starts_with(ATTESTATION_DOMAIN));
+        // Different payload root → different preimage.
+        let root2 = BlobHash([9u8; 32]);
+        let msg2 = attestation_preimage(&root2, &pk);
+        assert_ne!(&msg[..], &msg2[..]);
+        // Different publisher → different preimage.
+        let msg3 = attestation_preimage(&root, &[7u8; 32]);
+        assert_ne!(&msg[..], &msg3[..]);
+    }
+}
