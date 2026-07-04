@@ -13,7 +13,7 @@ pub mod wayland;
 
 pub use actor::{Actor, NetCmd, NetEvent};
 pub use behaviour::{NiriosBehaviour, load_or_create_keypair, peer_salt_from_keypair};
-pub use decoder::{DecodedFrame, H264Decoder};
+pub use decoder::{DecodedFrame, DecodedPixels, DecoderError, H264Decoder, VideoDecoder};
 pub use encoder::{EncodeError, H264Encoder};
 pub use hub::{Hub, TopicSubscriber};
 pub use invite::{PeerInviteToken, make_invite_token, validate_invite_token};
