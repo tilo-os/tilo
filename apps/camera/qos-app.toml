@@ -1,0 +1,97 @@
+# Package manifest for `camera` as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p camera -p pkg-cli -p install --release
+#     mkdir -p target/camera-payload/bin
+#     cp target/release/camera target/camera-payload/bin/camera
+#     target/release/qos-pkg pack \
+#         --manifest apps/camera/qos-app.toml \
+#         --payload  target/camera-payload \
+#         --output   target/camera.qpkg
+#     target/release/qos-install install target/camera.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.camera
+#
+# Camera is a wgpu/vello GUI app that also reads `/dev/video*` for
+# live capture and writes photos to ~/Pictures. `live-capture` is
+# an opt-in cargo feature; without it the app still works from the
+# on-disk photo library and QR-code sample frame.
+
+[package]
+id      = "dev.qos.camera"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/sys",
+    "/dev/video0",
+    "/dev/video1",
+    "/dev/video2",
+    "/dev/video3",
+]
+write = [
+    "~/Pictures",
+    "~/.local/share/dev.qos.camera",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/camera"
+splash-segments = ["bin/camera[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
