@@ -117,6 +117,12 @@ impl AccountList {
         self.empty_message = msg.into();
     }
 
+    /// The contextual empty-state message the list will show when it has no
+    /// rows (e.g. "No accounts match …" for a non-matching search).
+    pub fn empty_message(&self) -> &str {
+        &self.empty_message
+    }
+
     pub fn set_viewport(&mut self, rect: Rect) {
         self.rect = rect;
         self.clamp_scroll();
@@ -661,5 +667,73 @@ mod tests {
         let mut l = AccountList::new();
         l.set_viewport(Rect::new(0.0, 0.0, 600.0, 800.0));
         assert!(l.is_empty());
+    }
+
+    // ---- pointer routing through the real `handle_event` ----------------
+    // Hit-testing is proven above via `hit()`; these drive real synthetic
+    // pointer events through `AccountList::handle_event` so the
+    // MouseInput→ListEvent emission and the wheel-scroll clamp are verified
+    // through the production entry point, not the internal hit-test alone.
+
+    use crate::test_events::{cursor_at, left_press, no_mods, wheel};
+
+    fn dispatch(l: &mut AccountList, ev: &WindowEvent) -> bool {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = no_mods();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        l.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut None, node, &taffy);
+        handled
+    }
+
+    #[test]
+    fn mouse_click_in_the_copy_zone_emits_a_copy_event() {
+        let mut l = list_with_demo();
+        let id = l.account_at(0).unwrap().id;
+        let r = l.row_rect(0);
+        let layout = l.row_layout(r);
+        let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
+        dispatch(&mut l, &cursor_at(copy_p));
+        let handled = dispatch(&mut l, &left_press());
+        assert!(handled, "a click on a real row is handled");
+        assert_eq!(l.take_events(), vec![ListEvent::Copy(id)]);
+        assert_eq!(l.selected(), Some(id), "copying also selects the row");
+    }
+
+    #[test]
+    fn mouse_clicks_in_the_action_column_emit_reorder_and_delete() {
+        let mut l = list_with_demo();
+        let id = l.account_at(0).unwrap().id;
+        let r = l.row_rect(0);
+        let layout = l.row_layout(r);
+        let col_x = (layout.actions_x0 + layout.actions_x1) / 2.0;
+        // Top third of the action column → move up.
+        dispatch(&mut l, &cursor_at(Point::new(col_x, r.y0 + 4.0)));
+        dispatch(&mut l, &left_press());
+        assert_eq!(l.take_events(), vec![ListEvent::MoveUp(id)]);
+        // Bottom third → delete.
+        dispatch(&mut l, &cursor_at(Point::new(col_x, r.y1 - 4.0)));
+        dispatch(&mut l, &left_press());
+        assert_eq!(l.take_events(), vec![ListEvent::Delete(id)]);
+    }
+
+    #[test]
+    fn wheel_scrolls_and_clamps_through_handle_event() {
+        let mut l = AccountList::new();
+        // A viewport shorter than the content so scrolling is possible.
+        l.set_viewport(Rect::new(0.0, 0.0, 600.0, 220.0));
+        l.set_accounts(demo_accounts());
+        assert!(l.max_scroll() > 0.0, "five rows overflow a 220px viewport");
+
+        // The wheel handler only acts when the pointer is over the list.
+        dispatch(&mut l, &cursor_at(Point::new(300.0, 110.0)));
+        // Scroll far down: the offset clamps to the bottom, never past it.
+        dispatch(&mut l, &wheel(-100.0));
+        assert_eq!(l.scroll, l.max_scroll(), "scrolling down clamps to the bottom");
+        // Scroll far up: clamps to the top, never negative.
+        dispatch(&mut l, &wheel(100.0));
+        assert_eq!(l.scroll, 0.0, "scrolling up clamps to the top");
     }
 }
