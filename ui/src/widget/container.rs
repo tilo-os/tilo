@@ -15,12 +15,25 @@ pub struct Container {
     rect: Rect,
     has_background: bool,
     fill_height: bool,
-    /// Fixed pixel width override (e.g. a 180px sidebar). `None` keeps the
-    /// default `percent(1.0)` fill-parent width.
-    fixed_width: Option<f32>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     no_padding: bool,
+    /// Pin the container's outer width to an exact logical-pixel value
+    /// instead of the default `percent(1.0)` fill. `Some(px)` switches the
+    /// taffy width to `length(px)` and disables horizontal shrink so the
+    /// container reads as a true fixed-width pane (e.g. a master/detail or
+    /// settings sidebar). `None` keeps the default fill behaviour.
+    fixed_width: Option<f32>,
+    /// Pin the container's outer height to an exact logical-pixel value.
+    /// Mutually independent from [`Container::fill_height`] — when set this
+    /// overrides the auto/percent height with `length(px)`.
+    fixed_height: Option<f32>,
+    /// Explicit fill colour for the container's background surface. When
+    /// `Some(c)`, the background is painted in `c` (still themed — callers
+    /// pass a `Theme` token) rather than the default `theme.bg_primary`.
+    /// Setting this also implies `has_background`. `None` keeps the legacy
+    /// `bg_primary` behaviour when [`Container::with_background`] is used.
+    fill_color: Option<vello::peniko::Color>,
 }
 
 impl Container {
@@ -30,19 +43,13 @@ impl Container {
             rect: Rect::ZERO,
             has_background: false,
             fill_height: false,
-            fixed_width: None,
             presence_path: Vec::new(),
             permission_scope: None,
             no_padding: false,
+            fixed_width: None,
+            fixed_height: None,
+            fill_color: None,
         }
-    }
-
-    /// Constrain the container to a fixed pixel width (it no longer fills
-    /// the parent horizontally). Used for the file explorer's 180px
-    /// sidebar so the content pane gets the remaining width.
-    pub fn with_width(mut self, px: f32) -> Self {
-        self.fixed_width = Some(px);
-        self
     }
 
     /// Skip the default `padding_standard` on all sides. Used by the
@@ -59,6 +66,47 @@ impl Container {
     }
 
     pub fn with_background(mut self) -> Self {
+        self.has_background = true;
+        self
+    }
+
+    /// Pin the container to an exact logical-pixel width. Disables the
+    /// default `percent(1.0)` horizontal fill and stops the container from
+    /// shrinking below `px`, so a fixed-width sidebar / master-detail pane
+    /// is expressible without faking it with flex fractions. Pass a value
+    /// derived from theme spacing where possible so the pin still tracks
+    /// the design scale.
+    pub fn with_width(mut self, px: f32) -> Self {
+        self.fixed_width = Some(px);
+        self
+    }
+
+    /// Pin the container to an exact logical-pixel height (independent of
+    /// [`Container::filling`]). Use together with [`Container::with_width`]
+    /// for a fixed-size box.
+    pub fn with_height(mut self, px: f32) -> Self {
+        self.fixed_height = Some(px);
+        self
+    }
+
+    /// Pin both dimensions at once — convenience over chaining
+    /// [`Container::with_width`] + [`Container::with_height`].
+    pub fn with_size(mut self, width: f32, height: f32) -> Self {
+        self.fixed_width = Some(width);
+        self.fixed_height = Some(height);
+        self
+    }
+
+    /// Paint the container's background in an explicit colour rather than
+    /// the default `theme.bg_primary`. Implies a background (no separate
+    /// [`Container::with_background`] call needed). The colour is still a
+    /// theme decision — pass a token such as `theme.bg_app`,
+    /// `theme.tokens.colors.surfaces.base`, or a selected-row highlight —
+    /// so the surface tint stays OS-controlled. Use this for header bands,
+    /// selected-row highlights, and any surface that must read as distinct
+    /// from the standard raised card.
+    pub fn with_fill(mut self, color: vello::peniko::Color) -> Self {
+        self.fill_color = Some(color);
         self.has_background = true;
         self
     }
@@ -95,22 +143,29 @@ impl Widget for Container {
         let child_node = self.child.as_mut().map(|c| c.build_layout(taffy, theme, node_map));
 
         let pad = if self.no_padding { 0.0 } else { theme.padding_standard };
+        let width = match self.fixed_width {
+            Some(px) => length(px),
+            None => percent(1.0),
+        };
+        let height = match self.fixed_height {
+            Some(px) => length(px),
+            None if self.fill_height => percent(1.0),
+            None => taffy::Dimension::auto(),
+        };
         let style = Style {
             display: taffy::Display::Flex,
             flex_shrink: 0.0, // Prevent vertical squashing
+            // A pinned width must not grow to fill a flex parent — keep it
+            // exactly `px`. `flex_basis: auto` lets the `size.width` length
+            // resolve the basis.
+            flex_grow: 0.0,
             padding: taffy::Rect {
                 left: length(pad),
                 right: length(pad),
                 top: length(pad),
                 bottom: length(pad),
             },
-            size: taffy::Size {
-                width: match self.fixed_width {
-                    Some(px) => length(px),
-                    None => percent(1.0),
-                },
-                height: if self.fill_height { percent(1.0) } else { taffy::Dimension::auto() },
-            },
+            size: taffy::Size { width, height },
             ..Default::default()
         };
 
@@ -140,8 +195,9 @@ impl Widget for Container {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
         if self.has_background {
+            let fill = self.fill_color.unwrap_or(theme.bg_primary);
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-            scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_primary, None, &shape);
+            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
             scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &shape);
         }
 
@@ -214,8 +270,9 @@ impl Widget for Container {
         // Draw the container's own background, then propagate presence/permission
         // context down to the child so its opt-in chrome still renders.
         if self.has_background {
+            let fill = self.fill_color.unwrap_or(theme.bg_primary);
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-            scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_primary, None, &shape);
+            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
             scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &shape);
         }
 
@@ -237,5 +294,91 @@ impl Widget for Container {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use vello_encoding::DrawTag;
+    use vello::peniko::Color;
+
+    /// Lay the container out inside an 800×600 viewport and return its
+    /// resolved rect. Drives the real five-pass path so the taffy width
+    /// pin is exercised end-to-end.
+    fn lay_out(mut c: Container) -> (Container, Rect) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = c.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        c.apply_layout(&taffy, node, Point::ZERO);
+        let r = c.get_rect();
+        (c, r)
+    }
+
+    #[test]
+    fn with_width_pins_outer_width() {
+        let (_c, rect) = lay_out(Container::new().with_width(280.0));
+        assert!(
+            (rect.width() - 280.0).abs() < 0.5,
+            "with_width(280) must pin the container to 280 px, got {}",
+            rect.width()
+        );
+        assert!(
+            rect.width() < 799.0,
+            "a pinned-width container must NOT fill the 800 px viewport"
+        );
+    }
+
+    #[test]
+    fn with_size_pins_both_dimensions() {
+        let (_c, rect) = lay_out(Container::new().with_size(120.0, 64.0));
+        assert!((rect.width() - 120.0).abs() < 0.5, "width pinned to 120");
+        assert!((rect.height() - 64.0).abs() < 0.5, "height pinned to 64");
+    }
+
+    #[test]
+    fn default_container_still_fills_width() {
+        // Guards the additive contract: an un-pinned container keeps the
+        // legacy `percent(1.0)` fill so existing call sites are unaffected.
+        let (_c, rect) = lay_out(Container::new());
+        assert!(
+            (rect.width() - 800.0).abs() < 0.5,
+            "default container must fill the viewport width, got {}",
+            rect.width()
+        );
+    }
+
+    #[test]
+    fn with_fill_emits_background_distinct_from_bg_primary() {
+        // `with_fill` must paint *a* background (emit a COLOR fill) even
+        // without a separate `with_background()` call.
+        let custom = Color::from_rgb8(10, 20, 30);
+        let (mut c, _rect) = lay_out(Container::new().with_fill(custom));
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::default();
+        let mut scene = Scene::new();
+        c.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            fills >= 1,
+            "with_fill must emit at least one COLOR fill (the surface tint)"
+        );
     }
 }

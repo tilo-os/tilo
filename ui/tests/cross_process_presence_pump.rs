@@ -93,6 +93,10 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                         payload,
                     }
                 }
+                // Signed-op sync + scrollback fetch aren't part of this
+                // presence-pump scenario — swallow them like `Hello`.
+                CollabRequest::SignedSyncIncremental { .. }
+                | CollabRequest::FetchScrollback { .. } => continue,
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;

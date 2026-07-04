@@ -202,6 +202,13 @@ pub struct App {
     /// skipped by `apply_layout`.
     structure_dirty: bool,
     needs_sync: bool,
+    /// Physical window size the most recent `RedrawRequested` frame was
+    /// built at. `about_to_wait` compares the live `inner_size()` against
+    /// this to catch an allocation change that arrived without a `Resized`
+    /// event (a compositor reconfigure, or a resize that coalesced away)
+    /// and reflow responsive layouts on the next tick instead of waiting
+    /// on stray input. `None` until the first frame is drawn.
+    last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
@@ -346,6 +353,7 @@ impl App {
             // Theme is finalised right after this struct literal — the env-
             // driven low-vision preferences are folded in once all the
             // fields they depend on (base_theme, a11y, text_scale) exist.
+            last_frame_size: None,
             theme: Theme::dark(),
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
@@ -1828,6 +1836,44 @@ struct AppHandler {
     a11y_proxy: EventLoopProxy<UserEvent>,
 }
 
+impl AppHandler {
+    /// Lazily initialise the wgpu surface + renderer and spawn the render
+    /// worker. Called once, from the first `RedrawRequested`, so the heavy
+    /// blocking GPU init runs AFTER the winit event loop has processed the
+    /// initial `configure` and wired the seat — not inline in `resumed`,
+    /// where it would starve those first events and race first-launch focus.
+    fn init_render(&mut self, window: &Arc<Window>) {
+        let size = window.inner_size();
+        let mut render_cx = RenderContext::new();
+        let surface = pollster::block_on(render_cx.create_surface(
+            window.clone(),
+            size.width.max(1),
+            size.height.max(1),
+            vello::wgpu::PresentMode::AutoVsync,
+        ))
+        .unwrap();
+        let device_handle = &render_cx.devices[surface.dev_id];
+        // vello 0.9's `create_surface` builds the blitter pipeline against
+        // the format it chose; flipping to the sRGB suffix here would
+        // panic on the format mismatch in the first blit.
+        surface.surface.configure(&device_handle.device, &surface.config);
+        let renderer = Renderer::new(
+            &device_handle.device,
+            RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::all(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        // Hand the wgpu state off to the render worker. After this point
+        // the main thread doesn't touch the surface, renderer, or
+        // render_cx — every GPU call happens on the `ui-render` thread.
+        self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+    }
+}
+
 impl ApplicationHandler<UserEvent> for AppHandler {
     /// External-input translator: every variant becomes the WindowEvent
     /// winit would have delivered, then routes back through
@@ -1956,10 +2002,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // The AccessKit adapter must be created while the window is still
         // hidden (it asserts this), so build the window invisible, create the
         // adapter, then show it.
-        let window_attributes = Window::default_attributes()
+        let mut window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
+            // Draw a normal, draggable title bar (winit's sctk-adwaita CSD)
+            // on compositors that don't provide server-side decorations —
+            // e.g. GNOME/mutter. Explicit even though it's the winit
+            // default, so the intent is unmistakable.
+            .with_decorations(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+        // Give the xdg-toplevel a real app_id. Without one the app_id is
+        // the empty string, and mutter keys window identity, focus /
+        // xdg-activation, and its decoration policy off the app_id — an
+        // empty id is the concrete difference from every GTK / other
+        // Wayland app (all of which come up focused + decorated). Wayland
+        // only; a no-op on other winit backends.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            window_attributes = window_attributes.with_name("org.qos.app", "");
+        }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         // Accessibility: wire the AccessKit winit adapter so the exported
@@ -1974,42 +2036,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         ));
         window.set_visible(true);
 
-        let mut render_cx = RenderContext::new();
-        let surface = pollster::block_on(render_cx.create_surface(
-            window.clone(),
-            window.inner_size().width,
-            window.inner_size().height,
-            vello::wgpu::PresentMode::AutoVsync,
-        ))
-        .unwrap();
-        let device_handle = &render_cx.devices[surface.dev_id];
-        // vello 0.9's `create_surface` builds the blitter pipeline against
-        // the format it chose; flipping to the sRGB suffix here would
-        // panic on the format mismatch in the first blit.
-        surface.surface.configure(&device_handle.device, &surface.config);
-        let renderer = Renderer::new(
-            &device_handle.device,
-            RendererOptions {
-                use_cpu: false,
-                antialiasing_support: vello::AaSupport::all(),
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .unwrap();
-
         // Mark the freshly-built taffy tree dirty so the very first
         // `RedrawRequested` re-runs layout against the actual window
         // size and scale factor.
         self.app.layout_dirty = true;
+        // Drive the first frame. GPU init (create_surface / renderer /
+        // render-worker spawn) is DEFERRED to that first `RedrawRequested`
+        // — see `init_render` + `window_event`. Doing the ~50 ms
+        // `pollster::block_on` surface+device init inline here would block
+        // the winit Wayland event loop during `resumed`, starving the
+        // initial xdg `configure` and the wl_seat wiring; on mutter that
+        // intermittently left the toplevel unfocused with dead input on
+        // first launch ("works on the second try"). Deferring lets the
+        // event loop complete the configure + seat handshake first.
         window.request_redraw();
-
         self.window = Some(window);
-        // Hand the wgpu state off to the render worker. After this
-        // point, the main thread doesn't touch the surface, renderer,
-        // or render_cx — every GPU call happens on the `ui-render`
-        // thread.
-        self.render = Some(spawn_render_thread(render_cx, surface, renderer));
     }
 
     /// Winit calls this once on event-loop teardown. We use it to
@@ -2057,6 +2098,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                // Deferred one-time GPU init on the first frame (see
+                // `init_render`): the surface + renderer are built here,
+                // after the event loop has processed the initial configure
+                // and wired the seat, rather than inline in `resumed`.
+                if self.render.is_none() {
+                    self.init_render(&window);
+                }
                 let Some(render) = self.render.as_mut() else {
                     return;
                 };
@@ -2102,6 +2150,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let width = inner.width;
                 let height = inner.height;
                 let scale_factor = window.scale_factor() as f32;
+                // Record the size this frame is built at so `about_to_wait`
+                // can notice a later allocation change (a resize that never
+                // produced a `Resized` event, or one that coalesced) and
+                // reflow without waiting on stray input.
+                app.last_frame_size = Some(inner);
 
                 if app.needs_sync {
                     app.root_widget.sync(&mut app.state.doc, &app.state.root);
@@ -2371,13 +2424,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 let t_send_us = t_frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
                 if let Some(_start) = t_frame_start {
+                    // Attribute the draw phase: how much of it was
+                    // cosmic-text shaping (and how many labels hit vs.
+                    // missed the shaped-glyph cache) vs. Vello scene
+                    // encoding. On a static frame this should read
+                    // `shape=0us hit=N miss=0` — every label reused.
+                    let (shape_hits, shape_misses, shape_ns) =
+                        app.text_renderer.take_shape_stats();
                     eprintln!(
-                        "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us send_to_worker={:>5}us",
+                        "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                         t_send_us,
                         if t_relayout_branch { "Y" } else { "n" },
                         t_compute_us,
                         t_apply_us,
                         t_draw_us,
+                        shape_ns / 1000,
+                        shape_hits,
+                        shape_misses,
                         t_send_us,
                     );
                 }
@@ -2488,6 +2551,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     None
                 };
 
+                // Modal focus-trap: when the tree hosts an open modal
+                // overlay it reports its box rect here. While set, the App
+                // must NOT run its own global keyboard shortcuts (Tab focus
+                // cycling, Alt/arrow directional focus) — the modal owns the
+                // keyboard — and an unhandled pointer press is swallowed so
+                // clicks can't fall through to widgets behind the modal.
+                let modal_rect = app.root_widget.modal_capture();
+
                 if !handled {
                 if let WindowEvent::KeyboardInput {
                     event:
@@ -2563,7 +2634,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled {
+                if !handled && modal_rect.is_none() {
                     if let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -2617,7 +2688,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
                             _ => None,
                         };
-                        if let (Some(d), true) = (dir, app.modifiers.state().alt_key()) {
+                        if let (Some(d), true, true) =
+                            (dir, app.modifiers.state().alt_key(), modal_rect.is_none())
+                        {
                             app.navigate_focus(d);
                             handled = true;
                         }
@@ -2649,6 +2722,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             is_layout_dirty = app.root_widget.is_layout_dirty(),
                             "root_widget.handle_event(MouseInput Pressed) returned"
                         );
+                    }
+                    // Click-through swallow: with a modal active, any pointer
+                    // press the modal didn't already consume (e.g. a click on
+                    // the dimmed backdrop outside the box, before the modal's
+                    // own out-of-box dismiss has been wired) is marked handled
+                    // so it can't reach widgets painted behind the scrim.
+                    if modal_rect.is_some()
+                        && matches!(
+                            event,
+                            WindowEvent::MouseInput {
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            } | WindowEvent::MouseInput {
+                                state: winit::event::ElementState::Released,
+                                ..
+                            }
+                        )
+                    {
+                        handled = true;
                     }
                 }
 
@@ -2751,7 +2843,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled {
+                if !handled && modal_rect.is_none() {
                     if let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -2869,22 +2961,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // While collaborating, tick the loop at ~60 Hz so the collab
-        // socket is drained promptly. winit's default `Wait` only wakes on
-        // local input, so a remote peer's edits/presence (which aren't a
-        // winit event source) would otherwise sit unread for seconds until
-        // the local user happens to move the mouse. Non-collab apps keep
-        // the default event-driven `Wait` (no idle wakeups).
-        if self.app.collab_manager.is_connected() {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
-            ));
-        }
-
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
         let app = &mut self.app;
+
+        // Reflow on an allocation change even when no other input arrives.
+        // The event-driven loop only re-runs layout on a user event or a
+        // `Resized`, so a compositor reconfigure that changes `inner_size()`
+        // without delivering `Resized` (or a resize that coalesced away)
+        // would leave responsive content sized to the previous frame until
+        // the user happens to move the mouse. Compare against the size the
+        // last frame was built at and, only when it actually differs, mark
+        // layout dirty and request one redraw — the redraw refreshes
+        // `last_frame_size`, so this self-coalesces to a single reflow per
+        // distinct size rather than a per-tick repaint.
+        if let Some(prev) = app.last_frame_size {
+            if window.inner_size() != prev {
+                app.layout_dirty = true;
+                window.request_redraw();
+            }
+        }
         // Drain every pending CollabEvent into PresenceCtx /
         // state.collab via the single shared dispatch. If any event
         // came through, kick a redraw so the freshly-stamped remote
@@ -2933,18 +3030,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        // Pump the animation loop: while any widget reports an
-        // in-flight frame-driven transition (e.g. the shell's
-        // overview crossfade), keep scheduling redraws so the
-        // animation progresses until it settles. Without this,
-        // a single post-click redraw renders the first eased
-        // frame at t≈0 and then stalls — the overview would
-        // appear to "not work" because the fade never plays.
+        // Pump the animation / async-work loop: the root reports it needs
+        // another frame either because a widget is mid-transition (e.g. the
+        // shell's overview crossfade) or because it has a background worker
+        // — a network fetch, a file load — whose result it folds in on the
+        // next `sync`. Give it that sync opportunity and a redraw so the
+        // fresh state surfaces this frame; without the sync, a worker that
+        // delivered into the CRDT/state would stay invisible until unrelated
+        // input arrived. The bounded `WaitUntil` chosen at the end of this
+        // method keeps waking the loop at ~60 Hz while `needs_frame` holds,
+        // so results drain promptly, then it drops back to `Wait` the moment
+        // the widget stops asking — no idle spin.
         //
-        // Reduced motion stops the perpetual pump: widgets already paint
-        // their resting state (a still spinner, a static bar), so there is
-        // nothing left to animate and we let the loop go idle.
-        if !app.theme.reduce_motion && app.root_widget.needs_animation_frame() {
+        // Reduced motion stops the perpetual pump: widgets that respect it
+        // already paint their resting state (a still spinner, a static bar),
+        // so there is nothing left to animate and we let the loop go idle.
+        let needs_frame = app.root_widget.needs_animation_frame();
+        if needs_frame && !app.theme.reduce_motion {
+            app.needs_sync = true;
             window.request_redraw();
         }
 
@@ -2958,6 +3061,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if let Some(tick) = app.frame_tick.as_mut() {
             tick(&mut app.presence_ctx);
             window.request_redraw();
+        }
+
+        // Choose the loop's idle cadence for this wakeup. The steady state —
+        // nothing animating, no collab socket, no pending async work — is
+        // event-driven `Wait`: the loop sleeps until real input arrives and
+        // burns no CPU, so the `QUICK_UI_PERF` idle frame count stays ~0.
+        // We escalate to a bounded ~60 Hz `WaitUntil` tick only while there
+        // is work that no winit event will surface on its own: a live collab
+        // socket whose peer edits/presence must be drained, or a root that
+        // still needs another frame (animation or async worker). Dropping
+        // straight back to `Wait` the instant both clear is what keeps an
+        // idle app from spinning.
+        if app.collab_manager.is_connected() || needs_frame {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
