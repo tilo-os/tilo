@@ -23,3 +23,8 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+
+[dev-dependencies]
+# Serialises the tests that read/write the process-global QOS_CONTACTS_IMPORT
+# and QOS_CONTACTS_EXPORT env vars so parallel runs don't race on them.
+serial_test = "3"

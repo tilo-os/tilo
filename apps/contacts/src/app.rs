@@ -86,12 +86,11 @@ enum Slot {
     AddrCountry(usize),
 }
 
-/// The global-search seam: `true` for Ctrl/Cmd + K (or `/`), the chord the
-/// forthcoming shared global-search framework will claim. `handle_key` returns
-/// without setting `handled` when this matches, so the event bubbles to the
-/// host. Kept as a standalone function so it is the single decision point the
-/// production path and the seam test both exercise.
-fn is_global_search_chord(ctrl: bool, key: &Key) -> bool {
+/// The focus-search chord: `true` for Ctrl/Cmd + K (or Ctrl/Cmd + `/`). Both
+/// are the conventional "jump to search" shortcut, wired here to focus this
+/// app's own list search field (bare `/` does the same). Kept as a standalone
+/// predicate so the production path and the test share one decision point.
+fn is_focus_search_chord(ctrl: bool, key: &Key) -> bool {
     if !ctrl {
         return false;
     }
@@ -760,7 +759,39 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Write the explicitly-chosen `ids` out as a `.vcf` of the given version.
+    /// Resolve where an export `.vcf` is written, in priority order:
+    ///
+    ///   1. `QOS_CONTACTS_EXPORT` — the destination the OS save-picker (or the
+    ///      launching shell) hands us: a full file path, or an existing
+    ///      directory to drop the default file into. Symmetric with the
+    ///      `QOS_CONTACTS_IMPORT` open seam.
+    ///   2. The address book's own directory (where the live app persists), so
+    ///      an export lands next to the user's data.
+    ///   3. `$HOME` — a real, user-visible location as a last resort.
+    ///
+    /// Never a throwaway temp file presented to the user as a saved document.
+    fn export_destination(&self) -> PathBuf {
+        const FILE_NAME: &str = "contacts-export.vcf";
+        if let Some(dest) = std::env::var("QOS_CONTACTS_EXPORT")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+        {
+            // A directory value receives the default file name; a file path is
+            // used verbatim (the save-picker contract).
+            return if dest.is_dir() { dest.join(FILE_NAME) } else { dest };
+        }
+        if let Some(dir) = self.persist_path.as_ref().and_then(|p| p.parent()) {
+            return dir.join(FILE_NAME);
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+            return PathBuf::from(home).join(FILE_NAME);
+        }
+        std::env::temp_dir().join(FILE_NAME)
+    }
+
+    /// Write the explicitly-chosen `ids` out as a `.vcf` of the given version
+    /// to the resolved [`export_destination`], reporting the real path.
     fn export_ids(&mut self, ids: &[ContactId], version: VCardVersion) {
         let contacts: Vec<Contact> =
             ids.iter().filter_map(|id| self.store.get(*id).cloned()).collect();
@@ -769,7 +800,10 @@ impl ContactsApp {
             return;
         }
         let body = vcard::to_vcards(&contacts, version);
-        let path = std::env::temp_dir().join("contacts-export.vcf");
+        let path = self.export_destination();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         match std::fs::write(&path, body) {
             Ok(()) => self.show_toast(format!(
                 "Exported {} ({}) → {}",
@@ -2565,6 +2599,26 @@ impl Widget for ContactsApp {
         }
 
         // Modal layers consume input first.
+        //
+        // While a blocking modal (export / unsaved-guard / delete-confirm) is
+        // up, keyboard is limited to Escape — which dismisses it through
+        // `handle_key`'s escape branch — and every other key is swallowed so a
+        // shortcut behind the scrim can't fire. Pointer interaction still routes
+        // to the per-modal handlers below.
+        if self.export_sel.is_some() || self.pending_switch.is_some() || self.confirm_delete.is_some()
+        {
+            if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                if ke.state == ElementState::Pressed
+                    && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
+                {
+                    self.handle_key(
+                        ke, state, path, handled, node_id, taffy, modifiers, scale_factor, event,
+                    );
+                }
+                *handled = true;
+                return;
+            }
+        }
         if self.export_sel.is_some() {
             self.handle_export(event, handled);
             return;
@@ -3054,20 +3108,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Re-sync a focused input's edits into the draft + store + CRDT.
-    fn commit_form_live(&mut self, state: &mut AutoCommit) {
-        let c = if let Some(form) = &mut self.form {
-            form.collect();
-            Some(form.draft.clone())
-        } else {
-            None
-        };
-        if let Some(c) = c {
-            self.store.upsert(c.clone());
-            ContactsDoc::upsert_contact(state, &c);
-        }
-    }
-
     fn form_add(&mut self, f: impl Fn(&mut Contact)) {
         if let Some(form) = self.form.take() {
             let mut draft = form.draft;
@@ -3144,7 +3184,6 @@ impl ContactsApp {
                             }
                         }
                     }
-                    self.commit_form_live(state);
                 }
             }
             Popup::GroupFilter { anchor } => {
@@ -3218,7 +3257,6 @@ impl ContactsApp {
                                 fi.ti.set_text(&iso);
                             }
                         }
-                        self.commit_form_live(state);
                     } else {
                         // Click inside panel but not a day: keep open.
                         self.popup = Some(Popup::Calendar { year, month, anchor });
@@ -3393,12 +3431,14 @@ impl ContactsApp {
         }
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
-        // Global-search seam: leave Ctrl+K (and Ctrl+/) untouched so the
-        // forthcoming shared global-search framework can claim the chord.
-        // Returning here without setting `handled` lets the event propagate
-        // to the host/compositor — do NOT build a bespoke palette.
-        if is_global_search_chord(ctrl, &ke.logical_key) {
-            return; // handled stays false → event propagates
+        // Ctrl/Cmd+K and Ctrl/Cmd+/ focus the list's search field — the
+        // familiar "jump to search" chord, wired to this app's real search box
+        // (bare `/` does the same in the no-field-focused branch below).
+        if is_focus_search_chord(ctrl, &ke.logical_key) {
+            self.set_only_focus_search();
+            *handled = true;
+            self.dirty = true;
+            return;
         }
 
         // Escape closes popups / dialogs / cancels edit / returns from a
@@ -3446,12 +3486,12 @@ impl ContactsApp {
             }
         }
 
-        // If a text field is focused, route typing to it.
+        // If a text field is focused, route typing to it. In edit mode the
+        // keystroke lands in the field's *local* (non-CRDT) buffer only — the
+        // draft is folded into the store + CRDT solely by Save, so Cancel can
+        // genuinely discard and the unsaved-changes guard can see real dirt.
         if self.any_text_focused() {
             self.forward_event_to_inputs(full_event, scale_factor, modifiers, state, path, handled, node_id, taffy);
-            if self.mode == Mode::Edit {
-                self.commit_form_live(state);
-            }
             self.dirty = true;
             return;
         }
@@ -3682,8 +3722,32 @@ mod tests {
     // =================================================================
 
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, NamedKey, SmolStr};
+    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+
+    /// Build a `KeyboardInput` winit event. winit 0.30's `KeyEvent` carries a
+    /// `pub(crate)` `platform_specific` field, so it can't be struct-literalled
+    /// — the whole struct is zero-initialised (the same trick `shell`'s and
+    /// `terminal`'s test harnesses use) then the public fields we care about are
+    /// overwritten. `text` is what a focused `TextInput` actually inserts.
+    fn key_input_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
+        // SAFETY: every public `KeyEvent` field tolerates the all-zero bit
+        // pattern (`Option` → `None`; `Key`/`PhysicalKey`/`KeyLocation`/
+        // `ElementState` first variant; `bool` → false) and we overwrite the
+        // ones we read below; the private field is inert for our widgets.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = text.map(SmolStr::new);
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
 
     fn device_id() -> DeviceId {
         // winit gives no public DeviceId constructor; the production code
@@ -3835,6 +3899,99 @@ mod tests {
 
         fn row_id(&self, index: usize) -> ContactId {
             self.app.list_rows[index].0
+        }
+
+        /// Dispatch a key event with explicit modifier state through the real
+        /// `handle_event` path.
+        fn dispatch_key_mods(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
+            let modifiers: Modifiers = mods.into();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(
+                event,
+                1.0,
+                &modifiers,
+                &mut self.doc,
+                &ROOT,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+            handled
+        }
+
+        /// Press a single `Named` key (no modifiers).
+        fn press_named(&mut self, key: NamedKey) -> bool {
+            self.dispatch_key_mods(&key_input_event(Key::Named(key), None), ModifiersState::empty())
+        }
+
+        /// Press a single character key (no modifiers) — a global shortcut like
+        /// `n`, `e`, `/` when no field is focused.
+        fn press_char(&mut self, c: &str) -> bool {
+            self.dispatch_key_mods(
+                &key_input_event(Key::Character(SmolStr::new(c)), Some(c)),
+                ModifiersState::empty(),
+            )
+        }
+
+        /// Press a character key with Ctrl held (e.g. Ctrl+S, Ctrl+K).
+        fn press_char_ctrl(&mut self, c: &str) -> bool {
+            self.dispatch_key_mods(
+                &key_input_event(Key::Character(SmolStr::new(c)), Some(c)),
+                ModifiersState::CONTROL,
+            )
+        }
+
+        /// Type a string one keystroke at a time into whichever input is
+        /// focused, driving the production `handle_event` → `TextInput` path
+        /// (NOT `set_text`), so the live edit semantics are what's exercised.
+        fn type_text(&mut self, s: &str) {
+            for ch in s.chars() {
+                let buf = ch.to_string();
+                self.dispatch_key_mods(
+                    &key_input_event(Key::Character(SmolStr::new(&buf)), Some(&buf)),
+                    ModifiersState::empty(),
+                );
+            }
+        }
+
+        /// Value currently held in the focused/edit form field for `slot`.
+        fn field_value(&self, slot: Slot) -> String {
+            self.app
+                .form
+                .as_ref()
+                .and_then(|f| f.inputs.iter().find(|i| i.slot == slot))
+                .map(|i| i.ti.value().to_string())
+                .unwrap_or_default()
+        }
+
+        /// The stored (committed) contact for `id`, read back from the CRDT doc.
+        fn doc_contact(&self, id: ContactId) -> Option<Contact> {
+            ContactsDoc::list_contacts(&self.doc).into_iter().find(|c| c.id == id)
+        }
+
+        /// Focus the edit-form field for `slot` by clicking its laid-out rect
+        /// through the production press path. Returns whether it was found.
+        fn focus_field(&mut self, slot: Slot) -> bool {
+            let rect = self
+                .app
+                .form
+                .as_ref()
+                .and_then(|f| f.inputs.iter().find(|i| i.slot == slot))
+                .map(|i| i.ti.get_rect());
+            match rect {
+                Some(r) if r.width() > 0.0 => {
+                    self.press_left(r.center());
+                    self.app
+                        .form
+                        .as_ref()
+                        .and_then(|f| f.inputs.iter().find(|i| i.slot == slot))
+                        .map(|i| i.ti.is_focused())
+                        .unwrap_or(false)
+                }
+                _ => false,
+            }
         }
     }
 
@@ -4074,8 +4231,405 @@ mod tests {
         assert_eq!(h.app.mode, Mode::View);
     }
 
+    // =================================================================
+    // Live-edit draft semantics — the structural fix. Editing mutates only
+    // the form's local buffers/draft; nothing reaches the store or the CRDT
+    // doc until Save. This is what makes Cancel real and the unsaved guard
+    // reachable, so these drive the *real* keystroke path (handle_event),
+    // never `set_text`.
+    // =================================================================
+
     #[test]
+    fn typing_in_edit_form_does_not_commit_and_cancel_discards() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let original = h.app.store.get(id).unwrap().title.clone();
+        let c = h.app.store.get(id).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        // Focus the Title field via a real click, then type through the
+        // production keystroke path (NOT `set_text`).
+        assert!(h.focus_field(Slot::Title), "the title field focuses on click");
+        h.type_text("XYZ");
+        // The keystrokes landed in the field's local buffer …
+        let live = h.field_value(Slot::Title);
+        assert!(live.contains("XYZ"), "the field shows the typed text: {live:?}");
+        assert_ne!(live, original);
+        // … but NOTHING was committed: editing is a true draft now.
+        assert_eq!(h.app.store.get(id).unwrap().title, original, "store untouched mid-edit");
+        assert_eq!(h.doc_contact(id).unwrap().title, original, "CRDT doc untouched mid-edit");
+        assert!(h.app.form_is_dirty(), "the live-typed form reports dirty");
+        // Cancel genuinely discards the draft.
+        assert!(h.app.hit.cancel.width() > 0.0, "the Cancel button is laid out");
+        h.press_left(h.app.hit.cancel.center());
+        assert_eq!(h.app.mode, Mode::View, "Cancel leaves edit mode");
+        assert!(h.app.form.is_none(), "Cancel drops the form");
+        assert_eq!(h.app.store.get(id).unwrap().title, original, "Cancel discarded the edit (store)");
+        assert_eq!(h.doc_contact(id).unwrap().title, original, "Cancel discarded the edit (doc)");
+    }
+
+    #[test]
+    fn cancel_on_new_contact_leaves_no_phantom_record() {
+        let mut h = Harness::new(1280, 800);
+        let store_before = h.app.store.len();
+        let doc_before = ContactsDoc::list_contacts(&h.doc).len();
+        // Start a new contact via the keyboard shortcut, focus the name, type.
+        assert!(h.press_char("n"), "'n' starts a new contact");
+        assert_eq!(h.app.mode, Mode::Edit);
+        assert!(h.app.form.as_ref().unwrap().is_new);
+        h.relayout();
+        assert!(h.focus_field(Slot::First));
+        h.type_text("Ghost");
+        // The half-typed new contact must not exist anywhere yet.
+        assert_eq!(h.app.store.len(), store_before, "a half-typed new contact isn't in the store");
+        assert_eq!(
+            ContactsDoc::list_contacts(&h.doc).len(),
+            doc_before,
+            "nor in the doc",
+        );
+        // Cancel → still nothing, no "No Name"/"Ghost" phantom left behind.
+        h.press_left(h.app.hit.cancel.center());
+        assert_eq!(h.app.mode, Mode::View);
+        assert_eq!(h.app.store.len(), store_before, "Cancel on New leaves no phantom record");
+        assert!(
+            !h.app.store.contacts.iter().any(|c| c.display_name() == "Ghost"),
+            "the abandoned draft never entered the book",
+        );
+    }
+
+    #[test]
+    fn typed_edit_saved_with_ctrl_s_commits_through_the_keystroke_path() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let c = h.app.store.get(id).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        assert!(h.focus_field(Slot::Org));
+        h.type_text("Z");
+        let typed = h.field_value(Slot::Org);
+        assert!(typed.contains('Z'));
+        // Ctrl+S saves; the typed value now round-trips into store + doc.
+        assert!(h.press_char_ctrl("s"), "Ctrl+S is handled in edit mode");
+        assert_eq!(h.app.mode, Mode::View, "Ctrl+S leaves the form");
+        assert_eq!(h.app.store.get(id).unwrap().org, typed, "the typed org saved to the store");
+        assert_eq!(h.doc_contact(id).unwrap().org, typed, "and to the CRDT doc");
+    }
+
+    #[test]
+    fn dirtying_via_keystrokes_makes_the_unsaved_guard_reachable() {
+        // Proves the guard on the REAL keystroke path (not `set_text`): typing
+        // leaves the store untouched, so `form_is_dirty` sees the divergence
+        // and switching contacts pops the modal instead of losing the edit.
+        let mut h = Harness::new(1280, 800);
+        let cur = h.app.selected.unwrap();
+        let c = h.app.store.get(cur).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        assert!(h.focus_field(Slot::Title));
+        h.type_text("Q");
+        assert!(h.app.form_is_dirty(), "keystroke-dirtied form is dirty via the production path");
+        let other_idx = (0..h.app.list_rows.len()).find(|i| h.app.list_rows[*i].0 != cur).unwrap();
+        let other_id = h.row_id(other_idx);
+        h.press_left(h.row_center(other_idx));
+        assert_eq!(h.app.pending_switch, Some(other_id), "the guard defers the switch");
+        assert_eq!(h.app.mode, Mode::Edit, "still editing behind the modal");
+    }
+
+    // =================================================================
+    // List controls: search, sort, group filter, keyboard nav, scroll.
+    // =================================================================
+
+    #[test]
+    fn typing_in_search_narrows_the_visible_list() {
+        let mut h = Harness::new(1280, 800);
+        assert_eq!(h.app.visible_ids().len(), 7);
+        // Focus the search field with '/', then type a query via keystrokes.
+        assert!(h.press_char("/"), "'/' focuses search");
+        assert!(h.app.search.is_focused());
+        h.type_text("hopper");
+        assert_eq!(h.app.search.value(), "hopper");
+        let visible = h.app.visible_ids();
+        assert_eq!(visible.len(), 1, "only Grace Hopper matches 'hopper'");
+        assert_eq!(h.app.store.get(visible[0]).unwrap().last, "Hopper");
+        // The rendered rows reflect it after a layout pass.
+        h.relayout();
+        assert_eq!(h.app.list_rows.len(), 1, "the list pane renders the single match");
+    }
+
+    #[test]
+    fn sort_chip_click_toggles_name_org_and_reorders() {
+        let mut h = Harness::new(1280, 800);
+        assert_eq!(h.app.sort, SortKey::Name);
+        let first_by_name = h.app.store.get(h.app.visible_ids()[0]).unwrap().display_name();
+        assert_eq!(first_by_name, "Tim Berners-Lee", "name sort leads with Berners-Lee");
+        assert!(h.press_left(h.app.hit.sort.center()), "the sort chip is clickable");
+        assert_eq!(h.app.sort, SortKey::Org, "clicking toggles to Org sort");
+        let first_by_org = h.app.store.get(h.app.visible_ids()[0]).unwrap().display_name();
+        assert_ne!(first_by_org, first_by_name, "the list reordered");
+        assert_eq!(first_by_org, "Ada Lovelace", "org sort leads with Analytical Engines");
+        // Toggling again returns to Name sort.
+        h.press_left(h.app.hit.sort.center());
+        assert_eq!(h.app.sort, SortKey::Name);
+    }
+
+    #[test]
+    fn group_filter_popup_selection_filters_and_keeps_selection_valid() {
+        let mut h = Harness::new(1280, 800);
+        // The seeded selection (Ada) is not in "Friends".
+        let sel_before = h.app.selected.unwrap();
+        assert!(
+            !h.app.store.get(sel_before).unwrap().groups.iter().any(|g| g.eq_ignore_ascii_case("Friends")),
+        );
+        // Open the group filter popup and choose "Friends".
+        assert!(h.press_left(h.app.hit.group.center()));
+        let Some(Popup::GroupFilter { anchor }) = h.app.popup else {
+            panic!("the group chip opens the filter popup");
+        };
+        let mut opts = vec!["All".to_string()];
+        opts.extend(h.app.store.all_groups());
+        let idx = opts.iter().position(|o| o == "Friends").expect("Friends is a seeded group");
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, opts.len(), 180.0);
+        h.press_left(rows[idx].center());
+        assert_eq!(h.app.group_filter.as_deref(), Some("Friends"), "the filter is applied");
+        let visible = h.app.visible_ids();
+        assert!(!visible.is_empty());
+        assert!(
+            visible.iter().all(|id| h
+                .app
+                .store
+                .get(*id)
+                .unwrap()
+                .groups
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case("Friends"))),
+            "every visible contact is in Friends",
+        );
+        // Selection stayed valid: it now points at a still-visible contact.
+        assert!(visible.contains(&h.app.selected.unwrap()), "selection moved to a visible contact");
+    }
+
+    #[test]
+    fn arrow_keys_move_the_list_selection() {
+        let mut h = Harness::new(1280, 800);
+        let ids = h.app.visible_ids();
+        let pos = ids.iter().position(|x| *x == h.app.selected.unwrap()).unwrap();
+        assert!(pos + 1 < ids.len(), "the seeded selection isn't the last row");
+        assert!(h.press_named(NamedKey::ArrowDown));
+        assert_eq!(h.app.selected, Some(ids[pos + 1]), "ArrowDown selects the next contact");
+        assert!(h.press_named(NamedKey::ArrowUp));
+        assert_eq!(h.app.selected, Some(ids[pos]), "ArrowUp returns to the previous");
+    }
+
+    #[test]
+    fn n_key_opens_new_and_e_key_edits_selection() {
+        let mut h = Harness::new(1280, 800);
+        assert!(h.press_char("n"));
+        assert_eq!(h.app.mode, Mode::Edit);
+        assert!(h.app.form.as_ref().unwrap().is_new, "'n' opens a NEW contact form");
+        // Escape out, then 'e' edits the existing selection.
+        h.press_named(NamedKey::Escape);
+        assert_eq!(h.app.mode, Mode::View);
+        assert!(h.press_char("e"));
+        assert_eq!(h.app.mode, Mode::Edit);
+        assert!(!h.app.form.as_ref().unwrap().is_new, "'e' edits the selected contact");
+    }
+
+    #[test]
+    fn delete_key_opens_confirm_and_escape_dismisses_it() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        assert!(h.press_named(NamedKey::Delete));
+        assert_eq!(h.app.confirm_delete, Some(id), "Delete raises the confirm modal for the selection");
+        h.press_named(NamedKey::Escape);
+        assert!(h.app.confirm_delete.is_none(), "Escape dismisses the confirm modal");
+        assert!(h.app.store.get(id).is_some(), "nothing was deleted");
+    }
+
+    #[test]
+    fn dragging_the_divider_resizes_the_split() {
+        let mut h = Harness::new(1280, 800);
+        let before = h.app.split_pos;
+        // Grab the divider (between list and detail).
+        let grab = Point::new(h.app.list_rect.x1 + DIVIDER_W / 2.0, h.app.detail_rect.center().y);
+        h.move_to(grab);
+        assert!(h.app.divider_hover, "cursor over the divider arms the drag");
+        h.dispatch(&WindowEvent::MouseInput {
+            device_id: device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert!(h.app.divider_drag, "pressing on the divider starts a drag");
+        // Drag to ~55% of the width.
+        h.move_to(Point::new(h.app.rect.x0 + h.app.rect.width() * 0.55, grab.y));
+        assert!(h.app.split_pos > before, "dragging right widens the list pane");
+        assert!((h.app.split_pos - 0.55).abs() < 0.02, "the split follows the cursor");
+        h.dispatch(&WindowEvent::MouseInput {
+            device_id: device_id(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+        assert!(!h.app.divider_drag, "releasing ends the drag");
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_overflowing_contact_list() {
+        // A short, wide window overflows the list so scrolling has an effect.
+        let mut h = Harness::new(1000, 320);
+        assert!(!h.app.narrow, "1000px stays the docked split");
+        assert_eq!(h.app.list_scroll, 0.0);
+        h.move_to(h.app.list_rect.center());
+        h.dispatch(&WindowEvent::MouseWheel {
+            device_id: device_id(),
+            delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+        h.relayout();
+        assert!(h.app.list_scroll > 0.0, "scrolling down moves the list; clamp keeps it in range");
+    }
+
+    // =================================================================
+    // Edit-form controls: add/remove field, type chip, calendar, favorites.
+    // =================================================================
+
+    #[test]
+    fn add_and_remove_phone_buttons_grow_and_shrink_the_draft() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let c = h.app.store.get(id).cloned().unwrap();
+        let base = c.phones.len();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        // Add-phone button appends a blank row.
+        assert!(h.app.hit.add_phone.width() > 0.0, "the add-phone button is laid out");
+        h.press_left(h.app.hit.add_phone.center());
+        assert_eq!(h.app.form.as_ref().unwrap().draft.phones.len(), base + 1, "add-phone grew the draft");
+        h.relayout();
+        // Remove-field button on the new phone drops it again.
+        let rm = h
+            .app
+            .hit
+            .remove_btns
+            .iter()
+            .find(|(t, _)| matches!(t, TypeTarget::Phone(i) if *i == base))
+            .map(|(_, r)| *r)
+            .expect("the new phone row has a remove button");
+        h.press_left(rm.center());
+        assert_eq!(h.app.form.as_ref().unwrap().draft.phones.len(), base, "remove-field shrank the draft");
+    }
+
+    #[test]
+    fn type_chip_menu_selection_sets_label_in_draft_only() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let c = h.app.store.get(id).cloned().unwrap();
+        assert!(!c.phones.is_empty());
+        let stored_label = c.phones[0].label.clone();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        // Click the type chip for the first phone.
+        let chip = h
+            .app
+            .hit
+            .type_chips
+            .iter()
+            .find(|(t, _)| matches!(t, TypeTarget::Phone(0)))
+            .map(|(_, r)| *r)
+            .expect("phone 0 has a type chip");
+        h.press_left(chip.center());
+        let Some(Popup::TypeMenu { anchor, .. }) = h.app.popup else {
+            panic!("the type chip opens the type menu");
+        };
+        // Pick a label different from the current one.
+        let pick = TYPE_OPTIONS.iter().position(|l| *l != stored_label).unwrap();
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, TYPE_OPTIONS.len(), 140.0);
+        h.press_left(rows[pick].center());
+        assert_eq!(
+            h.app.form.as_ref().unwrap().draft.phones[0].label,
+            TYPE_OPTIONS[pick],
+            "the draft label updated",
+        );
+        // Draft-only: the committed store still holds the old label.
+        assert_eq!(
+            h.app.store.get(id).unwrap().phones[0].label,
+            stored_label,
+            "the label isn't committed until Save",
+        );
+    }
+
+    #[test]
+    fn calendar_day_click_sets_birthday_in_draft_only() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let c = h.app.store.get(id).cloned().unwrap();
+        let stored_bday = c.birthday.clone();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        assert!(h.app.hit.cal_btn.width() > 0.0, "the calendar button is laid out");
+        h.press_left(h.app.hit.cal_btn.center());
+        let Some(Popup::Calendar { year, month, anchor }) = h.app.popup else {
+            panic!("the calendar button opens the calendar");
+        };
+        let (panel, _prev, _next, cells) = h.app.calendar_geometry(anchor, year, month);
+        // Pick an in-panel day different from the stored one (10).
+        let (day, rect) = cells
+            .iter()
+            .copied()
+            .find(|(d, r)| *d != 10 && panel.contains(r.center()))
+            .expect("a selectable in-panel day");
+        h.press_left(rect.center());
+        let expect = format!("{:04}-{:02}-{:02}", year, month, day);
+        assert_eq!(h.app.form.as_ref().unwrap().draft.birthday, expect, "the picked day set the draft birthday");
+        assert_eq!(h.field_value(Slot::Birthday), expect, "and mirrored into the birthday field");
+        // Draft-only: not committed to the store yet.
+        assert_eq!(h.app.store.get(id).unwrap().birthday, stored_bday, "birthday not committed until Save");
+    }
+
+    #[test]
+    fn detail_favorite_star_click_toggles_store_and_doc() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let before = h.app.store.get(id).unwrap().favorite;
+        assert!(h.app.hit.fav.width() > 0.0, "the detail favorite star is laid out");
+        h.press_left(h.app.hit.fav.center());
+        assert_eq!(h.app.store.get(id).unwrap().favorite, !before, "the star flips the store flag");
+        assert_eq!(h.doc_contact(id).unwrap().favorite, !before, "and persists to the doc");
+    }
+
+    #[test]
+    fn edit_form_favorite_pill_click_toggles_draft_only() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let c = h.app.store.get(id).cloned().unwrap();
+        let before = c.favorite;
+        h.app.begin_edit(c, false);
+        h.relayout();
+        assert!(h.app.hit.fav_toggle.width() > 0.0, "the favorite pill is laid out in the form");
+        h.press_left(h.app.hit.fav_toggle.center());
+        assert_eq!(h.app.form.as_ref().unwrap().draft.favorite, !before, "the pill flips the draft flag");
+        assert_eq!(h.app.store.get(id).unwrap().favorite, before, "draft-only: store unchanged until Save");
+    }
+
+    /// A unique scratch `.vcf` destination for an export test, pointed at by
+    /// `QOS_CONTACTS_EXPORT` so the write lands somewhere deterministic instead
+    /// of the user's real home/book directory.
+    fn scratch_export() -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "contacts-export-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let vcf = dir.join("out.vcf");
+        (dir, vcf)
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn export_dialog_select_none_then_toggle_then_export_writes_selection() {
+        let (dir, vcf) = scratch_export();
+        // SAFETY: single-threaded (serialised) test; the env var is read
+        // synchronously inside the export below.
+        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &vcf) };
+
         let mut h = Harness::new(1280, 800);
         // Open the export dialog via the toolbar Export button.
         h.press_left(h.app.hit.export.center());
@@ -4097,15 +4651,21 @@ mod tests {
         let g = h.app.export_geometry();
         h.press_left(g.export_v3.center());
         assert!(h.app.export_sel.is_none(), "exporting closes the dialog");
-        // The export wrote exactly the one chosen contact.
-        let body = std::fs::read_to_string(std::env::temp_dir().join("contacts-export.vcf"))
-            .expect("export wrote a vcf");
+        // The export wrote exactly the one chosen contact to the chosen path.
+        let body = std::fs::read_to_string(&vcf).expect("export wrote a vcf to the chosen path");
         let cards = body.matches("BEGIN:VCARD").count();
         assert_eq!(cards, 1, "exported exactly the single ticked contact");
+
+        unsafe { std::env::remove_var("QOS_CONTACTS_EXPORT") };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
+    #[serial_test::serial]
     fn export_select_all_round_trips_every_contact() {
+        let (dir, vcf) = scratch_export();
+        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &vcf) };
+
         let mut h = Harness::new(1280, 800);
         h.app.open_export_dialog();
         let g = h.app.export_geometry();
@@ -4116,24 +4676,70 @@ mod tests {
         assert_eq!(h.app.export_sel.as_ref().unwrap().len(), total, "Select all ticks everyone");
         let g = h.app.export_geometry();
         h.press_left(g.export_v4.center());
-        let body = std::fs::read_to_string(std::env::temp_dir().join("contacts-export.vcf")).unwrap();
+        let body = std::fs::read_to_string(&vcf).unwrap();
         assert_eq!(body.matches("BEGIN:VCARD").count(), total);
         assert!(body.contains("VERSION:4.0"), "Export 4.0 emits a v4 card");
+
+        unsafe { std::env::remove_var("QOS_CONTACTS_EXPORT") };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn ctrl_k_is_left_unhandled_for_global_search() {
-        // The Ctrl+K (and Ctrl+/) chord must bubble to the host so the
-        // forthcoming shared global-search framework claims it. `handle_key`
-        // returns without setting `handled` exactly when this is true, so
-        // asserting on the production decision function proves the seam.
-        assert!(is_global_search_chord(true, &Key::Character(SmolStr::new("k"))));
-        assert!(is_global_search_chord(true, &Key::Character(SmolStr::new("K"))));
-        assert!(is_global_search_chord(true, &Key::Character(SmolStr::new("/"))));
-        // Not the seam: same keys without ctrl, or other ctrl chords.
-        assert!(!is_global_search_chord(false, &Key::Character(SmolStr::new("k"))));
-        assert!(!is_global_search_chord(true, &Key::Character(SmolStr::new("s"))));
-        assert!(!is_global_search_chord(true, &Key::Named(NamedKey::Escape)));
+    #[serial_test::serial]
+    fn export_destination_prefers_env_then_book_dir() {
+        // 1. QOS_CONTACTS_EXPORT (a file path) is used verbatim.
+        let (dir, vcf) = scratch_export();
+        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &vcf) };
+        let app = ContactsApp::sample();
+        assert_eq!(app.export_destination(), vcf, "an explicit env file path wins");
+        // A directory value receives the default file name.
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &dir) };
+        assert_eq!(
+            app.export_destination(),
+            dir.join("contacts-export.vcf"),
+            "a directory value receives the default file name",
+        );
+        unsafe { std::env::remove_var("QOS_CONTACTS_EXPORT") };
+
+        // 2. With no env override, a disk-backed app exports next to its book —
+        // never a throwaway temp file.
+        let book_dir = std::env::temp_dir().join(format!("contacts-book-{}", uuid::Uuid::new_v4()));
+        let book = book_dir.join("addressbook.automerge");
+        let app2 = ContactsApp::with_persist_path(book.clone());
+        assert_eq!(
+            app2.export_destination(),
+            book_dir.join("contacts-export.vcf"),
+            "the export lands next to the address book, not in a scratch temp dir",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn focus_search_chord_predicate_matches_ctrl_k_and_ctrl_slash() {
+        assert!(is_focus_search_chord(true, &Key::Character(SmolStr::new("k"))));
+        assert!(is_focus_search_chord(true, &Key::Character(SmolStr::new("K"))));
+        assert!(is_focus_search_chord(true, &Key::Character(SmolStr::new("/"))));
+        // Not the chord: same keys without ctrl, or other ctrl chords.
+        assert!(!is_focus_search_chord(false, &Key::Character(SmolStr::new("k"))));
+        assert!(!is_focus_search_chord(true, &Key::Character(SmolStr::new("s"))));
+        assert!(!is_focus_search_chord(true, &Key::Named(NamedKey::Escape)));
+    }
+
+    #[test]
+    fn ctrl_k_focuses_the_search_field_through_handle_event() {
+        // The chord used to be a dead seam that did nothing; it now performs a
+        // real, in-app action — focusing the list search box — driven all the
+        // way through the production `handle_event` path.
+        let mut h = Harness::new(1280, 800);
+        assert!(!h.app.search.is_focused(), "search starts unfocused");
+        assert!(h.press_char_ctrl("k"), "Ctrl+K is handled by the app");
+        assert!(h.app.search.is_focused(), "Ctrl+K focuses the search field");
+        // Escape releases it, and Ctrl+/ focuses it again.
+        h.press_named(NamedKey::Escape);
+        assert!(!h.app.search.is_focused());
+        assert!(h.press_char_ctrl("/"), "Ctrl+/ is handled too");
+        assert!(h.app.search.is_focused(), "Ctrl+/ also focuses the search field");
     }
 
     #[test]
@@ -4242,6 +4848,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn import_reads_a_real_vcf_and_persists_it() {
         let (dir, path) = scratch_book();
         // Write a real .vcf on disk and point the import env var at it.
@@ -4268,6 +4875,34 @@ mod tests {
         assert_eq!(reloaded.len(), 1, "the imported contact was written to disk");
 
         unsafe { std::env::remove_var("QOS_CONTACTS_IMPORT") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn import_with_no_source_is_a_noop_that_guides_the_user() {
+        // Clicking Import with no source path fabricates nothing: it must leave
+        // the book untouched and only raise an instructional toast, so the
+        // button never silently invents contacts.
+        unsafe { std::env::remove_var("QOS_CONTACTS_IMPORT") };
+        let (dir, path) = scratch_book();
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::with_persist_path(path.clone());
+        app.sync(&mut doc, &ROOT);
+        assert!(app.store.is_empty());
+
+        app.import_vcards(&mut doc);
+
+        assert!(app.store.is_empty(), "import with no source adds nothing");
+        assert!(ContactsDoc::list_contacts(&doc).is_empty(), "and writes nothing to the doc");
+        assert!(!path.exists(), "and never touches disk");
+        match &app.toast {
+            Some((msg, _)) => assert!(
+                msg.contains("import"),
+                "the toast guides the user toward importing, got {msg:?}",
+            ),
+            None => panic!("import with no source must surface an instructional toast"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
