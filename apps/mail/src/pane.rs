@@ -84,6 +84,10 @@ pub struct Pane {
     // list swipe state
     swipe: Option<SwipeState>,
     mouse_down_row: Option<(MessageId, Point)>,
+    /// Reader pane only: attachment chip hit regions `(rect, message, index)`,
+    /// resolved during draw (the card layout is only known then). Clicking one
+    /// saves the real attachment bytes to disk.
+    reader_attachment_hits: Vec<(Rect, MessageId, usize)>,
     dirty: bool,
 }
 
@@ -104,6 +108,7 @@ impl Pane {
             search_input,
             swipe: None,
             mouse_down_row: None,
+            reader_attachment_hits: Vec::new(),
             dirty: true,
         }
     }
@@ -482,14 +487,16 @@ impl Pane {
         }
     }
 
-    fn draw_reader(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
+        let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
         let st = self.shared.borrow();
         let rr = self.rect;
         fill_rect(scene, t, rr, c.surfaces.raised);
 
         let msgs = st.selected_thread_messages();
         if msgs.is_empty() {
+            self.reader_attachment_hits.clear();
             let cx = (rr.x0 + rr.x1) / 2.0;
             let cy = rr.y0 + rr.height() / 2.0;
             tr.draw_text(scene, "\u{2709}", 40.0, c.neutral[4], t * Affine::translate((cx - 18.0, cy - 40.0)), None);
@@ -548,13 +555,14 @@ impl Pane {
             if y > rr.y1 - 40.0 {
                 break;
             }
-            y = self.draw_message_card(scene, t, tr, theme, m, content_x, y, content_w, i == msgs.len() - 1);
+            y = self.draw_message_card(scene, t, tr, theme, m, content_x, y, content_w, i == msgs.len() - 1, &mut chip_hits);
             y += 14.0;
         }
+        self.reader_attachment_hits = chip_hits;
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_message_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32, expanded: bool) -> f64 {
+    fn draw_message_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32, expanded: bool, chip_hits: &mut Vec<(Rect, MessageId, usize)>) -> f64 {
         let c = &theme.tokens.colors;
         let card_x1 = x + w as f64;
         let st = self.shared.borrow();
@@ -587,20 +595,32 @@ impl Pane {
                 tr.draw_text_weighted(scene, &format!("{} attachment{}", m.attachments.len(), if m.attachments.len() == 1 { "" } else { "s" }), 11.5, c.text_dim, t * Affine::translate((x, yy)), None, TextWeight::Medium);
                 yy += 20.0;
                 let mut ax = x;
-                for a in &m.attachments {
+                let hov_mouse = self.shared.borrow().last_mouse;
+                for (ai, a) in m.attachments.iter().enumerate() {
                     let label = format!("{}  {}", a.filename, a.size_human());
                     let (lw, _) = tr.measure(&label, 11.5, None);
-                    let chip_w = lw as f64 + 44.0;
+                    // Room for the trailing download/state glyph.
+                    let chip_w = lw as f64 + 64.0;
                     if ax + chip_w > card_x1 {
                         ax = x;
                         yy += 36.0;
                     }
                     let chip = Rect::new(ax, yy, ax + chip_w, yy + 30.0);
-                    fill_round(scene, t, chip, 8.0, c.surface_white_5);
+                    let hov = chip.contains(hov_mouse);
+                    fill_round(scene, t, chip, 8.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
                     stroke_round(scene, t, chip, 8.0, 1.0, c.border_white_10);
                     tr.draw_text(scene, a.glyph(), 14.0, c.neutral[7], t * Affine::translate((chip.x0 + 8.0, chip.y0 + 7.0)), None);
                     tr.draw_text(scene, &a.filename, 11.5, c.text_primary, t * Affine::translate((chip.x0 + 30.0, chip.y0 + 4.0)), Some(lw));
                     tr.draw_text(scene, &a.size_human(), 10.0, c.text_dim, t * Affine::translate((chip.x0 + 30.0, chip.y0 + 17.0)), None);
+                    // Trailing affordance: a save glyph when the bytes are present
+                    // (clickable), a cloud when it must still be hydrated.
+                    let (glyph, col) = if a.is_downloadable() {
+                        ("\u{2B07}", c.accent[5]) // down arrow = save
+                    } else {
+                        ("\u{2601}", c.neutral[5]) // cloud = not downloaded
+                    };
+                    tr.draw_text(scene, glyph, 13.0, col, t * Affine::translate((chip.x1 - 22.0, chip.y0 + 6.0)), None);
+                    chip_hits.push((chip, m.id, ai));
                     ax += chip_w + 10.0;
                 }
                 yy += 30.0;
@@ -674,20 +694,44 @@ impl Pane {
                         }
                         Hit::Row(id) => {
                             self.set_search_focus(false);
-                            self.shared.borrow_mut().select_message(doc, id);
+                            let is_draft = self
+                                .shared
+                                .borrow()
+                                .mailbox
+                                .get(id)
+                                .map(|m| m.folder == Folder::Drafts)
+                                .unwrap_or(false);
+                            if is_draft {
+                                // A Drafts row reopens the composer, not the reader.
+                                self.shared.borrow_mut().push_intent(Intent::EditDraft(id));
+                            } else {
+                                self.shared.borrow_mut().select_message(doc, id);
+                            }
                             *handled = true;
                         }
                         _ => {}
                     }
                 }
-                // Record a potential swipe start when pressing a row.
-                if !*handled {
-                    if let Some(id) = self.row_id_at(pt) {
-                        self.mouse_down_row = Some((id, pt));
-                    }
+                // Record a potential swipe origin whenever the press lands on a
+                // row. A later drag past the threshold turns it into a swipe
+                // action (archive/delete) on release; a release without a drag
+                // is a plain tap, which already selected on press.
+                if let Some(id) = self.row_id_at(pt) {
+                    self.mouse_down_row = Some((id, pt));
                 }
             }
             Role::Reader => {
+                // An attachment chip saves the real bytes to disk.
+                if let Some((_, mid, ai)) = self
+                    .reader_attachment_hits
+                    .iter()
+                    .find(|(rc, _, _)| rc.contains(pt))
+                    .cloned()
+                {
+                    self.save_attachment_click(mid, ai);
+                    *handled = true;
+                    return;
+                }
                 if let Some(hit) = self.hit_at(pt) {
                     let sel = self.shared.borrow().selected;
                     if let Some(id) = sel {
@@ -709,6 +753,25 @@ impl Pane {
                 }
             }
         }
+    }
+
+    /// Save a reader attachment's real bytes to the downloads directory, or
+    /// report that it hasn't been downloaded (hydrated) yet.
+    fn save_attachment_click(&mut self, mid: MessageId, ai: usize) {
+        let mut st = self.shared.borrow_mut();
+        let Some(att) = st.mailbox.get(mid).and_then(|m| m.attachments.get(ai)).cloned() else {
+            return;
+        };
+        if !att.is_downloadable() {
+            st.status = Some(format!("{} isn't downloaded yet", att.filename));
+            st.dirty = true;
+            return;
+        }
+        st.status = Some(match crate::util::save_download(&att.filename, &att.content) {
+            Ok(path) => format!("Saved {} to {}", att.filename, path.display()),
+            Err(e) => format!("Couldn't save {}: {e}", att.filename),
+        });
+        st.dirty = true;
     }
 
     fn set_search_focus(&mut self, on: bool) {
@@ -884,5 +947,210 @@ impl Widget for Pane {
         if let Some(i) = self.search_input.as_mut() {
             i.mark_drawn();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::MailState;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, Modifiers};
+    use winit::keyboard::{Key, NamedKey};
+
+    fn shared() -> Shared {
+        MailState::shared(MailState::new_sample(crate::app::avatar_store()))
+    }
+
+    fn reader_for(sh: &Shared, id: MessageId, w: f64, h: f64) -> Pane {
+        {
+            let mut doc = AutoCommit::new();
+            sh.borrow_mut().select_message(&mut doc, id);
+            sh.borrow_mut().take_intents();
+        }
+        let mut p = Pane::new(Role::Reader, sh.clone());
+        p.rect = Rect::new(0.0, 0.0, w, h);
+        p.rebuild_hits();
+        p
+    }
+
+    fn draw(p: &mut Pane) {
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn dispatch(p: &mut Pane, ev: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        p.handle_event(ev, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Pressed, button: MouseButton::Left }
+    }
+    fn release() -> WindowEvent {
+        WindowEvent::MouseInput { device_id: DeviceId::dummy(), state: ElementState::Released, button: MouseButton::Left }
+    }
+    fn moved(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(p.x, p.y) }
+    }
+    fn named(k: NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: DeviceId::dummy(), event: ev, is_synthetic: false }
+    }
+
+    #[test]
+    fn reader_action_bar_star_toggles_star() {
+        let sh = shared();
+        let id = { let st = sh.borrow(); st.mailbox.messages_in(Folder::Inbox)[0].id };
+        let mut p = reader_for(&sh, id, 900.0, 800.0);
+        let before = sh.borrow().mailbox.get(id).unwrap().starred;
+        let star = p.hits.iter().find(|(_, h)| matches!(h, Hit::Star)).map(|(r, _)| *r).expect("star button present");
+        sh.borrow_mut().last_mouse = star.center();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, star.center(), &mut handled);
+        assert!(handled, "reader Star click consumed");
+        assert_eq!(sh.borrow().mailbox.get(id).unwrap().starred, !before, "Star button toggled the flag");
+    }
+
+    #[test]
+    fn reader_attachment_chip_click_saves_real_bytes() {
+        let dir = std::env::temp_dir().join(format!("mail-dl-{}", uuid::Uuid::new_v4()));
+        unsafe { std::env::set_var("QOS_MAIL_DOWNLOADS", &dir) };
+
+        let sh = shared();
+        // The Radia message is parsed from real MIME and carries a hydrated PDF.
+        let id = {
+            let st = sh.borrow();
+            st.mailbox.messages.values().find(|m| m.from.email == "radia@spanning.example").unwrap().id
+        };
+        let mut p = reader_for(&sh, id, 760.0, 900.0);
+        // The chip layout is only known after a draw.
+        draw(&mut p);
+        assert!(!p.reader_attachment_hits.is_empty(), "attachment chip has a hit region");
+        let (rect, mid, _ai) = p.reader_attachment_hits[0];
+        assert_eq!(mid, id);
+
+        sh.borrow_mut().last_mouse = rect.center();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, rect.center(), &mut handled);
+        assert!(handled, "chip click consumed");
+
+        let saved = dir.join("spanning-tree.pdf");
+        assert!(saved.exists(), "the real attachment bytes were written to disk");
+        assert!(!std::fs::read(&saved).unwrap().is_empty());
+        assert!(sh.borrow().status.as_ref().unwrap().contains("Saved"), "toast confirms the save");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_swipe_left_archives_the_row() {
+        let sh = shared();
+        let mut p = Pane::new(Role::List, sh.clone());
+        p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+        p.rebuild_hits();
+        let (id, row) = p
+            .hits
+            .iter()
+            .rev()
+            .find_map(|(r, h)| if let Hit::Row(i) = h { Some((*i, *r)) } else { None })
+            .expect("a list row");
+        let before = sh.borrow().mailbox.count(Folder::Archive);
+        let start = row.center();
+
+        sh.borrow_mut().last_mouse = start;
+        dispatch(&mut p, &press());
+        // Drag left past the threshold.
+        let far = Point::new(start.x - (SWIPE_THRESHOLD + 24.0), start.y);
+        sh.borrow_mut().last_mouse = far;
+        dispatch(&mut p, &moved(far));
+        dispatch(&mut p, &release());
+
+        assert_eq!(sh.borrow().mailbox.count(Folder::Archive), before + 1, "swipe-left archived the row");
+        assert_eq!(sh.borrow().mailbox.get(id).unwrap().folder, Folder::Archive);
+    }
+
+    #[test]
+    fn search_typing_filters_then_clear_resets() {
+        let sh = shared();
+        let mut p = Pane::new(Role::List, sh.clone());
+        p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+        p.rebuild_hits();
+        let full_rows = sh.borrow().list_rows().len();
+
+        // Focus the search field via its real hit.
+        let sr = p.hits.iter().find(|(_, h)| matches!(h, Hit::SearchFocus)).map(|(r, _)| *r).unwrap();
+        sh.borrow_mut().last_mouse = sr.center();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, sr.center(), &mut handled);
+        assert!(sh.borrow().search_focused, "clicking the field focuses search");
+
+        // Put a query in the field and drive the pane's reflect path.
+        if let Some(i) = p.search_input.as_mut() {
+            i.set_text("trajectory");
+        }
+        dispatch(&mut p, &named(NamedKey::ArrowRight));
+        assert_eq!(sh.borrow().search, "trajectory", "field value reflected into the query");
+        let filtered = sh.borrow().list_rows();
+        assert!(!filtered.is_empty() && filtered.len() < full_rows, "results narrowed to matches");
+        assert!(filtered.iter().all(|(mid, _)| {
+            let st = sh.borrow();
+            let m = st.mailbox.get(*mid).unwrap();
+            m.subject.to_ascii_lowercase().contains("trajectory")
+                || m.body.to_ascii_lowercase().contains("trajectory")
+        }));
+
+        // Clear (X) resets the query and rows.
+        p.rebuild_hits();
+        let clr = p.hits.iter().find(|(_, h)| matches!(h, Hit::SearchClear)).map(|(r, _)| *r).expect("clear button appears");
+        let mut handled = false;
+        p.on_left_press(&mut doc, clr.center(), &mut handled);
+        assert!(sh.borrow().search.is_empty(), "clear reset the query");
+        assert_eq!(sh.borrow().list_rows().len(), full_rows, "rows restored after clear");
+    }
+
+    #[test]
+    fn drafts_row_click_opens_editor_not_reader() {
+        let sh = shared();
+        // Put a message into the Drafts folder and switch to it.
+        let id = {
+            let mut st = sh.borrow_mut();
+            let some = *st.mailbox.messages.keys().next().unwrap();
+            st.mailbox.move_to(some, Folder::Drafts);
+            st.folder = Folder::Drafts;
+            some
+        };
+        let mut p = Pane::new(Role::List, sh.clone());
+        p.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+        p.rebuild_hits();
+        let row = p.hits.iter().rev().find(|(_, h)| matches!(h, Hit::Row(_))).map(|(r, _)| *r).unwrap();
+        sh.borrow_mut().last_mouse = row.center();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, row.center(), &mut handled);
+        let intents = sh.borrow_mut().take_intents();
+        assert!(intents.iter().any(|i| matches!(i, Intent::EditDraft(mid) if *mid == id)), "a Drafts row raises EditDraft");
+        assert!(!intents.iter().any(|i| matches!(i, Intent::ShowDetail)), "it does not open the reader");
     }
 }
