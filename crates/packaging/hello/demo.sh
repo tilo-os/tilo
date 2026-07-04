@@ -19,7 +19,9 @@
 
 set -euo pipefail
 
-INTEG=$(cd "$(dirname "$0")/.." && pwd)
+# Workspace root — cargo puts the target dir here (workspace target), not
+# at crates/packaging/target/. Walk two levels up from crates/packaging/hello/.
+INTEG=$(cd "$(dirname "$0")/../../.." && pwd)
 DEMO=${DEMO:-/tmp/qos-hello-demo}
 export XDG_DATA_HOME=${XDG_DATA_HOME:-/tmp/qos-install-demo-data}
 
@@ -47,7 +49,16 @@ cp "$INTEG/target/release/qos-hello" "$DEMO/payload/bin/qos-hello"
 ls -la "$DEMO/payload/bin/qos-hello" | awk '{print "  binary size:", $5, "bytes"}'
 
 hr "1b. install runtime bundle (qos-runtime/2026.07) from host"
-"$INTEG/target/release/qos-install" runtime install --version 2026.07 --from-host --force
+# The launcher refuses to mount unsigned runtime bundles by default —
+# `qos-install run` doesn't forward --allow-unsigned-runtime, so mint an
+# ephemeral signing identity here and sign the bundle. The identity is
+# throwaway (nothing else ever signs as this key), matching the same
+# ephemeral-key policy `os/Containerfile` already uses at image-build time.
+RUNTIME_IDENTITY="$DEMO/runtime-identity.json"
+"$INTEG/target/release/qos-runtime-bundle" key generate --out "$RUNTIME_IDENTITY" >/dev/null
+"$INTEG/target/release/qos-install" runtime install \
+    --version 2026.07 --from-host --force \
+    --identity "$RUNTIME_IDENTITY"
 "$INTEG/target/release/qos-install" runtime list
 
 hr "2. write manifest"
