@@ -81,6 +81,12 @@ enum Command {
         /// `publisher.identity` in the embedded manifest copy.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Where to write the auto-generated publisher identity JSON
+        /// so version updates can be re-signed by the same key. Only
+        /// consulted when `--identity` is NOT passed. The file is
+        /// written with mode 0600.
+        #[arg(long)]
+        identity_out: Option<PathBuf>,
     },
     /// Re-sign an existing .qpkg with the given identity, writing
     /// the result back into the same file.
@@ -123,7 +129,14 @@ fn main() -> Result<()> {
             payload,
             output,
             identity,
-        } => cmd_pack(&manifest, &payload, &output, identity.as_deref()),
+            identity_out,
+        } => cmd_pack(
+            &manifest,
+            &payload,
+            &output,
+            identity.as_deref(),
+            identity_out.as_deref(),
+        ),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
@@ -136,15 +149,19 @@ fn cmd_pack(
     payload_dir: &Path,
     output: &Path,
     identity_path: Option<&Path>,
+    identity_out: Option<&Path>,
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {manifest_path:?}"))?;
     let mut manifest =
         Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
 
-    let identity = match identity_path {
-        Some(p) => load_identity(p)?,
-        None => SigningIdentity::generate(),
+    // Track whether we minted a fresh identity ourselves — that path is
+    // the only one where `--identity-out` and the discard warning
+    // matter.
+    let (identity, was_generated) = match identity_path {
+        Some(p) => (load_identity(p)?, false),
+        None => (SigningIdentity::generate(), true),
     };
 
     // If the manifest's `publisher.identity` was a placeholder
@@ -156,12 +173,96 @@ fn cmd_pack(
     let pub_hex = hex::encode(identity.public_key_bytes());
     manifest.publisher.identity = format!("ed25519:{pub_hex}");
 
+    // Persist / discard behaviour for the auto-generated key.
+    if was_generated {
+        match identity_out {
+            Some(path) => {
+                write_identity_file(path, &identity).with_context(|| {
+                    format!("write identity to {}", path.display())
+                })?;
+                eprintln!(
+                    "wrote publisher identity (ed25519:{pub_hex}) to {} — reuse for version updates",
+                    path.display(),
+                );
+            }
+            None => {
+                eprintln!(
+                    "warning: publisher identity ed25519:{pub_hex} was auto-generated and will be discarded — \
+                     pass `--identity-out <path>` to save it for signing later versions of this package"
+                );
+            }
+        }
+    }
+
     let mut store = MemoryBlobStore::new();
     let id = pack(payload_dir, &manifest, &identity, &mut store)
         .map_err(|e| anyhow!("pack failed: {e}"))?;
     write_qpkg(output, id, &store)?;
     eprintln!("packed {} ({} blobs)", id, store.len());
     Ok(())
+}
+
+/// Serialise `identity` in the same JSON shape [`load_identity`] reads
+/// and write it to `path` with mode 0600. Overwrites atomically via
+/// a sibling tmpfile so a crash never leaves a half-written key on disk.
+fn write_identity_file(path: &Path, identity: &SigningIdentity) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let seed = extract_secret_seed(identity)?;
+    let record = IdentityFile { secret_key_hex: hex::encode(seed) };
+    let text = serde_json::to_string_pretty(&record).context("encode identity JSON")?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create parent {}", parent.display()))?;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    // Create with 0600 explicitly so between-tmp-and-rename windows
+    // don't leave the seed world-readable.
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("open {}", tmp.display()))?;
+        use std::io::Write;
+        f.write_all(text.as_bytes())?;
+    }
+    std::fs::rename(&tmp, path)?;
+    // Belt+suspenders: ensure the final file is 0600 even if it existed
+    // before with looser perms.
+    let mut perm = std::fs::metadata(path)?.permissions();
+    perm.set_mode(0o600);
+    std::fs::set_permissions(path, perm)?;
+    Ok(())
+}
+
+/// Extract the 32-byte secret seed from a `SigningIdentity` — only
+/// works for the plain Ed25519 variant, which is what `generate()`
+/// mints. Threshold-single-device is not supported here because there
+/// is no in-crate way to reconstruct a share layout from disk.
+fn extract_secret_seed(identity: &SigningIdentity) -> Result<[u8; 32]> {
+    // SigningIdentity's variants are non-exhaustive from the outside,
+    // but the CLI only mints Ed25519 in the auto-generate path — so
+    // we compute the seed by re-generating from the known secret bytes
+    // via the pubkey. Instead: match on the enum by round-tripping the
+    // signing_key. Since Ed25519(sk) exposes the SigningKey via public
+    // API only through pack, we peek by signing a canonical marker and
+    // comparing to a fresh SigningKey — impractical.
+    //
+    // Simpler path: expose the seed via a new helper. Match on the enum
+    // in-crate: the `pkg` crate makes SigningIdentity's variants pub,
+    // so we can pattern-match here.
+    use pkg::SigningIdentity as SI;
+    match identity {
+        SI::Ed25519(sk) => Ok(sk.to_bytes()),
+        SI::ThresholdSingleDevice(_) => {
+            bail!("cannot write threshold identity via `--identity-out` — use qos-threshold-identity to persist shares")
+        }
+    }
 }
 
 fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
