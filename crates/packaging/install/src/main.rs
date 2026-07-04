@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
-use qos_pkg::blobs::BlobStore;
-use qos_pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify};
+use pkg::blobs::BlobStore;
+use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify};
 use serde::{Deserialize, Serialize};
 
 /// Header block written into every .qpkg tar. Mirrors qos-pkg-cli's
@@ -412,10 +412,10 @@ fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore), Error> {
 /// and decodes just enough to lift the 32-byte publisher_identity.
 fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8; 32]> {
     let blob = store
-        .get(&qos_pkg::blobs::BlobHash(*id.as_bytes()))
+        .get(&pkg::blobs::BlobHash(*id.as_bytes()))
         .ok()
         .flatten()?;
-    let signed = qos_pkg::signed::SignedRoot::decode(&blob).ok()?;
+    let signed = pkg::signed::SignedRoot::decode(&blob).ok()?;
     Some(signed.publisher_identity)
 }
 
