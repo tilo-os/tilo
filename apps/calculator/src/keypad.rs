@@ -112,6 +112,30 @@ impl CalcScreen {
         self.keys.iter().position(|k| k.label() == label)
     }
 
+    /// Test helper: screen-space center of memory-bar button `i`, once laid out.
+    #[doc(hidden)]
+    pub fn mem_center(&self, i: usize) -> Option<Point> {
+        self.mem_rects.get(i).map(|r| r.center())
+    }
+
+    /// Test helper: screen-space center of the history row for entry `i`, if it
+    /// is currently laid out (sidebar shown and the row is in the viewport).
+    #[doc(hidden)]
+    pub fn history_row_center(&self, i: usize) -> Option<Point> {
+        self.history_rects
+            .iter()
+            .find(|(idx, _)| *idx == i)
+            .map(|(_, r)| r.center())
+    }
+
+    /// Test helper: screen-space center of the "Clear" history button, if the
+    /// sidebar is currently shown.
+    #[doc(hidden)]
+    pub fn clear_history_center(&self) -> Option<Point> {
+        (self.sidebar_open && self.clear_hist_rect != Rect::ZERO)
+            .then(|| self.clear_hist_rect.center())
+    }
+
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
     /// breakpoint changed. Cheap when unchanged (the common case).
     fn ensure_layout(&mut self, keypad_w: f64) {

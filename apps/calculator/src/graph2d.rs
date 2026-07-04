@@ -464,6 +464,11 @@ impl Graph2dScreen {
     pub fn toggle_center(&self) -> Option<Point> {
         (self.toggle_rect != Rect::ZERO).then(|| self.toggle_rect.center())
     }
+    /// Center of function row `i`'s visibility dot, once laid out (test helper).
+    #[doc(hidden)]
+    pub fn vis_center(&self, i: usize) -> Option<Point> {
+        self.vis_rects.get(i).map(|r| r.center())
+    }
 
     // ----- canvas internals -------------------------------------------------
 

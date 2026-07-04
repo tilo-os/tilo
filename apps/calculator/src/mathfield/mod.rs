@@ -472,11 +472,6 @@ impl MathField {
         self.rect.contains(p)
     }
 
-    /// Width the laid-out content needs (so callers can size a row).
-    pub fn content_width(&self) -> f64 {
-        self.layout.as_ref().map(|l| l.width).unwrap_or(0.0)
-    }
-
     /// Height the laid-out content needs, measured against `tr` (rebuilding the
     /// layout if the content changed). Callers use this to GROW the hosting card
     /// to fit the formula up to [`CARD_MAX_H`] before handing the field its rect,
