@@ -42,7 +42,7 @@ members = [
     "apps/osk",
     "apps/collab-broker",
     "apps/settings",
-    "greeter",
-    "installer",
+    "crates/session/greeter",
+    "crates/session/installer",
 ]
 resolver = "2"
