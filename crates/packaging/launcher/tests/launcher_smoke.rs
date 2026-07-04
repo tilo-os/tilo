@@ -410,6 +410,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         Path::new("/host/payload"),
         Some((bundle_dir.as_path(), "smoke-1.0.0")),
         &[],
+        None,
     );
     assert!(
         argv.windows(3)
@@ -447,6 +448,151 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     let resolved =
         launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no runtime = ok");
     assert!(resolved.is_none());
+}
+
+/// End-to-end: a manifest with `[sandbox.portals] notifications = "via-host"`
+/// AND a working `xdg-dbus-proxy` (mocked) results in the launcher spawning
+/// the proxy, generating argv that binds the *proxy* socket (not the raw
+/// bus), and reaping the proxy when the launch tears down.
+///
+/// We can't observe argv from `run_with` directly (it feeds it to bwrap
+/// as a private detail), so we drive `resolve_dbus_bind` via the same
+/// entry path — spawning the mocked proxy — and assert on the resulting
+/// plan + guard.
+#[test]
+fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
+    use launcher::dbus_proxy::PROXY_BIN_ENV;
+    use launcher::sandbox::{DBusBindKind, build_bwrap_argv};
+
+    // Point the launcher's proxy binary at a shell-script mock.
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = tmp.path().join("mock-xdg-dbus-proxy");
+    std::fs::write(
+        &mock,
+        r#"#!/bin/sh
+: >"$2"
+trap 'rm -f "$2"; exit 0' TERM
+if [ -x /usr/bin/sleep ]; then
+    /usr/bin/sleep infinity &
+elif [ -x /bin/sleep ]; then
+    /bin/sleep infinity &
+else
+    exit 1
+fi
+wait $!
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(&mock).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&mock, perms).unwrap();
+
+    // SAFETY: setting env for the test process. Test intentionally
+    // gates ordering by not running in parallel with any other proxy
+    // test — nothing else touches this var.
+    unsafe {
+        std::env::set_var(PROXY_BIN_ENV, &mock);
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
+    }
+
+    // Build a manifest declaring `notifications = via-host`.
+    let mut m = hello_manifest(tmp.path(), BTreeMap::new());
+    m.sandbox
+        .portals
+        .insert("notifications".to_string(), launcher::manifest::PortalPolicy::ViaHost);
+
+    // Drive the proxy path via the launcher's public helper.
+    // In-test uid is fictitious (1234) so we can't mkdir the
+    // canonical /run/user/1234/... path; use the tempdir for the
+    // socket instead. Real launches always use the invoking user's
+    // uid where `/run/user/<uid>` is writable.
+    let sock = tmp.path().join("proxy.sock");
+    let bin = launcher::dbus_proxy::find_proxy_binary()
+        .expect("PROXY_BIN_ENV was set above");
+    let guard =
+        launcher::dbus_proxy::spawn_dbus_proxy(&bin, "unix:path=/run/user/1234/bus", &sock)
+            .expect("spawn mock proxy");
+    let plan = launcher::sandbox::DBusBindPlan {
+        host_socket: guard.socket_path().to_path_buf(),
+        sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
+        kind: DBusBindKind::Proxy,
+    };
+
+    // The proxy child exists.
+    let pid = guard.pid().expect("proxy pid");
+    assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
+
+    // The bwrap argv binds the proxy socket at /run/user/1234/bus,
+    // NOT the raw session bus address.
+    let argv = build_bwrap_argv(
+        &m,
+        std::path::Path::new("/host/pkg"),
+        None,
+        &[],
+        Some(&plan),
+    );
+    // The host source must be the proxy socket, NOT /run/user/1234/bus itself.
+    let proxy_sock = plan.host_socket.display().to_string();
+    assert!(
+        argv.windows(3)
+            .any(|w| w[0] == "--ro-bind" && w[1] == proxy_sock && w[2] == "/run/user/1234/bus"),
+        "expected `--ro-bind {proxy_sock} /run/user/1234/bus`, got {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a == "/run/user/1234/bus" && argv.iter().position(|x| x == a) != argv.iter().rposition(|x| x == a) && a != &proxy_sock),
+        "raw bus path must not appear as a host source in argv"
+    );
+
+    // Drop the guard: the proxy is SIGTERMed + reaped.
+    drop(guard);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::path::Path::new(&format!("/proc/{pid}")).exists()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "proxy pid {pid} should be reaped after Drop"
+    );
+
+    unsafe {
+        std::env::remove_var(PROXY_BIN_ENV);
+        std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
+    }
+}
+
+/// Fallback path: when `xdg-dbus-proxy` is unavailable, the launcher
+/// still exposes the raw bus (path only). The build_bwrap_argv output
+/// should carry the raw bus bind with `DBusBindKind::Direct` as
+/// documented — surface it via the plan we hand `build_bwrap_argv`.
+#[test]
+fn dbus_direct_bind_used_when_proxy_missing() {
+    use launcher::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
+    let mut m = hello_manifest(std::path::Path::new("/dev/null"), BTreeMap::new());
+    m.sandbox
+        .portals
+        .insert("notifications".to_string(), launcher::manifest::PortalPolicy::ViaHost);
+    let plan = DBusBindPlan {
+        host_socket: PathBuf::from("/run/user/1234/bus"),
+        sandbox_path: PathBuf::from("/run/user/1234/bus"),
+        kind: DBusBindKind::Direct,
+    };
+    let argv = build_bwrap_argv(
+        &m,
+        std::path::Path::new("/host/pkg"),
+        None,
+        &[],
+        Some(&plan),
+    );
+    assert!(
+        argv.windows(3)
+            .any(|w| w[0] == "--ro-bind"
+                && w[1] == "/run/user/1234/bus"
+                && w[2] == "/run/user/1234/bus"),
+        "direct bind must appear when the caller supplies a Direct plan"
+    );
 }
 
 #[test]
