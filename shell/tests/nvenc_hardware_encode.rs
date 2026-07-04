@@ -206,6 +206,7 @@ fn shared_flatpak_session_rolls_up_nvenc() {
         max_bitrate_kbps: 6000,
         target_fps: 30,
         encoder: EncoderChoice::Auto,
+        hdr: None,
     };
     // 1280x720 for the same driver-config reason as
     // nvenc_produces_annex_b_h264_bytes.

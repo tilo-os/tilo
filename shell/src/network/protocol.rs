@@ -97,6 +97,23 @@ pub enum NeighbourMsg {
         /// offset zero) still work.
         #[serde(default)]
         sender_monotonic_ns_at_send: u64,
+        /// Colorimetry the encoder tags the bitstream with. `None` on
+        /// pre-HDR peers → receiver assumes SDR BT.709 (matches the
+        /// v1 behaviour), so this field is wire-compatible.
+        #[serde(default)]
+        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+        /// HDR10 static metadata (SMPTE ST 2086 mastering + CTA-861.3
+        /// content light) for HDR pipelines. `None` on SDR streams and
+        /// on pre-HDR peers. The receiver's tone-mapper uses this to
+        /// size compression correctly on SDR displays.
+        #[serde(default)]
+        hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+        /// Bit depth of the codec's target pixel format. `0` (the
+        /// serde-default) means unspecified — receivers infer 8-bit
+        /// from `codec = "h264"` on the wire; explicit values are 8 or
+        /// 10 for HEVC Main10.
+        #[serde(default)]
+        bit_depth: u8,
     },
     /// Explicit end-of-stream — the owner tore down the share, or the
     /// captured surface unmapped.
@@ -292,29 +309,52 @@ mod tests {
             codec: "h264".to_string(),
             ts: 1_700_000_002,
             sender_monotonic_ns_at_send: 1_700_000_002,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 0,
         });
     }
 
     #[test]
     fn surface_stream_start_backfill_when_field_missing() {
-        // Older peer emits the JSON without `sender_monotonic_ns_at_send`;
-        // the `#[serde(default)]` marker must backfill it as 0 so the
-        // receiver's `set_clock_offset(0, _)` path fires (which the
-        // diagnostics layer treats as "skip cross-host latency").
+        // Older peer emits the JSON without the extended fields; the
+        // `#[serde(default)]` markers must backfill so receivers on the
+        // new schema still parse legacy messages.
         let legacy = r#"{"SurfaceStreamStart":{"surface":9,"source_peer":123,"width":320,"height":240,"codec":"h264","ts":1234567}}"#;
         let parsed: NeighbourMsg = serde_json::from_str(legacy).expect("legacy parses");
         match parsed {
             NeighbourMsg::SurfaceStreamStart {
                 sender_monotonic_ns_at_send,
+                colorimetry,
+                hdr_static_metadata,
+                bit_depth,
                 ..
             } => {
-                assert_eq!(
-                    sender_monotonic_ns_at_send, 0,
-                    "missing field must serde-default to 0 for legacy peer compat"
-                );
+                assert_eq!(sender_monotonic_ns_at_send, 0);
+                assert!(colorimetry.is_none(), "legacy has no colorimetry");
+                assert!(hdr_static_metadata.is_none(), "legacy has no HDR metadata");
+                assert_eq!(bit_depth, 0, "legacy defaults bit_depth to 0 (unspecified)");
             }
             other => panic!("expected SurfaceStreamStart, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn surface_stream_start_hdr_round_trips() {
+        use crate::collab::colorimetry::Colorimetry;
+        use crate::collab::hdr_metadata::Hdr10Metadata;
+        round_trip(NeighbourMsg::SurfaceStreamStart {
+            surface: 7,
+            source_peer: 0xABCD,
+            width: 1920,
+            height: 1080,
+            codec: "hevc-main10".to_string(),
+            ts: 1_700_000_002,
+            sender_monotonic_ns_at_send: 1_700_000_002,
+            colorimetry: Some(Colorimetry::hdr10()),
+            hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
+            bit_depth: 10,
+        });
     }
 
     #[test]
@@ -338,6 +378,9 @@ mod tests {
             codec: "h264".to_string(),
             ts: 1_700_000_004,
             sender_monotonic_ns_at_send: 1_700_000_004,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 0,
         };
         let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
         let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");

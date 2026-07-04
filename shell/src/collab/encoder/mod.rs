@@ -1,4 +1,4 @@
-//! H.264 encoder trait + runtime selection.
+//! Video encoder trait + runtime selection.
 //!
 //! The encoder abstraction lives here (instead of `network::encoder`
 //! which still hosts the openh264 wrapper for backwards compatibility)
@@ -6,24 +6,26 @@
 //! keeping the trait next to the session code makes the ownership graph
 //! obvious.
 //!
-//! Three concrete backends:
+//! Three concrete backends × three codecs:
 //!
 //! - [`OpenH264Backend`] — pure-software Cisco openh264, always
-//!   available. Preferred fallback and the only path guaranteed to
-//!   compile without system headers.
+//!   available. H.264 8-bit only. Preferred fallback.
 //! - [`VaApiBackend`] — VA-API (Intel iGPU, AMD, some ARM SoCs). Gated
-//!   behind the `vaapi` cargo feature: default off so the shell still
-//!   compiles on hosts without `libva-devel`. Uses zero-copy DMABUF import
-//!   when the capture path hands it a DMABUF fd; falls back to
-//!   `vaCreateImage` upload from the NV12/RGBA CPU path otherwise.
-//! - [`NvEncBackend`] — NVENC via `nvidia-video-codec-sdk`. Behind the
-//!   `nvenc` cargo feature (default off — NVIDIA-only variant).
+//!   behind the `vaapi` cargo feature. Supports H.264 8-bit + HEVC
+//!   Main10 (10-bit) depending on the render node's capabilities.
+//! - [`NvEncBackend`] — NVENC via `ffmpeg-next`. Behind the `nvenc`
+//!   cargo feature. Supports H.264 8-bit + HEVC Main10.
 //!
-//! The trait keeps the encoder loop backend-agnostic and lets
-//! [`SharedFlatpakSession`] hold `Box<dyn Encoder + Send>` without
-//! sprinkling `cfg(feature)` through the composition. Backends that
-//! aren't linked in this build simply don't register a probe entry.
+//! The trait keeps the encoder loop backend + codec agnostic; the
+//! caller derives a [`Codec`] from the session config (SDR → H.264,
+//! HDR → HEVC Main10) and every backend either supports it or returns
+//! [`EncoderError::Unavailable`].
+//!
+//! Backends that aren't linked in this build simply don't register a
+//! probe entry.
 
+use crate::collab::colorimetry::Colorimetry;
+use crate::collab::hdr_metadata::{Hdr10Metadata, HdrConfig};
 use crate::config::EncoderChoice;
 use std::time::Duration;
 
@@ -60,6 +62,61 @@ impl EncoderKind {
             EncoderKind::Openh264 => "openh264",
             EncoderKind::VaApi => "vaapi",
             EncoderKind::NvEnc => "nvenc",
+        }
+    }
+}
+
+/// Which bitstream codec is riding on the encoder backend.
+///
+/// Distinct from [`EncoderKind`] because the same backend can drive
+/// multiple codecs — a modern NVIDIA GPU handles both `h264_nvenc` and
+/// `hevc_nvenc`; a modern Intel iGPU does `h264_vaapi` + `hevc_vaapi`.
+///
+/// SDR pipelines use [`Self::H264`] because that's still the best-
+/// supported wire format for 8-bit content — HEVC is more efficient
+/// but adds decode-side compatibility overhead. HDR pipelines use
+/// [`Self::HevcMain10`] because H.264 doesn't do >8-bit and AV1
+/// hardware is Ada+/Arc+/Battlemage-only.
+///
+/// Wire label — matches the string that goes on the wire in
+/// [`crate::network::NeighbourMsg::SurfaceStreamStart::codec`] so the
+/// receiver can construct the right decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    /// H.264 8-bit — `codec: "h264"` on the wire.
+    H264,
+    /// HEVC Main10 10-bit — `codec: "hevc-main10"` on the wire.
+    HevcMain10,
+}
+
+impl Codec {
+    /// Wire label matching [`crate::network::protocol::SurfaceStreamStart::codec`].
+    pub fn wire_label(self) -> &'static str {
+        match self {
+            Codec::H264 => "h264",
+            Codec::HevcMain10 => "hevc-main10",
+        }
+    }
+
+    /// libavcodec encoder-name suffix for this codec + backend.
+    /// e.g. `Codec::HevcMain10` on `EncoderKind::VaApi` picks
+    /// `hevc_vaapi`. Openh264 only supports H.264.
+    pub fn libav_encoder_name(self, backend: EncoderKind) -> Option<&'static str> {
+        match (self, backend) {
+            (Codec::H264, EncoderKind::VaApi) => Some("h264_vaapi"),
+            (Codec::HevcMain10, EncoderKind::VaApi) => Some("hevc_vaapi"),
+            (Codec::H264, EncoderKind::NvEnc) => Some("h264_nvenc"),
+            (Codec::HevcMain10, EncoderKind::NvEnc) => Some("hevc_nvenc"),
+            (Codec::H264, EncoderKind::Openh264) => None, // uses in-tree openh264, not libav
+            (Codec::HevcMain10, EncoderKind::Openh264) => None,
+        }
+    }
+
+    /// Bit depth of the codec's target pixel format.
+    pub fn bit_depth(self) -> u8 {
+        match self {
+            Codec::H264 => 8,
+            Codec::HevcMain10 => 10,
         }
     }
 }
@@ -211,6 +268,62 @@ pub struct EncoderInit {
     /// Keyframe interval in seconds. `0` = backend default (openh264
     /// picks it internally; VA-API uses `fps` seconds).
     pub keyframe_interval_secs: u32,
+    /// Bitstream codec to emit. Default [`Codec::H264`] preserves the
+    /// prior SDR path.
+    pub codec: Codec,
+    /// Colorimetry the encoder tags the bitstream with. VUI on the SPS
+    /// side, and side-data on every frame. Default is SDR BT.709.
+    pub colorimetry: Colorimetry,
+    /// HDR10 static metadata to embed as SEI. `None` = SDR, no SEI
+    /// insertion; `Some(_)` = HDR pipeline, emit mastering-display + CLL
+    /// SEIs per keyframe.
+    pub hdr: Option<Hdr10Metadata>,
+}
+
+impl EncoderInit {
+    /// Convenience — the SDR default matches every call before HDR
+    /// support existed. Used by tests + code paths that haven't been
+    /// migrated yet.
+    pub const fn sdr_h264(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+        keyframe_interval_secs: u32,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            fps,
+            bitrate_kbps,
+            keyframe_interval_secs,
+            codec: Codec::H264,
+            colorimetry: Colorimetry::sdr_bt709(),
+            hdr: None,
+        }
+    }
+
+    /// HDR10 constructor. Wires the config's transfer + metadata
+    /// through, forces HEVC Main10.
+    pub fn hdr10_hevc(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+        keyframe_interval_secs: u32,
+        hdr: HdrConfig,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            fps,
+            bitrate_kbps,
+            keyframe_interval_secs,
+            codec: Codec::HevcMain10,
+            colorimetry: hdr.colorimetry(),
+            hdr: Some(hdr.metadata),
+        }
+    }
 }
 
 /// Outcome of a runtime probe for one candidate backend.
@@ -221,48 +334,47 @@ pub struct EncoderInit {
 #[derive(Debug, Clone)]
 pub struct ProbeOutcome {
     pub kind: EncoderKind,
+    pub codec: Codec,
     pub available: bool,
     pub reason: String,
 }
 
-/// Probe every compiled-in backend and return the highest-priority
-/// available one, along with the outcomes of every backend probed.
+/// Probe every compiled-in backend for the requested codec and return
+/// the highest-priority available one, along with the outcomes of
+/// every backend probed.
 ///
-/// Priority order matches the task spec:
-/// 1. NVENC (if compiled + available)
-/// 2. VA-API (if compiled + `/dev/dri/renderD128` opens + supports H.264)
-/// 3. openh264 (software, always available)
+/// Priority order:
+/// 1. NVENC (if compiled + supports codec)
+/// 2. VA-API (if compiled + render node supports codec)
+/// 3. openh264 (software) — only for [`Codec::H264`]
 ///
-/// The `outcomes` vector is returned so [`SharedFlatpakSession::start`]
-/// can log every step (not just the chosen one) — useful for
-/// diagnosing why VA-API is falling through to software on a specific
-/// host.
-pub fn probe(force: Option<EncoderChoice>) -> (EncoderKind, Vec<ProbeOutcome>) {
+/// For [`Codec::HevcMain10`] the openh264 backend reports unavailable
+/// (it only handles H.264 8-bit); a software HEVC fallback via libx265
+/// is a follow-up. On a host with no hardware HEVC encoder,
+/// `Codec::HevcMain10` probe returns [`EncoderKind::Openh264`] as the
+/// picked kind with `available = false` — the caller must fall back to
+/// SDR + [`Codec::H264`] or fail the share.
+pub fn probe(
+    codec: Codec,
+    force: Option<EncoderChoice>,
+) -> (EncoderKind, Vec<ProbeOutcome>) {
     let mut outcomes = Vec::new();
-    // Respect an explicit non-auto config choice. If a specific backend
-    // is requested and probes as unavailable, we *still* fall through
-    // to the next best — the caller wanted the best-effort behaviour,
-    // and the outcome vector records the failure so the log surfaces it.
-    // (An explicit "force this or fail" mode would be a new
-    // `EncoderChoice::VaapiOrFail` — not adopted here to keep the config
-    // stable.)
     match force {
         Some(EncoderChoice::Openh264) => {
-            let outcome = openh264_probe();
+            let outcome = openh264_probe(codec);
             outcomes.push(outcome);
             return (EncoderKind::Openh264, outcomes);
         }
         Some(EncoderChoice::Nvenc) => {
-            let out = nvenc_probe();
+            let out = nvenc_probe(codec);
             let ok = out.available;
             outcomes.push(out);
             if ok {
                 return (EncoderKind::NvEnc, outcomes);
             }
-            // Fall through to try lower-priority.
         }
         Some(EncoderChoice::Vaapi) => {
-            let out = vaapi_probe();
+            let out = vaapi_probe(codec);
             let ok = out.available;
             outcomes.push(out);
             if ok {
@@ -270,13 +382,13 @@ pub fn probe(force: Option<EncoderChoice>) -> (EncoderKind, Vec<ProbeOutcome>) {
             }
         }
         Some(EncoderChoice::Auto) | None => {
-            let nv = nvenc_probe();
+            let nv = nvenc_probe(codec);
             let nv_ok = nv.available;
             outcomes.push(nv);
             if nv_ok {
                 return (EncoderKind::NvEnc, outcomes);
             }
-            let va = vaapi_probe();
+            let va = vaapi_probe(codec);
             let va_ok = va.available;
             outcomes.push(va);
             if va_ok {
@@ -284,55 +396,61 @@ pub fn probe(force: Option<EncoderChoice>) -> (EncoderKind, Vec<ProbeOutcome>) {
             }
         }
     }
-    // Software backup — always available.
-    let sw = openh264_probe();
+    // Software backup — always available for H.264 only.
+    let sw = openh264_probe(codec);
     outcomes.push(sw);
     (EncoderKind::Openh264, outcomes)
 }
 
-/// Openh264 always probes as available (it's a pure-Rust/C compile-in
-/// backend). The probe still returns a `ProbeOutcome` so the log
-/// pipeline is uniform.
-fn openh264_probe() -> ProbeOutcome {
+/// Openh264 always probes as available for H.264. Reports unavailable
+/// for any 10-bit codec — the SVC encoder wraps Cisco's 8-bit-only
+/// implementation.
+fn openh264_probe(codec: Codec) -> ProbeOutcome {
+    let (available, reason) = match codec {
+        Codec::H264 => (true, "openh264 (software) is always available".to_string()),
+        Codec::HevcMain10 => (
+            false,
+            "openh264 backend only supports H.264 8-bit; HEVC Main10 needs a hardware encoder"
+                .to_string(),
+        ),
+    };
     ProbeOutcome {
         kind: EncoderKind::Openh264,
-        available: true,
-        reason: "openh264 (software) is always available".to_string(),
+        codec,
+        available,
+        reason,
     }
 }
 
 /// VA-API probe. Without the `vaapi` feature this always reports
-/// unavailable so the caller falls through.
-///
-/// When the feature is on, the probe:
-///  1. Enumerates `/dev/dri/renderD*` nodes
-///  2. Opens the first one that has H.264 encode support
-///
-/// The feature-off path lets the shell compile + test-suite run
-/// everywhere without libva-devel present.
-fn vaapi_probe() -> ProbeOutcome {
+/// unavailable so the caller falls through. With the feature: opens
+/// `/dev/dri/renderD*` and asks libavcodec whether the render node
+/// exposes an encode profile for `codec`.
+fn vaapi_probe(codec: Codec) -> ProbeOutcome {
     #[cfg(feature = "vaapi")]
     {
-        return vaapi::probe();
+        return vaapi::probe(codec);
     }
     #[allow(unreachable_code)]
     ProbeOutcome {
         kind: EncoderKind::VaApi,
+        codec,
         available: false,
         reason: "vaapi feature not compiled into this build".to_string(),
     }
 }
 
-/// NVENC probe. Feature-gated behind `nvenc`; without the feature the
-/// probe always reports unavailable.
-fn nvenc_probe() -> ProbeOutcome {
+/// NVENC probe. Feature-gated behind `nvenc`; queries libavcodec for
+/// the encoder name matching `codec` on `EncoderKind::NvEnc`.
+fn nvenc_probe(codec: Codec) -> ProbeOutcome {
     #[cfg(feature = "nvenc")]
     {
-        return nvenc::probe();
+        return nvenc::probe(codec);
     }
     #[allow(unreachable_code)]
     ProbeOutcome {
         kind: EncoderKind::NvEnc,
+        codec,
         available: false,
         reason: "nvenc feature not compiled into this build".to_string(),
     }
@@ -380,53 +498,95 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openh264_probe_is_always_available() {
-        let outcome = openh264_probe();
+    fn openh264_probe_is_always_available_for_h264() {
+        let outcome = openh264_probe(Codec::H264);
         assert_eq!(outcome.kind, EncoderKind::Openh264);
+        assert_eq!(outcome.codec, Codec::H264);
         assert!(outcome.available);
     }
 
     #[test]
+    fn openh264_probe_unavailable_for_hevc() {
+        let outcome = openh264_probe(Codec::HevcMain10);
+        assert_eq!(outcome.kind, EncoderKind::Openh264);
+        assert!(!outcome.available, "openh264 must not claim HEVC support");
+    }
+
+    #[test]
     fn auto_probe_falls_back_to_openh264_when_no_hardware() {
-        // On a stripped host (no vaapi feature, no nvenc feature) the
-        // Auto probe must always land on Openh264 as the last-resort
-        // fallback. This test is deterministic on CI runners with no
-        // GPU features enabled.
-        let (chosen, outcomes) = probe(Some(EncoderChoice::Auto));
+        let (chosen, outcomes) = probe(Codec::H264, Some(EncoderChoice::Auto));
         assert_eq!(chosen, EncoderKind::Openh264);
-        // Software probe is *always* the last entry in the outcomes.
         assert_eq!(outcomes.last().unwrap().kind, EncoderKind::Openh264);
         assert!(outcomes.last().unwrap().available);
     }
 
     #[test]
     fn explicit_openh264_choice_bypasses_hardware_probes() {
-        let (chosen, outcomes) = probe(Some(EncoderChoice::Openh264));
+        let (chosen, outcomes) = probe(Codec::H264, Some(EncoderChoice::Openh264));
         assert_eq!(chosen, EncoderKind::Openh264);
-        // Only the software entry — hardware probes are skipped.
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].kind, EncoderKind::Openh264);
     }
 
     #[test]
     fn requested_vaapi_falls_through_when_unavailable() {
-        // Without the vaapi feature, requesting VA-API explicitly still
-        // records the outcome + falls through to openh264 rather than
-        // returning an error. That preserves the "best-effort, log the
-        // reason" contract the flatpak-share session expects.
-        let (chosen, outcomes) = probe(Some(EncoderChoice::Vaapi));
-        // We can't assert `chosen == Openh264` unconditionally because
-        // a `cargo test --features vaapi` run would legitimately land on
-        // VaApi. But we can assert the outcome vector has at least the
-        // vaapi + openh264 probes, and openh264 remains available.
+        let (chosen, outcomes) = probe(Codec::H264, Some(EncoderChoice::Vaapi));
         assert!(outcomes.iter().any(|o| o.kind == EncoderKind::VaApi));
-        // On the default (no `vaapi` feature) build, chosen == Openh264.
         #[cfg(not(feature = "vaapi"))]
         {
             assert_eq!(chosen, EncoderKind::Openh264);
         }
-        // On a vaapi-featured build, chosen can be either — we just
-        // assert the enum is one of the compiled backends.
         let _ = chosen;
+    }
+
+    #[test]
+    fn hevc_probe_on_stripped_host_still_returns_openh264_but_unavailable() {
+        // On a host with no hardware HEVC support, the caller sees the
+        // openh264 fallback picked but flagged unavailable — the session
+        // uses that to fail HDR-share setup with a clear error rather
+        // than silently downgrading to SDR.
+        let (_chosen, outcomes) = probe(Codec::HevcMain10, Some(EncoderChoice::Auto));
+        let last = outcomes.last().expect("has an outcome");
+        assert_eq!(last.kind, EncoderKind::Openh264);
+        assert_eq!(last.codec, Codec::HevcMain10);
+        #[cfg(not(any(feature = "vaapi", feature = "nvenc")))]
+        assert!(!last.available);
+    }
+
+    #[test]
+    fn init_convenience_constructors_pair_codec_with_colorimetry() {
+        let sdr = EncoderInit::sdr_h264(1280, 720, 30, 6000, 2);
+        assert_eq!(sdr.codec, Codec::H264);
+        assert_eq!(sdr.colorimetry, Colorimetry::sdr_bt709());
+        assert!(sdr.hdr.is_none());
+
+        let hdr = EncoderInit::hdr10_hevc(
+            1920,
+            1080,
+            30,
+            15_000,
+            2,
+            HdrConfig::pq_reference(),
+        );
+        assert_eq!(hdr.codec, Codec::HevcMain10);
+        assert!(hdr.colorimetry.is_hdr());
+        assert!(hdr.hdr.is_some());
+    }
+
+    #[test]
+    fn codec_wire_label_stability() {
+        // Wire labels are wire ABI — any change breaks receivers.
+        assert_eq!(Codec::H264.wire_label(), "h264");
+        assert_eq!(Codec::HevcMain10.wire_label(), "hevc-main10");
+    }
+
+    #[test]
+    fn codec_libav_encoder_name_matches_ffmpeg() {
+        assert_eq!(Codec::H264.libav_encoder_name(EncoderKind::VaApi), Some("h264_vaapi"));
+        assert_eq!(Codec::HevcMain10.libav_encoder_name(EncoderKind::VaApi), Some("hevc_vaapi"));
+        assert_eq!(Codec::H264.libav_encoder_name(EncoderKind::NvEnc), Some("h264_nvenc"));
+        assert_eq!(Codec::HevcMain10.libav_encoder_name(EncoderKind::NvEnc), Some("hevc_nvenc"));
+        // Openh264 is not a libavcodec encoder.
+        assert_eq!(Codec::H264.libav_encoder_name(EncoderKind::Openh264), None);
     }
 }
