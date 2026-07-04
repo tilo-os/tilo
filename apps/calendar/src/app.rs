@@ -120,6 +120,9 @@ enum Action {
     ToggleSidebar,
     /// Dismiss the overlay sidebar by clicking the scrim (narrow layout).
     DismissSidebar,
+    /// Collapse (or re-expand) the persistent sidebar in the wide layout. The
+    /// content + detail reclaim the freed width; only the sidebar collapses.
+    ToggleSidebarCollapsed,
     /// Pop the narrow detail screen, returning to the calendar.
     BackToCalendar,
     /// Toggle whether a synced remote calendar's events are shown.
@@ -167,6 +170,11 @@ pub struct CalendarApp {
     sidebar_mode: SidebarMode,
     /// Whether the overlay flap is open (only meaningful in `Overlay` mode).
     sidebar_open: bool,
+    /// Whether the persistent sidebar is collapsed (only meaningful in
+    /// `Persistent` mode — the wide layout). Collapsing hides the sidebar and
+    /// lets the calendar + detail reclaim its width; the overlay flap uses
+    /// `sidebar_open` instead.
+    sidebar_collapsed: bool,
     /// Which narrow screen is showing (only meaningful below the breakpoint).
     narrow_screen: NarrowScreen,
 
@@ -260,6 +268,7 @@ impl CalendarApp {
             last_persist: std::time::Instant::now(),
             sidebar_mode: SidebarMode::Persistent,
             sidebar_open: false,
+            sidebar_collapsed: false,
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
@@ -301,6 +310,12 @@ impl CalendarApp {
     /// Open the overlay sidebar flap for a screenshot.
     pub fn shots_open_flap(&mut self) {
         self.sidebar_open = true;
+        self.dirty = true;
+    }
+
+    /// Collapse the persistent sidebar for a screenshot (wide layout only).
+    pub fn shots_collapse_sidebar(&mut self) {
+        self.sidebar_collapsed = true;
         self.dirty = true;
     }
 
@@ -728,9 +743,11 @@ impl CalendarApp {
         // Sidebar occupies the left edge in both modes; in overlay it floats
         // over the content (so the content starts at the window's left edge).
         self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
+        // A persistent sidebar only takes width while it's expanded; collapsed,
+        // or in overlay mode, the content begins at the window's left edge.
         let content_x0 = match self.sidebar_mode {
-            SidebarMode::Persistent => r.x0 + SIDEBAR_W,
-            SidebarMode::Overlay => r.x0,
+            SidebarMode::Persistent if !self.sidebar_collapsed => r.x0 + SIDEBAR_W,
+            _ => r.x0,
         };
 
         if wide {
@@ -789,7 +806,7 @@ impl CalendarApp {
     /// persistent sidebar).
     fn sidebar_visible(&self) -> bool {
         match self.sidebar_mode {
-            SidebarMode::Persistent => true,
+            SidebarMode::Persistent => !self.sidebar_collapsed,
             SidebarMode::Overlay => self.sidebar_open,
         }
     }
@@ -845,6 +862,7 @@ impl CalendarApp {
             }
             Action::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             Action::DismissSidebar => self.sidebar_open = false,
+            Action::ToggleSidebarCollapsed => self.sidebar_collapsed = !self.sidebar_collapsed,
             Action::BackToCalendar => self.narrow_screen = NarrowScreen::Calendar,
             Action::ToggleCalendarVisible(id) => {
                 for acc in &mut self.accounts.accounts {
@@ -958,6 +976,18 @@ impl CalendarApp {
             None,
             &Circle::new(Point::new(r.x0 + pad + 100.0, y + 9.0), 4.0),
         );
+        // Collapse control — persistent sidebar only. A chevron pointing at the
+        // edge it tucks into (never an X: this hides the panel, it does not
+        // dismiss a dialog). When collapsed, the mirror-image expand chevron
+        // appears in the topbar so the sidebar is always one click away.
+        if !overlay {
+            let cb = Rect::new(r.x1 - pad - 24.0, y - 3.0, r.x1 - pad, y + 21.0);
+            if cb.contains(self.last_mouse) {
+                fill_round(scene, t, c.surface_white_5, cb, 7.0);
+            }
+            draw_chevron(scene, t, c.neutral[7], cb.center(), true);
+            hits.push((cb, Action::ToggleSidebarCollapsed));
+        }
         y += 40.0;
 
         // View switcher — carried by the flap only in the overlay layout. The
@@ -1434,6 +1464,15 @@ impl CalendarApp {
             draw_icon_button(scene, t, theme, ham, ham.contains(self.last_mouse));
             draw_hamburger(scene, t, c.neutral[8], ham.center());
             hits.push((ham, Action::ToggleSidebar));
+            left += 38.0;
+        } else if self.sidebar_collapsed {
+            // Persistent sidebar collapsed → expand chevron (mirror of the
+            // sidebar's collapse control). A chevron, not a hamburger: the
+            // sidebar is inline, not an overlay drawer.
+            let exp = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
+            draw_icon_button(scene, t, theme, exp, exp.contains(self.last_mouse));
+            draw_chevron(scene, t, c.neutral[8], exp.center(), false);
+            hits.push((exp, Action::ToggleSidebarCollapsed));
             left += 38.0;
         }
 
@@ -2040,11 +2079,15 @@ impl CalendarApp {
             y += 34.0;
         }
 
-        // close button
-        let close = Rect::new(r.x1 - 36.0, r.y0 + 14.0, r.x1 - 14.0, r.y0 + 36.0);
-        draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
-        draw_cross(scene, t, c.neutral[8], close.center());
-        hits.push((close, Action::CloseDetail));
+        // Close affordance. The wide docked panel gets an X to dismiss it back
+        // to a full-width calendar. The narrow pushed screen already carries the
+        // Back bar above, so it doesn't repeat the control as a redundant X.
+        if !matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            let close = Rect::new(r.x1 - 36.0, r.y0 + 14.0, r.x1 - 14.0, r.y0 + 36.0);
+            draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
+            draw_cross(scene, t, c.neutral[8], close.center());
+            hits.push((close, Action::CloseDetail));
+        }
 
         match self.selection {
             Some(Sel::Event(id)) => {
@@ -2964,6 +3007,42 @@ mod tests {
     }
 
     #[test]
+    fn desktop_sidebar_collapses_and_only_the_sidebar_collapses() {
+        // Confirmed-defect: on desktop the sidebar must be collapsible, and ONLY
+        // the sidebar collapses — the detail stays docked on the right. Drive the
+        // real `relayout` across expand → collapse → expand on ONE instance.
+        let mut app = CalendarApp::new_demo();
+        app.detail_open = true;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert!(app.sidebar_visible(), "sidebar shown when expanded");
+        let expanded_content_x0 = app.content_rect.x0;
+        assert!(
+            expanded_content_x0 >= app.sidebar_rect.x1 - 0.5,
+            "expanded: content starts to the right of the sidebar"
+        );
+        let detail_right = app.detail_rect.x1;
+
+        // Collapse: sidebar hidden, content reclaims the left edge, detail stays.
+        app.sidebar_collapsed = true;
+        app.relayout();
+        assert!(!app.sidebar_visible(), "collapsed sidebar is hidden");
+        assert_eq!(app.content_rect.x0, app.rect.x0, "content reclaims the sidebar edge");
+        assert!(app.content_rect.width() > 0.0);
+        assert!(app.detail_rect.area() > 0.0, "detail stays docked — only the sidebar collapsed");
+        assert!(
+            (app.detail_rect.x1 - detail_right).abs() < 0.5,
+            "detail keeps its right dock when the sidebar collapses"
+        );
+
+        // Expand again — proves it toggles both directions.
+        app.sidebar_collapsed = false;
+        app.relayout();
+        assert!(app.sidebar_visible());
+        assert_eq!(app.content_rect.x0, expanded_content_x0, "expanding restores the layout");
+    }
+
+    #[test]
     fn narrow_detail_screen_replaces_the_calendar() {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
@@ -3325,6 +3404,54 @@ mod tests {
         h.click(rect.center());
         assert_eq!(h.app.selection, Some(Sel::Event(id)), "clicked chip is now selected");
         assert!(h.app.detail_open, "detail panel opened");
+    }
+
+    #[test]
+    fn clicking_sidebar_chevron_collapses_then_topbar_chevron_expands() {
+        // The collapse control is reachable and functional through the real
+        // click path, and its expand mirror lives in the topbar once collapsed —
+        // so a pointer user can always get the sidebar back.
+        let mut h = Harness::new(1280, 800);
+        assert!(h.app.sidebar_visible(), "starts expanded on a wide window");
+        let collapse = h
+            .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
+            .expect("collapse chevron present in the persistent sidebar");
+        h.click(collapse);
+        assert!(h.app.sidebar_collapsed, "clicking the chevron collapsed the sidebar");
+        assert!(!h.app.sidebar_visible());
+
+        // Re-lay so the collapsed topbar's expand chevron enters the hit-map.
+        h.relayout();
+        let expand = h
+            .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
+            .expect("expand chevron present in the topbar when collapsed");
+        h.click(expand);
+        assert!(!h.app.sidebar_collapsed, "clicking the topbar chevron expanded the sidebar");
+        assert!(h.app.sidebar_visible());
+    }
+
+    #[test]
+    fn narrow_pushed_detail_uses_back_not_a_redundant_close() {
+        // De-slop: the narrow pushed detail has a single Back affordance, not a
+        // Back plus a duplicate X that both return to the calendar.
+        let mut h = Harness::new(560, 720);
+        h.app.detail_open = true;
+        h.app.narrow_screen = NarrowScreen::Detail;
+        h.relayout();
+        let closes = h.app.hits.iter().filter(|(_, a)| matches!(a, Action::CloseDetail)).count();
+        let backs = h.app.hits.iter().filter(|(_, a)| matches!(a, Action::BackToCalendar)).count();
+        assert_eq!(closes, 0, "no redundant X close on the narrow pushed detail");
+        assert_eq!(backs, 1, "Back is the single dismissal affordance");
+    }
+
+    #[test]
+    fn wide_docked_detail_keeps_its_x_close() {
+        // The wide docked panel still carries an X — distinct from Back, which
+        // only exists on narrow.
+        let mut h = Harness::new(1280, 800);
+        assert!(h.app.detail_open, "demo opens with a selected event → detail docked");
+        let closes = h.app.hits.iter().filter(|(_, a)| matches!(a, Action::CloseDetail)).count();
+        assert_eq!(closes, 1, "wide docked detail carries exactly one X close");
     }
 
     #[test]
