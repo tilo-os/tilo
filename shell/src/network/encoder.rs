@@ -125,6 +125,10 @@ impl H264Encoder {
     /// bytes). On the first call the returned bytes include SPS + PPS
     /// metadata NALs; subsequent calls return P-frames (or IDR-frames
     /// when the encoder decides to refresh the GOP).
+    ///
+    /// Instrumented so profile passes can attribute the openh264 CPU
+    /// cost — RGBA→I420 conversion + encode — to a single named span.
+    #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height))]
     pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, EncodeError> {
         let expected = self.width as usize * self.height as usize * 4;
         if rgba.len() != expected {
