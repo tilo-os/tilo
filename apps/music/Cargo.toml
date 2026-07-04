@@ -1,0 +1,63 @@
+[package]
+name = "music"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "music"
+path = "src/lib.rs"
+
+[[bin]]
+name = "music"
+path = "src/main.rs"
+
+[features]
+# Real HTTP audio-stream resolution (Piped/Invidious). Off by default so the
+# default build + offline `--shots` need no HTTP stack; the bundled sample
+# library keeps the UI fully populated.
+default = []
+streaming = ["dep:reqwest"]
+# Real GStreamer `playbin` audio output. Off by default (no system GStreamer
+# dependency for CI / screenshots).
+audio = ["dep:gstreamer"]
+# Real YouTube-Music streaming via the pure-Rust `rustypipe` InnerTube client:
+# real search (`music_search_tracks`) and real audio-stream resolution
+# (`player`, which returns a directly-playable googlevideo URL). Off by default
+# so the default build + every `--shots`/test run stays hermetic on the bundled
+# sample library. Pairs with `audio` for actual sound: `--features live,audio`.
+# `reqwest` is pulled in so `--probe` can independently HTTP-verify the resolved
+# stream URL (Content-Length / first bytes).
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest"]
+# Live synced-lyrics fetch from lrclib.net over HTTP. Off by default; the
+# bundled sample lyrics keep the lyrics view populated offline / in `--shots`.
+lyrics = ["dep:reqwest"]
+# Live P2P library sync over iroh QUIC (the headless self-host transport).
+# Off by default so the default build + the headless relay still compile and
+# run in CI without an iroh/Tokio stack; the loopback transport demonstrates
+# the full convergence seam without it.
+p2p = ["dep:iroh", "dep:tokio"]
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+
+# Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
+# features above. Versions pinned to match the workspace lock so no extra
+# copies resolve (iroh/tokio mirror the `chat` app + `fs` submodule pins).
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+gstreamer = { version = "0.23", optional = true }
+iroh = { version = "0.96", optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
+# Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
+# resolution. Embeds `rquickjs` for signature deobfuscation — no ffmpeg /
+# yt-dlp / JS runtime binary. Gated behind `live`; off the `--shots` path.
+rustypipe = { version = "0.11", optional = true }

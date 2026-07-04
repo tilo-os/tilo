@@ -27,17 +27,21 @@ use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Column, Row, Slider, Spacer, Text, Toggle, Widget};
+use ui::widget::{Slider, Toggle, Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::widgets::{card, caption, rows, setting_row, value_row};
 
 /// CRDT key the brightness slider writes into.
 pub const BRIGHTNESS_KEY: &str = "display.brightness";
 /// CRDT key the auto-brightness toggle writes into.
 pub const AUTO_BRIGHTNESS_KEY: &str = "display.auto_brightness";
+pub const RESOLUTION_KEY: &str = "display.resolution";
+pub const SCALE_KEY: &str = "display.scale";
+pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
 
 /// Display pane widget.
 ///
@@ -110,33 +114,88 @@ impl DisplayPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let row = Row::new()
-            .push(Box::new(Text::new("Brightness").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
-                    .with_id("display.brightness"),
-            ));
-        let auto_row = Row::new()
-            .push(Box::new(Text::new("Auto brightness").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
-                    .with_id("display.auto_brightness"),
-            ));
-        Box::new(
-            Column::new()
-                .push(Box::new(row))
-                .push(Box::new(auto_row))
-                .push(Box::new(
-                    Text::new(
-                        "Drag the slider to change the backlight brightness. \
-                         Auto-brightness is a placeholder — no ambient-light \
-                         binding yet.",
-                    )
-                    .with_size(11.0),
-                )),
-        )
+        use ui::widget::Dropdown;
+
+        // --- Arrangement card: which display + its layout.
+        let arrangement = card(
+            "Displays",
+            rows(vec![
+                value_row("Built-in display", "Active · primary"),
+                value_row("External display", "Not connected"),
+                caption(
+                    "Connect a second display to arrange screens side by \
+                     side or mirror them.",
+                ),
+            ]),
+        );
+
+        // --- Resolution & scale card.
+        let resolutions = vec![
+            "3840 × 2160 (4K)".to_string(),
+            "2560 × 1440 (QHD)".to_string(),
+            "1920 × 1080 (FHD)".to_string(),
+        ];
+        let scales = vec![
+            "100%".to_string(),
+            "125%".to_string(),
+            "150%".to_string(),
+            "200%".to_string(),
+        ];
+        let resolution = card(
+            "Resolution & scale",
+            rows(vec![
+                setting_row(
+                    "Resolution",
+                    Box::new(
+                        Dropdown::new(resolutions, RESOLUTION_KEY)
+                            .with_id("display.resolution")
+                            .with_placeholder("2560 × 1440 (QHD)"),
+                    ),
+                ),
+                setting_row(
+                    "Scale",
+                    Box::new(
+                        Dropdown::new(scales, SCALE_KEY)
+                            .with_id("display.scale")
+                            .with_placeholder("150%"),
+                    ),
+                ),
+            ]),
+        );
+
+        // --- Brightness & night light card.
+        let brightness = card(
+            "Brightness",
+            rows(vec![
+                setting_row(
+                    "Brightness",
+                    Box::new(
+                        Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
+                            .with_id("display.brightness"),
+                    ),
+                ),
+                setting_row(
+                    "Automatic brightness",
+                    Box::new(
+                        Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
+                            .with_id("display.auto_brightness"),
+                    ),
+                ),
+                setting_row(
+                    "Night light",
+                    Box::new(
+                        Toggle::new("settings.display.night_light", NIGHT_LIGHT_KEY)
+                            .with_id("display.night_light"),
+                    ),
+                ),
+                caption(
+                    "Brightness drives the backlight. Night light warms the \
+                     colour temperature in the evening.",
+                ),
+            ]),
+        );
+
+        crate::widgets::cards(vec![arrangement, resolution, brightness])
     }
 }
 
@@ -215,7 +274,7 @@ impl Widget for DisplayPane {
             flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
             ..Default::default()
         };

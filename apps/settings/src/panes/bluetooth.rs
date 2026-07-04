@@ -26,6 +26,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::widgets::{card_with_action, caption, rows, El};
 
 pub const BT_ENABLED_KEY: &str = "bluetooth.enabled";
 
@@ -97,52 +98,56 @@ impl BluetoothPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let toggle_row = Row::new()
-            .push(Box::new(Text::new("Bluetooth").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Toggle::new("settings.bluetooth.toggle", BT_ENABLED_KEY)
-                    .with_id("bluetooth.toggle"),
-            ));
-        let mut col = Column::new().push(Box::new(toggle_row));
+        let toggle: El = Box::new(
+            Toggle::new("settings.bluetooth.toggle", BT_ENABLED_KEY).with_id("bluetooth.toggle"),
+        );
 
+        let mut device_rows: Vec<El> = Vec::new();
         if self.devices.is_empty() {
-            col = col.push(Box::new(
-                Text::new("No paired devices yet — pair via bluetoothctl.")
-                    .with_size(11.0),
-            ));
+            device_rows.push(caption("No paired devices yet. Pair a device to see it here."));
         } else {
             for dev in &self.devices {
                 let battery_str = if dev.battery > 0 {
-                    format!(" · {}%", dev.battery)
+                    format!("  ·  {}%", dev.battery)
                 } else {
                     String::new()
                 };
-                let connected_str = if dev.connected {
-                    " (connected)"
-                } else {
-                    ""
-                };
-                let label = format!("{}{battery_str}{connected_str}", dev.name);
+                let block = Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(Text::new(&dev.name).with_size(13.0)))
+                    .push(Box::new(
+                        Text::new(&format!(
+                            "{}{battery_str}",
+                            if dev.connected { "Connected" } else { "Paired" }
+                        ))
+                        .with_size(11.0)
+                        .with_color(if dev.connected {
+                            ui::Theme::dark().status_success
+                        } else {
+                            ui::Theme::dark().text_dim
+                        }),
+                    ));
                 let key = connect_key(&dev.name);
                 let cta_id = format!("settings.bluetooth.connect.{}", dev.name);
                 let cta_label = if dev.connected { "Disconnect" } else { "Connect" };
                 let row = Row::new()
-                    .push(Box::new(Text::new(&label).with_size(12.0)))
+                    .push(Box::new(block))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(Button::new(&cta_id, cta_label, Some(&key))));
-                col = col.push(Box::new(row));
+                device_rows.push(Box::new(row));
             }
         }
-        col = col.push(Box::new(
-            Text::new(
-                "Bluetooth pairing currently requires bluetoothctl from a \
-                 terminal; the connect button only requests an existing \
-                 link.",
-            )
-            .with_size(11.0),
+        device_rows.push(caption(
+            "Turn Bluetooth on, then put a device in pairing mode to \
+             connect it.",
         ));
-        Box::new(col)
+
+        crate::widgets::cards(vec![card_with_action(
+            "Bluetooth",
+            toggle,
+            rows(device_rows),
+        )])
     }
 }
 
@@ -214,7 +219,7 @@ impl Widget for BluetoothPane {
             flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
             ..Default::default()
         };

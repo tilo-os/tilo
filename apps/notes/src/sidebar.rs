@@ -653,6 +653,13 @@ impl NoteTreeView {
     pub fn visible_row_count(&self) -> usize {
         self.flat_rows.len()
     }
+
+    /// Test hook: the centre point of laid-out row `idx`, for click
+    /// targeting through the real event path.
+    #[doc(hidden)]
+    pub fn row_center_for_test(&self, idx: usize) -> Option<Point> {
+        self.row_rects.get(idx).map(|r| r.center())
+    }
 }
 
 #[cfg(test)]
