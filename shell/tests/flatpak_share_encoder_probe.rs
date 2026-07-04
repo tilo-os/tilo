@@ -132,27 +132,53 @@ fn requested_nvenc_falls_back_when_hardware_absent() {
 }
 
 /// Auto probe on a real VA-API host must pick VaApi. Ignored by
-/// default — the probe requires a `/dev/dri/renderD128` (or similar)
-/// that opens successfully under libva. Enable with
-/// `cargo test --features vaapi -- --include-ignored`.
+/// default — the probe requires the `vaapi` feature compiled in AND a
+/// `/dev/dri/renderD128` (or similar) that opens successfully under
+/// libva. Enable with:
+///
+///   $ cargo test --features vaapi -- --include-ignored auto_probe_picks_vaapi
+///
+/// If `--include-ignored` is used without the required feature+device,
+/// the test self-skips with a clear message (rather than failing) so
+/// CI runs that pass `--include-ignored` blindly don't spuriously
+/// break.
 #[test]
-#[ignore = "requires libva + a real /dev/dri render node; run with --include-ignored on a workstation"]
+#[ignore = "requires libva + a real /dev/dri render node (also needs --features vaapi); run with --include-ignored on a workstation"]
 fn auto_probe_picks_vaapi_when_hardware_present() {
-    // This test is intentionally lax about *which* VA-API device is
-    // picked — it just asserts that if we're running on a host with a
-    // usable render node, the probe doesn't fall through to software.
-    let session = SharedFlatpakSession::start(
-        HOST_PEER,
-        "org.gimp.GIMP",
-        SURFACE,
-        320,
-        240,
-        cfg(EncoderChoice::Auto),
-    )
-    .expect("session should start");
-    assert_eq!(
-        session.chosen_encoder(),
-        EncoderKind::VaApi,
-        "auto probe should pick VA-API on a host with a working render node"
-    );
+    // Self-skip when the environment can't possibly pick VA-API:
+    // either the feature isn't compiled or the render node doesn't
+    // exist. This keeps `--include-ignored` runs green on distrobox
+    // + CI while still asserting the invariant on real hardware.
+    #[cfg(not(feature = "vaapi"))]
+    {
+        eprintln!(
+            "skipping vaapi hardware assertion — build has no `vaapi` feature; \
+             rerun with --features vaapi to actually exercise the path"
+        );
+        return;
+    }
+    #[allow(unreachable_code)]
+    {
+        if !std::path::Path::new("/dev/dri/renderD128").exists() {
+            eprintln!(
+                "skipping vaapi hardware assertion — no /dev/dri/renderD128 \
+                 on this host"
+            );
+            return;
+        }
+        let session = SharedFlatpakSession::start(
+            HOST_PEER,
+            "org.gimp.GIMP",
+            SURFACE,
+            320,
+            240,
+            cfg(EncoderChoice::Auto),
+        )
+        .expect("session should start");
+        assert_eq!(
+            session.chosen_encoder(),
+            EncoderKind::VaApi,
+            "auto probe should pick VA-API on a host with a working render node"
+        );
+    }
 }
