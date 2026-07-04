@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
+use std::time::Instant;
 use cosmic_text::{FontSystem, SwashCache, Buffer, Family, Metrics, Shaping, Style as FontStyle, Wrap};
 use cosmic_text::fontdb::Weight;
 use vello::Scene;
@@ -70,6 +72,41 @@ struct MeasureKey {
 /// process RSS when the user types many distinct strings.
 const MEASURE_CACHE_LIMIT: usize = 4096;
 
+/// Hashable cache key for a fully shaped + positioned run of text.
+/// Mirrors [`MeasureKey`] but adds the two style bits (`italic`,
+/// `monospace`) because they change glyph selection and therefore the
+/// positions. Colour and transform are deliberately NOT part of the key
+/// — they're applied at paint time, so a theme recolour or a widget
+/// moving on screen reuses the same cached glyph geometry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ShapeKey {
+    text_hash: u64,
+    size_bits: u32,
+    max_width_bits: u32,
+    weight: u16,
+    italic: bool,
+    monospace: bool,
+    generation: u64,
+}
+
+/// One contiguous span of glyphs sharing a single font face, already
+/// positioned in the text block's local coordinate space (x = advance,
+/// y = baseline). Painting is then just `scene.draw_glyphs` with the
+/// caller's colour + transform — no reshaping.
+#[derive(Clone)]
+struct GlyphRun {
+    face_id: cosmic_text::fontdb::ID,
+    glyphs: Vec<vello::Glyph>,
+}
+
+/// Upper bound on distinct shaped runs retained across frames. Each
+/// entry is a `Vec<GlyphRun>` holding `vello::Glyph` (12 bytes each);
+/// even a tree with a few hundred distinct labels stays well under a
+/// megabyte. Static chrome + button labels warm this once and every
+/// subsequent frame is a pure `Arc` clone instead of a cosmic-text
+/// shape — the dominant per-frame draw cost before this cache existed.
+const SHAPE_CACHE_LIMIT: usize = 4096;
+
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
@@ -92,6 +129,21 @@ pub struct TextRenderer {
     /// Useful in tests + benches; doesn't affect runtime behaviour.
     hits: u64,
     misses: u64,
+    /// `(text, size, max_width, weight, style)` → shaped + positioned
+    /// glyph runs. This is the payload of the DRAW path: before it
+    /// existed, every `draw_text*` call reshaped its string through
+    /// cosmic-text on every single frame even when nothing changed. An
+    /// `Arc` value lets a lookup hand the runs back to the paint loop
+    /// without cloning the glyph vecs and without holding a borrow on
+    /// the cache while `font_cache` is touched.
+    shape_cache: HashMap<ShapeKey, Arc<Vec<GlyphRun>>>,
+    /// Shape-cache hit / miss counters + accumulated shaping time.
+    /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
+    /// (`QUICK_UI_PERF`) can attribute how much of the draw phase was
+    /// spent inside cosmic-text vs. Vello encoding.
+    shape_hits: u64,
+    shape_misses: u64,
+    shape_ns: u128,
 }
 
 impl TextRenderer {
@@ -104,7 +156,24 @@ impl TextRenderer {
             generation: 0,
             hits: 0,
             misses: 0,
+            shape_cache: HashMap::with_capacity(256),
+            shape_hits: 0,
+            shape_misses: 0,
+            shape_ns: 0,
         }
+    }
+
+    /// Take-and-reset the per-frame shape-cache stats:
+    /// `(hits, misses, nanoseconds_spent_shaping)`. The frame profiler
+    /// calls this once per frame so each line reports only that frame's
+    /// shaping work. Returns zeros on an all-cached frame — the goal
+    /// state for static content.
+    pub fn take_shape_stats(&mut self) -> (u64, u64, u128) {
+        let out = (self.shape_hits, self.shape_misses, self.shape_ns);
+        self.shape_hits = 0;
+        self.shape_misses = 0;
+        self.shape_ns = 0;
+        out
     }
 
     /// Hit / miss snapshot of the measure cache. Useful for
@@ -121,6 +190,11 @@ impl TextRenderer {
     pub fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
+        // Shaped glyph geometry depends on the same font set + locale,
+        // so it must die alongside the measurements. Entries key on
+        // `generation` too, so stale ones would never match anyway; the
+        // explicit clear reclaims their memory immediately.
+        self.shape_cache.clear();
     }
 
     /// Internal: hash-based key lookup → cached measurement.
@@ -207,6 +281,128 @@ impl TextRenderer {
         result
     }
 
+    /// Truncate `text` to fit within `max_width` logical pixels on a
+    /// single line, appending an ellipsis (`…`) when anything was dropped.
+    ///
+    /// Returns `text` unchanged when it already fits. When even the
+    /// ellipsis alone doesn't fit, returns the ellipsis (callers that
+    /// reserve at least a few px get a sensible glyph rather than empty).
+    /// Measurement uses [`TextWeight::Regular`]; pair with
+    /// [`Self::elide_to_width_weighted`] when the draw weight differs so the
+    /// fit calculation matches the rendered advance.
+    pub fn elide_to_width(&mut self, text: &str, size: f32, max_width: f32) -> String {
+        self.elide_to_width_weighted(text, size, max_width, TextWeight::Regular)
+    }
+
+    /// Weighted variant of [`Self::elide_to_width`] — measures with the
+    /// supplied [`TextWeight`] so the fit matches a bold/medium draw call.
+    pub fn elide_to_width_weighted(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: f32,
+        weight: TextWeight,
+    ) -> String {
+        if text.is_empty() || max_width <= 0.0 {
+            return String::new();
+        }
+        let (full_w, _) = self.measure_weighted(text, size, None, weight);
+        if full_w <= max_width {
+            return text.to_string();
+        }
+        const ELLIPSIS: char = '\u{2026}';
+        // If the ellipsis alone is wider than the budget, we still return
+        // it — a single glyph reads better than an empty slot, and callers
+        // that truly have no room won't have called us with text anyway.
+        let (ell_w, _) = self.measure_weighted("\u{2026}", size, None, weight);
+        if ell_w > max_width {
+            return ELLIPSIS.to_string();
+        }
+        let budget = max_width - ell_w;
+        // Grow a prefix char-by-char while it fits the remaining budget.
+        // Linear in char count — fine for the short labels (filenames,
+        // titles, legend entries) elision targets. Each step re-measures
+        // the candidate prefix, which hits the measure cache after warmup.
+        let mut best = String::new();
+        let mut candidate = String::new();
+        for ch in text.chars() {
+            candidate.push(ch);
+            let (w, _) = self.measure_weighted(&candidate, size, None, weight);
+            if w <= budget {
+                best.push(ch);
+            } else {
+                break;
+            }
+        }
+        // Drop a trailing space so the ellipsis doesn't read as " …".
+        while best.ends_with(' ') {
+            best.pop();
+        }
+        best.push(ELLIPSIS);
+        best
+    }
+
+    /// Word-wrap `text` to `max_width` and clamp the result to at most
+    /// `max_lines` lines, eliding the last kept line with an ellipsis when
+    /// content overflows. Returns the kept lines as a `Vec<String>`,
+    /// already wrapped — draw each entry on its own baseline at
+    /// `line_height = size * 1.25`.
+    ///
+    /// `max_lines == 0` returns an empty vec. A single-line clamp
+    /// (`max_lines == 1`) degenerates to [`Self::elide_to_width`].
+    pub fn clamp_to_lines(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: f32,
+        max_lines: usize,
+    ) -> Vec<String> {
+        if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
+            return Vec::new();
+        }
+        if max_lines == 1 {
+            return vec![self.elide_to_width(text, size, max_width)];
+        }
+        let wrapped = self.wrap_lines(text, size, max_width);
+        if wrapped.len() <= max_lines {
+            return wrapped;
+        }
+        // Overflow: keep the first `max_lines - 1` whole lines, then merge
+        // the remaining text onto the final line and elide it so the reader
+        // sees the truncation marker.
+        let mut kept: Vec<String> = wrapped[..max_lines - 1].to_vec();
+        let remainder: String = wrapped[max_lines - 1..].join(" ");
+        kept.push(self.elide_to_width(&remainder, size, max_width));
+        kept
+    }
+
+    /// Greedy word-wrap of `text` at `max_width`. A word longer than the
+    /// budget is placed on its own line (no mid-word breaking — the
+    /// per-line elision in [`Self::clamp_to_lines`] handles overlong
+    /// single words). Internal helper for the clamp; exposed for tests.
+    pub(crate) fn wrap_lines(&mut self, text: &str, size: f32, max_width: f32) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for word in text.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+                continue;
+            }
+            let candidate = format!("{current} {word}");
+            let (w, _) = self.measure(&candidate, size, None);
+            if w <= max_width {
+                current = candidate;
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current.push_str(word);
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        lines
+    }
+
     pub fn draw_text(
         &mut self,
         scene: &mut Scene,
@@ -244,43 +440,8 @@ impl TextRenderer {
         monospace: bool,
     ) {
         if text.is_empty() { return; }
-
-        let line_height = size * 1.25;
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
-        let mut attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
-        if italic {
-            attrs = attrs.style(FontStyle::Italic);
-        }
-        if monospace {
-            attrs = attrs.family(Family::Monospace);
-        }
-        buffer.set_text(text, &attrs, Shaping::Advanced, None);
-        buffer.set_size(max_width, None);
-        buffer.set_wrap(Wrap::Word);
-        buffer.shape_until_scroll(&mut self.font_system, false);
-
-        for run in buffer.layout_runs() {
-            let mut current_face_id: Option<cosmic_text::fontdb::ID> = None;
-            let mut glyphs_to_draw = Vec::new();
-
-            for glyph in run.glyphs.iter() {
-                let face_id = glyph.font_id;
-
-                if current_face_id != Some(face_id) && !glyphs_to_draw.is_empty() {
-                    self.flush_glyphs(scene, current_face_id.unwrap(), &glyphs_to_draw, size, color, transform, run.line_y);
-                    glyphs_to_draw.clear();
-                }
-
-                current_face_id = Some(face_id);
-                glyphs_to_draw.push(glyph.clone());
-            }
-
-            if let Some(face_id) = current_face_id {
-                if !glyphs_to_draw.is_empty() {
-                    self.flush_glyphs(scene, face_id, &glyphs_to_draw, size, color, transform, run.line_y);
-                }
-            }
-        }
+        let runs = self.shaped_runs(text, size, max_width, weight, italic, monospace);
+        self.paint_runs(scene, &runs, size, color, transform);
     }
 
     /// Measure `text` with style attributes. Mirrors
@@ -343,39 +504,144 @@ impl TextRenderer {
         weight: TextWeight,
     ) {
         if text.is_empty() { return; }
+        let runs = self.shaped_runs(text, size, max_width, weight, false, false);
+        self.paint_runs(scene, &runs, size, color, transform);
+    }
 
+    /// Shape `text` under the given size / wrap-width / weight / style
+    /// into positioned [`GlyphRun`]s, caching the result. On a hit this
+    /// is an `Arc` clone (refcount bump); on a miss it runs cosmic-text
+    /// once and stores the geometry. The dominant win of the draw path:
+    /// static labels shape once and stay shaped until their text, size,
+    /// width, weight, style, or the font generation changes.
+    fn shaped_runs(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: Option<f32>,
+        weight: TextWeight,
+        italic: bool,
+        monospace: bool,
+    ) -> Arc<Vec<GlyphRun>> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let key = ShapeKey {
+            text_hash: hasher.finish(),
+            size_bits: size.to_bits(),
+            max_width_bits: max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX),
+            weight: weight.to_u16(),
+            italic,
+            monospace,
+            generation: self.generation,
+        };
+        if let Some(runs) = self.shape_cache.get(&key) {
+            self.shape_hits += 1;
+            return runs.clone();
+        }
+        self.shape_misses += 1;
+
+        let t0 = Instant::now();
         let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
-        let attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
-        // cosmic-text 0.19: setters are lazy and no longer take FontSystem;
-        // set_text gained a trailing `Option<Align>` arg.
+        let mut attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
+        if italic {
+            attrs = attrs.style(FontStyle::Italic);
+        }
+        if monospace {
+            attrs = attrs.family(Family::Monospace);
+        }
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.set_size(max_width, None);
         buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
+        // Flatten the layout into per-face contiguous runs, baking the
+        // baseline (`line_y + glyph.y`) into each glyph so paint is a
+        // pure transform + colour with no per-glyph arithmetic.
+        let mut runs: Vec<GlyphRun> = Vec::new();
         for run in buffer.layout_runs() {
-            let mut current_face_id: Option<cosmic_text::fontdb::ID> = None;
-            let mut glyphs_to_draw = Vec::new();
-
-            for glyph in run.glyphs.iter() {
-                let face_id = glyph.font_id;
-
-                if current_face_id != Some(face_id) && !glyphs_to_draw.is_empty() {
-                    self.flush_glyphs(scene, current_face_id.unwrap(), &glyphs_to_draw, size, color, transform, run.line_y);
-                    glyphs_to_draw.clear();
+            let mut current_face: Option<cosmic_text::fontdb::ID> = None;
+            let mut glyphs: Vec<vello::Glyph> = Vec::new();
+            for g in run.glyphs.iter() {
+                if current_face != Some(g.font_id) && !glyphs.is_empty() {
+                    runs.push(GlyphRun {
+                        face_id: current_face.unwrap(),
+                        glyphs: std::mem::take(&mut glyphs),
+                    });
                 }
-                
-                current_face_id = Some(face_id);
-                glyphs_to_draw.push(glyph.clone());
+                current_face = Some(g.font_id);
+                glyphs.push(vello::Glyph {
+                    id: g.glyph_id as u32,
+                    x: g.x,
+                    y: run.line_y + g.y,
+                });
             }
-
-            if let Some(face_id) = current_face_id {
-                if !glyphs_to_draw.is_empty() {
-                    self.flush_glyphs(scene, face_id, &glyphs_to_draw, size, color, transform, run.line_y);
+            if let Some(face_id) = current_face {
+                if !glyphs.is_empty() {
+                    runs.push(GlyphRun { face_id, glyphs });
                 }
             }
         }
+        self.shape_ns += t0.elapsed().as_nanos();
+
+        let arc = Arc::new(runs);
+        if self.shape_cache.len() >= SHAPE_CACHE_LIMIT {
+            if let Some(victim) = self.shape_cache.keys().next().copied() {
+                self.shape_cache.remove(&victim);
+            }
+        }
+        self.shape_cache.insert(key, arc.clone());
+        arc
+    }
+
+    /// Paint pre-shaped [`GlyphRun`]s with a single `color` at
+    /// `transform`. The per-face Vello font handle is resolved from
+    /// `font_cache` (loaded lazily, once per face for the process).
+    fn paint_runs(
+        &mut self,
+        scene: &mut Scene,
+        runs: &[GlyphRun],
+        size: f32,
+        color: Color,
+        transform: Affine,
+    ) {
+        for run in runs {
+            let font = self.vello_font(run.face_id);
+            scene
+                .draw_glyphs(&font)
+                .font_size(size)
+                .brush(color)
+                .transform(transform)
+                .draw(
+                    StyleRef::Fill(vello::peniko::Fill::NonZero),
+                    run.glyphs.iter().copied(),
+                );
+        }
+    }
+
+    /// Resolve (loading + caching once per face) the Vello font handle
+    /// for a cosmic-text face id. Returns a clone — `FontData` is a
+    /// cheap `Arc`-backed handle, so this doesn't copy glyph outlines.
+    fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID) -> Font {
+        self.font_cache
+            .entry(face_id)
+            .or_insert_with(|| {
+                let font_data = self.font_system.db().face(face_id).and_then(|f| {
+                    match &f.source {
+                        cosmic_text::fontdb::Source::Binary(data) => Some(data.as_ref().as_ref().to_vec()),
+                        cosmic_text::fontdb::Source::File(path) => fs::read(path).ok(),
+                        cosmic_text::fontdb::Source::SharedFile(_, data) => Some(data.as_ref().as_ref().to_vec()),
+                    }
+                });
+                if let Some(data) = font_data {
+                    Font::new(data.into(), 0)
+                } else {
+                    Font::new(vec![].into(), 0)
+                }
+            })
+            .clone()
     }
 
     /// Draw a [`crate::richtext::RichTextLayout`] (attributed, wrapped text) in a
@@ -465,21 +731,7 @@ impl TextRenderer {
         transform: Affine,
         line_y: f32,
     ) {
-        let vello_font = self.font_cache.entry(face_id).or_insert_with(|| {
-            let font_data = self.font_system.db().face(face_id).and_then(|f| {
-                match &f.source {
-                    cosmic_text::fontdb::Source::Binary(data) => Some(data.as_ref().as_ref().to_vec()),
-                    cosmic_text::fontdb::Source::File(path) => fs::read(path).ok(),
-                    cosmic_text::fontdb::Source::SharedFile(_, data) => Some(data.as_ref().as_ref().to_vec()),
-                }
-            });
-            
-            if let Some(data) = font_data {
-                Font::new(data.into(), 0)
-            } else {
-                Font::new(vec![].into(), 0)
-            }
-        });
+        let vello_font = self.vello_font(face_id);
 
         let vello_glyphs: Vec<vello::Glyph> = glyphs.iter().map(|g| {
             vello::Glyph {
@@ -489,7 +741,7 @@ impl TextRenderer {
             }
         }).collect();
 
-        scene.draw_glyphs(vello_font)
+        scene.draw_glyphs(&vello_font)
             .font_size(size)
             .brush(color)
             .transform(transform)
@@ -587,6 +839,161 @@ mod tests {
             hl_paths > plain_paths,
             "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
         );
+    }
+
+    /// Text that already fits is returned verbatim — no ellipsis is
+    /// appended and the budget check uses the real measured width.
+    #[test]
+    fn elide_returns_text_unchanged_when_it_fits() {
+        let mut tr = TextRenderer::new();
+        let s = "short";
+        let (w, _) = tr.measure(s, 14.0, None);
+        // Give a budget comfortably above the measured width.
+        let out = tr.elide_to_width(s, 14.0, w + 50.0);
+        assert_eq!(out, s, "fitting text must be returned unchanged");
+        assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
+    }
+
+    /// Text wider than the budget is truncated and ends with the ellipsis
+    /// glyph, and the truncated string measures within the budget.
+    #[test]
+    fn elide_truncates_and_appends_ellipsis() {
+        let mut tr = TextRenderer::new();
+        let s = "the quick brown fox jumps over the lazy dog";
+        let (full_w, _) = tr.measure(s, 14.0, None);
+        let budget = full_w / 3.0; // force truncation
+        let out = tr.elide_to_width(s, 14.0, budget);
+        assert!(out.ends_with('\u{2026}'), "truncated text must end with …, got {out:?}");
+        assert!(out.chars().count() < s.chars().count(), "must drop characters");
+        let (out_w, _) = tr.measure(&out, 14.0, None);
+        assert!(
+            out_w <= budget + 0.5,
+            "elided string ({out_w}) must fit the budget ({budget})",
+        );
+    }
+
+    /// A zero/empty budget yields an empty string; empty input yields
+    /// empty output. Defensive edge cases callers rely on.
+    #[test]
+    fn elide_edge_cases() {
+        let mut tr = TextRenderer::new();
+        assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
+        assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
+    }
+
+    /// A multi-line clamp keeps at most `max_lines` lines, and when the
+    /// content overflows the final kept line carries the ellipsis.
+    #[test]
+    fn clamp_to_lines_caps_line_count_and_elides_last() {
+        let mut tr = TextRenderer::new();
+        let paragraph =
+            "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+             incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
+        // Narrow width forces several wrapped lines; cap to 2.
+        let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
+        assert!(lines.len() <= 2, "must not exceed max_lines, got {}", lines.len());
+        assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
+        assert!(
+            lines.last().unwrap().ends_with('\u{2026}'),
+            "overflowing clamp must elide the final line: {:?}",
+            lines.last(),
+        );
+    }
+
+    /// `max_lines == 1` degenerates to single-line elision; `max_lines == 0`
+    /// returns nothing.
+    #[test]
+    fn clamp_to_lines_degenerate_cases() {
+        let mut tr = TextRenderer::new();
+        assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
+        let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
+        assert_eq!(one.len(), 1);
+        assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
+    }
+
+    /// Short content that fits within `max_lines` is returned wrapped but
+    /// un-elided.
+    #[test]
+    fn clamp_to_lines_no_overflow_keeps_all() {
+        let mut tr = TextRenderer::new();
+        let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
+        assert_eq!(lines, vec!["two words".to_string()]);
+        assert!(!lines[0].ends_with('\u{2026}'));
+    }
+
+    /// The DRAW path caches shaped glyph geometry: drawing the same
+    /// string twice shapes it once. This is the fix for the per-frame
+    /// re-shape that dominated draw time.
+    #[test]
+    fn shape_cache_reshapes_once_for_repeated_draw() {
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let t = Affine::IDENTITY;
+        let c = Color::WHITE;
+        tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
+        let (_h, m1, _ns1) = tr.take_shape_stats();
+        assert_eq!(m1, 1, "first draw must shape once (miss)");
+
+        // Redraw the same label 5 more times — as a widget tree does
+        // every frame. Every one must be a cache hit; zero reshapes.
+        for _ in 0..5 {
+            tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
+        }
+        let (h, m, ns) = tr.take_shape_stats();
+        assert_eq!(m, 0, "repeated identical draws must not reshape");
+        assert_eq!(h, 5, "all five redraws must hit the shape cache");
+        assert_eq!(ns, 0, "no shaping time on an all-hit frame");
+    }
+
+    /// Colour is NOT part of the shape key — a theme recolour of the
+    /// same label reuses the cached glyph geometry. Guards the design
+    /// choice that makes theme switches free of reshaping.
+    #[test]
+    fn shape_cache_reuses_geometry_across_recolor() {
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let t = Affine::IDENTITY;
+        tr.draw_text_weighted(&mut scene, "Clear", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        let _ = tr.take_shape_stats();
+        // Same string + size + weight, different colour (dark→light theme).
+        tr.draw_text_weighted(&mut scene, "Clear", 16.0, Color::BLACK, t, None, TextWeight::Regular);
+        let (h, m, _ns) = tr.take_shape_stats();
+        assert_eq!(m, 0, "recolour must not reshape");
+        assert_eq!(h, 1, "recolour must hit the cached geometry");
+    }
+
+    /// A different wrap width is a different shape — wrapping changes
+    /// glyph positions, so it must miss and reshape.
+    #[test]
+    fn shape_cache_keys_on_width() {
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let t = Affine::IDENTITY;
+        let s = "the quick brown fox";
+        tr.draw_text_weighted(&mut scene, s, 16.0, Color::WHITE, t, Some(200.0), TextWeight::Regular);
+        tr.draw_text_weighted(&mut scene, s, 16.0, Color::WHITE, t, Some(60.0), TextWeight::Regular);
+        tr.draw_text_weighted(&mut scene, s, 16.0, Color::WHITE, t, Some(200.0), TextWeight::Regular); // hit
+        let (h, m, _ns) = tr.take_shape_stats();
+        assert_eq!(m, 2, "each distinct width shapes once");
+        assert_eq!(h, 1, "the repeated width hits");
+    }
+
+    /// `bump_generation` (locale / font hot-swap) invalidates shaped
+    /// geometry too, so the next draw reshapes.
+    #[test]
+    fn bump_generation_invalidates_shape_cache() {
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let t = Affine::IDENTITY;
+        tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        let _ = tr.take_shape_stats();
+        tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        let (h, _m, _ns) = tr.take_shape_stats();
+        assert_eq!(h, 1, "second draw hits before bump");
+        tr.bump_generation();
+        tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        let (_h, m, _ns) = tr.take_shape_stats();
+        assert_eq!(m, 1, "draw after bump must reshape");
     }
 
     /// `bump_generation` blows away every cached entry — the next

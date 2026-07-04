@@ -121,6 +121,10 @@ fn real_socket_fans_out_incremental_and_presence() {
                         payload,
                     }
                 }
+                // Signed-op sync + scrollback fetch aren't part of this
+                // two-peer plaintext scenario — swallow them like `Hello`.
+                CollabRequest::SignedSyncIncremental { .. }
+                | CollabRequest::FetchScrollback { .. } => continue,
             };
 
             let bytes = match serde_json::to_vec(&event) {
