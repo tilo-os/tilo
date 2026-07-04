@@ -125,6 +125,16 @@ pub struct Grid {
     last_cursor: Point,
     resize: Option<ResizeDrag>,
     selecting: bool,
+    /// Formula "point mode": while editing a formula, clicking/dragging cells
+    /// inserts their references. `point_anchor` is the char index in the edit
+    /// buffer where the last click-inserted reference begins — a subsequent
+    /// click/drag (with nothing typed in between) replaces it, matching Excel.
+    /// Cleared to `None` the moment the user types.
+    point_anchor: Option<usize>,
+    /// The cell a point-mode drag started on, so the range grows from it.
+    point_drag_start: Addr,
+    /// Whether a point-mode drag is in progress (a held click after pointing).
+    point_selecting: bool,
     dirty: bool,
 }
 
@@ -150,6 +160,9 @@ impl Grid {
             last_cursor: Point::ZERO,
             resize: None,
             selecting: false,
+            point_anchor: None,
+            point_drag_start: (0, 0),
+            point_selecting: false,
             dirty: true,
         };
         g.rebuild_geom();
@@ -653,6 +666,8 @@ impl Grid {
         };
         let caret = chars.len();
         self.edit = Some(EditState { addr: self.active, chars, caret });
+        self.point_anchor = None;
+        self.point_selecting = false;
         self.dirty = true;
     }
 
@@ -660,12 +675,104 @@ impl Grid {
         if let Some(e) = self.edit.take() {
             out.push(GridCmd::SetCell { addr: e.addr, raw: e.text() });
             out.push(GridCmd::Commit);
+            self.point_anchor = None;
+            self.point_selecting = false;
             self.dirty = true;
         }
     }
 
     fn cancel_edit(&mut self) {
         self.edit = None;
+        self.point_anchor = None;
+        self.point_selecting = false;
+        self.dirty = true;
+    }
+
+    /// Whether an in-cell edit is in progress and its buffer is a formula
+    /// (begins with `=`). Formula edits enter "point mode": clicking cells
+    /// inserts their references instead of moving the selection.
+    pub fn editing_formula(&self) -> bool {
+        self.edit
+            .as_ref()
+            .map(|e| e.chars.first() == Some(&'='))
+            .unwrap_or(false)
+    }
+
+    /// The formula text whose references should be highlighted this frame:
+    /// the live edit buffer when a formula is being edited, else `None`. Only
+    /// edit mode highlights references (matching Excel/Calc), so a plain
+    /// selection of a formula cell stays uncluttered.
+    fn active_formula_body(&self) -> Option<String> {
+        let e = self.edit.as_ref()?;
+        let text = e.text();
+        text.strip_prefix('=').map(|b| b.to_string())
+    }
+
+    /// Whether a click can be absorbed as a reference insertion right now: a
+    /// formula is being edited, and either a click-inserted reference is
+    /// pending replacement or the caret sits right after an operator/opener.
+    fn can_point(&self) -> bool {
+        let Some(e) = &self.edit else { return false };
+        if e.chars.first() != Some(&'=') {
+            return false;
+        }
+        if self.point_anchor.is_some() {
+            return true;
+        }
+        let prev = if e.caret == 0 { None } else { e.chars.get(e.caret - 1).copied() };
+        matches!(
+            prev,
+            Some('=' | '+' | '-' | '*' | '/' | '^' | '(' | ',' | ':' | '&' | '<' | '>' | '%')
+        )
+    }
+
+    /// Insert (or, when a click-inserted reference is pending, replace) a
+    /// single-cell reference to `addr` at the caret, and arm a potential drag
+    /// that would grow it into a range.
+    fn begin_point(&mut self, addr: Addr) {
+        let insert_at = match self.point_anchor {
+            Some(a) => {
+                if let Some(e) = &mut self.edit {
+                    e.chars.truncate(a);
+                    e.caret = a;
+                }
+                a
+            }
+            None => self.edit.as_ref().map(|e| e.caret).unwrap_or(0),
+        };
+        let s = addr_to_a1(addr.0, addr.1);
+        if let Some(e) = &mut self.edit {
+            for ch in s.chars() {
+                e.chars.insert(e.caret, ch);
+                e.caret += 1;
+            }
+        }
+        self.point_anchor = Some(insert_at);
+        self.point_drag_start = addr;
+        self.point_selecting = true;
+        self.dirty = true;
+    }
+
+    /// Extend the pending point-mode reference into the range
+    /// `point_drag_start:addr` as the pointer is dragged.
+    fn point_drag_to(&mut self, addr: Addr) {
+        let Some(anchor) = self.point_anchor else { return };
+        let start = self.point_drag_start;
+        let text = if start == addr {
+            addr_to_a1(addr.0, addr.1)
+        } else {
+            let tl = (start.0.min(addr.0), start.1.min(addr.1));
+            let br = (start.0.max(addr.0), start.1.max(addr.1));
+            format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1))
+        };
+        if let Some(e) = &mut self.edit {
+            e.chars.truncate(anchor);
+            e.caret = anchor;
+            for ch in text.chars() {
+                e.chars.insert(e.caret, ch);
+                e.caret += 1;
+            }
+        }
         self.dirty = true;
     }
 
@@ -700,6 +807,21 @@ impl Grid {
         self.last_cursor = p;
         if !self.rect.contains(p) {
             return false;
+        }
+        // Formula point mode: while editing a formula, a click on another cell
+        // inserts its reference (a drag inserts a range) rather than moving
+        // the selection or committing the edit. Only fires when the caret is
+        // ready for a reference (right after `=` / an operator, or replacing a
+        // previously click-inserted one); otherwise the click falls through to
+        // normal selection, which commits the edit.
+        if self.editing_formula() && self.can_point() {
+            if let Some(addr) = self.cell_at(p) {
+                let editing_here = self.edit.as_ref().map(|e| e.addr) == Some(addr);
+                if !editing_here {
+                    self.begin_point(addr);
+                    return true;
+                }
+            }
         }
         // Start a resize drag if near a header edge.
         if let Some(target) = self.resize_target_at(p) {
@@ -781,6 +903,13 @@ impl Grid {
 
     pub fn pointer_move(&mut self, p: Point) -> bool {
         self.last_cursor = p;
+        // A held point-mode drag grows the pending reference into a range.
+        if self.point_selecting {
+            if let Some(addr) = self.cell_at(p) {
+                self.point_drag_to(addr);
+            }
+            return true;
+        }
         if let Some(drag) = &self.resize {
             match drag.target {
                 ResizeTarget::Col(c) => {
@@ -811,6 +940,10 @@ impl Grid {
     pub fn pointer_up(&mut self) {
         self.resize = None;
         self.selecting = false;
+        // Keep `point_anchor` so the next click replaces the just-inserted
+        // reference (Excel keeps a click-inserted ref "hot" until you type);
+        // only the drag itself ends here.
+        self.point_selecting = false;
     }
 
     pub fn double_click(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
@@ -933,6 +1066,7 @@ impl Grid {
                         e.caret -= 1;
                     }
                 }
+                self.point_anchor = None;
                 self.dirty = true;
                 true
             }
@@ -942,6 +1076,7 @@ impl Grid {
                         e.chars.remove(e.caret);
                     }
                 }
+                self.point_anchor = None;
                 self.dirty = true;
                 true
             }
@@ -949,6 +1084,7 @@ impl Grid {
                 if let Some(e) = &mut self.edit {
                     e.caret = e.caret.saturating_sub(1);
                 }
+                self.point_anchor = None;
                 self.dirty = true;
                 true
             }
@@ -958,6 +1094,7 @@ impl Grid {
                         e.caret += 1;
                     }
                 }
+                self.point_anchor = None;
                 self.dirty = true;
                 true
             }
@@ -965,6 +1102,7 @@ impl Grid {
                 if let Some(e) = &mut self.edit {
                     e.caret = 0;
                 }
+                self.point_anchor = None;
                 self.dirty = true;
                 true
             }
@@ -972,6 +1110,7 @@ impl Grid {
                 if let Some(e) = &mut self.edit {
                     e.caret = e.chars.len();
                 }
+                self.point_anchor = None;
                 self.dirty = true;
                 true
             }
@@ -1001,6 +1140,9 @@ impl Grid {
                 e.chars.insert(e.caret, ch);
                 e.caret += 1;
             }
+            // Typing commits any click-inserted reference into ordinary text,
+            // so the next click appends a fresh reference instead of replacing.
+            self.point_anchor = None;
             self.dirty = true;
         }
     }
@@ -1016,6 +1158,19 @@ impl Grid {
     /// Commit any pending edit (e.g. before switching sheets).
     pub fn flush_edit(&mut self, out: &mut Vec<GridCmd>) {
         self.commit_edit(out);
+    }
+
+    /// Shots/test hook: insert (or replace) a click-inserted reference to
+    /// `addr` while editing a formula — the point-mode click, driven by
+    /// address so it works before the grid has a laid-out geometry.
+    pub fn point_click_addr(&mut self, addr: Addr) {
+        self.begin_point(addr);
+        self.point_selecting = false;
+    }
+
+    /// Shots/test hook: type literal text into the active edit buffer.
+    pub fn insert_text_public(&mut self, s: &str) {
+        self.insert_text(s);
     }
 
     // --- rendering ----------------------------------------------------------
@@ -1138,6 +1293,31 @@ impl Grid {
                 None,
                 &ar,
             );
+        }
+
+        // Referenced ranges of the formula being edited — coloured outlines
+        // matching the tinted references in the formula text, so it's clear
+        // which cells feed the result (and, in point mode, which range a click
+        // just inserted).
+        if let Some(body_text) = self.active_formula_body() {
+            let spans = crate::formula::references(&body_text);
+            let slots = crate::formula::ref_color_slots(&spans);
+            for (span, slot) in spans.iter().zip(&slots) {
+                let color = reference_color(*slot);
+                let tl = self.cell_screen_rect(span.tl.0, span.tl.1);
+                let br = self.cell_screen_rect(span.br.0, span.br.1);
+                let rr = Rect::new(tl.x0, tl.y0, br.x1, br.y1);
+                if let Some(cr) = intersect(rr, body) {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        color.with_alpha_factor(0.12),
+                        None,
+                        &cr,
+                    );
+                    scene.stroke(&Stroke::new(1.5), transform, color, None, &cr);
+                }
+            }
         }
         scene.pop_layer();
 
@@ -1339,21 +1519,21 @@ impl Grid {
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &edit_rect);
         scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &edit_rect);
 
-        // Text + caret, clipped to the editor box.
+        // Text + caret, clipped to the editor box. A formula draws each cell
+        // reference in its own colour; anything else draws in the body colour.
         let ty = edit_rect.y0 + (edit_rect.height() - size as f64) / 2.0;
         let tx = edit_rect.x0 + CELL_PAD_X;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &edit_rect);
-        tr.draw_text(
+        let caret_x = draw_formula_line(
             scene,
+            transform,
+            tr,
             &text,
             size,
             colors.text_primary,
-            transform * Affine::translate((tx, ty)),
-            None,
+            Point::new(tx, ty),
+            Some(e.caret.min(e.chars.len())),
         );
-        let prefix: String = e.chars[..e.caret.min(e.chars.len())].iter().collect();
-        let (pw, _) = tr.measure(&prefix, size, None);
-        let caret_x = tx + pw as f64;
         scene.stroke(
             &Stroke::new(1.5),
             transform,
@@ -1364,6 +1544,92 @@ impl Grid {
         scene.pop_layer();
         scene.pop_layer();
     }
+}
+
+/// A distinct, saturated hue for the `slot`-th reference in a formula, so
+/// each referenced cell/range reads in its own colour both in the formula
+/// text and as an outline on the grid — the coloured-reference cue every
+/// desktop spreadsheet shows while editing a formula. Cycles for formulas
+/// with more references than palette entries. These are a fixed syntax-style
+/// palette (there is no theme token for "reference colour N") chosen to stay
+/// legible on the app surfaces.
+pub(crate) fn reference_color(slot: usize) -> Color {
+    let palette = [
+        Color::from_rgb8(0x54, 0x9b, 0xf5), // blue
+        Color::from_rgb8(0xe2, 0x5b, 0x5b), // red
+        Color::from_rgb8(0x3f, 0xbb, 0x53), // green
+        Color::from_rgb8(0xb1, 0x6c, 0xf0), // purple
+        Color::from_rgb8(0xe0, 0x8a, 0x2a), // orange
+        Color::from_rgb8(0x1f, 0xbd, 0xa8), // teal
+        Color::from_rgb8(0xe2, 0x63, 0xb0), // pink
+    ];
+    palette[slot % palette.len()]
+}
+
+/// Draw a formula string with each cell/range reference tinted its assigned
+/// colour (the rest in `base_color`), starting at `origin` (top-left of the
+/// text). When `caret` is `Some`, the returned value is the caret's x in
+/// scene space so the caller can draw a matching caret; otherwise the return
+/// is the x just past the text. Only strings beginning with `=` are scanned
+/// for references — a plain value is drawn entirely in `base_color`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_formula_line(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    text: &str,
+    size: f32,
+    base_color: Color,
+    origin: Point,
+    caret: Option<usize>,
+) -> f64 {
+    let chars: Vec<char> = text.chars().collect();
+    // (start_char, end_char, colour) segments in full-text char space.
+    let mut segs: Vec<(usize, usize, Color)> = Vec::new();
+    if chars.first() == Some(&'=') {
+        let body: String = chars[1..].iter().collect();
+        let spans = crate::formula::references(&body);
+        let slots = crate::formula::ref_color_slots(&spans);
+        let mut cursor = 0usize;
+        for (span, slot) in spans.iter().zip(&slots) {
+            let s = span.start + 1;
+            let e = span.end + 1;
+            if s > cursor {
+                segs.push((cursor, s, base_color));
+            }
+            segs.push((s, e, reference_color(*slot)));
+            cursor = e;
+        }
+        if cursor < chars.len() {
+            segs.push((cursor, chars.len(), base_color));
+        }
+    } else if !chars.is_empty() {
+        segs.push((0, chars.len(), base_color));
+    }
+
+    let mut x = origin.x;
+    let mut caret_x = origin.x;
+    for (s, e, color) in segs {
+        if let Some(c) = caret {
+            if c >= s && c <= e {
+                let prefix: String = chars[s..c].iter().collect();
+                let (pw, _) = tr.measure(&prefix, size, None);
+                caret_x = x + pw as f64;
+            }
+        }
+        let seg: String = chars[s..e].iter().collect();
+        tr.draw_text(
+            scene,
+            &seg,
+            size,
+            color,
+            transform * Affine::translate((x, origin.y)),
+            None,
+        );
+        let (sw, _) = tr.measure(&seg, size, None);
+        x += sw as f64;
+    }
+    caret_x
 }
 
 /// Intersection of two rects, or `None` if they don't overlap.
@@ -1555,6 +1821,89 @@ mod tests {
         g.move_active(1, 0, false);
         assert!(!g.is_multi_range());
         assert_eq!(g.selected_cells(), vec![(6, 5)]);
+    }
+
+    // --- formula point mode (build formulas by clicking) --------------------
+
+    #[test]
+    fn formula_point_click_inserts_reference_without_moving_selection() {
+        // Select A5, start a formula (as typing '=' would), then click B1.
+        // This drives the exact grid path `handle_event` runs on a click.
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.select_only((0, 4));
+        g.begin_edit(Some("=".into()));
+        assert!(g.pointer_down(cell_point(&g, 1, 0), false, false, &mut out));
+        g.pointer_up();
+        assert!(out.is_empty(), "a point-mode click must not commit the edit");
+        assert_eq!(g.active_display_raw(), "=B1", "clicked cell's ref inserted");
+        assert!(g.is_editing(), "still editing the original cell");
+        assert_eq!(g.active(), (0, 4), "selection stayed on the edited cell");
+    }
+
+    #[test]
+    fn formula_point_drag_inserts_range() {
+        // Press A1, drag to B4 while editing a formula → inserts A1:B4.
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.select_only((0, 6));
+        g.begin_edit(Some("=".into()));
+        assert!(g.pointer_down(cell_point(&g, 0, 0), false, false, &mut out));
+        g.pointer_move(cell_point(&g, 1, 3));
+        g.pointer_up();
+        assert_eq!(g.active_display_raw(), "=A1:B4");
+        assert!(out.is_empty(), "the drag never committed the edit");
+    }
+
+    #[test]
+    fn formula_point_appends_after_operator() {
+        // =A1  then type '+'  then click B2  →  =A1+B2.
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.select_only((4, 4));
+        g.begin_edit(Some("=".into()));
+        g.pointer_down(cell_point(&g, 0, 0), false, false, &mut out);
+        g.pointer_up();
+        assert_eq!(g.active_display_raw(), "=A1");
+        g.insert_text_public("+");
+        g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
+        g.pointer_up();
+        assert_eq!(g.active_display_raw(), "=A1+B2");
+    }
+
+    #[test]
+    fn formula_second_click_replaces_unoperated_reference() {
+        // Click A1, then C3 without typing an operator → the ref is replaced
+        // (Excel point-mode behaviour), not appended.
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.select_only((4, 4));
+        g.begin_edit(Some("=".into()));
+        g.pointer_down(cell_point(&g, 0, 0), false, false, &mut out);
+        g.pointer_up();
+        g.pointer_down(cell_point(&g, 2, 2), false, false, &mut out);
+        g.pointer_up();
+        assert_eq!(g.active_display_raw(), "=C3");
+    }
+
+    #[test]
+    fn point_mode_off_when_caret_after_a_value() {
+        // A non-pointable click (nothing typed makes the caret ready) commits
+        // the edit and moves the selection instead of inserting a reference.
+        let mut g = grid_with(&[]);
+        let mut out = Vec::new();
+        g.select_only((0, 0));
+        g.begin_edit(Some("=A1".into())); // caret after '1', no operator
+        g.point_anchor = None; // as if the ref were typed, not clicked
+        assert!(g.pointer_down(cell_point(&g, 3, 3), false, false, &mut out));
+        g.pointer_up();
+        // The edit committed to A1 and the selection moved to the clicked cell.
+        assert!(
+            out.iter().any(|c| matches!(c, GridCmd::SetCell { .. })),
+            "a non-pointable click commits the edit"
+        );
+        assert!(!g.is_editing());
+        assert_eq!(g.active(), (3, 3));
     }
 
     #[test]
