@@ -55,6 +55,11 @@ pub use runtime_collab as collab;
 pub use runtime_fs as fs;
 pub use runtime_identity as identity;
 pub use runtime_portal as portal;
+/// XDG desktop portal client (file-chooser, screencast,
+/// notifications, secret, open-uri). See
+/// [`runtime_portal_xdg`] docs for the graceful-degradation
+/// contract. Reachable from apps as `runtime::portal_xdg`.
+pub use runtime_portal_xdg as portal_xdg;
 
 /// The shared error type — every fallible SDK entry point returns
 /// `Result<T, NotAvailable>`. Re-exported at the top level so app

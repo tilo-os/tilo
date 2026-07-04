@@ -1,0 +1,332 @@
+//! Install-time shim writer.
+//!
+//! The `[cli].commands` block from a manifest becomes one PATH
+//! shim per command under `~/.local/share/qos-apps/bin/<cmd>`.
+//! Each shim is a copy of the `qos-cli-shim` binary paired with
+//! a small TOML sidecar (`<cmd>.qos-shim`) holding the package
+//! id + command name.
+//!
+//! Kept as its own module so the unit tests can drive it without
+//! spawning the full `qos-install install` flow.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+/// Suffix appended to the shim binary's path to find its sidecar.
+/// Must match `cli-shim`'s `SIDECAR_SUFFIX`.
+pub const SIDECAR_SUFFIX: &str = ".qos-shim";
+
+/// Wire form of the sidecar TOML. Same shape as `cli-shim`'s
+/// `Sidecar`. Duplicated intentionally so we don't have to depend
+/// on the shim crate at link time (it's a binary, and its runtime
+/// deps needn't ride along in the install crate).
+#[derive(Debug, Serialize)]
+struct Sidecar<'a> {
+    package_id: &'a str,
+    command: &'a str,
+    /// Only set in dev mode — points at the developer's
+    /// `target/debug/qos-launcher`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launcher: Option<&'a Path>,
+}
+
+/// Options `write_shims` needs beyond the manifest data itself.
+#[derive(Debug, Clone)]
+pub struct ShimInstall<'a> {
+    /// Reverse-DNS package id.
+    pub package_id: &'a str,
+    /// PATH-visible command names (`manifest.cli.commands`).
+    pub commands: &'a [String],
+    /// Source path of the shim binary — the file we copy into
+    /// place under `bin/<cmd>`. The `install` main resolves this
+    /// via [`locate_shim_source`].
+    pub shim_source: &'a Path,
+    /// Target `bin/` dir under the user's qos-apps root.
+    pub bin_dir: &'a Path,
+    /// Optional launcher override — bakes a `launcher = "..."`
+    /// field into each sidecar. Used by integration tests + dev
+    /// installs. `None` = system launcher path (production).
+    pub launcher_override: Option<&'a Path>,
+}
+
+/// Install one shim per command. Returns the list of files
+/// written so the caller can persist them in the registry entry
+/// for later removal.
+pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
+    fs::create_dir_all(spec.bin_dir).map_err(|e| ShimError::CreateDir {
+        path: spec.bin_dir.to_path_buf(),
+        source: e,
+    })?;
+    let mut written = Vec::with_capacity(spec.commands.len() * 2);
+    for cmd in spec.commands {
+        validate_command_name(cmd)?;
+        let shim_target = spec.bin_dir.join(cmd);
+        let sidecar_target = spec.bin_dir.join(format!("{cmd}{SIDECAR_SUFFIX}"));
+
+        // Overwrite semantics: the installer already treats the
+        // reverse-DNS id as the install slot, so an upgrade
+        // clobbers the old shims cleanly.
+        let _ = fs::remove_file(&shim_target);
+        let _ = fs::remove_file(&sidecar_target);
+
+        fs::copy(spec.shim_source, &shim_target).map_err(|e| ShimError::CopyShim {
+            src: spec.shim_source.to_path_buf(),
+            dst: shim_target.clone(),
+            source: e,
+        })?;
+        // Preserve executable bit. `fs::copy` on Unix already
+        // copies permissions, but we make it explicit for clarity
+        // and future portability.
+        set_executable(&shim_target)?;
+
+        let sidecar = Sidecar {
+            package_id: spec.package_id,
+            command: cmd,
+            launcher: spec.launcher_override,
+        };
+        let sidecar_text = toml::to_string(&sidecar)
+            .map_err(|e| ShimError::EncodeSidecar(e.to_string()))?;
+        fs::write(&sidecar_target, sidecar_text).map_err(|e| ShimError::WriteSidecar {
+            path: sidecar_target.clone(),
+            source: e,
+        })?;
+
+        written.push(shim_target);
+        written.push(sidecar_target);
+    }
+    Ok(written)
+}
+
+/// Remove the shims installed for a package. Best-effort — a
+/// missing file is silently ignored so a partial install doesn't
+/// leave the user stuck.
+pub fn remove_shims(bin_dir: &Path, commands: &[String]) -> Result<(), ShimError> {
+    for cmd in commands {
+        // We deliberately don't validate the name here — if a
+        // stale entry has garbage in it we still want to try.
+        let _ = fs::remove_file(bin_dir.join(cmd));
+        let _ = fs::remove_file(bin_dir.join(format!("{cmd}{SIDECAR_SUFFIX}")));
+    }
+    Ok(())
+}
+
+/// Locate the `qos-cli-shim` binary at install time. Search:
+/// 1. `QOS_CLI_SHIM_PATH` env override (tests, dev-installs).
+/// 2. Sibling of this executable (`target/debug/qos-cli-shim`).
+/// 3. `/usr/libexec/qos-cli-shim` (production install).
+/// 4. `qos-cli-shim` — falls back to PATH resolution at copy time.
+pub fn locate_shim_source() -> PathBuf {
+    if let Some(over) = std::env::var_os("QOS_CLI_SHIM_PATH") {
+        return PathBuf::from(over);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let sib = parent.join("qos-cli-shim");
+            if sib.exists() {
+                return sib;
+            }
+        }
+    }
+    let system = PathBuf::from("/usr/libexec/qos-cli-shim");
+    if system.exists() {
+        return system;
+    }
+    PathBuf::from("qos-cli-shim")
+}
+
+fn validate_command_name(name: &str) -> Result<(), ShimError> {
+    if name.is_empty() {
+        return Err(ShimError::BadCommandName("<empty>".into()));
+    }
+    // Refuse anything that could escape the bin/ dir or shadow
+    // an unrelated file (path separators, leading dot for hidden
+    // files). The manifest schema is technically permissive here;
+    // the installer is where we draw the line.
+    if name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        return Err(ShimError::BadCommandName(name.to_string()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) -> Result<(), ShimError> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = fs::metadata(path).map_err(|e| ShimError::CopyShim {
+        src: path.to_path_buf(),
+        dst: path.to_path_buf(),
+        source: e,
+    })?;
+    let mut perms = meta.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    fs::set_permissions(path, perms).map_err(|e| ShimError::CopyShim {
+        src: path.to_path_buf(),
+        dst: path.to_path_buf(),
+        source: e,
+    })
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> Result<(), ShimError> {
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ShimError {
+    #[error("shim command name {0:?} is not filesystem-safe (empty, contains `/`, or starts with `.`)")]
+    BadCommandName(String),
+    #[error("create dir {path}: {source}")]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("copy shim from {src} to {dst}: {source}")]
+    CopyShim {
+        src: PathBuf,
+        dst: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("write sidecar {path}: {source}")]
+    WriteSidecar {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("sidecar encode: {0}")]
+    EncodeSidecar(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_shim(tmp: &Path) -> PathBuf {
+        let p = tmp.join("qos-cli-shim");
+        fs::write(&p, b"#!/bin/sh\necho stub\n").unwrap();
+        set_executable(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn write_shims_creates_binary_and_sidecar_per_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = dummy_shim(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        let commands = vec!["notes".to_string(), "notes-import".to_string()];
+        let written = write_shims(&ShimInstall {
+            package_id: "dev.qos.notes-cli",
+            commands: &commands,
+            shim_source: &shim,
+            bin_dir: &bin_dir,
+            launcher_override: None,
+        })
+        .expect("write_shims");
+        assert_eq!(written.len(), 4);
+        for cmd in &commands {
+            let bin_path = bin_dir.join(cmd);
+            let side_path = bin_dir.join(format!("{cmd}.qos-shim"));
+            assert!(bin_path.exists(), "shim {cmd} should exist");
+            assert!(side_path.exists(), "sidecar {cmd}.qos-shim should exist");
+            let sidecar_text = fs::read_to_string(&side_path).unwrap();
+            assert!(sidecar_text.contains("dev.qos.notes-cli"));
+            assert!(sidecar_text.contains(cmd));
+        }
+    }
+
+    #[test]
+    fn write_shims_honours_launcher_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = dummy_shim(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        let commands = vec!["notes".to_string()];
+        let launcher = PathBuf::from("/tmp/dev/qos-launcher");
+        write_shims(&ShimInstall {
+            package_id: "dev.qos.notes-cli",
+            commands: &commands,
+            shim_source: &shim,
+            bin_dir: &bin_dir,
+            launcher_override: Some(&launcher),
+        })
+        .unwrap();
+        let text = fs::read_to_string(bin_dir.join("notes.qos-shim")).unwrap();
+        assert!(text.contains("launcher"), "sidecar must carry launcher override; got: {text}");
+        assert!(text.contains("/tmp/dev/qos-launcher"));
+    }
+
+    #[test]
+    fn remove_shims_deletes_both_binary_and_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = dummy_shim(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        let commands = vec!["notes".to_string()];
+        write_shims(&ShimInstall {
+            package_id: "dev.qos.notes-cli",
+            commands: &commands,
+            shim_source: &shim,
+            bin_dir: &bin_dir,
+            launcher_override: None,
+        })
+        .unwrap();
+        assert!(bin_dir.join("notes").exists());
+        remove_shims(&bin_dir, &commands).unwrap();
+        assert!(!bin_dir.join("notes").exists());
+        assert!(!bin_dir.join("notes.qos-shim").exists());
+    }
+
+    #[test]
+    fn write_shims_refuses_path_traversal_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = dummy_shim(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        let bad_names = vec![
+            "../evil".to_string(),
+            "a/b".to_string(),
+            ".hidden".to_string(),
+            "".to_string(),
+        ];
+        for name in bad_names {
+            let commands = vec![name.clone()];
+            let e = write_shims(&ShimInstall {
+                package_id: "dev.qos.notes-cli",
+                commands: &commands,
+                shim_source: &shim,
+                bin_dir: &bin_dir,
+                launcher_override: None,
+            })
+            .expect_err(&format!("write_shims should reject {name:?}"));
+            assert!(matches!(e, ShimError::BadCommandName(_)), "got {e:?}");
+        }
+    }
+
+    #[test]
+    fn write_shims_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = dummy_shim(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        let commands = vec!["notes".to_string()];
+        write_shims(&ShimInstall {
+            package_id: "dev.qos.notes-cli",
+            commands: &commands,
+            shim_source: &shim,
+            bin_dir: &bin_dir,
+            launcher_override: None,
+        })
+        .unwrap();
+        // Second install with a different launcher override — must
+        // succeed and end with the second override baked in.
+        let l2 = PathBuf::from("/tmp/other/qos-launcher");
+        write_shims(&ShimInstall {
+            package_id: "dev.qos.notes-cli",
+            commands: &commands,
+            shim_source: &shim,
+            bin_dir: &bin_dir,
+            launcher_override: Some(&l2),
+        })
+        .unwrap();
+        let text = fs::read_to_string(bin_dir.join("notes.qos-shim")).unwrap();
+        assert!(text.contains("/tmp/other/qos-launcher"));
+    }
+}
