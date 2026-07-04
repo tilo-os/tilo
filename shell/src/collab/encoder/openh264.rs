@@ -31,12 +31,20 @@ impl OpenH264Backend {
     /// on the openh264 path — the SVC encoder handles GOP structure
     /// internally.
     pub fn new(init: EncoderInit) -> Result<Self, EncoderError> {
-        let inner = H264Encoder::new(init.width, init.height, init.fps.max(1)).map_err(
-            |e: EncodeError| EncoderError::ConfigFailed {
-                kind: EncoderKind::Openh264,
-                detail: format!("{e:?}"),
-            },
-        )?;
+        // Bitrate from the caller (kbps) → openh264's bps. Prior wiring
+        // called ::new() and inherited the library's 120 kbps default,
+        // which skip-framed most of the stream on any real workload.
+        let bitrate_bps = (init.bitrate_kbps as u32).saturating_mul(1000).max(500_000);
+        let inner = H264Encoder::new_with_bitrate_bps(
+            init.width,
+            init.height,
+            init.fps.max(1),
+            bitrate_bps,
+        )
+        .map_err(|e: EncodeError| EncoderError::ConfigFailed {
+            kind: EncoderKind::Openh264,
+            detail: format!("{e:?}"),
+        })?;
         Ok(Self {
             inner,
             frames_encoded: 0,
