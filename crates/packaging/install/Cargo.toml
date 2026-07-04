@@ -8,6 +8,10 @@ description = "One-shot install / launch / list / remove for qOS packages."
 name = "qos-install"
 path = "src/main.rs"
 
+[lib]
+name = "install"
+path = "src/lib.rs"
+
 [dependencies]
 pkg = { path = "../pkg" }
 clap = { version = "4", features = ["derive"] }

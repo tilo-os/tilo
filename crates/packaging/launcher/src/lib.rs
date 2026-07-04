@@ -16,6 +16,7 @@
 pub mod landlock;
 pub mod landlock_shim;
 pub mod manifest;
+pub mod registry;
 pub mod run;
 pub mod sandbox;
 pub mod seccomp;
