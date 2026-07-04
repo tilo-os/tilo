@@ -299,13 +299,21 @@ impl SharedFlatpakSession {
     /// on session start. The workspace's actor calls this once, ships
     /// the message, then pumps `encode_next_frame` on the tick.
     pub fn stream_start_msg(&self) -> NeighbourMsg {
+        // Take a single monotonic reading and stamp it into both `ts`
+        // (informational; matches every prior wire-log format) *and*
+        // `sender_monotonic_ns_at_send` (used by the receiver's
+        // clock-offset handshake). Reading the clock twice would smear
+        // the two values by a couple of hundred nanoseconds and yield a
+        // handshake that's off by the same amount — small, but avoidable.
+        let now_ns = self.monotonic_ns_now();
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,
             source_peer: self.host_user_id,
             width: self.width,
             height: self.height,
             codec: CODEC_LABEL.to_string(),
-            ts: self.monotonic_ns_now(),
+            ts: now_ns,
+            sender_monotonic_ns_at_send: now_ns,
         }
     }
 
@@ -357,6 +365,12 @@ impl SharedFlatpakSession {
     ///   swallowed. The session logs on encode error (once per
     ///   consecutive run to avoid flooding). This matches the
     ///   compositor's "encode or drop" memory contract.
+    ///
+    /// Instrumented so a profile pass shows how much wall-clock the
+    /// per-tick composition (throttle check + encoder → NALU + timestamp
+    /// bookkeeping) costs. The inner `H264Encoder::encode` span is a
+    /// nested child.
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn encode_next_frame(&self, now: Instant) -> Option<EncodedFrame> {
         if !self.active.load(Ordering::Acquire) {
             return None;
@@ -559,13 +573,20 @@ mod tests {
                 width,
                 height,
                 codec,
-                ..
+                ts,
+                sender_monotonic_ns_at_send,
             } => {
                 assert_eq!(surface, 42);
                 assert_eq!(source_peer, 0xBEEF);
                 assert_eq!(width, 64);
                 assert_eq!(height, 64);
                 assert_eq!(codec, "h264");
+                // Clock-offset handshake: sender stamps its own monotonic
+                // reading. Same value as `ts` (single clock read at
+                // encode-msg time), non-zero so the receiver's offset
+                // handshake kicks in.
+                assert!(sender_monotonic_ns_at_send > 0);
+                assert_eq!(sender_monotonic_ns_at_send, ts);
             }
             other => panic!("expected SurfaceStreamStart, got {other:?}"),
         }
