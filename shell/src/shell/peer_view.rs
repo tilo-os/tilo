@@ -213,6 +213,7 @@ impl PeerView {
     /// previous latest is dropped and `frames_dropped` increments. The
     /// new frame still becomes `latest` — the "drop" is on the paint
     /// side, not the decoder side.
+    #[tracing::instrument(level = "trace", skip(self, nalus), fields(nalu_bytes = nalus.len()))]
     pub fn push_encoded_with_latency(
         &mut self,
         nalus: &[u8],

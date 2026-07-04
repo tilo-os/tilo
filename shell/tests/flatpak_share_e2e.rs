@@ -122,6 +122,14 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     session.add_viewer(VIEWER_PEER, false);
 
     // Assert the start message carries the right dimensions + codec.
+    // The clock-offset handshake is exercised via the sender-side
+    // `sender_monotonic_ns_at_send` field: on loopback we can feed both
+    // sides of the handshake into the receiver's metrics and expect an
+    // in-process offset (nanoseconds).
+    // Extract the sender-side monotonic-ns from the announcement so
+    // we can feed the receiver's clock-offset handshake below.
+    #[allow(unused_assignments)]
+    let mut sender_ns_at_send: u64 = 0;
     match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
             surface,
@@ -129,6 +137,7 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
             width,
             height,
             codec,
+            sender_monotonic_ns_at_send,
             ..
         } => {
             assert_eq!(surface, SURFACE);
@@ -136,6 +145,11 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
             assert_eq!(width, W);
             assert_eq!(height, H);
             assert_eq!(codec, "h264");
+            assert!(
+                sender_monotonic_ns_at_send > 0,
+                "sender stamps its monotonic reading into the handshake field"
+            );
+            sender_ns_at_send = sender_monotonic_ns_at_send;
         }
         other => panic!("expected SurfaceStreamStart, got {other:?}"),
     }
@@ -148,6 +162,26 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     // zero. `SharedFlatpakSession::origin` exposes the reference the
     // wire ts is measured from; `elapsed_ns` gives receiver-side "now".
     let origin = session.origin();
+
+    // Feed the receiver-side clock-offset handshake. On loopback the
+    // sender and receiver share `origin`, so `receiver_ns_at_recv`
+    // equals what the sender emitted a few nanoseconds ago — the
+    // learned offset is exactly the receiver-side wall-clock cost of
+    // decoding the message (single-digit microseconds).
+    let receiver_ns_at_recv = origin.elapsed().as_nanos() as u64;
+    metrics.set_clock_offset(sender_ns_at_send, receiver_ns_at_recv);
+    assert!(
+        metrics.clock_offset_ns().is_some(),
+        "handshake must have populated clock offset"
+    );
+    let learned_offset = metrics.clock_offset_ns().unwrap();
+    // On loopback the two clocks are the same clock, so the offset is
+    // just "how long between the sender's read and ours" — bounded by
+    // a few microseconds even on a busy CI runner.
+    assert!(
+        learned_offset.abs() < 10_000_000,
+        "loopback clock offset should be < 10 ms, got {learned_offset} ns"
+    );
     let frame_bytes = gradient_frame(W, H);
 
     // Drive 90 encode ticks at ~33 ms intervals — 3 s of wall-clock
