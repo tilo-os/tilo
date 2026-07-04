@@ -100,6 +100,19 @@ struct Inner {
     chosen_encoder: EncoderKind,
     capture_path: CapturePath,
     bitrate_bytes_per_sec_ewma: u64,
+    /// Sender→receiver monotonic clock offset, in signed nanoseconds.
+    /// Computed once per session from the `SurfaceStreamStart` handshake:
+    /// `offset = receiver_monotonic_ns_at_recv - sender_monotonic_ns_at_send`.
+    /// A frame with wire timestamp `ts` was captured on the sender at
+    /// receiver-monotonic time `ts + offset`; motion-to-photon latency
+    /// at the receiver is `receiver_now_ns - (ts + offset)`.
+    ///
+    /// `None` means the handshake either hasn't landed yet or the peer
+    /// is on an older wire format that shipped `ts=0` (see the
+    /// `#[serde(default)]` note on `SurfaceStreamStart::sender_monotonic_ns_at_send`).
+    /// Callers treat "no offset" as "skip this measurement" rather than
+    /// stamping a wrong value.
+    clock_offset_ns: Option<i128>,
 }
 
 /// Point-in-time copy of the counters for read-only consumers.
@@ -183,6 +196,7 @@ impl PeerSurfaceMetrics {
                 chosen_encoder: EncoderKind::Openh264,
                 capture_path: CapturePath::default(),
                 bitrate_bytes_per_sec_ewma: 0,
+                clock_offset_ns: None,
             })),
         }
     }
@@ -255,6 +269,76 @@ impl PeerSurfaceMetrics {
     pub fn set_capture_path(&self, path: CapturePath) {
         let mut inner = self.inner.lock().expect("metrics mutex");
         inner.capture_path = path;
+    }
+
+    /// Learn the sender→receiver clock offset from a `SurfaceStreamStart`
+    /// handshake.
+    ///
+    /// Called once per session on the receiving side when the shell
+    /// decodes a [`crate::network::NeighbourMsg::SurfaceStreamStart`]
+    /// message. `sender_ns_at_send` is the sender's monotonic reading
+    /// at message construction; `receiver_ns_at_recv` is the receiver's
+    /// reading at message decode. The offset is stashed and later
+    /// consumed by [`Self::end_to_end_latency_ns`] to translate every
+    /// per-frame `ts` on the wire into the receiver's clock domain.
+    ///
+    /// Passing `sender_ns_at_send == 0` signals "the sender didn't
+    /// include the field" (older peers, or the `#[serde(default)]`
+    /// fallback). We clear the offset in that case rather than storing
+    /// a bogus receiver-clock value, so downstream latency queries
+    /// return `None` (which the OSD renders as "—") instead of a
+    /// nonsense number.
+    pub fn set_clock_offset(&self, sender_ns_at_send: u64, receiver_ns_at_recv: u64) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        if sender_ns_at_send == 0 {
+            inner.clock_offset_ns = None;
+            return;
+        }
+        let offset = (receiver_ns_at_recv as i128) - (sender_ns_at_send as i128);
+        inner.clock_offset_ns = Some(offset);
+    }
+
+    /// End-to-end latency in **nanoseconds** for a frame whose wire
+    /// `ts` (sender-side monotonic ns) is `wire_ts_ns`, observed at
+    /// receiver-side monotonic ns `receiver_now_ns`.
+    ///
+    /// Returns `None` when no clock-offset has been learned yet (no
+    /// handshake) or when the arithmetic would underflow (clock skew
+    /// against a frame that predates the handshake). Callers treat
+    /// `None` as "skip this measurement" and don't push to the latency
+    /// ring — a wrong measurement is worse than a missing one.
+    pub fn end_to_end_latency_ns(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
+        let inner = self.inner.lock().expect("metrics mutex");
+        let offset = inner.clock_offset_ns?;
+        // The sender's `ts`, expressed on the receiver's clock, is
+        // `wire_ts_ns + offset` — that's the "moment of capture" in the
+        // receiver's monotonic domain. Latency is now − that.
+        let capture_on_receiver = (wire_ts_ns as i128) + offset;
+        let latency = (receiver_now_ns as i128) - capture_on_receiver;
+        if latency < 0 {
+            None
+        } else {
+            Some(latency as u64)
+        }
+    }
+
+    /// Convenience: the same latency in **milliseconds**. Wraps
+    /// [`Self::end_to_end_latency_ns`] and rounds to the nearest u64.
+    /// Returns `None` for the same reasons the ns-precision method does.
+    pub fn end_to_end_latency_ms(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
+        self.end_to_end_latency_ns(wire_ts_ns, receiver_now_ns)
+            .map(|ns| (ns + 500_000) / 1_000_000)
+    }
+
+    /// Current learned clock offset, or `None` before the handshake.
+    /// Exposed for diagnostics — the OSD overlay shows the offset
+    /// alongside the latency histogram so a huge offset (drifted NTP,
+    /// unsync'd hosts) is visible.
+    pub fn clock_offset_ns(&self) -> Option<i128> {
+        self.inner
+            .lock()
+            .expect("metrics mutex")
+            .clock_offset_ns
     }
 
     /// Snapshot the counters for a read-only consumer.
@@ -445,5 +529,52 @@ mod tests {
         assert_eq!(percentile_50_99(&[]), (0, 0));
         assert_eq!(percentile_50_99(&[42]), (42, 42));
         assert_eq!(percentile_50_99(&[1, 2, 3, 4, 5]), (3, 5));
+    }
+
+    #[test]
+    fn no_clock_offset_returns_none_for_latency() {
+        let m = PeerSurfaceMetrics::new();
+        assert_eq!(m.end_to_end_latency_ns(1_000, 5_000), None);
+        assert_eq!(m.end_to_end_latency_ms(1_000, 5_000), None);
+        assert_eq!(m.clock_offset_ns(), None);
+    }
+
+    #[test]
+    fn clock_offset_zero_ts_clears() {
+        let m = PeerSurfaceMetrics::new();
+        // First, learn a real offset.
+        m.set_clock_offset(1_000, 5_000);
+        assert_eq!(m.clock_offset_ns(), Some(4_000));
+        // Then a "no field on the wire" event — offset is cleared.
+        m.set_clock_offset(0, 5_000);
+        assert_eq!(m.clock_offset_ns(), None);
+    }
+
+    #[test]
+    fn end_to_end_latency_uses_learned_offset() {
+        let m = PeerSurfaceMetrics::new();
+        // Sender was 1_000_000 ns ahead of receiver at handshake.
+        // (sender's clock: 100_000_000; receiver's clock: 101_000_000 → offset = +1_000_000)
+        m.set_clock_offset(100_000_000, 101_000_000);
+        // A frame with wire ts = 200_000_000 (sender monotonic ns), and
+        // receiver now = 201_500_000, has a 500 000 ns latency:
+        //   capture_on_receiver = 200_000_000 + 1_000_000 = 201_000_000
+        //   latency = 201_500_000 - 201_000_000 = 500_000 ns
+        assert_eq!(
+            m.end_to_end_latency_ns(200_000_000, 201_500_000),
+            Some(500_000)
+        );
+        // Rounded to ms: 500 000 ns rounds to 1 ms via the +500 000 offset.
+        assert_eq!(m.end_to_end_latency_ms(200_000_000, 201_500_000), Some(1));
+    }
+
+    #[test]
+    fn end_to_end_latency_none_when_negative() {
+        let m = PeerSurfaceMetrics::new();
+        m.set_clock_offset(1_000_000, 500_000);
+        // Frame whose "capture on receiver clock" is in the future
+        // (would-be latency negative) — return None instead of a wrong
+        // number.
+        assert_eq!(m.end_to_end_latency_ns(2_000_000, 500_000), None);
     }
 }
