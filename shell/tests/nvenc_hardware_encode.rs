@@ -41,13 +41,18 @@ fn nvenc_produces_annex_b_h264_bytes() {
     if !nvenc_available() {
         return;
     }
-    const W: u32 = 640;
-    const H: u32 = 480;
+    // 1280x720 rather than a smaller frame because ffmpeg 8's
+    // h264_nvenc wrapper rejects sub-720p CBR+baseline config on some
+    // driver versions with a bare "Unknown error" from `avcodec_open2`.
+    // The single-frame path we're asserting on doesn't care about the
+    // pixel count.
+    const W: u32 = 1280;
+    const H: u32 = 720;
     let init = EncoderInit {
         width: W,
         height: H,
         fps: 30,
-        bitrate_kbps: 4000,
+        bitrate_kbps: 6000,
         keyframe_interval_secs: 2,
     };
     let mut backend = build(EncoderKind::NvEnc, init).expect("construct nvenc backend");
@@ -198,12 +203,14 @@ fn shared_flatpak_session_rolls_up_nvenc() {
         return;
     }
     let cfg = FlatpakShareConfig {
-        max_bitrate_kbps: 4000,
+        max_bitrate_kbps: 6000,
         target_fps: 30,
         encoder: EncoderChoice::Auto,
     };
+    // 1280x720 for the same driver-config reason as
+    // nvenc_produces_annex_b_h264_bytes.
     let session =
-        SharedFlatpakSession::start(0xCCCC, "org.gimp.GIMP", 42, 640, 480, cfg).expect("session");
+        SharedFlatpakSession::start(0xCCCC, "org.gimp.GIMP", 42, 1280, 720, cfg).expect("session");
     let (chosen_probe, _) = probe(Some(EncoderChoice::Nvenc));
     assert_eq!(chosen_probe, EncoderKind::NvEnc);
     assert_eq!(session.chosen_encoder(), EncoderKind::NvEnc);

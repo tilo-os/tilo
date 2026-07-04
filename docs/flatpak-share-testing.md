@@ -45,31 +45,76 @@ compatibility table for what you get out of a laptop dev box.
 | DMABUF direct import | smithay DMABUF handler + wgpu import | Detection tested; end-to-end requires a client sending a DMABUF (e.g. a real Flatpak'd app under the compositor) |
 | Two-netns real network | `CAP_NET_ADMIN` (sudo) | ✅ works on bare-metal, rootless podman blocks it |
 
-## The NVENC-on-host escape hatch
+## The NVENC-on-host runbook
 
 Rootless podman doesn't grant CUDA the capability it needs — even with
 `/dev/nvidia*` bind-mounted, `cuInit` returns "operation not permitted".
-Building fine in distrobox produces a binary that segfaults inside the
-container but runs fine on the host.
+Building fine in distrobox produces a binary that fails on encoder init
+inside the container but runs fine on the host.
 
-`scripts/test-flatpak-share.sh nvenc` does the shim automatically:
+Two paths, depending on whether your distrobox matches the host's
+ffmpeg ABI:
 
-1. Compile the test in distrobox with `--features nvenc`
-2. Extract the ffmpeg .so files from distrobox into a scratch dir
-3. Symlink the host's `libnvidia-encode.so.1` + `libcuda.so.1` into the
-   same scratch dir
-4. Run the compiled test binary on the host with
+### Happy path — `my-distrobox-44` (Fedora 44)
+
+When the distrobox and the host are on the same Fedora version, their
+libavcodec/libavutil/libswscale SONAMEs match and the compiled binary
+dlopens the host's shared libs directly. No shim.
+
+Create it once:
+
+```
+podman pull registry.fedoraproject.org/fedora-toolbox:44
+distrobox create --name my-distrobox-44 \
+    --image registry.fedoraproject.org/fedora-toolbox:44 \
+    --nvidia --yes
+distrobox enter my-distrobox-44 -- bash -c '
+    sudo dnf install -y \
+        https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-44.noarch.rpm \
+        https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-44.noarch.rpm
+    sudo dnf install -y --skip-unavailable \
+        gcc clang clang-devel make nasm pkgconf-pkg-config \
+        libxkbcommon-devel libseat-devel libinput-devel libudev-devel libdrm-devel \
+        mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel pipewire-devel \
+        ffmpeg ffmpeg-devel libva-devel libva-utils capnproto capnproto-devel \
+        fuse3-devel dbus-devel harfbuzz-devel freetype-devel glibc-devel \
+        openssl-devel systemd-devel wayland-devel wayland-protocols-devel \
+        xz-devel zlib-devel bzip2-devel kernel-headers rust cargo
+'
+```
+
+`scripts/test-flatpak-share.sh` auto-detects `my-distrobox-44` and
+prefers it. The nvenc subcommand then just builds the test binary and
+runs it bare on the host — `ldd` resolves everything against `/lib64`
+naturally.
+
+### Fallback — `my-distrobox` (Fedora 42) + LD_LIBRARY_PATH shim
+
+If only the older distrobox exists, the runner:
+
+1. Compiles the test in distrobox with `--features nvenc`
+2. Extracts the ffmpeg .so files from distrobox into a scratch dir
+3. Symlinks the host's `libnvidia-encode.so.1` + `libcuda.so.1` into
+   the same scratch dir
+4. Runs the compiled test binary on the host with
    `LD_LIBRARY_PATH=<scratch>:/lib64`
 
-The host's ffmpeg is often a stripped `ffmpeg-free` without NVENC linked
-— which is why we use distrobox's `ffmpeg` .so files instead of the
-host's. Result: NVENC hits real hardware.
+Result identical either way — real bytes come out of real hardware.
 
-Numbers to expect on a working NVIDIA laptop (RTX 4070 class):
+### Numbers to expect on an RTX 4070 Laptop
+
 - 720p sustained: 250–370 fps
 - 1080p sustained: 150–170 fps
 - First NAL emitted after ~2 frames (encoder look-ahead)
 - Worst-case single-frame wall-clock: < 10 ms
+
+### Host CUDA state gotcha
+
+If every NVENC test panics with `cuInit(0) failed -> CUDA_ERROR_NO_DEVICE`
+even though `nvidia-smi` shows the GPU present, CUDA userspace has
+gotten wedged from the driver. Reload `nvidia_uvm` (`sudo rmmod
+nvidia_uvm && sudo modprobe nvidia_uvm`) or reboot. This is unrelated
+to the build path.
 
 ## The two-netns test
 
