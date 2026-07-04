@@ -22,14 +22,11 @@ jobs:
   build-and-push:
     runs-on: runner
     steps:
-      - name: Checkout (with submodules — the in-image build needs the sources)
+      - name: Checkout the monorepo
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
-          # The automatic job token is scoped to qos/qos only; the sibling
-          # submodule repos (qos/shell, qos/ui, qos/fs, qos/apps) need a token
-          # with org-wide read, so reuse the REGISTRY_TOKEN PAT for checkout.
+          # Private repo checkout: reuse the REGISTRY_TOKEN PAT.
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       # Only log in when we actually push (not on PRs — keep creds out of
@@ -60,7 +57,7 @@ jobs:
             type=ref,event=pr
 
       # Build the multi-stage bootc image. Context is the repo root so the
-      # builder stage can COPY the whole workspace (incl. submodules); the
+      # builder stage can COPY the whole workspace; the
       # Containerfile lives in os/. push:false on PRs discards the image.
       - name: Build the qOS image (push only on tags/dispatch)
         id: build
