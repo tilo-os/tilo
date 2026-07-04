@@ -60,8 +60,8 @@ impl ContactsDoc {
         sync_text(doc, &m, "title", &c.title);
         sync_text(doc, &m, "website", &c.website);
         sync_text(doc, &m, "notes", &c.notes);
-        let _ = doc.put(&m, "birthday", c.birthday.clone());
-        let _ = doc.put(&m, "favorite", c.favorite);
+        ui::doc::put_if_changed(doc, &m, "birthday", c.birthday.clone());
+        ui::doc::put_if_changed(doc, &m, "favorite", c.favorite);
         sync_str_list(doc, &m, "groups", &c.groups);
         sync_labeled_list(doc, &m, "phones", &c.phones);
         sync_labeled_list(doc, &m, "emails", &c.emails);
@@ -123,11 +123,7 @@ fn text_obj(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
 
 fn sync_text(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
     let tid = text_obj(doc, parent, key);
-    let cur = doc.text(&tid).unwrap_or_default();
-    if cur != value {
-        let n = cur.chars().count() as isize;
-        let _ = doc.splice_text(&tid, 0, n, value);
-    }
+    ui::doc::splice_text_diffed(doc, &tid, value);
 }
 
 fn read_text(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
@@ -349,5 +345,37 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n.contains("Ada")), "{names:?}");
         assert!(names.iter().any(|n| n.contains("Grace")), "{names:?}");
+    }
+
+    #[test]
+    fn sync_text_append_one_char_is_bounded() {
+        // Anti-churn on the collaborative text fields: appending one char to a
+        // long field must splice only the new char, not rewrite the value.
+        let mut doc = AutoCommit::new();
+        let long = "a".repeat(300);
+        sync_text(&mut doc, &ROOT, "notes", &long);
+        let before = doc.save().len();
+        let mut longer = long.clone();
+        longer.push('!');
+        sync_text(&mut doc, &ROOT, "notes", &longer);
+        let grew = doc.save().len() - before;
+        assert_eq!(read_text(&doc, &ROOT, "notes"), longer, "value round-trips");
+        assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
+    }
+
+    #[test]
+    fn repeated_upsert_keeps_doc_bounded() {
+        // Full store-path idempotency: with diff-spliced text, guarded scalar
+        // puts, and change-gated list rebuilds, re-upserting an unchanged
+        // contact must not grow the document at all.
+        let mut doc = AutoCommit::new();
+        let c = sample_contacts().into_iter().next().unwrap();
+        ContactsDoc::upsert_contact(&mut doc, &c);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            ContactsDoc::upsert_contact(&mut doc, &c);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-upserting an unchanged contact grew the document {a} -> {b}");
     }
 }

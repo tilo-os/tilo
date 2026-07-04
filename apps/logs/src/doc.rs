@@ -116,8 +116,7 @@ impl LogsDoc {
                 .put_object(root, K_SEARCH, ObjType::Text)
                 .expect("put search text"),
         };
-        let len = doc.text(&id).unwrap_or_default().chars().count() as isize;
-        let _ = doc.splice_text(&id, 0, len, s);
+        ui::doc::splice_text_diffed(doc, &id, s);
     }
 
     pub fn selected(doc: &AutoCommit, root: &ObjId) -> i64 {
@@ -244,5 +243,34 @@ mod tests {
         let f = LogsDoc::filter(&doc, &ROOT);
         assert_eq!(f.min_priority, 4);
         assert_eq!(f.unit, "kernel");
+    }
+
+    #[test]
+    fn appending_one_char_to_search_is_bounded() {
+        // Anti-churn: `search_set` used to rewrite the whole search Text; the
+        // diff-splice makes a one-char change cost one op.
+        let mut doc = AutoCommit::new();
+        let long = "z".repeat(300);
+        LogsDoc::search_set(&mut doc, &ROOT, &long);
+        let before = doc.save().len();
+        let mut longer = long.clone();
+        longer.push('q');
+        LogsDoc::search_set(&mut doc, &ROOT, &longer);
+        let grew = doc.save().len() - before;
+        assert_eq!(LogsDoc::search(&doc, &ROOT), longer, "value round-trips");
+        assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
+    }
+
+    #[test]
+    fn repeated_search_set_keeps_doc_bounded() {
+        let mut doc = AutoCommit::new();
+        let long = "w".repeat(300);
+        LogsDoc::search_set(&mut doc, &ROOT, &long);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            LogsDoc::search_set(&mut doc, &ROOT, &long);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing the same search grew the document {a} -> {b}");
     }
 }

@@ -82,11 +82,7 @@ pub fn put_text(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
             .put_object(root, key, ObjType::Text)
             .expect("put_object text never fails"),
     };
-    let cur = doc.text(&id).unwrap_or_default();
-    if cur != val {
-        let n = cur.chars().count() as isize;
-        let _ = doc.splice_text(&id, 0, n, val);
-    }
+    ui::doc::splice_text_diffed(doc, &id, val);
 }
 
 /// Decode the catalog JSON blob into a `Vec<ThemeSpec>`.
@@ -116,6 +112,41 @@ mod tests {
     use super::*;
     use crate::model::default_catalog;
     use automerge::ROOT;
+
+    #[test]
+    fn put_text_append_one_char_is_bounded() {
+        // `put_text` backs the catalog blob; appending one char must splice
+        // only the new char, not rewrite the whole Text.
+        let mut doc = AutoCommit::new();
+        let root = ROOT;
+        let long = "t".repeat(300);
+        put_text(&mut doc, &root, KEY_CATALOG, &long);
+        let before = doc.save().len();
+        let mut longer = long.clone();
+        longer.push('!');
+        put_text(&mut doc, &root, KEY_CATALOG, &longer);
+        let grew = doc.save().len() - before;
+        assert_eq!(
+            get_text(&doc, &root, KEY_CATALOG).as_deref(),
+            Some(longer.as_str()),
+            "value round-trips"
+        );
+        assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
+    }
+
+    #[test]
+    fn put_text_repeated_store_keeps_doc_bounded() {
+        let mut doc = AutoCommit::new();
+        let root = ROOT;
+        let long = "s".repeat(300);
+        put_text(&mut doc, &root, KEY_CATALOG, &long);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            put_text(&mut doc, &root, KEY_CATALOG, &long);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
+    }
 
     #[test]
     fn catalog_round_trips_through_crdt() {

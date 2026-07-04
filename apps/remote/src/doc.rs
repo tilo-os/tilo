@@ -72,21 +72,17 @@ impl RemoteDoc {
                 .put_object(&conn, "name", ObjType::Text)
                 .expect("put_object name never fails"),
         };
-        let cur = doc.text(&name_id).unwrap_or_default();
-        if cur != c.name {
-            let cur_chars = cur.chars().count() as isize;
-            let _ = doc.splice_text(&name_id, 0, cur_chars, &c.name);
-        }
+        ui::doc::splice_text_diffed(doc, &name_id, &c.name);
 
-        let _ = doc.put(&conn, "host", c.host.as_str());
-        let _ = doc.put(&conn, "port", c.port as i64);
-        let _ = doc.put(&conn, "user", c.user.as_str());
-        let _ = doc.put(&conn, "kind", c.kind.tag());
-        let _ = doc.put(&conn, "auth", c.auth.label());
-        let _ = doc.put(&conn, "last_used", c.last_used.as_str());
-        let _ = doc.put(&conn, "presence", presence_tag(c.presence));
-        let _ = doc.put(&conn, "group", c.group.as_str());
-        let _ = doc.put(&conn, "favorite", c.favorite);
+        ui::doc::put_if_changed(doc, &conn, "host", c.host.as_str());
+        ui::doc::put_if_changed(doc, &conn, "port", c.port as i64);
+        ui::doc::put_if_changed(doc, &conn, "user", c.user.as_str());
+        ui::doc::put_if_changed(doc, &conn, "kind", c.kind.tag());
+        ui::doc::put_if_changed(doc, &conn, "auth", c.auth.label());
+        ui::doc::put_if_changed(doc, &conn, "last_used", c.last_used.as_str());
+        ui::doc::put_if_changed(doc, &conn, "presence", presence_tag(c.presence));
+        ui::doc::put_if_changed(doc, &conn, "group", c.group.as_str());
+        ui::doc::put_if_changed(doc, &conn, "favorite", c.favorite);
     }
 
     /// Remove a connection from the document.
@@ -231,6 +227,38 @@ mod tests {
         assert_eq!(back.len(), 1, "update must not create a duplicate");
         assert_eq!(back[0].name, "New");
         assert_eq!(back[0].presence, Presence::Offline);
+    }
+
+    #[test]
+    fn appending_one_char_to_name_is_bounded() {
+        // The name is a collaborative Text; appending one char must splice only
+        // the new char. The other (scalar) fields are unchanged, so the guarded
+        // re-puts emit nothing — the whole upsert grows the doc by ~one char.
+        let mut doc = AutoCommit::new();
+        let mut c = conn("x", ConnectionKind::Ssh);
+        c.name = "n".repeat(300);
+        RemoteDoc::upsert(&mut doc, &c);
+        let before = doc.save().len();
+        c.name.push('!');
+        RemoteDoc::upsert(&mut doc, &c);
+        let grew = doc.save().len() - before;
+        assert_eq!(RemoteDoc::list(&doc)[0].name, c.name, "value round-trips");
+        assert!(grew < 40, "appending one char to the name grew doc by {grew} bytes");
+    }
+
+    #[test]
+    fn repeated_upsert_keeps_doc_bounded() {
+        // Re-upserting an unchanged connection must be a no-op: the name diff is
+        // empty and every scalar re-put is guarded.
+        let mut doc = AutoCommit::new();
+        let c = conn("Build Box", ConnectionKind::Ssh);
+        RemoteDoc::upsert(&mut doc, &c);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            RemoteDoc::upsert(&mut doc, &c);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-upserting an unchanged connection grew the document {a} -> {b}");
     }
 
     #[test]
