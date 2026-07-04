@@ -3,7 +3,7 @@
 
 mod fixtures;
 
-use pkg::manifest::{Manifest, Requirement, ServiceReq, ServiceReqParseError};
+use pkg::manifest::{Manifest, PortalPolicy, Requirement, ServiceReq, ServiceReqParseError};
 use pkg::validate::{ManifestError, validate_manifest};
 
 fn render_with_dummy_key() -> String {
@@ -86,6 +86,40 @@ fn service_req_parse_required_defaults_to_v1() {
     let r = ServiceReq::parse("collab", "required").unwrap();
     assert_eq!(r.requirement, Requirement::Required);
     assert_eq!(r.version, 1);
+}
+
+#[test]
+fn portal_policy_parses_via_host_and_deny() {
+    let src = render_with_dummy_key();
+    // The sample template only declares `file-chooser = "via-host"`.
+    // Extend it here to also cover `deny`, then round-trip.
+    let extended = src.replace(
+        "[sandbox.portals]\nfile-chooser = \"via-host\"",
+        "[sandbox.portals]\nfile-chooser = \"via-host\"\nnotifications = \"deny\"",
+    );
+    let m = Manifest::from_toml_str(&extended).expect("decode");
+    assert_eq!(
+        m.sandbox.portals.get("file-chooser").copied(),
+        Some(PortalPolicy::ViaHost)
+    );
+    assert_eq!(
+        m.sandbox.portals.get("notifications").copied(),
+        Some(PortalPolicy::Deny)
+    );
+
+    // Round-trip preserves the enum.
+    let reencoded = m.to_toml_string().expect("encode");
+    let again = Manifest::from_toml_str(&reencoded).expect("decode-2");
+    assert_eq!(m.sandbox.portals, again.sandbox.portals);
+}
+
+#[test]
+fn portal_policy_rejects_typo() {
+    let src = render_with_dummy_key();
+    let bad = src.replace("\"via-host\"", "\"via-hst\"");
+    // A misspelling now surfaces at manifest-decode time (rather
+    // than silently being accepted as an opaque string).
+    assert!(Manifest::from_toml_str(&bad).is_err());
 }
 
 #[test]
