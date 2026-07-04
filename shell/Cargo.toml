@@ -127,6 +127,20 @@ png = "0.18.1"
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
+# The shell serves the SDK-facing Cap'n Proto broker interface
+# natively. `runtime-collab` provides the generated schema types and
+# the SDK-side client wrappers we reuse in tests; `runtime-portal`
+# supplies the connected-fd lift + service-fd lookup.
+runtime-collab = { path = "../crates/runtime/runtime-collab" }
+runtime-portal = { path = "../crates/runtime/runtime-portal" }
+capnp = "0.26"
+capnp-rpc = "0.26"
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+# The shell re-serialises signed op envelopes and presence keys onto
+# the capnp wire; `postcard` matches what apps and the ui toolkit
+# already use for the same envelopes / keys.
+postcard = { version = "1", features = ["alloc"] }
 
 [dev-dependencies]
 wayland-client = "0.31"
