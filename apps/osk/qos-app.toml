@@ -1,0 +1,95 @@
+# Package manifest for `osk` (on-screen keyboard) as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p osk -p pkg-cli -p install --release
+#     mkdir -p target/osk-payload/bin
+#     cp target/release/osk target/osk-payload/bin/osk
+#     target/release/qos-pkg pack \
+#         --manifest apps/osk/qos-app.toml \
+#         --payload  target/osk-payload \
+#         --output   target/osk.qpkg
+#     target/release/qos-install install target/osk.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.osk
+#
+# OSK is a wgpu/vello GUI that additionally opens a *second*
+# Wayland connection to bind the `virtual-keyboard-v1` and
+# `input-method-v2` protocols for typing into the focused surface.
+# The optional FUTO swipe decoder loads its model + ExecuTorch libs
+# via QOS_SWIPE_LIB / QOS_SWIPE_MODELS at run time — those paths
+# come from the runtime bundle, not this manifest.
+
+[package]
+id      = "dev.qos.osk"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/usr/share/X11/xkb",
+    "/sys",
+]
+write = [
+    "~/.local/share/dev.qos.osk",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/osk"
+splash-segments = ["bin/osk[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
