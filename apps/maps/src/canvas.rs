@@ -14,7 +14,7 @@ use ui::theme::Theme;
 
 use crate::draw;
 use crate::geo::{self, Projection};
-use crate::model::{Category, MapModel};
+use crate::model::{Category, MapModel, TransitJourney, TransitMode};
 use crate::sample::{Area, AreaKind, Basemap, RoadClass};
 use crate::tiles::{self, TileLayer};
 
@@ -274,6 +274,93 @@ pub fn draw_route(
     draw::stroke_circle(scene, t, start, 7.0, 3.0, pal.route);
     draw::fill_circle(scene, t, end, 7.0, pal.route);
     draw::stroke_circle(scene, t, end, 7.0, 2.5, pal.marker_ring);
+}
+
+/// Per-mode colour for a public-transport leg, resolved from theme tokens (no
+/// hard-coded RGB). Shared by the on-map itinerary and the panel leg pills.
+pub fn transit_leg_color(theme: &Theme, mode: TransitMode) -> Color {
+    let c = &theme.tokens.colors;
+    match mode {
+        TransitMode::Walk => c.text_dim,
+        TransitMode::Bus => c.semantic.info,
+        TransitMode::Tram => c.semantic.danger,
+        TransitMode::Subway => theme.accent_primary,
+        TransitMode::Rail => c.semantic.success,
+        TransitMode::Ferry => c.accent[6],
+    }
+}
+
+/// Paint the selected public-transport itinerary onto the map: each transit leg
+/// as a mode-coloured line (with a casing), each walking leg as a lighter dashed
+/// connector, and a stop puck at every leg boundary (the transfer points).
+///
+/// The live app fills `TransitLeg.geometry` from the planner's `legGeometry`;
+/// the offline sample seeds plausible on-grid polylines. A leg whose geometry is
+/// empty is simply skipped, so a partial itinerary still draws what it can.
+pub fn draw_transit(
+    scene: &mut Scene,
+    t: Affine,
+    proj: &Projection,
+    journey: &TransitJourney,
+    theme: &Theme,
+    pal: &MapPalette,
+    clip: Rect,
+) {
+    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    // Lines first (casings under surfaces), then boundary pucks on top.
+    for leg in &journey.legs {
+        if leg.geometry.len() < 2 {
+            continue;
+        }
+        let pts = project_pts(proj, &leg.geometry);
+        let col = transit_leg_color(theme, leg.mode);
+        if leg.mode == TransitMode::Walk {
+            // Walking connector: a short dashed line, no casing.
+            draw_dashed(scene, t, &pts, 3.0, draw::alpha(col, 0.9), 6.0, 5.0);
+        } else {
+            draw::polyline(scene, t, &pts, 8.0, draw::mix(col, Color::BLACK, 0.45));
+            draw::polyline(scene, t, &pts, 5.0, col);
+        }
+    }
+    // Boundary/transfer pucks between consecutive legs.
+    for leg in &journey.legs {
+        if leg.mode == TransitMode::Walk {
+            continue;
+        }
+        let pts = project_pts(proj, &leg.geometry);
+        let col = transit_leg_color(theme, leg.mode);
+        for anchor in [pts.first(), pts.last()].into_iter().flatten() {
+            if clip.contains(*anchor) {
+                draw::fill_circle(scene, t, *anchor, 5.0, pal.marker_ring);
+                draw::stroke_circle(scene, t, *anchor, 5.0, 2.5, col);
+            }
+        }
+    }
+    scene.pop_layer();
+}
+
+/// Stroke a polyline as evenly-spaced dashes (`dash` on, `gap` off).
+fn draw_dashed(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: Color, dash: f64, gap: f64) {
+    if pts.len() < 2 {
+        return;
+    }
+    let period = dash + gap;
+    for seg in pts.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let len = a.distance(b);
+        if len < 1e-3 {
+            continue;
+        }
+        let (dx, dy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+        let mut d = 0.0;
+        while d < len {
+            let s = Point::new(a.x + dx * d, a.y + dy * d);
+            let e_len = (d + dash).min(len);
+            let e = Point::new(a.x + dx * e_len, a.y + dy * e_len);
+            draw::line(scene, t, s, e, width, color);
+            d += period;
+        }
+    }
 }
 
 /// Draw all place markers; the selected one is enlarged and labelled.

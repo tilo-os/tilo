@@ -222,6 +222,13 @@ impl TileLayer {
     /// Construct an inert layer with no worker thread and no network — used by
     /// `--shots` and tests so nothing ever blocks or hits the wire.
     pub fn offline() -> Self {
+        Self::offline_with_cache_dir(default_cache_dir())
+    }
+
+    /// An inert (no-worker, no-network) layer rooted at an explicit cache
+    /// directory. Lets a cache-management test drive `clear_cache` against a
+    /// disposable temp dir instead of the user's real default cache.
+    pub fn offline_with_cache_dir(cache_dir: PathBuf) -> Self {
         Self {
             mem: HashMap::new(),
             lru: VecDeque::new(),
@@ -229,7 +236,7 @@ impl TileLayer {
             failed: HashMap::new(),
             job_tx: None,
             done_rx: None,
-            cache_dir: default_cache_dir(),
+            cache_dir,
             progress: DownloadProgress::default(),
         }
     }
