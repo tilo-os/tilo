@@ -362,6 +362,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         Path::new("/host/payload"),
         Some((bundle_dir.as_path(), "smoke-1.0.0")),
         &[],
+        None,
     );
     assert!(
         argv.windows(3)

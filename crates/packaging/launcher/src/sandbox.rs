@@ -44,6 +44,15 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/libutil.so.1",
 ];
 
+/// In-sandbox path the launcher ro-binds the host identity JSON at.
+///
+/// Deliberately outside `~/.config` so the launcher doesn't need to
+/// stage the whole config directory into the sandbox (which would
+/// leak an inode listing of every other config file the user has).
+/// The apps read this path via the `QOS_USER_IDENTITY` env var, which
+/// the launcher sets in lock-step with the bind.
+pub const SANDBOX_IDENTITY_PATH: &str = "/run/qos/identity.json";
+
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs.
 ///
@@ -59,12 +68,20 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
 /// path; the entrypoint binary picks them up via `QOS_SVC_<NAME>_FD`
 /// env vars (set separately on the `Command`).
 ///
+/// `identity_host_path` is the resolved host location of the user
+/// identity JSON (typically `<XDG_CONFIG_HOME>/qos/identity/primary.json`).
+/// When present, it is ro-bound into the sandbox at
+/// [`SANDBOX_IDENTITY_PATH`] and the `QOS_USER_IDENTITY` env var is
+/// set so `runtime-identity::load()` finds it. When absent, no bind
+/// and no env var — apps degrade to the "no identity" path unchanged.
+///
 /// The returned argv ends with the entrypoint command and its args.
 pub fn build_bwrap_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
+    identity_host_path: Option<&Path>,
 ) -> Vec<String> {
     // GUI launch: pick the GUI-flavour bin. Falls back to the
     // legacy top-level `bin` when neither split is set (i.e. old
@@ -73,7 +90,14 @@ pub fn build_bwrap_argv(
         .entrypoint
         .gui_bin()
         .unwrap_or(&manifest.entrypoint.bin);
-    build_bwrap_argv_for_entry(manifest, payload_root, runtime, service_binds, entry)
+    build_bwrap_argv_for_entry(
+        manifest,
+        payload_root,
+        runtime,
+        service_binds,
+        identity_host_path,
+        entry,
+    )
 }
 
 /// `build_bwrap_argv` variant that lets the caller pick which of
@@ -85,6 +109,7 @@ pub fn build_bwrap_argv_for_entry(
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
+    identity_host_path: Option<&Path>,
     entry_bin: &str,
 ) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
@@ -183,6 +208,20 @@ pub fn build_bwrap_argv_for_entry(
             argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
             argv.push(bus_addr);
         }
+    }
+
+    // User identity: ro-bind the caller-supplied host path into the
+    // sandbox and set QOS_USER_IDENTITY. The host path is a specific
+    // file — we deliberately do NOT bind `~/.config/qos/` wholesale
+    // so identities the user has for other purposes (secondary
+    // devices, staged records) stay off the app's view.
+    if let Some(host_path) = identity_host_path {
+        argv.push("--ro-bind".to_string());
+        argv.push(host_path.display().to_string());
+        argv.push(SANDBOX_IDENTITY_PATH.to_string());
+        argv.push("--setenv".to_string());
+        argv.push("QOS_USER_IDENTITY".to_string());
+        argv.push(SANDBOX_IDENTITY_PATH.to_string());
     }
 
     // Service fds: --file <host_fd> /run/qos/services/<name>.sock
@@ -307,7 +346,7 @@ mod tests {
     #[test]
     fn argv_includes_namespace_and_lifetime_flags() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(argv.iter().any(|a| a == "--unshare-all"));
         assert!(argv.iter().any(|a| a == "--die-with-parent"));
         // net.mode = "off" means no --share-net
@@ -321,14 +360,14 @@ mod tests {
     #[test]
     fn argv_shares_net_when_mode_not_off() {
         let m = mk_manifest("on");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(argv.iter().any(|a| a == "--share-net"));
     }
 
     #[test]
     fn argv_binds_payload_root_to_qos_apps_path() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         // Find the --ro-bind triple for the payload.
         let pos = argv
             .iter()
@@ -341,7 +380,7 @@ mod tests {
     #[test]
     fn argv_includes_fs_read_and_write_binds() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         // --ro-bind /usr/share/fonts /usr/share/fonts
         let ro_pos = argv
             .windows(3)
@@ -363,6 +402,7 @@ mod tests {
             Path::new("/host/pkg"),
             Some((Path::new("/host/runtime"), "1")),
             &[],
+            None,
         );
         let rt_pos = argv
             .windows(3)
@@ -382,7 +422,7 @@ mod tests {
     #[test]
     fn argv_ends_with_entrypoint_path() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert_eq!(
             argv.last().map(String::as_str),
             Some("/var/qos-apps/com.example.notes/bin/notes")
@@ -424,7 +464,7 @@ mod tests {
             "notifications".to_string(),
             PortalPolicy::ViaHost,
         );
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         // --ro-bind /run/user/1234/bus /run/user/1234/bus
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind"
@@ -452,7 +492,7 @@ mod tests {
             );
         }
         let m = mk_manifest("off"); // no portals declared
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(
             !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
             "bus must not leak into sandbox without a portal declaration: {argv:?}"
@@ -473,7 +513,7 @@ mod tests {
         m.sandbox
             .portals
             .insert("screencast".to_string(), PortalPolicy::Deny);
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(
             !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
             "bus must stay out when every portal is Deny: {argv:?}"
@@ -489,12 +529,53 @@ mod tests {
             Path::new("/host/pkg"),
             None,
             &[],
+            None,
             "bin/notes-cli",
         );
         // The last argv token is the entrypoint absolute path.
         assert_eq!(
             argv.last().map(String::as_str),
             Some("/var/qos-apps/com.example.notes/bin/notes-cli")
+        );
+    }
+
+    #[test]
+    fn identity_bind_emits_ro_bind_and_setenv() {
+        let m = mk_manifest("off");
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            Some(Path::new("/home/alice/.config/qos/identity/primary.json")),
+        );
+        // --ro-bind /home/alice/.config/qos/identity/primary.json /run/qos/identity.json
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/home/alice/.config/qos/identity/primary.json"
+                && w[2] == SANDBOX_IDENTITY_PATH),
+            "identity ro-bind missing: {argv:?}"
+        );
+        // --setenv QOS_USER_IDENTITY /run/qos/identity.json
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "QOS_USER_IDENTITY"
+                && w[2] == SANDBOX_IDENTITY_PATH),
+            "identity setenv missing: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn identity_bind_absent_when_host_path_is_none() {
+        let m = mk_manifest("off");
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
+        assert!(
+            !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
+            "QOS_USER_IDENTITY must not appear without a host path: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == SANDBOX_IDENTITY_PATH),
+            "identity path must not appear without a host path: {argv:?}"
         );
     }
 
@@ -506,7 +587,7 @@ mod tests {
             host_fd: 7,
             child_fd: 17,
         }];
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None);
         // --file 7 /run/qos/services/collab.sock
         let file_pos = argv
             .windows(3)

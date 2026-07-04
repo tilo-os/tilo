@@ -115,6 +115,7 @@ fn main() -> ExitCode {
                 landlock_enforce: true,
                 mode: LaunchMode::Gui,
                 allow_missing_runtime,
+                identity_host_path: None,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -231,6 +232,7 @@ fn run_installed(
             passthrough_argv: rest,
         },
         allow_missing_runtime: false,
+        identity_host_path: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
