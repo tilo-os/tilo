@@ -1,0 +1,27 @@
+[Unit]
+Description=qOS host first-boot — consume enrollment token and mint device cert
+Documentation=file:///usr/share/doc/qos/relay.md
+After=network-online.target
+Wants=network-online.target
+Before=qos-relay.service
+# Runs exactly once per fresh install; the script writes a marker
+# at /var/lib/qos/device/cert.bin and refuses to re-run once the
+# cert is present.
+ConditionPathExists=/etc/qos/enrollment-token.txt
+ConditionPathExists=!/var/lib/qos/device/cert.bin
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/qos-relay-firstboot
+# Give the LAN mdns handshake generous room but do not block
+# forever — a headless host may boot at 2AM with no primary device
+# on the LAN. In that case the script prints its pairing token to
+# the console and returns non-zero; systemd will retry on next
+# boot after the operator finishes the OOB handshake.
+TimeoutStartSec=300
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
