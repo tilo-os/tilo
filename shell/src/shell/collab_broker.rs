@@ -43,6 +43,7 @@ use collab_types::{
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
+use crate::shell::collab_broker_capnp::CapnpBrokerState;
 use crate::shell::network::ShellNetwork;
 
 /// Maximum number of audit-log entries retained per channel before
@@ -253,15 +254,55 @@ impl BrokerChannels {
 
 /// Shared registry of connected peers. Reader threads call
 /// [`PeerTable::fanout_except`] for every translated event.
-struct PeerTable {
+///
+/// The table owns:
+/// - the legacy JSON peer connections,
+/// - the process-wide peer-id counter (shared with the capnp
+///   listener so ids are unique across transports),
+/// - an optional [`CapnpBrokerState`] handle that layers the same
+///   fanout onto per-subscription mpsc queues held by the capnp
+///   RPC layer. When the capnp listener is bound alongside the
+///   legacy one, every event dispatched here reaches both.
+pub struct PeerTable {
     peers: Mutex<Vec<Arc<Peer>>>,
+    /// Monotonic id source. Shared with the capnp listener so a
+    /// capnp-side "peer" and a legacy-side peer are never confused
+    /// when the `except` filter runs on fanout.
+    peer_id_counter: AtomicU64,
+    /// Optional capnp fanout sink. Set once during `spawn_*` when
+    /// the capnp listener is bound.
+    capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
 }
 
 impl PeerTable {
     fn new() -> Self {
         Self {
             peers: Mutex::new(Vec::new()),
+            peer_id_counter: AtomicU64::new(0),
+            capnp: Mutex::new(None),
         }
+    }
+
+    /// Mint the next peer id. Legacy accept + capnp accept both go
+    /// through this so their ids never collide.
+    pub(crate) fn next_peer_id(&self) -> u64 {
+        self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Attach the capnp fanout sink. Called at most once at
+    /// broker-spawn time. Silently ignores repeat calls (defensive
+    /// but not expected).
+    pub(crate) fn attach_capnp(&self, state: Arc<CapnpBrokerState>) {
+        if let Ok(mut g) = self.capnp.lock() {
+            if g.is_none() {
+                *g = Some(state);
+            }
+        }
+    }
+
+    /// Read the capnp fanout sink if one has been attached.
+    fn capnp_state(&self) -> Option<Arc<CapnpBrokerState>> {
+        self.capnp.lock().ok().and_then(|g| g.clone())
     }
 
     /// Add a peer to the table. Called once per `accept`.
@@ -289,8 +330,11 @@ impl PeerTable {
     }
 
     /// Serialize `event` and write it to every peer in the table whose
-    /// id is not `except`. Drops any peer that errors on write.
-    fn fanout_except(&self, event: &CollabEvent, except: u64) {
+    /// id is not `except`. Drops any peer that errors on write. Also
+    /// pushes the same event onto every capnp subscription queue held
+    /// by the attached [`CapnpBrokerState`] (if any) so both transports
+    /// see the same fanout.
+    pub(crate) fn fanout_except(&self, event: &CollabEvent, except: u64) {
         let bytes = match serde_json::to_vec(event) {
             Ok(b) => b,
             Err(_) => return,
@@ -307,6 +351,9 @@ impl PeerTable {
         for id in dead {
             self.remove(id);
         }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_except(event, except);
+        }
     }
 
     /// Send `event` to exactly one peer by id. Used by the Phase 6
@@ -314,6 +361,10 @@ impl PeerTable {
     /// requester, not the whole fan-out. Drops the peer if the write
     /// fails. Returns whether the send happened (false when the peer
     /// id was not in the table at lookup time).
+    ///
+    /// Also consults the capnp fanout sink (if attached) so a
+    /// scrollback reply routed to a capnp-side requester still lands
+    /// on their per-request reply channel.
     fn send_to_peer(&self, peer_id: u64, event: &CollabEvent) -> bool {
         let bytes = match serde_json::to_vec(event) {
             Ok(b) => b,
@@ -323,12 +374,17 @@ impl PeerTable {
             .snapshot()
             .into_iter()
             .find(|p| p.id == peer_id);
-        let Some(peer) = target else { return false };
-        if write_frame(&peer.writer, &bytes).is_err() {
-            self.remove(peer.id);
-            return false;
+        if let Some(peer) = target {
+            if write_frame(&peer.writer, &bytes).is_err() {
+                self.remove(peer.id);
+                return false;
+            }
+            return true;
         }
-        true
+        if let Some(capnp) = self.capnp_state() {
+            return capnp.send_to_peer(peer_id, event);
+        }
+        false
     }
 }
 
@@ -398,7 +454,7 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
 /// envelope onto the op log via `record_validated_op`; this helper
 /// only owns the derived-state mutation + the redaction-record
 /// audit entry.
-fn apply_redaction_from_envelope(
+pub(crate) fn apply_redaction_from_envelope(
     envelope: &SignedOp,
     artifact: ArtifactId,
     channels: &Arc<Mutex<BrokerChannels>>,
@@ -767,8 +823,13 @@ fn reader_loop(
 /// file is best-effort-removed on `Drop` too, so a crashed shell can
 /// be restarted without a stale-inode collision.
 pub struct BrokerHandle {
-    /// Path the listener is bound to. Held for the `Drop` `unlink`.
+    /// Path the legacy JSON listener is bound to. Held for the
+    /// `Drop` `unlink`.
     socket_path: PathBuf,
+    /// Optional capnp listener socket path — only present when the
+    /// capnp interface is bound alongside the legacy one. Removed on
+    /// `Drop` best-effort.
+    capnp_socket_path: Option<PathBuf>,
     /// Listener thread handle. Wrapped in `Option` so `Drop` can
     /// `take()` and `join()` it without violating the moved-out rule.
     listener_thread: Option<JoinHandle<()>>,
@@ -778,11 +839,17 @@ pub struct BrokerHandle {
     /// Drain-thread quit flag. Drop sets it; the drainer exits at
     /// its next wake.
     drain_quit: Arc<AtomicBool>,
+    /// Capnp listener thread handle. `None` when the capnp interface
+    /// is not bound. The thread runs a tokio LocalSet driving
+    /// capnp-rpc futures.
+    capnp_thread: Option<JoinHandle<()>>,
+    /// Capnp listener quit flag. Drop sets it; the capnp accept-loop
+    /// exits at its next wake.
+    capnp_quit: Arc<AtomicBool>,
     /// Shared peer table — the reader threads use it; the broker keeps
     /// a reference so external callers (Phase 2: libp2p bridge) can
     /// fan a remote event in to every locally-connected peer.
-    #[allow(dead_code)]
-    peers: Arc<PeerTable>,
+    pub(crate) peers: Arc<PeerTable>,
     /// Phase 3 channel-state cache + audit log. Reader threads pull
     /// the lock for the duration of one validation; tests + the
     /// eventual Phase 3.5 bootstrap path mutate the state map to
@@ -866,10 +933,15 @@ impl Drop for BrokerHandle {
     fn drop(&mut self) {
         // Signal the inbound-drain thread to exit at its next wake.
         self.drain_quit.store(true, Ordering::Relaxed);
+        // Signal the capnp accept loop to exit.
+        self.capnp_quit.store(true, Ordering::Relaxed);
         // Removing the socket file is best-effort — if the listener
         // thread already cleaned up (or another shell instance rebound
         // the path), don't surface a spurious error.
         let _ = std::fs::remove_file(&self.socket_path);
+        if let Some(p) = &self.capnp_socket_path {
+            let _ = std::fs::remove_file(p);
+        }
         // We can't reliably join the listener thread here because it's
         // blocked on `listener.accept()`; the socket-file removal alone
         // doesn't unblock `accept`. Detach the join handle — the
@@ -877,6 +949,7 @@ impl Drop for BrokerHandle {
         // teardown drop their connections first; reader threads
         // observe EOF and exit on their own.
         let _ = self.listener_thread.take();
+        let _ = self.capnp_thread.take();
         // Best-effort join the drain thread — it polls its quit flag
         // on a 100ms cadence so a clean shutdown is bounded.
         if let Some(t) = self.drain_thread.take() {
@@ -896,20 +969,35 @@ impl Drop for BrokerHandle {
 /// can log a `tracing::warn!` and continue without collab — the shell
 /// must keep working even without the broker.
 pub fn spawn(socket_path: PathBuf) -> std::io::Result<BrokerHandle> {
-    spawn_with_peer_sync(socket_path, None)
+    spawn_full(socket_path, None, None)
 }
 
-/// Variant of [`spawn`] that wires the Phase 2 libp2p bridge.
-///
-/// When `peer_sync` is `Some`, every local `SyncIncremental` is
-/// republished as a `NeighbourMsg::AppCrdtIncremental` and remote
-/// `AppCrdtIncremental`s drained from `ShellNetwork`'s inbound buffer
-/// get fanned out to every locally-connected peer as a
-/// `CollabEvent::CRDTIncremental`.
-///
-/// Pass `None` to get the Phase 1 (local-only) behaviour.
+/// Legacy shim retained so existing hosted-mode callers keep working
+/// after `capnp_socket_path` was factored out into [`spawn_full`].
+/// Callers that want the capnp interface should call `spawn_full`.
 pub fn spawn_with_peer_sync(
     socket_path: PathBuf,
+    peer_sync: Option<Arc<ShellNetwork>>,
+) -> std::io::Result<BrokerHandle> {
+    spawn_full(socket_path, None, peer_sync)
+}
+
+/// Full-featured broker spawn.
+///
+/// - `socket_path`: legacy JSON socket (`QUICK_COLLAB_SOCK`). Bound
+///   unconditionally so the existing SDK-migration path (bridge +
+///   legacy tests) keeps working.
+/// - `capnp_socket_path`: optional native Cap'n Proto socket
+///   (`QOS_SVC_COLLAB` in `runtime-portal` terms — the path the
+///   launcher fd-injects, or a well-known Unix path for local dev
+///   and tests). When `Some`, the shell also serves the
+///   `runtime-collab` schema natively; both transports share fanout
+///   through the same [`PeerTable`], so an event from either side
+///   reaches every subscriber on either side.
+/// - `peer_sync`: optional libp2p bridge; unchanged semantics.
+pub fn spawn_full(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
     // Best-effort unlink: a previous shell instance may have left a
@@ -921,7 +1009,6 @@ pub fn spawn_with_peer_sync(
     let listener = UnixListener::bind(&socket_path)?;
 
     let table = Arc::new(PeerTable::new());
-    let peer_id_counter = Arc::new(AtomicU64::new(0));
     // Phase 3 per-artifact channel state + audit log. Created here so
     // every reader thread gets the same `Arc`, and so the
     // `BrokerHandle::channels()` accessor returns a handle to the
@@ -938,7 +1025,7 @@ pub fn spawn_with_peer_sync(
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let id = peer_id_counter.fetch_add(1, Ordering::Relaxed);
+                        let id = listener_table.next_peer_id();
                         let writer = match stream.try_clone() {
                             Ok(w) => w,
                             Err(e) => {
@@ -1190,11 +1277,44 @@ pub fn spawn_with_peer_sync(
             .ok()
     }).flatten();
 
+    // Optional capnp interface. Attaches its `CapnpBrokerState` to the
+    // shared `PeerTable` so every existing fanout call (`translate` →
+    // `table.fanout_except`, drain thread → `drain_table.fanout_except`,
+    // `BrokerHandle::fanout_event`) also reaches capnp subscribers.
+    // Bind failure surfaces on the return path; a capnp bind failure
+    // does NOT tear down the legacy broker (the shell must keep
+    // running even if only one transport comes up).
+    let capnp_quit = Arc::new(AtomicBool::new(false));
+    let (capnp_thread, capnp_socket_ok) = match &capnp_socket_path {
+        Some(path) => match crate::shell::collab_broker_capnp::spawn(
+            path.clone(),
+            Arc::clone(&table),
+            Arc::clone(&channels),
+            Arc::clone(&capnp_quit),
+        ) {
+            Ok(handle) => (Some(handle), true),
+            Err(e) => {
+                tracing::warn!(
+                    "collab_broker (capnp): bind {} failed ({e}); \
+                     capnp transport disabled",
+                    path.display()
+                );
+                (None, false)
+            }
+        },
+        None => (None, false),
+    };
+    let effective_capnp_path =
+        if capnp_socket_ok { capnp_socket_path } else { None };
+
     Ok(BrokerHandle {
         socket_path,
+        capnp_socket_path: effective_capnp_path,
         listener_thread: Some(listener_thread),
         drain_thread,
         drain_quit,
+        capnp_thread,
+        capnp_quit,
         peers: table,
         channels,
     })
