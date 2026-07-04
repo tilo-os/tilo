@@ -6,8 +6,8 @@
 //! 2. The signed-root carries a signature (i.e. not unsigned).
 //! 3. The signature verifies against the embedded publisher
 //!    identity over the signing-bytes prefix.
-//! 4. The embedded publisher identity is in the caller-supplied
-//!    `trusted_keys` list.
+//! 4. The publisher identity is not in the caller-supplied
+//!    revocation list.
 //! 5. The manifest blob is present and re-hashes to the value
 //!    embedded in the signed-root (catches manifest tampering).
 //! 6. The payload-collection blob is present and re-hashes to
@@ -15,6 +15,10 @@
 //! 7. Every file blob referenced by the collection is present
 //!    and re-hashes to the declared per-file hash (catches
 //!    payload tampering).
+//! 8. If any `[[trust.attested_by]]` entry is signed by a
+//!    trusted attestor whose scope covers the package, the bundle
+//!    is [`Verification::AttestedBy`]. Otherwise the embedded
+//!    publisher identity is checked against `trusted_keys`.
 //!
 //! Any failure short-circuits — verify reports the *first*
 //! invariant that broke, with enough context to fix it.
@@ -25,18 +29,33 @@ use crate::blobs::{BlobHash, BlobStore};
 use crate::id::PackageId;
 use crate::manifest::Manifest;
 use crate::signed::{SignedRoot, SignedRootError};
+use crate::trust::{RevocationList, TrustedAttestor, attestation_preimage};
 
-/// The outcome of [`verify`]. `Trusted` means every check
-/// passed; every other variant names the first invariant that
-/// broke.
+/// The outcome of [`verify`]. `Trusted` / `AttestedBy` mean every
+/// check passed; every other variant names the first invariant
+/// that broke.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verification {
     /// All checks passed and the publisher's identity is in the
     /// trusted-keys list.
     Trusted { manifest: Manifest },
+    /// All checks passed AND a trusted attestor signed the
+    /// bundle — the strongest trust outcome. `attestor` is the
+    /// id from the attestor registry that verified.
+    AttestedBy { attestor: String, manifest: Manifest },
+    /// The publisher's pubkey is in the caller-supplied
+    /// revocation list. Refuse to install / launch. The manifest
+    /// may still parse correctly and the signature may verify —
+    /// revocation is a policy override, not a crypto failure.
+    Revoked {
+        pubkey: [u8; 32],
+        reason: String,
+        manifest: Manifest,
+    },
     /// All cryptographic checks passed but the publisher's
-    /// identity is not in the trusted-keys list. The bundle is
-    /// authentic; the trust-policy is on the consumer.
+    /// identity is not in the trusted-keys list and no trusted
+    /// attestor's signature was found. The bundle is authentic;
+    /// the trust-policy is on the consumer.
     UntrustedPublisher {
         identity: [u8; 32],
         manifest: Manifest,
@@ -73,15 +92,37 @@ pub enum Verification {
     StoreError(String),
 }
 
-/// Verify a package against the caller-supplied trusted keys.
-/// Trusted keys are Ed25519 32-byte values (use `VerifyingKey`
-/// at the consumer side); we accept the raw bytes here so this
-/// crate stays free of `ed25519_dalek` newtype churn for
-/// callers.
+/// Backwards-compatible verify: no attestor registry, no
+/// revocation list. See [`verify_with_trust`] for the full API.
 pub fn verify<S: BlobStore>(
     id: PackageId,
     store: &S,
     trusted_keys: &[[u8; 32]],
+) -> Verification {
+    verify_with_trust(id, store, trusted_keys, &[], &RevocationList::empty())
+}
+
+/// Verify a package with a trusted-attestor registry AND a
+/// revocation list.
+///
+/// Trust decision order (assuming all crypto invariants pass):
+///
+/// 1. If the publisher pubkey is in `revoked` → [`Verification::Revoked`].
+/// 2. Walk `manifest.trust.attested_by`. For each row whose
+///    `signature` field is present, look up the attestor in
+///    `trusted_attestors` by id. If found and the row's
+///    signature verifies over the canonical preimage AND the
+///    attestor's scope covers this package, return
+///    [`Verification::AttestedBy`].
+/// 3. Otherwise, if the publisher pubkey is in `trusted_keys`,
+///    return [`Verification::Trusted`].
+/// 4. Otherwise → [`Verification::UntrustedPublisher`].
+pub fn verify_with_trust<S: BlobStore>(
+    id: PackageId,
+    store: &S,
+    trusted_keys: &[[u8; 32]],
+    trusted_attestors: &[TrustedAttestor],
+    revoked: &RevocationList,
 ) -> Verification {
     let signed_bytes = match store.get(&BlobHash(*id.as_bytes())) {
         Ok(Some(b)) => b,
@@ -154,6 +195,27 @@ pub fn verify<S: BlobStore>(
         Ok(m) => m,
         Err(e) => return Verification::ManifestParseFailed(e.to_string()),
     };
+
+    // Revocation check — refuse before honouring attestor / trusted-key.
+    if let Some(entry) = revoked.find(&signed.publisher_identity) {
+        return Verification::Revoked {
+            pubkey: signed.publisher_identity,
+            reason: entry.reason.clone(),
+            manifest,
+        };
+    }
+
+    // Attestor chain — walk the [[trust.attested_by]] rows and
+    // check whether any trusted attestor signed this package.
+    if let Some(attestor_id) = find_matching_attestor(
+        &manifest,
+        &signed.payload_root_hash,
+        &signed.publisher_identity,
+        trusted_attestors,
+    ) {
+        return Verification::AttestedBy { attestor: attestor_id, manifest };
+    }
+
     if !trusted_keys
         .iter()
         .any(|k| k == &signed.publisher_identity)
@@ -164,4 +226,41 @@ pub fn verify<S: BlobStore>(
         };
     }
     Verification::Trusted { manifest }
+}
+
+/// Walk the manifest's `[[trust.attested_by]]` rows and check
+/// each one against the trusted-attestor registry. Returns the
+/// id of the first row whose signature verifies against a
+/// trusted attestor's pubkey with matching scope.
+fn find_matching_attestor(
+    manifest: &Manifest,
+    payload_root_hash: &BlobHash,
+    publisher_pubkey: &[u8; 32],
+    trusted_attestors: &[TrustedAttestor],
+) -> Option<String> {
+    let preimage = attestation_preimage(payload_root_hash, publisher_pubkey);
+    for row in &manifest.trust.attested_by {
+        let Ok(Some(sig_bytes)) = row.signature_bytes() else {
+            continue; // legacy claim-only row, no signature to verify
+        };
+        let Some(attestor) = trusted_attestors.iter().find(|a| a.id == row.attestor) else {
+            continue;
+        };
+        // Scope check: package id + declared mime types.
+        let mime = &manifest.providers.mime;
+        if !attestor.scope.covers(&manifest.package.id, mime) {
+            continue;
+        }
+        let Ok(pubkey_bytes) = attestor.pubkey_bytes() else {
+            continue;
+        };
+        let Ok(vk) = VerifyingKey::from_bytes(&pubkey_bytes) else {
+            continue;
+        };
+        let sig = DalekSig::from_bytes(&sig_bytes);
+        if vk.verify(&preimage, &sig).is_ok() {
+            return Some(attestor.id.clone());
+        }
+    }
+    None
 }
