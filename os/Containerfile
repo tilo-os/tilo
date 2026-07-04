@@ -145,10 +145,19 @@ RUN dnf install -y \
     polkit \
     && dnf clean all
 
-# System utilities
+# System utilities.
+#
+# `xdg-dbus-proxy` (Fedora package name) is the filtered D-Bus proxy
+# `qos-launcher` spawns per-sandbox so an app that declares
+# `[sandbox.portals] X = "via-host"` reaches only the portal + fd.o
+# notifications + MPRIS interfaces on the session bus (instead of the
+# full bus surface). Without this package the launcher logs a warning
+# and falls back to a direct bind of the raw session bus — degraded
+# security, no functional regression.
 RUN dnf install -y \
     bubblewrap \
     flatpak \
+    xdg-dbus-proxy \
     distrobox \
     podman \
     foot \
