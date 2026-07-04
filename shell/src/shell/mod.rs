@@ -26,6 +26,7 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod desktop_backdrop;
 pub mod editor_app;
+pub mod hdr_display;
 pub mod network;
 pub mod nirios_tokens;
 pub mod notes_app;
