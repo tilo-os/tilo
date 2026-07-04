@@ -233,6 +233,11 @@ pub enum FrameInput<'a> {
 pub trait Encoder: Send {
     /// Which concrete backend is running.
     fn kind(&self) -> EncoderKind;
+    /// Bitstream codec being emitted. Distinct from `kind` because the
+    /// same backend can drive multiple codecs (`h264_vaapi` vs
+    /// `hevc_vaapi` on the same VA-API device). Wire and diagnostic
+    /// paths read this to report the actual runtime codec + bit depth.
+    fn codec(&self) -> Codec;
     /// Configured width, in pixels.
     fn width(&self) -> u32;
     /// Configured height, in pixels.
