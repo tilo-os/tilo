@@ -148,11 +148,12 @@ pub fn sample_library() -> Library {
     ];
 
     // ---- Cache / download state ---------------------------------------
-    // A handful of tracks are downloaded for offline; one is mid-download.
+    // A handful of tracks are marked to keep offline so the Downloads view has
+    // content. (No fabricated in-progress download — a `Downloading` state is
+    // only ever set by a real, advancing fetch.)
     for id in ["tk_g1", "tk_p1", "tk_u1", "tk_a1", "tk_h1", "tk_r1", "tk_n1"] {
         lib.cache.insert(id.into(), CacheState::Cached);
     }
-    lib.cache.insert("tk_u3".into(), CacheState::Downloading(0.62));
 
     // ---- Liked songs + saved albums -----------------------------------
     // A populated "Liked Songs" + a couple saved albums so the screenshots
