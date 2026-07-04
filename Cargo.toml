@@ -26,6 +26,8 @@ members = [
     "crates/collab/relay",
     "crates/packaging/pkg",
     "crates/packaging/pkg-cli",
+    "crates/packaging/registry-types",
+    "crates/packaging/registry-server",
     "crates/packaging/launcher",
     "crates/packaging/app-fs",
     "crates/packaging/app-host",
