@@ -95,6 +95,26 @@ impl Default for StreamingThrottle {
 /// Phase 4 v1 carries pointer motion / button + a single keysym; richer
 /// events (touch, axis, tablet) are a follow-up. The serde representation
 /// rides inside [`crate::network::NeighbourMsg::RemoteInput::event`].
+///
+/// # Keyboard focus semantics
+///
+/// `PointerEnter` and `PointerLeave` are the focus-grab / -release signals
+/// the owner uses to route subsequent [`InputEvent::Key`] events to the
+/// right client. On `PointerEnter { surface }` the owner grabs keyboard
+/// focus onto the peer's virtual seat for `surface`; on `PointerLeave` the
+/// grab releases. Between them, `Key` events flow into the focused client
+/// through the seat's `KeyboardHandle::input`.
+///
+/// # Multi-user typing
+///
+/// When two peers hold overlapping shares of the same surface and type
+/// concurrently, their keystrokes interleave at the kernel-input level:
+/// whichever `InputEvent::Key` arrives first at the owner wins the
+/// serial-counter mint and is delivered to the focused client first. There
+/// is no session-level lock — `KeyboardHandle::input` is atomic per event,
+/// so a "half-composed" character is not observable, but the resulting
+/// character stream is a race with the network order. Callers that need
+/// deterministic multi-typist behaviour should serialise upstream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum InputEvent {
     /// Pointer moved to logical `(x, y)` inside the surface's content rect.
@@ -102,11 +122,40 @@ pub enum InputEvent {
     /// Mouse button transitioned to `pressed`. `button` mirrors smithay's
     /// libinput-style button codes (e.g. 272 = BTN_LEFT).
     PointerButton { button: u32, pressed: bool },
+    /// Peer's pointer entered `surface`. The owner responds by grabbing
+    /// keyboard focus onto the peer's virtual seat for `surface`, so
+    /// subsequent [`InputEvent::Key`] events land in the right client.
+    ///
+    /// The remote driver emits this once when it acquires the share's
+    /// focus (typically on hover / click into the `PeerView`).
+    PointerEnter { surface: SurfaceIdWire },
+    /// Peer's pointer left `surface`. The owner releases the keyboard
+    /// focus grab for the peer's virtual seat. Subsequent `Key` events
+    /// fall on the floor at the seat level until another `PointerEnter`.
+    PointerLeave { surface: SurfaceIdWire },
     /// Key press / release. `keysym` is the raw u32 from
     /// `xkbcommon::xkb::Keysym`; the owner translates back to its local
     /// keymap before injection.
-    Key { keysym: u32, pressed: bool },
+    ///
+    /// `modifiers` is a bitfield in xkbcommon's `Mods` layout — Shift=1,
+    /// Ctrl=4, Alt=8, Logo=64, etc. The owner sets the modifier state on
+    /// the seat's keyboard *before* delivering the key, then unsets it on
+    /// key-release, so held modifiers survive across the network. The
+    /// field defaults to `0` (via serde) so the legacy two-field
+    /// `{ keysym, pressed }` payload deserialises with no modifiers set,
+    /// preserving compat with peers on older builds.
+    Key {
+        keysym: u32,
+        pressed: bool,
+        #[serde(default)]
+        modifiers: u32,
+    },
 }
+
+/// Wire-side surface id. Duplicated in this module to keep `InputEvent`
+/// free of a cross-module dependency; equal to
+/// [`crate::network::protocol::SurfaceId`].
+pub type SurfaceIdWire = crate::network::protocol::SurfaceId;
 
 /// Sink the owner's compositor exposes to receive remote-input events.
 ///
@@ -390,6 +439,7 @@ mod tests {
         let ev3 = InputEvent::Key {
             keysym: 0xFF0D,
             pressed: true,
+            modifiers: 0,
         };
         assert!(registry.route_to(peer, surface, ev3.clone(), &mut sink));
         assert_eq!(sink.events.len(), 2);
@@ -417,7 +467,10 @@ mod tests {
             InputEvent::Key {
                 keysym: 0xFF1B,
                 pressed: false,
+                modifiers: 4, /* Ctrl */
             },
+            InputEvent::PointerEnter { surface: 42 },
+            InputEvent::PointerLeave { surface: 42 },
         ];
         for ev in events {
             let bytes = serde_json::to_vec(&ev).expect("serialize");
@@ -629,6 +682,151 @@ mod tests {
         );
         let after2 = state.seat.get_pointer().unwrap().current_location();
         assert_eq!((after2.x, after2.y), (5.0, 6.0));
+    }
+
+    /// `InputEvent::Key` must reach the smithay `KeyboardHandle::input`
+    /// path. We can't easily observe a wayland client receiving the
+    /// key without spinning up a real client + surface — instead we
+    /// prove the delivery reaches the *seat*: after a Key event, the
+    /// keyboard's `forwarded_pressed_keys` set includes the keycode.
+    ///
+    /// The compositor's `KeyboardHandle::input` guarded by the
+    /// forwarded-pressed-keys bookkeeping is the same call site
+    /// `network::wayland::WaylandServer::handle_input` uses in
+    /// production — hitting it here proves the peer-input path is no
+    /// longer a no-op.
+    #[test]
+    fn apply_remote_input_key_reaches_keyboard() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::{InputEvent, StreamingShare};
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> =
+            Display::new().expect("wayland display");
+        let display_handle = display.handle();
+        let mut state = State::new(event_loop.handle(), display_handle);
+
+        let peer: PeerId = 7;
+        let surface: SurfaceId = 42;
+        state
+            .share_registry
+            .insert(peer, surface, StreamingShare::new());
+
+        // Baseline: no keys pressed.
+        {
+            let kb = state.seat.get_keyboard().expect("keyboard on seat");
+            assert!(
+                kb.pressed_keys().is_empty(),
+                "seat starts with no pressed keys",
+            );
+        }
+
+        // Drive a Key event through the real production path.
+        let keysym: u32 = 30; /* A on a US keymap */
+        let routed = state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::Key {
+                keysym,
+                pressed: true,
+                modifiers: 0,
+            },
+        );
+        assert!(routed, "read/write share, key event must route");
+
+        // The seat's keyboard now tracks the injected keycode as
+        // pressed — smithay's `forwarded_pressed_keys` (exposed via
+        // `KeyboardHandle::pressed_keys`) reflects the state after
+        // `KeyboardHandle::input` runs.
+        {
+            let kb = state.seat.get_keyboard().expect("keyboard on seat");
+            let pressed = kb.pressed_keys();
+            assert!(
+                pressed.iter().any(|k| u32::from(*k) == keysym),
+                "keyboard did not observe key press; observed {pressed:?}",
+            );
+        }
+
+        // Release event mirrors the press: after `Released`, the
+        // pressed set no longer contains the keycode.
+        let _ = state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::Key {
+                keysym,
+                pressed: false,
+                modifiers: 0,
+            },
+        );
+        {
+            let kb = state.seat.get_keyboard().expect("keyboard on seat");
+            assert!(
+                !kb.pressed_keys().iter().any(|k| u32::from(*k) == keysym),
+                "keyboard still holds the released keycode",
+            );
+        }
+
+        // Origin tag: `last_remote_input` carries the peer id so the
+        // future per-user "typing" overlay can find it in one place.
+        let (last_peer, _, _) = state.last_remote_input.as_ref().expect("event stamped");
+        assert_eq!(*last_peer, peer, "origin peer tag lost");
+    }
+
+    /// `PointerEnter` auto-grabs the peer's keyboard focus (bookkeeping
+    /// on the peer's `RemoteSeat`). `PointerLeave` releases it. The
+    /// physical seat's `set_focus` flip only fires when a
+    /// `surface_resolver` is installed — headless tests set it to a
+    /// stub, so we assert on the `RemoteSeats` bookkeeping directly.
+    #[test]
+    fn pointer_enter_grabs_and_leave_releases_remote_seat_focus() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::{InputEvent, StreamingShare};
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> =
+            Display::new().expect("wayland display");
+        let display_handle = display.handle();
+        let mut state = State::new(event_loop.handle(), display_handle);
+
+        let peer: PeerId = 11;
+        let surface: SurfaceId = 314;
+        state
+            .share_registry
+            .insert(peer, surface, StreamingShare::new());
+
+        // No seat entry yet — the peer hasn't emitted any input.
+        assert!(state.remote_seats.seat(peer).is_none());
+
+        // Enter grabs focus.
+        let routed = state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::PointerEnter { surface },
+        );
+        assert!(routed);
+        let seat = state
+            .remote_seats
+            .seat(peer)
+            .expect("peer's remote seat exists after enter");
+        assert_eq!(seat.focused_surface, Some(surface));
+
+        // Leave releases.
+        let _ = state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::PointerLeave { surface },
+        );
+        let seat = state
+            .remote_seats
+            .seat(peer)
+            .expect("peer's remote seat still exists");
+        assert_eq!(seat.focused_surface, None);
     }
 
     #[test]
