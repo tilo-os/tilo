@@ -1,0 +1,101 @@
+# Package manifest for `file-explorer` as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p file-explorer -p pkg-cli -p install --release
+#     mkdir -p target/file-explorer-payload/bin
+#     cp target/release/file-explorer target/file-explorer-payload/bin/file-explorer
+#     target/release/qos-pkg pack \
+#         --manifest apps/file-explorer/qos-app.toml \
+#         --payload  target/file-explorer-payload \
+#         --output   target/file-explorer.qpkg
+#     target/release/qos-install install target/file-explorer.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.file-explorer
+#
+# The file manager renders the user's home hierarchy and shells out
+# to `xdg-open` / `trash`. The sandbox grants read+write access to
+# the typical XDG user dirs it navigates, plus the GPU + Wayland +
+# font surface any ui/vello app needs.
+
+[package]
+id      = "dev.qos.file-explorer"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/usr/share/mime",
+    "/sys",
+    "~",
+]
+write = [
+    "~/Documents",
+    "~/Downloads",
+    "~/Pictures",
+    "~/Videos",
+    "~/Music",
+    "~/Desktop",
+    "~/.local/share/dev.qos.file-explorer",
+    "~/.local/share/Trash",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/file-explorer"
+splash-segments = ["bin/file-explorer[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
