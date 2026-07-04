@@ -1,5 +1,5 @@
 [package]
-name = "qos-format-provider-wit"
+name = "format-provider-wit"
 version = "0.1.0"
 edition = "2021"
 description = "WIT interface + shared Rust mirror types for qOS format providers (WASM Component Model)."

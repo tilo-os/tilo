@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use qos_format_provider_wit::CodecError;
+use format_provider_wit::CodecError;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{ResourceTableError, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -32,10 +32,10 @@ pub const EPOCH_TICK: Duration = Duration::from_secs(1);
 pub const MAX_TICKS: u64 = (MAX_WALLCLOCK.as_secs() / EPOCH_TICK.as_secs()) as u64;
 
 // Generate host-side Component Model bindings from the WIT package shipped by
-// `qos-format-provider-wit`. The host imports the generated `Provider`
+// `format-provider-wit`. The host imports the generated `Provider`
 // world's `format_provider` exports.
 wasmtime::component::bindgen!({
-    path: "../qos-format-provider-wit/wit",
+    path: "../format-provider-wit/wit",
     world: "provider",
 });
 

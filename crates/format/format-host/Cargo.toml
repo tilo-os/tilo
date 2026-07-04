@@ -1,11 +1,11 @@
 [package]
-name = "qos-format-host"
+name = "format-host"
 version = "0.1.0"
 edition = "2021"
 description = "qOS format-provider router daemon. Hosts WASM Component Model providers via wasmtime and serves a Cap'n Proto RPC interface."
 
 [dependencies]
-qos-format-provider-wit = { path = "../qos-format-provider-wit" }
+format-provider-wit = { path = "../format-provider-wit" }
 
 # Wasmtime 46 ships component-model + the on-disk compilation cache out of the
 # box. We rely on epoch-based interruption + ResourceLimiter for per-call
