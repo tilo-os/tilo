@@ -77,6 +77,45 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
+/// Explicit plan for exposing D-Bus into the sandbox.
+///
+/// Constructed by the orchestrator (`run.rs`) and threaded through
+/// [`build_bwrap_argv`] so the argv-building layer stays pure. Two
+/// shapes:
+/// - *Proxy*: the launcher has spawned `xdg-dbus-proxy` upstream of
+///   the session bus with an explicit allowlist; `host_socket`
+///   points at the proxy's listener.
+/// - *Direct*: `xdg-dbus-proxy` is unavailable; `host_socket` points
+///   at the raw session bus socket (path only — abstract sockets
+///   don't bind-mount, which is exactly the case a proxy would
+///   handle).
+///
+/// From bwrap's point of view both shapes look identical: one
+/// `--ro-bind` triple and one `DBUS_SESSION_BUS_ADDRESS` setenv. The
+/// distinction is documented so consumers can log the fallback and
+/// audit tests can assert on it.
+#[derive(Debug, Clone)]
+pub struct DBusBindPlan {
+    /// Host-side path we bind into the sandbox.
+    pub host_socket: PathBuf,
+    /// In-sandbox path the socket appears at. Apps read
+    /// `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
+    pub sandbox_path: PathBuf,
+    /// Which shape this plan carries — for logging + tests. Does
+    /// not change the argv shape.
+    pub kind: DBusBindKind,
+}
+
+/// Which flavour of D-Bus bind a [`DBusBindPlan`] describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DBusBindKind {
+    /// Filtered via `xdg-dbus-proxy` — the preferred path.
+    Proxy,
+    /// Raw session-bus socket bind — degraded fallback used when
+    /// `xdg-dbus-proxy` isn't installed.
+    Direct,
+}
+
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs.
 ///
@@ -92,12 +131,20 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
 /// path; the entrypoint binary picks them up via `QOS_SVC_<NAME>_FD`
 /// env vars (set separately on the `Command`).
 ///
+/// `dbus_bind` — when `Some`, wire the socket into the sandbox and
+/// set `DBUS_SESSION_BUS_ADDRESS`. `None` means the sandbox has no
+/// D-Bus access (the manifest didn't declare a `via-host` portal, or
+/// the caller decided even the direct-bind fallback was too much).
+/// The [`crate::dbus_proxy`] module builds the plan when the manifest
+/// asks for portals.
+///
 /// The returned argv ends with the entrypoint command and its args.
 pub fn build_bwrap_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
+    dbus_bind: Option<&DBusBindPlan>,
 ) -> Vec<String> {
     // GUI launch: pick the GUI-flavour bin. Falls back to the
     // legacy top-level `bin` when neither split is set (i.e. old
@@ -106,7 +153,7 @@ pub fn build_bwrap_argv(
         .entrypoint
         .gui_bin()
         .unwrap_or(&manifest.entrypoint.bin);
-    build_bwrap_argv_for_entry(manifest, payload_root, runtime, service_binds, entry)
+    build_bwrap_argv_for_entry(manifest, payload_root, runtime, service_binds, dbus_bind, entry)
 }
 
 /// `build_bwrap_argv` variant that lets the caller pick which of
@@ -118,6 +165,7 @@ pub fn build_bwrap_argv_for_entry(
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
+    dbus_bind: Option<&DBusBindPlan>,
     entry_bin: &str,
 ) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
@@ -193,8 +241,9 @@ pub fn build_bwrap_argv_for_entry(
     // the host-side expanded path — the app sees the same paths it
     // declared, so e.g. `~/Documents` resolves identically in and out of
     // the sandbox. Same convention as the per-workspace profile.
-    // Device paths (anything under `/dev`) get `--dev-bind` instead of
-    // `--ro-bind`/`--bind` so bwrap accepts the character-device inode.
+    // Device paths (anything under `/dev`) get `--dev-bind-try` instead
+    // of --ro-bind/--bind so bwrap accepts the character-device inode
+    // and silently skips paths that don't exist on the host.
     for entry in &manifest.sandbox.fs.read {
         let host = expand_path(entry);
         let flag = if host.starts_with("/dev") {
@@ -214,23 +263,18 @@ pub fn build_bwrap_argv_for_entry(
         push_bind(&mut argv, flag, &host, &host);
     }
 
-    // XDG portals: if the manifest declares any portal as `ViaHost`,
-    // bind the host session D-Bus socket into the sandbox and set the
-    // env var so `ashpd` finds it. If NO portal is declared (or every
-    // portal is `Deny`), the bus is NOT exposed — apps that didn't
-    // ask for it can't reach the wide D-Bus attack surface.
-    if let Some(bus_addr) = host_dbus_bus_address_if_needed(&manifest.sandbox.portals) {
-        // Only `unix:path=<path>` bus addresses are proxyable via a
-        // bind-mount. Abstract-namespace sockets can't be bind-
-        // mounted; when we see one we silently degrade — the app's
-        // ashpd call will surface `NotAvailable`, which is the
-        // documented graceful-degradation path.
-        if let Some(path) = parse_unix_path_bus_address(&bus_addr) {
-            push_bind(&mut argv, "--ro-bind", Path::new(&path), Path::new(&path));
-            argv.push("--setenv".to_string());
-            argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
-            argv.push(bus_addr);
-        }
+    // XDG portals: if the caller supplied a bind plan (either the
+    // preferred `xdg-dbus-proxy` socket or a direct-bind fallback),
+    // wire it in. If NO plan is supplied, the bus is NOT exposed —
+    // apps that didn't declare a portal (or hosts without a proxy
+    // AND an abstract-namespace bus) can't reach the D-Bus attack
+    // surface at all. The choice of plan (proxy vs direct) is made
+    // by `run.rs`; this layer just materialises it.
+    if let Some(bind) = dbus_bind {
+        push_bind(&mut argv, "--ro-bind", &bind.host_socket, &bind.sandbox_path);
+        argv.push("--setenv".to_string());
+        argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
+        argv.push(format!("unix:path={}", bind.sandbox_path.display()));
     }
 
     // Service fds: --file <host_fd> /run/qos/services/<name>.sock
@@ -355,7 +399,7 @@ mod tests {
     #[test]
     fn argv_includes_namespace_and_lifetime_flags() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(argv.iter().any(|a| a == "--unshare-all"));
         assert!(argv.iter().any(|a| a == "--die-with-parent"));
         // net.mode = "off" means no --share-net
@@ -369,14 +413,14 @@ mod tests {
     #[test]
     fn argv_shares_net_when_mode_not_off() {
         let m = mk_manifest("on");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(argv.iter().any(|a| a == "--share-net"));
     }
 
     #[test]
     fn argv_binds_payload_root_to_qos_apps_path() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         // Find the --ro-bind triple for the payload.
         let pos = argv
             .iter()
@@ -389,7 +433,7 @@ mod tests {
     #[test]
     fn argv_includes_fs_read_and_write_binds() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         // --ro-bind /usr/share/fonts /usr/share/fonts
         let ro_pos = argv
             .windows(3)
@@ -411,6 +455,7 @@ mod tests {
             Path::new("/host/pkg"),
             Some((Path::new("/host/runtime"), "1")),
             &[],
+            None,
         );
         let rt_pos = argv
             .windows(3)
@@ -430,7 +475,7 @@ mod tests {
     #[test]
     fn argv_ends_with_entrypoint_path() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert_eq!(
             argv.last().map(String::as_str),
             Some("/var/qos-apps/com.example.notes/bin/notes")
@@ -459,74 +504,96 @@ mod tests {
     }
 
     #[test]
-    fn argv_binds_dbus_when_via_host_portal_declared() {
-        // SAFETY: single-thread env mutation for test setup.
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/run/user/1234/bus",
-            );
-        }
+    fn argv_binds_dbus_proxy_socket_when_plan_is_supplied() {
         let mut m = mk_manifest("off");
         m.sandbox.portals.insert(
             "notifications".to_string(),
             PortalPolicy::ViaHost,
         );
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
-        // --ro-bind /run/user/1234/bus /run/user/1234/bus
+        let plan = DBusBindPlan {
+            host_socket: PathBuf::from("/run/user/1234/qos/dbus-proxy/9999.sock"),
+            sandbox_path: PathBuf::from("/run/user/1234/bus"),
+            kind: DBusBindKind::Proxy,
+        };
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            Some(&plan),
+        );
+        // Proxy socket bound at /run/user/1234/bus (NOT the raw bus
+        // path — that's exactly what the proxy is protecting).
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind"
-                && w[1] == "/run/user/1234/bus"
+                && w[1] == "/run/user/1234/qos/dbus-proxy/9999.sock"
                 && w[2] == "/run/user/1234/bus"),
-            "dbus socket ro-bind missing from argv: {argv:?}"
+            "proxy socket ro-bind missing from argv: {argv:?}"
         );
-        // --setenv DBUS_SESSION_BUS_ADDRESS unix:path=/run/user/1234/bus
+        // The sandbox sees the bus at /run/user/<uid>/bus, so the
+        // env var reflects THAT (not the host path).
         assert!(
             argv.windows(3).any(|w| w[0] == "--setenv"
                 && w[1] == "DBUS_SESSION_BUS_ADDRESS"
                 && w[2] == "unix:path=/run/user/1234/bus"),
             "dbus setenv missing from argv: {argv:?}"
         );
-        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
     }
 
     #[test]
-    fn argv_does_not_bind_dbus_without_portal() {
-        // SAFETY: single-thread env mutation for test setup.
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/run/user/1234/bus",
-            );
-        }
+    fn argv_binds_dbus_directly_when_direct_plan_is_supplied() {
+        // Direct-bind fallback: the manifest declared a portal but
+        // the launcher couldn't spawn xdg-dbus-proxy, so it binds
+        // the raw bus. Argv shape is identical to the proxy path
+        // by design — only the `kind` field distinguishes.
+        let mut m = mk_manifest("off");
+        m.sandbox.portals.insert(
+            "notifications".to_string(),
+            PortalPolicy::ViaHost,
+        );
+        let plan = DBusBindPlan {
+            host_socket: PathBuf::from("/run/user/1234/bus"),
+            sandbox_path: PathBuf::from("/run/user/1234/bus"),
+            kind: DBusBindKind::Direct,
+        };
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            Some(&plan),
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/run/user/1234/bus"
+                && w[2] == "/run/user/1234/bus"),
+            "direct bus ro-bind missing from argv: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn argv_does_not_bind_dbus_without_plan() {
         let m = mk_manifest("off"); // no portals declared
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(
             !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
-            "bus must not leak into sandbox without a portal declaration: {argv:?}"
+            "bus must not leak into sandbox without a plan: {argv:?}"
         );
-        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
     }
 
     #[test]
     fn argv_does_not_bind_dbus_when_only_deny_portals() {
-        // SAFETY: single-thread env mutation for test setup.
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/run/user/1234/bus",
-            );
-        }
+        // With the plan-based API, `Deny`-only portals means the
+        // caller passes `None` here — same as no portals at all.
         let mut m = mk_manifest("off");
         m.sandbox
             .portals
             .insert("screencast".to_string(), PortalPolicy::Deny);
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None);
         assert!(
             !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
-            "bus must stay out when every portal is Deny: {argv:?}"
+            "bus must stay out when caller passes no plan: {argv:?}"
         );
-        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
     }
 
     #[test]
@@ -537,6 +604,7 @@ mod tests {
             Path::new("/host/pkg"),
             None,
             &[],
+            None,
             "bin/notes-cli",
         );
         // The last argv token is the entrypoint absolute path.
@@ -554,7 +622,7 @@ mod tests {
             host_fd: 7,
             child_fd: 17,
         }];
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None);
         // --file 7 /run/qos/services/collab.sock
         let file_pos = argv
             .windows(3)
