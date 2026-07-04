@@ -31,7 +31,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FilePicker, FilePickerOutcome, TextInput, Widget};
+use ui::widget::{TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
@@ -65,10 +65,12 @@ pub struct AuthenticatorApp {
     search: TextInput,
     list: AccountList,
     add_panel: AddAccountPanel,
-    /// The file chooser for QR-image import, present only while open. It
-    /// overlays the add panel and takes input priority until the user
-    /// picks an image or cancels.
-    file_picker: Option<FilePicker>,
+    /// An in-flight XDG-portal file-open for QR-image import. When the user
+    /// taps "Scan a QR image" the portal round-trip runs on a worker thread
+    /// and hands the chosen path back over this channel, drained once per
+    /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
+    /// never draws its own picker (HIG §5).
+    portal_rx: Option<crate::portal::PortalChannel>,
 
     rect: Rect,
     root_node: Option<NodeId>,
@@ -124,7 +126,7 @@ impl AuthenticatorApp {
             search: TextInput::local(),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
-            file_picker: None,
+            portal_rx: None,
             rect: Rect::ZERO,
             root_node: None,
             header_rect: Rect::ZERO,
@@ -263,39 +265,59 @@ impl AuthenticatorApp {
 
     /// Import a QR code from an image file into the open add panel.
     ///
-    /// Opens a real file chooser ([`ui::widget::FilePicker`], the toolkit's
-    /// sandbox-aware open dialog) rooted at the user's home directory so a
-    /// saved screenshot or photo can be selected; the chosen path is decoded
-    /// by the pure-Rust, offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE`
-    /// environment variable short-circuits the chooser with a fixed path —
-    /// the seam the headless `--shots` and test flows drive.
+    /// Choosing the screenshot/photo goes through the **host** file chooser
+    /// (the XDG Desktop Portal, [`crate::portal`]) — the app never draws its
+    /// own picker (HIG §5). The portal round-trip runs on a worker thread and
+    /// the chosen path is drained each frame and decoded by the pure-Rust,
+    /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
+    /// variable short-circuits the chooser with a fixed path — the seam the
+    /// headless `--shots` and test flows drive.
     fn import_qr_from_image(&mut self) {
         if let Some(path) = std::env::var_os("TOTP_QR_IMAGE") {
             self.decode_qr_path(std::path::Path::new(&path));
             return;
         }
-        self.open_qr_file_picker();
+        self.request_qr_via_portal();
     }
 
-    /// Rect the QR file chooser occupies — a centred overlay that shrinks to
-    /// fit narrow windows.
-    fn picker_rect(&self) -> Rect {
-        let w = 560.0_f64.min(self.rect.width() - 48.0).max(280.0);
-        let h = 560.0_f64.min(self.rect.height() - 48.0).max(300.0);
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+    /// Ask the host desktop's file chooser for a QR image. Per HIG §5 the app
+    /// never draws its own picker: the portal round-trip runs on a worker
+    /// thread ([`crate::portal::request_open`]) and the chosen path comes back
+    /// over a channel drained each frame in [`Self::drain_portal`]. A second
+    /// request while one is in flight is ignored, so a double-tap can't stack
+    /// two host dialogs.
+    fn request_qr_via_portal(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
+        }
+        self.portal_rx = Some(crate::portal::request_open());
     }
 
-    /// Open the file chooser for QR import, rooted at the user's home dir.
-    fn open_qr_file_picker(&mut self) {
-        let home = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(|| std::path::PathBuf::from("/"));
-        let mut picker = FilePicker::new("Choose a QR image", &home, vec![home.clone()]);
-        picker.set_rect(self.picker_rect());
-        self.file_picker = Some(picker);
+    /// Drain a completed portal request, if any. Called once per frame from
+    /// [`Widget::sync`]: decodes the chosen image into the open add panel,
+    /// surfaces a decode/cancel/failure via the toast, and clears the
+    /// in-flight channel. Never blocks — a still pending picker leaves the
+    /// channel installed for the next frame.
+    fn drain_portal(&mut self) {
+        let Some(rx) = self.portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => self.decode_qr_path(&path),
+                    // A cancel is a no-op — the add panel is left as it was.
+                    crate::portal::PortalOutcome::Cancelled => {}
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        self.toast(format!("Couldn't open the file chooser: {reason}"));
+                    }
+                }
+            }
+            // Still waiting on the host dialog, or the worker vanished.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+            }
+        }
     }
 
     /// Decode a QR image at `path` into the open add panel, or surface why
@@ -323,22 +345,14 @@ impl AuthenticatorApp {
         self.add_panel.open_with_advanced();
     }
 
-    /// Open the Add-account screen with the QR file chooser overlaid — a
-    /// `--shots`-only entry point that roots the picker at a small,
-    /// deterministic scratch directory so the captured frame is stable and
-    /// doesn't depend on the host's home contents. Runtime opens the picker
-    /// via [`open_qr_file_picker`], rooted at the real home directory.
+    /// Open the Add-account screen — the surface the "Scan a QR image" import
+    /// starts from. At runtime that action hands off to the **host** file
+    /// chooser via the XDG Desktop Portal ([`Self::request_qr_via_portal`]);
+    /// there is no app-drawn picker to render offscreen (HIG §5), so this
+    /// `--shots` entry point simply lands on the add screen with its import
+    /// method cards.
     pub fn seed_open_add_picker(&mut self) {
         self.add_panel.open();
-        let dir = std::env::temp_dir().join("qos-totp-picker-demo");
-        let _ = std::fs::create_dir_all(dir.join("Screenshots"));
-        let _ = std::fs::create_dir_all(dir.join("Pictures"));
-        for name in ["github-2fa-qr.png", "vault-backup-qr.png", "notes.txt"] {
-            let _ = std::fs::write(dir.join(name), b"");
-        }
-        let mut picker = FilePicker::new("Choose a QR image", &dir, vec![dir.clone()]);
-        picker.set_rect(self.picker_rect());
-        self.file_picker = Some(picker);
     }
 
     // ---- header drawing ----------------------------------------------
@@ -446,6 +460,10 @@ impl AuthenticatorApp {
 
 impl Widget for AuthenticatorApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // Pull in any QR image the host portal picker returned since the last
+        // frame (off-thread; never blocks the UI).
+        self.drain_portal();
+
         if !self.seeded {
             self.seed();
             self.seeded = true;
@@ -521,14 +539,6 @@ impl Widget for AuthenticatorApp {
         self.list.set_viewport(self.list_rect);
 
         self.add_panel.layout(self.rect);
-
-        // Keep the QR chooser centred when it is open.
-        if self.file_picker.is_some() {
-            let pr = self.picker_rect();
-            if let Some(picker) = self.file_picker.as_mut() {
-                picker.set_rect(pr);
-            }
-        }
     }
 
     fn draw(
@@ -561,21 +571,6 @@ impl Widget for AuthenticatorApp {
         self.list.draw(scene, transform, text_renderer, theme, presence);
         self.draw_toast(scene, transform, text_renderer, theme);
         self.add_panel.draw(scene, transform, text_renderer, theme);
-
-        // The QR file chooser sits above everything, on its own scrim.
-        if self.file_picker.is_some() {
-            let overlay_rect = self.rect;
-            if let Some(picker) = self.file_picker.as_mut() {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.overlay,
-                    None,
-                    &overlay_rect,
-                );
-                picker.draw(scene, transform, text_renderer, theme, presence);
-            }
-        }
     }
 
     fn draw_with_presence(
@@ -605,37 +600,6 @@ impl Widget for AuthenticatorApp {
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
-        }
-
-        // The QR file chooser, when open, owns all input above the add panel.
-        if self.file_picker.is_some() {
-            *handled = true;
-            // Esc closes the chooser without leaving the add panel.
-            if let WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
-                ..
-            } = event
-            {
-                self.file_picker = None;
-                return;
-            }
-            let outcome = {
-                let picker = self.file_picker.as_mut().unwrap();
-                let mut throwaway = None;
-                picker.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy,
-                );
-                picker.take_outcome()
-            };
-            if let Some(outcome) = outcome {
-                self.file_picker = None;
-                if let FilePickerOutcome::Selected(paths) = outcome {
-                    if let Some(p) = paths.first() {
-                        self.decode_qr_path(&p.clone());
-                    }
-                }
-            }
-            return;
         }
 
         // Modal owns all input while open.
@@ -922,90 +886,64 @@ mod tests {
         );
     }
 
-    /// The primary "Scan a QR image" action must reach a real file chooser,
-    /// not a dead-end toast.
+    /// The primary "Scan a QR image" action must reach the **host** file
+    /// chooser (the XDG portal), not an in-app picker or a dead-end toast. A
+    /// sentinel channel is pre-armed so the routing can't launch a real host
+    /// dialog; the in-flight guard must preserve it.
     #[test]
-    fn qr_cta_opens_a_real_file_chooser() {
+    fn qr_cta_routes_to_the_host_portal() {
+        use crate::portal::{inject_for_test, PortalOutcome};
         let (mut app, _state) = app_with_state();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
-        assert!(app.file_picker.is_none());
-        app.open_qr_file_picker();
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
+        app.request_qr_via_portal();
         assert!(
-            app.file_picker.is_some(),
-            "the QR action opens a file chooser instead of doing nothing"
+            app.portal_rx.is_some(),
+            "the QR action routes through the host portal (not an in-app picker)"
         );
     }
 
-    fn cursor_event(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
-    }
-
-    fn left_press_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn drive(app: &mut AuthenticatorApp, state: &mut ui::State, event: &WindowEvent) {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-    }
-
-    /// End-to-end proof of the whole import interaction on the real
-    /// `handle_event` path: the file chooser is open, the user clicks a QR
-    /// image and then Open, and the decoded account fills the add panel.
+    /// End-to-end proof of the import seam on the real per-frame drain: a QR
+    /// image the host portal returned is decoded and fills the add panel — the
+    /// portal result is injected (no real dialog) and the next `sync` loads it.
     #[test]
-    fn picking_a_qr_image_fills_the_add_panel_through_handle_event() {
+    fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
+        use crate::portal::{inject_for_test, PortalOutcome};
         let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
-        let dir = std::env::temp_dir().join(format!("totp-pick-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = dir.join("acme-qr.png");
         render_qr_png(uri, &img);
 
         let (mut app, mut state) = app_with_state();
-        app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
 
-        // Open a chooser rooted at the temp dir (runtime roots at $HOME).
-        let mut picker = ui::widget::FilePicker::new("Choose a QR image", &dir, vec![dir.clone()]);
-        picker.set_rect(app.picker_rect());
-        // The single file sorts to index 0 (no sub-directories present).
-        let entry_rect = picker.entry_rect(0).expect("the QR image is listed");
-        let open_rect = picker.open_rect();
-        app.file_picker = Some(picker);
+        // Inject the portal outcome and let the per-frame sync drain it — the
+        // exact channel the off-thread portal worker feeds.
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(img.clone())));
+        app.sync(&mut state.doc, &state.root);
 
-        // Click the entry (selects it), then click Open — all through the
-        // production event path.
-        drive(&mut app, &mut state, &cursor_event(entry_rect.center()));
-        drive(&mut app, &mut state, &left_press_event());
-        drive(&mut app, &mut state, &cursor_event(open_rect.center()));
-        drive(&mut app, &mut state, &left_press_event());
-
-        assert!(app.file_picker.is_none(), "choosing a file closes the chooser");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
         let (issuer, label, secret) = app.add_panel.field_snapshot();
         assert_eq!(issuer, "Acme");
         assert_eq!(label, "bob@acme.io");
         assert_eq!(secret, "JBSWY3DPEHPK3PXP");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A cancelled portal interaction is a no-op: the add panel's fields are
+    /// left exactly as they were and the channel clears.
+    #[test]
+    fn portal_cancel_leaves_the_add_panel_untouched() {
+        use crate::portal::{inject_for_test, PortalOutcome};
+        let (mut app, mut state) = app_with_state();
+        app.add_panel.open();
+        let before = app.add_panel.field_snapshot();
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
+        app.sync(&mut state.doc, &state.root);
+        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
+        assert_eq!(app.add_panel.field_snapshot(), before, "cancel changes nothing");
     }
 
     /// End-to-end proof of the QR-image import seam: a real QR PNG on disk is
