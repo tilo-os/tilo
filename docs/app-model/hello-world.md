@@ -1,0 +1,277 @@
+# Hello, world: from `cargo new` to `qos-install run`
+
+The full recipe. Every command below was executed against tools built
+from `origin/main`; the exact output is what you'll see if you follow
+along verbatim.
+
+## Prerequisites
+
+You need:
+
+- A Rust toolchain (rustc / cargo). The examples were verified with
+  Rust 1.96.0.
+- The qOS packaging tools: `qos-pkg`, `qos-install`, `qos-launcher`,
+  `qos-cli-shim`, `qos-runtime-bundle`. Build them from the workspace:
+
+  ```bash
+  cargo build --release -p pkg-cli -p install -p launcher -p cli-shim -p runtime-bundle
+  ```
+
+- `bubblewrap` (`sudo dnf install bubblewrap` on Fedora). The launcher
+  invokes it under the hood.
+- A checkout of the qOS repo (for the workspace path to `runtime`). Once
+  a crates.io release exists this will simplify to
+  `runtime = "<version>"`.
+
+Add the release binaries to your PATH, e.g.:
+
+```bash
+export PATH="/path/to/quickdesktop/target/release:$PATH"
+```
+
+## Step 1: `cargo new`
+
+```
+$ mkdir -p /tmp/hw-walkthrough
+$ cd /tmp/hw-walkthrough
+$ cargo new --bin my-example-hello
+    Creating binary (application) `my-example-hello` package
+note: see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+```
+
+## Step 2: depend on `runtime`
+
+Edit `my-example-hello/Cargo.toml`:
+
+```toml
+[package]
+name = "my-example-hello"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "my-example-hello"
+path = "src/main.rs"
+
+[dependencies]
+runtime = { path = "/path/to/quickdesktop/crates/runtime/runtime" }
+```
+
+## Step 3: write a `main.rs`
+
+`my-example-hello/src/main.rs`:
+
+```rust
+use runtime::{collab, fs, identity, is_qos_native};
+
+fn main() {
+    println!("my-example-hello: running as qOS-native = {}", is_qos_native());
+
+    match collab::try_connect() {
+        Ok(_) => println!("  collab  : connected"),
+        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  collab  : not available (graceful)"),
+        Err(e) => println!("  collab  : unavailable ({e:?})"),
+    }
+    match fs::try_connect() {
+        Ok(_) => println!("  fs      : connected"),
+        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  fs      : not available (graceful)"),
+        Err(e) => println!("  fs      : unavailable ({e:?})"),
+    }
+    match identity::load() {
+        Ok(_) => println!("  identity: loaded"),
+        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  identity: not available (graceful)"),
+        Err(e) => println!("  identity: unavailable ({e:?})"),
+    }
+
+    println!("my-example-hello: done.");
+}
+```
+
+## Step 4: build
+
+```
+$ cd my-example-hello
+$ cargo build --release
+   Compiling my-example-hello v0.1.0 (/tmp/hw-walkthrough/my-example-hello)
+    Finished `release` profile [optimized] target(s) in 0.24s
+```
+
+Verify the binary:
+
+```
+$ ls -la target/release/my-example-hello
+-rwxr-xr-x. 2 quinten quinten 3075216  4. Jul 16:49 target/release/my-example-hello
+```
+
+3 MB. That's a stripped release build; running under `qos-install` on
+stock Linux (with a runtime bundle already installed) will produce the
+service / sandbox output.
+
+## Step 5: install a runtime bundle
+
+Once per system. Copy the host loader + libc into a content-addressed
+bundle qOS's launcher can mount into the sandbox:
+
+```
+$ qos-install runtime install --version 2026.07 --from-host --force
+installed runtime bundle: qos-runtime/2026.07
+  path     : /tmp/qos-hw-data/qos-runtime/2026.07
+  files    : 11
+  root-hash: blake3:1e7dedc8881ab7e8225b0c680e832e2332e3b1c14406f34fd1b2a70edec3e58d
+```
+
+11 files: `ld-linux`, `libc.so.6`, `libgcc_s.so.1`, `libm.so.6`,
+`libdl.so.2`, `libpthread.so.0`, `libutil.so.1`, `librt.so.1`, plus a
+copy of `/etc/ld.so.cache`. All content-addressed by their BLAKE3 hash;
+`root-hash` is the BLAKE3 of the sorted `(path, hash)` list.
+
+## Step 6: write a manifest
+
+`/tmp/hw-walkthrough/pkg-workdir/manifest.toml`:
+
+```toml
+[package]
+id       = "my.example.hello"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read  = []
+write = []
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+
+[entrypoint]
+bin  = "bin/my-example-hello"
+type = "gui"
+```
+
+Notes on the placeholder `publisher.identity`: `qos-pkg pack` with no
+`--identity` flag generates a fresh Ed25519 keypair, signs the package
+with it, and overwrites this field with the actual public key. What you
+put here is discarded. For repeatable publishing, pass
+`--identity <keyfile.json>`.
+
+## Step 7: assemble the payload
+
+```
+$ mkdir -p /tmp/hw-walkthrough/pkg-workdir/payload/bin
+$ cp target/release/my-example-hello /tmp/hw-walkthrough/pkg-workdir/payload/bin/
+```
+
+The payload's structure IS the shape your binary will see inside the
+sandbox (rooted at `/var/qos-apps/my.example.hello/`). Manifest field
+`entrypoint.bin = "bin/my-example-hello"` is relative to the payload
+root.
+
+## Step 8: pack
+
+```
+$ qos-pkg pack \
+    --manifest /tmp/hw-walkthrough/pkg-workdir/manifest.toml \
+    --payload  /tmp/hw-walkthrough/pkg-workdir/payload \
+    --output   /tmp/hw-walkthrough/my-example-hello.qpkg
+packed qpkg:20bd87389c30f2a0fcbb162845b15e88e72aa281a50322c6080dcd811cc311bb (4 blobs)
+```
+
+The `qpkg:<hex>` is the content-addressed identity: BLAKE3 of the
+173-byte signed root. Four blobs: signed root, manifest, collection,
+and the entrypoint binary.
+
+## Step 9: install
+
+```
+$ qos-install install /tmp/hw-walkthrough/my-example-hello.qpkg
+qos-install: WARN — package self-signed by ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
+installed: my.example.hello 0.1.0
+  payload  : /tmp/qos-hw-data/qos-apps/payloads/my.example.hello
+  pinned   : false
+run with:  qos-install run my.example.hello
+```
+
+The self-signed warning is expected — `qos-pkg pack` generated a fresh
+keypair for this build. Everything works; add an attestor and use
+`--require-attestor` (see [`trust.md`](./trust.md)) when you're ready to
+harden.
+
+## Step 10: run
+
+```
+$ qos-install run my.example.hello --no-services
+ INFO landlock plan derived rules=0 net_restricted=true enforce=true
+qos-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
+my-example-hello: running as qOS-native = false
+  collab  : not available (graceful)
+  fs      : not available (graceful)
+  identity: not available (graceful)
+my-example-hello: done.
+```
+
+The launcher:
+
+1. Verified the trust policy (no revocation, no `--require-attestor`).
+2. Built a bubblewrap argv from the manifest.
+3. Bind-mounted your payload → `/var/qos-apps/my.example.hello/` and
+   the runtime bundle → `/usr/lib/qos-runtime/2026.07/`.
+4. Installed the seccomp filter.
+5. Forked bwrap, which fork-execed the sandbox-exec shim.
+6. The shim installed the Landlock ruleset (12 ro rules from binds, 2
+   rw rules for `/tmp` and one implicit for the runtime), enforced the
+   network restriction, and finally execvp'd
+   `/var/qos-apps/my.example.hello/bin/my-example-hello`.
+7. Your `main()` ran. The `collab`/`fs`/`identity` calls all returned
+   `NotAvailable::ServiceFdMissing` gracefully — the launcher didn't
+   pass any fds because `--no-services` was set and the manifest
+   declared no `[sandbox.services]` deps anyway.
+
+## Optional: install into your real user data
+
+The walkthrough above scoped `XDG_DATA_HOME` and `XDG_CONFIG_HOME` to
+`/tmp/qos-hw-data` / `/tmp/qos-hw-config` for isolation. To install
+into your actual home:
+
+```bash
+unset XDG_DATA_HOME XDG_CONFIG_HOME
+qos-install runtime install --version 2026.07 --from-host --force
+qos-install install /tmp/hw-walkthrough/my-example-hello.qpkg
+qos-install list
+qos-install run my.example.hello
+```
+
+The install tree lands under `~/.local/share/qos-apps/` and
+`~/.local/share/qos-runtime/`. Removal:
+
+```bash
+qos-install remove my.example.hello
+qos-install runtime remove 2026.07
+```
+
+## Where to go next
+
+- **Add a `[cli]` block** to your manifest for PATH commands. See
+  [`cli-apps.md`](./cli-apps.md).
+- **Get a real signing identity** and store it out-of-band. See
+  [`trust.md`](./trust.md) for `qos-pkg pack --identity`.
+- **Ship a Flatpak alongside** for stock Linux. See
+  [`cross-target.md`](./cross-target.md).
+- **Publish a format codec** as a WASM Component. See
+  [`formats.md`](./formats.md).
+- **Understand the runtime API** you can call. See
+  [`runtime.md`](./runtime.md).
+- **Understand what your manifest is granting** the sandboxed process.
+  See [`sandbox.md`](./sandbox.md).
