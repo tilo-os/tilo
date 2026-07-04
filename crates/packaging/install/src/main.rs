@@ -116,10 +116,16 @@ enum Cmd {
         /// Forwarded to qos-launcher.
         #[arg(long)]
         no_services: bool,
-        /// Forwarded to qos-launcher. Stopgap while apps don't yet
-        /// carry a runtime bundle reference.
-        #[arg(long)]
+        /// Forwarded to qos-launcher. Deprecated: apps that declare
+        /// `runtime = "qos-runtime/<v>"` in their manifest and have the
+        /// bundle installed don't need this. Silently overridden when a
+        /// runtime bundle resolves.
+        #[arg(long, hide = true)]
         minimal_libs: bool,
+        /// Forwarded to qos-launcher. Fall back to --minimal-libs when
+        /// the manifest declares a runtime bundle that isn't installed.
+        #[arg(long)]
+        allow_missing_runtime: bool,
         /// Turn off the Landlock enforcement. Debug only.
         #[arg(long, hide = true)]
         no_landlock: bool,
@@ -154,6 +160,11 @@ enum Cmd {
     /// Prepend this to PATH to make `notes`, `notes-import`, etc.
     /// resolve.
     Path,
+    /// Manage installed qOS runtime bundles.
+    Runtime {
+        #[command(subcommand)]
+        cmd: RuntimeCmd,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -183,6 +194,45 @@ enum TrustCmd {
 enum RevokedCmd {
     /// List revoked keys.
     List,
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCmd {
+    /// Build + install a runtime bundle into
+    /// `$XDG_DATA_HOME/qos-runtime/<version>/`. `--from-host` copies
+    /// from the current host root; `--from <path>` from a specific
+    /// prefix (e.g. a distrobox rootfs).
+    Install {
+        /// Bundle version tag. Written into `bundle.toml` and used
+        /// to look the bundle up at launch time.
+        #[arg(long)]
+        version: String,
+        /// Copy from the running host root. Equivalent to `--from /`.
+        #[arg(long)]
+        from_host: bool,
+        /// Copy from an explicit host prefix. Wins over `--from-host`.
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// Overwrite an existing bundle at the same version.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List installed runtime bundle versions.
+    List,
+    /// Remove an installed runtime bundle by version tag.
+    Remove {
+        version: String,
+    },
+    /// Print the resolved path for a version. Same lookup order as
+    /// the launcher.
+    Path {
+        #[arg(long)]
+        version: String,
+    },
+    /// Verify an installed bundle's on-disk hash matches its manifest.
+    Verify {
+        version: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -217,6 +267,12 @@ enum Error {
     Unpack(String),
     #[error("shim install/remove: {0}")]
     Shim(String),
+    #[error("runtime-bundle: {0}")]
+    RuntimeBundle(String),
+    #[error("runtime bundle qos-runtime/{0} is already installed (use --force to overwrite)")]
+    RuntimeBundleExists(String),
+    #[error("runtime bundle qos-runtime/{0} is not installed")]
+    RuntimeBundleNotInstalled(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -547,6 +603,7 @@ fn run(
     pkg_id: &str,
     no_services: bool,
     minimal_libs: bool,
+    allow_missing_runtime: bool,
     no_landlock: bool,
     trust: TrustFlags,
 ) -> Result<(), Error> {
@@ -608,6 +665,9 @@ fn run(
     }
     if minimal_libs {
         cmd.arg("--minimal-libs");
+    }
+    if allow_missing_runtime {
+        cmd.arg("--allow-missing-runtime");
     }
     if no_landlock {
         eprintln!("qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging.");
@@ -736,15 +796,125 @@ fn revoked_list() -> Result<(), Error> {
     Ok(())
 }
 
+fn runtime_install(
+    version: &str,
+    from_host: bool,
+    from: Option<&Path>,
+    force: bool,
+) -> Result<(), Error> {
+    let dest = runtime_bundle::default_bundle_path(version)
+        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
+        return Err(Error::RuntimeBundleExists(version.to_string()));
+    }
+    if dest.exists() {
+        fs::remove_dir_all(&dest)?;
+    }
+    fs::create_dir_all(&dest)?;
+    let host_root: Option<&Path> = if let Some(p) = from {
+        Some(p)
+    } else if from_host {
+        Some(Path::new("/"))
+    } else {
+        None
+    };
+    let manifest = runtime_bundle::build_bundle(&dest, version, host_root)
+        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    println!("installed runtime bundle: qos-runtime/{version}");
+    println!("  path     : {}", dest.display());
+    println!("  files    : {}", manifest.files.len());
+    println!("  root-hash: blake3:{}", manifest.root_hash);
+    Ok(())
+}
+
+fn runtime_list() -> Result<(), Error> {
+    let base = dirs::data_dir().ok_or(Error::NoDataDir)?.join("qos-runtime");
+    if !base.exists() {
+        println!("(no runtime bundles installed)");
+        return Ok(());
+    }
+    let mut versions: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&base)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry
+            .path()
+            .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+            .exists()
+        {
+            versions.push(name);
+        }
+    }
+    if versions.is_empty() {
+        println!("(no runtime bundles installed)");
+        return Ok(());
+    }
+    versions.sort();
+    println!("{:<20}  {}", "version", "path");
+    for v in &versions {
+        println!("{:<20}  {}", v, base.join(v).display());
+    }
+    Ok(())
+}
+
+fn runtime_remove(version: &str) -> Result<(), Error> {
+    let path = runtime_bundle::default_bundle_path(version)
+        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    if !path.exists() {
+        return Err(Error::RuntimeBundleNotInstalled(version.to_string()));
+    }
+    fs::remove_dir_all(&path)?;
+    println!("removed runtime bundle: qos-runtime/{version}");
+    Ok(())
+}
+
+fn runtime_path(version: &str) -> Result<(), Error> {
+    if let Some(p) = runtime_bundle::resolve_bundle_path(version) {
+        println!("{}", p.display());
+        return Ok(());
+    }
+    let per_user = runtime_bundle::default_bundle_path(version)
+        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    println!("{}", per_user.display());
+    Ok(())
+}
+
+fn runtime_verify(version: &str) -> Result<(), Error> {
+    let path = runtime_bundle::resolve_bundle_path(version)
+        .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
+    let manifest =
+        runtime_bundle::verify_bundle(&path).map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    println!("verified: qos-runtime/{version}");
+    println!("  path     : {}", path.display());
+    println!("  files    : {}", manifest.files.len());
+    println!("  root-hash: blake3:{}", manifest.root_hash);
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Install { qpkg, pinned, force, trust } => install(&qpkg, pinned, force, trust),
         Cmd::List => list(),
         Cmd::Remove { pkg_id } => remove(&pkg_id),
-        Cmd::Run { pkg_id, no_services, minimal_libs, no_landlock, trust } => {
-            run(&pkg_id, no_services, minimal_libs, no_landlock, trust)
-        }
+        Cmd::Run {
+            pkg_id,
+            no_services,
+            minimal_libs,
+            allow_missing_runtime,
+            no_landlock,
+            trust,
+        } => run(
+            &pkg_id,
+            no_services,
+            minimal_libs,
+            allow_missing_runtime,
+            no_landlock,
+            trust,
+        ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
         Cmd::Trust { cmd } => match cmd {
             TrustCmd::Add { id, pubkey, scope } => trust_add(&id, &pubkey, &scope),
@@ -756,6 +926,18 @@ fn main() {
             RevokedCmd::List => revoked_list(),
         },
         Cmd::Path => print_path(),
+        Cmd::Runtime { cmd } => match cmd {
+            RuntimeCmd::Install {
+                version,
+                from_host,
+                from,
+                force,
+            } => runtime_install(&version, from_host, from.as_deref(), force),
+            RuntimeCmd::List => runtime_list(),
+            RuntimeCmd::Remove { version } => runtime_remove(&version),
+            RuntimeCmd::Path { version } => runtime_path(&version),
+            RuntimeCmd::Verify { version } => runtime_verify(&version),
+        },
     };
     if let Err(e) = result {
         eprintln!("qos-install: {e}");
