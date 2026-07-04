@@ -412,16 +412,40 @@ mod interaction_tests {
     //! runs) and assert the model + shell view actually changed. Built with
     //! `WeatherApp::new()` so `live == false`: no network, deterministic.
     use super::*;
+    use crate::interaction::{EntryAction, SWIPE_COMMIT_DX};
+    use crate::net::Request;
     use ui::widget::ContentLayout;
     use ui::widget::ShellMode;
     use vello::kurbo::Point as KPoint;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
-        DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+        DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase,
+        WindowEvent,
     };
+    use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
 
     fn synth_device() -> DeviceId {
         unsafe { std::mem::zeroed() }
+    }
+
+    /// Build a real `WindowEvent::KeyboardInput`. winit 0.30 keeps
+    /// `KeyEvent::platform_specific` `pub(crate)`, so the struct is
+    /// zero-initialised (every public field tolerates the all-zero bit
+    /// pattern) and the fields the handler reads are overwritten — the same
+    /// trick the ui/shell and sibling-app test harnesses use.
+    fn key_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = text.map(SmolStr::new);
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     struct Harness {
@@ -541,6 +565,43 @@ mod interaction_tests {
                 state: ElementState::Released,
                 button: MouseButton::Left,
             });
+        }
+
+        fn press(&mut self, x: f64, y: f64) {
+            self.move_to(x, y);
+            self.dispatch(WindowEvent::MouseInput {
+                device_id: synth_device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            });
+        }
+
+        fn release(&mut self) {
+            self.dispatch(WindowEvent::MouseInput {
+                device_id: synth_device(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            });
+        }
+
+        fn right_click(&mut self, x: f64, y: f64) {
+            self.move_to(x, y);
+            self.dispatch(WindowEvent::MouseInput {
+                device_id: synth_device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            });
+        }
+
+        fn key(&mut self, logical_key: Key, text: Option<&str>) {
+            self.dispatch(key_event(logical_key, text));
+        }
+
+        /// Centre-y of the saved-place chip at `i`, from the live list origin.
+        /// Mirrors `CHIP_H` (62) + `CHIP_GAP` (8) from `core`.
+        fn chip_center_y(&self, i: usize) -> f64 {
+            let top = self.app.core.borrow().over_list_top();
+            top + i as f64 * (62.0 + 8.0) + 62.0 / 2.0
         }
     }
 
@@ -715,5 +776,268 @@ mod interaction_tests {
             "Paris",
             "the added city becomes selected"
         );
+    }
+
+    // ---- right-click context menu (open → dispatch item) ----------------
+
+    #[test]
+    fn right_click_menu_delete_removes_the_city_and_persists() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let before = h.app.core.borrow().model.locations.len();
+        let victim = h.app.core.borrow().model.locations[1].id;
+
+        // Open the per-entry menu on the second chip via right-click.
+        let y1 = h.chip_center_y(1);
+        h.right_click(150.0, y1);
+        assert!(h.app.core.borrow().menu_is_open(), "right-click opens the context menu");
+
+        // Draw so the menu's item hotspots are built, then click Delete on the
+        // real hotspot the production hit-test would match.
+        h.redraw();
+        let del = h
+            .app
+            .core
+            .borrow()
+            .menu_item_rect(EntryAction::Delete)
+            .expect("Delete row hotspot present");
+        let c = del.center();
+        h.click(c.x, c.y);
+
+        let model = &h.app.core.borrow().model;
+        assert_eq!(model.locations.len(), before - 1, "Delete removes the entry");
+        assert!(!model.locations.iter().any(|l| l.id == victim), "the right city was removed");
+        assert!(!h.app.core.borrow().menu_is_open(), "the menu closes after an action");
+        // The deletion is written through to the shared document.
+        assert_eq!(
+            WeatherDoc::read_model(&h.state.doc).locations.len(),
+            before - 1,
+            "the mutation persisted to the CRDT"
+        );
+    }
+
+    #[test]
+    fn right_click_menu_move_to_top_reorders() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let second = h.app.core.borrow().model.locations[1].id;
+        let y1 = h.chip_center_y(1);
+        h.right_click(150.0, y1);
+        h.redraw();
+        let mv = h
+            .app
+            .core
+            .borrow()
+            .menu_item_rect(EntryAction::MoveToTop)
+            .expect("Move-to-top row hotspot present");
+        let c = mv.center();
+        h.click(c.x, c.y);
+        assert_eq!(
+            h.app.core.borrow().model.locations[0].id,
+            second,
+            "Move-to-top floats the entry to index 0"
+        );
+    }
+
+    #[test]
+    fn right_click_menu_refresh_queues_a_fetch_for_that_city() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let target = h.app.core.borrow().model.locations[1].id;
+        h.app.core.borrow_mut().take_outbox(); // drain any startup requests
+        let y1 = h.chip_center_y(1);
+        h.right_click(150.0, y1);
+        h.redraw();
+        let rf = h
+            .app
+            .core
+            .borrow()
+            .menu_item_rect(EntryAction::Refresh)
+            .expect("Refresh row hotspot present");
+        let c = rf.center();
+        h.click(c.x, c.y);
+        let queued = h
+            .app
+            .core
+            .borrow_mut()
+            .take_outbox()
+            .iter()
+            .any(|r| matches!(r, Request::Forecast { location_id, .. } if *location_id == target));
+        assert!(queued, "menu Refresh queues a real forecast fetch for that city");
+    }
+
+    // ---- swipe-to-delete + drag-to-reorder through handle_event ---------
+
+    #[test]
+    fn swipe_left_past_threshold_deletes_the_city() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let before = h.app.core.borrow().model.locations.len();
+        let victim = h.app.core.borrow().model.locations[0].id;
+
+        // Press the first chip, drag left past the commit distance, release.
+        let y0 = h.chip_center_y(0);
+        h.press(250.0, y0);
+        h.move_to(250.0 - (SWIPE_COMMIT_DX + 20.0), y0 + 2.0); // mostly-horizontal → swipe
+        h.release();
+
+        let model = &h.app.core.borrow().model;
+        assert_eq!(model.locations.len(), before - 1, "a committed swipe deletes the entry");
+        assert!(!model.locations.iter().any(|l| l.id == victim), "the swiped city is gone");
+    }
+
+    #[test]
+    fn short_swipe_does_not_delete() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let before = h.app.core.borrow().model.locations.len();
+        let y0 = h.chip_center_y(0);
+        h.press(250.0, y0);
+        h.move_to(250.0 - (SWIPE_COMMIT_DX - 30.0), y0 + 2.0); // under the commit distance
+        h.release();
+        assert_eq!(
+            h.app.core.borrow().model.locations.len(),
+            before,
+            "a swipe that doesn't clear the threshold is a no-op"
+        );
+    }
+
+    #[test]
+    fn vertical_drag_reorders_the_city() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let first = h.app.core.borrow().model.locations[0].id;
+        let n = h.app.core.borrow().model.locations.len();
+
+        // Press the first chip and drag it straight down past the last chip.
+        let y0 = h.chip_center_y(0);
+        let target_y = h.chip_center_y(n - 1) + 80.0;
+        h.press(200.0, y0);
+        h.move_to(200.0, target_y); // mostly-vertical → reorder
+        h.release();
+
+        let model = &h.app.core.borrow().model;
+        assert_ne!(model.locations[0].id, first, "the dragged city left index 0");
+        assert_eq!(model.locations.len(), n, "reorder preserves the entry count");
+        assert_eq!(
+            model.locations.last().unwrap().id,
+            first,
+            "dropping below the list lands it at the end"
+        );
+    }
+
+    #[test]
+    fn dragging_onto_the_delete_zone_deletes() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let before = h.app.core.borrow().model.locations.len();
+        let victim = h.app.core.borrow().model.locations[0].id;
+
+        // Begin a vertical reorder so the delete drop-zone appears, then drop
+        // onto it.
+        let y0 = h.chip_center_y(0);
+        h.press(200.0, y0);
+        h.move_to(200.0, y0 + 30.0); // classify as a reorder → zone shows
+        let zone = h.app.core.borrow().delete_zone_rect_test().center();
+        h.move_to(zone.x, zone.y);
+        h.release();
+
+        let model = &h.app.core.borrow().model;
+        assert_eq!(model.locations.len(), before - 1, "dropping on the trash deletes");
+        assert!(!model.locations.iter().any(|l| l.id == victim));
+    }
+
+    // ---- keyboard: arrow nav, '/' focus, Escape, geocode-on-typing ------
+
+    #[test]
+    fn arrow_keys_navigate_cities_and_fetch() {
+        let mut h = Harness::new(1280.0, 720.0); // side-by-side; detail follows
+        h.redraw();
+        assert_eq!(h.app.core.borrow().model.selected, 0);
+        h.app.core.borrow_mut().take_outbox(); // drain startup
+
+        h.key(Key::Named(NamedKey::ArrowDown), None);
+        assert_eq!(h.app.core.borrow().model.selected, 1, "Arrow Down advances the selection");
+        let fetched = h
+            .app
+            .core
+            .borrow_mut()
+            .take_outbox()
+            .iter()
+            .any(|r| matches!(r, Request::Forecast { .. }));
+        assert!(fetched, "moving to a city queues its forecast fetch");
+        assert_eq!(
+            WeatherDoc::read_model(&h.state.doc).selected,
+            1,
+            "the new selection persisted to the CRDT"
+        );
+
+        h.key(Key::Named(NamedKey::ArrowUp), None);
+        assert_eq!(h.app.core.borrow().model.selected, 0, "Arrow Up moves it back");
+    }
+
+    #[test]
+    fn slash_focuses_search_and_escape_clears_it() {
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        assert!(!h.app.core.borrow().search_is_focused());
+
+        h.key(Key::Character(SmolStr::new("/")), None);
+        assert!(h.app.core.borrow().search_is_focused(), "'/' focuses the search field");
+
+        for ch in ["P", "a", "r"] {
+            h.key(Key::Character(SmolStr::new(ch)), Some(ch));
+        }
+        assert_eq!(h.app.core.borrow().search_query(), "Par", "typed chars build the query");
+
+        h.key(Key::Named(NamedKey::Escape), None);
+        assert!(!h.app.core.borrow().search_is_focused(), "Escape blurs the search field");
+        assert_eq!(h.app.core.borrow().search_query(), "", "Escape clears the query");
+    }
+
+    #[test]
+    fn typing_then_enter_queues_a_debounced_geocode() {
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        h.key(Key::Character(SmolStr::new("/")), None);
+        for ch in ["P", "a", "r"] {
+            h.key(Key::Character(SmolStr::new(ch)), Some(ch));
+        }
+        assert_eq!(h.app.core.borrow().search_query(), "Par");
+
+        // Enter arms an immediate geocode (bypasses the wall-clock debounce);
+        // the app pumps `maybe_fire_geocode` every frame.
+        h.key(Key::Named(NamedKey::Enter), None);
+        h.app.core.borrow_mut().maybe_fire_geocode();
+
+        let queued = h
+            .app
+            .core
+            .borrow_mut()
+            .take_outbox()
+            .iter()
+            .any(|r| matches!(r, Request::Geocode { query, .. } if query.as_str() == "Par"));
+        assert!(queued, "typing then Enter queues a real geocode for the typed query");
+    }
+
+    // ---- detail Refresh button ------------------------------------------
+
+    #[test]
+    fn detail_refresh_button_queues_a_fetch() {
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        let btn = h.app.core.borrow().refresh_btn_rect();
+        assert!(btn.width() > 0.0, "the refresh button is laid out");
+        h.app.core.borrow_mut().take_outbox(); // drain startup
+        let c = btn.center();
+        h.click(c.x, c.y);
+        let queued = h
+            .app
+            .core
+            .borrow_mut()
+            .take_outbox()
+            .iter()
+            .any(|r| matches!(r, Request::Forecast { .. }));
+        assert!(queued, "clicking Refresh queues a forecast fetch");
     }
 }
