@@ -97,6 +97,19 @@ const TREE_INDENT: f64 = 16.0;
 /// Width of the clickable expand/collapse triangle hit target.
 const TWISTY_W: f64 = 16.0;
 
+// ---- toolbar (search + filter pills) -------------------------------------
+/// Height of one toolbar row (the search box / a row of filter pills).
+const TOOLBAR_ROW_H: f64 = 36.0;
+/// Vertical gap between the two toolbar rows when it stacks on narrow widths.
+const TOOLBAR_ROW_GAP: f64 = 8.0;
+/// Horizontal gap between adjacent filter pills.
+const TOOLBAR_PILL_GAP: f64 = 10.0;
+/// Smallest the search box may shrink beside the pill cluster before the
+/// toolbar stacks the search box onto its own row above the pills.
+const SEARCH_MIN_W: f64 = 160.0;
+/// Preferred search-box width when there is room to spare (wide windows).
+const SEARCH_PREF_W: f64 = 320.0;
+
 // `ui::widget::ContextMenu` lays itself out with private constants; we mirror
 // them here so the app's hit-testing + on-screen-nudge match the primitive's
 // drawn geometry exactly. Keep in sync with `context_menu.rs`.
@@ -243,6 +256,10 @@ impl Default for MonitorApp {
 }
 
 impl MonitorApp {
+    /// Construct with the deterministic, fully-populated sample snapshot. This
+    /// is what `--shots` and the tests render: a single offscreen frame never
+    /// ticks the sampler, so the seeded sample is what appears — hermetic and
+    /// reproducible offline. The live window uses [`Self::new_live`] instead.
     pub fn new() -> Self {
         let model = MonitorModel::sample();
         // Pre-select the busiest process so the detail strip is populated
@@ -252,6 +269,26 @@ impl MonitorApp {
             .iter()
             .max_by(|a, b| a.cpu.total_cmp(&b.cpu))
             .map(|p| p.pid);
+        // "now" ⇒ the first (screenshot) frame skips the live refresh and
+        // renders the seeded sample untouched.
+        Self::build(model, selected_pid, Instant::now())
+    }
+
+    /// Construct for the live window: start from an empty model and force the
+    /// first frame to sample real `sysinfo` data immediately, so the window
+    /// shows the user's actual processes and gauges from the first paint rather
+    /// than flashing fabricated sample rows. Sampling failures degrade to empty
+    /// tables (honest) rather than fake content.
+    pub fn new_live() -> Self {
+        // A `last_refresh` well in the past makes the first `maybe_refresh`
+        // fire on the first draw, replacing the empty seed with real data.
+        let stale = Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(Instant::now);
+        Self::build(MonitorModel::empty(), None, stale)
+    }
+
+    fn build(model: MonitorModel, selected_pid: Option<u32>, last_refresh: Instant) -> Self {
         Self {
             model,
             sampler: Sampler::new(),
@@ -279,9 +316,7 @@ impl MonitorApp {
             proc_push: ProcPush::default(),
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            // Set to "now" so the first (screenshot) frame skips the live
-            // refresh and renders the seeded sample untouched.
-            last_refresh: Instant::now(),
+            last_refresh,
             rows_per_page: 1,
             table_viewport: Rect::ZERO,
             table_content_w: 0.0,
@@ -1088,7 +1123,8 @@ impl MonitorApp {
             // Wide: summary strip, toolbar, table, detail strip stacked.
             let strip = Rect::new(r.x0, r.y0, r.x1, r.y0 + strip_h);
             self.draw_summary_strip(scene, t, tr, theme, strip, strip_g);
-            let toolbar = Rect::new(r.x0, strip.y1 + GAP, r.x1, strip.y1 + GAP + 36.0);
+            let toolbar_h = self.toolbar_height(tr, theme, r.width());
+            let toolbar = Rect::new(r.x0, strip.y1 + GAP, r.x1, strip.y1 + GAP + toolbar_h);
             self.draw_toolbar(scene, t, tr, theme, toolbar);
             let table_top = toolbar.y1 + GAP;
             let table_bottom = r.y1 - DETAIL_H - GAP;
@@ -1116,7 +1152,8 @@ impl MonitorApp {
         if slide < 0.999 {
             let strip = Rect::new(table_slab.x0, table_slab.y0, table_slab.x1, table_slab.y0 + strip_h);
             self.draw_summary_strip(scene, t, tr, theme, strip, strip_g);
-            let toolbar = Rect::new(table_slab.x0, strip.y1 + GAP, table_slab.x1, strip.y1 + GAP + 36.0);
+            let toolbar_h = self.toolbar_height(tr, theme, table_slab.width());
+            let toolbar = Rect::new(table_slab.x0, strip.y1 + GAP, table_slab.x1, strip.y1 + GAP + toolbar_h);
             self.draw_toolbar(scene, t, tr, theme, toolbar);
             let table_panel = Rect::new(table_slab.x0, toolbar.y1 + GAP, table_slab.x1, table_slab.y1);
             self.draw_process_table(scene, t, tr, theme, table_panel);
@@ -1350,37 +1387,69 @@ impl MonitorApp {
         self.draw_detail(scene, t, tr, theme, detail);
     }
 
+    /// Natural width of the right-hand filter-pill cluster (Tree/Flat pill,
+    /// the optional Sum-mode pill, and the kernel-threads toggle) including the
+    /// inter-pill gaps. The search box is sized to stop before this cluster so
+    /// the two never overlap, and the toolbar stacks when even a minimum-width
+    /// search box won't fit beside it.
+    fn pills_cluster_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let fs = theme.tokens.typography.scale.sm;
+        // Kernel-threads toggle (switch knob + label).
+        let mut w = tr.measure("kernel threads", fs, None).0 as f64 + 44.0;
+        // Sum-mode pill exists only in tree mode.
+        if self.tree_mode {
+            let sum_text = format!("Σ {}", self.sum_mode.label());
+            w += TOOLBAR_PILL_GAP + tr.measure(&sum_text, fs, None).0 as f64 + 24.0;
+        }
+        // Tree/Flat pill.
+        let tree_text = if self.tree_mode { "⊟ Tree" } else { "≣ Flat" };
+        w += TOOLBAR_PILL_GAP + tr.measure(tree_text, fs, None).0 as f64 + 24.0;
+        w
+    }
+
+    /// The toolbar stacks the search box onto its own row above the filter
+    /// pills once a single row can no longer seat a minimum-width search box
+    /// beside the pill cluster. Re-derived from the CURRENT width each frame,
+    /// so resizing between one and two rows reflows immediately.
+    fn toolbar_stacked(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> bool {
+        avail_w - self.pills_cluster_width(tr, theme) - GAP < SEARCH_MIN_W
+    }
+
+    /// Height the toolbar occupies at `avail_w`: one row when the search box
+    /// and pills fit side by side, two rows (search above pills) when narrow.
+    fn toolbar_height(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> f64 {
+        if self.toolbar_stacked(tr, theme, avail_w) {
+            2.0 * TOOLBAR_ROW_H + TOOLBAR_ROW_GAP
+        } else {
+            TOOLBAR_ROW_H
+        }
+    }
+
     fn draw_toolbar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
         let c = &theme.tokens.colors;
-        // Search box (left ~ 320px).
-        let search_w = 320.0_f64.min(r.width() - 260.0).max(160.0);
-        let search_r = Rect::new(r.x0, r.y0, r.x0 + search_w, r.y1);
-        let radius = r.height() / 2.0;
-        charts::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
-        let border = if self.search_focused { c.border_focus } else { c.border_standard };
-        charts::stroke_rrect(scene, t, search_r, radius, border, if self.search_focused { 1.6 } else { 1.0 });
-        let icon_r = Rect::new(search_r.x0 + 10.0, search_r.center().y - 8.0, search_r.x0 + 26.0, search_r.center().y + 8.0);
-        icons::draw_icon(scene, t, icon_r, Icon::Search, c.text_dim, 1.6);
         let fs = theme.tokens.typography.scale.sm;
-        let tx = icon_r.x1 + 8.0;
-        let ty = search_r.center().y - fs as f64 / 2.0 - 1.0;
-        if self.filter.is_empty() && !self.search_focused {
-            tr.draw_text(scene, "Search processes…", fs, c.text_dim, t * Affine::translate((tx, ty)), None);
-        } else {
-            let shown = Self::truncate(tr, &self.filter, fs, search_r.x1 - tx - 12.0);
-            tr.draw_text(scene, &shown, fs, c.text_primary, t * Affine::translate((tx, ty)), None);
-            if self.search_focused {
-                let (cw, _) = tr.measure(&shown, fs, None);
-                let caret_x = tx + cw as f64 + 1.0;
-                scene.stroke(&Stroke::new(1.5), t, c.accent[5], None, &Line::new((caret_x, search_r.y0 + 8.0), (caret_x, search_r.y1 - 8.0)));
-            }
-        }
-        self.hit.search = search_r;
 
-        // Kernel-threads toggle pill (right).
+        // One row (search beside pills) or two (search above pills). Deriving
+        // this from `r.width()` — the width the host allocated this frame —
+        // keeps the toolbar reflowing on every resize rather than freezing to
+        // whatever the first frame chose.
+        let stacked = self.toolbar_stacked(tr, theme, r.width());
+        let pills_row = if stacked {
+            Rect::new(r.x0, r.y1 - TOOLBAR_ROW_H, r.x1, r.y1)
+        } else {
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
+        };
+        let search_row = if stacked {
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
+        } else {
+            pills_row
+        };
+
+        // ---- filter pills, laid right→left in `pills_row` -----------------
+        // Kernel-threads toggle (rightmost).
         let kt_label = "kernel threads";
         let ktw = tr.measure(kt_label, fs, None).0 as f64 + 44.0;
-        let kt_r = Rect::new(r.x1 - ktw, r.y0 + 2.0, r.x1, r.y1 - 2.0);
+        let kt_r = Rect::new(pills_row.x1 - ktw, pills_row.y0 + 2.0, pills_row.x1, pills_row.y1 - 2.0);
         let on = self.prefs.show_kernel_threads;
         charts::fill_rrect(scene, t, kt_r, kt_r.height() / 2.0, if on { with_alpha(c.accent[5], 60) } else { c.surface_white_5 });
         charts::stroke_rrect(scene, t, kt_r, kt_r.height() / 2.0, if on { c.accent[5] } else { c.border_standard }, 1.0);
@@ -1395,19 +1464,19 @@ impl MonitorApp {
         // Sum-mode pill, left of the kernel toggle: "Σ Sum subtree" /
         // "Σ Per-process". Active (Sum) is accent-filled. Hidden in flat
         // mode (there's nothing to sum into when there's no tree).
-        let mut next_x1 = kt_r.x0 - 10.0;
+        let mut next_x1 = kt_r.x0 - TOOLBAR_PILL_GAP;
         if self.tree_mode {
             let sum_label = self.sum_mode.label();
             let sum_text = format!("Σ {sum_label}");
             let sw = tr.measure(&sum_text, fs, None).0 as f64 + 24.0;
-            let sum_r = Rect::new(next_x1 - sw, r.y0 + 2.0, next_x1, r.y1 - 2.0);
+            let sum_r = Rect::new(next_x1 - sw, pills_row.y0 + 2.0, next_x1, pills_row.y1 - 2.0);
             let summing = self.sum_mode == SumMode::SumSubtree;
             charts::fill_rrect(scene, t, sum_r, sum_r.height() / 2.0, if summing { with_alpha(c.accent[5], 60) } else { c.surface_white_5 });
             charts::stroke_rrect(scene, t, sum_r, sum_r.height() / 2.0, if summing { c.accent[5] } else { c.border_standard }, 1.0);
             let (stw, _) = tr.measure(&sum_text, fs, None);
             tr.draw_text(scene, &sum_text, fs, if summing { c.text_primary } else { c.text_dim }, t * Affine::translate((sum_r.center().x - stw as f64 / 2.0, sum_r.center().y - fs as f64 / 2.0 - 1.0)), None);
             self.hit.sum_toggle = sum_r;
-            next_x1 = sum_r.x0 - 10.0;
+            next_x1 = sum_r.x0 - TOOLBAR_PILL_GAP;
         } else {
             self.hit.sum_toggle = Rect::ZERO;
         }
@@ -1415,28 +1484,63 @@ impl MonitorApp {
         // Tree/Flat view pill, left of the sum pill.
         let tree_text = if self.tree_mode { "⊟ Tree" } else { "≣ Flat" };
         let tw_ = tr.measure(tree_text, fs, None).0 as f64 + 24.0;
-        let tree_r = Rect::new(next_x1 - tw_, r.y0 + 2.0, next_x1, r.y1 - 2.0);
+        let tree_r = Rect::new(next_x1 - tw_, pills_row.y0 + 2.0, next_x1, pills_row.y1 - 2.0);
         charts::fill_rrect(scene, t, tree_r, tree_r.height() / 2.0, if self.tree_mode { with_alpha(c.accent[5], 60) } else { c.surface_white_5 });
         charts::stroke_rrect(scene, t, tree_r, tree_r.height() / 2.0, if self.tree_mode { c.accent[5] } else { c.border_standard }, 1.0);
         let (ttw, _) = tr.measure(tree_text, fs, None);
         tr.draw_text(scene, tree_text, fs, if self.tree_mode { c.text_primary } else { c.text_dim }, t * Affine::translate((tree_r.center().x - ttw as f64 / 2.0, tree_r.center().y - fs as f64 / 2.0 - 1.0)), None);
         self.hit.tree_toggle = tree_r;
 
-        // Count label between search and the toggle cluster.
-        let total = self.model.processes.iter().filter(|p| self.prefs.show_kernel_threads || !p.kernel).count();
-        let shown = self.visible_rows().len();
-        let count = if let Some(pid) = self.copied_pid {
-            format!("PID {pid} copied  ·  {shown} of {total} shown")
-        } else {
-            format!("{shown} of {total} shown")
-        };
-        let (cw, _) = tr.measure(&count, fs, None);
+        // ---- search box in `search_row` -----------------------------------
+        // Stacked: full width on its own row. Side-by-side: fill from the left
+        // up to the pill cluster (capped at a comfortable preferred width), so
+        // the box and the pills can never overlap however narrow the window.
         let cluster_left = tree_r.x0;
-        let cxx = (search_r.x1 + cluster_left) / 2.0 - cw as f64 / 2.0;
-        // Only draw the count when it actually fits between the search box and
-        // the toggle cluster, so it never overlaps a pill on a narrow toolbar.
-        if cluster_left - (search_r.x1 + 10.0) > cw as f64 + 8.0 {
-            tr.draw_text(scene, &count, fs, c.text_dim, t * Affine::translate((cxx.max(search_r.x1 + 10.0), r.center().y - fs as f64 / 2.0 - 1.0)), None);
+        let search_r = if stacked {
+            Rect::new(search_row.x0, search_row.y0, search_row.x1, search_row.y1)
+        } else {
+            let max_right = cluster_left - GAP;
+            let right = (search_row.x0 + SEARCH_PREF_W).min(max_right);
+            Rect::new(search_row.x0, search_row.y0, right, search_row.y1)
+        };
+        let radius = search_r.height() / 2.0;
+        charts::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
+        let border = if self.search_focused { c.border_focus } else { c.border_standard };
+        charts::stroke_rrect(scene, t, search_r, radius, border, if self.search_focused { 1.6 } else { 1.0 });
+        let icon_r = Rect::new(search_r.x0 + 10.0, search_r.center().y - 8.0, search_r.x0 + 26.0, search_r.center().y + 8.0);
+        icons::draw_icon(scene, t, icon_r, Icon::Search, c.text_dim, 1.6);
+        let tx = icon_r.x1 + 8.0;
+        let ty = search_r.center().y - fs as f64 / 2.0 - 1.0;
+        if self.filter.is_empty() && !self.search_focused {
+            let placeholder = Self::truncate(tr, "Search processes…", fs, search_r.x1 - tx - 12.0);
+            tr.draw_text(scene, &placeholder, fs, c.text_dim, t * Affine::translate((tx, ty)), None);
+        } else {
+            let shown = Self::truncate(tr, &self.filter, fs, search_r.x1 - tx - 12.0);
+            tr.draw_text(scene, &shown, fs, c.text_primary, t * Affine::translate((tx, ty)), None);
+            if self.search_focused {
+                let (cw, _) = tr.measure(&shown, fs, None);
+                let caret_x = tx + cw as f64 + 1.0;
+                scene.stroke(&Stroke::new(1.5), t, c.accent[5], None, &Line::new((caret_x, search_r.y0 + 8.0), (caret_x, search_r.y1 - 8.0)));
+            }
+        }
+        self.hit.search = search_r;
+
+        // Count label centred in the slack between the search box and the pill
+        // cluster — only on a single row, and only when it genuinely fits, so
+        // it never overlaps a pill.
+        if !stacked {
+            let total = self.model.processes.iter().filter(|p| self.prefs.show_kernel_threads || !p.kernel).count();
+            let shown = self.visible_rows().len();
+            let count = if let Some(pid) = self.copied_pid {
+                format!("PID {pid} copied  ·  {shown} of {total} shown")
+            } else {
+                format!("{shown} of {total} shown")
+            };
+            let (cw, _) = tr.measure(&count, fs, None);
+            let cxx = (search_r.x1 + cluster_left) / 2.0 - cw as f64 / 2.0;
+            if cluster_left - (search_r.x1 + 10.0) > cw as f64 + 8.0 {
+                tr.draw_text(scene, &count, fs, c.text_dim, t * Affine::translate((cxx.max(search_r.x1 + 10.0), pills_row.center().y - fs as f64 / 2.0 - 1.0)), None);
+            }
         }
     }
 
@@ -2834,5 +2938,152 @@ mod tests {
         assert!(names.contains(&"shell"), "ancestor shell kept: {names:?}");
         // An unrelated branch (systemd's services) is pruned.
         assert!(!names.contains(&"chronyd"), "unrelated branch pruned: {names:?}");
+    }
+
+    // ---- responsive toolbar + summary strip (the reproduced defects) -----
+
+    /// True when two rects share any area.
+    fn overlaps(a: Rect, b: Rect) -> bool {
+        a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+    }
+
+    /// Count of distinct (rounded) row tops among a set of rects.
+    fn distinct_rows(rects: &[Rect]) -> usize {
+        let mut ys: Vec<i64> = rects.iter().map(|r| r.y0.round() as i64).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        ys.len()
+    }
+
+    /// Defect 1: at no width — down to well below the narrow breakpoint — may
+    /// the search box overlap any filter pill. Overlapping hit rects would make
+    /// a pill unclickable (a click in the shared area is consumed as search),
+    /// so this asserts the real hit rectangles the click path uses are
+    /// pairwise disjoint across a width sweep, on the production draw path.
+    #[test]
+    fn toolbar_search_never_overlaps_pills() {
+        for w in [1280.0, 1024.0, 900.0, 760.0, 700.0, 640.0, 560.0, 480.0, 420.0] {
+            let mut a = app();
+            draw_at(&mut a, w, 720.0);
+            let search = a.hit.search;
+            for (name, pill) in [
+                ("tree", a.hit.tree_toggle),
+                ("sum", a.hit.sum_toggle),
+                ("kernel", a.hit.kernel_toggle),
+            ] {
+                if pill == Rect::ZERO {
+                    continue; // sum pill is absent in flat mode
+                }
+                assert!(
+                    !overlaps(search, pill),
+                    "w={w}: search {search:?} overlaps {name} pill {pill:?}"
+                );
+            }
+        }
+    }
+
+    /// Defect 1: once the search box can no longer sit beside the pills, the
+    /// toolbar stacks — the search box moves to its own row *above* the pills,
+    /// and the toolbar grows to two rows. Proven on the real draw path.
+    #[test]
+    fn toolbar_stacks_on_very_narrow_widths() {
+        let mut a = app();
+        draw_at(&mut a, 440.0, 720.0);
+        // The pills and the search box are on different rows (search above).
+        assert!(
+            a.hit.search.y1 <= a.hit.tree_toggle.y0 + 0.5,
+            "stacked toolbar puts search above the pills: search {:?} tree {:?}",
+            a.hit.search,
+            a.hit.tree_toggle
+        );
+        // And the toolbar reports a two-row height.
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let content_w = 440.0 - 2.0 * OUTER_PAD;
+        assert!(
+            a.toolbar_height(&mut tr, &theme, content_w) > TOOLBAR_ROW_H + 1.0,
+            "narrow toolbar must be two rows tall"
+        );
+        // A wide toolbar stays a single row.
+        assert_eq!(
+            a.toolbar_height(&mut tr, &theme, 1252.0),
+            TOOLBAR_ROW_H,
+            "wide toolbar is a single row"
+        );
+    }
+
+    /// Defect 2: the summary strip's cards must grow with the window width and
+    /// rewrap as it narrows — and critically, keep doing so when the SAME
+    /// instance is resized (not just on a fresh narrow launch). Drives the real
+    /// draw path, reading back the card hit rects it records.
+    #[test]
+    fn summary_strip_grows_and_rewraps_on_resize() {
+        let mut a = app();
+
+        // Wide: four cards abreast on one row.
+        draw_at(&mut a, 1280.0, 720.0);
+        let wide = a.hit.summary_cells.clone();
+        assert_eq!(wide.len(), 4, "four summary cards");
+        assert_eq!(distinct_rows(&wide), 1, "four abreast when wide");
+        let wide_card_w = wide[0].width();
+        // The four cards fill the content width (within one gap of it).
+        let content_w = 1280.0 - 2.0 * OUTER_PAD;
+        let filled = wide.iter().map(|r| r.width()).sum::<f64>() + 3.0 * GAP;
+        assert!(
+            (filled - content_w).abs() < 2.0,
+            "cards fill the width: {filled} vs {content_w}"
+        );
+
+        // Same instance, narrower but still four-across (800px): the cards must
+        // re-derive a SMALLER width from the new allocation — the "grows with
+        // width" property. A frozen-at-first-frame layout would keep the wide
+        // card width here and fail.
+        draw_at(&mut a, 800.0, 720.0);
+        let mid = a.hit.summary_cells.clone();
+        assert_eq!(mid.len(), 4);
+        assert_eq!(distinct_rows(&mid), 1, "still four abreast at 800px");
+        assert!(
+            mid[0].width() < wide_card_w - 1.0,
+            "cards shrank with the window (grow-with-width): {} !< {}",
+            mid[0].width(),
+            wide_card_w
+        );
+
+        // Phone-narrow (560px): the SAME instance rewraps to a 2x2 block.
+        draw_at(&mut a, 560.0, 720.0);
+        let narrow = a.hit.summary_cells.clone();
+        assert_eq!(narrow.len(), 4);
+        assert_eq!(distinct_rows(&narrow), 2, "rewraps to two rows when narrow");
+
+        // Widening straight back reflows to one row — no frozen mode.
+        draw_at(&mut a, 1280.0, 720.0);
+        assert_eq!(
+            distinct_rows(&a.hit.summary_cells),
+            1,
+            "widening reflows back to one row"
+        );
+        assert!(
+            (a.hit.summary_cells[0].width() - wide_card_w).abs() < 1.0,
+            "card width returns to its wide value after resize round-trip"
+        );
+    }
+
+    /// The live window must show REAL data, not the fabricated sample. The live
+    /// constructor starts empty and its first refresh pulls actual `sysinfo`
+    /// readings — proven by the running test process appearing in the table.
+    #[test]
+    fn live_constructor_samples_real_processes() {
+        let mut a = MonitorApp::new_live();
+        // Nothing fabricated before the first frame.
+        assert!(a.model.processes.is_empty(), "live app starts empty, not seeded with sample rows");
+        assert!(a.selected_pid.is_none(), "no pre-selected fake process");
+        // The first refresh samples the real system.
+        a.maybe_refresh();
+        assert!(!a.model.processes.is_empty(), "first refresh populated real processes");
+        assert!(
+            a.model.processes.iter().any(|p| p.pid == std::process::id()),
+            "the running process appears in the real table (data is live, not mock)"
+        );
+        assert!(!a.model.metrics.cores.is_empty(), "real per-core readings sampled");
     }
 }
