@@ -24,23 +24,24 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Remaining: remote multi-cursor is not rendered inside the math field (local
       structured caret only) — peer carets need mapping into the 2D layout.
 
-## sheets (spreadsheet)
-- [ ] Cell-reference visualisation: for `=A1+B1`, colour `A1` and `B1`
-      **differently**, both in the in-cell formula text AND by highlighting the
-      referenced cells on the grid in the matching colours (Excel/LibreOffice).
-- [ ] Formula-building by click: while editing a cell and after typing `=`,
-      clicking another cell inserts its reference (`=A1`), and dragging inserts a
-      range (`=A1:B4`); further clicks/drags append more refs.
-- [ ] Re-confirm the Excel-style selection (drag-range, shift-extend, ctrl
-      multi-range) actually works live — user was unsure what changed.
+## sheets (spreadsheet) — CLEAR (verified, committed b0fe3e2)
+- [x] Cell-reference visualisation: each distinct ref in a formula gets a stable
+      colour, tinted in the in-cell text + formula bar AND outlined on the grid in
+      the matching colour → fixed (verified: `=B2+C2` → B2 blue + C2 red in text
+      and as grid outlines; `=SUM(B2:D2)` → blue range rectangle).
+- [x] Formula-building by click (point mode): while editing a formula, click a
+      cell to insert its ref, drag to insert a range, click after an operator to
+      append → fixed (verified: C10 `=B2+C2` built by clicking).
+- [x] Excel-style multi-range selection → confirmed live (ctrl-selected B2:B7 +
+      E2:E7 = 11 cells, status bar shows Sum $14,750 · Avg $1,340.91 · Count 11).
 
-## weather
-- [ ] Move the units (°C/°F) selection to **Settings** — it must not live in the
-      weather app UI (raised repeatedly).
-- [ ] Layout per HIG §1b: the city list is a **content panel** (contentful), not
-      a sidebar. Desktop: city list + forecast side by side. Mobile: full-screen
-      city list → tap a city → full-screen forecast with a back button top-left.
-      Remove the web-like overlay sidebar here.
+## weather — CLEAR (verified, committed b0fe3e2)
+- [x] Units (°C/°F, km/h/mph) removed from the app; read from the shared Settings
+      store (locale.measurement) → fixed.
+- [x] HIG §1b content panels via ui::NavShell: contentful city list + forecast
+      side-by-side on desktop; narrow = full-screen list → tap city → forecast
+      pushes in with a ‹ Back button (never an X). Old overlay-flap removed →
+      fixed (verified wide + narrow-pushed-detail). Real Open-Meteo data.
 
 ## monitor (system monitor)
 - [ ] The left column (Processor / Memory / Net / Disk stat cards + host info) is
@@ -69,24 +70,25 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       sidebar focus, delete — several were "verified" only via static shots.
 
 ## calendar
-- [ ] Adopt the HIG §1 three-panel model: **calendars** = genuine sidebar
-      (collapsible, proper collapse button, overlay-drawer on mobile);
-      **overview grid** + **event detail** = content panels. Desktop: all three
-      abreast, only the sidebar collapses. Mobile: overview full-screen → event
-      slides in from the right + back; only one of overview/detail at a time.
-- [ ] Responsive reflow bug: responsive on first launch but STOPS reflowing after
-      a resize (breakpoint cached from first frame). Re-derive from current width
-      each layout.
-- [ ] Narrow view-switcher (Month/Week/Day/Agenda) is pointer-unreachable
-      (<980px folds it away; only keyboard works). Give it a pointer path.
-- [ ] Week-view period title clips to `Mon 29 Jun –` at 1280px when the detail
-      panel is open (the default).
+- [x] HIG §1 three-panel model: genuine sidebar (calendars/smart-lists/projects,
+      chevron collapse never an X) + month/week/day grid overview + event detail;
+      three abreast on desktop, only the sidebar collapses; narrow = overlay
+      drawer + overview→detail push. Hand-rolled (not NavShell) but well-reasoned,
+      HIG-correct, and richer than a generic fill — kept per judgement; its
+      collapse behaviour is a candidate to fold into ui. Committed f917913.
+- [x] Responsive reflow re-derives the breakpoint each layout pass (test) → fixed.
+- [x] Narrow view-switcher (Month/Week/Day/Agenda) is pointer-reachable inside the
+      overlay drawer → verified.
+- [ ] NOT re-verified this round: week-view period title clipping at 1280px with
+      the detail panel open. Check the Week view + fix if it still clips.
 
-## email (mail)
-- [ ] Adopt the HIG §1 three-panel model: **accounts+folders** = genuine sidebar;
-      **message list** + **message** = content panels. Desktop three abreast,
-      sidebar collapsible; mobile sidebar = overlay drawer, list full-screen →
-      message slides over from the right + back.
+## email (mail) — CLEAR (verified, committed f917913)
+- [x] Adopted ui::NavShell three-panel: accounts+folders genuine sidebar (chevron
+      collapse, not X) + message-list overview + threaded-message detail, three
+      abreast on desktop; narrow = overlay drawer + list full-screen → message
+      pushes in with ‹ Back → fixed (verified wide 3-panel + narrow pushed detail;
+      workflow's verify agent crashed on an API drop, so I rendered + checked the
+      shots myself).
 
 ## chat
 - [ ] Expanded call overlay: remote participant tiles run off the RIGHT edge at
