@@ -1,0 +1,11 @@
+[Unit]
+Description=qOS collab-bridge (SDK Cap'n Proto <-> shell serde-JSON broker)
+After=graphical-session-pre.target
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/qos-collab-bridge --listen %t/qos/services/collab.sock --upstream %t/qos-shell-collab.sock
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
