@@ -155,6 +155,24 @@ impl MailDoc {
         }
     }
 
+    /// Mark the document as already seeded so a later open restores the
+    /// persisted session state instead of overwriting it from defaults.
+    pub fn set_seeded(doc: &mut AutoCommit) {
+        let ui = Self::ui(doc);
+        let _ = doc.put(&ui, "seeded", true);
+    }
+
+    /// Whether this document has been seeded before (i.e. carries a real
+    /// persisted session: folder / selection / active account / format).
+    pub fn is_seeded(doc: &AutoCommit) -> bool {
+        match doc.get(&ROOT, "ui") {
+            Ok(Some((Value::Object(ObjType::Map), ui))) => {
+                Self::read_bool(doc, &ui, "seeded").unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
     // ---- per-message flags ----
 
     fn flags_map(doc: &mut AutoCommit) -> ObjId {
@@ -338,6 +356,24 @@ mod tests {
         MailDoc::apply_flags(&doc, &mut mb3);
         assert_eq!(mb3.get(id).unwrap().starred, starred);
         assert!(mb3.get(id).unwrap().read);
+    }
+
+    #[test]
+    fn seeded_marker_round_trips() {
+        let mut doc = AutoCommit::new();
+        assert!(!MailDoc::is_seeded(&doc), "fresh doc is not seeded");
+        MailDoc::set_seeded(&mut doc);
+        assert!(MailDoc::is_seeded(&doc), "set_seeded persists");
+    }
+
+    #[test]
+    fn active_account_and_compose_format_round_trip() {
+        let mut doc = AutoCommit::new();
+        assert_eq!(MailDoc::get_active_account(&doc), None);
+        MailDoc::set_active_account(&mut doc, 2);
+        assert_eq!(MailDoc::get_active_account(&doc), Some(2));
+        MailDoc::set_compose_format(&mut doc, "text");
+        assert_eq!(MailDoc::get_compose_format(&doc).as_deref(), Some("text"));
     }
 
     #[test]
