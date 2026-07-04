@@ -4,9 +4,9 @@
 //! available HEVC hardware backend, and scans the resulting Annex-B
 //! byte stream for the two HDR10 SEI messages our encoder attaches:
 //!
-//! - HEVC Prefix SEI NAL (NAL type 39, header byte `0x4E`) containing
-//!   SEI payload type 137 = `mastering_display_colour_volume`
-//!   (SMPTE ST 2086).
+//! - HEVC Prefix SEI NAL (NAL unit type 39, extracted from the two-
+//!   byte NAL header via `(byte0 >> 1) & 0x3F`) containing SEI payload
+//!   type 137 = `mastering_display_colour_volume` (SMPTE ST 2086).
 //! - Same NAL kind carrying SEI payload type 144 =
 //!   `content_light_level_info` (CTA-861.3).
 //!
@@ -29,10 +29,16 @@ const SEI_MASTERING_DISPLAY: u8 = 137;
 /// CTA-861.3 payload type per H.265 § D.2.35.
 const SEI_CONTENT_LIGHT_LEVEL: u8 = 144;
 
-/// HEVC PREFIX_SEI_NUT header byte = `(0 << 7) | (39 << 1) | 0 = 0x4E`.
-/// Matches the first byte of a prefix SEI NAL unit for layer_id upper
-/// bit zero — the case for any single-layer HDR10 stream.
-const HEVC_PREFIX_SEI_NUT_BYTE: u8 = 0x4E;
+/// HEVC PREFIX_SEI_NUT = 39. In the 2-byte NAL header the first byte
+/// carries `forbidden_zero_bit(1) | nal_unit_type(6) | nuh_layer_id_high(1)`,
+/// MSB-first. `(byte0 >> 1) & 0x3F` extracts `nal_unit_type` independent
+/// of the layer-id upper bit.
+const HEVC_NAL_TYPE_PREFIX_SEI: u8 = 39;
+
+/// Extract the 6-bit HEVC NAL unit type from a NAL header's first byte.
+fn hevc_nal_type(byte0: u8) -> u8 {
+    (byte0 >> 1) & 0x3F
+}
 
 /// Solid-red RGBA test frame.
 fn red_frame(w: u32, h: u32) -> Vec<u8> {
@@ -109,7 +115,7 @@ fn sei_payload_types_at(bytes: &[u8], nal_offset: usize) -> Vec<u8> {
     if nal_offset + 2 >= bytes.len() {
         return out;
     }
-    if bytes[nal_offset] & 0x7f != HEVC_PREFIX_SEI_NUT_BYTE & 0x7f {
+    if hevc_nal_type(bytes[nal_offset]) != HEVC_NAL_TYPE_PREFIX_SEI {
         return out;
     }
     // Skip the 2-byte NAL header. Iterate SEI messages until a byte
