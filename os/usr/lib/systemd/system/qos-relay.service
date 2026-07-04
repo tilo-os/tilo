@@ -1,0 +1,55 @@
+[Unit]
+Description=qOS host + relay daemon (iroh WAN transport, workspace CRDT fan-out, store-and-forward)
+Documentation=file:///usr/share/doc/qos/relay.md
+After=network-online.target
+Wants=network-online.target
+# The relay reads /var/lib/qos/user-identity/pubkey.bin + the device
+# cert + secret written at first-boot enrollment. Those live under
+# /var, so start after local filesystems are up.
+After=var-lib-qos.mount
+
+[Service]
+Type=notify
+NotifyAccess=all
+# `run` blocks until SIGTERM. sd_notify(READY=1) is emitted from
+# main.rs once the iroh endpoint is bound + accepting.
+ExecStart=/usr/bin/qos-relay --config /etc/qos/relay.toml run
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+
+# Dedicated system user so the daemon has its own /var/lib/qos-relay
+# state directory. `DynamicUser=yes` allocates a uid at runtime; the
+# state persists via `StateDirectory=qos-relay`.
+DynamicUser=yes
+StateDirectory=qos-relay
+StateDirectoryMode=0700
+
+# Hardening: the relay is a network-facing daemon on an always-on
+# device, so it stays behind a paranoid sandbox.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# The daemon needs to read the user's cert + relay device secret
+# from the shared identity tree, so grant read access there.
+ReadOnlyPaths=/etc/qos /var/lib/qos
+
+[Install]
+WantedBy=multi-user.target
