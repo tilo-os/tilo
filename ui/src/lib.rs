@@ -1,5 +1,6 @@
 pub mod app;
 pub mod color_compat;
+pub mod doc;
 pub mod state;
 pub mod widget;
 pub mod text_render;
@@ -24,6 +25,7 @@ pub mod render_thread;
 
 pub use app::App;
 pub use color_compat::ColorCompat;
+pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
 pub use image_store::{Fetcher, ImageStore};
