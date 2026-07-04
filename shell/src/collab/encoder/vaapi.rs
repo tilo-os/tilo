@@ -559,12 +559,10 @@ impl Encoder for VaApiBackend {
                 }
             }
             FrameInput::DmabufFd { .. } => {
-                // TODO: zero-copy path — take the caller's DMABUF fd
-                // + fourcc + plane strides and hand them to
-                // `av_hwframe_map` via a VAAPISurfaceHandle. Requires
-                // extending FrameInput::DmabufFd with the full plane
-                // descriptor set. For now, callers who see this path
-                // must have negotiated NV12/RGBA upload separately.
+                // TODO(next commit): wire `av_hwframe_map` on a
+                // `DRM_PRIME` source frame. For now, refuse the input
+                // so the caller falls back to SHM readback +
+                // FrameInput::Rgba upload.
                 return Err(EncoderError::EncodeFailed {
                     kind: EncoderKind::VaApi,
                     detail: "DMABUF-direct import not yet wired; upload via RGBA/NV12"
