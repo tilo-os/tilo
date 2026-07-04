@@ -38,15 +38,14 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-
-      - name: Install build deps (mirrors os/Containerfile builder + bubblewrap for the sandbox demo)
+      # First step, because the fedora container ships neither node
+      # (needed by actions/checkout@v4) nor the rest of the build
+      # toolchain. Same ordering trick check.yml uses.
+      - name: Install deps (node for checkout, capnproto for runtime-collab, build + bubblewrap for sandbox)
         run: |
           dnf install -y \
-            rust cargo sccache \
+            nodejs \
+            rust cargo sccache capnproto \
             gcc gcc-c++ make cmake perl perl-FindBin python3 git \
             clang clang-devel pkgconf-pkg-config \
             libxkbcommon-devel wayland-devel \
@@ -58,6 +57,11 @@ jobs:
             nasm \
             bubblewrap \
             && dnf clean all
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Build packaging binaries (release)
         run: |

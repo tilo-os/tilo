@@ -37,19 +37,18 @@ jobs:
       RUSTC_WRAPPER: sccache
       WASM_OUT: crates/doc/qdoc-codec-markdown-wasm/target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-
-      - name: Install build deps + rustup (Fedora's `rust` package can't add targets)
-        # dnf's `rust` is a fixed toolchain — no `rustup target add`.
-        # Install rustup separately so the wasm32-wasip2 target is
-        # reachable; sccache + native deps still come from dnf so the
-        # host-target format-host build reuses the same cache.
+      # First step, because the fedora container ships neither node
+      # (needed by actions/checkout@v4) nor curl / cargo. Same
+      # ordering trick check.yml uses. dnf's `rust` is a fixed
+      # toolchain that can't `rustup target add`, so we install
+      # rustup separately for the wasm32-wasip2 target; sccache + the
+      # native deps stay dnf-sourced so the host-target format-host
+      # build reuses the same cache.
+      - name: Install deps (node for checkout, capnproto for runtime-collab, rustup for wasm)
         run: |
           dnf install -y \
-            sccache \
+            nodejs \
+            sccache capnproto \
             gcc gcc-c++ make cmake perl perl-FindBin python3 git curl \
             clang clang-devel pkgconf-pkg-config \
             openssl-devel \
@@ -57,6 +56,11 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Add wasm32-wasip2 target + build the component
         run: |

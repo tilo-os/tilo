@@ -40,19 +40,23 @@ jobs:
       OUT_B: bundle-b
       IDENTITY_PATH: runtime-bundle-identity.json
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-
-      - name: Install build deps
+      # First step, because the fedora container ships neither node
+      # (needed by actions/checkout@v4) nor the rest of the build
+      # toolchain. Same ordering trick check.yml uses.
+      - name: Install deps (node for checkout, capnproto for runtime-collab, build toolchain)
         run: |
           dnf install -y \
-            rust cargo sccache \
+            nodejs \
+            rust cargo sccache capnproto \
             gcc gcc-c++ make cmake perl perl-FindBin python3 git \
             clang clang-devel pkgconf-pkg-config \
             openssl-devel \
             && dnf clean all
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Build qos-runtime-bundle (release)
         run: |
