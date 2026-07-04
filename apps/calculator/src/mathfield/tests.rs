@@ -246,6 +246,64 @@ fn sqrt_word_then_paren_builds_radical() {
 }
 
 #[test]
+fn radical_glyph_builds_structured_sqrt() {
+    // Entering the `√` glyph must build a real radical (caret dropping into the
+    // radicand), identical to typing `sqrt(` — not a dead literal `√` char the
+    // engine can't parse. This is the `type_char('√') -> insert_sqrt()` wiring.
+    let mut e = Editor::from_linear("");
+    e.type_char('√');
+    assert_eq!(caret(&e).0, vec![(0, Slot::Radicand)], "caret must drop into the radicand");
+    for ch in "x+9".chars() {
+        e.type_char(ch);
+    }
+    assert!(
+        matches!(e.expr.root.first(), Some(Node::Sqrt { index: None, .. })),
+        "root must hold a structured radical, not a literal glyph"
+    );
+    // Serializes to `sqrt(...)` the engine accepts.
+    assert_eq!(e.to_linear(), "sqrt(x+9)");
+    let linear = engine_linear(&e.to_linear());
+    assert!(
+        crate::engine::compile(&linear, false, false).is_ok(),
+        "{linear} must compile"
+    );
+}
+
+#[test]
+fn radical_glyph_wraps_the_selection() {
+    // `√` over a selection replaces it with an empty radical (insert_sqrt goes
+    // through insert_node, which deletes the selection first).
+    let mut e = ed("x+1");
+    e.select_all();
+    e.type_char('√');
+    assert_eq!(caret(&e).0, vec![(0, Slot::Radicand)]);
+    assert_eq!(e.to_linear(), "sqrt()", "the selection is replaced by the radical");
+}
+
+#[test]
+fn field_key_path_accepts_radical_glyph() {
+    // Drive the real field key path: a `√` Character event routes through
+    // handle_key -> type_char -> insert_sqrt and builds the radical.
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+    use winit::event::Modifiers;
+    use winit::keyboard::Key as WKey;
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("").with_size(20.0);
+    f.set_rect(Rect::new(0.0, 0.0, 200.0, 60.0), &mut tr);
+    let mods = Modifiers::default();
+    for ch in ["√", "x"] {
+        assert!(
+            f.handle_key(&WKey::Character(ch.into()), &mods),
+            "{ch} must be accepted as a content change"
+        );
+    }
+    assert_eq!(f.linear(), "sqrt(x)");
+}
+
+#[test]
 fn function_name_then_paren_builds_call() {
     let mut e = Editor::from_linear("");
     for ch in "sin".chars() {
