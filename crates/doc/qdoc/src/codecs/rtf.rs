@@ -68,7 +68,7 @@ impl FormatProvider for RtfCodec {
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        // Export deliberately lives in the editor via `docrtf::render_rtf`, which
+        // Export deliberately lives in the editor via `qdoc_rtf::render_rtf`, which
         // renders from a materialized `DocSnapshot`. A `FormatProvider::export`
         // only gets a `DocRef`; rather than duplicate the writer here we keep a
         // single source of truth and surface a clear error if someone routes RTF
@@ -792,7 +792,7 @@ mod tests {
     /// `qdoc` cannot depend on `docrtf` without a dependency cycle.)
     #[test]
     fn roundtrip_docrtf_shaped_rtf_preserves_text_and_bold() {
-        // The exact shape `docrtf::render_rtf` produces for "Hello **world** today".
+        // The exact shape `qdoc_rtf::render_rtf` produces for "Hello **world** today".
         let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
 {\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
         let snap = import(rtf);

@@ -1,11 +1,11 @@
 //! End-to-end: HTML *import* via the word processor's open path. HTML *export*
 //! is provided by `dochtml`; this proves the read side — a `.html` file (whether
-//! hand-written or produced by `dochtml::render_html`) opens into the canonical
+//! hand-written or produced by `qdoc_html::render_html`) opens into the canonical
 //! CRDT model with its headings, paragraphs, bold runs, and links intact.
 
 use std::path::PathBuf;
 
-use editor::{open_document, WordProcessorWidget, WpFormat};
+use word_processor::{open_document, WordProcessorWidget, WpFormat};
 use ui::Widget;
 
 fn temp_path(name: &str) -> PathBuf {
@@ -33,7 +33,7 @@ fn render_doc_to_html() -> String {
         dm.add_mark(&p, 13, 19, "link", "https://qos.dev/"); // "a link"
     }
     let snap = qdoc::model::materialize(&state.doc, &c);
-    dochtml::render_html(&snap, dochtml::HtmlOptions::default())
+    qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default())
 }
 
 #[test]

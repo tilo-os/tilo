@@ -70,7 +70,7 @@ fn main() {
         styles: BTreeMap::new(),
     };
 
-    let bytes = docpdf::render_pdf(&snap).expect("render");
+    let bytes = qdoc_pdf::render_pdf(&snap).expect("render");
     std::fs::write(&out, &bytes).expect("write pdf");
     println!("wrote {} bytes to {out}", bytes.len());
 }
