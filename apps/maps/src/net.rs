@@ -111,16 +111,13 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
         let kind = item["type"].as_str().unwrap_or("");
         let osm_type = item["osm_type"].as_str().unwrap_or("n");
         let osm_id = item["osm_id"].as_i64().unwrap_or(0);
-        let mut place = Place::new(
+        let place = Place::new(
             &format!("osm-{osm_type}-{osm_id}"),
             &name,
             Category::from_osm(class, kind),
             &display,
             LatLon::new(lat, lon),
         );
-        if let Some(imp) = item["importance"].as_f64() {
-            place.rating = Some((3.5 + imp.clamp(0.0, 1.0) * 1.5) as f32);
-        }
         out.push(place);
     }
     Ok(out)
@@ -262,6 +259,13 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
 pub fn transit(from: LatLon, to: LatLon, when: &TransitQuery) -> Result<Vec<TransitJourney>, String> {
     let url = transit_url(from, to, when);
     let v = fetch_json(&url)?;
+    parse_transit(&v)
+}
+
+/// Parse a MOTIS `plan` response body into itineraries. Split out (and pure) so
+/// the leg-geometry decoding and field mapping are unit-testable without a
+/// network round-trip.
+pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
     let its = v["itineraries"].as_array().ok_or("no itineraries")?;
     let mut out = Vec::new();
     for it in its {
@@ -294,7 +298,7 @@ pub fn transit(from: LatLon, to: LatLon, when: &TransitQuery) -> Result<Vec<Tran
                     arr,
                     duration_min,
                     num_stops: leg["intermediateStops"].as_array().map(|a| a.len() as u32).unwrap_or(0),
-                    geometry: vec![],
+                    geometry: leg_geometry(leg),
                 });
             }
         }
@@ -307,6 +311,58 @@ pub fn transit(from: LatLon, to: LatLon, when: &TransitQuery) -> Result<Vec<Tran
         });
     }
     Ok(out)
+}
+
+/// Decode one leg's `legGeometry` (a Google-encoded polyline) into WGS-84
+/// coordinates. MOTIS reports the `precision` alongside the points; we honour it
+/// and fall back to the standard precision-5 encoding when it is absent.
+fn leg_geometry(leg: &Value) -> Vec<LatLon> {
+    let g = &leg["legGeometry"];
+    let Some(points) = g["points"].as_str().filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let precision = g["precision"].as_u64().unwrap_or(5) as u32;
+    decode_polyline(points, precision)
+}
+
+/// Decode a Google-encoded polyline string into `LatLon`s at the given
+/// coordinate `precision` (decimal digits; 5 is the classic Google encoding, 6
+/// and 7 are used by higher-resolution planners). Malformed trailing input is
+/// ignored rather than panicking.
+pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
+    let factor = 10f64.powi(precision as i32);
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut lat = 0i64;
+    let mut lon = 0i64;
+    let mut out = Vec::new();
+    // Read one signed varint (zig-zag) starting at `*i`; advances `*i`.
+    let read = |i: &mut usize| -> Option<i64> {
+        let mut shift = 0u32;
+        let mut result = 0i64;
+        loop {
+            if *i >= bytes.len() {
+                return None;
+            }
+            let b = bytes[*i] as i64 - 63;
+            *i += 1;
+            result |= (b & 0x1f) << shift;
+            shift += 5;
+            if b < 0x20 {
+                break;
+            }
+        }
+        // Zig-zag decode.
+        Some(if result & 1 != 0 { !(result >> 1) } else { result >> 1 })
+    };
+    while i < bytes.len() {
+        let Some(dlat) = read(&mut i) else { break };
+        let Some(dlon) = read(&mut i) else { break };
+        lat += dlat;
+        lon += dlon;
+        out.push(LatLon::new(lat as f64 / factor, lon as f64 / factor));
+    }
+    out
 }
 
 /// Extract `HH:MM` from an ISO-8601 timestamp; best-effort.
@@ -365,6 +421,76 @@ mod tests {
         assert!(url.contains("toPlace=48.140000,11.580000"), "{url}");
         assert!(!url.contains("&time="), "depart-now must not pin a time: {url}");
         assert!(!url.contains("arriveBy"), "depart-now is not arrive-by: {url}");
+    }
+
+    #[test]
+    fn decode_polyline_matches_google_reference() {
+        // The canonical example from Google's polyline algorithm docs:
+        // `_p~iF~ps|U_ulLnnqC_mqNvxq`@` at precision 5 decodes to three points.
+        let pts = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
+        assert_eq!(pts.len(), 3);
+        assert!((pts[0].lat - 38.5).abs() < 1e-5, "{:?}", pts[0]);
+        assert!((pts[0].lon - -120.2).abs() < 1e-5, "{:?}", pts[0]);
+        assert!((pts[1].lat - 40.7).abs() < 1e-5, "{:?}", pts[1]);
+        assert!((pts[1].lon - -120.95).abs() < 1e-5, "{:?}", pts[1]);
+        assert!((pts[2].lat - 43.252).abs() < 1e-5, "{:?}", pts[2]);
+        assert!((pts[2].lon - -126.453).abs() < 1e-5, "{:?}", pts[2]);
+    }
+
+    #[test]
+    fn decode_polyline_empty_and_malformed_dont_panic() {
+        assert!(decode_polyline("", 5).is_empty());
+        // A lone continuation byte with no pair is dropped, not panicked on.
+        assert!(decode_polyline("_", 6).is_empty());
+    }
+
+    #[test]
+    fn parse_transit_decodes_leg_geometry() {
+        // A minimal MOTIS-shaped plan response with one itinerary whose transit
+        // leg carries an encoded `legGeometry`. Proves the real parse path
+        // populates `TransitLeg.geometry` (previously always empty).
+        let body = serde_json::json!({
+            "itineraries": [{
+                "startTime": "2026-07-04T09:12:00+02:00",
+                "endTime": "2026-07-04T09:26:00+02:00",
+                "duration": 840,
+                "transfers": 0,
+                "legs": [{
+                    "mode": "SUBWAY",
+                    "routeShortName": "U3",
+                    "headsign": "Moosach",
+                    "from": {"name": "Goetheplatz"},
+                    "to": {"name": "Marienplatz"},
+                    "startTime": "2026-07-04T09:17:00+02:00",
+                    "endTime": "2026-07-04T09:23:00+02:00",
+                    "duration": 360,
+                    "intermediateStops": [{}, {}, {}],
+                    "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "precision": 5}
+                }]
+            }]
+        });
+        let js = parse_transit(&body).expect("parses");
+        assert_eq!(js.len(), 1);
+        let leg = &js[0].legs[0];
+        assert_eq!(leg.mode, TransitMode::Subway);
+        assert_eq!(leg.line, "U3");
+        assert_eq!(leg.num_stops, 3);
+        assert_eq!(leg.geometry.len(), 3, "legGeometry must decode onto the leg");
+        assert!((leg.geometry[0].lat - 38.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn parse_transit_tolerates_missing_geometry() {
+        // A leg with no `legGeometry` (some walk legs) must parse with an empty
+        // polyline, not error.
+        let body = serde_json::json!({
+            "itineraries": [{
+                "duration": 300,
+                "legs": [{"mode": "WALK", "from": {"name": "A"}, "to": {"name": "B"}}]
+            }]
+        });
+        let js = parse_transit(&body).expect("parses");
+        assert!(js[0].legs[0].geometry.is_empty());
     }
 
     #[test]

@@ -841,6 +841,46 @@ impl MapsApp {
         }
     }
 
+    /// Flatten the currently-selected transit journey's leg geometry into a
+    /// single polyline (empty if no journey is selected or none has geometry).
+    fn selected_journey_geometry(&self) -> Vec<LatLon> {
+        self.model
+            .transit
+            .get(self.model.transit_choice)
+            .map(|j| j.legs.iter().flat_map(|l| l.geometry.iter().copied()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Frame the map on whatever journey is currently shown — a road route's
+    /// polyline, else the selected transit itinerary's leg geometry, else the
+    /// origin/destination pair. This is what the `f` key and journey selection
+    /// use so "fit" works in Transit mode (which has no road route), not only
+    /// for road routes.
+    fn fit_current(&mut self) {
+        if let Some(route) = self.model.route.clone() {
+            if route.geometry.len() >= 2 {
+                self.fit_points(&route.geometry);
+                return;
+            }
+        }
+        let journey = self.selected_journey_geometry();
+        if journey.len() >= 2 {
+            self.fit_points(&journey);
+            return;
+        }
+        // No line to fit — frame the endpoints if we have them.
+        let mut ends = Vec::new();
+        if let Some(o) = self.model.origin {
+            ends.push(o);
+        }
+        if let Some(d) = self.model.dest {
+            ends.push(d);
+        }
+        if ends.len() >= 2 {
+            self.fit_points(&ends);
+        }
+    }
+
     /// Frame the map so `pts` fit the visible map area (the part not covered by
     /// the docked panel). Used to fit a road route's geometry and, for transit
     /// where there is no road polyline, the origin/destination pair.
@@ -953,6 +993,9 @@ impl MapsApp {
                 NetMsg::Transit(t) => match t {
                     Ok(j) if !j.is_empty() => {
                         self.model.transit = j;
+                        // Frame the map on the itinerary now that we have real
+                        // leg geometry (the same courtesy the road route gets).
+                        self.fit_current();
                         self.model.status = "Departures updated".to_string();
                     }
                     Ok(_) => self.model.status = "No transit options found".to_string(),
@@ -1081,6 +1124,9 @@ impl MapsApp {
             }
             Hit::Journey(i) => {
                 self.model.transit_choice = *i;
+                // Frame the newly-selected itinerary on the map (its legs are
+                // what draws now), not just expand the panel card.
+                self.fit_current();
                 self.mark_dirty();
             }
             Hit::OfflineOpen => {
@@ -1146,15 +1192,7 @@ fn fmt_bytes(n: u64) -> String {
 }
 
 fn transit_color(theme: &Theme, mode: TransitMode) -> Color {
-    let c = &theme.tokens.colors;
-    match mode {
-        TransitMode::Walk => c.text_dim,
-        TransitMode::Bus => c.semantic.info,
-        TransitMode::Tram => c.semantic.danger,
-        TransitMode::Subway => theme.accent_primary,
-        TransitMode::Rail => c.semantic.success,
-        TransitMode::Ferry => c.accent[6],
-    }
+    canvas::transit_leg_color(theme, mode)
 }
 
 // ===========================================================================
@@ -1191,6 +1229,14 @@ impl MapsApp {
         }
         if let Some(route) = &self.model.route {
             canvas::draw_route(scene, t, &proj, route, &pal);
+        }
+        // Public-transport itinerary: the selected journey's legs draw on the
+        // map (mode-coloured lines + transfer pucks) when Transit is the active
+        // mode. Only the highlighted option is drawn to keep the map legible.
+        if self.model.mode.is_transit() {
+            if let Some(j) = self.model.transit.get(self.model.transit_choice) {
+                canvas::draw_transit(scene, t, &proj, j, theme, &pal, clip);
+            }
         }
         canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, clip);
 
@@ -1569,11 +1615,7 @@ impl MapsApp {
             let cat_col = canvas::category_color(theme, sel.category);
             draw::fill_rrect(scene, t, Rect::new(cr.x0, cr.y0, cr.x0 + 5.0, cr.y1), 12.0, cat_col);
             draw::text_w(scene, tr, t, &sel.name, x + 16.0, y + 12.0, 18.0, theme.text_primary, TextWeight::Bold);
-            let mut meta = sel.category.label().to_string();
-            if let Some(rating) = sel.rating {
-                meta = format!("{meta}  ·  ★ {rating:.1}");
-            }
-            draw::text(scene, tr, t, &meta, x + 16.0, y + 38.0, 12.0, theme.accent_primary);
+            draw::text(scene, tr, t, sel.category.label(), x + 16.0, y + 38.0, 12.0, theme.accent_primary);
             draw::text_clip(scene, tr, t, &sel.address, x + 16.0, y + 58.0, 12.0, theme.text_dim, right - x - 28.0);
 
             // Action buttons row.
@@ -1665,9 +1707,6 @@ impl MapsApp {
         draw::text_clip(scene, tr, t, &p.name, tx, r.y0 + 6.0, 13.0, theme.text_primary, r.x1 - tx - 50.0);
         let sub = format!("{} · {}", p.category.label(), p.address);
         draw::text_clip(scene, tr, t, &sub, tx, r.y0 + 24.0, 11.0, theme.text_dim, r.x1 - tx - 50.0);
-        if let Some(rt) = p.rating {
-            draw::text_right(scene, tr, t, &format!("★ {rt:.1}"), r.x1 - 8.0, r.y0 + 6.0, 11.0, theme.accent_primary);
-        }
         if p.saved {
             draw::text_right(scene, tr, t, "♥", r.x1 - 8.0, r.y0 + 24.0, 12.0, theme.tokens.colors.semantic.danger);
         }
@@ -2398,7 +2437,9 @@ impl MapsApp {
                     true
                 }
                 Key::Character(s) if s.eq_ignore_ascii_case("f") => {
-                    self.fit_route();
+                    // Fit whatever is shown: a road route, or — in Transit mode
+                    // — the selected itinerary's geometry, or the endpoints.
+                    self.fit_current();
                     true
                 }
                 Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
@@ -3009,6 +3050,320 @@ mod tests {
             (a.model.center.lon - before.lon).abs() > 1e-6
                 || (a.model.center.lat - before.lat).abs() > 1e-6,
             "drag should move the map centre"
+        );
+    }
+
+    /// Press directly on a map pin through the real `handle_event` path (no UI
+    /// click-target under it) and confirm `select_place` fires via `marker_at`.
+    /// The drag test above deliberately clears markers; this covers the pin path.
+    #[test]
+    fn press_on_marker_selects_via_handle_event() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        // A single marker placed in the open right-hand map area (clear of the
+        // docked left panel, the top search bar and the right-edge controls).
+        let anchor = Point::new(900.0, 460.0);
+        let pos = a.projection().unproject(anchor);
+        a.model.places = vec![crate::model::Place::new("pin", "Pin", Category::Cafe, "", pos)];
+        a.model.selected = None;
+        // Draw so any UI hot-regions are recorded (there are none over the pin).
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        // Press on the pin head (an unselected pin's head sits 22px above anchor).
+        let head = Point::new(anchor.x, anchor.y - 22.0);
+        move_to(&mut a, head.x, head.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "a press on a pin must be handled");
+        assert_eq!(a.model.selected.as_deref(), Some("pin"), "pressing the pin selects it");
+    }
+
+    /// A scroll over the side panel must scroll the panel content, not zoom the
+    /// map — the branch the map-zoom wheel test never reaches.
+    #[test]
+    fn wheel_over_panel_scrolls_not_zoom() {
+        let mut a = app_at(1280.0, 720.0);
+        assert!(a.panel_visible(), "docked panel is visible");
+        // Force overflow so there is somewhere to scroll to.
+        a.content_h = 2000.0;
+        a.content_view_h = 400.0;
+        let zoom_before = a.model.zoom;
+        let scroll_before = a.scroll;
+        let pr = a.panel_rect();
+        move_to(&mut a, pr.center().x, pr.y0 + 120.0);
+        let handled = feed(
+            &mut a,
+            WindowEvent::MouseWheel {
+                device_id: dummy_device_id(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        assert!(handled, "wheel over the panel must be handled");
+        assert!(a.scroll > scroll_before, "panel content should scroll");
+        assert_eq!(a.model.zoom, zoom_before, "scrolling the panel must not zoom the map");
+    }
+
+    // --- Keyboard shortcuts through the real KeyboardInput path -------------
+    // These drive the actual `WindowEvent::KeyboardInput` → `handle_key`
+    // dispatch. `KeyEvent` has a `pub(crate)` field in winit 0.30, so it is
+    // built via the workspace-standard zeroed-struct workaround (see
+    // `ui/src/widget/slash_menu.rs`); `handle_key` only reads `logical_key`.
+
+    fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        feed(
+            a,
+            WindowEvent::KeyboardInput {
+                device_id: dummy_device_id(),
+                event: ev,
+                is_synthetic: false,
+            },
+        )
+    }
+
+    fn key_char(a: &mut MapsApp, ch: &str) -> bool {
+        feed_key(a, Key::Character(winit::keyboard::SmolStr::new(ch)))
+    }
+
+    fn key_named(a: &mut MapsApp, named: NamedKey) -> bool {
+        feed_key(a, Key::Named(named))
+    }
+
+    /// `/` focuses the search field, characters then type into it, Backspace
+    /// deletes, and Escape unfocuses — the whole edit loop over the real event
+    /// path.
+    #[test]
+    fn slash_and_typing_drive_search_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query.clear();
+        a.search_focused = false;
+        assert!(key_char(&mut a, "/"), "'/' handled");
+        assert!(a.search_focused, "'/' focuses search");
+        key_char(&mut a, "h");
+        key_char(&mut a, "i");
+        assert_eq!(a.model.query, "hi", "characters type into the focused search");
+        key_named(&mut a, NamedKey::Backspace);
+        assert_eq!(a.model.query, "h", "Backspace deletes a char");
+        key_named(&mut a, NamedKey::Escape);
+        assert!(!a.search_focused, "Escape unfocuses search");
+    }
+
+    /// `+`/`-` zoom the map through the key path.
+    #[test]
+    fn zoom_keys_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        let z0 = a.model.zoom;
+        key_char(&mut a, "+");
+        assert!(a.model.zoom > z0, "'+' zooms in");
+        let z1 = a.model.zoom;
+        key_char(&mut a, "-");
+        assert!(a.model.zoom < z1, "'-' zooms out");
+    }
+
+    /// Arrow keys pan the map through the key path.
+    #[test]
+    fn arrow_keys_pan_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        let before = a.model.center;
+        key_named(&mut a, NamedKey::ArrowRight);
+        assert!((a.model.center.lon - before.lon).abs() > 1e-9, "ArrowRight pans east");
+        let mid = a.model.center;
+        key_named(&mut a, NamedKey::ArrowDown);
+        assert!((a.model.center.lat - mid.lat).abs() > 1e-9, "ArrowDown pans south");
+    }
+
+    /// `d`/`t` open Directions / Transit for the selected place, and `s` toggles
+    /// its saved flag — all via the key path.
+    #[test]
+    fn directions_transit_save_keys_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        a.select_place("marienplatz");
+        a.model.panel = Panel::Explore;
+        a.model.mode = TravelMode::Car;
+
+        key_char(&mut a, "d");
+        assert_eq!(a.model.panel, Panel::Directions, "'d' opens Directions");
+        assert!(a.model.route.is_some(), "'d' computes a route for the selection");
+
+        key_char(&mut a, "t");
+        assert!(a.model.mode.is_transit(), "'t' switches to Transit mode");
+        assert!(a.model.route.is_none(), "transit drops the road route");
+
+        let saved_before = a.model.place("marienplatz").unwrap().saved;
+        key_char(&mut a, "s");
+        assert_eq!(
+            a.model.place("marienplatz").unwrap().saved,
+            !saved_before,
+            "'s' toggles the selected place's saved flag"
+        );
+    }
+
+    /// `1`/`2` switch the Explore/Directions tabs; `m` toggles the offline
+    /// overlay; Escape deselects.
+    #[test]
+    fn panel_offline_escape_keys_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        key_char(&mut a, "1");
+        assert_eq!(a.model.panel, Panel::Explore, "'1' selects Explore");
+        key_char(&mut a, "2");
+        assert_eq!(a.model.panel, Panel::Directions, "'2' selects Directions");
+
+        assert!(!a.offline_open);
+        key_char(&mut a, "m");
+        assert!(a.offline_open, "'m' opens the offline overlay");
+        key_char(&mut a, "m");
+        assert!(!a.offline_open, "'m' again closes it");
+
+        a.select_place("hofgarten");
+        assert!(a.model.selected.is_some());
+        key_named(&mut a, NamedKey::Escape);
+        assert!(a.model.selected.is_none(), "Escape deselects the place");
+    }
+
+    // --- Click-dispatch coverage for previously-untested Hits ---------------
+
+    /// Clearing the search (the × button's `Hit`) empties the query and results.
+    #[test]
+    fn clear_search_dispatch() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query = "café".to_string();
+        a.run_search();
+        assert!(!a.model.results.is_empty(), "search populated results");
+        a.dispatch(&Hit::ClearSearch);
+        assert!(a.model.query.is_empty(), "clear empties the query");
+        assert!(a.model.results.is_empty(), "clear empties the results");
+    }
+
+    /// Clearing an active route drops it (the place-card / directions clear-×).
+    #[test]
+    fn clear_route_dispatch() {
+        let mut a = app_at(1280.0, 720.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        assert!(a.model.route.is_some());
+        a.dispatch(&Hit::ClearRoute);
+        assert!(a.model.route.is_none(), "clear-route drops the route");
+    }
+
+    /// A recent-search chip re-runs that query.
+    #[test]
+    fn recent_dispatch_runs_search() {
+        let mut a = app_at(1280.0, 720.0);
+        a.dispatch(&Hit::Recent("Marienplatz".to_string()));
+        assert_eq!(a.model.query, "Marienplatz", "recent sets the query");
+        assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
+        assert!(!a.model.results.is_empty(), "the recent search actually runs");
+    }
+
+    // --- Offline download / cache management dispatch -----------------------
+
+    /// Opening the overlay then starting a download computes a real tile count
+    /// for the current viewport and surfaces a progress status.
+    #[test]
+    fn offline_open_and_download_dispatch() {
+        let mut a = app_at(1280.0, 720.0);
+        a.dispatch(&Hit::OfflineOpen);
+        assert!(a.offline_open, "OfflineOpen shows the overlay");
+        a.dispatch(&Hit::OfflineDownload);
+        assert!(
+            a.model.status.starts_with("Downloading") && a.model.status.contains("tiles"),
+            "download surfaces a tile-count status, got {:?}",
+            a.model.status
+        );
+        // The download covers at least the base zoom plus the extra levels.
+        assert!(a.tiles.progress().total > 0, "a real region of tiles was queued");
+    }
+
+    /// The offline zoom-depth stepper clamps to 0..=6.
+    #[test]
+    fn offline_zoom_delta_clamps() {
+        let mut a = app_at(1280.0, 720.0);
+        for _ in 0..10 {
+            a.dispatch(&Hit::OfflineZoomDelta(1));
+        }
+        assert_eq!(a.offline_zoom_extra, 6, "zoom-depth caps at 6");
+        for _ in 0..10 {
+            a.dispatch(&Hit::OfflineZoomDelta(-1));
+        }
+        assert_eq!(a.offline_zoom_extra, 0, "zoom-depth floors at 0");
+    }
+
+    /// Clearing the cache deletes the on-disk tile tree and zeroes the readout —
+    /// exercised against a disposable temp dir, never the user's real cache.
+    #[test]
+    fn offline_clear_cache_dispatch_removes_dir() {
+        let mut a = app_at(1280.0, 720.0);
+        let dir = std::env::temp_dir()
+            .join(format!("qos-maps-cctest-{}-{}", std::process::id(), a.start.elapsed().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("seed.png"), b"not-a-real-tile").unwrap();
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        assert!(a.tiles.cache_bytes() > 0, "seeded cache is non-empty");
+
+        a.dispatch(&Hit::OfflineClearCache);
+        assert!(!dir.exists(), "clear-cache removes the on-disk tree");
+        assert_eq!(a.cache_bytes, 0, "the cache-size readout resets to 0");
+        assert!(a.model.status.starts_with("Cleared"), "a status states what was freed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Transit itinerary on the map (element: transit geometry was dead) ---
+
+    /// With a transit itinerary selected, the leg geometry is present and the
+    /// `f` key / journey selection frames the map on it — previously `f` was a
+    /// no-op in Transit mode because it only ever fit `model.route` (always None
+    /// for transit), and the geometry was never populated at all.
+    #[test]
+    fn transit_journey_geometry_drives_map_fit() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        // Sample transit carries real leg geometry; select Transit as the mode
+        // (keeps the sample itineraries, drops the road route).
+        a.set_travel_mode(TravelMode::Transit);
+        assert!(a.model.route.is_none(), "transit has no road route");
+        let geom = a.selected_journey_geometry();
+        assert!(geom.len() >= 2, "the selected itinerary has drawable leg geometry");
+
+        // Drawing the transit itinerary must not panic (real on-map render path).
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        // The `f` key frames the itinerary even though there is no road route.
+        a.model.center = LatLon::new(0.0, 0.0);
+        a.model.zoom = 3.0;
+        assert!(key_char(&mut a, "f"), "'f' handled in transit mode");
+        assert!(
+            a.model.center.lat.abs() > 1.0 && a.model.center.lon.abs() > 1.0,
+            "'f' reframed the map onto the itinerary, not left at (0,0): {:?}",
+            a.model.center
+        );
+        assert!(a.model.zoom > 3.0, "'f' zoomed in to fit the itinerary");
+    }
+
+    /// Selecting a different journey card re-frames the map onto that itinerary
+    /// (not merely expanding the panel), via the real dispatch path.
+    #[test]
+    fn selecting_journey_reframes_map() {
+        let mut a = app_at(1280.0, 720.0);
+        a.set_travel_mode(TravelMode::Transit);
+        assert!(a.model.transit.len() >= 3, "sample has multiple itineraries");
+        a.dispatch(&Hit::Journey(0));
+        let center0 = a.model.center;
+        a.dispatch(&Hit::Journey(2));
+        assert_eq!(a.model.transit_choice, 2, "the third journey is selected");
+        assert!(
+            (a.model.center.lat - center0.lat).abs() > 1e-6
+                || (a.model.center.lon - center0.lon).abs() > 1e-6,
+            "a different itinerary reframes the map"
         );
     }
 }

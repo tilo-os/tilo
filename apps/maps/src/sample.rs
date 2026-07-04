@@ -251,64 +251,56 @@ pub fn places() -> Vec<Place> {
             Category::Landmark,
             "Marienplatz 1, 80331 München",
             cell(0.0, 0.0),
-        )
-        .with_rating(4.7),
+        ),
         Place::new(
             "cafe-glueck",
             "Café Glück",
             Category::Cafe,
             "Theatinerstraße 18",
             cell(2.6, 2.1),
-        )
-        .with_rating(4.5),
+        ),
         Place::new(
             "stadtmuseum",
             "Stadtmuseum",
             Category::Museum,
             "St.-Jakobs-Platz 1",
             cell(-2.1, -1.2),
-        )
-        .with_rating(4.3),
+        ),
         Place::new(
             "isar-biergarten",
             "Isar Biergarten",
             Category::Bar,
             "Am Kanal 4",
             cell(7.4, -2.6),
-        )
-        .with_rating(4.6),
+        ),
         Place::new(
             "hofgarten",
             "Hofgarten",
             Category::Park,
             "Hofgartenstraße",
             cell(1.5, 5.4),
-        )
-        .with_rating(4.8),
+        ),
         Place::new(
             "hauptbahnhof",
             "Hauptbahnhof",
             Category::Transit,
             "Bahnhofplatz 2",
             cell(-9.0, 1.1),
-        )
-        .with_rating(4.0),
+        ),
         Place::new(
             "hotel-vier",
             "Hotel Vier Türme",
             Category::Hotel,
             "Sendlinger Str. 44",
             cell(3.8, -4.2),
-        )
-        .with_rating(4.4),
+        ),
         Place::new(
             "viktualienmarkt",
             "Viktualienmarkt",
             Category::Shop,
             "Viktualienmarkt 3",
             cell(0.3, -2.1),
-        )
-        .with_rating(4.7),
+        ),
     ]
 }
 
@@ -426,9 +418,16 @@ pub fn fallback_route(from: LatLon, to: LatLon, mode: TravelMode) -> Route {
     }
 }
 
-/// Sample public-transport itineraries for the Transit panel.
+/// Sample public-transport itineraries for the Transit panel. Each leg carries
+/// a plausible on-grid `geometry` polyline so the offline `--shots` map and the
+/// hermetic tests exercise the real on-map itinerary rendering (the live app
+/// gets these from the planner's `legGeometry`).
 pub fn sample_transit() -> Vec<TransitJourney> {
-    let walk = |from: &str, to: &str, dep: &str, arr: &str, min: u32| TransitLeg {
+    // Short polyline along the sample street grid between two grid cells.
+    let seg = |a: (f64, f64), b: (f64, f64)| -> Vec<LatLon> {
+        vec![cell(a.0, a.1), cell((a.0 + b.0) / 2.0, a.1), cell(b.0, b.1)]
+    };
+    let walk = |from: &str, to: &str, dep: &str, arr: &str, min: u32, geom: Vec<LatLon>| TransitLeg {
         mode: TransitMode::Walk,
         line: String::new(),
         headsign: String::new(),
@@ -438,7 +437,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
         arr: arr.to_string(),
         duration_min: min,
         num_stops: 0,
-        geometry: vec![],
+        geometry: geom,
     };
 
     vec![
@@ -448,7 +447,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
             duration_min: 14,
             transfers: 0,
             legs: vec![
-                walk("Your location", "Goetheplatz", "09:12", "09:16", 4),
+                walk("Your location", "Goetheplatz", "09:12", "09:16", 4, seg((-6.5, -6.0), (-5.0, -5.0))),
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3".to_string(),
@@ -459,9 +458,9 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: "09:23".to_string(),
                     duration_min: 6,
                     num_stops: 3,
-                    geometry: vec![],
+                    geometry: vec![cell(-5.0, -5.0), cell(-3.0, -3.0), cell(-1.0, -1.0), cell(0.0, 0.0)],
                 },
-                walk("Marienplatz", "Marienplatz", "09:24", "09:26", 2),
+                walk("Marienplatz", "Marienplatz", "09:24", "09:26", 2, seg((0.0, 0.0), (0.2, -0.2))),
             ],
         },
         TransitJourney {
@@ -470,7 +469,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
             duration_min: 19,
             transfers: 1,
             legs: vec![
-                walk("Your location", "Sendlinger Tor", "09:08", "09:11", 3),
+                walk("Your location", "Sendlinger Tor", "09:08", "09:11", 3, seg((-6.5, -6.0), (-4.0, -4.0))),
                 TransitLeg {
                     mode: TransitMode::Tram,
                     line: "17".to_string(),
@@ -481,7 +480,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: "09:16".to_string(),
                     duration_min: 4,
                     num_stops: 2,
-                    geometry: vec![],
+                    geometry: vec![cell(-4.0, -4.0), cell(-3.0, -2.5), cell(-2.0, -1.5)],
                 },
                 TransitLeg {
                     mode: TransitMode::Bus,
@@ -493,9 +492,9 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: "09:25".to_string(),
                     duration_min: 6,
                     num_stops: 3,
-                    geometry: vec![],
+                    geometry: vec![cell(-2.0, -1.5), cell(-1.0, -0.5), cell(0.0, 0.0)],
                 },
-                walk("Marienplatz", "Marienplatz", "09:25", "09:27", 2),
+                walk("Marienplatz", "Marienplatz", "09:25", "09:27", 2, seg((0.0, 0.0), (0.2, -0.2))),
             ],
         },
         TransitJourney {
@@ -504,7 +503,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
             duration_min: 24,
             transfers: 1,
             legs: vec![
-                walk("Your location", "Poccistraße", "09:05", "09:10", 5),
+                walk("Your location", "Poccistraße", "09:05", "09:10", 5, seg((-6.5, -6.0), (-6.0, -4.5))),
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3/U6".to_string(),
@@ -515,7 +514,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: "09:21".to_string(),
                     duration_min: 8,
                     num_stops: 4,
-                    geometry: vec![],
+                    geometry: vec![cell(-6.0, -4.5), cell(-4.0, -2.0), cell(-1.0, 2.0), cell(1.5, 5.0)],
                 },
                 TransitLeg {
                     mode: TransitMode::Rail,
@@ -527,9 +526,9 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: "09:27".to_string(),
                     duration_min: 3,
                     num_stops: 1,
-                    geometry: vec![],
+                    geometry: vec![cell(1.5, 5.0), cell(0.5, 2.0), cell(0.0, 0.0)],
                 },
-                walk("Marienplatz", "Marienplatz", "09:27", "09:29", 2),
+                walk("Marienplatz", "Marienplatz", "09:27", "09:29", 2, seg((0.0, 0.0), (0.2, -0.2))),
             ],
         },
     ]
