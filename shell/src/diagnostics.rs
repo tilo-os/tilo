@@ -1,0 +1,449 @@
+//! Per-share observability counters — the OSD overlay's data source.
+//!
+//! [`PeerSurfaceMetrics`] aggregates several signals for each peer
+//! surface (the receive side of a `flatpak_share` session):
+//!
+//! 1. **Frame counters** — how many decoded frames landed, how many were
+//!    dropped because the decoder / paint queue backed up. Backpressure
+//!    on the receive side is drop-oldest: if the caller pushes a new
+//!    frame before `mark_drawn` has cleared the previous one and more
+//!    than `queue_ceiling` frames are pending, the oldest gets dropped
+//!    and [`Self::frames_dropped`] increments. Dropped frames are the
+//!    diagnostic the overlay surfaces when a link is over-subscribed.
+//!
+//! 2. **Latency samples** — a small ring of `(capture_ts_ns,
+//!    present_ts_ns)` deltas so the overlay can render a rolling motion-
+//!    to-photon histogram. The default ring holds the last 128 samples;
+//!    at 60 fps that's ~2.1 s of history, enough to catch a burst-of-
+//!    jitter without unbounded memory.
+//!
+//! 3. **Sender-side encode wall-clock** — a parallel ring of encode
+//!    times measured on the owner. Exposed as p50 / p99 in
+//!    [`PeerSurfaceSnapshot`] so the OSD can render "encode budget"
+//!    separately from "network + decode budget".
+//!
+//! 4. **Chosen backend + capture path** — set once at session start
+//!    ([`Self::set_chosen_encoder`], [`Self::set_capture_path`]) so the
+//!    OSD can label which pipeline is running. The runtime probe writes
+//!    the outcome here.
+//!
+//! Access is [`Clone`] + a single mutex-protected inner so multiple
+//! subsystems (the actor's receive loop, the PeerView paint pass, the
+//! OSD overlay) can share the same handle without lifetime gymnastics.
+
+use std::sync::{Arc, Mutex};
+
+use crate::collab::encoder::EncoderKind;
+
+/// Default ring capacity — 128 samples ≈ 2.1 s at 60 fps.
+const LATENCY_RING_CAPACITY: usize = 128;
+
+/// Ring capacity for encode-wallclock samples. Same size as latency —
+/// they represent the same time window.
+const ENCODE_WALLCLOCK_CAPACITY: usize = 128;
+
+/// Which route a captured frame took from the client's `wl_buffer` to
+/// the encoder.
+///
+/// - `ShmReadback` — the historical path. Costs ~4 ms per 720p frame
+///   because it copies out of the client's SHM pool, swizzles ARGB→RGBA
+///   into a Vec, then hands the Vec to the encoder.
+/// - `DmabufDirect` — zero-copy path. The compositor detects a DMABUF
+///   `wl_buffer`, extracts the fd + strides, and hands them directly to
+///   the encoder (VA-API's `Surface::from_dma_buf`, NVENC's registered
+///   CUDA external memory). Saves the readback + swizzle cost — the
+///   difference shows up as ~3.5 ms in the encode-wallclock ring.
+///
+/// The default is `ShmReadback` — the tracker's fallback path for
+/// clients that ship SHM buffers (Xwayland is the common case).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum CapturePath {
+    /// SHM pool readback + CPU-side swizzle.
+    #[default]
+    ShmReadback,
+    /// Direct DMABUF fd handed to the encoder — no CPU copy.
+    DmabufDirect,
+}
+
+impl CapturePath {
+    /// Human-readable label for the OSD overlay.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapturePath::ShmReadback => "shm-readback",
+            CapturePath::DmabufDirect => "dmabuf-direct",
+        }
+    }
+}
+
+/// Shared observability counters for one receive-side peer surface.
+///
+/// Clone is cheap — the inner state sits behind an `Arc<Mutex<_>>` so
+/// every clone points at the same numbers. Snapshots via
+/// [`Self::snapshot`] copy the current values out for callers that just
+/// want to render them (the OSD overlay) without holding the lock.
+#[derive(Clone, Debug)]
+pub struct PeerSurfaceMetrics {
+    inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Debug)]
+struct Inner {
+    frames_received: u64,
+    frames_dropped: u64,
+    keyframes: u64,
+    latency_ring: Vec<u64>,
+    latency_head: usize,
+    latency_capacity: usize,
+    encode_ring: Vec<u64>,
+    encode_head: usize,
+    encode_capacity: usize,
+    chosen_encoder: EncoderKind,
+    capture_path: CapturePath,
+    bitrate_bytes_per_sec_ewma: u64,
+}
+
+/// Point-in-time copy of the counters for read-only consumers.
+///
+/// Small enough to pass by value; no `Arc` so callers can serialise
+/// or diff without touching the mutex.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PeerSurfaceSnapshot {
+    /// Total frames the receiver successfully decoded and stashed.
+    pub frames_received: u64,
+    /// Total frames the receiver dropped due to backpressure. Rate =
+    /// `frames_dropped / (frames_received + frames_dropped)`.
+    pub frames_dropped: u64,
+    /// Number of keyframes observed — proxy for GOP length + encoder
+    /// health (a spike here means the encoder is refreshing more
+    /// aggressively than the target keyframe interval).
+    pub keyframes: u64,
+    /// Mean of the current latency ring in nanoseconds. `0` if the ring
+    /// is empty.
+    pub latency_ns_mean: u64,
+    /// Peak (max) latency observed in the current ring, in nanoseconds.
+    /// `0` if the ring is empty.
+    pub latency_ns_max: u64,
+    /// Number of latency samples currently in the ring.
+    pub latency_samples: usize,
+    /// Encode wall-clock p50 (median) in milliseconds.
+    pub encode_wallclock_ms_p50: u64,
+    /// Encode wall-clock p99 in milliseconds.
+    pub encode_wallclock_ms_p99: u64,
+    /// Which encoder the runtime probe selected. Set once at session
+    /// start via [`PeerSurfaceMetrics::set_chosen_encoder`].
+    pub chosen_encoder: EncoderKind,
+    /// Whether the capture path used direct DMABUF import or SHM
+    /// readback for the most recently observed frame.
+    pub capture_path: CapturePath,
+    /// Exponentially-weighted moving average of the encoded-bitrate
+    /// (bytes per second). Set by [`PeerSurfaceMetrics::record_bitrate`].
+    pub bitrate_bytes_per_sec_ewma: u64,
+}
+
+impl Default for PeerSurfaceSnapshot {
+    fn default() -> Self {
+        Self {
+            frames_received: 0,
+            frames_dropped: 0,
+            keyframes: 0,
+            latency_ns_mean: 0,
+            latency_ns_max: 0,
+            latency_samples: 0,
+            encode_wallclock_ms_p50: 0,
+            encode_wallclock_ms_p99: 0,
+            chosen_encoder: EncoderKind::Openh264,
+            capture_path: CapturePath::default(),
+            bitrate_bytes_per_sec_ewma: 0,
+        }
+    }
+}
+
+impl PeerSurfaceMetrics {
+    /// Fresh counters — all zero, empty rings at the default capacity.
+    pub fn new() -> Self {
+        Self::with_capacity(LATENCY_RING_CAPACITY)
+    }
+
+    /// Fresh counters with a caller-chosen ring capacity. Tests use this
+    /// to keep assertions deterministic on small sample counts; production
+    /// callers should stick to [`Self::new`].
+    pub fn with_capacity(latency_capacity: usize) -> Self {
+        let capacity = latency_capacity.max(1);
+        Self {
+            inner: Arc::new(Mutex::new(Inner {
+                frames_received: 0,
+                frames_dropped: 0,
+                keyframes: 0,
+                latency_ring: Vec::with_capacity(capacity),
+                latency_head: 0,
+                latency_capacity: capacity,
+                encode_ring: Vec::with_capacity(ENCODE_WALLCLOCK_CAPACITY),
+                encode_head: 0,
+                encode_capacity: ENCODE_WALLCLOCK_CAPACITY,
+                chosen_encoder: EncoderKind::Openh264,
+                capture_path: CapturePath::default(),
+                bitrate_bytes_per_sec_ewma: 0,
+            })),
+        }
+    }
+
+    /// Record a successfully-decoded frame with its measured
+    /// motion-to-photon latency (nanoseconds).
+    pub fn record_received(&self, latency_ns: u64) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        inner.frames_received = inner.frames_received.saturating_add(1);
+        // Insert into the ring. Grow up to capacity, then overwrite the
+        // oldest slot via `latency_head`.
+        if inner.latency_ring.len() < inner.latency_capacity {
+            inner.latency_ring.push(latency_ns);
+        } else {
+            let cap = inner.latency_capacity;
+            let head = inner.latency_head;
+            inner.latency_ring[head] = latency_ns;
+            inner.latency_head = (head + 1) % cap;
+        }
+    }
+
+    /// Record a dropped frame — the counter increments by one; latency
+    /// ring untouched (a dropped frame has no valid latency).
+    pub fn record_dropped(&self) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        inner.frames_dropped = inner.frames_dropped.saturating_add(1);
+    }
+
+    /// Record an encode wall-clock sample (nanoseconds). Populates the
+    /// p50/p99 fields the OSD renders.
+    pub fn record_encode_wallclock(&self, ns: u64) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        if inner.encode_ring.len() < inner.encode_capacity {
+            inner.encode_ring.push(ns);
+        } else {
+            let cap = inner.encode_capacity;
+            let head = inner.encode_head;
+            inner.encode_ring[head] = ns;
+            inner.encode_head = (head + 1) % cap;
+        }
+    }
+
+    /// Record that the just-encoded frame was a keyframe (SPS/PPS or
+    /// IDR refresh).
+    pub fn record_keyframe(&self) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        inner.keyframes = inner.keyframes.saturating_add(1);
+    }
+
+    /// Update the bitrate EWMA with a fresh sample (bytes per second).
+    /// Alpha is fixed at 0.2 so recent samples dominate but the number
+    /// stays smooth across the ~5 s window the OSD renders.
+    pub fn record_bitrate(&self, bytes_per_sec: u64) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        let prev = inner.bitrate_bytes_per_sec_ewma;
+        let alpha = 20u64; // 20% new sample weight
+        inner.bitrate_bytes_per_sec_ewma =
+            ((prev.saturating_mul(100 - alpha)) + bytes_per_sec.saturating_mul(alpha)) / 100;
+    }
+
+    /// Set the encoder chosen by the runtime probe at session start.
+    pub fn set_chosen_encoder(&self, kind: EncoderKind) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        inner.chosen_encoder = kind;
+    }
+
+    /// Set the capture path for the most recent frame — the compositor
+    /// commit hook calls this after routing the buffer to either the
+    /// DMABUF direct path or the SHM readback path.
+    pub fn set_capture_path(&self, path: CapturePath) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        inner.capture_path = path;
+    }
+
+    /// Snapshot the counters for a read-only consumer.
+    pub fn snapshot(&self) -> PeerSurfaceSnapshot {
+        let inner = self.inner.lock().expect("metrics mutex");
+        let latency_samples = inner.latency_ring.len();
+        let (latency_ns_mean, latency_ns_max) = if latency_samples == 0 {
+            (0, 0)
+        } else {
+            let sum: u128 = inner.latency_ring.iter().map(|s| *s as u128).sum();
+            let mean = (sum / latency_samples as u128) as u64;
+            let max = inner.latency_ring.iter().copied().max().unwrap_or(0);
+            (mean, max)
+        };
+        // Compute p50 / p99 from the encode ring.
+        let (p50_ns, p99_ns) = percentile_50_99(&inner.encode_ring);
+        PeerSurfaceSnapshot {
+            frames_received: inner.frames_received,
+            frames_dropped: inner.frames_dropped,
+            keyframes: inner.keyframes,
+            latency_ns_mean,
+            latency_ns_max,
+            latency_samples,
+            encode_wallclock_ms_p50: p50_ns / 1_000_000,
+            encode_wallclock_ms_p99: p99_ns / 1_000_000,
+            chosen_encoder: inner.chosen_encoder,
+            capture_path: inner.capture_path,
+            bitrate_bytes_per_sec_ewma: inner.bitrate_bytes_per_sec_ewma,
+        }
+    }
+
+    /// Reset every counter. Used by tests that reuse a metrics handle
+    /// across cases; production code has no reason to call this.
+    #[cfg(test)]
+    pub fn reset(&self) {
+        let mut inner = self.inner.lock().expect("metrics mutex");
+        inner.frames_received = 0;
+        inner.frames_dropped = 0;
+        inner.keyframes = 0;
+        inner.latency_ring.clear();
+        inner.latency_head = 0;
+        inner.encode_ring.clear();
+        inner.encode_head = 0;
+        inner.bitrate_bytes_per_sec_ewma = 0;
+    }
+}
+
+/// Return `(p50_ns, p99_ns)` for a ring of nanosecond samples. Copies
+/// into a scratch vec for sorting so the caller's ring stays in
+/// insertion order.
+fn percentile_50_99(ring: &[u64]) -> (u64, u64) {
+    if ring.is_empty() {
+        return (0, 0);
+    }
+    let mut sorted = ring.to_vec();
+    sorted.sort_unstable();
+    let p50_idx = sorted.len() / 2;
+    let p99_idx = ((sorted.len() as f64 * 0.99) as usize).min(sorted.len() - 1);
+    (sorted[p50_idx], sorted[p99_idx])
+}
+
+impl Default for PeerSurfaceMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_metrics_snapshot_is_zero() {
+        let m = PeerSurfaceMetrics::new();
+        let s = m.snapshot();
+        assert_eq!(s, PeerSurfaceSnapshot::default());
+    }
+
+    #[test]
+    fn record_received_increments_and_stores_latency() {
+        let m = PeerSurfaceMetrics::with_capacity(4);
+        m.record_received(10_000_000);
+        m.record_received(20_000_000);
+        let s = m.snapshot();
+        assert_eq!(s.frames_received, 2);
+        assert_eq!(s.frames_dropped, 0);
+        assert_eq!(s.latency_samples, 2);
+        assert_eq!(s.latency_ns_mean, 15_000_000);
+        assert_eq!(s.latency_ns_max, 20_000_000);
+    }
+
+    #[test]
+    fn record_dropped_does_not_touch_latency() {
+        let m = PeerSurfaceMetrics::new();
+        m.record_received(1_000);
+        m.record_dropped();
+        m.record_dropped();
+        let s = m.snapshot();
+        assert_eq!(s.frames_received, 1);
+        assert_eq!(s.frames_dropped, 2);
+        assert_eq!(s.latency_samples, 1);
+        assert_eq!(s.latency_ns_mean, 1_000);
+    }
+
+    #[test]
+    fn latency_ring_wraps_at_capacity() {
+        // Capacity 3 with 5 pushes: samples 3, 4, 5 remain (drop 1 + 2).
+        let m = PeerSurfaceMetrics::with_capacity(3);
+        for i in 1..=5u64 {
+            m.record_received(i * 1_000_000);
+        }
+        let s = m.snapshot();
+        assert_eq!(s.frames_received, 5);
+        assert_eq!(s.latency_samples, 3);
+        // (3 + 4 + 5) / 3 = 4 → 4_000_000 ns.
+        assert_eq!(s.latency_ns_mean, 4_000_000);
+        assert_eq!(s.latency_ns_max, 5_000_000);
+    }
+
+    #[test]
+    fn clone_shares_inner_state() {
+        let m1 = PeerSurfaceMetrics::new();
+        let m2 = m1.clone();
+        m1.record_received(500);
+        m2.record_dropped();
+        let s = m1.snapshot();
+        assert_eq!(s.frames_received, 1);
+        assert_eq!(s.frames_dropped, 1);
+        // m2's view sees the same values.
+        assert_eq!(m2.snapshot(), s);
+    }
+
+    #[test]
+    fn encode_wallclock_p50_p99_populate() {
+        let m = PeerSurfaceMetrics::new();
+        // 10 samples: 1ms .. 10ms.
+        for i in 1..=10u64 {
+            m.record_encode_wallclock(i * 1_000_000);
+        }
+        let s = m.snapshot();
+        // Median of 10 sorted [1..10]ms — the p50 index is 5 (0-indexed
+        // into the sorted vec of length 10 → element at index 5, which
+        // is 6ms). p99 = ceil(0.99 * 10) = 9 → 10ms.
+        assert_eq!(s.encode_wallclock_ms_p50, 6);
+        assert_eq!(s.encode_wallclock_ms_p99, 10);
+    }
+
+    #[test]
+    fn chosen_encoder_and_capture_path_round_trip() {
+        let m = PeerSurfaceMetrics::new();
+        m.set_chosen_encoder(EncoderKind::VaApi);
+        m.set_capture_path(CapturePath::DmabufDirect);
+        let s = m.snapshot();
+        assert_eq!(s.chosen_encoder, EncoderKind::VaApi);
+        assert_eq!(s.capture_path, CapturePath::DmabufDirect);
+    }
+
+    #[test]
+    fn keyframe_counter_increments() {
+        let m = PeerSurfaceMetrics::new();
+        m.record_keyframe();
+        m.record_keyframe();
+        m.record_keyframe();
+        let s = m.snapshot();
+        assert_eq!(s.keyframes, 3);
+    }
+
+    #[test]
+    fn bitrate_ewma_smooths_samples() {
+        let m = PeerSurfaceMetrics::new();
+        m.record_bitrate(1_000_000);
+        m.record_bitrate(1_000_000);
+        m.record_bitrate(1_000_000);
+        let s = m.snapshot();
+        // With alpha=0.2 the EWMA reaches ~488 000 after 3 samples of
+        // 1M (0 + 0.2 * (1M - 0) = 200k; 200k + 0.2 * 800k = 360k;
+        // 360k + 0.2 * 640k = 488k).
+        assert!(
+            s.bitrate_bytes_per_sec_ewma > 400_000
+                && s.bitrate_bytes_per_sec_ewma < 600_000,
+            "EWMA converged to unexpected value: {}",
+            s.bitrate_bytes_per_sec_ewma
+        );
+    }
+
+    #[test]
+    fn percentile_helper_handles_edge_cases() {
+        assert_eq!(percentile_50_99(&[]), (0, 0));
+        assert_eq!(percentile_50_99(&[42]), (42, 42));
+        assert_eq!(percentile_50_99(&[1, 2, 3, 4, 5]), (3, 5));
+    }
+}
