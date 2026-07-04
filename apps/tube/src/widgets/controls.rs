@@ -345,6 +345,7 @@ pub struct Switch {
     rect: Rect,
     hovered: bool,
     dirty: bool,
+    test_id: Option<String>,
 }
 
 impl Switch {
@@ -356,7 +357,15 @@ impl Switch {
             rect: Rect::ZERO,
             hovered: false,
             dirty: true,
+            test_id: None,
         }
+    }
+
+    /// Stable, addressable id so headless click-tests can flip this exact
+    /// switch through the real `handle_event` path.
+    pub fn id(mut self, id: &str) -> Self {
+        self.test_id = Some(id.to_string());
+        self
     }
 }
 
@@ -472,6 +481,9 @@ impl Widget for Switch {
     }
     fn name(&self) -> &str {
         "Switch"
+    }
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
     }
     fn get_rect(&self) -> Rect {
         self.rect

@@ -388,12 +388,18 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
 
 pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
     // The search field is a CRDT-bound TextInput so its text lives in the
-    // document (survives navigation rebuilds) and would sync to peers.
+    // document (survives navigation rebuilds) and would sync to peers. It is
+    // ALWAYS present — its own placeholder draws the "Search" hint while empty —
+    // so the user can click into it and type from a cold start. (An earlier
+    // build swapped the input for a static label while empty, which meant the
+    // input was absent from the tree until a query already existed, so there was
+    // nothing to focus and free-text search was unreachable.)
     let search_input = TextInput::new(vec![])
         .with_id("search_input")
         .with_on_change_path("search_query")
         .with_plain_chrome()
-        .with_font_size(15.0);
+        .with_font_size(15.0)
+        .with_placeholder("Search");
 
     let search = Flex::row()
         .grow(1.0)
@@ -408,15 +414,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             border: Some((1.0, theme.border_standard)),
         })
         .push(icon(IconKind::Search, 18.0, theme.text_dim))
-        .push(
-            Flex::row()
-                .grow(1.0)
-                .push_if(
-                    model.search_query.is_empty(),
-                    dim(theme, "Search", 14.0),
-                )
-                .push_if(!model.search_query.is_empty(), search_input),
-        )
+        .push(Flex::row().grow(1.0).push(search_input))
         .push(icon_button(theme, bus, IconKind::Search, Action::SubmitSearch));
 
     // Only surface the data-source indicator when we're NOT on live data
@@ -769,17 +767,21 @@ pub fn watch(
         .iter()
         .map(|s| model.settings.category_enabled(s.category))
         .collect();
-    let seek = SeekBar::new(bus, v.duration as f64, model.playhead, v.sponsor.clone(), enabled);
+    let seek = SeekBar::new(bus, v.duration as f64, model.playhead, v.sponsor.clone(), enabled)
+        .id("seek_bar");
     let transport = Flex::row()
         .fill_w()
         .gap(14.0)
         .align(Align::Center)
-        .push(icon_button(
-            theme,
-            bus,
-            if model.playing { IconKind::Pause } else { IconKind::Play },
-            Action::TogglePlay,
-        ))
+        .push(
+            icon_button(
+                theme,
+                bus,
+                if model.playing { IconKind::Pause } else { IconKind::Play },
+                Action::TogglePlay,
+            )
+            .id("play_pause"),
+        )
         .push(text_c(
             &format!("{} / {}", clock(model.playhead), clock(v.duration as f64)),
             13.0,
@@ -787,17 +789,36 @@ pub fn watch(
         ))
         .push(spring())
         .push(quality_menu(model, theme, bus))
-        .push(icon(IconKind::Settings, 18.0, theme.text_dim));
+        // The gear opens the app's Settings screen (playback / SponsorBlock /
+        // DeArrow / source) — a real destination, not a dead ornament.
+        .push(
+            icon_button(theme, bus, IconKind::Settings, Action::Navigate(Route::Settings))
+                .id("watch_settings"),
+        );
 
     let title = text(v.display_title(dearrow), 22.0);
+    let liked = model.is_liked(&v.id);
     let meta = Flex::row()
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
         .push(dim(theme, &format!("{} • {}", human_views(v.views), v.published), 13.0))
         .push(spring())
-        .push(pill(theme, bus, &human_count(v.likes), Some(IconKind::Like), Action::Like, false))
-        .push(pill(theme, bus, "Share", Some(IconKind::Chevron), Action::Like, false));
+        .push(
+            pill(
+                theme,
+                bus,
+                &human_count(model.display_likes(v)),
+                Some(IconKind::Like),
+                Action::ToggleLike(v.id.clone()),
+                liked,
+            )
+            .id("like_btn"),
+        )
+        .push(
+            pill(theme, bus, "Share", Some(IconKind::Chevron), Action::Share(v.id.clone()), false)
+                .id("share_btn"),
+        );
 
     let ch_sub = model.is_subscribed(&v.channel_id);
     let channel_row = Flex::row()
@@ -820,11 +841,14 @@ pub fn watch(
                     12.0,
                 )),
         )
-        .push(if ch_sub {
-            pill(theme, bus, "Subscribed", Some(IconKind::Bell), Action::ToggleSubscribe(v.channel_id.clone()), false)
-        } else {
-            pill(theme, bus, "Subscribe", None, Action::ToggleSubscribe(v.channel_id.clone()), true)
-        });
+        .push(
+            if ch_sub {
+                pill(theme, bus, "Subscribed", Some(IconKind::Bell), Action::ToggleSubscribe(v.channel_id.clone()), false)
+            } else {
+                pill(theme, bus, "Subscribe", None, Action::ToggleSubscribe(v.channel_id.clone()), true)
+            }
+            .id("subscribe_btn"),
+        );
 
     let sb_card = sponsor_summary(model, theme, bus, v);
 
@@ -854,6 +878,7 @@ pub fn watch(
         .gap(14.0)
         .push(player)
         .push(Flex::col().fill_w().gap(8.0).push(seek).push(transport))
+        .push_if(!model.notices.is_empty(), notices_view(theme, model))
         .push(title)
         .push(meta)
         .push(divider(theme))
@@ -976,6 +1001,27 @@ fn sponsor_summary(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video)
     col
 }
 
+/// The toast stack of transient notices (auto-skip confirmations, "link
+/// copied" acknowledgements, worker status). Rendered on the watch page so the
+/// auto-skip / share / worker feedback that writes here is actually seen. Only
+/// called when [`TubeModel::notices`] is non-empty.
+fn notices_view(theme: &Theme, model: &TubeModel) -> Flex {
+    let mut col = Flex::col().id("notices").fill_w().gap(6.0);
+    for n in model.notices.iter().take(4) {
+        col = col.push(
+            Flex::row()
+                .fill_w()
+                .gap(8.0)
+                .pad_xy(12.0, 8.0)
+                .align(Align::Center)
+                .surface(subtle_surface(theme))
+                .push(icon(IconKind::Skip, 14.0, theme.accent_primary))
+                .push(text_c(n, 12.5, theme.text_primary)),
+        );
+    }
+    col
+}
+
 fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
     let mut head = Flex::row().gap(8.0).align(Align::Center);
     if c.pinned {
@@ -1065,9 +1111,9 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         "Playback",
         vec![
             setting_row(theme, "Autoplay next video", "Play the up-next video when this one ends.",
-                Switch::new(s.autoplay, bus, Action::ToggleSetting(SettingFlag::Autoplay))),
+                Switch::new(s.autoplay, bus, Action::ToggleSetting(SettingFlag::Autoplay)).id("switch_autoplay")),
             setting_row(theme, "Show comments", "Load the comment section on the watch page.",
-                Switch::new(s.show_comments, bus, Action::ToggleSetting(SettingFlag::ShowComments))),
+                Switch::new(s.show_comments, bus, Action::ToggleSetting(SettingFlag::ShowComments)).id("switch_comments")),
             setting_row(theme, "Preferred quality", "Highest resolution to request when available.",
                 quality_menu(model, theme, bus)),
         ],
@@ -1076,9 +1122,9 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
     let sponsorblock = {
         let mut rows = vec![
             setting_row(theme, "Enable SponsorBlock", "Use community segment data to mark and skip parts of videos.",
-                Switch::new(s.sponsorblock_enabled, bus, Action::ToggleSetting(SettingFlag::SponsorBlock))),
+                Switch::new(s.sponsorblock_enabled, bus, Action::ToggleSetting(SettingFlag::SponsorBlock)).id("switch_sponsorblock")),
             setting_row(theme, "Auto-skip", "Skip enabled categories automatically instead of just marking them.",
-                Switch::new(s.auto_skip, bus, Action::ToggleSetting(SettingFlag::AutoSkip))),
+                Switch::new(s.auto_skip, bus, Action::ToggleSetting(SettingFlag::AutoSkip)).id("switch_autoskip")),
         ];
         for cat in Category::ALL {
             let (r, g, b) = cat.rgb();
@@ -1120,9 +1166,9 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         "DeArrow",
         vec![
             setting_row(theme, "Replace clickbait titles", "Show community-submitted, factual titles instead of clickbait.",
-                Switch::new(s.dearrow_enabled, bus, Action::ToggleSetting(SettingFlag::DeArrow))),
+                Switch::new(s.dearrow_enabled, bus, Action::ToggleSetting(SettingFlag::DeArrow)).id("switch_dearrow")),
             setting_row(theme, "Replace thumbnails", "Use neutral community thumbnails in place of clickbait frames.",
-                Switch::new(s.dearrow_thumbnails, bus, Action::ToggleSetting(SettingFlag::DeArrowThumbnails))),
+                Switch::new(s.dearrow_thumbnails, bus, Action::ToggleSetting(SettingFlag::DeArrowThumbnails)).id("switch_dearrow_thumbs")),
         ],
     );
 
@@ -1130,7 +1176,18 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         theme,
         "Source",
         vec![
-            setting_row(theme, "Invidious instance", &s.invidious_instance, icon(IconKind::Chevron, 16.0, theme.text_dim)),
+            // Clicking the row cycles to the next known Invidious instance —
+            // the one live search actually queries — so the chevron is a real
+            // control, not a dead ornament.
+            setting_row(theme, "Invidious instance", &s.invidious_instance, icon(IconKind::Chevron, 16.0, theme.text_dim))
+                .id("instance_row")
+                .pad_xy(8.0, 8.0)
+                .hover_surface(Surface {
+                    fill: Some(hover_fill(theme)),
+                    radius: theme.tokens.radii.md as f64,
+                    border: None,
+                })
+                .on_click(bus, Action::CycleInstance),
         ],
     );
 
@@ -1207,11 +1264,15 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
         crate::search_type::VideoSearchProvider::new(&backend, model.settings.dearrow_enabled);
     let hits = crate::search_type::palette_hits(&provider, model, &model.palette_query);
 
+    // Always-present, placeholder-backed input (same reachability fix as the
+    // top-bar search box): the field must exist in the tree even while empty so
+    // it can be focused and typed into — that's the whole point of the palette.
     let input = TextInput::new(vec![])
         .with_id("palette_input")
         .with_on_change_path("palette_query")
         .with_plain_chrome()
-        .with_font_size(16.0);
+        .with_font_size(16.0)
+        .with_placeholder("Search videos and channels…");
 
     let field = Flex::row()
         .fill_w()
@@ -1225,15 +1286,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
             border: Some((1.0, theme.border_focus)),
         })
         .push(icon(IconKind::Search, 18.0, theme.accent_primary))
-        .push(
-            Flex::row()
-                .grow(1.0)
-                .push_if(
-                    model.palette_query.is_empty(),
-                    dim(theme, "Search videos and channels…", 15.0),
-                )
-                .push_if(!model.palette_query.is_empty(), input),
-        )
+        .push(Flex::row().grow(1.0).push(input))
         .push(
             Flex::row()
                 .pad_xy(7.0, 3.0)

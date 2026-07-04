@@ -306,9 +306,16 @@ pub struct TubeModel {
     /// Playhead position (seconds) on the current watch page.
     pub playhead: f64,
     pub playing: bool,
-    /// Segments auto-skipped in this session — surfaced as a toast row.
+    /// Videos the user has liked this session (local, mirrored into the CRDT).
+    /// The watch page's like pill reads this to render its active state + the
+    /// incremented count.
     #[serde(default)]
-    pub skipped_log: Vec<String>,
+    pub liked: Vec<VideoId>,
+    /// Transient user-facing notices — auto-skip confirmations, worker status,
+    /// "link copied" acknowledgements — rendered as a toast stack on the watch
+    /// page. Newest first, capped.
+    #[serde(default)]
+    pub notices: Vec<String>,
     /// Whether the Ctrl+K global command palette overlay is open.
     #[serde(default)]
     pub palette_open: bool,
@@ -349,7 +356,8 @@ impl Default for TubeModel {
             search_query: String::new(),
             playhead: 0.0,
             playing: false,
-            skipped_log: Vec::new(),
+            liked: Vec::new(),
+            notices: Vec::new(),
             palette_open: false,
             palette_query: String::new(),
             data_source: DataSource::default(),
@@ -380,6 +388,31 @@ impl TubeModel {
         } else {
             self.subscriptions.push(id.to_string());
         }
+    }
+
+    pub fn is_liked(&self, id: &str) -> bool {
+        self.liked.iter().any(|l| l == id)
+    }
+
+    pub fn toggle_like(&mut self, id: &str) {
+        if let Some(pos) = self.liked.iter().position(|l| l == id) {
+            self.liked.remove(pos);
+        } else {
+            self.liked.push(id.to_string());
+        }
+    }
+
+    /// The like count to display for a video: the base count plus one while the
+    /// user has liked it this session, so the pill's number tracks its state.
+    pub fn display_likes(&self, v: &Video) -> u64 {
+        v.likes + if self.is_liked(&v.id) { 1 } else { 0 }
+    }
+
+    /// Push a transient notice onto the front of the toast stack (newest first,
+    /// capped so it stays a compact strip).
+    pub fn push_notice(&mut self, msg: impl Into<String>) {
+        self.notices.insert(0, msg.into());
+        self.notices.truncate(8);
     }
 
     /// Push a video onto the front of the watch history (dedup, cap 50).

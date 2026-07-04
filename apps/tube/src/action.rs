@@ -30,7 +30,14 @@ pub enum Action {
     /// Run a search using the current contents of the search box.
     SubmitSearch,
     SetQuality(String),
-    Like,
+    /// Toggle the local "liked" flag on a video (reflected on the watch page's
+    /// like pill + count).
+    ToggleLike(VideoId),
+    /// Copy a shareable link to the given video to the system clipboard.
+    Share(VideoId),
+    /// Cycle the configured Invidious instance to the next known one (the
+    /// instance the live search actually queries).
+    CycleInstance,
     /// Flip the navigation sidebar (the hamburger toggle). Only has a visible
     /// effect on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,

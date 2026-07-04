@@ -37,6 +37,14 @@ const STATE_KEY: &str = "tube_state";
 const SEARCH_KEY: &str = "search_query";
 const PALETTE_KEY: &str = "palette_query";
 const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
+/// Known public Invidious instances the "Source" setting cycles through. The
+/// selected one is what [`Action::SubmitSearch`] actually queries.
+const INSTANCES: [&str; 4] = [
+    "https://invidious.fdn.fr",
+    "https://yewtu.be",
+    "https://vid.puffyan.us",
+    "https://invidious.snopyta.org",
+];
 
 /// Below this allocated width (logical px) the navigation rail stops sitting
 /// beside the content and collapses into an overlay flap summoned by the
@@ -221,6 +229,19 @@ impl TubeApp {
     /// Test accessor: whether the command palette is open.
     pub fn palette_open_for_test(&self) -> bool {
         self.model.palette_open
+    }
+
+    /// Test accessor: read-only view of the model, so integration tests can
+    /// assert on real state (likes, notices, settings, playhead) after driving
+    /// the widget tree.
+    pub fn model_for_test(&self) -> &TubeModel {
+        &self.model
+    }
+
+    /// Test accessor: whether the navigation rail is currently shown (resolves
+    /// the session preference against the layout default).
+    pub fn sidebar_open_for_test(&self) -> bool {
+        self.sidebar_currently_open()
     }
 
     fn build_shell_themed(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -414,8 +435,50 @@ impl TubeApp {
             }
         };
         self.model.playhead = seg_end;
-        self.model.skipped_log.insert(0, label);
-        self.model.skipped_log.truncate(8);
+        self.model.push_notice(label);
+    }
+
+    /// Open a video's watch page: record history, route to it, reset the
+    /// playhead and start playing, and kick off metadata/branding fetches.
+    /// Shared by the card/palette open paths and by autoplay-next so they stay
+    /// in lockstep.
+    fn open_video(&mut self, id: String) {
+        self.model.record_watch(&id);
+        self.model.route = Route::Watch(id.clone());
+        self.model.playhead = 0.0;
+        self.model.playing = true;
+        self.request(Request::Branding(id.clone()));
+        self.request_live(Request::VideoMeta(id));
+    }
+
+    /// If autoplay is on and the playhead has reached the end of the current
+    /// video, advance to the first "up next" recommendation — the real code
+    /// path that consumes the [`Settings::autoplay`] flag. Reaching the end
+    /// happens when the user scrubs the [`crate::widgets::SeekBar`] to the
+    /// finish (or, live, when playback runs out).
+    fn maybe_autoplay_next(&mut self) {
+        if !self.model.settings.autoplay {
+            return;
+        }
+        let Route::Watch(id) = self.model.route.clone() else {
+            return;
+        };
+        let Some(dur) = self.model.video(&id).map(|v| v.duration as f64) else {
+            return;
+        };
+        if self.model.playhead < dur - 0.001 {
+            return;
+        }
+        let next = self
+            .model
+            .related_display(&id)
+            .first()
+            .map(|v| v.id.clone());
+        if let Some(next) = next {
+            if next != id {
+                self.open_video(next);
+            }
+        }
     }
 
     /// Apply one drained action. Returns true if the model changed enough
@@ -437,13 +500,8 @@ impl TubeApp {
                 self.dismiss_overlay_rail();
             }
             Action::OpenVideo(id) => {
-                self.model.record_watch(&id);
-                self.model.route = Route::Watch(id.clone());
-                self.model.playhead = 0.0;
-                self.model.playing = true;
+                self.open_video(id);
                 self.dismiss_overlay_rail();
-                self.request(Request::Branding(id.clone()));
-                self.request_live(Request::VideoMeta(id));
             }
             Action::OpenChannel(id) => {
                 self.model.route = Route::Channel(id.clone());
@@ -457,6 +515,7 @@ impl TubeApp {
                 if let Some(d) = self.current_duration() {
                     self.model.playhead = (frac * d).clamp(0.0, d);
                     self.apply_auto_skip();
+                    self.maybe_autoplay_next();
                 }
             }
             Action::TogglePlay => {
@@ -486,6 +545,12 @@ impl TubeApp {
                 let idx = QUALITIES.iter().position(|q| *q == cur).unwrap_or(0);
                 self.model.settings.preferred_quality = QUALITIES[(idx + 1) % QUALITIES.len()].to_string();
             }
+            Action::CycleInstance => {
+                let cur = self.model.settings.invidious_instance.clone();
+                let idx = INSTANCES.iter().position(|i| *i == cur).unwrap_or(0);
+                self.model.settings.invidious_instance =
+                    INSTANCES[(idx + 1) % INSTANCES.len()].to_string();
+            }
             Action::SubmitSearch => {
                 let q = self.read_search(state, root);
                 self.model.search_query = q.clone();
@@ -495,10 +560,19 @@ impl TubeApp {
                     self.request(Request::Search { instance, query: q });
                 }
             }
-            Action::Like => {
-                // Local-only acknowledgement for now.
-                self.model.skipped_log.insert(0, "Liked (stored locally)".into());
-                self.model.skipped_log.truncate(8);
+            Action::ToggleLike(id) => {
+                // A real, visible toggle: the watch page's like pill reads
+                // `is_liked` for its active fill and `display_likes` for the
+                // count, so this flips both.
+                self.model.toggle_like(&id);
+            }
+            Action::Share(id) => {
+                // Copy the canonical shareable link to the system clipboard —
+                // the real action — and drop a toast so the (otherwise
+                // invisible) clipboard write has visible confirmation.
+                let url = format!("https://youtu.be/{id}");
+                ui::clipboard_copy(&url);
+                self.model.push_notice(format!("Link copied: {url}"));
             }
             Action::OpenPalette => {
                 self.model.palette_open = true;
@@ -509,12 +583,7 @@ impl TubeApp {
             Action::ActivateHit(link) => {
                 use crate::search_type::SearchHit;
                 if let Some(id) = SearchHit::parse_watch_link(&link) {
-                    self.model.record_watch(&id);
-                    self.model.route = Route::Watch(id.clone());
-                    self.model.playhead = 0.0;
-                    self.model.playing = true;
-                    self.request(Request::Branding(id.clone()));
-                    self.request_live(Request::VideoMeta(id));
+                    self.open_video(id);
                 } else if let Some(id) = SearchHit::parse_channel_link(&link) {
                     self.model.route = Route::Channel(id.clone());
                     self.request_live(Request::Channel(id));
@@ -642,8 +711,7 @@ impl TubeApp {
                     }
                 }
                 Update::Note(n) => {
-                    self.model.skipped_log.insert(0, n);
-                    self.model.skipped_log.truncate(8);
+                    self.model.push_notice(n);
                     changed = true;
                 }
             }
@@ -1067,7 +1135,71 @@ mod tests {
         app.apply(Action::Seek(1500.0 / dur), &mut doc, &r);
         // Auto-skip should jump the playhead to the segment end (1570).
         assert!(app.model.playhead >= 1570.0, "playhead was {}", app.model.playhead);
-        assert!(app.model.skipped_log.iter().any(|l| l.contains("Sponsor")));
+        assert!(app.model.notices.iter().any(|l| l.contains("Sponsor")));
+    }
+
+    #[test]
+    fn autoplay_advances_to_next_when_the_video_ends() {
+        // Autoplay is on by default; seeking to the very end must advance to
+        // the first "up next" recommendation — the real code path that
+        // consumes the autoplay flag.
+        let (mut app, mut doc) = fresh();
+        let r = automerge::ROOT;
+        assert!(app.model.settings.autoplay, "autoplay defaults on");
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
+        app.apply(Action::Seek(1.0), &mut doc, &r);
+        match app.route_for_test() {
+            Route::Watch(id) => assert_ne!(
+                id, "vid_rust_async",
+                "autoplay advanced to a different video"
+            ),
+            other => panic!("expected a watch route, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn autoplay_off_parks_at_the_end_without_advancing() {
+        let (mut app, mut doc) = fresh();
+        let r = automerge::ROOT;
+        app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &mut doc, &r);
+        assert!(!app.model.settings.autoplay);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
+        app.apply(Action::Seek(1.0), &mut doc, &r);
+        assert_eq!(
+            app.route_for_test(),
+            &Route::Watch("vid_rust_async".into()),
+            "with autoplay off, reaching the end stays on the same video"
+        );
+    }
+
+    #[test]
+    fn like_toggles_and_share_copies_a_link() {
+        let (mut app, mut doc) = fresh();
+        let r = automerge::ROOT;
+        assert!(!app.model.is_liked("vid_donut"));
+        app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
+        assert!(app.model.is_liked("vid_donut"), "ToggleLike likes the video");
+        app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
+        assert!(!app.model.is_liked("vid_donut"), "ToggleLike again unlikes it");
+
+        app.apply(Action::Share("vid_donut".into()), &mut doc, &r);
+        assert!(
+            !app.model.is_liked("vid_donut"),
+            "Share must not like the video"
+        );
+        assert!(
+            app.model.notices.iter().any(|n| n.contains("vid_donut")),
+            "Share records the copied link as a notice"
+        );
+    }
+
+    #[test]
+    fn cycle_instance_moves_to_a_different_source() {
+        let (mut app, mut doc) = fresh();
+        let r = automerge::ROOT;
+        let before = app.model.settings.invidious_instance.clone();
+        app.apply(Action::CycleInstance, &mut doc, &r);
+        assert_ne!(before, app.model.settings.invidious_instance);
     }
 
     #[test]
