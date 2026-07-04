@@ -160,9 +160,18 @@ pub struct Sandbox {
     pub fs: SandboxFs,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
-    /// `[sandbox.portals]` table — portal mode per portal name.
+    /// `[sandbox.portals]` table — portal policy per portal name.
+    ///
+    /// The map keys are freedesktop portal names (`file-chooser`,
+    /// `screencast`, `notifications`, `secret-service`, `open-uri`).
+    /// Values are [`PortalPolicy`] — today either `via-host` (the
+    /// launcher plumbs the session D-Bus socket in and the app can
+    /// use `ashpd`) or `deny` (the portal is explicitly disabled).
+    /// An entry MUST exist for every portal the app expects to use;
+    /// absence == the launcher will NOT proxy the bus in for that
+    /// portal, so the app's `ashpd` call surfaces `NotAvailable`.
     #[serde(default)]
-    pub portals: std::collections::BTreeMap<String, String>,
+    pub portals: std::collections::BTreeMap<String, PortalPolicy>,
     /// `[sandbox.services]` table — required/optional services.
     /// Each value parses as `"required@N"` / `"optional@N"`.
     #[serde(default)]
@@ -209,6 +218,29 @@ impl SandboxNet {
             None
         }
     }
+}
+
+/// How the launcher should route a portal request.
+///
+/// Historically the manifest wrote `"via-host"` as a bare string.
+/// Callers now parse into this enum so misspellings surface at
+/// manifest-decode time instead of silently downgrading to a no-op.
+///
+/// The wire form is a plain kebab-case string; TOML round-trips
+/// via the `#[serde(rename_all = "kebab-case")]` attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PortalPolicy {
+    /// Route through the freedesktop portal on the host session bus.
+    /// The launcher bind-mounts the session D-Bus socket into the
+    /// sandbox and sets `DBUS_SESSION_BUS_ADDRESS` — the app then
+    /// uses `runtime::portal_xdg` (or `ashpd` directly).
+    ViaHost,
+    /// The portal is explicitly denied. The launcher does NOT plumb
+    /// the bus in and any `ashpd` call from the app surfaces
+    /// `PortalError::NotAvailable`. Same on-wire behaviour as
+    /// omitting the entry, but signals intent for auditors.
+    Deny,
 }
 
 /// Egress modes. The kebab-case wire form matches the TOML
