@@ -23,6 +23,7 @@ members = [
     "crates/collab/threshold-identity",
     "crates/collab/channel-crypto",
     "crates/collab/collab-link",
+    "crates/collab/frame-link",
     "crates/collab/relay",
     "crates/packaging/pkg",
     "crates/packaging/pkg-cli",
