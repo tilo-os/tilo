@@ -31,17 +31,16 @@ cd "$REPO"
 # apps/browser pulls libservo from git and often fails to resolve on
 # fresh checkouts — that's independent of the share pipeline, so we
 # temporarily drop it from the workspace to keep this script robust.
-# Restored on exit so committing the Cargo.toml after a test run isn't
-# a footgun.
-BROWSER_TMP_EXCLUDED=0
+# Always restore on exit — the canonical state is "browser included",
+# regardless of what the working tree looked like when the script
+# started. Committing a `# tmp:` line is a footgun.
 tmp_exclude_browser() {
     if grep -q '^    "apps/browser",' Cargo.toml; then
         sed -i 's|^    "apps/browser",|    # tmp: "apps/browser",|' Cargo.toml
-        BROWSER_TMP_EXCLUDED=1
     fi
 }
 restore_browser() {
-    if [ "$BROWSER_TMP_EXCLUDED" = 1 ] && grep -q '^    # tmp: "apps/browser",' Cargo.toml; then
+    if grep -q '^    # tmp: "apps/browser",' Cargo.toml; then
         sed -i 's|^    # tmp: "apps/browser",|    "apps/browser",|' Cargo.toml
     fi
 }
@@ -50,8 +49,21 @@ tmp_exclude_browser
 
 # Everywhere we invoke cargo, go through distrobox — the host doesn't
 # have the build deps. See CLAUDE.md.
+#
+# Prefer my-distrobox-44 when it exists: its ffmpeg SONAMEs match the
+# host (Fedora 44 both sides), so the NVENC test binary runs bare on
+# the host without an LD_LIBRARY_PATH shim. Fall back to the older
+# my-distrobox (fedora-toolbox:latest / F42) — that build still works
+# but the on-host run needs the ffmpeg-lib staging shim below.
+if podman container exists my-distrobox-44 2>/dev/null; then
+    DISTROBOX="${QOS_DISTROBOX:-my-distrobox-44}"
+    HOST_ABI_MATCHES=1
+else
+    DISTROBOX="${QOS_DISTROBOX:-my-distrobox}"
+    HOST_ABI_MATCHES=0
+fi
 cargo_in_distrobox() {
-    distrobox enter my-distrobox -- bash -c "cd $REPO && $*"
+    distrobox enter "$DISTROBOX" -- bash -c "cd $REPO && $*"
 }
 
 # Root the on-host scratch dir here so subsequent runs are cheap.
@@ -134,14 +146,13 @@ stage_host_libs() {
 }
 
 run_nvenc() {
-    echo "=== NVENC (build in distrobox, run on host) ==="
+    echo "=== NVENC (build in $DISTROBOX, run on host) ==="
     if [ ! -e /dev/nvidia0 ] && [ ! -e /dev/nvidiactl ]; then
         echo "no /dev/nvidia* on this host — NVENC probe self-skips, running anyway to prove it"
     fi
     cargo_in_distrobox \
         "cargo test -p shell --features nvenc \
             --test nvenc_hardware_encode --release --no-run"
-    stage_host_libs
     local TEST_BIN
     TEST_BIN=$(ls -t "$REPO"/target/release/deps/nvenc_hardware_encode-* \
         | grep -v '\.d$' | head -1)
@@ -150,8 +161,20 @@ run_nvenc() {
         exit 1
     fi
     echo "running: $TEST_BIN"
-    LD_LIBRARY_PATH="$FF_LIBS:$NV_LIBS:/lib64" "$TEST_BIN" \
-        --include-ignored --nocapture --test-threads 1
+    if [ "$HOST_ABI_MATCHES" = 1 ]; then
+        # Distrobox and host share ffmpeg SONAMEs — the binary can
+        # dlopen host libs directly. This is the happy path.
+        "$TEST_BIN" --include-ignored --nocapture --test-threads 1
+    else
+        # Fallback path when the distrobox's ffmpeg SONAMEs don't
+        # match the host's (e.g. F42 distrobox on an F44 host).
+        # Stage distrobox's libavcodec/libavutil/libswscale + the
+        # host's libnvidia-encode/libcuda into a scratch dir and
+        # LD_LIBRARY_PATH the binary at them.
+        stage_host_libs
+        LD_LIBRARY_PATH="$FF_LIBS:$NV_LIBS:/lib64" "$TEST_BIN" \
+            --include-ignored --nocapture --test-threads 1
+    fi
 }
 
 run_dmabuf() {
