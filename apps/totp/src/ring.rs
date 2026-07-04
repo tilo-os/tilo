@@ -25,7 +25,6 @@ use vello::peniko::Color;
 use vello::Scene;
 use winit::event::WindowEvent;
 
-use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -267,11 +266,4 @@ impl Widget for CountdownRing {
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
-}
-
-/// Helper used by the list to lerp an account colour slightly toward the
-/// danger colour as the period nears rollover, without a hard switch.
-/// Kept here next to the ring so the urgency treatment lives in one place.
-pub fn dim(color: Color, factor: f32) -> Color {
-    color.with_alpha_factor(factor)
 }

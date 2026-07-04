@@ -82,6 +82,10 @@ pub struct AuthenticatorApp {
     last_mouse: Point,
     selected: Option<AccountId>,
     toast: Option<(String, Instant)>,
+    /// The exact code string most recently written to the clipboard by a copy
+    /// action. Lets callers (and tests) observe what was copied without
+    /// round-tripping the system clipboard, which is unavailable headless.
+    last_copied: Option<String>,
     seeded: bool,
     /// How the initial vault is populated and whether changes persist. The
     /// live app loads/saves the real vault; the demo/empty shots roots use
@@ -136,6 +140,7 @@ impl AuthenticatorApp {
             last_mouse: Point::ZERO,
             selected: None,
             toast: None,
+            last_copied: None,
             seeded: false,
             seed_mode,
             doc_dirty: false,
@@ -196,8 +201,16 @@ impl AuthenticatorApp {
         if let Some(acc) = self.vault.get(id).cloned() {
             let code = totp::current_code(&acc);
             ui::text_selection::clipboard_copy(&code);
+            self.last_copied = Some(code);
             self.toast(format!("Copied {} code", acc.title()));
         }
+    }
+
+    /// The exact code string the most recent copy action placed on the
+    /// clipboard, if any. Observability for the copy path (the system
+    /// clipboard can't be read back in a headless test).
+    pub fn last_copied(&self) -> Option<&str> {
+        self.last_copied.as_deref()
     }
 
     /// Apply one list interaction.
@@ -738,8 +751,10 @@ mod tests {
     }
 
     /// Run the app's real layout passes at a concrete window size, the same
-    /// cycle `main.rs` drives for the live/offscreen frames.
-    fn layout_at(app: &mut AuthenticatorApp, w: f32, h: f32) {
+    /// cycle `main.rs` drives for the live/offscreen frames. Returns the live
+    /// taffy tree + the app's root node so events can be routed exactly as
+    /// production does.
+    fn layout_at(app: &mut AuthenticatorApp, w: f32, h: f32) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -766,6 +781,24 @@ mod tests {
             )
             .unwrap();
         app.apply_layout(&taffy, child, Point::ORIGIN);
+        (taffy, child)
+    }
+
+    /// Route one event through the app's real `handle_event`, returning
+    /// whether it was marked handled.
+    fn dispatch(
+        app: &mut AuthenticatorApp,
+        ev: &WindowEvent,
+        mods: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(ev, 1.0, mods, state, root, &mut handled, &mut focus, node, taffy);
+        handled
     }
 
     #[test]
@@ -860,10 +893,22 @@ mod tests {
     fn copy_event_selects_the_account_and_confirms_with_a_toast() {
         let (mut app, _state) = app_with_state();
         let id = app.vault.ordered()[0].id;
+        let acc = app.vault.get(id).cloned().unwrap();
+        let before = totp::current_code(&acc);
         app.apply_list_event(ListEvent::Copy(id));
+        let after = totp::current_code(&acc);
         assert_eq!(app.selected, Some(id), "the copied row becomes selected");
         let (msg, _) = app.toast.clone().expect("copying shows a confirmation toast");
         assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
+        // The copied string is the account's live TOTP code (not its title or
+        // an empty string). It equals the code at some instant during the copy,
+        // so it must match the value just before or just after — deterministic
+        // even across a period rollover.
+        let copied = app.last_copied().expect("a copy records the copied code");
+        assert!(
+            copied == before || copied == after,
+            "copied {copied:?} must equal the account's live code ({before:?}/{after:?})"
+        );
     }
 
     #[test]
@@ -962,6 +1007,215 @@ mod tests {
         assert_eq!(label, "bob@acme.io");
         assert_eq!(secret, "JBSWY3DPEHPK3PXP");
         std::fs::remove_file(&path).ok();
+    }
+
+    // ---- pointer + keyboard routing through the real `handle_event` -----
+    // These drive synthetic winit events through `AuthenticatorApp::handle_event`
+    // (the production input path) instead of calling internals directly, so the
+    // add-button hit-test, the modal-owns-input gate, and every global shortcut
+    // are verified end to end.
+
+    use crate::test_events::{char_press, cursor_at, ctrl, left_press, named_press, no_mods};
+
+    #[test]
+    fn clicking_the_add_button_opens_the_modal() {
+        let (mut app, mut state) = app_with_state();
+        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+        assert!(!app.add_panel.is_open(), "starts on the list, modal closed");
+
+        let btn = app.add_btn_rect.center();
+        let mods = no_mods();
+        dispatch(&mut app, &cursor_at(btn), &mods, &mut state.doc, &state.root, node, &taffy);
+        dispatch(&mut app, &left_press(), &mods, &mut state.doc, &state.root, node, &taffy);
+        assert!(
+            app.add_panel.is_open(),
+            "clicking the + Add account button opens the add modal"
+        );
+    }
+
+    #[test]
+    fn ctrl_n_opens_the_add_modal() {
+        let (mut app, mut state) = app_with_state();
+        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+        let ctrl = ctrl();
+        let handled =
+            dispatch(&mut app, &char_press("n"), &ctrl, &mut state.doc, &state.root, node, &taffy);
+        assert!(handled, "Ctrl+N is consumed");
+        assert!(app.add_panel.is_open(), "Ctrl+N opens the add modal");
+    }
+
+    #[test]
+    fn slash_and_ctrl_f_focus_the_search_field() {
+        let (mut app, mut state) = app_with_state();
+        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+        assert!(!app.search.is_focused());
+
+        // "/" focuses search when not already typing there.
+        let none = no_mods();
+        dispatch(&mut app, &char_press("/"), &none, &mut state.doc, &state.root, node, &taffy);
+        assert!(app.search.is_focused(), "'/' focuses the search field");
+
+        // Ctrl+F also focuses search.
+        app.search.set_focus(false);
+        let ctrl = ctrl();
+        dispatch(&mut app, &char_press("f"), &ctrl, &mut state.doc, &state.root, node, &taffy);
+        assert!(app.search.is_focused(), "Ctrl+F focuses the search field");
+    }
+
+    #[test]
+    fn escape_clears_a_nonempty_search_query() {
+        let (mut app, mut state) = app_with_state();
+        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+        app.search.set_focus(true);
+        app.search.set_text("github");
+
+        let none = no_mods();
+        let handled = dispatch(
+            &mut app,
+            &named_press(NamedKey::Escape),
+            &none,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
+        assert!(handled, "Escape is consumed while clearing the query");
+        assert!(app.search.value().is_empty(), "Escape clears the search text");
+        assert!(!app.search.is_focused(), "Escape also drops search focus");
+    }
+
+    #[test]
+    fn enter_copies_the_selected_accounts_live_code() {
+        let (mut app, mut state) = app_with_state();
+        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+        let id = app.selected.expect("the demo vault selects the first account");
+        let acc = app.vault.get(id).cloned().unwrap();
+
+        let before = totp::current_code(&acc);
+        let none = no_mods();
+        dispatch(
+            &mut app,
+            &named_press(NamedKey::Enter),
+            &none,
+            &mut state.doc,
+            &state.root,
+            node,
+            &taffy,
+        );
+        let after = totp::current_code(&acc);
+
+        let copied = app.last_copied().expect("Enter copies the selected code");
+        assert!(
+            copied == before || copied == after,
+            "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
+        );
+        let (msg, _) = app.toast.clone().expect("Enter shows a copy toast");
+        assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
+    }
+
+    #[test]
+    fn open_modal_gates_the_global_search_shortcut() {
+        // While the add modal is open it owns all input: a key that would be a
+        // global shortcut on the list (here "/", focus-search) must be swallowed
+        // by the modal and NOT focus the underlying search field.
+        let (mut app, mut state) = app_with_state();
+        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+        app.add_panel.open();
+        app.add_panel.layout(app.rect);
+        assert!(!app.search.is_focused());
+
+        let none = no_mods();
+        dispatch(&mut app, &char_press("/"), &none, &mut state.doc, &state.root, node, &taffy);
+        assert!(
+            !app.search.is_focused(),
+            "the open modal gates the '/' shortcut from reaching the list"
+        );
+        assert!(app.add_panel.is_open(), "the modal stays open");
+    }
+
+    #[test]
+    fn search_with_no_matches_sets_a_contextual_empty_message() {
+        let (mut app, _state) = app_with_state();
+        app.search.set_text("zzz-no-such-service");
+        app.refresh_list();
+        assert!(app.list.is_empty(), "no demo account matches the query");
+        let msg = app.list.empty_message();
+        assert!(
+            msg.contains("zzz-no-such-service"),
+            "the empty state names the unmatched query, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn every_shots_scenario_renders_a_nonblank_frame() {
+        // The five `--shots` entry points must each produce a real frame, not
+        // collapse to nothing. Runs the exact host cycle (sync → build_layout →
+        // compute_layout(measure) → apply_layout → draw) and asserts the scene
+        // encoded draw commands. No GPU needed — this is pure Vello encoding.
+        let scenarios: [(&str, fn() -> Box<dyn Widget>); 5] = [
+            ("demo", crate::app_root_demo),
+            ("empty", crate::app_root_empty),
+            ("add", crate::app_root_add_screen),
+            ("add-advanced", crate::app_root_add_advanced_screen),
+            ("add-picker", crate::app_root_add_picker_screen),
+        ];
+        for (name, build) in scenarios {
+            let mut widget = build();
+            let theme = Theme::dark();
+            let mut state = ui::State::new();
+            widget.sync(&mut state.doc, &state.root);
+
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(1280.0),
+                            height: Dimension::length(800.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let mut tr = TextRenderer::new();
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, &mut tr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::empty();
+            let permission = PermissionContext::permissive();
+            widget.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &permission,
+            );
+            assert!(
+                !scene.encoding().is_empty(),
+                "the '{name}' shots scenario must render a non-blank frame"
+            );
+        }
     }
 
     /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling
