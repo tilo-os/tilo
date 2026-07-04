@@ -10,6 +10,7 @@
 //!       * `--view V`         month | week | day | agenda.
 //!       * `--screen S`       calendar | detail (which pane to show).
 //!       * `--flap`           open the overlay sidebar (narrow only).
+//!       * `--collapse`       collapse the persistent sidebar (wide only).
 //!       * `--resize-from WxH` lay the SAME instance out at this size first,
 //!                             then render at `--viewport`. Proves the layout
 //!                             reflows on a live resize (rather than caching the
@@ -50,6 +51,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let screen = parse_flag_value(&args, "--screen")
             .map(|p| p.to_str().unwrap_or("").to_string());
         let flap = args.iter().any(|a| a == "--flap");
+        // `--collapse` collapses the persistent sidebar (wide layout) so a shot
+        // can prove the three-abreast layout folds down to calendar + detail.
+        let collapse = args.iter().any(|a| a == "--collapse");
         // `--empty` renders the real live app (persisted document + configured
         // accounts, i.e. empty on a fresh machine) rather than the sample seed.
         let empty = args.iter().any(|a| a == "--empty");
@@ -70,6 +74,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if flap {
                 app.shots_open_flap();
+            }
+            if collapse {
+                app.shots_collapse_sidebar();
             }
             Box::new(app) as Box<dyn Widget>
         };
