@@ -257,8 +257,21 @@ impl SharedFlatpakSession {
         // Clamp fps to the SW ceiling. Callers of `snapshot_config()`
         // see the *effective* value, not the requested one.
         let effective_fps = config.target_fps.min(SOFTWARE_FPS_CEILING).max(1);
-        let encoder = H264Encoder::new(width, height, effective_fps)
-            .map_err(ShareError::EncoderConstruction)?;
+        // Flow the workspace's configured bitrate cap into the encoder
+        // so the actual streamed payload matches the profile. Prior to
+        // this the encoder took openh264's 120 kbps default and dropped
+        // most frames as too-expensive; the config knob had no wiring.
+        let target_bitrate_bps = config
+            .max_bitrate_kbps
+            .saturating_mul(1000)
+            .max(500_000);
+        let encoder = H264Encoder::new_with_bitrate_bps(
+            width,
+            height,
+            effective_fps,
+            target_bitrate_bps,
+        )
+        .map_err(ShareError::EncoderConstruction)?;
 
         // Throttle interval mirrors the target fps.
         let interval = std::time::Duration::from_micros(
