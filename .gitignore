@@ -31,3 +31,4 @@ keys/*.password
 keys/*.private.pem
 # runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
 *.crdt
+.claude/test-scratch/
