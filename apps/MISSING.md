@@ -43,13 +43,12 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       pushes in with a ‹ Back button (never an X). Old overlay-flap removed →
       fixed (verified wide + narrow-pushed-detail). Real Open-Meteo data.
 
-## monitor (system monitor)
-- [ ] The left column (Processor / Memory / Net / Disk stat cards + host info) is
-      **actual content, not a sidebar** — rendering it as a left rail is wrong.
-      Re-architect the layout so this is a proper dashboard: e.g. a compact
-      summary strip above a full-width process table on the Processes view, with
-      the detailed graphs living in the Resources view — no fake sidebar. Think
-      it through; make it read as content.
+## monitor (system monitor) — CLEAR (verified, committed 1571bc5)
+- [x] Re-architected: Processes view = a compact CPU/Memory/Network/Disk summary
+      strip above a full-width process table (PID/name/user/CPU%/mem/threads +
+      selected-process detail + Kill); Resources view = Processor donut + load
+      avg, RAM/Swap bars, System info (real host/CPU/cores), Per-Core bars, and
+      large CPU/Mem/Net/Disk graphs. No fake sidebar — reads as content → verified.
 
 ## pdf_viewer
 - [ ] ZOOM DOES NOT WORK (raised before, and I failed to record it — now recorded).
