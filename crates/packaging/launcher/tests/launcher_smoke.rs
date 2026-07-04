@@ -411,6 +411,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         Some((bundle_dir.as_path(), "smoke-1.0.0")),
         &[],
         None,
+        None,
     );
     assert!(
         argv.windows(3)
@@ -531,6 +532,7 @@ wait $!
         None,
         &[],
         Some(&plan),
+        None,
     );
     // The host source must be the proxy socket, NOT /run/user/1234/bus itself.
     let proxy_sock = plan.host_socket.display().to_string();
@@ -585,6 +587,7 @@ fn dbus_direct_bind_used_when_proxy_missing() {
         None,
         &[],
         Some(&plan),
+        None,
     );
     assert!(
         argv.windows(3)
