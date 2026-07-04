@@ -269,6 +269,12 @@ struct RailMetrics {
 
 struct Chrome {
     toolbar: Rect,
+    /// Clickable region of the deck title in the toolbar — a press here starts
+    /// the inline title rename. Its top-left is [`Chrome::title_pos`].
+    title_rect: Rect,
+    /// Baseline top-left the title label is drawn at (used to place the rename
+    /// caret so it tracks the real glyphs).
+    title_pos: Point,
     /// The rail's painted rect. When the rail is an overlay flap this slides
     /// in from the left edge (off-screen when closed); when docked it is the
     /// permanent left column.
@@ -325,6 +331,10 @@ pub struct SlidesApp {
     caret: usize,
     editing_notes: bool,
     notes_caret: usize,
+    /// Inline deck-title rename in progress (toolbar title clicked). Typing
+    /// splices into the CRDT title; Enter/Esc/clicking away commits.
+    editing_title: bool,
+    title_caret: usize,
     show_notes: bool,
 
     /// Keyboard-shortcuts overlay visibility (toggled with `?`).
@@ -494,6 +504,8 @@ impl SlidesApp {
             caret: 0,
             editing_notes: false,
             notes_caret: 0,
+            editing_title: false,
+            title_caret: 0,
             show_notes: false,
             show_help: false,
             active_guides: Vec::new(),
@@ -552,6 +564,27 @@ impl SlidesApp {
                 self.present_started = Some(std::time::Instant::now());
             }
             "help" => self.show_help = true,
+            // The inline deck-title rename in progress (title focused, caret in
+            // the toolbar title field).
+            "rename" => {
+                self.cur_slide = 1;
+                self.begin_title_edit();
+                self.bootstrapped = true;
+            }
+            // The speaker-notes editor focused, with the caret shown in the
+            // notes field (previously no caret was rendered at all).
+            "notes_edit" => {
+                self.cur_slide = 1;
+                self.sel = None;
+                self.editing_notes = true;
+                self.notes_caret = self
+                    .deck
+                    .slides
+                    .get(1)
+                    .map(|s| s.notes.chars().count())
+                    .unwrap_or(0);
+                self.bootstrapped = true;
+            }
             // The docked, nothing-selected inspector (slide-level properties:
             // layout, background, and the deck-theme pills). Captures the pills
             // at the default width to prove every theme name stays readable.
@@ -953,13 +986,23 @@ impl SlidesApp {
         // Title block, elided so it never runs under the tools or right group.
         let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
         let title_max = (tools_x - 12.0 - title_x).max(60.0);
+        let title_pos = Point::new(title_x, toolbar.y0 + 11.0);
+        // While renaming, show the full (un-elided) title so the caret can sit
+        // anywhere in it; otherwise elide so it never runs under the tools.
+        let title_text = if self.editing_title {
+            self.deck.title.clone()
+        } else {
+            elide(&self.deck.title, 17.0, title_max)
+        };
         labels.push(Label {
-            pos: Point::new(title_x, toolbar.y0 + 11.0),
-            text: elide(&self.deck.title, 17.0, title_max),
+            pos: title_pos,
+            text: title_text,
             font: 17.0,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
         });
+        // The whole two-line title block is the click target for renaming.
+        let title_rect = Rect::new(title_x - 4.0, toolbar.y0 + 6.0, title_x + title_max, toolbar.y0 + 46.0);
         labels.push(Label {
             pos: Point::new(title_x, toolbar.y0 + 33.0),
             text: elide(
@@ -1068,6 +1111,8 @@ impl SlidesApp {
 
         Chrome {
             toolbar,
+            title_rect,
+            title_pos,
             rail,
             inspector,
             slide_dest,
@@ -1990,6 +2035,17 @@ impl SlidesApp {
     // --- text editing -------------------------------------------------------
 
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
+        if self.editing_title {
+            // A title is one line — drop any embedded newlines from a paste.
+            let s: String = s.chars().filter(|c| *c != '\n').collect();
+            if s.is_empty() {
+                return;
+            }
+            SlidesDoc::splice_title(doc, self.title_caret, 0, &s);
+            self.title_caret += s.chars().count();
+            self.reload(doc);
+            return;
+        }
         if self.editing_notes {
             SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 0, s);
             self.notes_caret += s.chars().count();
@@ -2004,6 +2060,15 @@ impl SlidesApp {
     }
 
     fn backspace_text(&mut self, doc: &mut AutoCommit) {
+        if self.editing_title {
+            if self.title_caret > 0 {
+                SlidesDoc::splice_title(doc, self.title_caret - 1, 1, "");
+                self.title_caret -= 1;
+                self.mark();
+                self.reload(doc);
+            }
+            return;
+        }
         if self.editing_notes {
             if self.notes_caret > 0 {
                 SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret - 1, 1, "");
@@ -2024,11 +2089,77 @@ impl SlidesApp {
     }
 
     fn cur_text_len(&self) -> usize {
-        if self.editing_notes {
+        if self.editing_title {
+            self.deck.title.chars().count()
+        } else if self.editing_notes {
             self.slide().map(|s| s.notes.chars().count()).unwrap_or(0)
         } else {
             self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0)
         }
+    }
+
+    /// The text currently being edited (title / notes / selected element), used
+    /// by the caret helpers for vertical navigation.
+    fn cur_edit_text(&self) -> String {
+        if self.editing_title {
+            self.deck.title.clone()
+        } else if self.editing_notes {
+            self.slide().map(|s| s.notes.clone()).unwrap_or_default()
+        } else {
+            self.selected_element().map(|e| e.text.clone()).unwrap_or_default()
+        }
+    }
+
+    /// Start renaming the deck title inline (caret at the end).
+    fn begin_title_edit(&mut self) {
+        self.editing_title = true;
+        self.editing_text = false;
+        self.editing_notes = false;
+        self.sel = None;
+        self.title_caret = self.deck.title.chars().count();
+    }
+
+    /// The char-index caret of whatever text is being edited.
+    fn active_caret(&self) -> usize {
+        if self.editing_title {
+            self.title_caret
+        } else if self.editing_notes {
+            self.notes_caret
+        } else {
+            self.caret
+        }
+    }
+
+    fn set_active_caret(&mut self, v: usize) {
+        if self.editing_title {
+            self.title_caret = v;
+        } else if self.editing_notes {
+            self.notes_caret = v;
+        } else {
+            self.caret = v;
+        }
+    }
+
+    /// Move the active caret one char left (`dir < 0`) or right, clamped.
+    fn move_caret(&mut self, dir: i32) {
+        let len = self.cur_text_len();
+        let cur = self.active_caret().min(len);
+        let next = if dir < 0 { cur.saturating_sub(1) } else { (cur + 1).min(len) };
+        self.set_active_caret(next);
+    }
+
+    /// Move the active caret up/down one explicit line, keeping the column.
+    fn move_caret_vertical(&mut self, dir: i32) {
+        let text = self.cur_edit_text();
+        let next = caret_line_move(&text, self.active_caret(), dir);
+        self.set_active_caret(next);
+    }
+
+    /// Move the active caret to the start (`end=false`) or end of its line.
+    fn move_caret_home_end(&mut self, end: bool) {
+        let text = self.cur_edit_text();
+        let next = caret_line_home_end(&text, self.active_caret(), end);
+        self.set_active_caret(next);
     }
 
     // --- drawing ------------------------------------------------------------
@@ -2151,6 +2282,33 @@ impl SlidesApp {
             if !in_panel(Point::new(l.pos.x, l.pos.y)) {
                 self.draw_label(scene, t, tr, theme, &pal, l);
             }
+        }
+
+        // Inline title rename: an accent underline under the title line plus a
+        // caret, so the toolbar title reads as an editable field while renaming.
+        if self.editing_title {
+            let underline_y = chrome.title_pos.y + 22.0;
+            stroke_line(scene, t, chrome.title_pos.x, underline_y, chrome.title_rect.x1, underline_y, pal.accent);
+            let er = Rect::new(
+                chrome.title_pos.x,
+                chrome.title_pos.y,
+                chrome.title_rect.x1,
+                chrome.title_pos.y + 20.0,
+            );
+            self.draw_caret_in_box(
+                scene,
+                t,
+                tr,
+                pal.accent,
+                &self.deck.title,
+                self.title_caret,
+                er,
+                17.0,
+                TextWeight::Bold,
+                false,
+                TextAlign::Left,
+                false,
+            );
         }
 
         // Scrim behind an open overlay flap, dimming the editor body.
@@ -2372,43 +2530,115 @@ impl SlidesApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
-        _pal: &Palette,
+        pal: &Palette,
         el: &Element,
         er: Rect,
         s: f64,
     ) {
-        // Approximate caret position: count chars up to caret on the caret's
-        // line, measure that prefix, place a vertical bar.
-        let text = &el.text;
-        let caret = self.caret.min(text.chars().count());
+        let font_px = (el.font_size * s).max(1.0) as f32;
+        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+        self.draw_caret_in_box(
+            scene, t, tr, pal.accent, &el.text, self.caret, er, font_px, weight, el.italic,
+            el.align, true,
+        );
+    }
+
+    /// Paint a vertical caret over one line of text inside `er`. The caret
+    /// tracks the same layout the text is painted with (line height `font_px *
+    /// 1.25`, per-line `align` offset, optional vertical centering), so it lands
+    /// correctly on centre- and right-aligned boxes — not just left-anchored
+    /// ones. `caret` is a char index into `text`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_caret_in_box(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        accent: Color,
+        text: &str,
+        caret: usize,
+        er: Rect,
+        font_px: f32,
+        weight: TextWeight,
+        italic: bool,
+        align: TextAlign,
+        center_v: bool,
+    ) {
+        let (top, line_h) =
+            self.caret_geometry(tr, text, caret, er, font_px, weight, italic, align, center_v);
+        let bar = Line::new(Point::new(top.x, top.y + 2.0), Point::new(top.x, top.y + line_h - 2.0));
+        scene.stroke(&Stroke::new(2.0), t, accent, None, &bar);
+    }
+
+    /// Pure geometry for [`Self::draw_caret_in_box`]: the caret bar's top point
+    /// and the line height, tracking the same layout the painter uses (line
+    /// height `font_px * 1.25`, per-line `align` offset, optional vertical
+    /// centering). Split out so the placement can be asserted directly.
+    #[allow(clippy::too_many_arguments)]
+    fn caret_geometry(
+        &self,
+        tr: &mut TextRenderer,
+        text: &str,
+        caret: usize,
+        er: Rect,
+        font_px: f32,
+        weight: TextWeight,
+        italic: bool,
+        align: TextAlign,
+        center_v: bool,
+    ) -> (Point, f64) {
         let chars: Vec<char> = text.chars().collect();
-        let mut line_start = 0usize;
-        let mut line_idx = 0usize;
-        for i in 0..caret {
-            if chars[i] == '\n' {
-                line_start = i + 1;
-                line_idx += 1;
+        let caret = caret.min(chars.len());
+        let starts = line_starts(&chars);
+        // Explicit line the caret sits on, and that line's char span.
+        let mut li = 0usize;
+        for (k, &st) in starts.iter().enumerate() {
+            if caret >= st {
+                li = k;
+            } else {
+                break;
             }
         }
+        let line_start = starts[li];
+        let line_end = if li + 1 < starts.len() { starts[li + 1] - 1 } else { chars.len() };
+        let cur_line: String = chars[line_start..line_end].iter().collect();
         let prefix: String = chars[line_start..caret].iter().collect();
-        let font_px = (el.font_size * s).max(6.0) as f32;
-        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
-        let (pw, _) = tr.measure_styled(&prefix, font_px, None, weight, el.italic, false);
-        let line_h = (font_px as f64) * 1.28;
-        let n_lines = text.split('\n').count().max(1);
-        let total_h = line_h * n_lines as f64;
-        let top = if total_h < er.height() {
+
+        let line_h = (font_px as f64) * 1.25;
+        let wrap_w = (er.width() + 4.0).max(1.0) as f32;
+        // Total painted height (wrapped rows across explicit lines) mirrors
+        // `render::draw_text_element`, so the caret shares its baselines.
+        let rows: Vec<usize> = text
+            .split('\n')
+            .map(|l| {
+                if l.is_empty() {
+                    1
+                } else {
+                    let (_, h) = tr.measure_styled(l, font_px, Some(wrap_w), weight, italic, false);
+                    ((h as f64 / line_h).round() as usize).max(1)
+                }
+            })
+            .collect();
+        let total_h = rows.iter().sum::<usize>() as f64 * line_h;
+        let block_top = if center_v && total_h < er.height() {
             er.y0 + (er.height() - total_h) / 2.0
         } else {
             er.y0
         };
-        let cy = top + line_idx as f64 * line_h;
-        let cx = match el.align {
-            TextAlign::Left => er.x0 + pw as f64,
-            _ => er.x0 + pw as f64, // simple: left-anchored caret
+        let rows_before: usize = rows.iter().take(li).sum();
+        let cy = block_top + rows_before as f64 * line_h;
+
+        // Horizontal: offset the line by its own width per its alignment (as the
+        // painter does), then advance past the prefix to the caret.
+        let (lw, _) = tr.measure_styled(&cur_line, font_px, Some(wrap_w), weight, italic, false);
+        let (pw, _) = tr.measure_styled(&prefix, font_px, None, weight, italic, false);
+        let line_x = match align {
+            TextAlign::Left => er.x0,
+            TextAlign::Center => er.x0 + (er.width() - lw as f64) / 2.0,
+            TextAlign::Right => er.x1 - lw as f64,
         };
-        let bar = Line::new(Point::new(cx, cy + 2.0), Point::new(cx, cy + line_h - 2.0));
-        scene.stroke(&Stroke::new(2.0), t, _pal.accent, None, &bar);
+        let cx = line_x + pw as f64;
+        (Point::new(cx, cy), line_h)
     }
 
     fn draw_notes(
@@ -2450,6 +2680,27 @@ impl SlidesApp {
             Some((nb.width() - 20.0) as f32),
             TextWeight::Regular,
         );
+        // Blinking-free caret while the notes field is focused. The text area's
+        // width is sized so the caret helper's wrap width matches the draw call
+        // above (`er.width() + 4 == nb.width() - 20`), and notes are top-anchored
+        // and left-aligned.
+        if self.editing_notes {
+            let er = Rect::new(nb.x0 + 10.0, nb.y0 + 9.0, nb.x0 + 10.0 + (nb.width() - 24.0), nb.y1 - 9.0);
+            self.draw_caret_in_box(
+                scene,
+                t,
+                tr,
+                self.palette(theme).accent,
+                notes,
+                self.notes_caret,
+                er,
+                12.5,
+                TextWeight::Regular,
+                false,
+                TextAlign::Left,
+                false,
+            );
+        }
     }
 
     fn draw_present(
@@ -3033,6 +3284,13 @@ impl SlidesApp {
 
     // --- keyboard-shortcuts overlay ----------------------------------------
 
+    /// Whether the keyboard-shortcuts overlay should paint this frame. It is
+    /// shown in **every** mode (including Present): suppressing it in Present
+    /// while `on_key` still routed keys to it would soft-lock navigation.
+    fn help_overlay_visible(&self) -> bool {
+        self.show_help
+    }
+
     fn draw_help(
         &self,
         scene: &mut Scene,
@@ -3073,8 +3331,9 @@ impl SlidesApp {
             TextWeight::Regular,
         );
 
-        let rows: [(&str, &str); 19] = [
+        let rows: [(&str, &str); 20] = [
             ("N", "New slide"),
+            ("Click title", "Rename the deck"),
             ("P", "Present from current slide"),
             ("G", "Slide-sorter overview"),
             ("T / R / O / L", "Insert text · rect · ellipse · line"),
@@ -3190,6 +3449,75 @@ fn scroll_from_thumb_drag(viewport: Rect, orig_scroll: f64, max_scroll: f64, dy:
 /// Truncate `label` with a trailing ellipsis so its estimated width fits
 /// `max_w`. Uses the same [`chrome::est_width`] metric that drives the toolbar
 /// layout, so the clip lands where the layout expects it.
+/// Line starts (char index of the first char of every `\n`-delimited line).
+fn line_starts(chars: &[char]) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, ch) in chars.iter().enumerate() {
+        if *ch == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// Move a char-index caret up (`dir < 0`) or down one explicit (`\n`-delimited)
+/// line, keeping the column where the target line is long enough. At the first
+/// line (up) or last line (down) the caret is returned unchanged.
+fn caret_line_move(text: &str, caret: usize, dir: i32) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let caret = caret.min(chars.len());
+    let starts = line_starts(&chars);
+    // Current line = the largest start <= caret.
+    let mut li = 0usize;
+    for (k, &st) in starts.iter().enumerate() {
+        if caret >= st {
+            li = k;
+        } else {
+            break;
+        }
+    }
+    let col = caret - starts[li];
+    let target = if dir < 0 {
+        if li == 0 {
+            return caret;
+        }
+        li - 1
+    } else {
+        if li + 1 >= starts.len() {
+            return caret;
+        }
+        li + 1
+    };
+    let tstart = starts[target];
+    let tend = if target + 1 < starts.len() {
+        starts[target + 1] - 1 // drop the trailing '\n'
+    } else {
+        chars.len()
+    };
+    tstart + col.min(tend - tstart)
+}
+
+/// Move a char-index caret to the start (`end=false`) or end of its explicit
+/// line.
+fn caret_line_home_end(text: &str, caret: usize, end: bool) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let caret = caret.min(chars.len());
+    let mut ls = 0usize;
+    for (i, ch) in chars.iter().enumerate().take(caret) {
+        if *ch == '\n' {
+            ls = i + 1;
+        }
+    }
+    if !end {
+        return ls;
+    }
+    let mut le = caret;
+    while le < chars.len() && chars[le] != '\n' {
+        le += 1;
+    }
+    le
+}
+
 fn elide(label: &str, font: f64, max_w: f64) -> String {
     if max_w <= 0.0 || chrome::est_width(label, font) <= max_w {
         return label.to_string();
@@ -3348,7 +3676,10 @@ impl Widget for SlidesApp {
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
         }
-        if self.show_help && self.mode != Mode::Present {
+        // The help overlay draws over every mode — including Present, where it
+        // must appear (and be dismissable), otherwise a `?` press would set the
+        // flag, suppress the overlay, and swallow all later navigation keys.
+        if self.help_overlay_visible() {
             self.draw_help(scene, transform, text_renderer, theme);
         }
     }
@@ -3652,6 +3983,12 @@ impl SlidesApp {
         }
         let chrome = self.compute_chrome();
 
+        // A click anywhere but the title itself commits an in-flight rename.
+        if self.editing_title && !chrome.title_rect.contains(p) {
+            self.editing_title = false;
+            self.mark();
+        }
+
         // Toolbar overflow menu is modal-ish: while open, its rows and its
         // click-away dismissal take precedence over everything beneath it.
         if let Some(bg) = chrome.menu_bg {
@@ -3704,6 +4041,13 @@ impl SlidesApp {
                 *handled = true;
                 return;
             }
+        }
+        // Deck title → inline rename (the title sits between the hamburger and
+        // the centre tool group, so it never overlaps a button).
+        if chrome.title_rect.contains(p) {
+            self.begin_title_edit();
+            *handled = true;
+            return;
         }
         // Scrim dismissal: with an overlay flap open, a click in the dimmed body
         // (outside both panels) closes whichever flap is open — like tapping the
@@ -3900,7 +4244,7 @@ impl SlidesApp {
             return;
         }
         // `?` opens help from any non-text context.
-        if !self.editing_text && !self.editing_notes {
+        if !self.editing_text && !self.editing_notes && !self.editing_title {
             if let Key::Character(c) = key {
                 if c.as_str() == "?" {
                     self.show_help = true;
@@ -4054,12 +4398,13 @@ impl SlidesApp {
             return;
         }
 
-        // Text / notes editing intercepts most keys.
-        if self.editing_text || self.editing_notes {
+        // Text / notes / title editing intercepts most keys.
+        if self.editing_text || self.editing_notes || self.editing_title {
             match key {
                 Key::Named(NamedKey::Escape) => {
                     self.editing_text = false;
                     self.editing_notes = false;
+                    self.editing_title = false;
                     self.mark();
                     *handled = true;
                 }
@@ -4068,7 +4413,14 @@ impl SlidesApp {
                     *handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.insert_text(doc, "\n");
+                    // A title is a single line — Enter commits the rename rather
+                    // than inserting a newline.
+                    if self.editing_title {
+                        self.editing_title = false;
+                        self.mark();
+                    } else {
+                        self.insert_text(doc, "\n");
+                    }
                     *handled = true;
                 }
                 Key::Named(NamedKey::Space) => {
@@ -4076,20 +4428,27 @@ impl SlidesApp {
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowLeft) => {
-                    if self.editing_notes {
-                        self.notes_caret = self.notes_caret.saturating_sub(1);
-                    } else {
-                        self.caret = self.caret.saturating_sub(1);
-                    }
+                    self.move_caret(-1);
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowRight) => {
-                    let len = self.cur_text_len();
-                    if self.editing_notes {
-                        self.notes_caret = (self.notes_caret + 1).min(len);
-                    } else {
-                        self.caret = (self.caret + 1).min(len);
-                    }
+                    self.move_caret(1);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.move_caret_vertical(-1);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.move_caret_vertical(1);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Home) => {
+                    self.move_caret_home_end(false);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::End) => {
+                    self.move_caret_home_end(true);
                     *handled = true;
                 }
                 Key::Character(c) if !ctrl => {
@@ -5106,5 +5465,434 @@ mod tests {
             before,
             "a cancelled pick leaves the slide untouched"
         );
+    }
+
+    // === write-through + interaction coverage =============================
+
+    /// A one-slide deck seeded into a shared doc; `slide` becomes slide 0 and
+    /// the mirror is reloaded from the document.
+    fn app_doc(slide: Slide) -> (SlidesApp, AutoCommit) {
+        let mut app = app_with(slide);
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+        (app, doc)
+    }
+
+    /// A one-slide deck with a single text element, selected, seeded to a doc.
+    fn selected_text_app() -> (SlidesApp, AutoCommit, Id) {
+        let mut s = Slide::new(Layout::TitleContent);
+        let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 100.0, 40.0));
+        let (mut app, doc) = app_doc(s);
+        app.sel = Some(id.clone());
+        (app, doc, id)
+    }
+
+    fn keyn(app: &mut SlidesApp, doc: &mut AutoCommit, key: NamedKey) -> bool {
+        let mut h = false;
+        app.on_key(doc, &Key::Named(key), None, &Modifiers::default(), &mut h);
+        h
+    }
+    fn keyc(app: &mut SlidesApp, doc: &mut AutoCommit, ch: &str) -> bool {
+        let mut h = false;
+        app.on_key(doc, &Key::Character(ch.into()), Some(ch), &Modifiers::default(), &mut h);
+        h
+    }
+    fn loaded(doc: &AutoCommit) -> Deck {
+        crate::doc::SlidesDoc::load(doc).expect("deck round-trips from the document")
+    }
+    fn sized(app: &mut SlidesApp, w: f64, h: f64) {
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.sync_flaps(0.0);
+    }
+
+    // --- deck title rename (was display-only: set_title had no caller) ------
+
+    #[test]
+    fn clicking_the_toolbar_title_starts_a_rename_and_typing_writes_through() {
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
+        let title0 = app.deck.title.clone();
+        let chrome = app.compute_chrome();
+        let p = chrome.title_rect.center();
+        assert!(app.rect.contains(p), "the title click target is inside the window");
+
+        let mut handled = false;
+        app.last_mouse = p;
+        app.on_press(&mut doc, p, &mut handled);
+        assert!(handled && app.editing_title, "clicking the title enters inline rename");
+        assert_eq!(app.title_caret, title0.chars().count(), "caret opens at the end");
+
+        // Typed characters splice into the CRDT title (not a local-only buffer).
+        assert!(keyc(&mut app, &mut doc, "!"));
+        assert!(keyc(&mut app, &mut doc, "?"), "'?' types into the title, not the help overlay");
+        assert!(!app.show_help, "'?' while renaming must not open help");
+        // Enter commits the rename.
+        assert!(keyn(&mut app, &mut doc, NamedKey::Enter));
+        assert!(!app.editing_title, "Enter commits the rename");
+        assert_eq!(loaded(&doc).title, format!("{title0}!?"), "the rename persisted to the CRDT");
+    }
+
+    #[test]
+    fn title_backspace_and_click_away_commit_persist_to_the_crdt() {
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
+        app.begin_title_edit();
+        // Backspace deletes the last title char through the CRDT.
+        let title0 = app.deck.title.clone();
+        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+        let mut expect: String = title0.clone();
+        expect.pop();
+        assert_eq!(loaded(&doc).title, expect, "backspace spliced one char out of the title");
+
+        // Add a char, then click away from the title → commits (leaves editing).
+        assert!(keyc(&mut app, &mut doc, "Z"));
+        let chrome = app.compute_chrome();
+        let away = Point::new(chrome.slide_dest.center().x, chrome.slide_dest.center().y);
+        assert!(!chrome.title_rect.contains(away));
+        let mut handled = false;
+        app.last_mouse = away;
+        app.on_press(&mut doc, away, &mut handled);
+        assert!(!app.editing_title, "a click away commits the rename");
+        assert_eq!(loaded(&doc).title, format!("{expect}Z"), "the edit persisted");
+    }
+
+    // --- '?' help in Present mode (was a no-op that soft-locked nav) --------
+
+    #[test]
+    fn help_overlay_is_visible_and_dismissable_in_present_mode() {
+        let mut app = presenting_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        assert!(!app.help_overlay_visible());
+        // '?' opens the overlay even while presenting.
+        assert!(press_char(&mut app, "?"));
+        assert!(
+            app.help_overlay_visible(),
+            "the help overlay is shown in Present mode (the exact gate `draw` uses)"
+        );
+        // And it actually paints over the present surface without panicking.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.draw_help(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        // While open it is modal (a nav key is swallowed, does not advance).
+        let before = app.cur_slide;
+        assert!(press_named(&mut app, NamedKey::ArrowRight));
+        assert_eq!(app.cur_slide, before, "help is modal: nav is captured, not applied");
+        // Dismiss with '?', and navigation resumes — no soft-lock.
+        assert!(press_char(&mut app, "?"));
+        assert!(!app.help_overlay_visible(), "'?' dismisses the overlay");
+        assert!(press_named(&mut app, NamedKey::ArrowRight));
+        assert_eq!(app.cur_slide, before + 1, "navigation resumes once help is closed");
+    }
+
+    // --- text caret alignment (was hard-coded to the left edge) -------------
+
+    #[test]
+    fn caret_tracks_center_and_right_alignment_not_just_left() {
+        let app = app_with(Slide::new(Layout::Blank));
+        let mut tr = TextRenderer::new();
+        let er = Rect::new(100.0, 100.0, 700.0, 200.0);
+        let text = "Hello";
+        let end = text.chars().count();
+        let geo = |al: TextAlign, tr: &mut TextRenderer| {
+            app.caret_geometry(tr, text, end, er, 40.0, TextWeight::Regular, false, al, true).0
+        };
+        let left = geo(TextAlign::Left, &mut tr);
+        let center = geo(TextAlign::Center, &mut tr);
+        let right = geo(TextAlign::Right, &mut tr);
+        // Right-aligned caret at the line end sits at the box's right edge.
+        assert!((right.x - er.x1).abs() < 1.0, "right caret at line end hits the right edge (x={})", right.x);
+        // The three alignments are genuinely distinct (the old stub returned the
+        // same left-anchored x for every arm).
+        assert!(left.x < center.x && center.x < right.x, "l={} c={} r={}", left.x, center.x, right.x);
+        assert!((center.x - left.x).abs() > 1.0, "center caret differs from the left-anchored position");
+    }
+
+    // --- caret line navigation (ArrowUp/Down did nothing) -------------------
+
+    #[test]
+    fn caret_line_move_keeps_column_and_clamps_at_edges() {
+        let t = "abc\ndef\nghij";
+        // Down/up keep the column.
+        assert_eq!(caret_line_move(t, 2, 1), 6, "down from line0 col2 → line1 col2");
+        assert_eq!(caret_line_move(t, 6, -1), 2, "up from line1 col2 → line0 col2");
+        // A longer column clamps to a shorter target line's length.
+        assert_eq!(caret_line_move(t, 12, -1), 7, "up from line2 col4 clamps to line1 col3");
+        // Edges are no-ops.
+        assert_eq!(caret_line_move(t, 2, -1), 2, "up on the first line is unchanged");
+        assert_eq!(caret_line_move(t, 10, 1), 10, "down on the last line is unchanged");
+    }
+
+    #[test]
+    fn caret_line_home_end_snaps_within_the_line() {
+        let t = "abc\ndef";
+        assert_eq!(caret_line_home_end(t, 5, false), 4, "Home → line start");
+        assert_eq!(caret_line_home_end(t, 5, true), 7, "End → line end");
+        assert_eq!(caret_line_home_end(t, 1, false), 0);
+        assert_eq!(caret_line_home_end(t, 1, true), 3);
+    }
+
+    // --- speaker notes editing (no caret + no vertical nav before) ----------
+
+    #[test]
+    fn notes_typing_writes_through_and_up_down_move_the_caret() {
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        // Seed two lines of notes on slide 0.
+        crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "line one\nsecond");
+        app.reload(&doc);
+        app.apply_hit(&mut doc, Hit::EditNotes);
+        assert!(app.editing_notes, "clicking notes enters the notes editor");
+        let len = app.slide().unwrap().notes.chars().count();
+        assert_eq!(app.notes_caret, len, "caret opens at the end of the notes");
+
+        // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
+        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowUp));
+        assert_eq!(app.notes_caret, 6, "ArrowUp moved the notes caret up one line");
+        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowDown));
+        assert_eq!(app.notes_caret, len, "ArrowDown returns to the second line");
+
+        // Typing splices into the CRDT notes at the caret.
+        assert!(keyc(&mut app, &mut doc, "!"));
+        assert_eq!(loaded(&doc).slides[0].notes, "line one\nsecond!", "notes edit persisted to the CRDT");
+    }
+
+    // --- element text editing -----------------------------------------------
+
+    #[test]
+    fn editing_element_text_types_and_deletes_through_the_crdt() {
+        let (mut app, mut doc, id) = selected_text_app();
+        // Enter opens the text editor on the selected box.
+        assert!(keyn(&mut app, &mut doc, NamedKey::Enter));
+        assert!(app.editing_text);
+        assert_eq!(app.caret, "Hi".chars().count());
+        assert!(keyc(&mut app, &mut doc, "!"));
+        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi!", "typed char persisted");
+        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi", "backspace persisted");
+    }
+
+    #[test]
+    fn second_click_on_a_selected_text_box_enters_edit_mode() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 120.0, 40.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        let chrome = app.compute_chrome();
+        let el = app.slide().unwrap().element(&id).unwrap().clone();
+        let p = render::element_dest(chrome.slide_dest, chrome.scale, &el).center();
+        // First click selects.
+        let mut h = false;
+        app.last_mouse = p;
+        app.on_press(&mut doc, p, &mut h);
+        assert_eq!(app.sel.as_deref(), Some(id.as_str()));
+        assert!(!app.editing_text);
+        app.on_release(&mut doc, &mut h);
+        // Second click on the already-selected box enters edit.
+        let mut h2 = false;
+        app.on_press(&mut doc, p, &mut h2);
+        assert!(app.editing_text, "a second click on a selected text box edits it");
+    }
+
+    // --- canvas move / resize persistence -----------------------------------
+
+    #[test]
+    fn dragging_an_element_persists_the_move_to_the_crdt() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::shape(ElementKind::Rect, 300.0, 300.0, 160.0, 90.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        let chrome = app.compute_chrome();
+        let el = app.slide().unwrap().element(&id).unwrap().clone();
+        let start = render::element_dest(chrome.slide_dest, chrome.scale, &el).center();
+
+        let mut h = false;
+        app.last_mouse = start;
+        app.on_press(&mut doc, start, &mut h);
+        assert!(matches!(app.drag, Drag::Move { .. }), "pressing an element starts a move drag");
+        // Move a good distance so no guide snaps it back to the origin.
+        app.drag_move(Point::new(start.x - 130.0, start.y + 70.0));
+        let mut h2 = false;
+        app.on_release(&mut doc, &mut h2);
+        assert!(!app.drag.active(), "release ends the drag");
+
+        let persisted = loaded(&doc).slides[0].element(&id).unwrap().clone();
+        let mirror = app.slide().unwrap().element(&id).unwrap().clone();
+        assert!((persisted.x - mirror.x).abs() < 0.001, "the CRDT matches the mirror after release");
+        assert!((persisted.x - 300.0).abs() > 5.0, "the move actually changed x and persisted (x={})", persisted.x);
+        assert!((persisted.y - 300.0).abs() > 5.0, "the move actually changed y and persisted (y={})", persisted.y);
+    }
+
+    #[test]
+    fn resizing_via_a_selection_handle_persists_to_the_crdt() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::shape(ElementKind::Rect, 300.0, 300.0, 200.0, 120.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        app.sel = Some(id.clone());
+        let chrome = app.compute_chrome();
+        let el = app.slide().unwrap().element(&id).unwrap().clone();
+        let (_, hr) = app
+            .handles_of(chrome.slide_dest, chrome.scale, &el)
+            .into_iter()
+            .find(|(h, _)| matches!(h, Handle::Br))
+            .expect("a bottom-right resize handle");
+        let start = hr.center();
+
+        let mut h = false;
+        app.last_mouse = start;
+        app.on_press(&mut doc, start, &mut h);
+        assert!(matches!(app.drag, Drag::Resize { .. }), "pressing a handle starts a resize");
+        app.drag_move(Point::new(start.x + 120.0, start.y + 90.0));
+        let mut h2 = false;
+        app.on_release(&mut doc, &mut h2);
+
+        let persisted = loaded(&doc).slides[0].element(&id).unwrap().clone();
+        let mirror = app.slide().unwrap().element(&id).unwrap().clone();
+        assert!((persisted.w - mirror.w).abs() < 0.001 && (persisted.h - mirror.h).abs() < 0.001, "CRDT matches mirror");
+        assert!(persisted.w > el.w + 1.0, "Br drag grew width and persisted ({} → {})", el.w, persisted.w);
+        assert!(persisted.h > el.h + 1.0, "Br drag grew height and persisted ({} → {})", el.h, persisted.h);
+    }
+
+    // --- inspector property edits (every writer, on the real hit path) ------
+
+    #[test]
+    fn every_inspector_property_edit_writes_through_to_the_crdt() {
+        let (mut app, mut doc, id) = selected_text_app();
+        let el0 = app.selected_element().unwrap().clone();
+
+        app.apply_hit(&mut doc, Hit::SetFill("accent".into()));
+        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().fill, "accent");
+
+        app.apply_hit(&mut doc, Hit::SetStroke("text".into()));
+        let after_stroke = loaded(&doc).slides[0].element(&id).unwrap().clone();
+        assert_eq!(after_stroke.stroke, "text");
+        assert!(after_stroke.stroke_width >= 1.0, "a freshly stroked element gets a default width");
+
+        app.apply_hit(&mut doc, Hit::FontDelta(6.0));
+        assert!((loaded(&doc).slides[0].element(&id).unwrap().font_size - (el0.font_size + 6.0)).abs() < 0.001);
+
+        app.apply_hit(&mut doc, Hit::ToggleBold);
+        assert!(loaded(&doc).slides[0].element(&id).unwrap().bold);
+        app.apply_hit(&mut doc, Hit::ToggleItalic);
+        assert!(loaded(&doc).slides[0].element(&id).unwrap().italic);
+
+        app.apply_hit(&mut doc, Hit::CycleAlign);
+        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().align, TextAlign::Center);
+
+        app.apply_hit(&mut doc, Hit::BringFront);
+        let zf = loaded(&doc).slides[0].element(&id).unwrap().z;
+        app.apply_hit(&mut doc, Hit::SendBack);
+        let zb = loaded(&doc).slides[0].element(&id).unwrap().z;
+        assert!(zb < zf, "SendBack lowers z below BringFront ({zf} → {zb})");
+
+        app.apply_hit(&mut doc, Hit::SetLayout(Layout::Blank));
+        assert_eq!(loaded(&doc).slides[0].layout, Layout::Blank);
+        app.apply_hit(&mut doc, Hit::SetBackground(Background::Accent));
+        assert_eq!(loaded(&doc).slides[0].background, Background::Accent);
+        app.apply_hit(&mut doc, Hit::SetPalette(PaletteKind::Amber));
+        assert_eq!(loaded(&doc).palette, PaletteKind::Amber);
+
+        let n = loaded(&doc).slides[0].elements.len();
+        app.apply_hit(&mut doc, Hit::DuplicateElement);
+        assert_eq!(loaded(&doc).slides[0].elements.len(), n + 1, "duplicate adds an element");
+        app.apply_hit(&mut doc, Hit::DeleteElement);
+        assert_eq!(loaded(&doc).slides[0].elements.len(), n, "delete removes one");
+    }
+
+    // --- slide ops via the app handlers -------------------------------------
+
+    #[test]
+    fn slide_ops_via_hit_handlers_update_the_deck_and_current_slide() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.bootstrapped = true;
+        app.cur_slide = 1;
+        app.reload(&doc);
+        let n0 = loaded(&doc).slides.len();
+
+        // New slide inserts after the current one and follows it.
+        app.apply_hit(&mut doc, Hit::NewSlide);
+        assert_eq!(loaded(&doc).slides.len(), n0 + 1);
+        assert_eq!(app.cur_slide, 2, "the new slide becomes current");
+
+        // Duplicate inserts a copy after current.
+        app.apply_hit(&mut doc, Hit::DuplicateSlide);
+        assert_eq!(loaded(&doc).slides.len(), n0 + 2);
+        assert_eq!(app.cur_slide, 3);
+
+        // Move up / down reorders and tracks cur_slide.
+        let moved_id = loaded(&doc).slides[3].id.clone();
+        app.apply_hit(&mut doc, Hit::MoveSlideUp);
+        assert_eq!(app.cur_slide, 2);
+        assert_eq!(loaded(&doc).slides[2].id, moved_id, "MoveSlideUp reordered the deck");
+        app.apply_hit(&mut doc, Hit::MoveSlideDown);
+        assert_eq!(app.cur_slide, 3);
+        assert_eq!(loaded(&doc).slides[3].id, moved_id, "MoveSlideDown reordered it back");
+
+        // Delete removes the current slide.
+        app.apply_hit(&mut doc, Hit::DeleteSlide);
+        assert_eq!(loaded(&doc).slides.len(), n0 + 1);
+    }
+
+    #[test]
+    fn delete_slide_keeps_at_least_one_slide() {
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        assert_eq!(loaded(&doc).slides.len(), 1);
+        app.apply_hit(&mut doc, Hit::DeleteSlide);
+        assert_eq!(loaded(&doc).slides.len(), 1, "the last slide can't be deleted");
+    }
+
+    // --- edit-mode keyboard: nudge, Tab cycle, Delete -----------------------
+
+    #[test]
+    fn arrow_nudge_tab_cycle_and_delete_key_edit_the_crdt() {
+        let mut s = Slide::new(Layout::Blank);
+        let a = s.add(Element::shape(ElementKind::Rect, 200.0, 200.0, 100.0, 100.0));
+        let b = s.add(Element::shape(ElementKind::Ellipse, 500.0, 400.0, 100.0, 100.0));
+        let (mut app, mut doc) = app_doc(s);
+        app.sel = Some(a.clone());
+
+        // Arrow nudges the selected element's position (persisted).
+        let x0 = loaded(&doc).slides[0].element(&a).unwrap().x;
+        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowRight));
+        let x1 = loaded(&doc).slides[0].element(&a).unwrap().x;
+        assert!(x1 > x0 + 1.0, "ArrowRight nudged and persisted x ({x0} → {x1})");
+
+        // Tab cycles selection to the next element (by z order).
+        assert!(keyn(&mut app, &mut doc, NamedKey::Tab));
+        assert_eq!(app.sel.as_deref(), Some(b.as_str()), "Tab cycles selection");
+
+        // Delete removes the selected element from the CRDT.
+        let n = loaded(&doc).slides[0].elements.len();
+        assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
+        assert_eq!(loaded(&doc).slides[0].elements.len(), n - 1, "Delete removed the element");
+        assert!(app.sel.is_none(), "selection clears after delete");
+    }
+
+    // --- overview click opens the slide -------------------------------------
+
+    #[test]
+    fn clicking_an_overview_card_opens_that_slide_in_the_editor() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        app.bootstrapped = true;
+        app.mode = Mode::Overview;
+        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+
+        let (_, thumbs, _) = app.compute_overview();
+        let (idx, rect) = thumbs.get(2).cloned().expect("a third overview card");
+        let mut handled = false;
+        app.last_mouse = rect.center();
+        app.on_press(&mut doc, rect.center(), &mut handled);
+        assert!(handled, "clicking an overview card is handled");
+        assert_eq!(app.mode, Mode::Edit, "opening a card returns to the editor");
+        assert_eq!(app.cur_slide, idx, "the clicked card's slide is now current");
     }
 }
