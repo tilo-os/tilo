@@ -232,12 +232,18 @@ pub fn run_with(
             .collect::<Vec<_>>(),
     );
     let net_restricted = manifest.sandbox.net.mode == "off";
+    // The shim now IS wired via opts.landlock_enforce (see argv splice
+    // above). Log intent from the parent for observability; the shim's
+    // own "landlock: {fully,partially} enforced" line surfaces the real
+    // kernel-side outcome after bwrap execs the shim.
     tracing::info!(
-        "landlock plan derived ({} rules, net_restricted={net_restricted}); shim wiring is a follow-up",
-        landlock_plan.len()
+        target: "qos_launcher::landlock",
+        rules = landlock_plan.len(),
+        net_restricted,
+        enforce = opts.landlock_enforce,
+        "landlock plan derived",
     );
     let _ = landlock_plan;
-    let _ = net_restricted;
 
     // SAFETY: pre_exec runs in the child after fork, before exec. We
     // perform only async-signal-safe operations: dup2, fcntl, plus the
@@ -258,11 +264,10 @@ pub fn run_with(
                     let _ = libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                 }
             }
-            // Landlock is NOT installed here: bwrap needs broad FS
-            // access to set up the namespace. See the comment in
-            // `run_with` above — the shim wiring is a follow-up. The
-            // pure plan derivation still happens in the parent so
-            // logging shows what the policy would have been.
+            // Landlock is NOT installed here — bwrap needs broad FS
+            // access to set up the namespace. It's installed by the
+            // __sandbox-exec shim after bwrap's mount setup completes.
+            // See `qos_launcher::landlock_shim`.
             Ok(())
         });
     }
