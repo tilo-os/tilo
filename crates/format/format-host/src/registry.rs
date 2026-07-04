@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use qos_format_provider_wit::Tier;
+use format_provider_wit::Tier;
 use serde::Deserialize;
 
 /// One provider as declared in the registry TOML.

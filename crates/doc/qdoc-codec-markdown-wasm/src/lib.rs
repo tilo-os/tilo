@@ -23,7 +23,7 @@ mod guest {
     use qdoc::{Document, FormatProvider, MarkdownCodec};
 
     wit_bindgen::generate!({
-        path: "../qos-format-provider-wit/wit",
+        path: "../../format/format-provider-wit/wit",
         world: "provider",
     });
 
