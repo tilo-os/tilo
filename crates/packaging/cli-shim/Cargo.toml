@@ -1,0 +1,22 @@
+[package]
+name = "cli-shim"
+version = "0.1.0"
+edition = "2024"
+description = "Tiny PATH shim binary — resolves its sidecar, execvs qos-launcher run-installed."
+
+# A single tiny binary installed once per PATH command a package
+# publishes. When invoked as `notes ...` it reads its own path,
+# finds the sibling `<name>.qos-shim` sidecar (a TOML with
+# `package_id` and `command`), and execvs the qOS launcher with
+# `run-installed --package <id> --command <cmd> -- <argv>`. The
+# shim is intentionally minimal (no allocator-heavy deps, no
+# tokio) so the boot cost is close to the launcher's fork+exec.
+
+[[bin]]
+name = "qos-cli-shim"
+path = "src/main.rs"
+
+[dependencies]
+libc  = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml  = "0.8"
