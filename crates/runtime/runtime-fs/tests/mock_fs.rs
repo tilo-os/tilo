@@ -23,9 +23,9 @@ use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use qos_runtime_fs::raw::{file_handle, workspace_fs, EntryKind as WireKind, OpenMode};
-use qos_runtime_fs::{FsClient, WorkspaceFsClient};
-use qos_runtime_portal::UnixCapnpClient;
+use runtime_fs::raw::{file_handle, workspace_fs, EntryKind as WireKind, OpenMode};
+use runtime_fs::{FsClient, WorkspaceFsClient};
+use runtime_portal::UnixCapnpClient;
 
 // --- Shared in-memory backend --------------------------------------------
 
@@ -304,20 +304,20 @@ async fn round_trip_write_read_list_stat() {
 
             // 1. Open two files under docs/ and write to each.
             let notes = fs
-                .open("docs/notes.md", qos_runtime_fs::OpenMode::Write)
+                .open("docs/notes.md", runtime_fs::OpenMode::Write)
                 .await
                 .expect("open notes");
             notes.write_at(0, b"hello world").await.expect("write notes");
 
             let plan = fs
-                .open("docs/plan.md", qos_runtime_fs::OpenMode::Write)
+                .open("docs/plan.md", runtime_fs::OpenMode::Write)
                 .await
                 .expect("open plan");
             plan.write_at(0, b"shipping").await.expect("write plan");
 
             // 2. Read notes back and confirm.
             let notes_ro = fs
-                .open("docs/notes.md", qos_runtime_fs::OpenMode::Read)
+                .open("docs/notes.md", runtime_fs::OpenMode::Read)
                 .await
                 .expect("reopen notes");
             let contents = notes_ro.read_all().await.expect("read notes");
@@ -326,7 +326,7 @@ async fn round_trip_write_read_list_stat() {
             // 3. Stat matches.
             let md = fs.stat("docs/notes.md").await.expect("stat notes");
             assert_eq!(md.size, 11);
-            assert_eq!(md.kind, qos_runtime_fs::EntryKind::File);
+            assert_eq!(md.kind, runtime_fs::EntryKind::File);
 
             // 4. List docs/ returns both entries by name.
             let mut listing = fs.list("docs").await.expect("list docs");
