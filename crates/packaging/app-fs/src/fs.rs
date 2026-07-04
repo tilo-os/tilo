@@ -7,7 +7,7 @@
 //! The Collection is a flat `path -> blob_hash` table. The
 //! mount expands it into a tree of inodes:
 //!
-//! - inode 1 (FUSE_ROOT_ID) is the payload root.
+//! - inode 1 ([`FUSE_ROOT_ID`]) is the payload root.
 //! - Each interior directory (`bin/`, `share/icons/`, …) gets a
 //!   freshly allocated inode the first time it is visited.
 //! - Each leaf file gets a freshly allocated inode at build
@@ -36,7 +36,7 @@
 //! - The [`PageCache`] absorbs duplicate page reads from the
 //!   kernel's mmap fault path.
 //! - The kernel itself caches `getattr` / `lookup` for
-//!   [`Self::TTL`], which is fine for a read-only payload —
+//!   [`TTL`], which is fine for a read-only payload —
 //!   nothing the kernel cached can become stale.
 
 use std::collections::BTreeMap;
@@ -45,18 +45,19 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    FileAttr, FileType, Filesystem, KernelConfig, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
+    KernelConfig, LockOwner, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
+    ReplyOpen, Request,
 };
-use fuser::consts::FOPEN_KEEP_CACHE;
-use fuser::ll::fuse_abi::consts::FUSE_ROOT_ID;
-use fuser::ll::{FileHandle, FopenFlags, Generation, INodeNo, OpenFlags};
-use fuser::{Errno, ReplyOpen};
-use libc::{EINVAL, EIO, ENOENT, ENOTDIR};
 
 use crate::cache::PageCache;
 use crate::collection::Collection;
 use crate::store::{BlobError, BlobStore};
+
+/// The root inode number. The FUSE kernel ABI hard-codes this to
+/// `1` — every path walk starts here. `fuser` 0.17 doesn't
+/// re-export the ABI constant publicly, so we mirror it inline.
+pub const FUSE_ROOT_ID: u64 = 1;
 
 /// Attribute / entry kernel TTL.
 ///
@@ -213,6 +214,39 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
         self.entries.len()
     }
 
+    /// Resolve `path` (payload-relative, `/`-separated, no
+    /// leading `/`) to its inode. Returns `None` if any segment
+    /// is missing or crosses through a non-directory.
+    ///
+    /// Exposed for tests + a small bit of introspection; the
+    /// FUSE kernel path uses `lookup`, not this.
+    pub fn ino_of(&self, path: &str) -> Option<u64> {
+        let mut current: u64 = FUSE_ROOT_ID;
+        if path.is_empty() {
+            return Some(current);
+        }
+        for seg in path.split('/') {
+            let Entry::Dir { children } = &self.entries[(current - 1) as usize] else {
+                return None;
+            };
+            current = *children.get(seg)?;
+        }
+        Some(current)
+    }
+
+    /// The `(hash, size)` for a file inode. `None` for
+    /// directories or unknown inodes.
+    ///
+    /// Test-only convenience — lets tests exercise the same
+    /// cache path the FUSE `read` handler uses without needing
+    /// a real kernel mount.
+    pub fn blob_at(&self, ino: u64) -> Option<([u8; 32], u64)> {
+        match self.entries.get((ino - 1) as usize)? {
+            Entry::Blob { hash, size } => Some((*hash, *size)),
+            Entry::Dir { .. } => None,
+        }
+    }
+
     /// Build the `FileAttr` for `ino`. The caller is responsible
     /// for handing it to the correct `Reply…`.
     fn attr(&self, ino: u64) -> Option<FileAttr> {
@@ -225,11 +259,13 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
                 // ignores this. Use 2 + dir-child-count.
                 let sub_dirs = children
                     .values()
-                    .filter(|c| matches!(self.entries.get((**c - 1) as usize), Some(Entry::Dir { .. })))
+                    .filter(|c| {
+                        matches!(self.entries.get((**c - 1) as usize), Some(Entry::Dir { .. }))
+                    })
                     .count() as u32;
-                (FileType::Directory, 0u64, 0o555, 2 + sub_dirs)
+                (FileType::Directory, 0u64, 0o555u16, 2 + sub_dirs)
             }
-            Entry::Blob { size, .. } => (FileType::RegularFile, *size, 0o444, 1),
+            Entry::Blob { size, .. } => (FileType::RegularFile, *size, 0o444u16, 1u32),
         };
         let now = SystemTime::now();
         Some(FileAttr {
@@ -269,10 +305,6 @@ pub enum BuildError {
     Store(String, BlobError),
 }
 
-fn to_errno(e: i32) -> Errno {
-    std::io::Error::from_raw_os_error(e).into()
-}
-
 impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), std::io::Error> {
         let _ = config.set_max_readahead(MAX_READAHEAD);
@@ -281,23 +313,23 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let Some(name) = name.to_str() else {
-            reply.error(to_errno(EINVAL));
+            reply.error(Errno::EINVAL);
             return;
         };
         let Some(parent_entry) = self.entries.get((parent.0 - 1) as usize) else {
-            reply.error(to_errno(ENOENT));
+            reply.error(Errno::ENOENT);
             return;
         };
         let Entry::Dir { children } = parent_entry else {
-            reply.error(to_errno(ENOTDIR));
+            reply.error(Errno::ENOTDIR);
             return;
         };
         let Some(&child_ino) = children.get(name) else {
-            reply.error(to_errno(ENOENT));
+            reply.error(Errno::ENOENT);
             return;
         };
         let Some(attr) = self.attr(child_ino) else {
-            reply.error(to_errno(EIO));
+            reply.error(Errno::EIO);
             return;
         };
         reply.entry(&TTL, &attr, Generation(0));
@@ -306,7 +338,7 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         match self.attr(ino.0) {
             Some(attr) => reply.attr(&TTL, &attr),
-            None => reply.error(to_errno(ENOENT)),
+            None => reply.error(Errno::ENOENT),
         }
     }
 
@@ -315,7 +347,7 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         // page is served from the kernel without coming back
         // to us, which is exactly what we want for a read-only
         // payload.
-        reply.opened(FileHandle(0), FopenFlags::from_bits_retain(FOPEN_KEEP_CACHE));
+        reply.opened(FileHandle(0), FopenFlags::FOPEN_KEEP_CACHE);
     }
 
     fn read(
@@ -326,20 +358,20 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         offset: u64,
         size: u32,
         _flags: OpenFlags,
-        _lock_owner: Option<fuser::ll::LockOwner>,
+        _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
         let entry = match self.entries.get((ino.0 - 1) as usize) {
             Some(e) => e,
             None => {
-                reply.error(to_errno(ENOENT));
+                reply.error(Errno::ENOENT);
                 return;
             }
         };
         let (hash, blob_size) = match entry {
             Entry::Blob { hash, size } => (*hash, *size),
             Entry::Dir { .. } => {
-                reply.error(to_errno(EINVAL));
+                reply.error(Errno::EINVAL);
                 return;
             }
         };
@@ -353,7 +385,7 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
             Ok(bytes) => reply.data(&bytes),
             Err(e) => {
                 tracing::warn!(?e, "blob read failed; replying EIO");
-                reply.error(to_errno(EIO));
+                reply.error(Errno::EIO);
             }
         }
     }
@@ -371,11 +403,11 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         mut reply: ReplyDirectory,
     ) {
         let Some(Entry::Dir { children }) = self.entries.get((ino.0 - 1) as usize) else {
-            reply.error(to_errno(ENOENT));
+            reply.error(Errno::ENOENT);
             return;
         };
         // `.` and `..` first, then sorted children.
-        let mut idx = 0u64;
+        //
         // We synthesize parent_ino as the same inode for the
         // root (matches kernel convention), but a non-root
         // directory's parent isn't tracked. Since this is a
@@ -383,6 +415,7 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         // actual destination — but we pass `ino` for
         // determinism rather than 0 which would surprise
         // strict callers.
+        let mut idx = 0u64;
         let entries_iter = [
             (ino.0, FileType::Directory, "."),
             (ino.0, FileType::Directory, ".."),
