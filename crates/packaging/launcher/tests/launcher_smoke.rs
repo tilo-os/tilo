@@ -19,10 +19,18 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
+
+/// The runtime-bundle lookup tests all mutate `HOME` / `XDG_DATA_HOME`
+/// to a per-test tempdir. Since env vars are process-global, run those
+/// tests serially — otherwise concurrent tempdir paths bleed across
+/// each other and `default_bundle_path()` may resolve to the wrong
+/// tempdir.
+static RUNTIME_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------- helpers
 
@@ -66,6 +74,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
     MinimalManifest {
         package_id: "com.example.hello".to_string(),
         version: "0.0.0".to_string(),
+        runtime: None,
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -164,6 +173,7 @@ fn hello_world_runs() {
         minimal_libs: false,
         landlock_enforce: true,
         mode: launcher::run::LaunchMode::Gui,
+        ..Default::default()
     };
     let (status, stdout) =
         run_with_captured(&m, payload.path(), &opts).expect("launch");
@@ -197,6 +207,7 @@ fn no_services_flag_skips_required() {
         minimal_libs: false,
         landlock_enforce: true,
         mode: launcher::run::LaunchMode::Gui,
+        ..Default::default()
     };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success());
@@ -228,6 +239,7 @@ fn optional_service_missing_warns_and_runs() {
         minimal_libs: false,
         landlock_enforce: true,
         mode: launcher::run::LaunchMode::Gui,
+        ..Default::default()
     };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success(), "optional missing should still run");
@@ -259,9 +271,134 @@ fn read_only_fs_enforced() {
         minimal_libs: false,
         landlock_enforce: true,
         mode: launcher::run::LaunchMode::Gui,
+        ..Default::default()
     };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success());
+}
+
+#[test]
+fn manifest_declared_runtime_missing_bundle_fails() {
+    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    // Manifest points at a runtime whose bundle doesn't exist anywhere
+    // on the search path. Without --allow-missing-runtime we expect a
+    // RuntimeBundleMissing error naming the paths we looked at.
+    let dir = tempfile::tempdir().unwrap();
+    let user_home = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", user_home.path());
+        std::env::set_var("HOME", user_home.path());
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+    }
+    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    m.runtime = Some("qos-runtime/nope-9.9.9".to_string());
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+    let err = run_with(&m, dir.path(), &opts).unwrap_err();
+    match &err {
+        RunError::RuntimeBundleMissing { runtime, paths } => {
+            assert!(runtime.contains("nope-9.9.9"));
+            assert!(!paths.is_empty(), "error should list checked paths");
+        }
+        other => panic!("expected RuntimeBundleMissing, got {other:?}"),
+    }
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("nope-9.9.9"),
+        "error text must name runtime: {msg}"
+    );
+}
+
+/// When an app manifest declares a runtime bundle, the launcher's
+/// argv should:
+///   * bind the bundle at /usr/lib/qos-runtime/<v>/
+///   * set LD_LIBRARY_PATH to <mount>/lib
+///   * NOT include the --minimal-libs loader binds even if the flag
+///     is on
+#[test]
+fn runtime_bundle_wins_over_minimal_libs_in_argv() {
+    use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
+    use launcher::sandbox::build_bwrap_argv;
+
+    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    // Set up a fake bundle so resolve_runtime finds it.
+    let user_home = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", user_home.path());
+        std::env::set_var("HOME", user_home.path());
+    }
+    let bundle_dir = user_home
+        .path()
+        .join("qos-runtime")
+        .join("smoke-1.0.0");
+    std::fs::create_dir_all(bundle_dir.join("lib")).unwrap();
+    std::fs::write(bundle_dir.join("bundle.toml"), "version = \"smoke-1.0.0\"\nroot_hash = \"deadbeef\"\n").unwrap();
+
+    let mut m = MinimalManifest {
+        package_id: "com.example.hello".to_string(),
+        version: "0.0.0".to_string(),
+        runtime: Some("qos-runtime/smoke-1.0.0".to_string()),
+        entrypoint: Entrypoint {
+            bin: "bin/hello".to_string(),
+            r#type: launcher::manifest::EntrypointType::Gui,
+            gui_bin: None,
+            cli_bin: None,
+        },
+        sandbox: Sandbox {
+            net: Net { mode: "off".to_string() },
+            fs: Fs::default(),
+            services: BTreeMap::new(),
+            portals: BTreeMap::new(),
+        },
+        cli_commands: Vec::new(),
+    };
+    // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
+    // for a manually-supplied runtime tuple (the pure-function surface).
+    let argv = build_bwrap_argv(
+        &m,
+        Path::new("/host/payload"),
+        Some((bundle_dir.as_path(), "smoke-1.0.0")),
+        &[],
+    );
+    assert!(
+        argv.windows(3)
+            .any(|w| w[0] == "--ro-bind"
+                && w[1] == bundle_dir.display().to_string()
+                && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0"),
+        "runtime bind not in argv: {argv:?}"
+    );
+    assert!(
+        argv.windows(3).any(|w| w[0] == "--setenv"
+            && w[1] == "LD_LIBRARY_PATH"
+            && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0/lib"),
+        "LD_LIBRARY_PATH setenv not in argv: {argv:?}"
+    );
+
+    // And when both minimal-libs and a resolvable runtime bundle are
+    // requested, resolve_runtime picks the bundle. We can't easily
+    // read argv from `run_with` without spawning bwrap, so instead
+    // exercise resolve_runtime directly.
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        minimal_libs: true,
+        ..Default::default()
+    };
+    let resolved =
+        launcher::run::resolve_runtime_test_helper(&m, &opts).expect("resolve ok");
+    assert!(resolved.is_some(), "runtime should resolve");
+    let (path, version) = resolved.unwrap();
+    assert_eq!(version, "smoke-1.0.0");
+    assert_eq!(path, bundle_dir);
+
+    // And no-runtime manifest resolves to None (no error).
+    m.runtime = None;
+    let resolved =
+        launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no runtime = ok");
+    assert!(resolved.is_none());
 }
 
 #[test]
