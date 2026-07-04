@@ -71,6 +71,29 @@ fn tampered_payload_fails_verification() {
 }
 
 #[test]
+fn bootstrap_single_device_seed_round_trips_via_dalek() {
+    // The seed variant produces a dalek-shaped keypair: rebuilding
+    // a `SigningKey` from the returned seed derives the returned
+    // group public key, and signatures verify against it via the
+    // standard Ed25519 verifier. This is the property the on-disk
+    // identity record depends on — the frost variant of
+    // `bootstrap_single_device` cannot uphold it (frost stores a
+    // scalar, dalek `from_bytes` treats input as a seed).
+    let mut rng = fixed_rng();
+    let (seed, group_pk) = ThresholdIdentity::bootstrap_single_device_seed(&mut rng);
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let derived_pk = sk.verifying_key().to_bytes();
+    assert_eq!(&derived_pk, group_pk.as_bytes());
+
+    use ed25519_dalek::Signer;
+    let msg = b"round-trip";
+    let sig = sk.sign(msg);
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(group_pk.as_bytes()).unwrap();
+    use ed25519_dalek::Verifier;
+    vk.verify(msg, &sig).expect("dalek verify must succeed");
+}
+
+#[test]
 fn threshold_signing_calls_error_in_single_device_mode() {
     // The round-1 / round-2 API doesn't apply when the identity
     // is in single-device mode — there is no second signer.
