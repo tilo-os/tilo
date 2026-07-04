@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 qOS is a collaborative, spatial Linux OS built on **Fedora Bootc**. It is a stack, not a single app:
 
 - An immutable container-based OS image
-- A custom Wayland compositor with a 2D-cluster tile-first window model
+- A custom Wayland compositor with a Niri-inspired scrollable-strip tiling model
 - A P2P FUSE filesystem that projects remote files and hydrates on demand
 - A custom CRDT-native UI toolkit used by system apps
 - Native system apps (terminal, file explorer, browser)
