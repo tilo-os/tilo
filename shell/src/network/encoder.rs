@@ -274,7 +274,11 @@ mod tests {
         let frame = dec.decode(&nalus).expect("decoder yields a frame");
         assert_eq!(frame.width, W);
         assert_eq!(frame.height, H);
-        assert_eq!(frame.rgba.len(), original.len());
+        let rgba = match &frame.pixels {
+            crate::network::decoder::DecodedPixels::Rgba8(b) => b,
+            other => panic!("H.264 decoder returned non-RGBA pixels: {other:?}"),
+        };
+        assert_eq!(rgba.len(), original.len());
 
         // Compare only RGB channels — the encoder writes alpha=255 on
         // the way back out (openh264 doesn't carry an alpha channel),
@@ -286,7 +290,7 @@ mod tests {
                 .collect()
         };
         let orig_rgb = strip_alpha(&original);
-        let decoded_rgb = strip_alpha(&frame.rgba);
+        let decoded_rgb = strip_alpha(rgba);
         let score = psnr(&orig_rgb, &decoded_rgb);
         assert!(
             score >= 35.0,

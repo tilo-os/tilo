@@ -367,7 +367,10 @@ mod tests {
             .expect("decoder yields at least one frame");
         assert_eq!(frame.width, 128);
         assert_eq!(frame.height, 96);
-        let pixels = &frame.rgba;
+        let pixels = match &frame.pixels {
+            shell::network::DecodedPixels::Rgba8(bytes) => bytes,
+            other => panic!("SDR H.264 decoder should yield RGBA pixels, got {other:?}"),
+        };
         let first_r = pixels[0];
         // If every pixel's R channel equals the first byte, the frame is
         // uniformly coloured. The shell paints a backdrop + chrome, so a

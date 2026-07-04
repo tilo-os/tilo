@@ -39,7 +39,7 @@ use ui::text_render::TextRenderer;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::diagnostics::PeerSurfaceMetrics;
-use crate::network::decoder::{DecodedFrame, H264Decoder};
+use crate::network::decoder::{DecodedFrame, DecodedPixels, VideoDecoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
 
@@ -91,9 +91,12 @@ pub struct PeerView {
     /// `peer` field on `RemoteInput`. Wired through from the shell at
     /// construction.
     local_peer: PeerId,
-    /// Active decoder. Constructed lazily on first `push_encoded` so the
+    /// Active decoder — H.264 for SDR streams via the SDR default
+    /// constructor. Constructed lazily on first `push_encoded` so the
     /// PSNR-style construction failure path stays out of widget init.
-    decoder: H264Decoder,
+    /// HEVC / HDR routing lands in a follow-on so this field stays
+    /// [`VideoDecoder::H264`] for now.
+    decoder: VideoDecoder,
     /// Most recent decoded frame, ready to paint. `None` until the first
     /// successful decode.
     latest: Option<DecodedFrame>,
@@ -155,7 +158,7 @@ impl PeerView {
             title: format!("Peer surface #{surface_id}"),
             surface_id,
             local_peer,
-            decoder: H264Decoder::new(),
+            decoder: VideoDecoder::H264(crate::network::decoder::H264Decoder::new()),
             latest: None,
             cached_image: None,
             pending_inputs: Vec::new(),
@@ -304,11 +307,25 @@ impl PeerView {
     /// Cheap when `cached_image` is already populated; otherwise clones
     /// the RGBA bytes once into a `Blob<u8>` and re-uses it across
     /// subsequent paints.
+    ///
+    /// Only the SDR RGBA path is wired today. HDR P010 frames from the
+    /// HEVC Main10 decoder are dropped (falls back to the placeholder)
+    /// — the tone-map + display-passthrough routing lands in a
+    /// follow-on that plumbs `HdrTonemapConfig` + `DisplayCapabilities`
+    /// through this method.
     fn ensure_image(&mut self) -> Option<&vello::peniko::ImageData> {
         if self.cached_image.is_none() {
             if let Some(frame) = &self.latest {
-                let blob =
-                    vello::peniko::Blob::new(std::sync::Arc::new(frame.rgba.clone()));
+                let rgba = match &frame.pixels {
+                    DecodedPixels::Rgba8(bytes) => bytes.clone(),
+                    DecodedPixels::P010 { .. } => {
+                        // TODO(HDR routing): wire the tone-map here.
+                        // Until then, drop the P010 frame — the
+                        // placeholder in `draw` shows up instead.
+                        return None;
+                    }
+                };
+                let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
                 self.cached_image = Some(vello::peniko::ImageData {
                     data: blob,
                     format: vello::peniko::ImageFormat::Rgba8,
@@ -531,6 +548,10 @@ mod tests {
         let latest = view.latest_frame().expect("frame stashed");
         assert_eq!(latest.width, W);
         assert_eq!(latest.height, H);
+        assert!(
+            latest.pixels.is_rgba(),
+            "H.264 decoder should yield RGBA pixels"
+        );
 
         // Layout a 100×100 rect at origin so the image has somewhere to
         // blit.

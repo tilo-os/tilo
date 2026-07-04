@@ -567,7 +567,11 @@ mod tests {
                 .collect()
         };
         let orig_rgb = strip_alpha(&input);
-        let decoded_rgb = strip_alpha(&frame.rgba);
+        let rgba = match &frame.pixels {
+            crate::network::decoder::DecodedPixels::Rgba8(b) => b,
+            other => panic!("H.264 decoder returned non-RGBA pixels: {other:?}"),
+        };
+        let decoded_rgb = strip_alpha(rgba);
         // PSNR — inline so this test stays self-contained without
         // re-exporting `encoder::tests::psnr`.
         let mse: f64 = orig_rgb
