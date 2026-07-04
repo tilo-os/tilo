@@ -1,10 +1,10 @@
 # Development Guide
 
-Welcome to the qOS project! This document outlines how to set up your environment and work with our submodule-based architecture.
+Welcome to the qOS project! This document outlines how to set up your environment and work with the codebase.
 
 ## 1. Project Structure
 
-qOS is organized as a Cargo Workspace using Git Submodules for its core components.
+qOS is organized as a single Cargo Workspace (monorepo).
 
 -   `shell/`: The Wayland compositor (`shell`).
 -   `fs/`: The collaborative P2P filesystem.
@@ -14,29 +14,19 @@ qOS is organized as a Cargo Workspace using Git Submodules for its core componen
     -   `file-explorer/`: Spatial file manager.
     -   `terminal/`: GPU-accelerated terminal.
 
-## 2. Working with Submodules
+## 2. Working in the monorepo
 
-Since this project uses submodules, you need to be aware of how to manage them.
+All components (`shell`, `fs`, `os`, `ui`, `apps/*`, and the top-level crates)
+live in this single repository — clone, edit, and commit normally.
 
 ### Initial Setup
-If you just cloned the repository, initialize the submodules:
 ```bash
-git submodule update --init --recursive
-```
-
-### Pulling Updates
-To pull the latest changes for all submodules:
-```bash
-git submodule update --remote --merge
+git clone ssh://git@code.sandbox.example/qos/qos.git
 ```
 
 ### Making Changes
-When working on a sub-project (e.g., the browser):
-1. `cd apps/browser`
-2. Make your changes and commit them *inside* the browser directory.
-3. `cd ../..` (back to root)
-4. `git add apps/browser` to update the pointer in the main repository.
-5. Commit the pointer update.
+Edit any component in place and commit — no submodule pointer dance. Prefer
+explicit paths over `git add -A` so you only stage what you intend.
 
 ## 3. Building the Project
 
