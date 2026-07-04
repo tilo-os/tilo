@@ -6,13 +6,13 @@
 //!   * the **semantic tree** ([`crate::a11y::AccessNode`], produced per-widget
 //!     by [`Widget::accessibility`](crate::widget::Widget::accessibility) and
 //!     assembled by the [`App`](crate::app::App)); and
-//!   * the **speech engine** [`qos_tts`] — an offline, interrupt-aware TTS stack
-//!     whose [`Speaker`](qos_tts::Speaker) trait this module drives.
+//!   * the **speech engine** [`tts`] — an offline, interrupt-aware TTS stack
+//!     whose [`Speaker`](tts::Speaker) trait this module drives.
 //!
 //! The reader owns a `Box<dyn Speaker>` (defaulting to
-//! [`qos_tts::default_speaker`], which never panics — it falls back to a
-//! [`NullSpeaker`](qos_tts::NullSpeaker) when no speech stack is installed) and
-//! a [`SpeechQueue`](qos_tts::SpeechQueue) so chatty focus narration coalesces
+//! [`tts::default_speaker`], which never panics — it falls back to a
+//! [`NullSpeaker`](tts::NullSpeaker) when no speech stack is installed) and
+//! a [`SpeechQueue`](tts::SpeechQueue) so chatty focus narration coalesces
 //! (rapid arrow navigation interrupts the previous utterance instead of queuing
 //! a backlog — see [`ScreenReader::announce_focus`]).
 //!
@@ -45,7 +45,7 @@
 //! speech engine, no I/O, and no state, so it is exhaustively unit-testable —
 //! the test module at the bottom is a role × state truth table. `ScreenReader`
 //! is the thin imperative shell that pushes `describe`'s output through the
-//! queue into a [`Speaker`](qos_tts::Speaker).
+//! queue into a [`Speaker`](tts::Speaker).
 //!
 //! ## i18n
 //!
@@ -59,7 +59,7 @@
 //! switching locale changes the spoken language without touching the reader
 //! logic. The constants live in the `phrase` submodule next to their keys.
 
-use qos_tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance, default_speaker};
+use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance, default_speaker};
 
 use crate::a11y::{AccessNode, Role};
 use crate::widget::Widget;
@@ -372,7 +372,7 @@ fn is_editable_role(role: Role) -> bool {
 }
 
 /// The built-in screen reader: an interrupt-coalescing narrator over a
-/// [`Speaker`](qos_tts::Speaker).
+/// [`Speaker`](tts::Speaker).
 ///
 /// Hold one of these in the [`App`](crate::app::App) when
 /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader) is
@@ -380,7 +380,7 @@ fn is_editable_role(role: Role) -> bool {
 /// change and [`announce_value_change`](Self::announce_value_change) when a
 /// value-bearing control's value changes; widgets that echo typing call the
 /// `echo_*` helpers. Everything funnels through an internal
-/// [`SpeechQueue`](qos_tts::SpeechQueue) so a focus storm coalesces to the
+/// [`SpeechQueue`](tts::SpeechQueue) so a focus storm coalesces to the
 /// latest utterance (responsive arrow navigation).
 pub struct ScreenReader {
     speaker: Box<dyn Speaker>,
@@ -403,16 +403,16 @@ impl Default for ScreenReader {
 
 impl ScreenReader {
     /// A reader wired to the platform default speech engine
-    /// ([`qos_tts::default_speaker`]). Never panics: with no TTS installed this
-    /// is a [`NullSpeaker`](qos_tts::NullSpeaker) and narration is silently
+    /// ([`tts::default_speaker`]). Never panics: with no TTS installed this
+    /// is a [`NullSpeaker`](tts::NullSpeaker) and narration is silently
     /// dropped, so the reader is safe to construct unconditionally.
     pub fn new() -> Self {
         Self::with_speaker(default_speaker())
     }
 
     /// A reader over a caller-supplied speaker. Tests inject a
-    /// [`NullSpeaker`](qos_tts::NullSpeaker) and assert on
-    /// [`NullSpeaker::spoken`](qos_tts::NullSpeaker::spoken).
+    /// [`NullSpeaker`](tts::NullSpeaker) and assert on
+    /// [`NullSpeaker::spoken`](tts::NullSpeaker::spoken).
     pub fn with_speaker(speaker: Box<dyn Speaker>) -> Self {
         Self {
             speaker,
@@ -422,7 +422,7 @@ impl ScreenReader {
         }
     }
 
-    /// A reader over a [`NullSpeaker`](qos_tts::NullSpeaker) — convenience for
+    /// A reader over a [`NullSpeaker`](tts::NullSpeaker) — convenience for
     /// tests and headless paths that want to inspect what *would* be spoken.
     pub fn null() -> Self {
         Self::with_speaker(Box::new(NullSpeaker::new()))
@@ -478,9 +478,9 @@ impl ScreenReader {
 
     /// Speak arbitrary `text` at the given `priority`, optionally interrupting.
     /// This is the **live-region** entry point: errors / permission prompts use
-    /// [`Priority::Important`](qos_tts::Priority) (never dropped, survives a
+    /// [`Priority::Important`](tts::Priority) (never dropped, survives a
     /// focus interrupt); polite toasts use
-    /// [`Priority::Notification`](qos_tts::Priority).
+    /// [`Priority::Notification`](tts::Priority).
     pub fn announce(&mut self, text: impl Into<String>, priority: Priority, interrupt: bool) {
         let text = text.into();
         if text.is_empty() {
@@ -505,7 +505,7 @@ impl ScreenReader {
     }
 
     /// Typing echo: speak a single just-typed character. Spoken at
-    /// [`Priority::Text`](qos_tts::Priority), interrupting, so a fast typist's
+    /// [`Priority::Text`](tts::Priority), interrupting, so a fast typist's
     /// echoes coalesce and a focus change cuts them off cleanly.
     pub fn echo_char(&mut self, ch: char) {
         // A space is announced as the word so it isn't silence.
@@ -550,7 +550,7 @@ impl ScreenReader {
     /// Speak the entire reading order of `root` — a "say all". Walks the tree
     /// in DFS order, collapsing presentational (`accessibility() == None`)
     /// nodes exactly as the AccessKit bridge does, and speaks every node's
-    /// [`describe`] as bulk [`Priority::Text`](qos_tts::Priority) content (so a
+    /// [`describe`] as bulk [`Priority::Text`](tts::Priority) content (so a
     /// later focus change interrupts it). Seeds the reading cursor at the start
     /// so a subsequent [`read_next`](Self::read_next) continues from there.
     pub fn read_all(&mut self, root: &dyn Widget) {
@@ -788,7 +788,7 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
 mod tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
-    use qos_tts::NullSpeaker;
+    use tts::NullSpeaker;
 
     // ----- describe(): the role × state truth table -----
 

@@ -1,12 +1,12 @@
 [package]
-name = "qos-tts"
+name = "tts"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "qOS text-to-speech engine for the built-in screen reader: speech-dispatcher (SSIP) primary backend, espeak-ng subprocess fallback, null recording mock, and an interrupt-aware speech queue."
 
 [lib]
-name = "qos_tts"
+name = "tts"
 path = "src/lib.rs"
 
 # License posture (see src/lib.rs for the full note):

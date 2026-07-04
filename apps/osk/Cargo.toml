@@ -17,7 +17,7 @@ ui = { path = "../../ui" }
 # Real FUTO swipe decoder (ExecuTorch over FFI). Builds a stub reporting
 # "unavailable" when the FUTO libs aren't linked, so the OSK falls back to
 # its geometric decoder — see src/futo.rs.
-qos-swipe = { path = "../../qos-swipe" }
+swipe = { path = "../../crates/system/swipe" }
 # Same render/event crate set the other `ui` apps pull in so the `Widget`
 # impl can build a taffy node, draw into a vello `Scene`, react to winit
 # events, and (for tests/headless) carry an automerge handle.
