@@ -1085,4 +1085,265 @@ mod tests {
         app.sync(&mut state.doc, &state.root);
         assert_eq!(app.model.surface, "x*y+1", "sync must adopt the external CRDT surface edit");
     }
+
+    // -- pointer-path harness: drive the REAL production handle_event route -----
+    //
+    // These exercise the live pointer pipeline end-to-end — hit-testing against
+    // the same rects the last layout painted, then the wired handler — rather
+    // than calling the model-level `apply_key` / view mutators directly. Node /
+    // taffy are unused by the (single-leaf) calculator, so a throwaway leaf is
+    // fine.
+
+    fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    fn cursor(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn btn(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        }
+    }
+    fn wheel(y: f64) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, y as f32),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+
+    /// A full click (move → press → release) at scene point `p`.
+    fn tap(app: &mut CalculatorApp, st: &mut ui::State, p: Point) {
+        send(app, st, &cursor(p));
+        send(app, st, &btn(ElementState::Pressed));
+        send(app, st, &btn(ElementState::Released));
+    }
+
+    /// A press-drag: press at `a`, move to `b` with the button held, release.
+    fn drag(app: &mut CalculatorApp, st: &mut ui::State, a: Point, b: Point) {
+        send(app, st, &cursor(a));
+        send(app, st, &btn(ElementState::Pressed));
+        send(app, st, &cursor(b));
+        send(app, st, &btn(ElementState::Released));
+    }
+
+    #[test]
+    fn calc_keypad_click_appends_to_expression() {
+        // handle_event → on_press → on_press_calc → key_at → apply_key on the
+        // real keycap rects (not a model-level apply_key shortcut).
+        let mut app = CalculatorApp::new(); // Calc mode, empty
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        let seven = app.bench_calc_key_center("7").expect("7 keycap laid out");
+        tap(&mut app, &mut st, seven);
+        assert_eq!(app.model.expr, "7", "tapping a digit keycap must append it");
+        let plus = app.bench_calc_key_center("+").expect("+ keycap laid out");
+        tap(&mut app, &mut st, plus);
+        assert_eq!(app.model.expr, "7+", "tapping an operator keycap must append it");
+    }
+
+    #[test]
+    fn history_row_click_recalls_expression() {
+        // on_press_calc → history_at → model.expr loads the tapped entry.
+        let mut app = CalculatorApp::seeded();
+        app.set_mode(Mode::Calc);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // wide → history docks open
+        app.relayout();
+        app.layout_active();
+        let want = app.model.history[0].expr.clone();
+        assert!(!want.is_empty());
+        let row = app.calc.history_row_center(0).expect("history row 0 laid out");
+        app.model.expr = "999".into(); // something distinct to overwrite
+        app.model.after_equals = true;
+        tap(&mut app, &mut st, row);
+        assert_eq!(app.model.expr, want, "tapping a history row must load its expression");
+        assert!(!app.model.after_equals, "recall must clear the after-equals latch");
+    }
+
+    #[test]
+    fn clear_history_button_click_empties_history() {
+        // on_press_calc → clear_history_at → model.history.clear().
+        let mut app = CalculatorApp::seeded();
+        app.set_mode(Mode::Calc);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        assert!(!app.model.history.is_empty());
+        let clear = app.calc.clear_history_center().expect("Clear button laid out");
+        tap(&mut app, &mut st, clear);
+        assert!(app.model.history.is_empty(), "tapping Clear must empty the history");
+    }
+
+    #[test]
+    fn memory_button_click_accumulates_via_pointer() {
+        // on_press_calc → mem_at → apply_key(MemAdd/MemClear) via the mem rects.
+        let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
+        app.model.expr = "10".into();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        // MEM_KEYS = [MC, MR, M+, M-]; index 2 is M+, index 0 is MC.
+        let m_add = app.calc.mem_center(2).expect("M+ button laid out");
+        tap(&mut app, &mut st, m_add);
+        assert_eq!(app.model.memory, 10.0, "M+ must add the current value to memory");
+        tap(&mut app, &mut st, m_add);
+        assert_eq!(app.model.memory, 20.0, "M+ again accumulates");
+        let m_clr = app.calc.mem_center(0).expect("MC button laid out");
+        tap(&mut app, &mut st, m_clr);
+        assert_eq!(app.model.memory, 0.0, "MC must clear memory");
+    }
+
+    #[test]
+    fn deg_toggle_click_changes_angle_mode_and_trig_output() {
+        // on_press → deg_rect / rad_rect → model.deg, and the change must flow
+        // through model.ctx() so trig actually evaluates differently.
+        use crate::engine;
+        let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert!(!app.model.deg, "default is radians");
+        let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
+        assert!((rad_val - 1.0).abs() > 0.01, "RAD sin(90) must not be 1 (got {rad_val})");
+        let deg_pt = app.deg_rect.center();
+        tap(&mut app, &mut st, deg_pt);
+        assert!(app.model.deg, "clicking DEG must switch to degrees");
+        let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
+        assert!((deg_val - 1.0).abs() < 1e-9, "DEG sin(90) must be 1 (got {deg_val})");
+        let rad_pt = app.rad_rect.center();
+        tap(&mut app, &mut st, rad_pt);
+        assert!(!app.model.deg, "clicking RAD must switch back to radians");
+    }
+
+    #[test]
+    fn graph2d_drag_pans_the_view() {
+        // handle_event drag → on_drag → view2d center shifts.
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph2d);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // docked panel → live canvas
+        app.relayout();
+        app.layout_active();
+        assert_eq!(app.model.view2d.cx, 0.0);
+        assert_eq!(app.model.view2d.cy, 0.0);
+        let c = app.g2.canvas.center();
+        drag(&mut app, &mut st, c, Point::new(c.x + 40.0, c.y + 30.0));
+        assert!(app.model.view2d.cx != 0.0, "horizontal drag must pan cx");
+        assert!(app.model.view2d.cy != 0.0, "vertical drag must pan cy");
+    }
+
+    #[test]
+    fn graph2d_wheel_zooms_the_view() {
+        // handle_event wheel over the canvas → on_wheel → view2d.scale grows.
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph2d);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        let before = app.model.view2d.scale;
+        let c = app.g2.canvas.center();
+        send(&mut app, &mut st, &cursor(c));
+        send(&mut app, &mut st, &wheel(1.0));
+        assert!(
+            app.model.view2d.scale > before,
+            "scrolling up over the canvas must zoom in (scale {before} → {})",
+            app.model.view2d.scale
+        );
+    }
+
+    #[test]
+    fn graph3d_drag_orbits_the_view() {
+        // handle_event drag → on_drag → view3d yaw/pitch change.
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph3d);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        let (yaw0, pitch0) = (app.model.view3d.yaw, app.model.view3d.pitch);
+        let c = app.g3.canvas.center();
+        drag(&mut app, &mut st, c, Point::new(c.x + 50.0, c.y + 20.0));
+        assert!(app.model.view3d.yaw != yaw0, "horizontal drag must change yaw");
+        assert!(app.model.view3d.pitch != pitch0, "vertical drag must change pitch");
+    }
+
+    #[test]
+    fn graph3d_wheel_zooms_the_view() {
+        // handle_event wheel over the surface canvas → on_wheel → view3d.zoom.
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph3d);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        let before = app.model.view3d.zoom;
+        let c = app.g3.canvas.center();
+        send(&mut app, &mut st, &cursor(c));
+        send(&mut app, &mut st, &wheel(1.0));
+        assert!(app.model.view3d.zoom > before, "scrolling up over the surface must zoom in");
+    }
+
+    #[test]
+    fn vis_dot_click_toggles_function_visibility() {
+        // on_press_g2 → vis_at → funcs[i].visible flips, via the real dot rect.
+        let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
+        app.set_mode(Mode::Graph2d);
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // docked panel
+        app.relayout();
+        app.layout_active();
+        assert!(app.model.funcs[0].visible);
+        let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
+        tap(&mut app, &mut st, dot);
+        assert!(!app.model.funcs[0].visible, "tapping the dot must hide the function");
+        tap(&mut app, &mut st, dot);
+        assert!(app.model.funcs[0].visible, "tapping again must show it");
+    }
+
+    /// The calculator's half of the framework Ctrl+Z: a real edit through the
+    /// event path arms the coalescing timer, `needs_commit` seals a checkpoint
+    /// only after the pause, and `on_commit` clears it. (The Ctrl+Z keybinding →
+    /// snapshot → sync loop itself lives in `ui::App`; the snapshot round-trip is
+    /// proven by `undo_redo_of_formula_edit_routes_through_ui_state`.)
+    #[test]
+    fn edit_through_event_path_arms_and_seals_undo_commit() {
+        let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        assert!(!app.needs_commit(), "no edit yet → nothing to commit");
+        let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
+        tap(&mut app, &mut st, five);
+        assert_eq!(app.model.expr, "5");
+        assert!(app.last_edit_time.is_some(), "an edit must arm the coalescing timer");
+        assert!(!app.needs_commit(), "a just-made edit must not seal a checkpoint mid-burst");
+        // Once the coalesce window has elapsed the widget asks to checkpoint.
+        app.last_edit_time = Some(std::time::Instant::now() - COMMIT_COALESCE);
+        assert!(app.needs_commit(), "after the pause the edit must seal into a checkpoint");
+        // The App calls on_commit after snapshotting; that clears the pending edit.
+        app.on_commit();
+        assert!(!app.needs_commit());
+        assert!(app.last_edit_time.is_none());
+    }
 }
