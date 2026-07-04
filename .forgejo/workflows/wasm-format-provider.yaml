@@ -24,24 +24,46 @@ on:
       - ".forgejo/workflows/wasm-format-provider.yaml"
   workflow_dispatch:
 
+concurrency:
+  group: wasm-format-provider-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-instantiate:
     runs-on: runner
+    container:
+      image: quay.io/fedora/fedora:42
     env:
+      RUSTC_WRAPPER: sccache
       WASM_OUT: crates/doc/qdoc-codec-markdown-wasm/target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Install build deps + rustup (Fedora's `rust` package can't add targets)
+        # dnf's `rust` is a fixed toolchain — no `rustup target add`.
+        # Install rustup separately so the wasm32-wasip2 target is
+        # reachable; sccache + native deps still come from dnf so the
+        # host-target format-host build reuses the same cache.
+        run: |
+          dnf install -y \
+            sccache \
+            gcc gcc-c++ make cmake perl perl-FindBin python3 git curl \
+            clang clang-devel pkgconf-pkg-config \
+            openssl-devel \
+            && dnf clean all
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Add wasm32-wasip2 target + build the component
         run: |
-          distrobox enter my-distrobox -- bash -c \
-            'rustup target add wasm32-wasip2 \
-             && cargo build \
-                 --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml \
-                 --target wasm32-wasip2 --release'
+          rustup target add wasm32-wasip2
+          cargo build \
+            --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml \
+            --target wasm32-wasip2 --release
 
       - name: Assert the .wasm exists and is non-empty
         # Bare-minimum sanity: the target directory contains a real
@@ -63,6 +85,7 @@ jobs:
         # through the Cap'n Proto surface. The test skips if the
         # wasm is absent — the previous step guarantees it isn't.
         run: |
-          distrobox enter my-distrobox -- bash -c \
-            'cargo test -p format-host --release --test integration \
-                single_provider_round_trip -- --nocapture'
+          sed -i '/"apps\/browser",/d' Cargo.toml
+          cp os/Cargo.lock.pinned Cargo.lock
+          cargo test -p format-host --release --test integration \
+              single_provider_round_trip -- --nocapture

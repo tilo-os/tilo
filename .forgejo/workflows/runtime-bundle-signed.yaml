@@ -24,10 +24,17 @@ on:
       - ".forgejo/workflows/runtime-bundle-signed.yaml"
   workflow_dispatch:
 
+concurrency:
+  group: runtime-bundle-signed-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-verify-and-check-determinism:
     runs-on: runner
+    container:
+      image: quay.io/fedora/fedora:42
     env:
+      RUSTC_WRAPPER: sccache
       RUNTIME_VERSION: ci-${{ github.sha }}
       OUT_A: bundle-a
       OUT_B: bundle-b
@@ -36,12 +43,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Build qos-runtime-bundle (release, in distrobox)
+      - name: Install build deps
         run: |
-          distrobox enter my-distrobox -- bash -c \
-            'cargo build -p runtime-bundle --release'
+          dnf install -y \
+            rust cargo sccache \
+            gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+            clang clang-devel pkgconf-pkg-config \
+            openssl-devel \
+            && dnf clean all
+
+      - name: Build qos-runtime-bundle (release)
+        run: |
+          sed -i '/"apps\/browser",/d' Cargo.toml
+          cp os/Cargo.lock.pinned Cargo.lock
+          cargo build -p runtime-bundle --release
 
       - name: Materialise signing identity
         # If the workflow secret is set, use it — persistent per-repo

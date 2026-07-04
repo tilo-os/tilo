@@ -22,27 +22,59 @@ on:
       - ".forgejo/workflows/app-model-e2e.yaml"
   workflow_dispatch:
 
+concurrency:
+  group: app-model-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-pack-install-run:
     runs-on: runner
+    # The self-hosted runner spawns each job in a Docker container;
+    # this pattern (same as .forgejo/workflows/check.yml) gives us a
+    # Fedora rootfs with a full package manager. The runner is not a
+    # host with distrobox — reach for `container:` + dnf instead.
+    container:
+      image: quay.io/fedora/fedora:42
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Build packaging binaries (release, in distrobox)
+      - name: Install build deps (mirrors os/Containerfile builder + bubblewrap for the sandbox demo)
         run: |
-          distrobox enter my-distrobox -- bash -c \
-            'cargo build -p pkg-cli -p launcher -p install -p hello -p runtime-bundle --release'
+          dnf install -y \
+            rust cargo sccache \
+            gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+            clang clang-devel pkgconf-pkg-config \
+            libxkbcommon-devel wayland-devel \
+            libseat-devel libinput-devel systemd-devel libdrm-devel \
+            mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
+            pipewire-devel \
+            openssl-devel sqlite-devel zlib-ng-compat-devel \
+            fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
+            nasm \
+            bubblewrap \
+            && dnf clean all
+
+      - name: Build packaging binaries (release)
+        run: |
+          # The image build already drops apps/browser here; do the same
+          # for the workspace check so an unrelated Servo resolve failure
+          # doesn't sink this workflow. Untouched in git.
+          sed -i '/"apps\/browser",/d' Cargo.toml
+          cp os/Cargo.lock.pinned Cargo.lock
+          cargo build -p pkg-cli -p launcher -p install -p hello -p runtime-bundle --release
 
       - name: Run hello demo (pack + install + sandboxed run)
         id: demo
+        # Capture full demo output (stdout+stderr) so the assertion step
+        # can grep it after the fact. Failing here aborts the workflow
+        # with the raw log intact.
         run: |
           set -o pipefail
-          # Capture full demo output (stdout+stderr) so the assertion
-          # step can grep it after the fact. Failing here aborts the
-          # workflow with the raw log intact.
           bash crates/packaging/hello/demo.sh 2>&1 | tee demo.log
 
       - name: Assert probe lines are in the hello output
