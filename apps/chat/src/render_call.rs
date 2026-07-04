@@ -388,15 +388,15 @@ impl ChatApp {
             let cx = rect.center().x;
             let cy = rect.center().y - r * 0.3;
             draw_avatar(scene, tf, tr, theme, Point::new(cx, cy), r, &u.initials, u.color_idx, None);
-            // Honest state under the avatar: "Camera off" for an audio-only
-            // participant, otherwise nothing (their camera is on but no frame
-            // reaches this peer here — we show the avatar rather than invent a
-            // picture). Never claims to be showing video it doesn't have.
-            if p.audio_only {
-                let s = "Camera off";
-                let (sw, _) = tr.measure(s, 11.5, None);
-                label(scene, tr, tf, s, 11.5, c.text_dim, cx - sw as f64 / 2.0, cy + r + 8.0);
-            }
+            // Honest state under the avatar — the same treatment the host tile
+            // gets. There is no remote camera capture in this environment, so
+            // the tile never fabricates a picture: an audio-only peer reads
+            // "Camera off"; a camera-enabled peer whose frame doesn't reach
+            // this peer reads "No video". It never claims to show video it
+            // doesn't have.
+            let s = member_tile_caption(p);
+            let (sw, _) = tr.measure(s, 11.5, None);
+            label(scene, tr, tf, s, 11.5, c.text_dim, cx - sw as f64 / 2.0, cy + r + 8.0);
         }
         if p.talking {
             stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
@@ -590,6 +590,20 @@ impl ChatApp {
     }
 }
 
+/// The honest one-line caption shown under a remote participant's avatar in
+/// the expanded call grid. There is no remote camera capture wired up in this
+/// environment, so a tile must never imply a live feed: an audio-only peer
+/// reads "Camera off"; a camera-enabled peer whose frame doesn't reach us
+/// reads "No video". Both are literally true, and both mirror the host tile's
+/// honest placeholder — the tile shows an avatar, never a fabricated picture.
+fn member_tile_caption(p: &Participant) -> &'static str {
+    if p.audio_only {
+        "Camera off"
+    } else {
+        "No video"
+    }
+}
+
 /// Pack `n` remote tiles into `region`, choosing the column count that yields
 /// the largest, most camera-shaped uniform tiles. Every returned rect is
 /// contained within `region`, so the grid can never spill past the window at
@@ -648,8 +662,28 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use super::grid_rects;
+    use super::{grid_rects, member_tile_caption, Participant};
     use vello::kurbo::Rect;
+
+    fn participant(audio_only: bool) -> Participant {
+        Participant { user: "u_x".into(), talking: false, muted: false, audio_only }
+    }
+
+    /// Defect regression: remote tiles must be honest — never present a
+    /// fabricated video feed. Every caption is a truthful "camera state"
+    /// string (matching the host tile), never a claim of live video.
+    #[test]
+    fn remote_tile_caption_is_honest_never_a_fabricated_feed() {
+        assert_eq!(member_tile_caption(&participant(true)), "Camera off");
+        assert_eq!(member_tile_caption(&participant(false)), "No video");
+        for audio_only in [true, false] {
+            let cap = member_tile_caption(&participant(audio_only)).to_lowercase();
+            assert!(
+                !cap.contains("live") && !cap.contains("streaming") && !cap.contains("feed"),
+                "caption must not imply a live feed: {cap:?}"
+            );
+        }
+    }
 
     /// The expanded-overlay regression: every remote tile must stay inside the
     /// window at every headcount and width. The old layout sized each tile to
