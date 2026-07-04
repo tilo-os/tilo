@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use editor::{open_document, WordProcessorWidget};
+use word_processor::{open_document, WordProcessorWidget};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceKey;

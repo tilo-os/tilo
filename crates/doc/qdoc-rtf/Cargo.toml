@@ -1,5 +1,5 @@
 [package]
-name = "docrtf"
+name = "qdoc-rtf"
 version = "0.1.0"
 edition = "2024"
 description = "RTF (Rich Text Format) export for qdoc DocSnapshot documents (qOS)"
