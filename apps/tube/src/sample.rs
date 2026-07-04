@@ -371,10 +371,11 @@ pub fn model() -> TubeModel {
         search_query: String::new(),
         playhead: 0.0,
         playing: false,
-        skipped_log: vec![
-            "Skipped Sponsor (24:00–26:10)".into(),
-            "Skipped Interaction reminder (9:00–9:12)".into(),
-        ],
+        liked: Vec::new(),
+        // No pre-seeded notices: the toast stack fills from real activity
+        // (auto-skips, share/like acknowledgements, worker status) so it never
+        // shows events that didn't happen.
+        notices: Vec::new(),
         palette_open: false,
         palette_query: String::new(),
         // The bundled catalogue is, by definition, the offline sample.
