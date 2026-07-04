@@ -75,6 +75,10 @@ impl Encoder for OpenH264Backend {
     fn kind(&self) -> EncoderKind {
         EncoderKind::Openh264
     }
+    fn codec(&self) -> super::Codec {
+        // Openh264 is 8-bit H.264 only; the ctor rejects anything else.
+        super::Codec::H264
+    }
     fn width(&self) -> u32 {
         self.width
     }
