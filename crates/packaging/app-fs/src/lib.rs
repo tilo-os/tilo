@@ -1,4 +1,4 @@
-//! qos-app-fs — read-only FUSE3 driver that mounts a qOS
+//! app-fs — read-only FUSE3 driver that mounts a qOS
 //! package payload from a content-addressed [`BlobStore`].
 //!
 //! ## Mental model
@@ -17,7 +17,7 @@
 //!   table without fetching any blob bytes.
 //! - `read(ino, offset, size)` calls `BlobStore::get_range` for
 //!   exactly the slice the kernel asked for.
-//! - An [`PageCache`] sits between the FUSE worker and the
+//! - A [`PageCache`] sits between the FUSE worker and the
 //!   store so an mmap'd binary doesn't re-fetch the same page
 //!   on every fault.
 //!
@@ -35,13 +35,11 @@
 pub mod cache;
 pub mod collection;
 pub mod fs;
-pub mod mount;
 pub mod store;
 
-pub use cache::{PageCache, PageCacheStats, PAGE_SIZE};
+pub use cache::{PAGE_SIZE, PageCache, PageCacheStats};
 pub use collection::{Collection, CollectionDecodeError};
 pub use fs::QosAppFs;
-pub use mount::{Mount, MountError, MountOptions};
 pub use store::{
     BlobError, BlobStore, CountingStore, CounterSnapshot, DiskBlobStore, MemoryBlobStore,
 };
