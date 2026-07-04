@@ -34,7 +34,7 @@ use ui::theme::Theme;
 use crate::chart::{self, ChartPoint};
 use crate::icon;
 use crate::interaction::{ContextMenu, EntryAction, PointerPress, SWIPE_COMMIT_DX};
-use crate::model::{SavedLocation, WeatherModel};
+use crate::model::{DayForecast, SavedLocation, WeatherModel, WeatherSnapshot};
 use crate::net::{Request, Response};
 use crate::units::{self, Units};
 use crate::wxcode::Sky;
@@ -262,6 +262,24 @@ impl Core {
             self.inflight += 1;
             self.status = "Updating…".to_string();
         }
+    }
+
+    /// Move the overview selection by `delta` (arrow-key navigation of the
+    /// city list), re-fetch the newly selected city's forecast and reset the
+    /// forecast scroll. Returns true when the selection actually moved, so the
+    /// caller can persist the new `selected` to the shared document.
+    fn move_selection(&mut self, delta: i64) -> bool {
+        if self.model.locations.is_empty() {
+            return false;
+        }
+        let before = self.model.selected;
+        self.model.select_relative(delta);
+        let moved = self.model.selected != before;
+        if moved {
+            self.scroll = 0.0;
+            self.refresh_selected();
+        }
+        moved
     }
 
     fn refresh_location(&mut self, idx: usize) {
@@ -1108,15 +1126,42 @@ impl Core {
                             }
                         }
                     }
-                } else if let Key::Named(NamedKey::Escape) = logical_key {
-                    if self.menu.is_some() {
-                        self.menu = None;
-                        handled = true;
-                    }
-                } else if let Key::Character(ch) = logical_key {
-                    if ch.as_str() == "/" {
-                        self.search_focused = true;
-                        handled = true;
+                } else {
+                    match logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            if self.menu.is_some() {
+                                self.menu = None;
+                                handled = true;
+                            }
+                        }
+                        // Arrow up/down move the highlighted city; the detail
+                        // pane follows the selection live (side-by-side) and a
+                        // fresh forecast is fetched for it.
+                        Key::Named(NamedKey::ArrowDown) => {
+                            self.menu = None;
+                            changed = self.move_selection(1);
+                            handled = true;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.menu = None;
+                            changed = self.move_selection(-1);
+                            handled = true;
+                        }
+                        // Enter opens the forecast for the highlighted city —
+                        // the only way to reach the detail by keyboard in the
+                        // narrow push layout, where it isn't shown yet.
+                        Key::Named(NamedKey::Enter) => {
+                            if self.model.selected_location().is_some() {
+                                self.refresh_selected();
+                                self.nav_request = Some(NavIntent::ShowDetail);
+                                handled = true;
+                            }
+                        }
+                        Key::Character(ch) if ch.as_str() == "/" => {
+                            self.search_focused = true;
+                            handled = true;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1230,7 +1275,7 @@ impl Core {
             let sr = hhmm(&today.sunrise);
             let ss = hhmm(&today.sunset);
             if mw >= 560.0 {
-                self.draw_sun_arc(scene, t, tr, theme, Rect::new(hero.x1 - 226.0, hero.y0 + 22.0, hero.x1 - 22.0, hero.y0 + HERO_H - 22.0), &sr, &ss, cur.is_day);
+                self.draw_sun_arc(scene, t, tr, theme, Rect::new(hero.x1 - 226.0, hero.y0 + 22.0, hero.x1 - 22.0, hero.y0 + HERO_H - 22.0), &cur.time, &sr, &ss, cur.is_day);
             } else {
                 let sx = hero.x1 - 18.0;
                 text_right(scene, tr, "Sunrise", sx, hero.y0 + HERO_H - 60.0, 10.0, TextWeight::Semibold, c.text_dim);
@@ -1319,7 +1364,20 @@ impl Core {
         let icon_l_x = inner_l + 92.0;
         let icon_r_x = icon_l_x + 28.0;
         let cond_x = icon_r_x + 10.0;
-        let cond_limit = if show_precip { precip_left - 10.0 } else { lo_x - 44.0 };
+        // Per-day extras (UV-index max + wind max) get a fixed-width column to
+        // the left of the precip/lo cluster, shown only when the row is wide
+        // enough to fit them without crowding the condition text.
+        let extras_w = 132.0;
+        let extras_right = if show_precip { precip_left - 14.0 } else { lo_x - 52.0 };
+        let extras_x = extras_right - extras_w;
+        let show_extras = (extras_x - cond_x) >= 118.0;
+        let cond_limit = if show_extras {
+            extras_x - 12.0
+        } else if show_precip {
+            precip_left - 10.0
+        } else {
+            lo_x - 44.0
+        };
         let show_cond = (cond_limit - cond_x) >= 96.0;
 
         let rows_top = dcard.y0 + 40.0;
@@ -1339,6 +1397,20 @@ impl Core {
             icon::draw_icon(scene, t, dsky, true, Rect::new(icon_l_x, cy - 14.0, icon_r_x, cy + 14.0), theme);
             if show_cond {
                 text_left(scene, tr, Sky::label(d.weather_code), cond_x, cy - 7.0, 13.0, TextWeight::Regular, c.text_dim);
+            }
+            if show_extras {
+                let (uv_label, wind_label) = day_extra_labels(d, &snap, units);
+                // UV dot tinted by severity so the number reads at a glance.
+                let uv_dot = if d.uv_index_max < 3.0 {
+                    c.semantic.info
+                } else if d.uv_index_max < 8.0 {
+                    c.semantic.warning
+                } else {
+                    c.semantic.danger
+                };
+                scene.fill(Fill::NonZero, t, uv_dot, None, &Circle::new(Point::new(extras_x + 4.0, cy), 3.0));
+                text_left(scene, tr, &uv_label, extras_x + 12.0, cy - 7.0, 12.0, TextWeight::Medium, c.text_dim);
+                text_right(scene, tr, &wind_label, extras_right, cy - 7.0, 12.0, TextWeight::Regular, c.text_dim);
             }
             if show_precip {
                 scene.fill(Fill::NonZero, t, c.semantic.info, None, &Circle::new(Point::new(precip_left, cy), 3.0));
@@ -1401,6 +1473,8 @@ impl Core {
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
+        // Current observation time ("YYYY-MM-DDTHH:MM"); positions the sun dot.
+        now_iso: &str,
         sunrise: &str,
         sunset: &str,
         is_day: bool,
@@ -1424,7 +1498,13 @@ impl Core {
             }
         }
         scene.stroke(&Stroke::new(1.5), t, c.text_dim.with_alpha_factor(0.7), None, &arc);
-        let frac = if is_day { 0.5 } else { 0.08 };
+        // Position the sun/moon dot from the real observation time relative to
+        // today's sunrise/sunset (0 = sunrise at the left horizon, 0.5 = solar
+        // noon at the apex, 1 = sunset at the right horizon). Falls back to a
+        // neutral position only when the times can't be parsed.
+        let now_hhmm = hhmm(now_iso);
+        let frac = sun_arc_fraction(&now_hhmm, sunrise, sunset)
+            .unwrap_or(if is_day { 0.5 } else { 0.08 });
         let ang = std::f64::consts::PI * frac;
         let sx = cx - radius * ang.cos();
         let sy = baseline - radius * ang.sin();
@@ -1529,6 +1609,36 @@ impl Core {
     pub fn over_rect(&self) -> Rect {
         self.over_rect
     }
+    #[cfg(test)]
+    pub fn menu_is_open(&self) -> bool {
+        self.menu.is_some()
+    }
+    /// The live hotspot rect the production hit-test would match for a given
+    /// context-menu action, so tests click the *real* target rather than a
+    /// recomputed guess. Requires a `draw_overview` pass with the menu open.
+    #[cfg(test)]
+    pub fn menu_item_rect(&self, action: EntryAction) -> Option<Rect> {
+        self.over_hotspots.iter().rev().find_map(|h| match &h.action {
+            OverAction::MenuItem(_, a) if *a == action => Some(h.rect),
+            _ => None,
+        })
+    }
+    #[cfg(test)]
+    pub fn search_is_focused(&self) -> bool {
+        self.search_focused
+    }
+    #[cfg(test)]
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+    #[cfg(test)]
+    pub fn delete_zone_rect_test(&self) -> Rect {
+        self.delete_zone_rect()
+    }
+    #[cfg(test)]
+    pub fn refresh_btn_rect(&self) -> Rect {
+        self.refresh_btn
+    }
 }
 
 // =====================================================================
@@ -1603,6 +1713,41 @@ fn hhmm(iso: &str) -> String {
     iso.get(11..16).unwrap_or("--:--").to_string()
 }
 
+/// Parse an "HH:MM" clock string into minutes since local midnight.
+fn hhmm_to_minutes(s: &str) -> Option<i64> {
+    let (h, m) = s.split_once(':')?;
+    let h: i64 = h.trim().parse().ok()?;
+    let m: i64 = m.trim().parse().ok()?;
+    if !(0..24).contains(&h) || !(0..60).contains(&m) {
+        return None;
+    }
+    Some(h * 60 + m)
+}
+
+/// Fraction along the daytime arc for the sun's current position: 0 at
+/// sunrise (left horizon), 0.5 at solar noon (apex), 1 at sunset (right
+/// horizon). Clamps to the nearest horizon before sunrise / after sunset.
+/// Returns `None` when any clock string is unparseable or the day has no
+/// length, so the caller can fall back rather than divide by zero.
+fn sun_arc_fraction(now_hhmm: &str, sunrise_hhmm: &str, sunset_hhmm: &str) -> Option<f64> {
+    let now = hhmm_to_minutes(now_hhmm)?;
+    let sr = hhmm_to_minutes(sunrise_hhmm)?;
+    let ss = hhmm_to_minutes(sunset_hhmm)?;
+    if ss <= sr {
+        return None;
+    }
+    Some(((now - sr) as f64 / (ss - sr) as f64).clamp(0.0, 1.0))
+}
+
+/// The per-day "extras" labels shown at the right of a wide 7-day row: the
+/// UV-index max and the wind max converted to the display units. Kept pure so
+/// the exact strings the row renders are unit-testable.
+fn day_extra_labels(d: &DayForecast, snap: &WeatherSnapshot, units: Units) -> (String, String) {
+    let uv = d.uv_index_max.round().max(0.0) as i64;
+    let wind = snap.wind_in(d.wind_max, units).round() as i64;
+    (format!("UV {uv}"), format!("{wind} {}", units.wind_suffix()))
+}
+
 fn weekday(date: &str) -> String {
     use chrono::NaiveDate;
     NaiveDate::parse_from_str(date, "%Y-%m-%d")
@@ -1644,5 +1789,54 @@ mod layout_tests {
         }
         // The specific awkward case: a raw 4-wide fit becomes a balanced 3 + 2.
         assert_eq!(balanced_tile_columns(604.0, 5), 3);
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::{day_extra_labels, hhmm_to_minutes, sun_arc_fraction};
+    use crate::units::Units;
+
+    #[test]
+    fn sun_arc_fraction_maps_time_to_arc_position() {
+        // The dot the hero renders is driven by this: sunrise → 0 (left
+        // horizon), solar noon → 0.5 (apex), sunset → 1 (right horizon).
+        assert_eq!(sun_arc_fraction("06:00", "06:00", "18:00"), Some(0.0));
+        assert_eq!(sun_arc_fraction("12:00", "06:00", "18:00"), Some(0.5));
+        assert_eq!(sun_arc_fraction("18:00", "06:00", "18:00"), Some(1.0));
+        assert_eq!(sun_arc_fraction("09:00", "06:00", "18:00"), Some(0.25));
+    }
+
+    #[test]
+    fn sun_arc_fraction_clamps_outside_daylight() {
+        // Before sunrise pins to the left horizon, after sunset to the right.
+        assert_eq!(sun_arc_fraction("03:00", "06:00", "18:00"), Some(0.0));
+        assert_eq!(sun_arc_fraction("23:30", "06:00", "18:00"), Some(1.0));
+    }
+
+    #[test]
+    fn sun_arc_fraction_rejects_unusable_input() {
+        assert_eq!(sun_arc_fraction("--:--", "06:00", "18:00"), None);
+        assert_eq!(sun_arc_fraction("12:00", "18:00", "06:00"), None, "sunset before sunrise");
+        assert_eq!(sun_arc_fraction("12:00", "12:00", "12:00"), None, "zero-length day");
+        assert_eq!(hhmm_to_minutes("25:00"), None);
+        assert_eq!(hhmm_to_minutes("07:30"), Some(450));
+    }
+
+    #[test]
+    fn day_extra_labels_render_real_uv_and_wind_in_display_units() {
+        // The values the 7-day rows now surface come straight from the parsed
+        // per-day fields (previously stored but never rendered).
+        let m = crate::sample::sample_model();
+        let snap = m.selected_snapshot().unwrap(); // San Francisco, metric source
+        let day0 = &snap.daily[0];
+        assert!(day0.wind_max > 0.0 && day0.uv_index_max > 0.0);
+        let (uv, wind) = day_extra_labels(day0, snap, Units::METRIC);
+        assert_eq!(uv, "UV 6");
+        assert_eq!(wind, "24 km/h");
+        // Imperial converts the wind (24 km/h ≈ 15 mph); the UV index is unitless.
+        let (uv_i, wind_i) = day_extra_labels(day0, snap, Units::IMPERIAL);
+        assert_eq!(uv_i, "UV 6");
+        assert_eq!(wind_i, "15 mph");
     }
 }
