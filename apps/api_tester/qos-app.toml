@@ -1,0 +1,98 @@
+# Package manifest for `api_tester` as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p api_tester -p pkg-cli -p install --release
+#     mkdir -p target/api_tester-payload/bin
+#     cp target/release/api_tester target/api_tester-payload/bin/api_tester
+#     target/release/qos-pkg pack \
+#         --manifest apps/api_tester/qos-app.toml \
+#         --payload  target/api_tester-payload \
+#         --output   target/api_tester.qpkg
+#     target/release/qos-install install target/api_tester.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.api-tester
+#
+# This is the odd one out — a wgpu/vello GUI app that ALSO makes
+# outbound HTTP(S) requests via reqwest. So `[sandbox.net]` is
+# `host` (unrestricted egress) rather than the default `off`. It
+# needs the system CA bundle to verify TLS.
+
+[package]
+id      = "dev.qos.api-tester"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` intentionally INCLUDED — this app makes real HTTP calls.
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/etc/pki/tls/certs",
+    "/etc/ssl/certs",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/sys",
+]
+write = [
+    "~/.local/share/dev.qos.api-tester",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/api_tester"
+splash-segments = ["bin/api_tester[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
