@@ -28,6 +28,7 @@ members = [
     "crates/packaging/launcher",
     "crates/runtime/runtime",
     "crates/runtime/runtime-portal",
+    "crates/runtime/runtime-portal-xdg",
     "crates/runtime/runtime-collab",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
