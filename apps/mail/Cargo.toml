@@ -1,0 +1,49 @@
+[package]
+name = "mail"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "mail"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mail"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+# Real MIME parsing (incoming) + MIME building (outgoing). Both are pure
+# Rust with no native/TLS/async deps, so the headless build stays green and
+# fast. The bundled sample corpus is genuinely parsed by mail-parser, and
+# compose output is genuinely serialized by mail-builder (see transport.rs).
+mail-parser = "0.11.4"
+mail-builder = "0.4.4"
+
+# Live IMAP (fetch/flag/move) and SMTP (submit) for the account engine. These
+# pull a TLS + async stack, so they are OPTIONAL and gated behind the `live`
+# feature (OFF by default). The default build — and `--shots` — uses the
+# offline stub backend in `engine.rs`, staying small, green, and deterministic.
+# The data types Mail already uses (AccountConfig/Draft/Message) are exactly the
+# shapes these crates consume and produce, so enabling `live` is a drop-in.
+async-imap = { version = "0.10", optional = true, default-features = false, features = ["runtime-tokio"] }
+lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "tokio1-rustls-tls", "tokio1"] }
+# Real HTTP for sender avatars (Gravatar) through the shared `ui::ImageStore`.
+# Optional + gated behind `live`; the default build injects a no-op fetcher so
+# avatars render as initials and `--shots` never opens a socket.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
+
+[features]
+# Compile the real IMAP/SMTP engine backend + remote avatar fetch. Requires
+# network + a TLS/async stack; not used by the headless build or `--shots`.
+live = ["dep:async-imap", "dep:lettre", "dep:reqwest"]

@@ -1,0 +1,170 @@
+//! Date arithmetic helpers built on `chrono`.
+//!
+//! Everything in the calendar is **Monday-first** (ISO week). These
+//! helpers are pure functions over `NaiveDate` / `NaiveDateTime` — no
+//! timezone juggling, no `Local` reads (the live app's "today" is read
+//! once at construction; tests pin a fixed anchor for determinism).
+
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+
+/// 6×7 = 42 dates covering the month that `anchor` falls in, Monday
+/// first, including the spill-in days from the previous month and the
+/// spill-out days from the next. Six rows is the worst case (a 31-day
+/// month starting on a Sunday).
+pub fn month_grid(anchor: NaiveDate) -> Vec<NaiveDate> {
+    let first = anchor.with_day(1).unwrap();
+    let offset = first.weekday().num_days_from_monday() as i64;
+    let start = first - Duration::days(offset);
+    (0..42).map(|i| start + Duration::days(i)).collect()
+}
+
+/// Monday at the start of the ISO week containing `date`.
+pub fn week_start(date: NaiveDate) -> NaiveDate {
+    date - Duration::days(date.weekday().num_days_from_monday() as i64)
+}
+
+/// The seven dates Mon..Sun of the week containing `date`.
+pub fn week_days(date: NaiveDate) -> Vec<NaiveDate> {
+    let s = week_start(date);
+    (0..7).map(|i| s + Duration::days(i)).collect()
+}
+
+/// Number of days in month `m` of year `y`.
+pub fn days_in_month(y: i32, m: u32) -> u32 {
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    let first_next = NaiveDate::from_ymd_opt(ny, nm, 1).unwrap();
+    (first_next - Duration::days(1)).day()
+}
+
+/// Shift `date` by `delta` whole months, clamping the day-of-month so
+/// e.g. Jan-31 + 1 month → Feb-28/29 rather than overflowing.
+pub fn add_months(date: NaiveDate, delta: i32) -> NaiveDate {
+    let total = (date.year() * 12 + date.month() as i32 - 1) + delta;
+    let y = total.div_euclid(12);
+    let m = (total.rem_euclid(12) + 1) as u32;
+    let day = date.day().min(days_in_month(y, m));
+    NaiveDate::from_ymd_opt(y, m, day).unwrap()
+}
+
+/// "June 2026"
+pub fn month_title(anchor: NaiveDate) -> String {
+    format!("{} {}", month_name(anchor.month()), anchor.year())
+}
+
+/// Full English month name.
+pub fn month_name(m: u32) -> &'static str {
+    const NAMES: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July",
+        "August", "September", "October", "November", "December",
+    ];
+    NAMES[(m as usize - 1).min(11)]
+}
+
+/// Three-letter weekday, Monday-indexed columns.
+pub const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+pub const WEEKDAY_NARROW: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
+
+/// "9:00", "14:30" — 24-hour, no leading zero on the hour.
+pub fn fmt_time(dt: &NaiveDateTime) -> String {
+    format!("{}:{:02}", dt.hour(), dt.minute())
+}
+
+/// "Mon 15 Jun"
+pub fn fmt_day_long(date: NaiveDate) -> String {
+    format!(
+        "{} {} {}",
+        WEEKDAY_SHORT[date.weekday().num_days_from_monday() as usize],
+        date.day(),
+        &month_name(date.month())[..3],
+    )
+}
+
+/// "15 Jun" — no weekday prefix (used for compact week ranges where the
+/// day-of-week is already visible in the column headers).
+pub fn fmt_day_short(date: NaiveDate) -> String {
+    format!("{} {}", date.day(), &month_name(date.month())[..3])
+}
+
+/// A week range with weekday names, e.g. "Mon 29 Jun – Sun 5 Jul".
+pub fn week_range_long(start: NaiveDate, end: NaiveDate) -> String {
+    format!("{} – {}", fmt_day_long(start), fmt_day_long(end))
+}
+
+/// A compact week range: "23 – 29 Jun" within one month, "29 Jun – 5 Jul"
+/// across a month boundary. Always shows both endpoints so the full span
+/// reads even where horizontal room is tight.
+pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
+    if start.month() == end.month() {
+        format!(
+            "{} – {} {}",
+            start.day(),
+            end.day(),
+            &month_name(end.month())[..3]
+        )
+    } else {
+        format!("{} – {}", fmt_day_short(start), fmt_day_short(end))
+    }
+}
+
+/// A human "relative" label for a due date against `today`.
+pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
+    let d = (due - today).num_days();
+    match d {
+        0 => "Today".into(),
+        1 => "Tomorrow".into(),
+        -1 => "Yesterday".into(),
+        2..=6 => WEEKDAY_SHORT[due.weekday().num_days_from_monday() as usize].into(),
+        _ if d < 0 => format!("{} d overdue", -d),
+        _ => fmt_day_long(due),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn month_grid_is_42_days_monday_first() {
+        // June 2026: 1st is a Monday → grid starts exactly on Jun 1.
+        let g = month_grid(d(2026, 6, 15));
+        assert_eq!(g.len(), 42);
+        assert_eq!(g[0], d(2026, 6, 1));
+        assert_eq!(g[0].weekday(), chrono::Weekday::Mon);
+    }
+
+    #[test]
+    fn month_grid_spills_in_for_non_monday_first() {
+        // July 2026: 1st is a Wednesday → two spill-in days (Mon Jun 29,
+        // Tue Jun 30).
+        let g = month_grid(d(2026, 7, 10));
+        assert_eq!(g[0], d(2026, 6, 29));
+        assert_eq!(g[2], d(2026, 7, 1));
+    }
+
+    #[test]
+    fn add_months_clamps_day_of_month() {
+        assert_eq!(add_months(d(2026, 1, 31), 1), d(2026, 2, 28));
+        assert_eq!(add_months(d(2026, 12, 15), 1), d(2027, 1, 15));
+        assert_eq!(add_months(d(2026, 3, 31), -1), d(2026, 2, 28));
+    }
+
+    #[test]
+    fn week_starts_on_monday() {
+        // Jun 17 2026 is a Wednesday.
+        assert_eq!(week_start(d(2026, 6, 17)), d(2026, 6, 15));
+        let w = week_days(d(2026, 6, 17));
+        assert_eq!(w[0], d(2026, 6, 15));
+        assert_eq!(w[6], d(2026, 6, 21));
+    }
+
+    #[test]
+    fn days_in_month_handles_february() {
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2026, 4), 30);
+    }
+}
