@@ -15,5 +15,7 @@
 //! prompts) will land here in follow-up work; today the module has
 //! only `flatpak_share`.
 
+pub mod colorimetry;
 pub mod encoder;
 pub mod flatpak_share;
+pub mod hdr_metadata;

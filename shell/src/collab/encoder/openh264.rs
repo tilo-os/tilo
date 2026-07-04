@@ -31,6 +31,23 @@ impl OpenH264Backend {
     /// on the openh264 path — the SVC encoder handles GOP structure
     /// internally.
     pub fn new(init: EncoderInit) -> Result<Self, EncoderError> {
+        // Openh264 is H.264 8-bit only; HDR / HEVC pipelines never reach
+        // us because probe() reports unavailable, but be defensive.
+        if init.codec != super::Codec::H264 {
+            return Err(EncoderError::Unavailable {
+                kind: EncoderKind::Openh264,
+                reason: format!(
+                    "openh264 backend does not support {:?}; use a hardware backend",
+                    init.codec
+                ),
+            });
+        }
+        if init.hdr.is_some() || init.colorimetry.is_hdr() {
+            return Err(EncoderError::Unavailable {
+                kind: EncoderKind::Openh264,
+                reason: "openh264 does not support HDR (10-bit, PQ/HLG)".to_string(),
+            });
+        }
         // Bitrate from the caller (kbps) → openh264's bps. Prior wiring
         // called ::new() and inherited the library's 120 kbps default,
         // which skip-framed most of the stream on any real workload.
@@ -120,13 +137,7 @@ mod tests {
     fn openh264_backend_encodes_rgba_frames() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let init = EncoderInit {
-            width: W,
-            height: H,
-            fps: 30,
-            bitrate_kbps: 5000,
-            keyframe_interval_secs: 1,
-        };
+        let init = EncoderInit::sdr_h264(W, H, 30, 5000, 1);
         let mut backend = OpenH264Backend::new(init).expect("construct");
         let frame = gradient(W, H);
         let mut out = Vec::new();
@@ -141,13 +152,7 @@ mod tests {
 
     #[test]
     fn openh264_backend_rejects_dmabuf_and_nv12() {
-        let init = EncoderInit {
-            width: 32,
-            height: 32,
-            fps: 30,
-            bitrate_kbps: 5000,
-            keyframe_interval_secs: 1,
-        };
+        let init = EncoderInit::sdr_h264(32, 32, 30, 5000, 1);
         let mut backend = OpenH264Backend::new(init).expect("construct");
         let mut out = Vec::new();
         // NV12 refusal.
