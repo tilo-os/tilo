@@ -33,8 +33,8 @@ use ui::widget::identity_flow::{
     InviteEnvelope, MemoryIdentityStore, mint_invite,
 };
 use ui::{App, State};
-use qos_collab_types::{ChannelId, Role, generate_keypair};
-use qos_threshold_identity::ThresholdIdentity;
+use collab_types::{ChannelId, Role, generate_keypair};
+use threshold_identity::ThresholdIdentity;
 use rand_core::OsRng;
 
 fn parse_screen_arg(name: &str) -> Option<IdentityFlowScreen> {

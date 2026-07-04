@@ -11,8 +11,8 @@ use ed25519_dalek::Signer;
 use rand::rngs::OsRng;
 use walkdir::WalkDir;
 
-use qos_collab_types::Ed25519PublicKey;
-use qos_threshold_identity::ThresholdIdentity;
+use collab_types::Ed25519PublicKey;
+use threshold_identity::ThresholdIdentity;
 
 use crate::blobs::{BlobStore, Collection};
 use crate::id::PackageId;
@@ -63,7 +63,7 @@ impl SigningIdentity {
         }
     }
 
-    /// Return the public key in `qos_collab_types` newtype form.
+    /// Return the public key in `collab_types` newtype form.
     pub fn public_key(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.public_key_bytes())
     }

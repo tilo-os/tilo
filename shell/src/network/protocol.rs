@@ -87,7 +87,7 @@ pub enum NeighbourMsg {
     /// Phase 3 of the spaces+channels spec: a signed CRDT envelope
     /// crossing the libp2p boundary. Recipients route the envelope
     /// into their local broker, which runs the validation pipeline
-    /// (`qos_collab_types::validate_inbound_op`) before fanning the
+    /// (`collab_types::validate_inbound_op`) before fanning the
     /// payload to any locally-connected app.
     ///
     /// The legacy `AppCrdtIncremental` variant is kept alongside this
@@ -111,7 +111,7 @@ pub enum NeighbourMsg {
         /// shell consults its channel state to decide whether to
         /// fan the payload out to local apps or to drop it with an
         /// audit-log entry.
-        envelope: Box<qos_collab_types::SignedOp>,
+        envelope: Box<collab_types::SignedOp>,
     },
     /// Phase 6: cooperative scrollback request. Broadcast over
     /// gossipsub when a peer's local broker has no in-memory
@@ -126,7 +126,7 @@ pub enum NeighbourMsg {
     /// case is "rare, single-shot" so amplification isn't a concern.
     ScrollbackRequest {
         /// The artifact whose log to fetch.
-        artifact: qos_collab_types::ArtifactId,
+        artifact: collab_types::ArtifactId,
         /// Exclusive upper bound on `seq`. Same semantics as
         /// `CollabRequest::FetchScrollback::before_seq`.
         before_seq: u64,
@@ -152,11 +152,11 @@ pub enum NeighbourMsg {
         /// Same as the request's `artifact`. Repeated on the
         /// response so the receiving broker can route without
         /// matching on a request-id.
-        artifact: qos_collab_types::ArtifactId,
+        artifact: collab_types::ArtifactId,
         /// The page of validated ops the responder is sharing. Empty
         /// is allowed (means "I don't have the range either"); the
         /// requester treats an empty response as a non-answer.
-        ops: Vec<Box<qos_collab_types::SignedOp>>,
+        ops: Vec<Box<collab_types::SignedOp>>,
         /// Hashed libp2p peer id of the answering broker.
         responder: PeerId,
     },
@@ -260,8 +260,8 @@ mod tests {
     /// envelope for postcard round-trip exercising. The bytes don't
     /// need to verify — only the framing has to survive a
     /// serialise/deserialise cycle.
-    fn dummy_envelope() -> Box<qos_collab_types::SignedOp> {
-        use qos_collab_types::{
+    fn dummy_envelope() -> Box<collab_types::SignedOp> {
+        use collab_types::{
             ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp,
         };
         use std::time::SystemTime;
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn app_crdt_incremental_signed_round_trips_postcard() {
         // Postcard is the canonical-bytes format used by
-        // `qos_collab_types` for signing; verifying that
+        // `collab_types` for signing; verifying that
         // `NeighbourMsg::AppCrdtIncrementalSigned` round-trips through
         // postcard guards against a future wire-format experiment
         // accidentally dropping the new variant.
@@ -310,7 +310,7 @@ mod tests {
         // Phase 6 — the cooperative-fetch request must survive the
         // actor's serde_json pipeline the same way every other
         // gossipsub message does.
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         round_trip(NeighbourMsg::ScrollbackRequest {
             artifact: ArtifactId::new(),
             before_seq: 42,
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn scrollback_request_round_trips_postcard() {
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         let msg = NeighbourMsg::ScrollbackRequest {
             artifact: ArtifactId::new(),
             before_seq: 42,
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn scrollback_response_round_trips_serde_json() {
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         round_trip(NeighbourMsg::ScrollbackResponse {
             artifact: ArtifactId::new(),
             ops: vec![dummy_envelope(), dummy_envelope()],
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn scrollback_response_round_trips_postcard() {
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         let msg = NeighbourMsg::ScrollbackResponse {
             artifact: ArtifactId::new(),
             ops: vec![dummy_envelope()],

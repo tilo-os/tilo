@@ -803,7 +803,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration;
-    use qos_collab_types::{ArtifactKind, OpClass};
+    use collab_types::{ArtifactKind, OpClass};
     use winit::event::Modifiers;
     use crate::widget::history::HistoryAuthor;
 

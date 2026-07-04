@@ -181,7 +181,7 @@ pub fn new_pairing_channel() -> SharedPairingChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_threshold_identity::ThresholdIdentity;
+    use threshold_identity::ThresholdIdentity;
     use rand_core::OsRng;
     use std::time::SystemTime;
     use ui::widget::identity_flow::MemoryIdentityStore;
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn parse_invite_url_validates_signature() {
-        use qos_collab_types::{ChannelId, Role, generate_keypair};
+        use collab_types::{ChannelId, Role, generate_keypair};
         use ui::widget::identity_flow::mint_invite;
         let (sk, pk) = generate_keypair();
         let env = mint_invite(
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn new_pairing_channel_round_trips_a_message() {
-        use qos_threshold_identity::EnrolmentRound2;
+        use threshold_identity::EnrolmentRound2;
         let ch = new_pairing_channel();
         let nonce = [0x55u8; 16];
         let mac = [0x11u8; 64];

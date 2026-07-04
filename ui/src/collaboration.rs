@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
-use qos_collab_types::SignedOp;
+use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
 
@@ -27,7 +27,7 @@ pub enum CollabRequest {
     Presence { key: PresenceKey, payload: PresencePayload },
     /// Phase 3: signed incremental CRDT mutation. The broker validates
     /// the envelope against the channel's role table (see
-    /// [`qos_collab_types::validate_inbound_op`]) before fanning it
+    /// [`collab_types::validate_inbound_op`]) before fanning it
     /// out. Invalid envelopes are dropped and a structured log line is
     /// emitted; nothing reaches other peers.
     ///
@@ -53,7 +53,7 @@ pub enum CollabRequest {
     FetchScrollback {
         /// The artifact whose log to scroll. Same id the app passes
         /// when sending mutation ops.
-        artifact: qos_collab_types::ArtifactId,
+        artifact: collab_types::ArtifactId,
         /// Exclusive upper bound on `seq`. The broker returns ops
         /// with `seq < before_seq`. To fetch "everything I haven't
         /// seen", pass the lowest seq the app has rendered locally.
@@ -118,7 +118,7 @@ pub enum CollabEvent {
         /// Echo of the original `FetchScrollback::artifact` so the
         /// app can route the reply to the right history view when
         /// multiple scrollback fetches are in flight.
-        artifact: qos_collab_types::ArtifactId,
+        artifact: collab_types::ArtifactId,
         /// The page of ops, in ascending seq order. Empty when the
         /// broker has no matching range (typically because compaction
         /// has evicted it).
@@ -161,10 +161,10 @@ pub enum SignedSendError {
     /// [`CollaborationManager::set_identity`].
     NoIdentity,
     /// Canonical-bytes serialisation of the envelope failed. The
-    /// underlying [`qos_collab_types::CanonicalError`] carries the
+    /// underlying [`collab_types::CanonicalError`] carries the
     /// postcard error message; in practice this only fires for
     /// unrepresentable values, not for healthy inputs.
-    Canonical(qos_collab_types::CanonicalError),
+    Canonical(collab_types::CanonicalError),
 }
 
 impl std::fmt::Display for SignedSendError {
@@ -203,13 +203,13 @@ pub struct SigningIdentity {
     pub(crate) secret_key: ed25519_dalek::SigningKey,
     /// Public half — embedded as the `author` field on every signed
     /// op.
-    pub public_key: qos_collab_types::Ed25519PublicKey,
+    pub public_key: collab_types::Ed25519PublicKey,
     /// The role attestation under which this identity emits ops. Set
     /// at construction time by whichever flow minted the attestation
     /// (the channel-owner's invite flow in production; the test
     /// fixture in tests). One identity may hold attestations on
     /// multiple channels; v1 pins to one per `CollaborationManager`.
-    pub attestation_id: qos_collab_types::AttestationId,
+    pub attestation_id: collab_types::AttestationId,
     /// Monotonic per-author seq counter. Bumped on every successful
     /// `sign` so the validator's replay check (`seq > last_seen`)
     /// passes. Re-using a seq is the spec-defined replay attack and
@@ -224,9 +224,9 @@ impl SigningIdentity {
     /// land alongside Phase 8's threshold sharing.
     pub fn new(
         secret_key: ed25519_dalek::SigningKey,
-        attestation_id: qos_collab_types::AttestationId,
+        attestation_id: collab_types::AttestationId,
     ) -> Self {
-        let public_key = qos_collab_types::Ed25519PublicKey::from_bytes(
+        let public_key = collab_types::Ed25519PublicKey::from_bytes(
             secret_key.verifying_key().to_bytes(),
         );
         Self {
@@ -244,12 +244,12 @@ impl SigningIdentity {
     pub fn sign_op(
         &mut self,
         payload: Vec<u8>,
-        artifact: qos_collab_types::ArtifactId,
-        op_class: qos_collab_types::OpClass,
-    ) -> Result<qos_collab_types::SignedOp, qos_collab_types::CanonicalError> {
+        artifact: collab_types::ArtifactId,
+        op_class: collab_types::OpClass,
+    ) -> Result<collab_types::SignedOp, collab_types::CanonicalError> {
         let timestamp = std::time::SystemTime::now();
         self.seq = self.seq.wrapping_add(1);
-        let mut op = qos_collab_types::SignedOp::new_unsigned(
+        let mut op = collab_types::SignedOp::new_unsigned(
             payload,
             artifact,
             self.public_key,
@@ -258,7 +258,7 @@ impl SigningIdentity {
             timestamp,
             self.seq,
         );
-        qos_collab_types::sign_op(&mut op, &self.secret_key)?;
+        collab_types::sign_op(&mut op, &self.secret_key)?;
         Ok(op)
     }
 }
@@ -274,7 +274,7 @@ pub struct CollaborationManager {
     /// desynced the stream.
     rbuf: Vec<u8>,
     /// Optional Phase 3 signing identity. When `Some`, calls to
-    /// [`Self::send_signed_op`] mint a [`qos_collab_types::SignedOp`]
+    /// [`Self::send_signed_op`] mint a [`collab_types::SignedOp`]
     /// envelope and dispatch it as a
     /// [`CollabRequest::SignedSyncIncremental`]. `None` is the legacy
     /// path: apps that haven't migrated keep flowing unsigned
@@ -351,7 +351,7 @@ impl CollaborationManager {
     /// Phase 3: sign and send a CRDT mutation envelope. Returns
     /// `Err` if the manager has no identity bound, or the canonical
     /// encoder fails (which is effectively unreachable for the wire
-    /// types in this crate — see [`qos_collab_types::canonical`]).
+    /// types in this crate — see [`collab_types::canonical`]).
     ///
     /// The send itself is best-effort, mirroring the legacy
     /// [`Self::send`] path: a frame that doesn't reach the socket
@@ -360,8 +360,8 @@ impl CollaborationManager {
     pub fn send_signed_op(
         &mut self,
         payload: Vec<u8>,
-        artifact: qos_collab_types::ArtifactId,
-        op_class: qos_collab_types::OpClass,
+        artifact: collab_types::ArtifactId,
+        op_class: collab_types::OpClass,
     ) -> Result<(), SignedSendError> {
         let identity = self
             .identity

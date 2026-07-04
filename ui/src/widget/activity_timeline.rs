@@ -52,7 +52,7 @@ use crate::widget::history::{
     op_class_glyph, op_class_is_revertible,
 };
 
-use qos_collab_types::OpClass;
+use collab_types::OpClass;
 
 /// Height of one entry row. Pinned at 40 px so a 600 px tall pane
 /// fits ~15 rows without scrolling — the typical "give me the last
@@ -992,7 +992,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration;
-    use qos_collab_types::ArtifactKind;
+    use collab_types::ArtifactKind;
     use winit::event::Modifiers;
     use crate::widget::history::HistoryAuthor;
 
