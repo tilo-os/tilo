@@ -19,6 +19,7 @@ members = [
     "ui",
     "crates/system/os-actions",
     "crates/collab/collab-types",
+    "crates/collab/collab-bridge",
     "crates/collab/threshold-identity",
     "crates/collab/channel-crypto",
     "crates/collab/collab-link",
