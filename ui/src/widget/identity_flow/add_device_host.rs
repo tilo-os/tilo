@@ -17,8 +17,8 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use qos_collab_types::Ed25519PublicKey;
-use qos_threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
+use collab_types::Ed25519PublicKey;
+use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use rand_core::{OsRng, RngCore};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -520,7 +520,7 @@ impl Widget for AddDeviceHostScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_threshold_identity::ThresholdIdentity;
+    use threshold_identity::ThresholdIdentity;
     use rand_core::OsRng;
 
     fn fixture_host() -> (AddDeviceHostScreen, [u8; 16]) {

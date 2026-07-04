@@ -132,7 +132,7 @@ pub struct InboundAppCrdtSigned {
     /// The signed envelope. Wrapped in `Box` to mirror the wire shape
     /// and keep the queue entry size bounded — `SignedOp` is large
     /// (32-byte pubkey + 64-byte sig + variable payload + UUIDs).
-    pub envelope: Box<qos_collab_types::SignedOp>,
+    pub envelope: Box<collab_types::SignedOp>,
 }
 
 /// One received cooperative-scrollback request, queued by
@@ -147,7 +147,7 @@ pub struct InboundScrollbackRequest {
     /// `requester`).
     pub requester: u64,
     /// The artifact whose scrollback is requested.
-    pub artifact: qos_collab_types::ArtifactId,
+    pub artifact: collab_types::ArtifactId,
     /// Exclusive upper bound on `seq`.
     pub before_seq: u64,
     /// Page cap.
@@ -163,9 +163,9 @@ pub struct InboundScrollbackResponse {
     /// Hashed libp2p peer id of the answering broker.
     pub responder: u64,
     /// Artifact the response covers.
-    pub artifact: qos_collab_types::ArtifactId,
+    pub artifact: collab_types::ArtifactId,
     /// The page of ops the answering peer is sharing.
-    pub ops: Vec<Box<qos_collab_types::SignedOp>>,
+    pub ops: Vec<Box<collab_types::SignedOp>>,
 }
 
 /// One received cursor-presence update, queued by [`ShellNetwork::tick`]
@@ -401,7 +401,7 @@ impl ShellNetwork {
     /// successful send will republish.
     pub fn publish_app_crdt_signed(
         &self,
-        envelope: qos_collab_types::SignedOp,
+        envelope: collab_types::SignedOp,
     ) {
         let msg = NeighbourMsg::AppCrdtIncrementalSigned {
             peer: self.local_peer_id_hash(),
@@ -420,7 +420,7 @@ impl ShellNetwork {
     pub fn handle_app_crdt_signed_message(
         &self,
         peer: u64,
-        envelope: qos_collab_types::SignedOp,
+        envelope: collab_types::SignedOp,
     ) {
         if let Ok(mut buf) = self.inbound_app_crdt_signed.lock() {
             buf.push(InboundAppCrdtSigned {
@@ -454,7 +454,7 @@ impl ShellNetwork {
     /// swallowed; the app can re-issue the request after a back-off.
     pub fn publish_scrollback_request(
         &self,
-        artifact: qos_collab_types::ArtifactId,
+        artifact: collab_types::ArtifactId,
         before_seq: u64,
         max: u16,
     ) {
@@ -475,8 +475,8 @@ impl ShellNetwork {
     /// artifact whose log it has matching ops for.
     pub fn publish_scrollback_response(
         &self,
-        artifact: qos_collab_types::ArtifactId,
-        ops: Vec<Box<qos_collab_types::SignedOp>>,
+        artifact: collab_types::ArtifactId,
+        ops: Vec<Box<collab_types::SignedOp>>,
     ) {
         let msg = NeighbourMsg::ScrollbackResponse {
             artifact,
@@ -495,7 +495,7 @@ impl ShellNetwork {
     pub fn handle_scrollback_request_message(
         &self,
         requester: u64,
-        artifact: qos_collab_types::ArtifactId,
+        artifact: collab_types::ArtifactId,
         before_seq: u64,
         max: u16,
     ) {
@@ -514,8 +514,8 @@ impl ShellNetwork {
     pub fn handle_scrollback_response_message(
         &self,
         responder: u64,
-        artifact: qos_collab_types::ArtifactId,
-        ops: Vec<Box<qos_collab_types::SignedOp>>,
+        artifact: collab_types::ArtifactId,
+        ops: Vec<Box<collab_types::SignedOp>>,
     ) {
         if let Ok(mut buf) = self.inbound_scrollback_response.lock() {
             buf.push(InboundScrollbackResponse {
@@ -869,8 +869,8 @@ mod tests {
     /// harness (`tests/peer_sync_test.rs` follow-up) once that
     /// harness supports app-level CRDT injection. The two unit
     /// tests above are the contract for now.
-    fn make_envelope(seq: u64) -> qos_collab_types::SignedOp {
-        use qos_collab_types::{
+    fn make_envelope(seq: u64) -> collab_types::SignedOp {
+        use collab_types::{
             ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp,
         };
         use std::time::SystemTime;
@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn publish_scrollback_request_emits_a_publish_command() {
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
         let artifact = ArtifactId::new();
@@ -980,7 +980,7 @@ mod tests {
 
     #[test]
     fn handle_scrollback_request_message_buffers_for_drain() {
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_request_handle();
@@ -996,7 +996,7 @@ mod tests {
 
     #[test]
     fn handle_scrollback_response_message_buffers_for_drain() {
-        use qos_collab_types::ArtifactId;
+        use collab_types::ArtifactId;
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_response_handle();

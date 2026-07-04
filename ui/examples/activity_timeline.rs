@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime};
 
 use ui::widget::{ActivityTimeline, Column, HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryScrubber};
 use ui::{App, State};
-use qos_collab_types::{ArtifactKind, OpClass};
+use collab_types::{ArtifactKind, OpClass};
 
 fn entry(id: u8, author: &str, hue: f32, op: OpClass, summary: &str, secs_ago: u64) -> HistoryEntry {
     let mut bytes = [0u8; 16];
