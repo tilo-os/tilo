@@ -24,3 +24,10 @@ keys/*.password
 keys/*.private.pem
 keys/**/*.key
 keys/**/*.private.pem
+
+# Signing keys — private material must never be committed (public keys are tracked)
+keys/*.key
+keys/*.password
+keys/*.private.pem
+# runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
+*.crdt
