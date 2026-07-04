@@ -24,9 +24,13 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// test gracefully if the file is missing (i.e. someone ran tests without
 /// the wasm build step).
 fn markdown_wasm() -> Option<PathBuf> {
+    // The wasm codec crate lives at `crates/doc/qdoc-codec-markdown-wasm/`
+    // (not `crates/format/`) — walk up two levels from `crates/format/format-host`
+    // to `crates/` and back down to `doc/qdoc-codec-markdown-wasm/`.
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let p = here
-        .parent()?
+    let crates_root = here.parent()?.parent()?;
+    let p = crates_root
+        .join("doc")
         .join("qdoc-codec-markdown-wasm")
         .join("target")
         .join("wasm32-wasip2")
