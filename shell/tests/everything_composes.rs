@@ -37,14 +37,14 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use ed25519_dalek::SigningKey;
-use qos_channel_crypto::{ChannelGroup, MemberKey};
-use qos_collab_types::{
+use channel_crypto::{ChannelGroup, MemberKey};
+use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, Role, RoleAttestation,
     Signature, SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
     sign_op,
 };
-use qos_threshold_identity::{
+use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
     signing::SigningRound2Partial,
 };

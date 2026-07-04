@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use qos_collab_types::{
+use collab_types::{
     ArtifactId, ChannelState, Ed25519PublicKey, OpClass, OpId, RedactedMarker, SignedOp,
     ValidationError, parse_redact_payload, validate_inbound_op,
 };
@@ -133,7 +133,7 @@ pub struct RedactionRecord {
     /// queries).
     pub redactor_pk: Ed25519PublicKey,
     /// Free-text justification (capped at
-    /// `qos_collab_types::MAX_REDACTION_REASON_BYTES`). Used by the
+    /// `collab_types::MAX_REDACTION_REASON_BYTES`). Used by the
     /// chrome's tooltip and the compliance system's case record.
     pub reason: String,
     /// Wall-clock time the redactor recorded in the request payload.
@@ -513,7 +513,7 @@ fn translate(
                         let state = ch.state_for(artifact);
                         state.record_validated_op((*envelope).clone());
                         if envelope.op_class == OpClass::Compaction {
-                            match qos_collab_types::parse_compaction_payload(&envelope) {
+                            match collab_types::parse_compaction_payload(&envelope) {
                                 Ok(cp) => match state.apply_compaction(&cp) {
                                     Ok(n) => {
                                         compaction_evicted = Some(n);
@@ -1063,7 +1063,7 @@ pub fn spawn_with_peer_sync(
                                     state.record_validated_op(envelope.clone());
                                     if envelope.op_class == OpClass::Compaction {
                                         if let Ok(cp) =
-                                            qos_collab_types::parse_compaction_payload(&envelope)
+                                            collab_types::parse_compaction_payload(&envelope)
                                         {
                                             let _ = state.apply_compaction(&cp);
                                         }
@@ -1153,7 +1153,7 @@ pub fn spawn_with_peer_sync(
                             state.scrollback_for(entry.artifact, entry.before_seq, entry.max)
                         };
                         if !ops.is_empty() {
-                            let boxed: Vec<Box<qos_collab_types::SignedOp>> =
+                            let boxed: Vec<Box<collab_types::SignedOp>> =
                                 ops.into_iter().map(Box::new).collect();
                             drain_net.publish_scrollback_response(entry.artifact, boxed);
                         }

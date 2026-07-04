@@ -126,7 +126,7 @@ png = "0.18.1"
 # channel's role table before fan-out; the libp2p actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
-qos-collab-types = { path = "../qos-collab-types" }
+collab-types = { path = "../crates/collab/collab-types" }
 
 [dev-dependencies]
 wayland-client = "0.31"
@@ -145,8 +145,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 # (`tests/everything_composes.rs`) exercises Phases 3 + 6 + 7 + 8 in a
 # single end-to-end flow — threshold-signed, MLS-encrypted op crossing
 # the broker, validated, decrypted, then compacted.
-qos-channel-crypto = { path = "../qos-channel-crypto" }
-qos-threshold-identity = { path = "../qos-threshold-identity" }
+channel-crypto = { path = "../crates/collab/channel-crypto" }
+threshold-identity = { path = "../crates/collab/threshold-identity" }
 # Deterministic RNG used by the FROST signing fixture in
 # `tests/everything_composes.rs`. Pinned to the same major as
 # `qos-threshold-identity`'s direct dep so the FROST primitives

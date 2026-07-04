@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use qos_collab_types::{ChannelEvent, Ed25519PublicKey};
+use collab_types::{ChannelEvent, Ed25519PublicKey};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -525,7 +525,7 @@ impl Widget for InviteAcceptScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_collab_types::{ChannelId, Role, generate_keypair};
+    use collab_types::{ChannelId, Role, generate_keypair};
     use std::time::Duration;
 
     fn fixture_url(now: SystemTime) -> String {

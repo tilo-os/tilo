@@ -57,7 +57,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use qos_collab_types::ChannelId;
+use collab_types::ChannelId;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;

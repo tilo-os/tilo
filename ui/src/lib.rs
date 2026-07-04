@@ -50,7 +50,7 @@ pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{CommandEntry, CommandPalette};
 // Phase 1 (Audit timeline) widgets + their shared types. The
-// `qos_collab_types::OpClass` / `ArtifactKind` re-exports flow through
+// `collab_types::OpClass` / `ArtifactKind` re-exports flow through
 // these widgets, so callers can build a `HistoryEntry` without taking
 // a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::ActivityTimeline;
