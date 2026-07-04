@@ -126,7 +126,10 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     // `sender_monotonic_ns_at_send` field: on loopback we can feed both
     // sides of the handshake into the receiver's metrics and expect an
     // in-process offset (nanoseconds).
-    let sender_ns_at_send: u64;
+    // Extract the sender-side monotonic-ns from the announcement so
+    // we can feed the receiver's clock-offset handshake below.
+    #[allow(unused_assignments)]
+    let mut sender_ns_at_send: u64 = 0;
     match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
             surface,
@@ -148,13 +151,7 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
             );
             sender_ns_at_send = sender_monotonic_ns_at_send;
         }
-        other => {
-            // Silence the "possibly-uninitialised" analyzer path — this
-            // branch panics, so any use of `sender_ns_at_send` after
-            // the match is unreachable from here.
-            let _ = &sender_ns_at_send;
-            panic!("expected SurfaceStreamStart, got {other:?}");
-        }
+        other => panic!("expected SurfaceStreamStart, got {other:?}"),
     }
 
     let metrics = PeerSurfaceMetrics::default();
