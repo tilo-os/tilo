@@ -8,6 +8,10 @@ description = "One-shot install / launch / list / remove for qOS packages."
 name = "qos-install"
 path = "src/main.rs"
 
+[lib]
+name = "install"
+path = "src/lib.rs"
+
 [dependencies]
 pkg = { path = "../pkg" }
 clap = { version = "4", features = ["derive"] }
@@ -16,3 +20,6 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "1"
 tar = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
