@@ -1,0 +1,456 @@
+//! Phase 7 Task 7.2 — end-to-end Wayland integration test for the native
+//! compositor.
+//!
+//! The test:
+//!
+//! 1. Spawns `quick-desktop --mode native --backend winit` as a child
+//!    process (with `WAYLAND_DISPLAY` unset so smithay's
+//!    `ListeningSocketSource::new_auto` picks a fresh `wayland-N`).
+//! 2. Scrapes the listening socket name out of the child's stderr — the
+//!    `nirios compositor listening on "wayland-N"` line is contractually
+//!    stable (see `compositor::native::run`).
+//! 3. Connects a raw `wayland-client` to that socket, walks the registry,
+//!    binds `wl_compositor` + `xdg_wm_base`, creates a single `wl_surface`
+//!    + `xdg_surface` + `xdg_toplevel`, sets a unique app-id, and commits.
+//! 4. Asserts the compositor's `WorkspaceTree` ends up containing a
+//!    foreign tab with the unique app-id (the assertion is driven through
+//!    the `NIRIOS_TEST_STATE_DUMP` env-var-temp-file introspection hook
+//!    added to `native::run`).
+//! 5. Tears the client down. Asserts the matching tab is reaped.
+//!
+//! ## Why `#[ignore]` by default
+//!
+//! The native compositor uses `winit` to open a host window which in turn
+//! requires a running Wayland or X11 display server. Fully headless CI
+//! (no `WAYLAND_DISPLAY`/`DISPLAY` and no virtual framebuffer) cannot
+//! satisfy that today — winit's backend init will panic.
+//!
+//! To run the test interactively:
+//!
+//! ```text
+//! cargo build -p quick-desktop
+//! cargo test -p quick-desktop --test compositor_test -- --ignored
+//! ```
+//!
+//! It works inside `my-distrobox` because the distrobox shares the host
+//! Wayland session and the binary is reachable at
+//! `target/debug/quick-desktop`. CI un-ignore is gated on adding a
+//! virtual display server to the runner image (tracked in the Phase 7
+//! plan section).
+
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+
+/// Drains the compositor's `WorkspaceTree` JSON dump and walks it
+/// untyped (via `serde_json::Value`) looking for a `TileContent::Foreign`
+/// tab whose `app_id` matches.
+///
+/// Walking untyped sidesteps the need to mirror every `TileContent`
+/// variant (`AppPlaceholder`, `Stub`, `Foreign`) in this test file —
+/// externally-tagged enums + `#[serde(other)]` only catches unit
+/// variants, so a strongly-typed mirror would have to enumerate every
+/// variant the production code adds. The untyped walk is also robust
+/// against new fields appearing in any tile shape (the chrome's
+/// `AppPlaceholder` may grow new keys without forcing this test to bump
+/// in lockstep).
+///
+/// Returns `Some(true)` if the dump parsed and contained a matching
+/// tab, `Some(false)` if the dump parsed but had no match, `None` if
+/// the file is unreadable or not JSON.
+fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<bool> {
+    let bytes = std::fs::read(dump_path).ok()?;
+    let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let workspaces = root.get("workspaces")?.as_array()?;
+    for ws in workspaces {
+        let strips = match ws.get("strips").and_then(|s| s.as_array()) {
+            Some(s) => s,
+            None => continue,
+        };
+        for strip in strips {
+            let groups = match strip.get("window_groups").and_then(|g| g.as_array()) {
+                Some(g) => g,
+                None => continue,
+            };
+            for group in groups {
+                let tabs = match group.get("tabs").and_then(|t| t.as_array()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                for tab in tabs {
+                    // Tab.tile is serialized as externally-tagged enum:
+                    // `{"Foreign":{"app_id":"…","surface_id":N}}`.
+                    let foreign = tab
+                        .get("tile")
+                        .and_then(|t| t.get("Foreign"));
+                    if let Some(f) = foreign {
+                        if f.get("app_id").and_then(|a| a.as_str()) == Some(app_id) {
+                            return Some(true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(false)
+}
+
+/// Block on a closure returning `Option<bool>` until it yields `Some(true)`
+/// or `timeout` expires. The closure is re-polled every 50ms.
+fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if matches!(probe(), Some(true)) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Spawn the compositor child + wait for the "listening on …" line.
+/// Returns (child handle, socket name like `wayland-3`).
+fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String) {
+    // The compositor binary is built by `cargo test`'s pre-build step
+    // (Cargo always rebuilds the package's binaries before running its
+    // integration tests). The exact path is `target/debug/quick-desktop`
+    // relative to CARGO_MANIFEST_DIR's parent.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().expect("workspace root").to_path_buf();
+    let bin = workspace_root.join("target/debug/quick-desktop");
+    assert!(
+        bin.exists(),
+        "compositor binary not found at {} — run `cargo build -p quick-desktop` first",
+        bin.display()
+    );
+
+    let mut child = Command::new(&bin)
+        .arg("--mode")
+        .arg("native")
+        .arg("--backend")
+        .arg("winit")
+        // Force smithay's `ListeningSocketSource::new_auto` to bind a
+        // fresh socket instead of inheriting the host Wayland session.
+        .env_remove("WAYLAND_DISPLAY")
+        .env("NIRIOS_TEST_STATE_DUMP", dump_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn quick-desktop");
+
+    // Stream stderr on a worker thread so we can both forward it to the
+    // test logs (helpful when debugging failures) and scan for the
+    // "listening on" marker. The first line matching the contract wins.
+    let stderr = child.stderr.take().expect("child stderr piped");
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            // Echo so the test runner shows compositor logs on failure.
+            eprintln!("[compositor] {line}");
+            let _ = tx.send(line);
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining.min(Duration::from_millis(500))) {
+            Ok(line) => {
+                if let Some(name) = extract_socket_name(&line) {
+                    return (child, name);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.kill();
+    panic!("compositor never printed `nirios compositor listening on …` within 8s");
+}
+
+/// Pull the socket name out of a stderr line. Returns `None` if the line
+/// doesn't match the compositor's contract format.
+fn extract_socket_name(line: &str) -> Option<String> {
+    // The contract is `nirios compositor listening on "wayland-N"`.
+    let marker = "nirios compositor listening on ";
+    let rest = line.find(marker).map(|i| &line[i + marker.len()..])?;
+    // The OsString's Debug form on Linux is `"wayland-N"` — strip the
+    // surrounding double-quotes.
+    let trimmed = rest.trim();
+    let stripped = trimmed.strip_prefix('"')?.strip_suffix('"')?;
+    Some(stripped.to_string())
+}
+
+// -----------------------------------------------------------------------------
+// Minimal wayland-client app — registry walks, then drives the toplevel.
+// -----------------------------------------------------------------------------
+
+struct TestClient {
+    compositor: Option<wl_compositor::WlCompositor>,
+    wm_base: Option<xdg_wm_base::XdgWmBase>,
+}
+
+impl TestClient {
+    fn new() -> Self {
+        Self {
+            compositor: None,
+            wm_base: None,
+        }
+    }
+}
+
+impl Dispatch<wl_registry::WlRegistry, ()> for TestClient {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            match interface.as_str() {
+                "wl_compositor" => {
+                    let c: wl_compositor::WlCompositor =
+                        registry.bind(name, version.min(4), qh, ());
+                    state.compositor = Some(c);
+                }
+                "xdg_wm_base" => {
+                    let b: xdg_wm_base::XdgWmBase =
+                        registry.bind(name, version.min(2), qh, ());
+                    state.wm_base = Some(b);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_compositor::WlCompositor, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        _: &wl_compositor::WlCompositor,
+        _: wl_compositor::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        _: &wl_surface::WlSurface,
+        _: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        wm_base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        xdg_surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            xdg_surface.ack_configure(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
+    fn event(
+        _: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        _: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+/// Drive the wayland queue until both required globals are bound, or
+/// until `timeout` elapses (in which case the function returns whatever
+/// it has — the caller asserts and reports the failure).
+fn round_trip_until_bound(
+    conn: &Connection,
+    queue: &mut EventQueue<TestClient>,
+    state: &mut TestClient,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    while (state.compositor.is_none() || state.wm_base.is_none())
+        && Instant::now() < deadline
+    {
+        let _ = conn.roundtrip();
+        let _ = queue.dispatch_pending(state);
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+#[ignore = "requires a host display server (WAYLAND_DISPLAY or DISPLAY) to back winit"]
+fn native_compositor_adopts_and_reaps_foreign_tab() {
+    // 1. Set up the introspection sink + spawn the compositor.
+    let dump_path = std::env::temp_dir()
+        .join(format!("nirios-state-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&dump_path);
+
+    let (mut child, socket_name) = spawn_compositor(&dump_path);
+
+    // Run the rest in a `defer-kill` closure so a panic in the client
+    // path still tears the compositor down before the test framework
+    // reports.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_client_assertions(&socket_name, &dump_path);
+    }));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&dump_path);
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
+    let app_id = format!("nirios-test-{}", std::process::id());
+
+    // 2. Connect to the freshly-bound socket. `wayland-client` reads
+    // `WAYLAND_DISPLAY`, so we set it just for the connection scope.
+    // SAFETY: tests run single-threaded; the env is restored after.
+    unsafe { std::env::set_var("WAYLAND_DISPLAY", socket_name) };
+    let conn = Connection::connect_to_env().expect("connect to compositor socket");
+    let mut queue: EventQueue<TestClient> = conn.new_event_queue();
+    let qh = queue.handle();
+    let display = conn.display();
+    let _registry = display.get_registry(&qh, ());
+
+    let mut client = TestClient::new();
+    round_trip_until_bound(&conn, &mut queue, &mut client, Duration::from_secs(3));
+    let compositor = client
+        .compositor
+        .as_ref()
+        .cloned()
+        .expect("compositor global never advertised");
+    let wm_base = client
+        .wm_base
+        .as_ref()
+        .cloned()
+        .expect("xdg_wm_base global never advertised");
+
+    // 3. Create the surface stack and set the unique app-id.
+    let surface = compositor.create_surface(&qh, ());
+    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg_surface.get_toplevel(&qh, ());
+    toplevel.set_app_id(app_id.clone());
+    surface.commit();
+    let _ = conn.flush();
+    // Roundtrip so the server processes get_toplevel + set_app_id + commit
+    // and fires both `new_toplevel` and `app_id_changed`. We poll the
+    // state dump separately below, this just unsticks the request queue.
+    for _ in 0..10 {
+        let _ = conn.roundtrip();
+        let _ = queue.dispatch_pending(&mut client);
+    }
+
+    // 4. Poll the state dump until the foreign tab with our app-id
+    // appears, or 3s elapses.
+    let adopted = poll_for(Duration::from_secs(3), || {
+        // Re-pump the wayland queue inside the poll so that any
+        // outstanding events the server needs to process (configure
+        // ack, set_app_id, …) get drained while we wait. Without this
+        // the test would block on the file system alone and the
+        // compositor's loop has nothing to drive it after the initial
+        // burst.
+        let _ = conn.roundtrip();
+        let _ = queue.dispatch_pending(&mut client);
+        dump_has_foreign_app_id(dump_path, &app_id)
+    });
+    if !adopted {
+        // On failure, echo the dump's contents (if any) so CI logs make
+        // the actual shell-state shape visible — the panic message
+        // alone doesn't help diagnose why adoption didn't fire.
+        match std::fs::read_to_string(dump_path) {
+            Ok(s) => eprintln!("dump contents at failure:\n{s}"),
+            Err(e) => eprintln!("dump unreadable at failure: {e}"),
+        }
+    }
+    assert!(
+        adopted,
+        "compositor never adopted a foreign tab with app_id={app_id} (dump at {})",
+        dump_path.display()
+    );
+
+    // 5. Tear the client down. `wayland-client` proxies do *not*
+    // auto-send destroy requests on drop — we need explicit `.destroy()`
+    // calls so smithay's `XdgShellHandler::toplevel_destroyed` fires.
+    // The xdg-shell spec requires destroying the role objects in
+    // reverse-creation order (toplevel → xdg_surface → surface).
+    toplevel.destroy();
+    xdg_surface.destroy();
+    surface.destroy();
+    let _ = conn.flush();
+    // Drive the queue once so the destroy requests reach the server
+    // before we drop the connection (the server's per-frame
+    // `dispatch_clients` does the rest).
+    let _ = conn.roundtrip();
+    drop(queue);
+    drop(conn);
+
+    let reaped = poll_for(Duration::from_secs(2), || {
+        // `Some(true)` means "still adopted"; we want the inverse.
+        match dump_has_foreign_app_id(dump_path, &app_id) {
+            Some(false) => Some(true),
+            Some(true) => Some(false),
+            None => None,
+        }
+    });
+    if !reaped {
+        match std::fs::read_to_string(dump_path) {
+            Ok(s) => eprintln!("dump contents at reap failure:\n{s}"),
+            Err(e) => eprintln!("dump unreadable at reap failure: {e}"),
+        }
+    }
+    assert!(
+        reaped,
+        "compositor never reaped foreign tab app_id={app_id} after client teardown"
+    );
+}
