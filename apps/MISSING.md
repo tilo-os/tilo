@@ -199,3 +199,60 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] FOLLOW-UP (dedup, not a bug): the 6 apps each carry a near-identical copy of
       `portal.rs`. Promote a shared `ui::portal` open/save helper and collapse the
       copies onto it (same "recurring pattern → framework" move as ui::doc).
+
+---
+
+## Open issues from a live desktop review (2026-07-04)
+
+### ui (general, cross-app)
+- [ ] Scroll bars aren't draggable: thumb + track don't respond to click/drag
+      (seen in monitor's data table). Make scrollbars fully interactive (thumb
+      drag + track paging) in the shared ui scrollbar/DataTable so ALL apps get it.
+
+### maps
+- [ ] Live tiles never load — always "Map imagery unavailable offline". Root cause:
+      rustls 0.23 with BOTH ring + aws-lc-rs and no installed default CryptoProvider
+      → every HTTPS fetch fails silently. (curl 200 from the same env proves the
+      network is fine.) Fix started (install ring provider in main + rustls dep) but
+      UNVERIFIED — needs a REAL-NETWORK tile-fetch test; unit tests hit a local http
+      mock + shots use sample data, so neither caught it. Likely workspace-wide
+      (weather/tube/music use reqwest+rustls too — audit + fix all).
+- [ ] UX: fold Transit INTO Directions as a travel MODE (Drive/Cycle/Walk/Transit),
+      not a separate tab; make clear what "Explore" is (search/browse) vs Directions.
+
+### monitor
+- [ ] Overlapping elements at very low width.
+- [ ] The top resource-metric strip doesn't grow/reflow with the window width.
+
+### weather
+- [ ] Search UX is bad: only a "Searching…" text label appears below the bar —
+      needs a real results dropdown you can pick from.
+- [ ] The city list isn't collapsible — feels off; make it collapsible.
+- [ ] Polish across widths (review at several widths).
+
+### sheets
+- [ ] No right-click context menu on the sheet TABS at the bottom.
+- [ ] Implement a large subset of Excel/LibreOffice FORMULAS (needn't be 1:1; can
+      improve where sensible).
+- [ ] Reference-coloring only shows while EDITING a cell — should also show when a
+      formula cell is just SELECTED.
+- [ ] The top formula edit bar has no caret / text selection — give it a real
+      editable field (shared caret core).
+
+## monitor — remaining (overlap + responsive strip already fixed)
+- [ ] "Copy PID" context-menu action is a no-op stub — reports "PID N copied" but
+      writes to NO system clipboard. Wire a real clipboard write (or remove the lie).
+- [ ] Narrow (≤680px) Processes detail push-pane wastes ~70% vertical height: the
+      96px-strip draw_detail is handed a full-height rect (name/PID top, chips+Kill
+      bottom, huge void between). Give it a proper full-height narrow layout.
+- [ ] Narrow 560 THR column header clipped to "T" (needs h-scroll to read) — a core
+      column; widen/prioritise it at narrow.
+
+## chat — remaining (call-overlay void + first-run flash already fixed)
+- [ ] Floating call-huddle title ("Design Huddle") overlaps the presence dot +
+      participant-count badge at narrow width (docked huddle PiP ~164px wide) —
+      elide the title to fit (the header topic is already elided; the huddle title
+      isn't).
+- [ ] Minor perf: ChatApp::needs_redraw() returns true unconditionally → a full
+      re-render on every CursorMoved even when no hover/selection changed. Gate it
+      on actual state change (not an idle spin, but wasteful under pointer motion).
