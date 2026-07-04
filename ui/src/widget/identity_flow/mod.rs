@@ -52,11 +52,11 @@ use std::time::{Duration, SystemTime};
 use automerge::{AutoCommit, ObjId};
 use ed25519_dalek::SigningKey as DalekSigningKey;
 use hmac::{Hmac, Mac};
-use qos_collab_types::{
+use collab_types::{
     Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey,
     RoleAttestation, Role, Signature, generate_keypair, sign_event, verify_event,
 };
-use qos_threshold_identity::{
+use threshold_identity::{
     EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity,
 };
 use rand_core::{OsRng, RngCore};
@@ -1837,15 +1837,15 @@ mod tests {
     /// After the UI ceremony completes (screens 1 → 2 → 3 + 4
     /// driving DKG to completion), the two halves of the
     /// threshold identity can co-sign an op that verifies via
-    /// `qos_collab_types::verify_event`.
+    /// `collab_types::verify_event`.
     ///
     /// The test drives the protocol directly (no winit, no taffy)
     /// — it stitches the two `DkgSession`s together in-process so
     /// the focus stays on the cryptographic outcome.
     #[test]
     fn end_to_end_ceremony_lets_both_devices_co_sign() {
-        use qos_collab_types::{canonical_bytes, verify_event};
-        use qos_threshold_identity::SigningRound1Commitment;
+        use collab_types::{canonical_bytes, verify_event};
+        use threshold_identity::SigningRound1Commitment;
 
         // 1) Host device bootstraps a single-device identity (screen 1).
         let mut rng = OsRng;

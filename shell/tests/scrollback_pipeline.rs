@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use ed25519_dalek::SigningKey;
-use qos_collab_types::{
+use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature,
     SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
@@ -557,7 +557,7 @@ fn compaction_op_class_rejected_for_editor() {
     assert!(
         audit.iter().any(|e| matches!(
             e.rejection,
-            Some(qos_collab_types::ValidationError::RoleForbidsOpClass)
+            Some(collab_types::ValidationError::RoleForbidsOpClass)
         )),
         "audit must record RoleForbidsOpClass, got {:?}",
         audit.iter().map(|e| &e.rejection).collect::<Vec<_>>()

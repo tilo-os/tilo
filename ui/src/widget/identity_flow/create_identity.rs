@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use qos_threshold_identity::ThresholdIdentity;
+use threshold_identity::ThresholdIdentity;
 use rand_core::OsRng;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;

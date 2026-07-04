@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use qos_threshold_identity::{
+use threshold_identity::{
     DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity,
 };
 use rand_core::OsRng;
