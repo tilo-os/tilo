@@ -25,10 +25,26 @@ const EXPR_PAD_Y: f64 = 7.0;
 /// Surface card height for a short, single-line expression.
 const BASE_EXPR_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * EXPR_PAD_Y;
 
+/// Below this body width the Surface panel collapses to a toggle + overlay
+/// drawer instead of docking (see [`crate::graph2d`] for the matching 2D rail).
+const PANEL_DOCK_MIN_W: f64 = 720.0;
+/// Overlay drawer width when the panel floats over the canvas.
+const PANEL_OVERLAY_W: f64 = 300.0;
+
 pub struct Graph3dScreen {
     pub panel: Rect,
     pub canvas: Rect,
     expr_rect: Rect,
+    /// Panel is an overlay drawer (narrow) rather than docked (wide).
+    overlay: bool,
+    /// Whether the panel is currently shown.
+    panel_open: bool,
+    /// Whether the user explicitly toggled the panel this session.
+    user_toggled: bool,
+    /// Toggle pill / hide chip for the overlay drawer.
+    toggle_rect: Rect,
+    /// Dismiss scrim behind an open overlay drawer.
+    scrim_rect: Rect,
     /// Grown (outer) height of the surface expression card, measured in `draw`
     /// and reused by `layout` on the event path so the box the user clicks
     /// matches what was painted. A tall stacked surface (the default
@@ -50,6 +66,13 @@ impl Default for Graph3dScreen {
             panel: Rect::ZERO,
             canvas: Rect::ZERO,
             expr_rect: Rect::ZERO,
+            overlay: false,
+            panel_open: true,
+            // Shots-only: force the panel open for the headless narrow-width
+            // screenshot (no effect when unset; live default is unchanged).
+            user_toggled: std::env::var_os("QOS_CALC_PANEL_OPEN").is_some(),
+            toggle_rect: Rect::ZERO,
+            scrim_rect: Rect::ZERO,
             expr_card_h: BASE_EXPR_H,
             field: MathField::new("").with_size(20.0),
             surface_cache: SurfaceCache::default(),
@@ -111,14 +134,79 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
+    /// Resolve docked-vs-overlay + panel / canvas / scrim / toggle rects from
+    /// the current width. Re-derived every layout pass so a resize reflows.
+    fn resolve_panel(&mut self, area: Rect) {
+        let can_dock = area.width() >= PANEL_DOCK_MIN_W;
+        self.overlay = !can_dock;
+        if !self.user_toggled {
+            self.panel_open = can_dock;
+        }
+        if can_dock && self.panel_open {
+            let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
+            self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
+            self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
+            self.scrim_rect = Rect::ZERO;
+            self.toggle_rect = Rect::ZERO;
+        } else {
+            self.canvas = Rect::new(area.x0, area.y0, area.x1, area.y1);
+            if self.overlay && self.panel_open {
+                let w = PANEL_OVERLAY_W.min(area.width() - 40.0);
+                self.panel = Rect::new(area.x0, area.y0, area.x0 + w, area.y1);
+                self.scrim_rect = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
+                self.toggle_rect = Rect::new(self.panel.x1 - 66.0, self.panel.y0 + 14.0, self.panel.x1 - 16.0, self.panel.y0 + 42.0);
+            } else {
+                self.panel = Rect::ZERO;
+                self.scrim_rect = Rect::ZERO;
+                self.toggle_rect = Rect::new(area.x0 + 12.0, area.y0 + 12.0, area.x0 + 144.0, area.y0 + 44.0);
+            }
+        }
+    }
+
     pub fn layout(&mut self, area: Rect) {
-        let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
-        self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
-        self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
+        self.resolve_panel(area);
+        if self.panel == Rect::ZERO {
+            self.expr_rect = Rect::ZERO;
+            return;
+        }
         // The surface card grows with the formula (measured in `draw`), so a
         // stacked expression is shown in a taller box instead of being clipped.
         let top = self.panel.y0 + 60.0;
         self.expr_rect = Rect::new(self.panel.x0 + 16.0, top, self.panel.x1 - 16.0, top + self.expr_card_h);
+    }
+
+    // -- overlay panel chrome ------------------------------------------------
+
+    pub fn toggle_at(&self, p: Point) -> bool {
+        self.toggle_rect != Rect::ZERO && self.toggle_rect.contains(p)
+    }
+    pub fn scrim_at(&self, p: Point) -> bool {
+        self.overlay && self.panel_open && self.scrim_rect.contains(p)
+    }
+    pub fn toggle_panel(&mut self) {
+        self.panel_open = !self.panel_open;
+        self.user_toggled = true;
+    }
+    pub fn close_panel(&mut self) {
+        self.panel_open = false;
+        self.user_toggled = true;
+    }
+    pub fn overlay_captures(&self, p: Point) -> bool {
+        self.overlay && self.panel_open && self.panel.contains(p)
+    }
+    /// Whether the Surface panel is currently shown (test/introspection).
+    pub fn panel_open(&self) -> bool {
+        self.panel_open
+    }
+    /// Center of the panel toggle, if one is placed this frame (test helper).
+    pub fn toggle_center(&self) -> Option<Point> {
+        (self.toggle_rect != Rect::ZERO).then(|| self.toggle_rect.center())
+    }
+
+    /// Paint remote collaborators' carets into the surface field, snapping each
+    /// scene-space cursor to the field's 2D glyph layout.
+    pub fn draw_remote_carets(&self, scene: &mut Scene, t: Affine, cursors: &[(Point, Color)]) {
+        self.field.draw_remote_carets(scene, t, cursors);
     }
 
     /// Feed the surface expression into the editor (no-op when unchanged).
@@ -167,10 +255,24 @@ impl Graph3dScreen {
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
 
         let (zmin, zmax) = self.draw_surface(scene, t, theme, model);
+        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+
+        // Collapsed overlay: only a floating toggle over the plot.
+        if self.panel == Rect::ZERO {
+            if self.overlay {
+                self.draw_toggle(scene, t, tr, theme);
+            }
+            return;
+        }
+        // Open overlay drawer: dismiss scrim over the canvas first.
+        if self.overlay {
+            draw::fill_rect(scene, t, self.scrim_rect, draw::with_alpha(Color::BLACK, 110));
+        }
 
         // ---- panel ---------------------------------------------------------
-        draw::fill_rect(scene, t, self.panel, c.surfaces.base);
-        draw::line(scene, t, Point::new(self.panel.x1, self.panel.y0), Point::new(self.panel.x1, self.panel.y1), c.border_standard, 1.0);
+        let panel_bg = if self.overlay { c.surfaces.raised } else { c.surfaces.base };
+        draw::fill_rect(scene, t, self.panel, panel_bg);
+        draw::line(scene, t, Point::new(self.panel.x1, self.panel.y0), Point::new(self.panel.x1, self.panel.y1), c.border_standard, if self.overlay { 1.5 } else { 1.0 });
         let head = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 12.0, self.panel.x1 - 16.0, self.panel.y0 + 36.0);
         draw::text_in(scene, tr, t, head, "Surface", 16.0, c.text_primary, Align::Left, TextWeight::Semibold);
         let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 34.0, self.panel.x1 - 16.0, self.panel.y0 + 54.0);
@@ -204,7 +306,28 @@ impl Graph3dScreen {
         // height legend
         self.draw_legend(scene, t, tr, theme, zmin, zmax, info.y1 + 16.0);
 
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+        // Overlay drawer keeps a "Hide" chip in its header.
+        if self.overlay {
+            self.draw_toggle(scene, t, tr, theme);
+        }
+    }
+
+    /// Draw the panel toggle: a "Surface" pill over the canvas when the drawer
+    /// is closed, or a "Hide" chip in the drawer header when it's open.
+    fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if self.toggle_rect == Rect::ZERO {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let r = self.toggle_rect;
+        if self.panel_open {
+            draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
+            draw::text_in(scene, tr, t, r, "Hide", 12.0, c.text_dim, Align::Center, TextWeight::Semibold);
+        } else {
+            draw::fill_rrect(scene, t, r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+            draw::text_in(scene, tr, t, r, "Surface", 13.0, c.accent[6], Align::Center, TextWeight::Semibold);
+        }
     }
 
     fn draw_legend(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, zmin: f64, zmax: f64, top: f64) {
@@ -379,6 +502,11 @@ impl Graph3dScreen {
     }
 
     pub fn canvas_contains(&self, p: Point) -> bool {
+        // An open overlay drawer makes the canvas non-interactive (a press there
+        // dismisses the drawer instead of orbiting).
+        if self.overlay && self.panel_open {
+            return false;
+        }
         self.canvas.contains(p)
     }
 }
@@ -420,6 +548,28 @@ mod tests {
         let mut s = Graph3dScreen::default();
         s.canvas = Rect::new(360.0, 60.0, 1280.0, 800.0);
         s
+    }
+
+    #[test]
+    fn wide_docks_narrow_collapses_surface_panel() {
+        let mut s = Graph3dScreen::default();
+        // Wide: docked.
+        s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0));
+        assert!(!s.overlay && s.panel_open);
+        assert!(s.panel.width() > 0.0 && s.canvas.x0 >= s.panel.x1 - 0.5);
+        // Narrow: collapsed overlay, canvas takes the full width.
+        s.layout(Rect::new(0.0, 60.0, 560.0, 800.0));
+        assert!(s.overlay && !s.panel_open);
+        assert_eq!(s.panel, Rect::ZERO);
+        assert!((s.canvas.width() - 560.0).abs() < 0.5);
+        assert!(s.toggle_at(s.toggle_rect.center()));
+        // Open it → drawer + scrim; press inside must not orbit.
+        s.toggle_panel();
+        s.layout(Rect::new(0.0, 60.0, 560.0, 800.0));
+        assert!(s.panel_open && s.panel.width() > 0.0 && s.scrim_rect.width() > 0.0);
+        assert!(!s.canvas_contains(s.panel.center()));
+        // Re-widening re-docks (un-toggled path already exercised; here the user
+        // opened it, so it stays open but docks).
     }
 
     #[test]

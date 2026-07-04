@@ -48,13 +48,13 @@ pub(crate) const COMPOSER_MIN_H: f64 = 76.0;
 pub(crate) const COMPOSER_MAX_H: f64 = 200.0;
 pub(crate) const AVATAR: f64 = 40.0;
 
-// --- Floating call overlay home placement (fractions of the window) -------
-// The docked overlay's resting rect before the user drags it, and the
-// expanded host-tile rect. The VideoPlayer's taffy node and the surrounding
-// chrome derive from these so they stay aligned; the drag offset is applied
-// on top in `apply_layout`.
+// --- Floating call huddle home placement (fractions of the window) --------
+// The docked huddle's resting video rect before the user drags it. The
+// VideoPlayer's taffy node and the surrounding chrome derive from this so
+// they stay aligned; the drag offset is applied on top in `apply_layout`.
+// (The expanded overlay instead tiles the host into a responsive grid — see
+// `overlay_tiles` — so it has no fixed fraction.)
 pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.230);
-pub(crate) const OVERLAY_VIDEO: (f64, f64, f64, f64) = (0.075, 0.180, 0.415, 0.330);
 
 /// Which composer currently owns keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +77,8 @@ pub(crate) struct ContextMenu {
 pub(crate) enum MenuTarget {
     Channel(Id),
     Category(Id),
+    /// One of your own messages — the action menu offers Edit.
+    Message(Id),
     /// The workspace background / the sidebar's "+" — create affordances.
     Workspace(Id),
 }
@@ -94,6 +96,8 @@ pub(crate) enum MenuAction {
     NewVoiceChannelHere,
     NewCategory,
     ToggleCollapse,
+    /// Load one of your own messages into the inline editor.
+    EditMessage,
 }
 
 impl MenuAction {
@@ -107,6 +111,7 @@ impl MenuAction {
             MenuAction::NewVoiceChannelHere => "New voice channel",
             MenuAction::NewCategory => "New category",
             MenuAction::ToggleCollapse => "Collapse / expand",
+            MenuAction::EditMessage => "Edit message",
         }
     }
     pub fn is_destructive(self) -> bool {
@@ -130,6 +135,10 @@ impl MenuAction {
     /// The action a swipe-left on a channel row resolves to.
     pub fn channel_swipe_left() -> MenuAction {
         Self::for_channel()[0]
+    }
+    /// Menu items for one of your own messages.
+    pub fn for_message() -> [MenuAction; 1] {
+        [MenuAction::EditMessage]
     }
 }
 
@@ -161,8 +170,6 @@ pub(crate) enum Hit {
     VoiceChannel(Id),
     /// Toggle a category's collapsed state.
     CategoryToggle(Id),
-    /// Open a context menu for a channel/category/workspace target.
-    ContextMenu { target: MenuTarget, anchor: Point },
     /// Execute a context-menu / create action.
     MenuAction { target: MenuTarget, action: MenuAction },
     /// The "+" create-channel button on a category header.
@@ -175,6 +182,13 @@ pub(crate) enum Hit {
     AddReaction { msg: Id, anchor: Point },
     OpenThread(Id),
     EditHistory { msg: Id, anchor: Point },
+    /// Right-click target over one of your own messages — opens the message
+    /// action menu (Edit). Left-click on it is a no-op.
+    MessageMenu { msg: Id },
+    /// Commit the inline message editor to the CRDT.
+    EditSave,
+    /// Discard the inline message editor without writing.
+    EditCancel,
     EmojiChoice(String),
     FocusMain,
     FocusThread,
@@ -228,6 +242,10 @@ pub struct ChatApp {
     pub(crate) emoji_anchor: Point,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
+    /// Inline message editor: the id of your own message being edited plus its
+    /// working text. `self.caret` indexes into this text. Enter/Save writes it
+    /// through [`ChatDoc::edit_message`]; Esc/Cancel discards it.
+    pub(crate) editing: Option<(Id, String)>,
 
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
@@ -325,6 +343,7 @@ impl ChatApp {
             emoji_anchor: Point::ZERO,
             history_open: None,
             history_anchor: Point::ZERO,
+            editing: None,
             attach_open: false,
             attach_entries: Vec::new(),
             menu: None,
@@ -430,6 +449,36 @@ impl ChatApp {
                     },
                 ];
                 self.attach_open = true;
+            }
+            "edit" => {
+                // The inline message editor open on your own last message,
+                // with an earlier message still carrying the static "(edited)"
+                // marker — the whole edit story in one frame. Ephemeral shot
+                // only: at seed time the messages aren't loaded yet, so the
+                // working text is set directly and the caret is clamped to its
+                // end by `reload`.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call = CallState::default();
+                self.editing = Some((
+                    "m_me2".into(),
+                    "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it."
+                        .into(),
+                ));
+                self.focus = Focus::Main;
+                self.caret = usize::MAX; // clamped to the working text length on reload
+            }
+            "msgmenu" => {
+                // The right-click action menu over one of your own messages,
+                // offering Edit — the discoverable entry point to editing.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call = CallState::default();
+                self.menu = Some(ContextMenu {
+                    target: MenuTarget::Message("m_me2".into()),
+                    anchor: Point::new(360.0, 300.0),
+                    items: MenuAction::for_message().to_vec(),
+                });
             }
             _ => {
                 // Desktop demo: reveal the thread beside the conversation and
@@ -537,7 +586,12 @@ impl ChatApp {
             Some(k) => ChatDoc::draft_text(doc, &k),
             None => String::new(),
         };
-        let max = self.focused_draft().chars().count();
+        // Clamp the caret to whatever text it currently indexes: the inline
+        // message editor when one is open, otherwise the focused draft.
+        let max = match &self.editing {
+            Some((_, text)) => text.chars().count(),
+            None => self.focused_draft().chars().count(),
+        };
         if self.caret > max {
             self.caret = max;
         }
@@ -641,6 +695,13 @@ impl ChatApp {
     /// while either flap is still animating (so the host keeps redrawing).
     pub(crate) fn reconcile_flaps(&mut self) -> bool {
         let w = self.rect.width();
+        // Ignore a degenerate pre-layout frame: resolving the flap mode from a
+        // zero width would snap it to the overlay default before the real
+        // window size is known. Wait for a genuine allocation so the first
+        // reconcile lands on the actual breakpoint.
+        if w < 1.0 {
+            return false;
+        }
         self.left_mode = FlapMode::from_width(w, LEFT_BREAKPOINT);
         self.right_mode = FlapMode::from_width(w, RIGHT_BREAKPOINT);
         self.left_flap.reconcile(self.left_mode);
@@ -703,7 +764,11 @@ impl ChatApp {
     /// placement and the surrounding call chrome.
     pub(crate) fn call_video_rect(&self) -> Rect {
         if self.call.expanded {
-            frac_rect(self.rect, OVERLAY_VIDEO)
+            // The host is the first cell of the responsive participant grid,
+            // so the tile (and the VideoPlayer surface beneath it) fills its
+            // share of the surface at every width — never a fixed fraction
+            // that leaves the rest of the overlay empty.
+            self.overlay_host_rect()
         } else {
             frac_rect(self.rect, HUDDLE_VIDEO) + self.call.overlay_offset
         }
@@ -797,14 +862,45 @@ impl Widget for ChatApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The host video tile is an absolute leaf positioned by *fractional*
-        // insets against the root, so it sizes correctly even on the first
-        // layout pass (when `self.rect` isn't known yet). The dragged overlay
-        // offset is applied as an origin shift in `apply_layout`, which keeps
-        // the tile correct without a relayout on every drag frame.
-        let f = if self.call.expanded { OVERLAY_VIDEO } else { HUDDLE_VIDEO };
-        let video_node = taffy
-            .new_leaf(Style {
+        // The host video tile is an absolute leaf. In the docked huddle it
+        // sits at a *fractional* home (sized correctly even before `self.rect`
+        // is known); the dragged overlay offset is applied as an origin shift
+        // in `apply_layout`. In the expanded overlay it instead tracks the
+        // first cell of the responsive participant grid so the surface fills
+        // its share at every width. That cell depends on the window size, so
+        // it is expressed in absolute px derived from the last known
+        // `self.rect`; before any layout pass the rect is empty, in which case
+        // the node collapses to zero size (nothing to paint) and the next
+        // frame — once the real size is known — positions it exactly.
+        let video_style = if self.call.expanded {
+            let host = self.call_video_rect();
+            let (left, top, w, h) = if host.width() > 1.0 && host.height() > 1.0 {
+                (
+                    (host.x0 - self.rect.x0) as f32,
+                    (host.y0 - self.rect.y0) as f32,
+                    host.width() as f32,
+                    host.height() as f32,
+                )
+            } else {
+                (0.0, 0.0, 0.0, 0.0)
+            };
+            Style {
+                position: Position::Absolute,
+                inset: taffy::Rect {
+                    left: taffy::style_helpers::length(left),
+                    top: taffy::style_helpers::length(top),
+                    right: LengthPercentageAuto::auto(),
+                    bottom: LengthPercentageAuto::auto(),
+                },
+                size: Size {
+                    width: taffy::style_helpers::length(w),
+                    height: taffy::style_helpers::length(h),
+                },
+                ..Default::default()
+            }
+        } else {
+            let f = HUDDLE_VIDEO;
+            Style {
                 position: Position::Absolute,
                 inset: taffy::Rect {
                     left: percent(f.0 as f32),
@@ -814,8 +910,9 @@ impl Widget for ChatApp {
                 },
                 size: Size { width: percent(f.2 as f32), height: percent(f.3 as f32) },
                 ..Default::default()
-            })
-            .unwrap();
+            }
+        };
+        let video_node = taffy.new_leaf(video_style).unwrap();
         node_map.insert(video_node, &mut self.video as *mut VideoPlayer as *mut dyn Widget);
         self.video_node = Some(video_node);
 

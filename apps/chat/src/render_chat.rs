@@ -185,10 +185,10 @@ impl ChatApp {
             let plus = Rect::new(hrow.x1 - 22.0, y + 2.0, hrow.x1 - 4.0, y + 20.0);
             label(scene, tr, tf, "+", 16.0, c.text_dim, plus.x0 + 4.0, y + 1.0);
             ChatApp::push_hit(hits, plus, Hit::AddChannel { workspace: self.active_ws.clone(), category: cat.id.clone() });
-            // Caret + name toggles collapse; right-click opens the menu.
+            // Caret + name toggles collapse; right-click (resolved against the
+            // toggle / "+" hit in `on_right_click`) opens the category menu.
             let toggle = Rect::new(hrow.x0, y, plus.x0, y + 24.0);
             ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
-            ChatApp::push_hit(hits, hrow, Hit::ContextMenu { target: MenuTarget::Category(cat.id.clone()), anchor: Point::new(hrow.x0 + 40.0, y + 22.0) });
             y += 26.0;
 
             if !cat.collapsed {
@@ -293,10 +293,10 @@ impl ChatApp {
                 fill_round(scene, tf, badge, 9.0, c.accent[5]);
                 label(scene, tr, tf, &txt, 11.0, Color::WHITE, badge.x0 + 7.0, badge.center().y - 7.0);
             }
-            // Click joins/opens; right-click opens the row context menu.
+            // Click joins/opens; right-click (resolved against this row's
+            // click hit in `on_right_click`) opens the channel context menu.
             let click_hit = if ch.kind == ChannelKind::Voice { Hit::VoiceChannel(ch.id.clone()) } else { Hit::Channel(ch.id.clone()) };
             ChatApp::push_hit(hits, row, click_hit);
-            ChatApp::push_hit(hits, row, Hit::ContextMenu { target: MenuTarget::Channel(ch.id.clone()), anchor: Point::new(row.x0 + 40.0, y + 28.0) });
             y += 34.0;
 
             // Voice presence: list connected members under a voice channel.
@@ -561,7 +561,13 @@ impl ChatApp {
     }
 
     fn measure_row(&self, tr: &mut TextRenderer, m: &Message, show_header: bool, text_w: f32) -> RowM {
-        let body_h = if m.text.is_empty() {
+        let editing = self.editing.as_ref().is_some_and(|(id, _)| id == &m.id);
+        // The editor measures its live working text so the timeline reflows as
+        // you type; a static message measures its stored body.
+        let body_h = if editing {
+            let t = self.editing.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
+            (tr.measure(t, 15.0, Some(text_w)).1 as f64).max(19.0)
+        } else if m.text.is_empty() {
             0.0
         } else {
             tr.measure(&m.text, 15.0, Some(text_w)).1 as f64
@@ -572,9 +578,22 @@ impl ChatApp {
             Some(Attachment::Image { w, h, .. }) => image_thumb_size(*w, *h, text_w as f64).1 + 24.0,
         };
         let react_h = if m.reactions.is_empty() { 0.0 } else { 32.0 };
-        let edited_h = if m.edited { 18.0 } else { 0.0 };
+        // While editing, the "(edited)" marker is suppressed in favour of the
+        // editor's own controls row.
+        let edited_h = if m.edited && !editing { 18.0 } else { 0.0 };
         let thread_h = if model::reply_count(&self.messages, &m.id) > 0 { 46.0 } else { 0.0 };
-        RowM { idx_id: m.id.clone(), show_header, body_h, att_h, react_h, edited_h, thread_h }
+        let edit_ctrl_h = if editing { 30.0 } else { 0.0 };
+        RowM {
+            idx_id: m.id.clone(),
+            show_header,
+            body_h,
+            att_h,
+            react_h,
+            edited_h,
+            thread_h,
+            editing,
+            edit_ctrl_h,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -595,6 +614,9 @@ impl ChatApp {
         let Some(m) = self.message(&rm.idx_id) else { return };
         let top_gap = if rm.show_header { 14.0 } else { 3.0 };
         *y += top_gap;
+        // Top of the header + body region — the right-click target for your
+        // own messages (recorded below, beneath the reaction / thread hits).
+        let content_top = *y;
 
         if rm.show_header {
             let u = self.user(&m.author).cloned();
@@ -613,12 +635,22 @@ impl ChatApp {
             *y += 22.0;
         }
 
-        if !m.text.is_empty() {
-            text(scene, tr, tf, &m.text, 15.0, c.text_primary, text_x, *y, TextWeight::Regular, Some(text_w));
-            *y += rm.body_h + 2.0;
+        if rm.editing {
+            self.draw_message_editor(scene, tf, tr, theme, text_x, text_w, rm, y, hits);
+        } else {
+            if !m.text.is_empty() {
+                text(scene, tr, tf, &m.text, 15.0, c.text_primary, text_x, *y, TextWeight::Regular, Some(text_w));
+                *y += rm.body_h + 2.0;
+            }
+            // Right-click your own message (header + body) opens the edit menu.
+            // Recorded now, before the reaction / thread hits so those still
+            // win in their own sub-regions.
+            if m.author == model::ME {
+                ChatApp::push_hit(hits, Rect::new(area.x0, content_top, area.x1, *y), Hit::MessageMenu { msg: m.id.clone() });
+            }
         }
 
-        if m.edited {
+        if m.edited && !rm.editing {
             let s = "(edited) · view history";
             let r = Rect::new(text_x, *y, text_x + tr.measure(s, 11.5, None).0 as f64 + 4.0, *y + 16.0);
             label(scene, tr, tf, s, 11.5, c.text_dim, text_x, *y, );
@@ -643,6 +675,56 @@ impl ChatApp {
             *y += rm.thread_h;
         }
         *y += 4.0;
+    }
+
+    /// Render the inline message editor in place of a message body: a focused
+    /// input box carrying the live working text + caret, and a controls row
+    /// (a keyboard hint plus Cancel / Save). Advances `*y` past the whole
+    /// editor. The wrap width matches [`Self::measure_row`] so the timeline
+    /// height stays exact as the text grows.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_message_editor(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        text_x: f64,
+        text_w: f32,
+        rm: &RowM,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let editing_text = self.editing.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
+        let box_h = rm.body_h + EDIT_BOX_PAD;
+        let er = Rect::new(text_x - 8.0, *y, text_x + text_w as f64 + 8.0, *y + box_h);
+        fill_round(scene, tf, er, 10.0, c.neutral[2]);
+        stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
+        if editing_text.is_empty() {
+            label(scene, tr, tf, "Edit message…", 15.0, c.text_dim, text_x, *y + 8.0);
+        } else {
+            text(scene, tr, tf, editing_text, 15.0, c.text_primary, text_x, *y + 8.0, TextWeight::Regular, Some(text_w));
+        }
+        let prefix = &editing_text[..char_to_byte(editing_text, self.caret)];
+        let cx = (text_x + tr.measure(prefix, 15.0, None).0 as f64).min(text_x + text_w as f64);
+        fill_rect(scene, tf, Rect::new(cx, *y + 8.0, cx + 1.6, *y + 27.0), c.border_focus);
+        *y += box_h;
+
+        // Controls row: keyboard hint on the left, Cancel + Save on the right.
+        let cy = *y + 2.0;
+        label(scene, tr, tf, "Enter to save · Esc to cancel", 11.0, c.text_dim, text_x, cy + 4.0);
+        let save = Rect::new(er.x1 - 56.0, cy, er.x1, cy + 24.0);
+        fill_round(scene, tf, save, 7.0, c.accent[5]);
+        let (sw, sh) = tr.measure_weighted("Save", 12.5, None, TextWeight::Semibold);
+        text(scene, tr, tf, "Save", 12.5, Color::WHITE, save.center().x - sw as f64 / 2.0, save.center().y - sh as f64 / 2.0, TextWeight::Semibold, None);
+        ChatApp::push_hit(hits, save, Hit::EditSave);
+        let cancel = Rect::new(save.x0 - 8.0 - 62.0, cy, save.x0 - 8.0, cy + 24.0);
+        fill_round(scene, tf, cancel, 7.0, c.surface_white_10);
+        let (kw, kh) = tr.measure("Cancel", 12.5, None);
+        text(scene, tr, tf, "Cancel", 12.5, c.text_primary, cancel.center().x - kw as f64 / 2.0, cancel.center().y - kh as f64 / 2.0, TextWeight::Regular, None);
+        ChatApp::push_hit(hits, cancel, Hit::EditCancel);
+        *y += rm.edit_ctrl_h;
     }
 
     fn draw_reactions(
@@ -790,7 +872,9 @@ impl ChatApp {
         let rect = self.composer_rect(tr);
         let ch_name = self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
         let placeholder = format!("Message #{ch_name}");
-        let focused = matches!(self.focus, crate::app::Focus::Main);
+        // While an inline message edit is in progress the caret lives in the
+        // editor, not the composer — don't paint a second one here.
+        let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
         let caret = if focused { Some(self.caret) } else { None };
         self.draw_input_box(
             scene, tf, tr, theme, rect, &self.draft_main, &placeholder, caret, focused,
@@ -1076,15 +1160,28 @@ struct RowM {
     react_h: f64,
     edited_h: f64,
     thread_h: f64,
+    /// This row is the message currently being edited inline — its body is
+    /// replaced by the editor box (extra padding) plus a controls row.
+    editing: bool,
+    edit_ctrl_h: f64,
 }
 impl RowM {
     fn height(&self) -> f64 {
         let header = if self.show_header { 22.0 } else { 0.0 };
         let top_gap = if self.show_header { 14.0 } else { 3.0 };
-        let body = if self.body_h > 0.0 { self.body_h + 2.0 } else { 0.0 };
+        let body = if self.editing {
+            self.body_h + EDIT_BOX_PAD + self.edit_ctrl_h
+        } else if self.body_h > 0.0 {
+            self.body_h + 2.0
+        } else {
+            0.0
+        };
         top_gap + header + body + self.edited_h + self.att_h + self.react_h + self.thread_h + 4.0
     }
 }
+
+/// Vertical padding added around the inline editor's text (top + bottom).
+const EDIT_BOX_PAD: f64 = 16.0;
 
 /// Contain-fit an image into the available text width, capped at a tidy
 /// preview size.

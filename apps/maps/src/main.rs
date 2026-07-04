@@ -30,6 +30,8 @@ struct ShotArgs {
     nav_closed: bool,
     empty: bool,
     panel: Option<maps::Panel>,
+    /// Select Transit travel mode inside Directions (`--panel transit`).
+    transit_mode: bool,
     /// Demo the typeable "From" field mid-edit with its geocoded dropdown.
     edit_from: bool,
     /// Demo the Transit picker anchored to an "Arrive by" time.
@@ -38,6 +40,12 @@ struct ShotArgs {
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+
+    // Install the rustls crypto provider before any HTTPS fetch. The tile worker
+    // and the geocoding/routing client also call this, but doing it here at
+    // startup keeps the provider set for the whole process regardless of which
+    // request runs first. See `net::ensure_crypto_provider` for why it's needed.
+    maps::net::ensure_crypto_provider();
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(shot) = parse_shots(&args) {
@@ -55,6 +63,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(panel) = shot.panel {
             app.set_active_panel(panel);
+        }
+        if shot.transit_mode {
+            app.set_travel_mode(maps::TravelMode::Transit);
         }
         if shot.edit_from {
             app.set_demo_edit_origin();
@@ -78,6 +89,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut nav_closed = false;
     let mut empty = false;
     let mut panel: Option<maps::Panel> = None;
+    let mut transit_mode = false;
     let mut edit_from = false;
     let mut transit_arrive = false;
     let mut iter = args.iter().skip(1);
@@ -103,9 +115,11 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         } else if arg == "--transit-arrive" {
             transit_arrive = true;
         } else if arg == "--panel" {
-            panel = iter.next().and_then(|s| parse_panel(s));
+            if let Some(s) = iter.next() {
+                apply_panel(s, &mut panel, &mut transit_mode);
+            }
         } else if let Some(rest) = arg.strip_prefix("--panel=") {
-            panel = parse_panel(rest);
+            apply_panel(rest, &mut panel, &mut transit_mode);
         }
     }
     out.map(|out| ShotArgs {
@@ -114,18 +128,23 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         nav_closed,
         empty,
         panel,
+        transit_mode,
         edit_from,
         transit_arrive,
     })
 }
 
-/// Parse a `--panel` value into a [`maps::Panel`].
-fn parse_panel(s: &str) -> Option<maps::Panel> {
+/// Resolve a `--panel` value. `transit` is not a panel — it opens Directions in
+/// Transit travel mode, mirroring how the live app models it.
+fn apply_panel(s: &str, panel: &mut Option<maps::Panel>, transit_mode: &mut bool) {
     match s.trim().to_ascii_lowercase().as_str() {
-        "explore" => Some(maps::Panel::Explore),
-        "directions" => Some(maps::Panel::Directions),
-        "transit" => Some(maps::Panel::Transit),
-        _ => None,
+        "explore" => *panel = Some(maps::Panel::Explore),
+        "directions" => *panel = Some(maps::Panel::Directions),
+        "transit" => {
+            *panel = Some(maps::Panel::Directions);
+            *transit_mode = true;
+        }
+        _ => {}
     }
 }
 
