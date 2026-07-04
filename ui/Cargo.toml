@@ -115,7 +115,7 @@ accesskit_winit = "0.33.1"
 # focus / value / live-region narration through the offline qOS TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
-qos-tts = { path = "../qos-tts" }
+tts = { path = "../crates/system/tts" }
 
 [dev-dependencies]
 regex = "1"

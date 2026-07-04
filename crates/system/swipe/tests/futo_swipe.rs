@@ -5,7 +5,7 @@
 
 #![cfg(futo)]
 
-use qos_swipe::{FutoSwipe, ModelPaths};
+use swipe::{FutoSwipe, ModelPaths};
 use std::path::PathBuf;
 
 // default_en_qwerty() normalized key centres (mirrors layout.hpp).
