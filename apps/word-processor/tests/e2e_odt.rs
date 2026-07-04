@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use editor::{open_document, save_document, WordProcessorWidget, WpFormat};
+use word_processor::{open_document, save_document, WordProcessorWidget, WpFormat};
 use ui::Widget;
 
 fn temp_path(name: &str) -> PathBuf {
@@ -139,7 +139,7 @@ fn table_created_in_editor_survives_odt_save_reload() {
 
 #[test]
 fn custom_named_style_survives_odt_save_reload() {
-    use editor::{StyleProps, WordProcessor};
+    use word_processor::{StyleProps, WordProcessor};
 
     let path = temp_path("styled.odt");
 
@@ -187,7 +187,7 @@ fn custom_named_style_survives_odt_save_reload() {
     assert_eq!(sheet2.get("body").name, "Body", "built-in body still available after import");
 
     // The block still references the named style.
-    let ed = editor::EditorDoc::bind(&mut s2.doc, &s2.root);
+    let ed = word_processor::EditorDoc::bind(&mut s2.doc, &s2.root);
     let snap = ed.snapshot(&s2.doc);
     assert_eq!(
         snap.blocks[0].attrs.get("style"),

@@ -1,11 +1,11 @@
 [package]
-name = "editor"
+name = "word-processor"
 version = "0.1.0"
 edition = "2021"
 description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
 
 [lib]
-name = "editor"
+name = "word_processor"
 path = "src/lib.rs"
 
 [[bin]]
@@ -13,13 +13,13 @@ name = "word-processor"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../ui" }
-qdoc = { path = "../qdoc" }
-spellcheck = { path = "../spellcheck" }
-docpdf = { path = "../docpdf" }
-dochtml = { path = "../dochtml" }
-docrtf = { path = "../docrtf" }
-docepub = { path = "../docepub" }
+ui = { path = "../../ui" }
+qdoc = { path = "../../crates/doc/qdoc" }
+spellcheck = { path = "../../crates/text/spellcheck" }
+qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+qdoc-html = { path = "../../crates/doc/qdoc-html" }
+qdoc-rtf = { path = "../../crates/doc/qdoc-rtf" }
+qdoc-epub = { path = "../../crates/doc/qdoc-epub" }
 automerge = "0.8.0"
 vello = "0.9"
 taffy = "0.10.1"
