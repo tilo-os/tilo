@@ -110,6 +110,9 @@ pub struct Channel {
     pub topic: String,
     pub kind: ChannelKind,
     pub order: u32,
+    /// Unread top-level messages for the local peer. Derived (not stored) —
+    /// filled in [`crate::app::ChatApp::reload`] from the read watermark; the
+    /// active channel is always shown as 0.
     pub unread: u32,
 }
 

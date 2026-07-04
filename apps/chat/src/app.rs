@@ -176,6 +176,8 @@ pub(crate) enum Hit {
     AddChannel { workspace: Id, category: Id },
     /// The "+" create-category button in the sidebar header.
     AddCategory(Id),
+    /// The "+" create-workspace button at the foot of the rail.
+    AddWorkspace,
     /// Confirm the inline rename editor.
     RenameConfirm,
     Reaction { msg: Id, emoji: String },
@@ -207,7 +209,6 @@ pub(crate) enum Hit {
     CallMute,
     CallDeafen,
     CallAudioOnly,
-    CallFollow,
     CallExpand,
     CallLeave,
     /// Toggle the left flap (rail + channel sidebar).
@@ -572,6 +573,17 @@ impl ChatApp {
                 self.active_channel = first;
             }
         }
+        // Unread is per-peer derived state, not stored: the channel in view is
+        // always read (0); every other channel shows its top-level messages
+        // beyond this peer's read watermark. The watermark itself is advanced
+        // by `mark_active_read` while a channel is viewed / on open.
+        for c in &mut self.channels {
+            c.unread = if c.id == self.active_channel {
+                0
+            } else {
+                ChatDoc::unread_count(doc, &c.id)
+            };
+        }
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
         // Cache voice membership for every voice channel in this workspace.
         self.voice_members.clear();
@@ -595,6 +607,57 @@ impl ChatApp {
         if self.caret > max {
             self.caret = max;
         }
+    }
+
+    /// Advance the local read watermark for the channel currently in view so
+    /// its unread badge stays cleared and doesn't reappear once the user
+    /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
+    /// safe to call every frame.
+    pub(crate) fn mark_active_read(&self, doc: &mut AutoCommit) {
+        if !self.active_channel.is_empty() {
+            ChatDoc::mark_read(doc, &self.active_channel);
+        }
+    }
+
+    /// The members roster shown in the right flap when no thread is open: every
+    /// user in the workspace paired with the voice channel they're currently in
+    /// (if any). Sorted in-call first, then by presence, then by name. Real
+    /// projection of the shared user list + voice membership — no placeholders.
+    pub(crate) fn roster_rows(&self) -> Vec<(User, Option<String>)> {
+        // user id → the name of the voice channel they're connected to.
+        let mut in_voice: HashMap<&str, String> = HashMap::new();
+        for (ch_id, members) in &self.voice_members {
+            let ch_name =
+                self.channel(ch_id).map(|c| c.name.clone()).unwrap_or_else(|| ch_id.clone());
+            for m in members {
+                in_voice.insert(m.user.as_str(), ch_name.clone());
+            }
+        }
+        let mut rows: Vec<(User, Option<String>)> = self
+            .users
+            .iter()
+            .cloned()
+            .map(|u| {
+                let voice = in_voice.get(u.id.as_str()).cloned();
+                (u, voice)
+            })
+            .collect();
+        let rank = |u: &User, voice: &Option<String>| -> u8 {
+            if voice.is_some() {
+                0
+            } else {
+                match u.status {
+                    crate::model::Presence::Online => 1,
+                    crate::model::Presence::Idle => 2,
+                    crate::model::Presence::Dnd => 3,
+                    crate::model::Presence::Offline => 4,
+                }
+            }
+        };
+        rows.sort_by(|a, b| {
+            rank(&a.0, &a.1).cmp(&rank(&b.0, &b.1)).then_with(|| a.0.name.cmp(&b.0.name))
+        });
+        rows
     }
 
     // --- responsive flap geometry ----------------------------------------
@@ -854,6 +917,9 @@ impl Widget for ChatApp {
             // Re-picking the workspace changes which channels/messages apply.
             self.reload(doc);
         }
+        // The channel in view is read: advance its watermark (no-op when
+        // nothing new arrived) so its unread badge stays cleared.
+        self.mark_active_read(doc);
     }
 
     fn build_layout(
@@ -984,7 +1050,14 @@ impl Widget for ChatApp {
             ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
         }
         if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
-            self.draw_thread(scene, tf, tr, theme, &mut hits);
+            // The right flap is "members / thread": it shows the open thread
+            // when one is up, otherwise the workspace members roster (so the
+            // "👥 N" pill always reveals a real panel, never a blank column).
+            if self.thread_open.is_some() {
+                self.draw_thread(scene, tf, tr, theme, &mut hits);
+            } else {
+                self.draw_members(scene, tf, tr, theme, &mut hits);
+            }
         }
 
         // Left flap (rail + channel sidebar). Overlay scrim first.
