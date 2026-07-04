@@ -463,6 +463,17 @@ impl SharedFlatpakSession {
         self.chosen_encoder
     }
 
+    /// Which bitstream codec the encoder is emitting. Distinct from
+    /// `chosen_encoder`: the same backend (VA-API or NVENC) can drive
+    /// H.264 or HEVC Main10 depending on the HDR config. Diagnostic +
+    /// OSD paths read this to display the actual runtime codec + bit
+    /// depth.
+    pub fn chosen_codec(&self) -> super::encoder::Codec {
+        // Lock is only held for the copy of the codec enum, which is
+        // Copy + tiny — no contention with encode_next_frame.
+        self.encoder.lock().expect("encoder").codec()
+    }
+
     /// Update the capture path — called by the compositor's commit hook
     /// whenever the surface's buffer type changes (SHM ↔ DMABUF).
     /// Propagates the value into the shared metrics handle so the OSD

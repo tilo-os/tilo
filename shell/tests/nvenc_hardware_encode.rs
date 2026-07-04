@@ -11,12 +11,12 @@
 
 #![cfg(feature = "nvenc")]
 
-use shell::collab::encoder::{EncoderInit, EncoderKind, FrameInput, build, nvenc, probe};
+use shell::collab::encoder::{Codec, EncoderInit, EncoderKind, FrameInput, build, nvenc, probe};
 use shell::collab::flatpak_share::SharedFlatpakSession;
 use shell::config::{EncoderChoice, FlatpakShareConfig};
 
 fn nvenc_available() -> bool {
-    let outcome = nvenc::probe();
+    let outcome = nvenc::probe(Codec::H264);
     if !outcome.available {
         eprintln!("nvenc unavailable: {}", outcome.reason);
     }
@@ -48,13 +48,7 @@ fn nvenc_produces_annex_b_h264_bytes() {
     // pixel count.
     const W: u32 = 1280;
     const H: u32 = 720;
-    let init = EncoderInit {
-        width: W,
-        height: H,
-        fps: 30,
-        bitrate_kbps: 6000,
-        keyframe_interval_secs: 2,
-    };
+    let init = EncoderInit::sdr_h264(W, H, 30, 6000, 2);
     let mut backend = build(EncoderKind::NvEnc, init).expect("construct nvenc backend");
     assert_eq!(backend.kind(), EncoderKind::NvEnc);
     let frame = red_frame(W, H);
@@ -96,13 +90,7 @@ fn nvenc_sustained_720p_encode() {
     const W: u32 = 1280;
     const H: u32 = 720;
     const FRAMES: u32 = 120;
-    let init = EncoderInit {
-        width: W,
-        height: H,
-        fps: 30,
-        bitrate_kbps: 8000,
-        keyframe_interval_secs: 2,
-    };
+    let init = EncoderInit::sdr_h264(W, H, 30, 8000, 2);
     let mut backend = match build(EncoderKind::NvEnc, init) {
         Ok(b) => b,
         Err(e) => {
@@ -153,13 +141,7 @@ fn nvenc_sustained_1080p_encode() {
     const W: u32 = 1920;
     const H: u32 = 1080;
     const FRAMES: u32 = 60;
-    let init = EncoderInit {
-        width: W,
-        height: H,
-        fps: 30,
-        bitrate_kbps: 12000,
-        keyframe_interval_secs: 2,
-    };
+    let init = EncoderInit::sdr_h264(W, H, 30, 12000, 2);
     let mut backend = match build(EncoderKind::NvEnc, init) {
         Ok(b) => b,
         Err(e) => {
@@ -212,7 +194,7 @@ fn shared_flatpak_session_rolls_up_nvenc() {
     // nvenc_produces_annex_b_h264_bytes.
     let session =
         SharedFlatpakSession::start(0xCCCC, "org.gimp.GIMP", 42, 1280, 720, cfg).expect("session");
-    let (chosen_probe, _) = probe(Some(EncoderChoice::Nvenc));
+    let (chosen_probe, _) = probe(Codec::H264, Some(EncoderChoice::Nvenc));
     assert_eq!(chosen_probe, EncoderKind::NvEnc);
     assert_eq!(session.chosen_encoder(), EncoderKind::NvEnc);
 }

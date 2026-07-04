@@ -53,7 +53,7 @@
 #![cfg(feature = "vaapi")]
 
 use shell::collab::encoder::{
-    Encoder, EncoderError, EncoderInit, FrameInput, vaapi::VaApiBackend, vaapi::probe,
+    Codec, Encoder, EncoderError, EncoderInit, FrameInput, vaapi::VaApiBackend, vaapi::probe,
 };
 use shell::compositor::surface_readback::{CapturePath, SurfaceTracker};
 
@@ -104,7 +104,7 @@ fn make_red_memfd(width: u32, height: u32) -> std::os::fd::OwnedFd {
 #[test]
 #[ignore = "requires /dev/dri renderD* with H264 VAAPI encode; self-skips otherwise"]
 fn dmabuf_direct_encode_path_end_to_end() {
-    let probe_outcome = probe();
+    let probe_outcome = probe(Codec::H264);
     if !probe_outcome.available {
         eprintln!(
             "skipping dmabuf_direct_encode_path_end_to_end: vaapi probe unavailable: {}",
@@ -115,13 +115,7 @@ fn dmabuf_direct_encode_path_end_to_end() {
 
     const W: u32 = 128;
     const H: u32 = 64;
-    let init = EncoderInit {
-        width: W,
-        height: H,
-        fps: 30,
-        bitrate_kbps: 2000,
-        keyframe_interval_secs: 1,
-    };
+    let init = EncoderInit::sdr_h264(W, H, 30, 2000, 1);
     let mut backend = VaApiBackend::new(init).expect("vaapi backend construct");
 
     // Synthesise a "dmabuf" — a memfd with red pixels. Most drivers
