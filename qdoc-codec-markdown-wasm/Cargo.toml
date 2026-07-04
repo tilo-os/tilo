@@ -1,0 +1,26 @@
+[workspace]
+# Standalone — not a member of the qOS workspace because this crate must be
+# compiled for `wasm32-wasip2`, not the host target. The exclusion in
+# ../Cargo.toml prevents the workspace from picking it up; this empty
+# [workspace] table keeps Cargo from walking *up* to find one.
+
+[package]
+name = "qdoc-codec-markdown-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WASM Component Model build of qdoc's Markdown codec, for the qOS format-router."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Builds the existing markdown codec as a wasm-target lib. We delegate
+# import/export to `qdoc::MarkdownCodec` and serialize the resulting
+# Document to bytes via Automerge save/load — that's the "canonical CRDT
+# bytes" the host hands back to clients.
+qdoc = { path = "../qdoc" }
+
+# Generated bindings for the host-facing WIT interface. Pinned to a
+# bindgen version known to target component-model 1.0.x; the host loads
+# the produced .wasm with wasmtime 46 via wasmtime::component::bindgen!.
+wit-bindgen = "0.36"
