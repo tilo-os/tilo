@@ -1,0 +1,55 @@
+[package]
+name = "camera"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "camera"
+path = "src/lib.rs"
+
+[[bin]]
+name = "camera"
+path = "src/main.rs"
+
+[features]
+default = []
+# Live capture via GStreamer's v4l2src. OFF by default so the standard
+# build (and `--shots`) never needs the gstreamer dev libs or a camera
+# device. Enable with `--features live-capture` on a machine that has a
+# real camera + the gstreamer-1.0 stack. See `src/capture.rs`.
+live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+
+# On-disk photo library: file dimensions, decode + downscale for thumbnails.
+# Default features are trimmed to the formats a camera roll actually holds.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+png = "0.17"
+dirs = "6"
+
+# QR / barcode pipeline — both pure Rust.
+#   qrcode:  encode payloads into a module matrix (used to synthesize the
+#            offline sample frame for `--shots`, and to render the "share
+#            my Wi-Fi" QR in-app).
+#   rqrr:    detect + decode QR codes from a greyscale buffer. This is the
+#            real scanner: the composited sample frame is decoded back so
+#            the on-screen bounding box + payload are produced by an actual
+#            decode, not hand-placed.
+qrcode = { version = "0.14", default-features = false }
+rqrr = { version = "0.10", default-features = false }
+
+# Live-capture-only (feature-gated; never compiled for the default build).
+gstreamer = { version = "0.24", optional = true }
+gstreamer-app = { version = "0.24", optional = true }
+gstreamer-video = { version = "0.24", optional = true }

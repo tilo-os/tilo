@@ -1,0 +1,888 @@
+//! The three content/menu panes of the mail client, expressed as one widget
+//! parameterised by [`Role`] so the [`ui::widget::NavShell`] can own three
+//! distinct child `Element`s that all share one [`MailState`].
+//!
+//! * [`Role::Sidebar`] — the genuine menu (accounts + folders + compose).
+//! * [`Role::List`] — the message overview (search + threaded rows).
+//! * [`Role::Reader`] — the message detail (headers + body + actions).
+//!
+//! Each pane draws into the rect the shell assigns it, builds its own hit list
+//! relative to that rect, mutates the shared state on interaction, and raises
+//! [`Intent`]s for anything that needs a sibling pane or an overlay.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+use ui::Widget;
+use ui::color_compat::ColorCompat;
+use ui::presence::PresenceCtx;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::TextInput;
+
+use crate::account::AccountStore;
+use crate::draw::{
+    draw_avatar, elide, fill_rect, fill_round, stroke_round, ACCOUNT_HEADER_H, BACK_CLEARANCE,
+    CHIP_CLEARANCE, FOLDER_ROW_H, HEADER_H, LIST_ROW_H,
+};
+use crate::model::{Addr, Folder, Message, MessageId};
+use crate::state::{CtxAction, Intent, Shared};
+use crate::util::{format_absolute, format_relative};
+
+/// Distance (px) a horizontal drag must pass to fire a swipe action.
+const SWIPE_THRESHOLD: f64 = 72.0;
+/// Reader width (px) below which the action bar switches to icon-only buttons.
+const READER_COMPACT_W: f64 = 480.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Sidebar,
+    List,
+    Reader,
+}
+
+#[derive(Clone)]
+enum Hit {
+    // sidebar
+    Compose,
+    Settings,
+    Account(usize),
+    AccountToggle(usize),
+    Folder(usize, Folder),
+    // list
+    Row(MessageId),
+    RowStar(MessageId),
+    SearchFocus,
+    SearchClear,
+    // reader
+    Reply,
+    Archive,
+    Delete,
+    Star,
+    Unread,
+}
+
+#[derive(Clone, Copy)]
+struct SwipeState {
+    id: MessageId,
+    dx: f64,
+}
+
+pub struct Pane {
+    role: Role,
+    shared: Shared,
+    rect: Rect,
+    hits: Vec<(Rect, Hit)>,
+    /// List pane only: the search field.
+    search_input: Option<TextInput>,
+    // list swipe state
+    swipe: Option<SwipeState>,
+    mouse_down_row: Option<(MessageId, Point)>,
+    dirty: bool,
+}
+
+impl Pane {
+    pub fn new(role: Role, shared: Shared) -> Self {
+        let search_input = if role == Role::List {
+            let mut i = TextInput::local();
+            i.set_plain_chrome(true);
+            Some(i)
+        } else {
+            None
+        };
+        Self {
+            role,
+            shared,
+            rect: Rect::ZERO,
+            hits: Vec::new(),
+            search_input,
+            swipe: None,
+            mouse_down_row: None,
+            dirty: true,
+        }
+    }
+
+    pub fn boxed(role: Role, shared: Shared) -> Box<dyn Widget> {
+        Box::new(Self::new(role, shared))
+    }
+
+    // ---- geometry / hit-list, recomputed from the current rect + state ----
+
+    fn header_left_inset(&self) -> f64 {
+        let st = self.shared.borrow();
+        match self.role {
+            Role::Sidebar => CHIP_CLEARANCE,
+            Role::List => if st.narrow { CHIP_CLEARANCE } else { 20.0 },
+            Role::Reader => {
+                if st.narrow && st.detail_pushed {
+                    BACK_CLEARANCE
+                } else {
+                    20.0
+                }
+            }
+        }
+    }
+
+    fn search_box_rect(&self) -> Rect {
+        let r = self.rect;
+        let x1 = r.x1 - 16.0;
+        // Adapt the search width to the (often narrow) list column, always
+        // leaving room for the folder title on its left.
+        let sw = (r.width() * 0.46).clamp(150.0, 240.0);
+        let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() + 70.0);
+        Rect::new(x0, r.y0 + 12.0, x1, r.y0 + 12.0 + 32.0)
+    }
+
+    fn rebuild_hits(&mut self) {
+        let mut hits: Vec<(Rect, Hit)> = Vec::new();
+        let r = self.rect;
+        let role = self.role;
+        let mut search_rect: Option<Rect> = None;
+        {
+            let st = self.shared.borrow();
+            match role {
+                Role::Sidebar => {
+                    let sb = r;
+                    // settings gear (header, right)
+                    let gear = Rect::new(sb.x1 - 44.0, sb.y0 + 12.0, sb.x1 - 12.0, sb.y0 + 44.0);
+                    hits.push((gear, Hit::Settings));
+                    // compose button under the header
+                    let pad = 12.0;
+                    let mut y = sb.y0 + HEADER_H + 6.0;
+                    hits.push((
+                        Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
+                        Hit::Compose,
+                    ));
+                    y += 40.0 + 14.0;
+                    for (ai, account) in st.accounts.accounts.iter().enumerate() {
+                        let header = Rect::new(sb.x0 + 8.0, y, sb.x1 - 8.0, y + ACCOUNT_HEADER_H);
+                        hits.push((header, Hit::Account(ai)));
+                        let chev = Rect::new(header.x0, header.y0, header.x0 + 28.0, header.y1);
+                        hits.push((chev, Hit::AccountToggle(ai)));
+                        y += ACCOUNT_HEADER_H;
+                        if !account.collapsed {
+                            for f in AccountStore::folders_for(account) {
+                                let row = Rect::new(sb.x0 + 16.0, y, sb.x1 - 8.0, y + FOLDER_ROW_H);
+                                hits.push((row, Hit::Folder(ai, f)));
+                                y += FOLDER_ROW_H;
+                            }
+                        }
+                        y += 8.0;
+                    }
+                }
+                Role::List => {
+                    let sr = self.search_box_rect();
+                    search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
+                    hits.push((sr, Hit::SearchFocus));
+                    if !st.search.is_empty() {
+                        hits.push((
+                            Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
+                            Hit::SearchClear,
+                        ));
+                    }
+                    let top = r.y0 + HEADER_H;
+                    let mut ly = top;
+                    for (id, _len) in st.list_rows() {
+                        if ly >= r.y1 {
+                            break;
+                        }
+                        let row = Rect::new(r.x0, ly, r.x1, ly + LIST_ROW_H);
+                        let star = Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
+                        hits.push((star, Hit::RowStar(id)));
+                        hits.push((row, Hit::Row(id)));
+                        ly += LIST_ROW_H;
+                    }
+                }
+                Role::Reader => {
+                    if st.selected.is_some() {
+                        let inset = if st.narrow && st.detail_pushed { BACK_CLEARANCE } else { 20.0 };
+                        let mut bx = r.x0 + inset;
+                        let by = r.y0 + 12.0;
+                        // Compact icon-only buttons when the reader column is
+                        // tight (narrow layout, or a slim detail pane) so five
+                        // actions always fit; labelled when there's room.
+                        let compact = st.narrow || r.width() < READER_COMPACT_W;
+                        let specs: [(f64, Hit); 5] = if compact {
+                            [(38.0, Hit::Reply), (38.0, Hit::Archive), (38.0, Hit::Delete), (38.0, Hit::Star), (38.0, Hit::Unread)]
+                        } else {
+                            [(78.0, Hit::Reply), (88.0, Hit::Archive), (78.0, Hit::Delete), (64.0, Hit::Star), (104.0, Hit::Unread)]
+                        };
+                        for (w, hit) in specs {
+                            let b = Rect::new(bx, by, bx + w, by + 32.0);
+                            hits.push((b, hit));
+                            bx += w + 8.0;
+                        }
+                    }
+                }
+            }
+        }
+        self.hits = hits;
+        if let (Some(sr), Some(inp)) = (search_rect, self.search_input.as_mut()) {
+            inp.apply_layout_external(sr);
+        }
+    }
+
+    fn hit_at(&self, pt: Point) -> Option<Hit> {
+        self.hits.iter().rev().find(|(rc, _)| rc.contains(pt)).map(|(_, h)| h.clone())
+    }
+
+    fn row_id_at(&self, pt: Point) -> Option<MessageId> {
+        self.hits.iter().rev().find_map(|(rc, h)| match h {
+            Hit::Row(id) if rc.contains(pt) => Some(*id),
+            _ => None,
+        })
+    }
+
+    // ---- drawing ----------------------------------------------------------
+
+    fn draw_sidebar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let st = self.shared.borrow();
+        let sb = self.rect;
+        fill_rect(scene, t, sb, c.neutral[0]);
+
+        // Header: app label (past the collapse chip) + settings gear.
+        tr.draw_text_weighted(
+            scene,
+            "Mail",
+            15.0,
+            c.text_primary,
+            t * Affine::translate((sb.x0 + CHIP_CLEARANCE, sb.y0 + 18.0)),
+            None,
+            TextWeight::Bold,
+        );
+        for (rect, hit) in &self.hits {
+            if matches!(hit, Hit::Settings) {
+                let hov = rect.contains(st.last_mouse);
+                if hov {
+                    fill_round(scene, t, *rect, 8.0, c.surface_white_5);
+                }
+                tr.draw_text(scene, "\u{2699}", 18.0, c.neutral[7], t * Affine::translate((rect.x0 + 6.0, rect.y0 + 5.0)), None);
+            }
+        }
+
+        // Compose button.
+        if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
+            let hov = rect.contains(st.last_mouse);
+            let col = if hov { c.accent[4] } else { c.accent[5] };
+            fill_round(scene, t, *rect, 10.0, col);
+            let label = "\u{270E}  Compose";
+            let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            tr.draw_text_weighted(
+                scene,
+                label,
+                14.0,
+                Color::WHITE,
+                t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 11.0)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+
+        for (rect, hit) in &self.hits {
+            match hit {
+                Hit::Account(ai) => {
+                    let Some(account) = st.accounts.accounts.get(*ai) else { continue };
+                    let active = *ai == st.accounts.active;
+                    let hov = rect.contains(st.last_mouse);
+                    if active {
+                        fill_round(scene, t, *rect, 9.0, c.accent[5].with_alpha_factor(0.12));
+                    } else if hov {
+                        fill_round(scene, t, *rect, 9.0, c.surface_white_5);
+                    }
+                    let chev = if account.collapsed { "\u{25B8}" } else { "\u{25BE}" };
+                    tr.draw_text(scene, chev, 11.0, c.text_dim, t * Affine::translate((rect.x0 + 8.0, rect.y0 + 15.0)), None);
+                    draw_avatar(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        &st.images,
+                        Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
+                        13.0,
+                        &Addr::new(account.config.display_name.clone(), account.config.email.clone()),
+                        account.tint,
+                    );
+                    let label = elide(tr, account.label(), 13.0, TextWeight::Semibold, sb.width() - 80.0);
+                    let email = elide(tr, &account.config.email, 10.5, TextWeight::Regular, sb.width() - 80.0);
+                    tr.draw_text_weighted(scene, &label, 13.0, c.text_primary, t * Affine::translate((rect.x0 + 54.0, rect.y0 + 6.0)), None, TextWeight::Semibold);
+                    tr.draw_text(scene, &email, 10.5, c.text_dim, t * Affine::translate((rect.x0 + 54.0, rect.y0 + 24.0)), None);
+                }
+                Hit::Folder(ai, f) => {
+                    let f = *f;
+                    let active_account = *ai == st.accounts.active;
+                    let selected = active_account && f == st.folder;
+                    let hov = rect.contains(st.last_mouse);
+                    if selected {
+                        fill_round(scene, t, *rect, 8.0, c.accent[5].with_alpha_factor(0.20));
+                        fill_rect(scene, t, Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 3.0, rect.y1 - 6.0), c.accent[5]);
+                    } else if hov {
+                        fill_round(scene, t, *rect, 8.0, c.surface_white_5);
+                    }
+                    let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
+                    let label_col = if selected { c.text_primary } else { c.neutral[7] };
+                    tr.draw_text(scene, f.glyph(), 13.5, label_col, t * Affine::translate((rect.x0 + 12.0, ty)), None);
+                    tr.draw_text_weighted(
+                        scene,
+                        f.title(),
+                        13.0,
+                        label_col,
+                        t * Affine::translate((rect.x0 + 36.0, ty)),
+                        Some(120.0),
+                        if selected { TextWeight::Semibold } else { TextWeight::Regular },
+                    );
+                    if active_account {
+                        let unread = st.mailbox.unread_count(f);
+                        if unread > 0 {
+                            let txt = unread.to_string();
+                            let (twd, _) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
+                            let bw = (twd as f64 + 14.0).max(20.0);
+                            let badge = Rect::new(rect.x1 - bw - 8.0, rect.y0 + 8.0, rect.x1 - 8.0, rect.y0 + 28.0);
+                            let bg = if selected { c.accent[5] } else { c.neutral[3] };
+                            fill_round(scene, t, badge, 10.0, bg);
+                            tr.draw_text_weighted(
+                                scene,
+                                &txt,
+                                11.0,
+                                Color::WHITE,
+                                t * Affine::translate(((badge.x0 + badge.x1) / 2.0 - twd as f64 / 2.0, badge.y0 + 4.0)),
+                                None,
+                                TextWeight::Semibold,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let st = self.shared.borrow();
+        let r = self.rect;
+        fill_rect(scene, t, r, c.surfaces.base);
+
+        // Header: folder title (+ count), search box.
+        let sr = self.search_box_rect();
+        let title_x = r.x0 + self.header_left_inset();
+        let title_budget = sr.x0 - title_x - 12.0;
+        let title_full = st.folder.title();
+        let (twd, _) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
+        let title = crate::draw::elide(tr, title_full, 18.0, TextWeight::Bold, title_budget);
+        tr.draw_text_weighted(scene, &title, 18.0, c.text_primary, t * Affine::translate((title_x, r.y0 + 14.0)), None, TextWeight::Bold);
+        // Count sits after the full title only when there's room for both.
+        let count = st.mailbox.count(st.folder);
+        let count_x = title_x + twd as f64 + 10.0;
+        if (twd as f64) <= title_budget && count_x + 26.0 < sr.x0 {
+            tr.draw_text(scene, &format!("{count}"), 12.0, c.text_dim, t * Affine::translate((count_x, r.y0 + 19.0)), None);
+        }
+        fill_round(scene, t, sr, 9.0, c.surfaces.raised);
+        stroke_round(scene, t, sr, 9.0, 1.0, if st.search_focused { c.border_focus } else { c.border_standard });
+        tr.draw_text(scene, "\u{1F50D}", 13.0, c.text_dim, t * Affine::translate((sr.x0 + 9.0, sr.y0 + 9.0)), None);
+        if st.search.is_empty() && !st.search_focused {
+            tr.draw_text(scene, "Search", 13.0, c.text_dim, t * Affine::translate((sr.x0 + 30.0, sr.y0 + 9.0)), None);
+        }
+        if !st.search.is_empty() {
+            tr.draw_text(scene, "\u{2715}", 12.0, c.text_dim, t * Affine::translate((sr.x1 - 20.0, sr.y0 + 9.0)), None);
+        }
+
+        // Rows.
+        let rows = st.list_rows();
+        if rows.is_empty() {
+            let hint = if !st.mailbox.messages.is_empty() {
+                if st.search.is_empty() { "No messages in this folder" } else { "No results" }
+            } else if st.accounts.is_empty() {
+                "No account yet — open the gear to add one"
+            } else {
+                "No messages"
+            };
+            tr.draw_text(scene, hint, 13.0, c.text_dim, t * Affine::translate((r.x0 + self.header_left_inset(), r.y0 + HEADER_H + 12.0)), None);
+            return;
+        }
+
+        for (rect, hit) in &self.hits {
+            let Hit::Row(id) = hit else { continue };
+            let id = *id;
+            if rect.y1 > r.y1 + 1.0 {
+                continue;
+            }
+            let Some(msg) = st.mailbox.get(id) else { continue };
+            let len = rows.iter().find(|(rid, _)| *rid == id).map(|(_, l)| *l).unwrap_or(1);
+            let selected = st.selected == Some(id) && !st.narrow;
+            let hov = rect.contains(st.last_mouse);
+
+            let swipe_dx = self.swipe.filter(|s| s.id == id).map(|s| s.dx).unwrap_or(0.0);
+            if swipe_dx.abs() > 1.0 {
+                let (col, glyph, label, on_left) = if swipe_dx < 0.0 {
+                    (c.semantic.warning, "\u{1F5C4}", "Archive", false)
+                } else {
+                    (c.semantic.danger, "\u{1F5D1}", "Delete", true)
+                };
+                fill_rect(scene, t, *rect, col.with_alpha_factor(0.9));
+                let gx = if on_left { rect.x0 + 18.0 } else { rect.x1 - 90.0 };
+                tr.draw_text(scene, glyph, 16.0, Color::WHITE, t * Affine::translate((gx, rect.y0 + 28.0)), None);
+                tr.draw_text_weighted(scene, label, 12.0, Color::WHITE, t * Affine::translate((gx + 26.0, rect.y0 + 30.0)), None, TextWeight::Semibold);
+            }
+            let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
+
+            if selected {
+                fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.16));
+                fill_rect(scene, t, Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1), c.accent[5]);
+            } else if hov && swipe_dx.abs() < 1.0 {
+                fill_rect(scene, t, row, c.surface_white_5);
+            }
+            fill_rect(scene, t, Rect::new(row.x0 + 12.0, row.y1 - 1.0, row.x1, row.y1), c.neutral[2]);
+
+            let unread = !msg.read;
+            if unread {
+                scene.fill(Fill::NonZero, t, c.accent[5], None, &Circle::new(Point::new(row.x0 + 14.0, row.y0 + LIST_ROW_H / 2.0), 4.0));
+            }
+            draw_avatar(scene, tr, t, theme, &st.images, Point::new(row.x0 + 42.0, row.y0 + 26.0), 17.0, &msg.from, 0);
+
+            let text_x = row.x0 + 70.0;
+            let right = row.x1 - 14.0;
+            let name_weight = if unread { TextWeight::Bold } else { TextWeight::Medium };
+            let name = elide(tr, &msg.from.display(), 13.5, name_weight, right - text_x - 56.0);
+            tr.draw_text_weighted(scene, &name, 13.5, c.text_primary, t * Affine::translate((text_x, row.y0 + 12.0)), None, name_weight);
+            let date = format_relative(msg.timestamp_min, st.now_min);
+            let (dw, _) = tr.measure(&date, 11.5, None);
+            tr.draw_text(scene, &date, 11.5, c.text_dim, t * Affine::translate((right - dw as f64, row.y0 + 13.0)), None);
+
+            let subj_y = row.y0 + 32.0;
+            let subj_col = if unread { c.text_primary } else { c.neutral[7] };
+            let subj_weight = if unread { TextWeight::Semibold } else { TextWeight::Regular };
+            let subj_budget = right - text_x - if len > 1 { 48.0 } else { 16.0 };
+            let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
+            tr.draw_text_weighted(scene, &subject, 12.5, subj_col, t * Affine::translate((text_x, subj_y)), None, subj_weight);
+            if len > 1 {
+                let badge_txt = len.to_string();
+                let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
+                let bx = right - bw as f64 - 12.0;
+                let badge = Rect::new(bx - 6.0, subj_y - 1.0, right, subj_y + 15.0);
+                fill_round(scene, t, badge, 8.0, c.neutral[3]);
+                tr.draw_text_weighted(scene, &badge_txt, 10.5, c.neutral[8], t * Affine::translate((bx, subj_y + 1.0)), None, TextWeight::Semibold);
+            }
+
+            let icon_reserve = if msg.has_attachments() { 64.0 } else { 28.0 };
+            let snippet = elide(tr, &msg.snippet(), 11.5, TextWeight::Regular, right - text_x - icon_reserve);
+            tr.draw_text(scene, &snippet, 11.5, c.text_dim, t * Affine::translate((text_x, row.y0 + 52.0)), None);
+
+            let star_col = if msg.starred { c.semantic.warning } else { c.neutral[4] };
+            tr.draw_text(scene, if msg.starred { "\u{2605}" } else { "\u{2606}" }, 15.0, star_col, t * Affine::translate((right - 18.0, row.y0 + 50.0)), None);
+            if msg.has_attachments() {
+                tr.draw_text(scene, "\u{1F4CE}", 12.0, c.text_dim, t * Affine::translate((right - 40.0, row.y0 + 52.0)), None);
+            }
+        }
+    }
+
+    fn draw_reader(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let st = self.shared.borrow();
+        let rr = self.rect;
+        fill_rect(scene, t, rr, c.surfaces.raised);
+
+        let msgs = st.selected_thread_messages();
+        if msgs.is_empty() {
+            let cx = (rr.x0 + rr.x1) / 2.0;
+            let cy = rr.y0 + rr.height() / 2.0;
+            tr.draw_text(scene, "\u{2709}", 40.0, c.neutral[4], t * Affine::translate((cx - 18.0, cy - 40.0)), None);
+            let hint = "Select a conversation to read";
+            let (w, _) = tr.measure(hint, 14.0, None);
+            tr.draw_text(scene, hint, 14.0, c.text_dim, t * Affine::translate((cx - w as f64 / 2.0, cy)), None);
+            return;
+        }
+
+        // Action bar (header strip).
+        let compact = st.narrow || rr.width() < READER_COMPACT_W;
+        let starred = st.selected.and_then(|id| st.mailbox.get(id)).map(|m| m.starred).unwrap_or(false);
+        for (rect, hit) in &self.hits {
+            let (label, danger, glyph) = match hit {
+                Hit::Reply => ("Reply", false, "\u{21A9}"),
+                Hit::Archive => ("Archive", false, "\u{1F5C4}"),
+                Hit::Delete => ("Delete", true, "\u{1F5D1}"),
+                Hit::Star => (if starred { "Starred" } else { "Star" }, false, if starred { "\u{2605}" } else { "\u{2606}" }),
+                Hit::Unread => ("Mark unread", false, "\u{2709}"),
+                _ => continue,
+            };
+            let hov = rect.contains(st.last_mouse);
+            let bg = if hov { c.surface_white_10 } else { c.surface_white_5 };
+            fill_round(scene, t, *rect, 8.0, bg);
+            stroke_round(scene, t, *rect, 8.0, 1.0, c.border_white_10);
+            let col = if danger { c.semantic.danger } else if matches!(hit, Hit::Star) && starred { c.semantic.warning } else { c.neutral[8] };
+            if compact {
+                let (gw, _) = tr.measure(glyph, 13.0, None);
+                tr.draw_text(scene, glyph, 13.0, col, t * Affine::translate((rect.center().x - gw as f64 / 2.0, rect.y0 + 8.0)), None);
+            } else {
+                tr.draw_text(scene, glyph, 12.0, col, t * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)), None);
+                tr.draw_text_weighted(scene, label, 12.0, col, t * Affine::translate((rect.x0 + 28.0, rect.y0 + 9.0)), None, TextWeight::Medium);
+            }
+        }
+
+        let head = &msgs[msgs.len() - 1];
+        let content_x = rr.x0 + 24.0;
+        let content_w = (rr.width() - 48.0) as f32;
+        let mut y = rr.y0 + HEADER_H + 8.0;
+        let subj = elide(tr, &head.thread_subject(), 20.0, TextWeight::Bold, content_w as f64);
+        tr.draw_text_weighted(scene, &subj, 20.0, c.text_primary, t * Affine::translate((content_x, y)), None, TextWeight::Bold);
+        y += 30.0;
+        tr.draw_text(
+            scene,
+            &format!("{} message{} · {}", msgs.len(), if msgs.len() == 1 { "" } else { "s" }, st.folder.title()),
+            12.0,
+            c.text_dim,
+            t * Affine::translate((content_x, y)),
+            None,
+        );
+        y += 26.0;
+        fill_rect(scene, t, Rect::new(content_x, y, rr.x1 - 24.0, y + 1.0), c.border_standard);
+        y += 16.0;
+
+        for (i, m) in msgs.iter().enumerate() {
+            if y > rr.y1 - 40.0 {
+                break;
+            }
+            y = self.draw_message_card(scene, t, tr, theme, m, content_x, y, content_w, i == msgs.len() - 1);
+            y += 14.0;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_message_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32, expanded: bool) -> f64 {
+        let c = &theme.tokens.colors;
+        let card_x1 = x + w as f64;
+        let st = self.shared.borrow();
+        draw_avatar(scene, tr, t, theme, &st.images, Point::new(x + 18.0, y + 18.0), 17.0, &m.from, 0);
+        let from_name = elide(tr, &m.from.display(), 13.5, TextWeight::Semibold, (w - 150.0) as f64);
+        tr.draw_text_weighted(scene, &from_name, 13.5, c.text_primary, t * Affine::translate((x + 44.0, y + 6.0)), None, TextWeight::Semibold);
+        let from_email = elide(tr, &m.from.email, 11.5, TextWeight::Regular, (w - 150.0) as f64);
+        tr.draw_text(scene, &from_email, 11.5, c.text_dim, t * Affine::translate((x + 44.0, y + 24.0)), None);
+        let date = format_absolute(m.timestamp_min);
+        let (dw, _) = tr.measure(&date, 11.5, None);
+        tr.draw_text(scene, &date, 11.5, c.text_dim, t * Affine::translate((card_x1 - dw as f64, y + 8.0)), None);
+        let to_line = elide(tr, &format!("to {}", m.to.iter().map(|a| a.display()).collect::<Vec<_>>().join(", ")), 11.0, TextWeight::Regular, 150.0);
+        tr.draw_text(scene, &to_line, 11.0, c.text_dim, t * Affine::translate((card_x1 - 150.0, y + 24.0)), None);
+
+        let mut yy = y + 48.0;
+        if expanded {
+            for para in m.body.split('\n') {
+                if para.trim().is_empty() {
+                    yy += 8.0;
+                    continue;
+                }
+                let quote = para.starts_with('>');
+                let col = if quote { c.text_dim } else { c.neutral[8] };
+                let (_pw, ph) = tr.measure(para, 13.0, Some(w - 8.0));
+                tr.draw_text(scene, para, 13.0, col, t * Affine::translate((x, yy)), Some(w - 8.0));
+                yy += ph.max(18.0) as f64 + 2.0;
+            }
+            if m.has_attachments() {
+                yy += 8.0;
+                tr.draw_text_weighted(scene, &format!("{} attachment{}", m.attachments.len(), if m.attachments.len() == 1 { "" } else { "s" }), 11.5, c.text_dim, t * Affine::translate((x, yy)), None, TextWeight::Medium);
+                yy += 20.0;
+                let mut ax = x;
+                for a in &m.attachments {
+                    let label = format!("{}  {}", a.filename, a.size_human());
+                    let (lw, _) = tr.measure(&label, 11.5, None);
+                    let chip_w = lw as f64 + 44.0;
+                    if ax + chip_w > card_x1 {
+                        ax = x;
+                        yy += 36.0;
+                    }
+                    let chip = Rect::new(ax, yy, ax + chip_w, yy + 30.0);
+                    fill_round(scene, t, chip, 8.0, c.surface_white_5);
+                    stroke_round(scene, t, chip, 8.0, 1.0, c.border_white_10);
+                    tr.draw_text(scene, a.glyph(), 14.0, c.neutral[7], t * Affine::translate((chip.x0 + 8.0, chip.y0 + 7.0)), None);
+                    tr.draw_text(scene, &a.filename, 11.5, c.text_primary, t * Affine::translate((chip.x0 + 30.0, chip.y0 + 4.0)), Some(lw));
+                    tr.draw_text(scene, &a.size_human(), 10.0, c.text_dim, t * Affine::translate((chip.x0 + 30.0, chip.y0 + 17.0)), None);
+                    ax += chip_w + 10.0;
+                }
+                yy += 30.0;
+            }
+        } else {
+            // Collapsed preview: a single elided line so a narrow reader column
+            // can't wrap it into the following card.
+            let snip = elide(tr, &m.snippet(), 12.0, TextWeight::Regular, (w - 8.0) as f64);
+            tr.draw_text(scene, &snip, 12.0, c.text_dim, t * Affine::translate((x, yy)), None);
+            yy += 18.0;
+        }
+        yy
+    }
+
+    // ---- event handling ---------------------------------------------------
+
+    fn on_left_press(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+        if !self.rect.contains(pt) {
+            return;
+        }
+        match self.role {
+            Role::Sidebar => {
+                if let Some(hit) = self.hit_at(pt) {
+                    match hit {
+                        Hit::Compose => self.shared.borrow_mut().push_intent(Intent::Compose),
+                        Hit::Settings => {
+                            let active = self.shared.borrow().accounts.active;
+                            let has = !self.shared.borrow().accounts.is_empty();
+                            self.shared.borrow_mut().push_intent(Intent::Settings(has.then_some(active)));
+                        }
+                        Hit::AccountToggle(ai) => self.shared.borrow_mut().toggle_account_collapsed(ai),
+                        Hit::Account(ai) => {
+                            let mut st = self.shared.borrow_mut();
+                            st.set_active_account(doc, ai);
+                            st.select_folder(doc, Folder::Inbox);
+                            st.push_intent(Intent::CloseDrawer);
+                        }
+                        Hit::Folder(ai, f) => {
+                            let mut st = self.shared.borrow_mut();
+                            st.set_active_account(doc, ai);
+                            st.select_folder(doc, f);
+                            st.push_intent(Intent::CloseDrawer);
+                        }
+                        _ => {}
+                    }
+                    *handled = true;
+                }
+            }
+            Role::List => {
+                if let Some(hit) = self.hit_at(pt) {
+                    match hit {
+                        Hit::SearchFocus => {
+                            self.set_search_focus(true);
+                            *handled = true;
+                        }
+                        Hit::SearchClear => {
+                            self.shared.borrow_mut().search.clear();
+                            if let Some(i) = self.search_input.as_mut() {
+                                i.set_text("");
+                            }
+                            crate::doc::MailDoc::set_search(doc, "");
+                            self.set_search_focus(false);
+                            *handled = true;
+                        }
+                        Hit::RowStar(id) => {
+                            let mut st = self.shared.borrow_mut();
+                            st.mailbox.toggle_star(id);
+                            st.persist_flags(doc, id);
+                            st.dirty = true;
+                            *handled = true;
+                        }
+                        Hit::Row(id) => {
+                            self.set_search_focus(false);
+                            self.shared.borrow_mut().select_message(doc, id);
+                            *handled = true;
+                        }
+                        _ => {}
+                    }
+                }
+                // Record a potential swipe start when pressing a row.
+                if !*handled {
+                    if let Some(id) = self.row_id_at(pt) {
+                        self.mouse_down_row = Some((id, pt));
+                    }
+                }
+            }
+            Role::Reader => {
+                if let Some(hit) = self.hit_at(pt) {
+                    let sel = self.shared.borrow().selected;
+                    if let Some(id) = sel {
+                        let mut st = self.shared.borrow_mut();
+                        match hit {
+                            Hit::Reply => st.push_intent(Intent::Reply(id)),
+                            Hit::Archive => st.apply_message_action(doc, id, CtxAction::Archive),
+                            Hit::Delete => st.apply_message_action(doc, id, CtxAction::Delete),
+                            Hit::Star => st.apply_message_action(doc, id, CtxAction::ToggleStar),
+                            Hit::Unread => {
+                                st.mailbox.mark_read(id, false);
+                                st.persist_flags(doc, id);
+                                st.dirty = true;
+                            }
+                            _ => {}
+                        }
+                        *handled = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn set_search_focus(&mut self, on: bool) {
+        if let Some(i) = self.search_input.as_mut() {
+            i.set_focus(on);
+        }
+        let mut st = self.shared.borrow_mut();
+        st.search_focused = on;
+        st.dirty = true;
+    }
+}
+
+impl Widget for Pane {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some(i) = self.search_input.as_mut() {
+            i.sync(state, path);
+        }
+    }
+
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        self.rebuild_hits();
+    }
+
+    fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Consume a pending `/`-shortcut focus request (list only).
+        if self.role == Role::List {
+            let req = {
+                let mut st = self.shared.borrow_mut();
+                std::mem::take(&mut st.focus_search_request)
+            };
+            if req {
+                self.set_search_focus(true);
+            }
+        }
+        self.rebuild_hits();
+        match self.role {
+            Role::Sidebar => self.draw_sidebar(scene, t, tr, theme),
+            Role::List => {
+                self.draw_list(scene, t, tr, theme);
+                if let Some(inp) = self.search_input.as_mut() {
+                    inp.draw(scene, t, tr, theme, presence);
+                }
+            }
+            Role::Reader => self.draw_reader(scene, t, tr, theme),
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if *handled {
+            return;
+        }
+        self.rebuild_hits();
+
+        // Keyboard: route to the focused search field (list only).
+        if matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List {
+            let focused = self.shared.borrow().search_focused;
+            if focused {
+                if let Some(inp) = self.search_input.as_mut() {
+                    inp.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+                }
+                // Reflect the field into the query + first-row selection.
+                let value = self.search_input.as_ref().map(|i| i.value().to_string()).unwrap_or_default();
+                let mut st = self.shared.borrow_mut();
+                st.search = value;
+                crate::doc::MailDoc::set_search(state, &st.search);
+                st.selected = st.list_rows().first().map(|(id, _)| *id);
+                st.dirty = true;
+                *handled = true;
+            }
+            return;
+        }
+
+        match event {
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                if self.role == Role::List {
+                    let pt = self.shared.borrow().last_mouse;
+                    if let Some(id) = self.row_id_at(pt) {
+                        self.shared.borrow_mut().push_intent(Intent::ContextMenu(id, pt));
+                        *handled = true;
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                let pt = self.shared.borrow().last_mouse;
+                self.on_left_press(state, pt, handled);
+            }
+            WindowEvent::CursorMoved { .. } => {
+                if self.role == Role::List {
+                    if let Some((id, start)) = self.mouse_down_row {
+                        let dx = self.shared.borrow().last_mouse.x - start.x;
+                        if dx.abs() > 6.0 {
+                            self.swipe = Some(SwipeState { id, dx });
+                            self.dirty = true;
+                            self.shared.borrow_mut().dirty = true;
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                if self.role == Role::List {
+                    if let Some(s) = self.swipe.take() {
+                        if s.dx <= -SWIPE_THRESHOLD {
+                            self.shared.borrow_mut().apply_message_action(state, s.id, CtxAction::Archive);
+                        } else if s.dx >= SWIPE_THRESHOLD {
+                            self.shared.borrow_mut().apply_message_action(state, s.id, CtxAction::Delete);
+                        }
+                        *handled = true;
+                    }
+                    self.mouse_down_row = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self.role {
+            Role::Sidebar => "MailSidebar",
+            Role::List => "MailList",
+            Role::Reader => "MailReader",
+        }
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(match self.role {
+            Role::Sidebar => "mail_sidebar",
+            Role::List => "mail_list",
+            Role::Reader => "mail_reader",
+        })
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.shared.borrow().dirty
+            || self.search_input.as_ref().map(|i| i.needs_redraw()).unwrap_or(false)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        if let Some(i) = self.search_input.as_mut() {
+            i.mark_drawn();
+        }
+    }
+}
