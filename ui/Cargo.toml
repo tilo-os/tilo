@@ -23,6 +23,13 @@ legacy-broker = []
 # binary, and the shell's broker keep compiling.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
+# On `CollaborationManager` init, load the user's on-disk identity
+# via `runtime-identity::load()` and forward its pubkey bytes to
+# `join_channel` so the broker sees a real caller instead of the
+# empty-identity fallback. Absent when running outside a qOS session
+# (env var unset / file missing) — the manager degrades to the
+# pre-existing empty-identity path in that case.
+runtime-identity = { path = "../crates/runtime/runtime-identity" }
 automerge = "0.8.0"
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput

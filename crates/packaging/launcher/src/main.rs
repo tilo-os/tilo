@@ -131,6 +131,7 @@ fn main() -> ExitCode {
                 allow_missing_runtime,
                 allow_unsigned_runtime,
                 require_runtime_publisher,
+                identity_host_path: None,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -258,6 +259,7 @@ fn run_installed(
         require_runtime_publisher: std::env::var("QOS_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),
+        identity_host_path: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
