@@ -75,6 +75,13 @@ impl ShellDriver {
     /// spawned a new `WindowGroup`, or a closed group's fade elapsed),
     /// the taffy tree is rebuilt first so the new structure participates
     /// in layout. Mirrors `App::handle_window_event`'s post-event sweep.
+    /// Force a full rebuild of the taffy layout tree — call after
+    /// mutating an inner widget's structural shape without going
+    /// through a `WindowEvent`.
+    pub fn force_rebuild_layout_tree(&mut self) {
+        self.fb.force_rebuild_layout_tree();
+    }
+
     pub fn relayout(&mut self) {
         self.fb.relayout();
     }

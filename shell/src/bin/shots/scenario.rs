@@ -96,6 +96,11 @@ pub enum Action {
     SwitchWorkspace(usize),
     SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
+    /// Seed the global-search index with a deterministic set of
+    /// mock items so the palette renders a known result list on
+    /// the next open. Bypasses the network so screenshots are
+    /// reproducible.
+    SeedSearchMock,
 }
 
 /// A named, ordered list of actions.
@@ -266,7 +271,123 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 st.quick_settings.push_level(lvl);
             });
         }
+        Action::SeedSearchMock => {
+            seed_mock_search_items(driver);
+        }
     }
+}
+
+/// Replace the overlay host's search index with a hard-coded item
+/// list so the palette-open path produces a known result set the
+/// screenshot pins.
+fn seed_mock_search_items(driver: &mut ShellDriver) {
+    use shell::search::sources::testing::MockSource;
+    use shell::search::{SearchAction, SearchItem, SearchIndex, SourceKind};
+    use std::path::PathBuf;
+
+    let host = driver.host_mut();
+    let index = host.search_index_mut();
+    *index = SearchIndex::new();
+
+    let mut installed_qos = MockSource::new(SourceKind::InstalledQosApp);
+    for (id, name, desc) in [
+        ("dev.qos.notes", "Notes", "CRDT-native notes"),
+        ("dev.qos.editor", "Editor", "Rich-text editor"),
+    ] {
+        installed_qos.push(SearchItem {
+            id: id.into(),
+            name: name.into(),
+            description: desc.into(),
+            icon: None,
+            source: SourceKind::InstalledQosApp,
+            categories: vec!["qOS".into()],
+            action: SearchAction::LaunchInstalled {
+                pkg_id: id.into(),
+                kind: SourceKind::InstalledQosApp,
+            },
+        });
+    }
+    index.add_source(Box::new(installed_qos));
+
+    let mut uninstalled_qos = MockSource::new(SourceKind::UninstalledQosApp);
+    uninstalled_qos.push(SearchItem {
+        id: "dev.qos.spreadsheet".into(),
+        name: "Spreadsheet".into(),
+        description: "Formula editor for qOS".into(),
+        icon: None,
+        source: SourceKind::UninstalledQosApp,
+        categories: vec!["qOS".into()],
+        action: SearchAction::AddQosApp {
+            pkg_id: "dev.qos.spreadsheet".into(),
+            registry_id: "official".into(),
+            qpkg_url: "https://apps.qos.dev/spreadsheet.qpkg".into(),
+            root_hash_hex: "aa".repeat(32),
+        },
+    });
+    index.add_source(Box::new(uninstalled_qos));
+
+    let mut installed_fp = MockSource::new(SourceKind::InstalledFlatpak);
+    installed_fp.push(SearchItem {
+        id: "org.mozilla.firefox".into(),
+        name: "Firefox".into(),
+        description: "Web browser".into(),
+        icon: None,
+        source: SourceKind::InstalledFlatpak,
+        categories: vec!["Network".into()],
+        action: SearchAction::LaunchInstalled {
+            pkg_id: "org.mozilla.firefox".into(),
+            kind: SourceKind::InstalledFlatpak,
+        },
+    });
+    index.add_source(Box::new(installed_fp));
+
+    let mut uninstalled_fp = MockSource::new(SourceKind::UninstalledFlatpak);
+    for (id, name, desc) in [
+        ("org.gnome.Weather", "Weather", "See what the weather looks like"),
+        ("com.spotify.Client", "Spotify", "Music streaming"),
+    ] {
+        uninstalled_fp.push(SearchItem {
+            id: id.into(),
+            name: name.into(),
+            description: desc.into(),
+            icon: None,
+            source: SourceKind::UninstalledFlatpak,
+            categories: vec!["Flatpak".into()],
+            action: SearchAction::InstallFlatpak {
+                flatpak_id: id.into(),
+            },
+        });
+    }
+    index.add_source(Box::new(uninstalled_fp));
+
+    let mut path = MockSource::new(SourceKind::PathCommand);
+    for name in ["ls", "cat", "grep", "top"] {
+        path.push(SearchItem {
+            id: name.into(),
+            name: name.into(),
+            description: format!("Run {name} in the active workspace terminal"),
+            icon: None,
+            source: SourceKind::PathCommand,
+            categories: vec!["Commands".into()],
+            action: SearchAction::RunCommand {
+                cmd: PathBuf::from(format!("/usr/bin/{name}")),
+            },
+        });
+    }
+    index.add_source(Box::new(path));
+
+    // Force-refresh so the mock sources' `last_refreshed_at`
+    // populates — the overlay host's TTL gate skips the real
+    // refresh call, which would otherwise wipe our mocks.
+    let _ = index.refresh_all();
+    // Repopulate the palette from the fresh index so the entries
+    // vector is `4 built-ins + 10 mocks`. Then force a full layout
+    // tree rebuild — the palette's `build_layout` sizes the popover
+    // by `visible.len()` at layout time, so without a rebuild the
+    // node stays at whatever height the initial 4-entry state
+    // produced.
+    host.repopulate_palette_from_sources();
+    driver.force_rebuild_layout_tree();
 }
 
 // =====================================================================
@@ -475,6 +596,7 @@ fn escape_json_str(s: &str) -> String {
 pub fn catalogue() -> Vec<Scenario> {
     vec![
         palette_typing(),
+        palette_search_registry(),
         tab_drag(),
         tab_drag_out_to_new_group(),
         tab_drag_hover_line_indicator(),
@@ -485,6 +607,25 @@ pub fn catalogue() -> Vec<Scenario> {
         notes_click_and_type(),
         cycle_all_tabs(),
     ]
+}
+
+/// Seed the multi-source search registry with a deterministic mock
+/// set, open the palette, snapshot the mixed result list. Proves
+/// the palette surfaces installed + uninstalled qOS apps + installed
+/// + uninstalled Flatpaks + PATH commands as one ranked list.
+fn palette_search_registry() -> Scenario {
+    Scenario {
+        name: "palette_search_registry",
+        description: "Seed multi-source search index, open palette, snapshot mixed result list.",
+        actions: vec![
+            Action::SeedSearchMock,
+            Action::OpenPalette,
+            Action::Wait(4),
+            Action::Snapshot("01-palette-open-mixed"),
+            Action::Type("s".into()),
+            Action::Snapshot("02-palette-filter-s"),
+        ],
+    }
 }
 
 /// Repro for "apps render but can't be interacted with". Click in the

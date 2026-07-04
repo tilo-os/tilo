@@ -102,6 +102,14 @@ impl FrameBuilder {
         builder
     }
 
+    /// Rebuild the taffy tree from scratch. Public so callers that
+    /// mutate an inner widget's structural shape *without* going
+    /// through a `WindowEvent` (e.g. the shots harness seeding a
+    /// mock palette entry list) can force a layout refresh.
+    pub fn force_rebuild_layout_tree(&mut self) {
+        self.rebuild_layout_tree();
+    }
+
     fn rebuild_layout_tree(&mut self) {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
