@@ -167,6 +167,17 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
+# User root identity + device cert + revocation. See
+# `network::identity` for the peer-side wiring: on connect we
+# expect the remote to present its device pubkey + cert; we validate
+# the cert against the workspace owner's root key and cross-check
+# the revocation list before accepting any of the peer's CRDT ops.
+qos-user-identity = { path = "../crates/identity/qos-user-identity" }
+# `network::identity` verifies raw Ed25519 signatures directly
+# against a peer's device pubkey (as recovered from their
+# DeviceCert). Same version + features shape as the dev-deps entry
+# below so cargo collapses to one copy in the lockfile.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 capnp = "0.26"
 capnp-rpc = "0.26"
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -184,11 +195,9 @@ tokio-test = "0.4"
 # signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
 # survives the same codec.
 postcard = { version = "1", features = ["alloc"] }
-# Phase 3 broker integration tests need the `SigningKey` type by name
-# to plumb the role-attestation issuer through the test fixture. Same
-# version as `qos-collab-types`'s direct dep so Cargo collapses to one
-# copy in the workspace lock.
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+# `ed25519-dalek` is now pulled in as a top-level dep (see above),
+# for the `network::identity` module. Broker integration tests use
+# the same lockfile copy for their `SigningKey` fixtures.
 # The headline "everything composes" integration test
 # (`tests/everything_composes.rs`) exercises Phases 3 + 6 + 7 + 8 in a
 # single end-to-end flow — threshold-signed, MLS-encrypted op crossing

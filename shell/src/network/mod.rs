@@ -3,6 +3,7 @@ pub mod behaviour;
 pub mod decoder;
 pub mod encoder;
 pub mod hub;
+pub mod identity;
 pub mod invite;
 pub mod p2p;
 pub mod protocol;
@@ -16,6 +17,7 @@ pub use behaviour::{NiriosBehaviour, load_or_create_keypair, peer_salt_from_keyp
 pub use decoder::{DecodedFrame, H264Decoder};
 pub use encoder::{EncodeError, H264Encoder};
 pub use hub::{Hub, TopicSubscriber};
+pub use identity::{PeerIdentity, PeerIdentityError, PeerIdentityStore};
 pub use invite::{PeerInviteToken, make_invite_token, validate_invite_token};
 pub use protocol::{NeighbourMsg, PeerId as MsgPeerId, PresenceKey, SurfaceId};
 pub use replica::WorkspaceTreeReplica;

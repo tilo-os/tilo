@@ -70,7 +70,7 @@ pub mod revocation;
 pub use canonical::CanonicalError;
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError, sign_device_cert,
-    verify_device_cert,
+    verify_device_cert, verify_device_cert_at,
 };
 pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
