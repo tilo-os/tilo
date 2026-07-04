@@ -1,4 +1,4 @@
-//! `dochtml` — render a [`qdoc::DocSnapshot`] to clean, semantic HTML.
+//! `qdoc-html` — render a [`qdoc::DocSnapshot`] to clean, semantic HTML.
 //!
 //! This is the HTML export / preview engine. It takes the materialized,
 //! read-only view of a qdoc document (headings, paragraphs, quotes, lists,

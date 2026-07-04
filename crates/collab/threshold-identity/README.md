@@ -68,9 +68,9 @@ libp2p direct-message tunnels. Each carries a small qOS header
 The `[workspace]` block in `Cargo.toml` makes this crate a
 **standalone** workspace. When merged back into the main qOS
 workspace the orchestrator must strip that block and add
-`qos-threshold-identity` to the root `Cargo.toml`'s
+`threshold-identity` to the root `Cargo.toml`'s
 `[workspace] members = [...]`. Same precedent as
-`qos-collab-types`.
+`collab-types`.
 
 In a worktree where the broader qOS workspace has unpopulated
 submodules:

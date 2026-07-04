@@ -20,13 +20,13 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 
 ### Phase 6 — Compaction + lazy scrollback
 
-- `OpClass::Compaction` exists in `qos-collab-types`. No app emits one.
+- `OpClass::Compaction` exists in `collab-types`. No app emits one.
 - No channel ever compacts. Scrollback is a feature without a trigger.
 - `BrokerChannels::apply_compaction` + audit log path verified by tests, never invoked in practice.
 
 ### Phase 7 — MLS group encryption
 
-- `qos-channel-crypto` crate works in isolation. 25 tests pass.
+- `channel-crypto` crate works in isolation. 25 tests pass.
 - The broker doesn't encrypt or decrypt payloads.
 - Every CRDT increment between two collaborating notes apps is plaintext on the wire.
 - `EncryptionMetadata` field on `SignedOp` is always `None` in practice.
@@ -86,7 +86,7 @@ The integration that turns these into something a user sees lives in `overlay_ho
 
 ## 5. User-facing entry points that don't exist anywhere
 
-- No way to **create a Space or Channel** from a UI. Channels are constructs in `qos-collab-types`; no app exposes "new channel" anywhere.
+- No way to **create a Space or Channel** from a UI. Channels are constructs in `collab-types`; no app exposes "new channel" anywhere.
 - No way to **mint a role attestation** as an owner. Spec says "owners promote editors"; no button does that.
 - No way to **view the activity timeline** of your work. The widget exists; no app shows it.
 - No way to **file a RedactRequest.** The op class is defined; no command surface emits it.

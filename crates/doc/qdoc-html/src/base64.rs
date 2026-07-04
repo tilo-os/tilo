@@ -1,6 +1,6 @@
 //! Minimal standard-alphabet base64 encoder for image `data:` URIs.
 //!
-//! Hand-rolled (rather than pulling the `base64` crate) so adding `dochtml`
+//! Hand-rolled (rather than pulling the `base64` crate) so adding `qdoc-html`
 //! doesn't touch the workspace lockfile. Standard RFC 4648 alphabet with `=`
 //! padding — exactly what a browser expects in a `data:image/png;base64,…` URI.
 

@@ -5,7 +5,7 @@
 //! `qos:format-provider/format-provider` interface; the qos-format-host
 //! daemon loads it via wasmtime 46.
 //!
-//! The guest binds itself to the WIT package shipped by `qos-format-provider-wit`
+//! The guest binds itself to the WIT package shipped by `format-provider-wit`
 //! through `wit-bindgen::generate!`. The implementation delegates to the existing
 //! `qdoc::MarkdownCodec` host-Rust source — the same code that runs in-process
 //! for the editor + builtin codecs path.

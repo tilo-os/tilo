@@ -2,12 +2,12 @@
 
 > **Status:** authoritative spec for the next phase. Supersedes the
 > infinite-canvas framing in
-> [`2026-04-18-nirios-shell-design.md`](2026-04-18-nirios-shell-design.md)
+> [`2026-04-18-nirios-shell-design.md`](../archive/2026-04-18-nirios-shell-design.md)
 > for layout. Older specs remain valid for the parts not contradicted
 > here (CRDT toolkit, Iroh-FS architecture, sandboxing intent).
 
 > **For agentic workers:** companion plans live at
-> `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`,
+> `docs/superpowers/archive/2026-05-02-real-wayland-compositor.md`,
 > `…-per-workspace-sandbox-permissions.md`, `…-peer-sync-end-to-end.md`.
 > Follow-up specs (search/actions/SDK, RDP+native collab, native apps,
 > per-workspace permissions, OS distro) are explicitly deferred — this
@@ -139,7 +139,7 @@ compositor. Default flips after smoke tests pass.
 - Buffer streaming for peer collaboration → §6.
 
 ### Detailed plan
-**[`plans/2026-05-02-real-wayland-compositor.md`](../plans/2026-05-02-real-wayland-compositor.md)**
+**[`plans/2026-05-02-real-wayland-compositor.md`](../archive/2026-05-02-real-wayland-compositor.md)**
 
 ---
 
@@ -202,7 +202,7 @@ can grant durable capabilities. Peers requesting capabilities trigger
 the prompt on the **owner's** screen.
 
 ### Detailed plan
-**[`plans/2026-05-02-per-workspace-sandbox-permissions.md`](../plans/2026-05-02-per-workspace-sandbox-permissions.md)**
+**[`plans/2026-05-02-per-workspace-sandbox-permissions.md`](../archive/2026-05-02-per-workspace-sandbox-permissions.md)**
 
 ### Follow-up spec
 *Per-workspace permissions* — detailed protocol for prompt UI, the
@@ -294,7 +294,7 @@ already exposes `commit_action` snapshots; nothing new on the
 data-model side. UI-level divergence indicator is a follow-up.
 
 ### Detailed plan
-**[`plans/2026-05-02-peer-sync-end-to-end.md`](../plans/2026-05-02-peer-sync-end-to-end.md)**
+**[`plans/2026-05-02-peer-sync-end-to-end.md`](../archive/2026-05-02-peer-sync-end-to-end.md)**
 
 ### Follow-up spec
 *Collaboration: native + RDP* — distinguishes how `quick-ui` widgets
@@ -466,7 +466,7 @@ Window groups have three preset widths (`Narrow=400`, `Normal=600`,
   `WindowFrame.tsx:217`).
 - Drag updates `WindowGroup::width = WindowWidth::Custom(px)`.
 - Persisted via the recently-landed maximize-style writeback path
-  (see §1 of `plans/2026-05-02-peer-sync-end-to-end.md` for
+  (see §1 of `archive/2026-05-02-peer-sync-end-to-end.md` for
   pattern).
 - Snap thresholds: within ±20 px of a preset, snap to that preset
   (so the user can always resize back to the conceptual sizes).

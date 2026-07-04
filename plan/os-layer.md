@@ -15,10 +15,10 @@ Fedora 42 is the latest stable release with full bootc support. The image is imm
 - Transparent compression (zstd) saves disk space
 - Subvolumes for `/home`, `/var` enable independent snapshot policies
 
-**Remote (future)**: JuiceFS
-- FUSE-mounted S3-backed filesystem with aggressive local caching
-- Metadata via SQLite/Redis (fast ls/stat), data via S3
-- Mounted at workspace-specific paths for collaborative file access
+**Collaborative** (`fs/`): an Iroh-backed P2P FUSE filesystem
+- Content-addressed via `blake3`, transferred with `iroh-blobs`, cached with `moka`
+- Metadata projects immediately over P2P gossip; content hydrates on first `read()`
+- Mounted at `/var/workspace`; cache at `/var/cache/qos-fs`
 
 ## Package Strategy
 

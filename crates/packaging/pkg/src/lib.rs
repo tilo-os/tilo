@@ -29,7 +29,7 @@
 //!
 //! - No tokio. Everything in this crate is synchronous.
 //! - No on-disk file format. That layering is owned by the CLI
-//!   crate (`qos-pkg-cli`): it dumps a `MemoryBlobStore` into a
+//!   crate (`pkg-cli`): it dumps a `MemoryBlobStore` into a
 //!   tar archive at pack time and the reverse at unpack time.
 //! - No live iroh-blobs serving. The loader crate provides a
 //!   `BlobStore` adapter over a real iroh `Store`.

@@ -2,7 +2,7 @@
 
 The compositor is a single Rust binary, `shell`, that is a real **Wayland server** built on `smithay` 0.6+. It hosts the in-tree shell chrome (top bar, wheel disc, command palette, modals) and third-party Wayland clients adopted into the workspace/strip/group model.
 
-The phased rewrite (`docs/superpowers/plans/2026-05-02-real-wayland-compositor.md` phases 0-7) is complete; this document describes the resulting design.
+The phased rewrite (`docs/superpowers/archive/2026-05-02-real-wayland-compositor.md` phases 0-7) is complete; this document describes the resulting design.
 
 ## Modes and backends
 
@@ -79,7 +79,7 @@ A CI integration test (`shell/tests/compositor_test.rs`) spawns the compositor w
 
 These are **rules**, not preferences:
 
-- **2D clusters, no overlap.** Tabs tile within a group; groups tile within a strip; strips stack within a workspace; workspaces tile on the infinite 2D canvas. Any design that reintroduces overlapping floating windows is rejected at review.
+- **`Workspace → Strip → WindowGroup → Tab`, no overlap.** Tabs tile within a group; groups scroll horizontally within a strip (Niri-inspired columnar workflow plus a tab dimension); strips stack within a workspace; workspaces are switched via the wheel disc. The infinite 2-D canvas (Niri-OG X/Y panning) is deliberately **out** — the strip is the navigable unit, not a free 2-D pan surface. Any design that reintroduces overlapping floating windows, or the infinite canvas, is rejected at review.
 - **Active group / active strip are explicit.** New tabs land in `(active_strip, active_group)`. Cross-strip drags update both pointers.
 - **Workspace is the boundary for sandboxing and replication.** A surface from sandbox A cannot adopt into a workspace B tab — its bridge tag would mismatch.
 
@@ -137,5 +137,5 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 - `shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
-- `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md` — phase-by-phase implementation log.
+- `docs/superpowers/archive/2026-05-02-real-wayland-compositor.md` — phase-by-phase implementation log.
 - `shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.
