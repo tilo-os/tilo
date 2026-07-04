@@ -472,6 +472,256 @@ impl VaApiBackend {
     pub fn render_node(&self) -> &Path {
         &self.render_node
     }
+
+    /// Zero-copy DMABUF encode. Builds a `DRM_PRIME` source frame with
+    /// an `AVDRMFrameDescriptor`, maps it onto a fresh VAAPI hardware
+    /// frame via `av_hwframe_map(AV_HWFRAME_MAP_DIRECT)`, sends it to
+    /// the encoder, and drains the output packet queue.
+    ///
+    /// # Errors
+    ///
+    /// - `EncoderError::EncodeFailed { detail: "dmabuf-direct not \
+    ///   supported by this VA-API driver, use FrameInput::Rgba" }` \
+    ///   when `av_hwframe_map` returns a negative errno. The caller \
+    ///   (compositor commit hook) is expected to catch this specific \
+    ///   detail and fall back to the SHM readback path.
+    /// - `EncoderError::EncodeFailed` on any allocation / send / \
+    ///   receive failure. These are typically un-recoverable — the \
+    ///   caller should tear down the session.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_dmabuf(
+        &mut self,
+        plane_fds: [std::os::fd::RawFd; 4],
+        plane_offsets: [u64; 4],
+        plane_strides: [u32; 4],
+        num_planes: u8,
+        drm_fourcc: u32,
+        drm_modifier: u64,
+        out: &mut Vec<u8>,
+    ) -> Result<(usize, bool), EncoderError> {
+        // Reject implausibly-shaped inputs early. Per libavutil the
+        // maximum plane count for a DRM_PRIME frame is `AV_DRM_MAX_PLANES`,
+        // defined as 4. Anything above that is a caller-side bug.
+        if num_planes == 0 || num_planes as usize > 4 {
+            return Err(EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: format!("dmabuf num_planes={} out of range 1..=4", num_planes),
+            });
+        }
+
+        // Build the AVDRMFrameDescriptor on the stack. Its lifetime
+        // only needs to cover the `av_hwframe_map` call — the mapping
+        // consumes the source frame's data and the destination frame
+        // keeps its own reference into the pool afterwards.
+        //
+        // The `av_hwframe_map` API bindings on ffmpeg-next 8 expose
+        // the raw `ffi::av_hwframe_map(dst, src, flags)`; the DRM
+        // descriptor types (`AVDRMFrameDescriptor`, `AVDRMObjectDescriptor`,
+        // `AVDRMLayerDescriptor`, `AVDRMPlaneDescriptor`) come from
+        // `libavutil/hwcontext_drm.h` — bindgen picks them up when
+        // the header is present at build time.
+        //
+        // We treat all planes as sharing a single DRM object (fd) —
+        // the common case for a wgpu-composited buffer. Multi-object
+        // multi-plane buffers (rare, e.g. some tiled formats with
+        // separate storage per plane) would need one object per fd.
+        //
+        // SAFETY: `AVDRMFrameDescriptor` is a POD C struct; `MaybeUninit`
+        // + zero-fill gives us a valid all-zero baseline. Every field
+        // we then set is a primitive (int / ptrdiff_t / uint32/64).
+        // The subsequent read is inside `av_hwframe_map` which is
+        // documented as copy-in on the source descriptor.
+        use std::mem::MaybeUninit;
+        let mut desc_mu: MaybeUninit<ffi::AVDRMFrameDescriptor> = MaybeUninit::zeroed();
+        // SAFETY: read the field addresses only — no reads of
+        // uninitialised bytes.
+        let desc_ptr = desc_mu.as_mut_ptr();
+        unsafe {
+            (*desc_ptr).nb_objects = 1;
+            (*desc_ptr).objects[0].fd = plane_fds[0];
+            // libavutil's size==0 signals "unknown; whole PRIME dup"
+            // which is acceptable — the encoder doesn't require the
+            // exact byte-length.
+            (*desc_ptr).objects[0].size = 0;
+            (*desc_ptr).objects[0].format_modifier = drm_modifier;
+
+            (*desc_ptr).nb_layers = 1;
+            (*desc_ptr).layers[0].format = drm_fourcc;
+            (*desc_ptr).layers[0].nb_planes = num_planes as i32;
+            for i in 0..(num_planes as usize) {
+                (*desc_ptr).layers[0].planes[i].object_index = 0;
+                (*desc_ptr).layers[0].planes[i].offset =
+                    plane_offsets[i] as libc::ptrdiff_t;
+                (*desc_ptr).layers[0].planes[i].pitch =
+                    plane_strides[i] as libc::ptrdiff_t;
+            }
+        }
+        // SAFETY: fully written above.
+        let desc = unsafe { desc_mu.assume_init() };
+
+        // Allocate the DRM_PRIME source frame; it doesn't own memory
+        // — its `data[0]` is a raw pointer to our stack-local desc.
+        // The pointer must be valid until `av_hwframe_map` returns.
+        //
+        // SAFETY: `av_frame_alloc` returns null on OOM.
+        let src_frame = unsafe { ffi::av_frame_alloc() };
+        if src_frame.is_null() {
+            return Err(EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: "av_frame_alloc (src) returned null".to_string(),
+            });
+        }
+        // On any error below, free src_frame.
+        let src_guard = FrameGuard(src_frame);
+
+        // Configure the source frame as an unattached DRM_PRIME view.
+        // No `hw_frames_ctx` — `av_hwframe_map` handles the format
+        // conversion directly. `data[0]` points at our AVDRMFrameDescriptor.
+        //
+        // SAFETY: we own `src_frame`; the field writes touch primitive
+        // fields on an initialised AVFrame.
+        unsafe {
+            (*src_frame).format = ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32;
+            (*src_frame).width = self.width as i32;
+            (*src_frame).height = self.height as i32;
+            (*src_frame).data[0] = &desc as *const _ as *mut u8;
+        }
+
+        // Allocate the destination VAAPI hw_frame from our pool.
+        //
+        // SAFETY: `hw_frames_ctx` is a valid ref we own; `av_frame_alloc`
+        // returns null on OOM.
+        let hw_frame = unsafe { ffi::av_frame_alloc() };
+        if hw_frame.is_null() {
+            return Err(EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: "av_frame_alloc (hw) returned null".to_string(),
+            });
+        }
+        let hw_guard = FrameGuard(hw_frame);
+        // SAFETY: bind hw_frame to a fresh VAAPI surface from the pool.
+        let get_rc =
+            unsafe { ffi::av_hwframe_get_buffer(self.hw_frames_ctx, hw_frame, 0) };
+        if get_rc < 0 {
+            return Err(EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: format!("av_hwframe_get_buffer (dmabuf-direct): {get_rc}"),
+            });
+        }
+        // Map the DRM_PRIME source into the VAAPI destination.
+        // `AV_HWFRAME_MAP_DIRECT` = 1 << 3 (from
+        // `libavutil/hwcontext.h`); the const is exposed via bindgen
+        // as `ffi::AV_HWFRAME_MAP_DIRECT`.
+        //
+        // SAFETY: both frames are valid; the flag is a documented
+        // libavutil constant.
+        let map_rc =
+            unsafe { ffi::av_hwframe_map(hw_frame, src_frame, ffi::AV_HWFRAME_MAP_DIRECT as i32) };
+        if map_rc < 0 {
+            // This is the specific error the compositor commit hook
+            // catches to fall back to SHM. Keep the exact string
+            // stable — call sites match on it.
+            return Err(EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: format!(
+                    "dmabuf-direct not supported by this VA-API driver, use FrameInput::Rgba (av_hwframe_map={})",
+                    map_rc
+                ),
+            });
+        }
+
+        // Stamp PTS on the mapped frame. Encoder propagates it into
+        // the AVPacket so downstream timestamps line up with our
+        // capture cadence.
+        //
+        // SAFETY: hw_frame is valid.
+        unsafe {
+            (*hw_frame).pts = self.pts;
+        }
+        self.pts += 1;
+
+        // Wrap + hand to the encoder. We can't move ownership through
+        // ffmpeg-next's `Frame::wrap` for hw_frame because it would
+        // race with `hw_guard`'s drop — so we send from the raw
+        // pointer via a scratch wrapper, then let hw_guard release
+        // its ref after send_frame returns.
+        //
+        // `send_frame` refs the underlying AVFrame, so it's safe for
+        // us to drop `hw_guard` right after. The wrapper simply
+        // borrows without taking ownership.
+        //
+        // SAFETY: `Frame::wrap` documents that the pointer becomes
+        // owned by the wrapper. We take that literally: pass a fresh
+        // ref instead of the guarded pointer. `av_frame_clone`
+        // increments the underlying refs (both the descriptor from
+        // the DRM_PRIME source and the pool ref from the mapping).
+        let cloned = unsafe { ffi::av_frame_clone(hw_frame) };
+        if cloned.is_null() {
+            return Err(EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: "av_frame_clone (hw) returned null".to_string(),
+            });
+        }
+        // `Frame::wrap` takes ownership — dropping the wrapper frees
+        // the cloned frame. hw_guard still owns the original hw_frame.
+        let send_frame = unsafe { ffmpeg::Frame::wrap(cloned) };
+        self.encoder
+            .send_frame(&send_frame)
+            .map_err(|e| EncoderError::EncodeFailed {
+                kind: EncoderKind::VaApi,
+                detail: format!("send_frame (dmabuf): {e}"),
+            })?;
+        // Drain packets. Same loop as the RGBA/NV12 path.
+        let mut total = 0usize;
+        let mut saw_keyframe = false;
+        loop {
+            let mut pkt = ffmpeg::codec::packet::Packet::empty();
+            match self.encoder.receive_packet(&mut pkt) {
+                Ok(()) => {
+                    if let Some(data) = pkt.data() {
+                        out.extend_from_slice(data);
+                        total += data.len();
+                    }
+                    if pkt.is_key() {
+                        saw_keyframe = true;
+                    }
+                }
+                Err(ffmpeg::Error::Other {
+                    errno: ffmpeg::error::EAGAIN,
+                }) => break,
+                Err(ffmpeg::Error::Eof) => break,
+                Err(e) => {
+                    return Err(EncoderError::EncodeFailed {
+                        kind: EncoderKind::VaApi,
+                        detail: format!("receive_packet (dmabuf): {e}"),
+                    });
+                }
+            }
+        }
+        drop(hw_guard);
+        drop(src_guard);
+        Ok((total, saw_keyframe))
+    }
+}
+
+/// RAII guard that frees an `AVFrame*` on drop. Named locally because
+/// the surrounding path threads several `?` early-returns through
+/// pointers we allocated with `av_frame_alloc`; a small guard keeps
+/// each branch's cleanup one line.
+struct FrameGuard(*mut ffi::AVFrame);
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the pointer came from `av_frame_alloc` and
+            // hasn't been freed elsewhere in this scope.
+            unsafe {
+                let mut p = self.0;
+                ffi::av_frame_free(&mut p);
+            }
+            self.0 = std::ptr::null_mut();
+        }
+    }
 }
 
 impl Drop for VaApiBackend {
@@ -558,17 +808,51 @@ impl Encoder for VaApiBackend {
                     }
                 }
             }
-            FrameInput::DmabufFd { .. } => {
-                // TODO: zero-copy path — take the caller's DMABUF fd
-                // + fourcc + plane strides and hand them to
-                // `av_hwframe_map` via a VAAPISurfaceHandle. Requires
-                // extending FrameInput::DmabufFd with the full plane
-                // descriptor set. For now, callers who see this path
-                // must have negotiated NV12/RGBA upload separately.
-                return Err(EncoderError::EncodeFailed {
-                    kind: EncoderKind::VaApi,
-                    detail: "DMABUF-direct import not yet wired; upload via RGBA/NV12"
-                        .to_string(),
+            FrameInput::DmabufFd {
+                plane_fds,
+                plane_offsets,
+                plane_strides,
+                num_planes,
+                drm_fourcc,
+                drm_modifier,
+                width,
+                height,
+            } => {
+                // Zero-copy DMABUF import. We build an
+                // `AV_PIX_FMT_DRM_PRIME` source frame whose `data[0]`
+                // points at an `AVDRMFrameDescriptor`, then map it
+                // onto a hardware frame from our VAAPI pool via
+                // `av_hwframe_map(AV_HWFRAME_MAP_DIRECT)`. On drivers
+                // that can't do the mapping (some AMD SoCs, some
+                // older Intel iGPUs) libavutil returns a negative
+                // errno and we fall through to
+                // `EncoderError::EncodeFailed` so the compositor
+                // side falls back to the SHM readback + RGBA path.
+                if width != self.width || height != self.height {
+                    return Err(EncoderError::EncodeFailed {
+                        kind: EncoderKind::VaApi,
+                        detail: format!(
+                            "dmabuf dimensions {}x{} don't match encoder {}x{}",
+                            width, height, self.width, self.height
+                        ),
+                    });
+                }
+                let (bytes, saw_keyframe) = self.encode_dmabuf(
+                    plane_fds,
+                    plane_offsets,
+                    plane_strides,
+                    num_planes,
+                    drm_fourcc,
+                    drm_modifier,
+                    out,
+                )?;
+                let elapsed = start.elapsed();
+                let keyframe = saw_keyframe || self.frames_encoded == 0;
+                self.frames_encoded = self.frames_encoded.saturating_add(1);
+                return Ok(FrameStats {
+                    encode_wallclock: elapsed,
+                    keyframe,
+                    bytes,
                 });
             }
         }

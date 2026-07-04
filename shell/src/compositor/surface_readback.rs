@@ -52,6 +52,7 @@
 //! else is safe Rust.
 
 use crate::network::protocol::SurfaceId;
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::wayland::shm::{BufferAccessError, with_buffer_contents};
@@ -336,6 +337,17 @@ impl CapturePath {
 #[derive(Default)]
 pub struct SurfaceTracker {
     latest: HashMap<SurfaceId, SurfaceBuffer>,
+    /// Per-surface most-recently attached [`Dmabuf`]. Populated by the
+    /// compositor commit hook when it detects a DMABUF-backed
+    /// `wl_buffer` and stashes the Dmabuf reference here for the
+    /// encoder's next drain.
+    ///
+    /// `Dmabuf` is `Arc`-backed inside smithay, so the map entry is a
+    /// cheap Arc clone — the shared inner keeps every plane's
+    /// `OwnedFd` alive for as long as any handle exists. Draining via
+    /// [`Self::take_latest_dmabuf`] hands the ownership over to the
+    /// encoder without extra fd dupes.
+    latest_dmabufs: HashMap<SurfaceId, Dmabuf>,
     /// Per-surface last-observed capture path. `None` before the first
     /// commit lands.
     last_capture_path: HashMap<SurfaceId, CapturePath>,
@@ -450,7 +462,40 @@ impl SurfaceTracker {
     /// compositor when the share is revoked or the surface destroyed.
     pub fn forget(&mut self, surface_id: SurfaceId) {
         self.latest.remove(&surface_id);
+        self.latest_dmabufs.remove(&surface_id);
         self.last_capture_path.remove(&surface_id);
+    }
+
+    /// Stash the DMABUF attached to the surface's latest commit. The
+    /// compositor commit hook calls this after
+    /// [`smithay::wayland::dmabuf::get_dmabuf`] returns `Ok` for the
+    /// buffer. Replaces any previously-staged DMABUF for the same
+    /// surface (drop-oldest, mirrors the SHM `on_commit` behaviour).
+    ///
+    /// The `Dmabuf` type is `Arc`-backed — cloning it keeps every plane
+    /// fd alive without duplicating them.
+    pub fn note_dmabuf_committed(&mut self, surface_id: SurfaceId, dmabuf: Dmabuf) {
+        self.latest_dmabufs.insert(surface_id, dmabuf);
+    }
+
+    /// Drain the most-recently-staged DMABUF for `surface_id`, removing
+    /// the entry so a follow-up drain without a fresh commit returns
+    /// `None`. Symmetric with [`Self::take_latest`] on the SHM side.
+    ///
+    /// The compositor commit hook calls this immediately after
+    /// [`Self::note_dmabuf_committed`] so the encoder can build a
+    /// `FrameInput::DmabufFd` from the returned handle's planes /
+    /// strides / offsets.
+    pub fn take_latest_dmabuf(&mut self, surface_id: SurfaceId) -> Option<Dmabuf> {
+        self.latest_dmabufs.remove(&surface_id)
+    }
+
+    /// Non-draining borrow of the most-recent DMABUF for `surface_id`.
+    /// Test helper — the compositor's production commit hook drains
+    /// unconditionally via [`Self::take_latest_dmabuf`] on every tick.
+    #[cfg(test)]
+    pub(crate) fn peek_latest_dmabuf(&self, surface_id: SurfaceId) -> Option<&Dmabuf> {
+        self.latest_dmabufs.get(&surface_id)
     }
 
     /// Record the capture path taken for the current commit of
@@ -492,12 +537,18 @@ impl SurfaceTracker {
     ///
     /// Detection logic: check whether smithay treats the buffer as an
     /// SHM buffer (via `with_buffer_contents`'s `NotManaged` = dmabuf).
-    /// If SHM, run the existing readback path. If DMABUF, mark the path
-    /// via [`Self::note_capture_path`] and leave the tracker slot empty
-    /// (the encoder is responsible for pulling the fd directly).
+    /// If SHM, run the existing readback path. If DMABUF, return the
+    /// tentative `CapturePath::DmabufDirect` — the caller is
+    /// responsible for pulling the `Dmabuf` off the buffer via
+    /// [`smithay::wayland::dmabuf::get_dmabuf`], stashing it via
+    /// [`Self::note_dmabuf_committed`], and recording the path via
+    /// [`Self::note_capture_path`] only after the encoder actually
+    /// consumed the DMABUF (so metrics reflect real zero-copy, not
+    /// "we tried but the encoder rejected it").
     ///
-    /// Returns the path that was taken so the caller can propagate it
-    /// into `PeerSurfaceMetrics::set_capture_path`.
+    /// Returns the tentative path plus the SHM readback result (which
+    /// is `Err(DmaBufUnsupported)` on the DMABUF branch and untouched
+    /// on the SHM branch).
     pub fn on_commit_with_path_detection(
         &mut self,
         surface_id: SurfaceId,
@@ -506,13 +557,21 @@ impl SurfaceTracker {
         // Try SHM readback first — if the buffer is DMABUF, smithay
         // returns `BufferAccessError::NotManaged` which surfaces as
         // `ReadbackError::DmaBufUnsupported`. That's our signal to
-        // treat this as the direct path.
+        // hand the DMABUF branch to the caller for zero-copy import.
         let result = self.on_commit(surface_id, buffer);
         let path = match &result {
             Err(ReadbackError::DmaBufUnsupported) => CapturePath::DmabufDirect,
             _ => CapturePath::ShmReadback,
         };
-        self.note_capture_path(surface_id, path);
+        // NOTE: SHM readbacks still bump the counter here because the
+        // path was actually taken end-to-end (bytes are in the
+        // tracker). DMABUF-direct's counter is bumped by the caller
+        // *after* the encoder accepts the fd — a rejected DMABUF
+        // frame that falls back to SHM must not be double-counted as
+        // "direct".
+        if matches!(path, CapturePath::ShmReadback) {
+            self.note_capture_path(surface_id, path);
+        }
         (path, result)
     }
 
@@ -538,6 +597,7 @@ impl SurfaceTracker {
     /// short-lived toplevels.
     pub fn drop_surface(&mut self, surface_id: SurfaceId) {
         self.latest.remove(&surface_id);
+        self.latest_dmabufs.remove(&surface_id);
         self.last_capture_path.remove(&surface_id);
     }
 
