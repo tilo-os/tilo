@@ -25,6 +25,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{put_if_changed, put_text_diffed};
 
 use crate::model::{Language, Snippet, SnippetId};
 
@@ -54,22 +55,6 @@ impl SnippetsDoc {
         }
     }
 
-    /// Re-splice a `Text` field only when its content actually changed —
-    /// avoids op churn on idempotent upserts.
-    fn put_text(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
-        let text_id = match doc.get(parent, key) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc
-                .put_object(parent, key, ObjType::Text)
-                .expect("put_object text never fails"),
-        };
-        let cur = doc.text(&text_id).unwrap_or_default();
-        if cur != value {
-            let cur_chars = cur.chars().count() as isize;
-            let _ = doc.splice_text(&text_id, 0, cur_chars, value);
-        }
-    }
-
     fn read_text(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
@@ -86,13 +71,16 @@ impl SnippetsDoc {
     /// puts; tags are rewritten as a fresh list when they differ.
     pub fn upsert(doc: &mut AutoCommit, s: &Snippet) {
         let snip = Self::ensure_snippet(doc, s.id);
-        Self::put_text(doc, &snip, "title", &s.title);
-        Self::put_text(doc, &snip, "description", &s.description);
-        Self::put_text(doc, &snip, "body", &s.body);
-        let _ = doc.put(&snip, "language", s.language.slug());
-        let _ = doc.put(&snip, "folder", s.folder.as_str());
-        let _ = doc.put(&snip, "favorite", s.favorite);
-        let _ = doc.put(&snip, "uses", s.uses as i64);
+        // Title / description / body are diff-spliced Text — a one-char edit
+        // splices one char, never rewrites (and tombstones) the whole field.
+        put_text_diffed(doc, &snip, "title", &s.title);
+        put_text_diffed(doc, &snip, "description", &s.description);
+        put_text_diffed(doc, &snip, "body", &s.body);
+        // Scalars are change-guarded so an idempotent upsert emits no ops.
+        put_if_changed(doc, &snip, "language", s.language.slug());
+        put_if_changed(doc, &snip, "folder", s.folder.as_str());
+        put_if_changed(doc, &snip, "favorite", s.favorite);
+        put_if_changed(doc, &snip, "uses", s.uses as i64);
 
         // Tags list: only rewrite when the set differs to avoid churn.
         let cur_tags = Self::read_tags(doc, &snip);
@@ -256,6 +244,44 @@ mod tests {
         s.tags = vec!["only".into()];
         SnippetsDoc::upsert(&mut doc, &s);
         assert_eq!(SnippetsDoc::list(&doc)[0].tags, vec!["only"]);
+    }
+
+    #[test]
+    fn editing_one_body_char_is_a_bounded_splice() {
+        // Appending one char to a long snippet body must diff-splice (grow the
+        // doc a little), not delete+reinsert the whole body every upsert — the
+        // O(len^2) tombstone churn that HIG §6 forbids.
+        let mut doc = AutoCommit::new();
+        let mut s = sample();
+        s.body = "x".repeat(200);
+        SnippetsDoc::upsert(&mut doc, &s);
+        let before = doc.save().len();
+        s.body.push('!');
+        SnippetsDoc::upsert(&mut doc, &s);
+        let grew = doc.save().len() - before;
+        assert_eq!(SnippetsDoc::list(&doc)[0].body, s.body);
+        assert!(
+            grew < 40,
+            "appending one char to a snippet body grew the doc by {grew} bytes (expected a single-char splice)"
+        );
+    }
+
+    #[test]
+    fn idempotent_upsert_does_not_grow_the_doc() {
+        // Change-guarded scalars + diff-spliced Text make a re-store of an
+        // unchanged snippet a true no-op (the old blind puts grew it forever).
+        let mut doc = AutoCommit::new();
+        let s = sample();
+        SnippetsDoc::upsert(&mut doc, &s);
+        let before = doc.save().len();
+        for _ in 0..25 {
+            SnippetsDoc::upsert(&mut doc, &s);
+        }
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "idempotent upsert must not grow the document"
+        );
     }
 
     #[test]

@@ -342,8 +342,10 @@ impl TypstApp {
         self.current = idx.min(self.documents.len() - 1);
         let src = self.documents[self.current].source.clone();
         if let Some(id) = self.source_id.clone() {
-            let cur = doc.text(&id).unwrap_or_default();
-            let _ = doc.splice_text(&id, 0, cur.chars().count() as isize, &src);
+            // Diff-splice only the changed span instead of delete+reinsert of
+            // the whole buffer — switching documents shares the common prefix/
+            // suffix rather than tombstoning the entire previous source.
+            ui::doc::splice_text_diffed(doc, &id, &src);
         }
         self.editor.caret = 0;
         self.editor.anchor = 0;
