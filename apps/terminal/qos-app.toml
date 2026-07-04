@@ -1,0 +1,106 @@
+# Package manifest for `terminal` as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p terminal -p pkg-cli -p install --release
+#     mkdir -p target/terminal-payload/bin
+#     cp target/release/terminal target/terminal-payload/bin/terminal
+#     target/release/qos-pkg pack \
+#         --manifest apps/terminal/qos-app.toml \
+#         --payload  target/terminal-payload \
+#         --output   target/terminal.qpkg
+#     target/release/qos-install install target/terminal.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.terminal
+#
+# The terminal is a wgpu/vello GUI app that additionally spawns a
+# real shell via portable-pty. That means the sandbox needs the
+# usual GPU + Wayland + font surface, plus read access to the
+# system's shells + `/dev/ptmx` + a writable `/dev/pts` for the
+# allocated pseudo-terminals.
+
+[package]
+id      = "dev.qos.terminal"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/bin",
+    "/bin",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/passwd",
+    "/etc/shells",
+    "/etc/profile",
+    "/etc/profile.d",
+    "/etc/bashrc",
+    "/usr/lib/locale",
+    "/sys",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.zshrc",
+    "~/.profile",
+]
+write = [
+    "~/.local/share/dev.qos.terminal",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+    "/dev/ptmx",
+    "/dev/pts",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/terminal"
+splash-segments = ["bin/terminal[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
