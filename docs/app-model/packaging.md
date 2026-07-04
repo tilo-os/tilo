@@ -1,0 +1,382 @@
+# Packaging: manifest schema and the `qos-pkg` CLI
+
+A `.qpkg` is a tar archive of a signed root + a manifest + a Collection of
+content-addressed blobs. This document is the source of truth for what
+belongs in the manifest and what `qos-pkg` does to it.
+
+## The manifest file
+
+Every manifest is TOML. The schema comes straight from
+`crates/packaging/pkg/src/manifest.rs`. A complete minimal manifest for a
+GUI app:
+
+```toml
+[package]
+id       = "dev.qos.hello"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read  = []
+write = []
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+
+[entrypoint]
+bin  = "bin/qos-hello"
+type = "gui"
+```
+
+### Blocks
+
+#### `[package]`
+
+| Field     | Required | Notes                                                             |
+| --------- | -------- | ----------------------------------------------------------------- |
+| `id`      | yes      | Reverse-DNS, e.g. `dev.qos.notes-cli`. Stable across versions; used as the install slot and to name the sandbox profile. |
+| `version` | yes      | Semver. Rejected at validate time if not parseable.               |
+| `kind`    | yes      | One of `app`, `service`, `format-provider`, `plugin`, `runtime`.  |
+| `runtime` | no       | `<name>/<version>` of the runtime bundle to bind against. The version side must be semver OR calver (`YYYY.MM[.MICRO]`, e.g. `2026.07`). Must be omitted for `kind = "runtime"`. |
+
+#### `[publisher]`
+
+| Field       | Required | Notes                                                                                            |
+| ----------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `qos-pkg pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the real key. |
+| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `qos-pkg pack` / `qos-pkg sign`.  |
+
+#### `[trust]`
+
+Optional. Third-party attestations. Repeated as `[[trust.attested_by]]`:
+
+```toml
+[[trust.attested_by]]
+attestor  = "qos-curated/2026.07"
+claim     = "deadbeef"      # attestor-specific bytes, hex
+signature = ""              # 64-byte Ed25519 signature, hex; empty for legacy claim-only rows
+```
+
+The attestor list is verified against `~/.config/qos/trusted-attestors.toml`
+at install and run time. See [`trust.md`](./trust.md).
+
+#### `[sandbox]`
+
+| Field        | Required | Notes                                                                                     |
+| ------------ | -------- | ----------------------------------------------------------------------------------------- |
+| `namespaces` | yes      | Linux namespaces to unshare. Names match `unshare(2)`: any subset of `user`, `pid`, `uts`, `ipc`, `mount`, `net`. |
+| `seccomp`    | yes      | Named seccomp profile. `qos-default` is the shipped baseline.                             |
+| `landlock`   | yes      | `strict` — enforce Landlock v3+; `lax` — best-effort; `off` — disable.                    |
+
+##### `[sandbox.fs]`
+
+```toml
+[sandbox.fs]
+read  = ["~/Documents", "/usr/share/fonts"]
+write = ["~/.local/share/dev.qos.notes-cli"]
+```
+
+Both fields are lists of path patterns. Patterns are expanded at load time
+by the launcher — `~` becomes the sandbox user's `$HOME`. Every path pattern
+is added to the Landlock ruleset with the corresponding access rights.
+
+If either list is empty the app has no filesystem access outside the payload
+it was launched from.
+
+##### `[sandbox.net]`
+
+```toml
+[sandbox.net]
+mode  = "allowlist"
+hosts = ["api.example.com", "cdn.example.com"]
+```
+
+`mode` is one of:
+
+- `off` — no network at all. Common for pure viewers/editors.
+- `host` — full host network. Only for `runtime` / privileged apps.
+- `dns-only` — DNS resolution allowed; nothing else.
+- `allowlist` — outbound to the listed hosts only.
+
+For any mode other than `allowlist`, `hosts` is ignored.
+
+##### `[sandbox.portals]`
+
+XDG desktop portals the launcher should plumb the D-Bus session bus in for.
+The map key is the portal name (`file-chooser`, `screencast`, `notifications`,
+`secret`, `open-uri`). The value is `"via-host"` or `"deny"`.
+
+```toml
+[sandbox.portals]
+file-chooser  = "via-host"
+notifications = "via-host"
+open-uri      = "via-host"
+```
+
+**Absence == no bus plumbed.** Your `ashpd` / `runtime::portal_xdg` calls
+will surface `PortalError::NotAvailable`. This is a security default: the
+D-Bus session bus is a wide attack surface, so the launcher only forwards
+it when the manifest says to.
+
+##### `[sandbox.services]`
+
+Declared dependencies on qOS system services. Each value parses as
+`required@<version>` or `optional@<version>`.
+
+```toml
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+```
+
+At launch, the launcher opens a connected Unix socket to every declared
+service and passes the fd in as `QOS_SVC_<NAME>_FD`. If a `required` service
+can't be reached the launcher aborts; if an `optional` service is missing
+the app sees `NotAvailable::ServiceFdMissing` and is expected to degrade.
+
+#### `[entrypoint]`
+
+Required for `kind = "app"`, absent for `kind = "runtime"`, optional for
+services (which usually install a systemd unit).
+
+| Field             | Required                | Notes                                                        |
+| ----------------- | ----------------------- | ------------------------------------------------------------ |
+| `bin`             | yes when `type != "both"` | Payload-relative path to the binary. Fallback used by `both` when the split fields are absent. |
+| `type`            | no (default `gui`)      | `gui`, `cli`, or `both`.                                     |
+| `gui-bin`         | only for `type = "both"`| Payload-relative GUI binary.                                 |
+| `cli-bin`         | only for `type = "both"`| Payload-relative CLI binary.                                 |
+| `splash-segments` | no                      | List of `"<path>[<start>:<end>]"` byte ranges the loader prefetches before exec. `<start>`/`<end>` are decimal or `0x`-hex. |
+| `splash-budget`   | no (default `100`)      | Milliseconds the loader will keep the splash before falling back. |
+
+#### `[cli]`
+
+Only meaningful when the entrypoint's `type` is `cli` or `both`. See
+[`cli-apps.md`](./cli-apps.md).
+
+```toml
+[cli]
+commands = ["notes", "notes-import"]
+```
+
+At install time `qos-install install` drops a `qos-cli-shim` copy under
+`~/.local/share/qos-apps/bin/<command>` for each entry.
+
+#### `[providers]`
+
+Only meaningful for `kind = "format-provider"`. See
+[`formats.md`](./formats.md).
+
+```toml
+[providers]
+mime = ["text/markdown"]
+ext  = ["md", "markdown"]
+```
+
+### Validation
+
+`qos-pkg pack` calls
+`validate_manifest_with_payload` before writing anything, which enforces:
+
+- `package.version` is semver.
+- `package.runtime` is `<name>/<version>` with a semver or calver version, and
+  is absent for `kind = "runtime"`.
+- `publisher.identity` parses as `ed25519:<64-hex>` and `publisher.signature`
+  is either empty or `128-hex`.
+- `kind = "app"` has an `[entrypoint]` with `bin` (or the correct split
+  binary for `type = "both"`).
+- `kind = "format-provider"` has non-empty `providers.mime` AND ships a
+  `component.wasm` in the payload.
+
+### On-disk layout
+
+A `.qpkg` is a plain (uncompressed) tar. Actual contents of the hello-world
+qpkg produced below:
+
+```
+$ tar tvf /tmp/qos-hello-demo/qos-hello.qpkg
+-rw-r--r-- 0/0              96 1970-01-01 01:00 qpkg.toml
+-rw-r--r-- 0/0             173 1970-01-01 01:00 signed-root
+-rw-r--r-- 0/0             770 1970-01-01 01:00 manifest.toml
+-rw-r--r-- 0/0              61 1970-01-01 01:00 collection.qcl
+-rw-r--r-- 0/0              61 1970-01-01 01:00 blobs/55ab8b6bdeb4e85d7fd37e975914278f67347056414d3e489aaaad4a1b4de2ee
+-rw-r--r-- 0/0         7811120 1970-01-01 01:00 blobs/70a0c763f562d63c09220bc85a427e806cc6cd28f8730cf0796ba52ad2982fe1
+-rw-r--r-- 0/0             770 1970-01-01 01:00 blobs/774d5714edfb4734e3f158e5e74aa5a8aeb34aab98ae21ef675894a578dbb312
+-rw-r--r-- 0/0             173 1970-01-01 01:00 blobs/b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
+```
+
+- `qpkg.toml` — 2-field header: `package_id = "qpkg:<hex>"`, `format = 1`.
+  Duplicates info in `signed-root`; kept human-readable for `tar tf`.
+- `signed-root` — 173-byte binary: `manifest_hash + payload_root_hash +
+  publisher_identity + signature`.
+- `manifest.toml` — UTF-8 TOML. Same content as author input.
+- `collection.qcl` — encoded payload Collection: the mapping from payload-
+  relative path to blob hash.
+- `blobs/<hex>` — every referenced blob, named by its BLAKE3 hex hash. The
+  signed root, manifest, and collection are each also written here under
+  their hash (so a hash-only downloader can reconstruct without walking the
+  named entries).
+
+Uncompressed on purpose: each blob is already content-addressed and (in
+deployed qOS) lives in an `iroh-blobs` store with chunk-level dedup. Adding
+gzip over that just wastes CPU.
+
+The `PackageId` is `blake3(signed-root-bytes)`. It is the `qpkg:<hex>` URL
+you see in `qos-pkg inspect`.
+
+## `qos-pkg` — the CLI
+
+```
+$ qos-pkg --help
+Pack / sign / verify / inspect qOS packages (.qpkg)
+
+Usage: qos-pkg <COMMAND>
+
+Commands:
+  pack     Pack a payload directory + manifest into a .qpkg, signing it with a freshly-generated identity unless --identity is passed
+  sign     Re-sign an existing .qpkg with the given identity, writing the result back into the same file
+  verify   Verify a .qpkg — checks every cryptographic invariant and reports the first one that breaks. By default the embedded publisher identity is treated as trusted (so the command succeeds on a self-signed package); pass --trusted-key to override
+  inspect  Print the manifest + payload tree of a .qpkg
+  unpack   Extract the payload + a copy of the manifest into `dest`
+  help     Print this message or the help of the given subcommand(s)
+```
+
+### `pack`
+
+```
+qos-pkg pack --manifest <toml> --payload <dir> --output <qpkg> [--identity <json>]
+```
+
+- Reads `--manifest` and `--payload/**`.
+- If `--identity` is absent, generates a fresh Ed25519 keypair and overwrites
+  `publisher.identity` in the embedded manifest with the fresh public key.
+- Signs the signed root with that identity.
+- Writes the `.qpkg`.
+
+Actual run against the demo project:
+
+```
+$ qos-pkg pack \
+    --manifest /tmp/qos-hello-demo/manifest.toml \
+    --payload  /tmp/qos-hello-demo/payload \
+    --output   /tmp/qos-hello-demo/qos-hello.qpkg
+packed qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 (4 blobs)
+```
+
+The `--identity` file is JSON:
+
+```json
+{ "secret_key_hex": "<32-byte hex — the Ed25519 signing-key seed>" }
+```
+
+### `sign`
+
+Re-sign an existing `.qpkg` with a different identity. Fails unless the
+identity's public key matches the `.qpkg`'s embedded publisher identity —
+this command is for detached signing flows (e.g. an offline HSM signed
+what `qos-pkg pack --identity dummy.json` produced), not for identity
+substitution.
+
+### `verify`
+
+Every cryptographic invariant. On the demo bundle:
+
+```
+$ qos-pkg verify /tmp/qos-hello-demo/qos-hello.qpkg
+ok: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
+```
+
+Pass `--trusted-key <hex>` (repeatable) to override the default of trusting
+the embedded publisher key. Exit code:
+
+- `0` — trusted publisher, all signatures OK.
+- `2` — signature OK but publisher untrusted (`--trusted-key` set and did
+  not match).
+- `1` — any cryptographic failure (broken signature, wrong hash, revoked).
+
+### `inspect`
+
+Human-readable dump of everything but the payload contents:
+
+```
+$ qos-pkg inspect /tmp/qos-hello-demo/qos-hello.qpkg
+package-id: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
+manifest-hash: blake3:774d5714edfb4734e3f158e5e74aa5a8aeb34aab98ae21ef675894a578dbb312
+payload-root-hash: blake3:55ab8b6bdeb4e85d7fd37e975914278f67347056414d3e489aaaad4a1b4de2ee
+publisher-identity: ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39
+signed: yes
+
+--- manifest.toml ---
+[package]
+id = "dev.qos.hello"
+version = "0.1.0"
+kind = "app"
+runtime = "qos-runtime/2026.07"
+...
+```
+
+### `unpack`
+
+```
+qos-pkg unpack --dest <dir> <qpkg>
+```
+
+Writes the payload tree into `--dest` and drops a copy of `manifest.toml`
+next to it. Useful for auditing a signed bundle without a running qOS.
+
+## The pack pipeline
+
+Under the hood, `pack` runs this sequence:
+
+```
+    ┌─────────────────┐
+    │payload/**       │  ── blake3 each file
+    │Cargo output     │        │
+    └─────────────────┘        ▼
+                          ┌────────────┐
+                          │Collection  │ (path → hash map)
+                          └────────────┘
+                                │
+                                ▼
+    ┌────────────────┐    ┌────────────┐
+    │manifest.toml   │──▶ │signing-bytes│ = manifest_hash || payload_root_hash || publisher_key
+    └────────────────┘    └────────────┘
+                                │
+                     Ed25519 sign with publisher key
+                                │
+                                ▼
+                          ┌────────────┐
+                          │SignedRoot  │  (173 bytes)
+                          └────────────┘
+                                │
+                     BLAKE3 hash the SignedRoot
+                                │
+                                ▼
+                          ┌────────────┐
+                          │ PackageId   │  "qpkg:<64-hex>"
+                          └────────────┘
+```
+
+The `PackageId` is derived entirely from the signed root, so a re-sign
+(with a different keypair or a different signature) produces a different
+`PackageId`. Two identical builds with the same keypair produce the same
+`PackageId` — the pack path is deterministic given deterministic inputs
+(BLAKE3 is content-addressed; Ed25519 signatures are non-deterministic by
+default, so identity re-use with a fresh key each pack changes the ID).
+
+Next: [`sandbox.md`](./sandbox.md) explains what each `[sandbox.*]` block
+actually enables at launch.

@@ -1,0 +1,239 @@
+# CLI apps
+
+A qOS CLI app is a package with `entrypoint.type = "cli"` and (typically)
+a `[cli]` block listing the commands it publishes on the user's PATH.
+
+## The `[cli]` block
+
+```toml
+[entrypoint]
+bin  = "bin/notes"
+type = "cli"
+
+[cli]
+commands = ["notes", "notes-import"]
+```
+
+At install time, `qos-install install` walks `[cli].commands` and drops
+one copy of `qos-cli-shim` per entry into
+`~/.local/share/qos-apps/bin/`. A sidecar TOML (`<command>.qos-shim`)
+holds the mapping back to the package id and command name.
+
+## What the user sees
+
+```
+$ qos-install path
+/tmp/qos-install-demo-data/qos-apps/bin
+
+# Prepend the above to your shell's PATH so CLI commands
+# installed via `qos-install install <pkg.qpkg>` are picked up.
+#
+# bash / zsh (~/.bashrc, ~/.zshrc):
+export PATH="/tmp/qos-install-demo-data/qos-apps/bin:$PATH"
+#
+# fish (~/.config/fish/config.fish):
+fish_add_path -pg /tmp/qos-install-demo-data/qos-apps/bin
+```
+
+The user prepends the printed dir to their PATH once. From then on, every
+`qos-install install …` that ships a `[cli].commands` entry adds fresh
+PATH commands automatically. `qos-install remove` un-writes the shims.
+
+## What actually happens on `notes "hello world"`
+
+```text
+   $ notes "hello world"
+        │
+        ▼
+   ~/.local/share/qos-apps/bin/notes   ← copy of qos-cli-shim (~880 KB)
+        │  read sidecar notes.qos-shim (TOML: package_id, command, launcher)
+        ▼
+   /usr/libexec/qos-launcher run-installed --package dev.qos.notes-cli
+                                            --command notes
+                                            -- "hello world"
+        │  fork + bwrap + Landlock (see sandbox.md)
+        │  setenv QOS_CLI_COMMAND=notes
+        ▼
+   /var/qos-apps/dev.qos.notes-cli/bin/notes "hello world"
+        │
+        ▼
+   cli::run_main(|| { … })
+        └── write to workspace path (or fallback dir if standalone)
+```
+
+The shim is one binary reused for every command; the sidecar is what
+picks the launcher and the package id at exec time.
+
+### The sidecar
+
+```toml
+# ~/.local/share/qos-apps/bin/notes.qos-shim
+package_id = "dev.qos.notes-cli"
+command    = "notes"
+launcher   = "/tmp/qos-tools/target-docs/release/qos-launcher"  # dev override
+```
+
+The `launcher` line is optional. In production installs it is unset, and
+the shim resolves to `/usr/libexec/qos-launcher`. It exists so integration
+tests can install shims that route through a `target/release/qos-launcher`
+without root.
+
+## The `cli` SDK
+
+CLI apps typically depend on the `cli` sibling of `runtime`, which layers
+CLI-specific ergonomics on top:
+
+```rust
+use cli::{run_main, resolve_workspace_path, is_qos_native};
+
+fn main() -> std::process::ExitCode {
+    run_main(|| {
+        let path = resolve_workspace_path("notes/inbox.md")?;
+        std::fs::write(path, "hello\n")?;
+        Ok(())
+    })
+}
+```
+
+Public API:
+
+```rust
+pub use runtime::NotAvailable;
+pub use runtime::is_qos_native;
+pub use grant::{Grant, request_grant};
+pub use output::{OutputBuilder, output};
+pub use workspace::{
+    /* WorkspaceHandle, is_workspace_available, workspace_root, resolve_workspace_path */
+};
+
+pub fn invoked_command() -> Option<String>;   // QOS_CLI_COMMAND
+pub fn run_main<F: FnOnce() -> anyhow::Result<()>>(f: F) -> ExitCode;
+pub fn package_id() -> String;                // QOS_PACKAGE_ID with fallback
+pub fn println_terminal_aware(text: &str) -> io::Result<()>;
+pub fn ensure_dir(dir: &Path) -> Result<()>;
+pub fn standalone_state_dir(pkg_id: &str) -> PathBuf;
+```
+
+`run_main` wraps your closure so that `anyhow::Error` becomes a non-zero
+exit with the error on stderr, and a broken pipe (`| head`) exits cleanly
+instead of panicking.
+
+`resolve_workspace_path("<rel>")` picks one of two roots:
+
+1. **Inside qOS**: `/var/workspace/<rel>` — the FUSE-mounted workspace.
+2. **Standalone**: `~/.local/share/<package-id>/<rel>` — a per-package
+   fallback state dir. Uses `dirs::data_dir()` so `$XDG_DATA_HOME` moves
+   it if set.
+
+The two paths are deliberately unrelated to `runtime::fs` so the CLI keeps
+working when the FUSE is offline. If your app needs the CRDT-backed
+workspace, wire `runtime::fs::try_connect()` explicitly; if it just needs
+a place to put its own state, use `resolve_workspace_path`.
+
+## Walkthrough: notes-cli
+
+The reference CLI shipped in-tree is `crates/packaging/notes-cli/`. Its
+manifest:
+
+```toml
+[package]
+id      = "dev.qos.notes-cli"
+version = "0.1.0"
+kind    = "app"
+
+[publisher]
+identity  = "ed25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read  = []
+write = ["~/.local/share/dev.qos.notes-cli"]
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin  = "bin/notes"
+type = "cli"
+
+[cli]
+commands = ["notes"]
+```
+
+Full install and run, verified end-to-end:
+
+```
+$ qos-pkg pack \
+    --manifest crates/packaging/notes-cli/manifest.toml \
+    --payload  demo/payload \
+    --output   demo/notes-cli.qpkg
+packed qpkg:36c777e279b33bd1c7ca6ee8a5a7033e0e500abfc5e2262c2b2b0476a9f33eca (4 blobs)
+
+$ qos-install install demo/notes-cli.qpkg
+qos-install: WARN — package self-signed by ed25519:… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
+  shims    : wrote 1 shim(s) into /tmp/qos-install-demo-data/qos-apps/bin
+  PATH     : prepend /tmp/qos-install-demo-data/qos-apps/bin to your shell's PATH to pick them up (see `qos-install path`).
+installed: dev.qos.notes-cli 0.1.0
+  payload  : /tmp/qos-install-demo-data/qos-apps/payloads/dev.qos.notes-cli
+  pinned   : false
+run with:  qos-install run dev.qos.notes-cli
+
+$ ls -la /tmp/qos-install-demo-data/qos-apps/bin/
+-rwxr-xr-x. 1 ada ada 886728  4. Jul 16:45 notes
+-rw-r--r--. 1 ada ada    158  4. Jul 16:45 notes.qos-shim
+
+$ export PATH="/tmp/qos-install-demo-data/qos-apps/bin:$PATH"
+
+$ notes "hello from the shim"
+qos-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 3 rw, net_restricted=true)
+wrote note → [file:///tmp/qos-install-demo-data/dev.qos.notes-cli/notes/inbox.md]
+```
+
+Note: the fs.write pattern `~/.local/share/dev.qos.notes-cli` is a Landlock
+target — the launcher expands `~` at load time to the user's home; the
+target directory must exist BEFORE launch, or bwrap fails to bind-mount it.
+Real installs use a first-launch hook (`ensure_dir` in the SDK) to create
+it, but the sandbox binding runs before your code, so the directory has to
+already exist. Ship an `install-hook` in your `[cli]` startup that does
+`mkdir -p ~/.local/share/<pkg-id>` OR ensure your CLI's parent dir is
+created out-of-sandbox in the install script.
+
+## Reading arguments
+
+Your `[cli].commands` entries all resolve to the same entrypoint binary.
+Distinguish them with `cli::invoked_command()`:
+
+```rust
+match cli::invoked_command().as_deref() {
+    Some("notes")        => append_note(),
+    Some("notes-import") => import_notes(),
+    _                    => usage(),
+}
+```
+
+The launcher forwards everything after `--` to your `argv[1..]` verbatim,
+so `clap` / `structopt` / a hand-rolled parser all work as-is.
+
+## `type = "both"` — GUI and CLI in one package
+
+```toml
+[entrypoint]
+type    = "both"
+gui-bin = "bin/notes-gui"
+cli-bin = "bin/notes"
+
+[cli]
+commands = ["notes"]
+```
+
+`qos-install run <pkg>` execs `gui-bin`. The PATH shim execs `cli-bin`.
+Both binaries live inside the same signed payload and share the same
+sandbox.
+
+Next: [`formats.md`](./formats.md) — WASM Component providers for file
+formats.
