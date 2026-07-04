@@ -131,6 +131,11 @@ enum Cmd {
         no_landlock: bool,
         #[command(flatten)]
         trust: TrustFlags,
+        /// Everything after `--` is forwarded verbatim to the
+        /// entrypoint as its argv[1..]. Example:
+        /// `qos-install run dev.qos.notes-cli -- create "hello"`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        passthrough_argv: Vec<String>,
     },
     /// Print manifest + install info for an installed package.
     Inspect {
@@ -617,6 +622,7 @@ fn run(
     allow_missing_runtime: bool,
     no_landlock: bool,
     trust: TrustFlags,
+    passthrough_argv: Vec<String>,
 ) -> Result<(), Error> {
     let reg = load_registry()?;
     let entry = reg
@@ -683,6 +689,15 @@ fn run(
     if no_landlock {
         eprintln!("qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging.");
         // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
+    }
+    // Forward trailing argv verbatim: qos-install run <pkg> -- <argv...>
+    // reaches the sandboxed process as its argv[1..]. `--` separator keeps
+    // qos-launcher's clap from interpreting the tail as its own flags.
+    if !passthrough_argv.is_empty() {
+        cmd.arg("--");
+        for a in &passthrough_argv {
+            cmd.arg(a);
+        }
     }
     // exec()-replace so this process's exit code IS the launcher's.
     let err = cmd.exec();
@@ -932,6 +947,7 @@ fn main() {
             allow_missing_runtime,
             no_landlock,
             trust,
+            passthrough_argv,
         } => run(
             &pkg_id,
             no_services,
@@ -939,6 +955,7 @@ fn main() {
             allow_missing_runtime,
             no_landlock,
             trust,
+            passthrough_argv,
         ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
         Cmd::Trust { cmd } => match cmd {
@@ -1082,6 +1099,15 @@ fn age(installed_at: u64) -> String {
 }
 
 fn which_launcher() -> PathBuf {
+    // Explicit override wins — same env var the shim installer honours.
+    // Lets integration tests point at a fake shim without disturbing
+    // the shared target/ directory.
+    if let Some(p) = std::env::var_os("QOS_LAUNCHER_PATH") {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            return pb;
+        }
+    }
     // Prefer a sibling binary — matches how the demo installs both under
     // the same target/release/ dir.
     if let Ok(exe) = std::env::current_exe() {

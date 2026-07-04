@@ -74,7 +74,7 @@ impl RunError {
 
 impl Default for LaunchMode {
     fn default() -> Self {
-        LaunchMode::Gui
+        LaunchMode::Gui { passthrough_argv: Vec::new() }
     }
 }
 
@@ -370,9 +370,11 @@ pub fn run(
 /// and what extra args to forward.
 #[derive(Debug, Clone)]
 pub enum LaunchMode {
-    /// The default: GUI-flavour bin. `run` / `run_with` use this
-    /// implicitly.
-    Gui,
+    /// GUI-flavour bin (the default). `passthrough_argv` is what
+    /// follows `--` on `qos-launcher run` / `qos-install run`;
+    /// forwarded verbatim to the entrypoint as its argv[1..]. Empty
+    /// in the usual case where no extra args were provided.
+    Gui { passthrough_argv: Vec<String> },
     /// CLI-flavour bin. `passthrough_argv` is what follows `--`
     /// on the shim command line — forwarded verbatim to the
     /// entrypoint. `command` names the manifest entry we resolved
@@ -428,7 +430,7 @@ pub fn run_with(
     // splices QOS_CLI_COMMAND / forwards passthrough argv.
     let entry_bin_owned: String;
     let (mut argv, extra_setenv, cli_passthrough) = match &opts.mode {
-        LaunchMode::Gui => (
+        LaunchMode::Gui { passthrough_argv } => (
             build_bwrap_argv(
                 manifest,
                 payload_root,
@@ -438,7 +440,7 @@ pub fn run_with(
                 identity_arg,
             ),
             None,
-            Vec::new(),
+            passthrough_argv.clone(),
         ),
         LaunchMode::Cli { command, passthrough_argv } => {
             entry_bin_owned = manifest

@@ -172,7 +172,7 @@ fn hello_world_runs() {
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
         landlock_enforce: true,
-        mode: launcher::run::LaunchMode::Gui,
+        mode: launcher::run::LaunchMode::Gui { passthrough_argv: Vec::new() },
         ..Default::default()
     };
     let (status, stdout) =
@@ -206,7 +206,7 @@ fn no_services_flag_skips_required() {
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
         landlock_enforce: true,
-        mode: launcher::run::LaunchMode::Gui,
+        mode: launcher::run::LaunchMode::Gui { passthrough_argv: Vec::new() },
         ..Default::default()
     };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
@@ -238,7 +238,7 @@ fn optional_service_missing_warns_and_runs() {
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
         landlock_enforce: true,
-        mode: launcher::run::LaunchMode::Gui,
+        mode: launcher::run::LaunchMode::Gui { passthrough_argv: Vec::new() },
         ..Default::default()
     };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
@@ -270,7 +270,7 @@ fn read_only_fs_enforced() {
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
         landlock_enforce: true,
-        mode: launcher::run::LaunchMode::Gui,
+        mode: launcher::run::LaunchMode::Gui { passthrough_argv: Vec::new() },
         ..Default::default()
     };
     let status = run_with(&m, payload.path(), &opts).expect("launch");

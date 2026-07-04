@@ -58,6 +58,12 @@ enum Cmd {
         /// accepted; a strict deployment pins one here.
         #[arg(long)]
         require_runtime_publisher: Option<String>,
+        /// Everything after `--` is forwarded verbatim to the
+        /// entrypoint as its argv[1..]. Lets `qos-install run <pkg>
+        /// -- <args>` propagate through this launcher into the
+        /// sandboxed program.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -113,6 +119,7 @@ fn main() -> ExitCode {
             allow_missing_runtime,
             allow_unsigned_runtime,
             require_runtime_publisher,
+            rest,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -127,7 +134,7 @@ fn main() -> ExitCode {
                 bwrap_bin: None,
                 minimal_libs,
                 landlock_enforce: true,
-                mode: LaunchMode::Gui,
+                mode: LaunchMode::Gui { passthrough_argv: rest },
                 allow_missing_runtime,
                 allow_unsigned_runtime,
                 require_runtime_publisher,
