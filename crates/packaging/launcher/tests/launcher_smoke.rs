@@ -144,7 +144,7 @@ fn no_services_flag_skips_required_resolution() {
     // skip + warn. We can't actually exec without bwrap, so we just
     // assert the resolution step succeeds; the spawn step is exercised
     // by the live tests.
-    let dir = tempfile::tempdir().unwrap();
+    let _dir = tempfile::tempdir().unwrap();
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "required@1".to_string());
     let resolved =
@@ -517,6 +517,80 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
         launcher::run::resolve_runtime_test_helper(&m, &opts_ok).expect("opt-in accepts");
     let (_p, v) = resolved.expect("bundle resolves");
     assert_eq!(v, "sig-refuse-1");
+}
+
+/// The launcher's trusted-publisher file pins which signing keys are
+/// acceptable for runtime bundles at mount time. A missing file means
+/// "any signed publisher works"; a file with matching key accepts; a
+/// file with only a different key refuses.
+#[test]
+fn trusted_publisher_file_gates_mount() {
+    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let user_home = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", user_home.path());
+        std::env::set_var("HOME", user_home.path());
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+    }
+    let (_bundle, identity) = install_signed_bundle(user_home.path(), "trust-file-1");
+
+    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    m.runtime = Some("qos-runtime/trust-file-1".to_string());
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+
+    // 1. Trust file lists this publisher: accepted.
+    let trust_file = user_home.path().join("trust.txt");
+    std::fs::write(
+        &trust_file,
+        format!(
+            "# managed by test\n{}\n\n# blank + comments are ignored\n",
+            identity.public_key_hex()
+        ),
+    )
+    .unwrap();
+    unsafe {
+        std::env::set_var(
+            "QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+            &trust_file,
+        );
+    }
+    launcher::run::resolve_runtime_test_helper(&m, &opts).expect("trusted pubkey ok");
+
+    // 2. Trust file lists a different publisher only: refused.
+    let other = runtime_bundle::Identity::generate();
+    std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
+    let err = launcher::run::resolve_runtime_test_helper(&m, &opts).unwrap_err();
+    match &err {
+        RunError::RuntimeBundleSignature { .. } => {}
+        RunError::RuntimeBundleUnsigned { .. } => panic!("bundle IS signed"),
+        other => panic!("expected RuntimeBundleSignature, got {other:?}"),
+    }
+
+    // 3. Trust file lists BOTH the actual publisher and a random extra —
+    //    the multi-entry branch of enforce_bundle_policy.
+    std::fs::write(
+        &trust_file,
+        format!(
+            "{}\n{}\n",
+            identity.public_key_hex(),
+            other.public_key_hex()
+        ),
+    )
+    .unwrap();
+    launcher::run::resolve_runtime_test_helper(&m, &opts).expect("multi-entry list accepts");
+
+    // 4. No trust file: any signed publisher works (verify the env
+    //    override applied above is what's being tested — the default
+    //    file at /etc is not readable in these tests).
+    unsafe {
+        std::env::remove_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
+    }
+    launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no trust file = any signed");
 }
 
 /// A signed bundle is accepted by default. Pinning the publisher to
