@@ -1,0 +1,129 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+automerge = "0.8.0"
+# Diagnostic event/handler tracing. Off by default at WARN; turn up with
+# `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
+# entering App::window_event + dispatch results. Lets a maintainer
+# diagnose interaction bugs in hosted mode without source-reading.
+tracing = "0.1"
+cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
+pollster = "0.4.0"
+rand = "0.10.1"
+taffy = { version = "0.10.1", features = ["content_size"] }
+tokio = { version = "1.52.3", features = ["full"] }
+vello = "0.9"
+wgpu = "29"
+winit = "0.30.13"
+fluent = "0.17.0"
+unic-langid = "0.9.6"
+once_cell = "1.21.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+png = "0.18.1"
+# Multi-format decode (JPEG/PNG/WebP) for the async remote-image cache
+# (`image_store`): system apps display real CDN artwork. Default features are
+# off so we pull only the decoders we need, not the whole codec zoo.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Date / time picker widgets (`widget::date_picker`, `widget::time_picker`) use
+# `chrono` for NaiveDate arithmetic. shell already pulls chrono
+# transitively but this is a direct dep so the picker widgets compile in
+# isolation.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
+# `source` feature compiles the pure-C reference implementation so we don't
+# rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
+# screencast pipeline.
+openh264 = { version = "0.9", features = ["source"] }
+# System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
+# Wayland uses `wl_data_device`; X11 uses the selection protocol —
+# `arboard` wraps both. The "wayland-data-control" feature lets us
+# talk to the data-control compositor extension when available
+# (kanshi / GNOME / KDE), falling back to the seat-driven protocol
+# otherwise.
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+# Shared collaboration-types crate. Phase 1 widgets
+# (`widget::activity_timeline`, `widget::history_scrubber`,
+# `widget::conflict_picker`, `widget::channel_browser`) read `OpClass`
+# / `ArtifactKind` from here; Phase 3 also uses `SignedOp` +
+# `validate_inbound_op` for the wire envelopes carried by
+# `CollabRequest::SignedSyncIncremental` /
+# `CollabEvent::SignedCRDTIncremental`.
+qos-collab-types = { path = "../qos-collab-types" }
+# Direct dep on the Ed25519 implementation `qos-collab-types` uses so
+# the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
+# without reaching into the qos-collab-types private module path. Pinned
+# to the same major as `qos-collab-types`.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# Phase 8 identity-flow widgets: FROST threshold identity engine. The
+# screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
+# `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
+qos-threshold-identity = { path = "../qos-threshold-identity" }
+# Phase 8 identity-flow QR widget: `widget::qr` encodes both the
+# pairing-channel JSON payload (screen 3) and the `qos://invite/...`
+# URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
+# QR encoder that produces a module-matrix we paint with Vello.
+qrcode = { version = "0.14", default-features = false }
+# Phase 8 invite encoding: the `qos://invite/<base32>` URL packs a
+# postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
+# so it stays URL-safe and case-insensitive when read aloud.
+base32 = "0.5"
+# Phase 8 pairing one-time MAC: derived from the 6-digit code so the
+# host can authenticate the pairer's DKG round-2 reply without a
+# pre-shared long-term key. SHA-512 is already a transitive via
+# `qos-threshold-identity`, so direct pin keeps the lock single-copy.
+sha2 = "0.10"
+# Phase 8 pairing-channel encryption (placeholder; in-memory shim for
+# the v1 widget tests). HMAC is used as a one-time pairing MAC over
+# the round-1 broadcast keyed by the 6-digit code's full nonce.
+hmac = "0.12"
+# Identity-flow encode helpers — canonical-bytes for the invite
+# envelope's owner signature view, hex for the pairing-channel JSON
+# payload's binary fields, serde_bytes for the postcard-friendly
+# delegation-secret representation, thiserror for the flow-local
+# error type.
+postcard = { version = "1", features = ["alloc"] }
+hex = "0.4"
+serde_bytes = "0.11"
+thiserror = "1"
+# `widget::identity_flow::recovery_share` generates a deterministic
+# placeholder mnemonic on first-run (single-device mode has no real
+# recovery share — see the module-level note). Already a transitive
+# via `qos-threshold-identity`; the direct pin keeps Cargo collapsing
+# to a single copy.
+bip39 = "2"
+# Phase 8 identity-flow needs a `CryptoRng + RngCore` compatible with
+# `frost-ed25519` 3.x (which still consumes `rand_core` 0.6). ui's
+# top-level `rand` dep is on 0.10 and dropped the OsRng re-export, so
+# the identity_flow screens depend on `rand_core` 0.6 directly for
+# `OsRng`.
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Accessibility: AccessKit is the cross-platform a11y schema; the winit
+# adapter bridges our exported tree into the event loop and, via its default
+# `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
+# (Orca, braille) read every `ui` app. `accesskit_winit` 0.33.1 targets
+# winit 0.30.x — the same pin as the `winit` dep above. See
+# `ui/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
+# adapter wiring in `ui/src/app.rs`.
+accesskit = "0.24.1"
+accesskit_winit = "0.33.1"
+# Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
+# focus / value / live-region narration through the offline qOS TTS engine.
+# `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
+# stack is installed), so depending on this is safe in headless builds.
+qos-tts = { path = "../qos-tts" }
+
+[dev-dependencies]
+regex = "1"
+# Inspect Vello scene encodings (draw tags) in widget tests so we can pin
+# end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
+# fills_than_inactive_siblings`) without rendering pixels.
+vello_encoding = "0.9"
+# `widget::file_picker::tests` build a real on-disk tree to exercise the
+# `std::fs::read_dir` path. Already pulled in by shell as a regular
+# dev-dep; pinning here for the leaf-test build.
+tempfile = "3"
