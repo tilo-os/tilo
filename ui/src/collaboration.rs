@@ -403,6 +403,24 @@ pub struct CollaborationManager {
     /// `SyncIncremental` frames and the broker fans them out without
     /// validation.
     identity: Option<SigningIdentity>,
+    /// User-identity loaded from the on-disk record the launcher
+    /// points at (via `QOS_USER_IDENTITY`). Its pubkey bytes are
+    /// forwarded to `join_channel` so presence and role lookups can
+    /// attribute events to a real caller — the previous behaviour
+    /// (empty identity bytes on every join) left presence unauthored
+    /// and signed-op provenance ungrounded.
+    ///
+    /// `None` in three cases:
+    /// - The app is running outside qOS (env var unset).
+    /// - The pointed-at file is missing / unreadable.
+    /// - Parsing failed. See `runtime_identity::load`'s
+    ///   [`runtime_portal::NotAvailable`] variants for the split.
+    ///
+    /// Kept alive on the manager so future signed-op paths that
+    /// prefer this identity over the widget-bound [`SigningIdentity`]
+    /// can reach for it without re-reading disk.
+    #[allow(dead_code)]
+    runtime_identity: Option<runtime_identity::SigningIdentity>,
 }
 
 impl CollaborationManager {
@@ -420,6 +438,38 @@ impl CollaborationManager {
     /// preserve the legacy auto-join behaviour every existing app
     /// depends on.
     pub fn new() -> Self {
+        // Attempt to load the user's on-disk identity via the
+        // runtime SDK. When the file is present, its pubkey bytes
+        // ride along on the join_channel call the auto-Hello issues
+        // below — the previous behaviour (unconditional empty bytes)
+        // left presence unauthored on every connect.
+        //
+        // `runtime_identity::load` reports `ServiceFdMissing` when the
+        // env var is unset (not-a-qOS-session, unit test, etc.);
+        // that path is expected and quiet. Any other failure mode
+        // (unreadable file, malformed JSON) is worth a debug line so
+        // a maintainer investigating "why does presence look
+        // anonymous?" can find the reason in `RUST_LOG=ui=debug`.
+        let runtime_identity = match runtime_identity::load() {
+            Ok(id) => Some(id),
+            Err(runtime_portal::NotAvailable::ServiceFdMissing) => {
+                tracing::debug!(
+                    "runtime-identity: env var unset — collab join will use empty identity bytes"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "runtime-identity: load failed ({e:?}); collab join will use empty identity bytes"
+                );
+                None
+            }
+        };
+        let identity_bytes = runtime_identity
+            .as_ref()
+            .map(|id| id.group_public_key().to_vec())
+            .unwrap_or_default();
+
         #[cfg(feature = "legacy-broker")]
         if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK") {
             if let Ok(stream) = UnixStream::connect(&path) {
@@ -429,6 +479,7 @@ impl CollaborationManager {
                         rbuf: Vec::new(),
                     }),
                     identity: None,
+                    runtime_identity,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello { app_id, cluster_id });
@@ -436,11 +487,12 @@ impl CollaborationManager {
             }
         }
 
-        match Self::spawn_sdk(SdkConnectSource::Env) {
+        match Self::spawn_sdk(SdkConnectSource::Env, identity_bytes) {
             Ok(sdk) => {
                 let mut manager = Self {
                     backend: Backend::Sdk(sdk),
                     identity: None,
+                    runtime_identity,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello { app_id, cluster_id });
@@ -449,6 +501,7 @@ impl CollaborationManager {
             Err(_) => Self {
                 backend: Backend::Disabled,
                 identity: None,
+                runtime_identity,
             },
         }
     }
@@ -462,11 +515,26 @@ impl CollaborationManager {
     /// deterministic test fixture.
     #[cfg(test)]
     fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
-        let sdk = Self::spawn_sdk(SdkConnectSource::Fd(fd))
+        Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
+    }
+
+    /// Test-only: like [`Self::from_sdk_fd_for_test`] but stamps the
+    /// join_channel call with a caller-supplied identity blob. Kept
+    /// alongside the empty-blob variant so tests that don't care
+    /// about the identity path stay concise.
+    #[cfg(test)]
+    fn from_sdk_fd_for_test_with_identity(
+        fd: RawFd,
+        app_id: &str,
+        cluster_id: Uuid,
+        identity_bytes: Vec<u8>,
+    ) -> Self {
+        let sdk = Self::spawn_sdk(SdkConnectSource::Fd(fd), identity_bytes)
             .expect("spawn_sdk from Fd source must succeed in tests");
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
             identity: None,
+            runtime_identity: None,
         };
         manager.send(CollabRequest::Hello {
             app_id: app_id.to_owned(),
@@ -485,7 +553,10 @@ impl CollaborationManager {
     /// returning; if we deferred the decision to the first `send`
     /// call, apps that only ever `poll` would never notice they were
     /// running against a dead broker.
-    fn spawn_sdk(source: SdkConnectSource) -> Result<SdkChannel, runtime_portal::NotAvailable> {
+    fn spawn_sdk(
+        source: SdkConnectSource,
+        identity_bytes: Vec<u8>,
+    ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
         let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<CollabRequest>();
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
@@ -495,7 +566,7 @@ impl CollaborationManager {
         // (RawFd is Send, but this keeps the intent explicit).
         let handle = thread::Builder::new()
             .name("ui-collab-shovel".into())
-            .spawn(move || run_shovel(source, outbound_rx, inbound_tx, init_tx))
+            .spawn(move || run_shovel(source, identity_bytes, outbound_rx, inbound_tx, init_tx))
             .expect("spawn ui-collab-shovel thread");
 
         // Wait for the shovel to report initial connect status. This
@@ -713,6 +784,7 @@ enum InitStatus {
 /// (i.e. the manager was dropped).
 fn run_shovel(
     source: SdkConnectSource,
+    identity_bytes: Vec<u8>,
     outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
     init_tx: mpsc::SyncSender<InitStatus>,
@@ -745,7 +817,7 @@ fn run_shovel(
         // Ready. Manager may now hand out `send` / `poll`.
         let _ = init_tx.send(InitStatus::Ready);
 
-        drive_shovel(client, outbound_rx, inbound_tx).await;
+        drive_shovel(client, identity_bytes, outbound_rx, inbound_tx).await;
     });
 }
 
@@ -756,6 +828,7 @@ fn run_shovel(
 /// this body reads as pure protocol translation.
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
+    identity_bytes: Vec<u8>,
     mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
 ) {
@@ -768,15 +841,15 @@ async fn drive_shovel(
     while let Some(req) = outbound_rx.recv().await {
         match req {
             CollabRequest::Hello { app_id: _, cluster_id } => {
-                // The SDK contract wants opaque identity bytes; we do
-                // not yet have a real identity blob on this path
-                // (runtime-identity provisioning is a separate task).
-                // Passing empty bytes matches the "no identity" case
-                // the broker already tolerates — validation lives on
-                // the signed-op path.
-                let identity_blob: Vec<u8> = Vec::new();
+                // Ride the identity blob captured at manager
+                // construction — the loaded runtime-identity's raw
+                // pubkey bytes when the on-disk record was reachable,
+                // an empty vec otherwise. The broker treats empty as
+                // the "no identity" fallback (unchanged behaviour for
+                // apps outside a qOS session or missing an
+                // `QOS_USER_IDENTITY` env var).
                 let channel_id = cluster_id.to_string();
-                let ch = match client.join_channel(&channel_id, &identity_blob).await {
+                let ch = match client.join_channel(&channel_id, &identity_bytes).await {
                     Ok(ch) => ch,
                     Err(_) => continue,
                 };
@@ -1741,6 +1814,114 @@ mod tests {
         assert!(!mgr.is_connected(), "no service = not connected");
         mgr.send(CollabRequest::SyncCRDT { data: b"nope".to_vec() });
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
+    }
+
+    #[test]
+    fn join_channel_uses_empty_identity_when_env_var_unset() {
+        // The manager's public constructor (`new`) is what apps hit.
+        // With `QOS_USER_IDENTITY` unset, `runtime-identity::load()`
+        // returns `ServiceFdMissing` and the manager falls back to
+        // the empty-identity path — matching the pre-existing wire
+        // behaviour so a legacy broker sees no diff.
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+
+        // SAFETY: env-var mutations in this test module are logically
+        // serial — no other test in this module races on the same var.
+        unsafe { std::env::remove_var(runtime_identity::IDENTITY_ENV_VAR) };
+        let cluster = Uuid::new_v4();
+        let _mgr =
+            CollaborationManager::from_sdk_fd_for_test_with_identity(fd, "alice", cluster, Vec::new());
+
+        assert!(
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2),
+            ),
+            "join_channel must be observed"
+        );
+        let joined = captures.lock().unwrap().joined.clone();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].0, cluster.to_string());
+        assert!(joined[0].1.is_empty(), "identity blob must be empty when env unset");
+    }
+
+    #[test]
+    fn join_channel_carries_pubkey_bytes_when_identity_loads() {
+        // A fresh single-device identity written to disk and pointed
+        // at via QOS_USER_IDENTITY must ride the join_channel call as
+        // its pubkey bytes. This is the property that makes presence
+        // authored and signed-op provenance meaningful.
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("primary.json");
+        let secret = [42u8; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let vk = sk.verifying_key();
+        let record = serde_json::json!({
+            "display_name": "test-user",
+            "avatar_color": [1, 2, 3],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": vk.to_bytes(),
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": secret.to_vec(),
+            },
+            "created_at": "2026-07-04T00:00:00Z",
+            "schema_version": 1,
+        });
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
+        drop(f);
+
+        // We can't call `CollaborationManager::new()` here — it also
+        // reaches for `QOS_SVC_COLLAB_FD` and would race any other
+        // test in the workspace using the same env var. Instead
+        // simulate the load-then-forward path explicitly against the
+        // fake broker via the identity-aware test constructor.
+        let loaded = runtime_identity::load_from_path(path).expect("load identity");
+        let identity_bytes = loaded.group_public_key().to_vec();
+
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let cluster = Uuid::new_v4();
+        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
+            fd,
+            "alice",
+            cluster,
+            identity_bytes.clone(),
+        );
+
+        assert!(
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2),
+            ),
+            "join_channel must be observed"
+        );
+        let joined = captures.lock().unwrap().joined.clone();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(
+            joined[0].1,
+            identity_bytes,
+            "identity blob must equal the loaded pubkey bytes"
+        );
+        assert_eq!(joined[0].1.len(), 32, "Ed25519 pubkey is 32 bytes");
     }
 
     #[test]
