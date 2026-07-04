@@ -3,7 +3,26 @@ name = "ui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Keep the legacy JSON-over-Unix-socket broker path compiled in
+# (i.e. `collaboration::broker` submodule + the `QUICK_COLLAB_SOCK`
+# code branch inside `CollaborationManager`). Runtime already
+# prefers the `runtime-collab` SDK path; this flag exists so the
+# in-tree test suites, the `collab-broker` binary, and the shell's
+# 1400-LOC broker keep compiling / working while the wider fleet
+# migrates. Flip off (in a workspace `--no-default-features` build)
+# once every consumer is on the SDK dialect.
+default = ["legacy-broker"]
+legacy-broker = []
+
 [dependencies]
+# runtime-collab is the qOS collab-broker Cap'n Proto SDK.
+# `CollaborationManager` now delegates to it via a shovel thread; the
+# legacy Unix-socket JSON dialect stays available behind the
+# `legacy-broker` feature so the in-tree tests, the `collab-broker`
+# binary, and the shell's broker keep compiling.
+runtime-collab = { path = "../crates/runtime/runtime-collab" }
+runtime-portal = { path = "../crates/runtime/runtime-portal" }
 automerge = "0.8.0"
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
@@ -86,7 +105,7 @@ hmac = "0.12"
 # payload's binary fields, serde_bytes for the postcard-friendly
 # delegation-secret representation, thiserror for the flow-local
 # error type.
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", features = ["alloc", "use-std"] }
 hex = "0.4"
 serde_bytes = "0.11"
 thiserror = "1"
@@ -127,3 +146,9 @@ vello_encoding = "0.9"
 # `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.
 tempfile = "3"
+# The `collaboration` shim tests stand up a fake capnp broker on one end
+# of a `UnixStream::pair()` and drive `CollaborationManager` against it.
+# Same pin runtime-collab tests use.
+capnp = "0.26"
+capnp-rpc = "0.26"
+tokio-util = { version = "0.7", features = ["compat"] }
