@@ -5,6 +5,25 @@
 //! derived behaviour. The peer identity is an ed25519 keypair persisted at
 //! `/var/lib/qos-fs/peer-key` so the same `PeerId` survives compositor
 //! restarts.
+//!
+//! # Video substream
+//!
+//! Encoded video frames ride a dedicated per-share substream — not
+//! gossipsub. See [`crate::network::surface_stream`] for the framing
+//! format (u64 sequence, u32 length, u8 keyframe flag) and the
+//! per-subscriber bounded queue with drop-oldest backpressure.
+//!
+//! `NeighbourMsg::SurfaceStreamStart` / `SurfaceStreamEnd` remain on
+//! gossipsub for workspace-wide discovery — peers use those to open
+//! the substream. Only frame bytes ride the direct substream.
+//!
+//! The QUIC transport itself is available through `libp2p_quic 0.13`
+//! (pulled in transitively via `libp2p`), so a follow-up can extend
+//! this behaviour to open `substream` handles alongside the existing
+//! TCP/yamux transport without adding a new dep. For v1 the substream
+//! substrate lives in [`crate::network::surface_stream`] and can be
+//! driven over any bidirectional byte stream — the wire binding is
+//! decoupled from the framing.
 
 use libp2p::{gossipsub, mdns, swarm::NetworkBehaviour};
 
