@@ -1,0 +1,124 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# qOS host-mode bootc image — headless always-on host / relay.
+# ----------------------------------------------------------------------------
+# Ships a minimal bootc image that boots straight into
+# `qos-relay.service`. No compositor, no greetd, no session. Users
+# reach it via their own workspaces once the enrollment token in
+# /etc/qos/enrollment-token.txt is consumed on first boot.
+#
+#     podman build -f os/Containerfile.host -t localhost/qos-host:latest .
+#
+# The disk-image step is the same as the desktop image:
+# `bootc-image-builder` writes a qcow2 the operator installs onto
+# a target machine. See os/build-host.sh.
+# ============================================================================
+
+# ---- Stage 1: builder (same base + toolchain as the desktop image) ---------
+FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS builder
+
+RUN dnf install -y \
+        rust cargo sccache \
+        gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+        clang clang-devel pkgconf-pkg-config \
+        openssl-devel sqlite-devel zlib-ng-compat-devel \
+    && dnf clean all
+
+WORKDIR /build
+COPY . /build
+
+ARG SOURCE_DATE_EPOCH=0
+ENV CARGO_HOME=/build/.cargo-home \
+    SCCACHE_DIR=/build/.sccache \
+    CARGO_INCREMENTAL=0 \
+    RUSTFLAGS=--remap-path-prefix=/build=. \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
+
+# Host image only needs qos-relay + fs (for local mount) + a small
+# admin CLI. Drop the browser member (Servo) before resolving.
+RUN --mount=type=cache,target=/build/.cargo-home \
+    --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/build/.sccache \
+    sed -i '/"apps\/browser",/d' Cargo.toml \
+    && cp os/Cargo.lock.pinned Cargo.lock \
+    && cargo build --release \
+        -p qos-relay -p fs \
+    && mkdir -p /out \
+    && cp target/release/qos-relay \
+          target/release/qos-relay-admin \
+          target/release/fs \
+          /out/
+
+# ---- Stage 2: runtime image ------------------------------------------------
+FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d
+
+# Minimal runtime — no display stack, no PipeWire, no greetd. Just
+# what a headless network appliance needs: time sync, firewall,
+# fuse for the workspace mount, ca-certs for iroh relays.
+RUN dnf install -y \
+        chrony \
+        firewalld \
+        fuse3 \
+        ca-certificates \
+        NetworkManager \
+    && dnf clean all
+
+# Copy binaries + systemd unit + tmpfiles snippet.
+COPY --from=builder /out/qos-relay /usr/bin/qos-relay
+COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
+COPY --from=builder /out/fs /usr/bin/fs
+RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/fs
+
+COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
+COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
+COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
+COPY os/usr/lib/tmpfiles.d/qos-host.conf /usr/lib/tmpfiles.d/qos-host.conf
+RUN chmod 0755 /usr/libexec/qos-relay-firstboot
+
+# The first-boot script consumes /etc/qos/enrollment-token.txt (a
+# base32-Crockford EnrollmentToken minted on the operator's primary
+# device by the imager app) and mints a device keypair + persists
+# a device cert once the LAN mdns discovery hands back the signed
+# cert. Baked into the ISO by `qos-installer` — the sample stub
+# here is overwritten at install time.
+RUN mkdir -p /etc/qos \
+    && echo "# Replace with a base32-Crockford enrollment token minted by your primary device." \
+        > /etc/qos/enrollment-token.txt
+
+# Default relay config; `qos-relay init` inside the first-boot
+# service writes a real one under `/etc/qos/relay.toml` once the
+# enrollment completes.
+RUN mkdir -p /etc/qos \
+    && printf 'identity_root = "/var/lib/qos"\nstate_root = "/var/lib/qos-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
+        > /etc/qos/relay.toml
+
+# Enable services.
+RUN systemctl enable qos-relay-firstboot.service \
+    && systemctl enable qos-relay.service \
+    && systemctl enable chronyd.service \
+    && systemctl enable firewalld.service \
+    && systemctl set-default multi-user.target
+
+# The host does not run a graphical session; disable greetd + gdm
+# in case anything transitively pulls them in.
+RUN systemctl mask greetd.service || true
+RUN systemctl mask gdm.service || true
+
+# Automatic bootc updates — the host benefits even more than the
+# desktop image because it's headless + always-on.
+RUN systemctl enable bootc-fetch-apply-updates.timer
+
+# Signed-image trust roots — the same policy the desktop image
+# uses. Refuses to `bootc upgrade` unless the image is signed.
+COPY keys/cosign.pub /usr/share/qos/cosign.pub
+COPY os/etc/containers/policy.json /etc/containers/policy.json
+COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
+
+# firewalld default zone: the FedoraServer zone drops all inbound
+# except explicitly permitted. Iroh punches out; the relay does not
+# need any inbound-hole in the firewall to be reachable.
+RUN firewall-offline-cmd --set-default-zone=FedoraServer
+
+RUN bootc container lint
