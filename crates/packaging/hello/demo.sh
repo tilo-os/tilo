@@ -35,16 +35,20 @@ hr "1. build qos-hello + tools (release)"
 # demo idempotent + fast to re-run without needing distrobox from every
 # shell (some sub-shells can't launch nested distrobox containers).
 missing=0
-for b in qos-hello qos-pkg qos-launcher qos-install; do
+for b in qos-hello qos-pkg qos-launcher qos-install qos-runtime-bundle; do
   if [ ! -x "$INTEG/target/release/$b" ]; then missing=1; break; fi
 done
 if [ "$missing" -eq 1 ]; then
-  step distrobox enter my-distrobox -- bash -c "cd $INTEG && cargo build -p qos-hello -p qos-pkg-cli -p qos-launcher -p qos-install --release >/dev/null 2>&1"
+  step distrobox enter my-distrobox -- bash -c "cd $INTEG && cargo build -p hello -p pkg-cli -p launcher -p install -p runtime-bundle --release >/dev/null 2>&1"
 else
   echo "  ✓ all release binaries already built"
 fi
 cp "$INTEG/target/release/qos-hello" "$DEMO/payload/bin/qos-hello"
 ls -la "$DEMO/payload/bin/qos-hello" | awk '{print "  binary size:", $5, "bytes"}'
+
+hr "1b. install runtime bundle (qos-runtime/2026.07) from host"
+"$INTEG/target/release/qos-install" runtime install --version 2026.07 --from-host --force
+"$INTEG/target/release/qos-install" runtime list
 
 hr "2. write manifest"
 cat > "$DEMO/manifest.toml" <<'EOF'
@@ -109,7 +113,9 @@ hr "6. qos-install inspect"
 "$INTEG/target/release/qos-install" inspect dev.qos.hello
 
 hr "7. qos-install run — sandbox + Landlock enforcement + graceful services"
-"$INTEG/target/release/qos-install" run dev.qos.hello --no-services --minimal-libs
+# NOTE: no --minimal-libs. The manifest declares `runtime = "qos-runtime/2026.07"`,
+# and step 1b installed that bundle; the launcher mounts it automatically.
+"$INTEG/target/release/qos-install" run dev.qos.hello --no-services
 
 hr "8. qos-install remove"
 "$INTEG/target/release/qos-install" remove dev.qos.hello

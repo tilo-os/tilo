@@ -1,0 +1,17 @@
+[package]
+name = "notes-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Reference CLI app for the qOS package model — 'notes' on PATH writes a note."
+
+[[bin]]
+name = "notes"
+path = "src/main.rs"
+
+# Uses the `cli` SDK for workspace-path resolution + terminal-aware
+# output. Ships as a `type = "cli"` package (see manifest.toml).
+
+[dependencies]
+cli    = { path = "../../runtime/cli" }
+anyhow = "1"
+clap   = { version = "4", features = ["derive"] }
