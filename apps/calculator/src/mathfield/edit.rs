@@ -383,13 +383,6 @@ impl Editor {
         self.insert_node(Node::Char(ch));
     }
 
-    /// Insert a whole string of literal chars at the caret.
-    pub fn insert_str(&mut self, s: &str) {
-        for ch in s.chars() {
-            self.insert_char(ch);
-        }
-    }
-
     /// Type one logical character with GeoGebra-style structured building.
     pub fn type_char(&mut self, ch: char) {
         match ch {
@@ -399,6 +392,7 @@ impl Editor {
             '·' => self.insert_char('·'),
             '(' => self.start_paren(),
             ')' => self.skip_or_insert_close(),
+            '√' => self.insert_sqrt(),
             'π' => self.insert_char('π'),
             _ => {
                 self.delete_selection();
@@ -456,7 +450,11 @@ impl Editor {
         // Not inside a group: ignore stray close to keep the tree balanced.
     }
 
-    /// Explicit `sqrt` action (e.g. from a button) — same as typing `sqrt(`.
+    /// Build an empty radical at the caret and drop into its radicand — the
+    /// structured equivalent of typing `sqrt(`. This backs the `√` glyph as
+    /// entered input (routed here by [`type_char`]), so a `√` from the keyboard
+    /// / an IME / a paste builds a real radical rather than a literal character
+    /// the engine can't parse.
     pub fn insert_sqrt(&mut self) {
         self.insert_node(Node::Sqrt { index: None, radicand: Vec::new() });
         self.descend_into_last(Slot::Radicand);
@@ -653,25 +651,6 @@ impl Editor {
         if !self.expr.root.is_empty() {
             self.anchor = Some(0);
             self.caret.offset = self.expr.root.len();
-        }
-    }
-
-    /// Clamp the caret + anchor into valid positions after an external model
-    /// swap (e.g. the CRDT changed under us). Falls back to the root row end.
-    pub fn clamp(&mut self) {
-        if self.expr.row_at(&self.caret.steps).is_none() {
-            self.caret = Path::root(self.expr.root.len());
-            self.anchor = None;
-            return;
-        }
-        let len = self.row_len();
-        if self.caret.offset > len {
-            self.caret.offset = len;
-        }
-        if let Some(a) = self.anchor {
-            if a > len {
-                self.anchor = Some(len);
-            }
         }
     }
 }
