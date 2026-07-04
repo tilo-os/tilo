@@ -13,14 +13,16 @@ edition = "2024"
 default = ["hosted-test-control"]
 hosted-test-control = []
 # VA-API hardware H.264 encoder for Intel iGPU / AMD Radeon / ARM SoCs.
-# Opt-in — turns on the render-node probe + backend skeleton in
-# `collab::encoder::vaapi`. See the `cros-libva` note below the
-# openh264 dep for why the wrapper isn't linked in yet.
-vaapi = []
+# Opt-in — pulls in `ffmpeg-next` + libavcodec so the shell still
+# compiles on hosts without `ffmpeg-devel`. The backend calls
+# `h264_vaapi` (libavcodec) with an `av_hwdevice_ctx_create`d VAAPI
+# device on the render node.
+vaapi = ["ffmpeg-next"]
 # NVIDIA NVENC hardware H.264 encoder. Opt-in for NVIDIA-only OS-image
-# variants — non-NVIDIA hosts should leave this off to skip the CUDA
-# SDK compile.
-nvenc = []
+# variants — same `ffmpeg-next` dep as vaapi, different codec probe
+# (`h264_nvenc`). If libavcodec wasn't built against NVENC the probe
+# reports unavailable and Auto falls through to openh264.
+nvenc = ["ffmpeg-next"]
 
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
@@ -116,16 +118,20 @@ bs58 = "0.5.1"
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
 openh264 = { version = "0.9", features = ["source"] }
-# Note: the natural pick for `collab::encoder::vaapi` was `cros-libva`
-# (ChromeOS's upstream safe wrapper over libva.so.2 — smaller than
-# `ffmpeg-next`, with a first-class DMABUF import surface). It hit a
-# workspace-wide `log` feature conflict: `cros-libva` selects
-# `log/release_max_level_debug` while `ssip-client` (a transitive dep
-# elsewhere in the workspace) selects `log/release_max_level_info`,
-# and the two variants are mutually exclusive at compile time. The
-# vaapi backend currently probes render nodes via `/dev/dri`
-# directly; wiring `cros-libva` in is queued behind either patching
-# one of those upstreams or replacing `ssip-client` in the workspace.
+# Hardware H.264 encode (VA-API / NVENC) via libavcodec. Opt-in behind
+# the `vaapi` / `nvenc` features. `default-features = false` +
+# `features = ["codec", "software-scaling"]` pulls only libavcodec +
+# libswscale (no libavformat / libavfilter / libavdevice) so the compile
+# cost is bounded. The h264_vaapi encoder needs an `av_hwdevice_ctx_create`d
+# VAAPI device on `/dev/dri/renderD*`; libswscale handles the RGBA→NV12
+# CPU-side conversion before uploading to a VA-API surface.
+#
+# Why not `cros-libva`: it selects `log/release_max_level_debug` and
+# `ssip-client` (already in-tree for accessibility) selects
+# `log/release_max_level_info` — mutually exclusive Cargo features on
+# the `log` crate. `ffmpeg-next` has no `log` dependency, so it side-
+# steps the conflict entirely.
+ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
 # Sandbox Phase 4.3 (`docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`):
 # `portal::serve` registers the `org.freedesktop.impl.portal.{FileChooser,
 # ScreenCast,Access}` backend interfaces over D-Bus so xdg-desktop-portal can
