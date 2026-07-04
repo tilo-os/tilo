@@ -42,8 +42,9 @@ use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 /// A row action chosen from the right-click context menu. The menu's action
 /// callbacks are `Fn()` with no access to `&mut self`, so they record the
 /// chosen action into a shared cell that `on_click` drains and applies after
-/// dispatch. This is the consumer-side routing the self-routing context menu
-/// expects (`ContextMenu::handle_event` is a no-op primitive).
+/// dispatch. The app owns the input routing into the menu because the menu is
+/// hand-drawn as a child of this widget rather than mounted in the host's
+/// widget tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProcAction {
     Stop(u32),
@@ -118,6 +119,35 @@ const CONTEXT_MENU_ROW_H: f64 = 28.0;
 const CONTEXT_MENU_SEP_H: f64 = 9.0;
 const CONTEXT_MENU_PAD: f64 = 6.0;
 
+/// How long the "PID copied" toast stays up after a Copy PID action before it
+/// expires on its own. The redraw loop keeps ticking (`needs_animation_frame`
+/// is always true), so the toast clears itself without any further input.
+const TOAST_MS: u64 = 2200;
+
+/// A scrollbar's on-screen geometry, recorded during `draw` so `handle_event`
+/// can hit-test its thumb/track and map a thumb drag to a scroll value.
+/// `max_value` is the scroll range's ceiling in that bar's own units — rows
+/// for the vertical row bar, logical px for the column and page bars.
+#[derive(Clone, Copy, Debug)]
+struct ScrollBarHit {
+    track: Rect,
+    thumb: Rect,
+    max_value: f64,
+}
+
+/// Which scrollbar the user is dragging, plus where within its thumb they
+/// grabbed (logical px along the bar's axis) so the thumb tracks the cursor
+/// without jumping to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ScrollDrag {
+    /// The process table's vertical row scrollbar (value = fractional row).
+    Rows { grab: f64 },
+    /// The process table's horizontal column scrollbar (value = px).
+    Cols { grab: f64 },
+    /// The whole-view page scrollbar (value = px).
+    Page { grab: f64 },
+}
+
 /// Hit rectangles recorded during `draw`, consumed by `handle_event`.
 struct Hit {
     tab_proc: Rect,
@@ -143,6 +173,15 @@ struct Hit {
     summary_cells: Vec<Rect>,
     /// Back affordance returning from the pushed detail to the table (narrow).
     detail_back: Rect,
+    /// The "Confirm kills" preference toggle pill in the toolbar — the only UI
+    /// that reaches the persisted `confirm_kill` preference.
+    confirm_toggle: Rect,
+    /// The process table's vertical row scrollbar (present when rows overflow).
+    v_scrollbar: Option<ScrollBarHit>,
+    /// The process table's horizontal column scrollbar (present on overflow).
+    h_scrollbar: Option<ScrollBarHit>,
+    /// The whole-view page scrollbar (present when the Resources body overflows).
+    page_scrollbar: Option<ScrollBarHit>,
 }
 
 impl Hit {
@@ -164,6 +203,10 @@ impl Hit {
             modal_cancel: Rect::ZERO,
             summary_cells: Vec::new(),
             detail_back: Rect::ZERO,
+            confirm_toggle: Rect::ZERO,
+            v_scrollbar: None,
+            h_scrollbar: None,
+            page_scrollbar: None,
         }
     }
 }
@@ -213,10 +256,15 @@ pub struct MonitorApp {
     /// drained + applied by `on_click` after dispatch (see [`ProcAction`]).
     /// `Arc<Mutex<..>>` because `ContextMenu` requires `Send + Sync` actions.
     pending_action: Arc<Mutex<Option<ProcAction>>>,
-    /// The pid most recently "Copy PID"'d — observable by tests and surfaced
-    /// briefly as a toast-style caption (the OS clipboard protocol isn't wired
-    /// to this app yet, so the copy is recorded here).
+    /// The pid most recently "Copy PID"'d. The pid itself is written to the OS
+    /// clipboard via [`ui::clipboard_copy`]; this field records it so the
+    /// transient "PID N copied" toast (and tests) can observe the action.
     copied_pid: Option<u32>,
+    /// When the last Copy PID happened — drives the auto-expiring toast.
+    copied_at: Option<Instant>,
+    /// An in-progress scrollbar thumb drag, if any (started on mouse-press over
+    /// a thumb, updated on cursor-move, cleared on release).
+    scroll_drag: Option<ScrollDrag>,
     /// A `--shots` request to open the context menu over a pid once its row
     /// has been laid out (the anchor isn't known until `draw` computes the row
     /// rects). Consumed on the first frame that finds the row.
@@ -312,6 +360,8 @@ impl MonitorApp {
             context_pid: None,
             pending_action: Arc::new(Mutex::new(None)),
             copied_pid: None,
+            copied_at: None,
+            scroll_drag: None,
             context_menu_seed: None,
             proc_push: ProcPush::default(),
             rect: Rect::ZERO,
@@ -510,7 +560,13 @@ impl MonitorApp {
                 }
             }
         };
-        menu.push(MenuItem::action("Show details", set(ProcAction::ShowDetails(pid))));
+        // "Show details" only earns a place on narrow windows, where it pushes
+        // the detail pane into view. On wide windows the detail strip is always
+        // visible and the right-click already selected the row, so the item
+        // would be a no-op — so it's omitted rather than offered as a lie.
+        if self.is_narrow() {
+            menu.push(MenuItem::action("Show details", set(ProcAction::ShowDetails(pid))));
+        }
         menu.push(MenuItem::action("Copy PID", set(ProcAction::CopyPid(pid))));
         menu.push(MenuItem::separator());
         menu.push(MenuItem::action(format!("Stop {name}  (SIGTERM)"), set(ProcAction::Stop(pid))));
@@ -595,15 +651,18 @@ impl MonitorApp {
             .map(|r| r.pid)
     }
 
-    /// Apply a [`ProcAction`] the context menu recorded. Returns nothing; the
-    /// CopyPid path writes to the clipboard-bridge field (a no-op stub until
-    /// the OS clipboard protocol lands — recorded so it's observable in tests).
+    /// Apply a [`ProcAction`] the context menu recorded. The CopyPid path
+    /// writes the pid to the real OS clipboard via [`ui::clipboard_copy`] (a
+    /// silent no-op in a headless/locked-down session) and records it so the
+    /// transient toast and tests can observe the action.
     fn apply_action(&mut self, action: ProcAction, doc: &mut AutoCommit, path: &ObjId) {
         match action {
             ProcAction::Stop(pid) => self.request_stop(pid, doc),
             ProcAction::Kill(pid) => self.request_kill(pid, doc, path),
             ProcAction::CopyPid(pid) => {
+                ui::clipboard_copy(&pid.to_string());
                 self.copied_pid = Some(pid);
+                self.copied_at = Some(Instant::now());
                 self.selected_pid = Some(pid);
             }
             ProcAction::ShowDetails(pid) => {
@@ -708,6 +767,43 @@ impl MonitorApp {
             Tab::Processes => 0.0,
             Tab::Resources => self.resources_natural_h(main_w),
         }
+    }
+
+    /// The page-scroll offset that brings summary stat `i`'s Resources chart
+    /// (0 CPU · 1 Memory · 2 Network · 3 Disk) to the top of the viewport,
+    /// clamped to the page overflow at the current body size. Clicking a
+    /// summary-strip cell switches to Resources and scrolls here, so each of
+    /// the four cells lands on its own chart rather than every one dumping the
+    /// user at the top. Uses the exact chart-grid arithmetic `draw_resources`
+    /// lays out against, so the target lands on the real chart.
+    fn resources_scroll_for_stat(&self, i: usize, body_w: f64, viewport_h: f64) -> f32 {
+        let n = self.model.metrics.cores.len().max(1);
+        let grid = layout::per_core_grid(n, body_w - 2.0 * layout::RAIL_CARD_PAD);
+        let core_h = layout::per_core_card_h(grid);
+        let charts_top = layout::overview_h(body_w) + GAP + core_h + GAP;
+        let cols = layout::charts_cols(body_w);
+        let row = (i / cols) as f64;
+        let min_chart_h = 150.0;
+        let target = charts_top + row * (min_chart_h + GAP);
+        let overflow = (self.resources_natural_h(body_w) - viewport_h).max(0.0);
+        (target as f32).clamp(0.0, overflow as f32)
+    }
+
+    /// The body content width and viewport height the page-scroll math uses,
+    /// derived from the current outer `rect` (mirrors `draw`'s split of the
+    /// frame into header + body).
+    fn body_metrics(&self) -> (f64, f64) {
+        let body_w = (self.rect.width() - 2.0 * OUTER_PAD).max(1.0);
+        let viewport_h = (self.rect.height() - 2.0 * OUTER_PAD - HEADER_H - GAP).max(1.0);
+        (body_w, viewport_h)
+    }
+
+    /// Whether the "PID copied" toast should currently show — true for a short
+    /// window after a Copy PID action, then it expires on its own.
+    fn copy_toast_active(&self) -> bool {
+        self.copied_at
+            .map(|t| t.elapsed() < Duration::from_millis(TOAST_MS))
+            .unwrap_or(false)
     }
 
     // ---- headless screenshot scenarios -----------------------------------
@@ -1314,16 +1410,20 @@ impl MonitorApp {
         }
         scene.pop_layer();
 
-        // Vertical row scrollbar.
+        // Vertical row scrollbar — a draggable thumb over a page-able track.
         if rows.len() > self.rows_per_page {
-            let track = Rect::new(view.x1 - 5.0, view.y0, view.x1 - 1.0, view.y1);
+            let track = Rect::new(view.x1 - 8.0, view.y0, view.x1 - 1.0, view.y1);
             charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
             let frac_v = self.rows_per_page as f64 / rows.len() as f64;
             let thumb_h = (track.height() * frac_v).max(24.0);
             let max_off = (rows.len() - self.rows_per_page) as f64;
             let pos = if max_off > 0.0 { self.scroll_off as f64 / max_off } else { 0.0 };
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
-            charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
+            let thumb = Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h);
+            charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+            self.hit.v_scrollbar = Some(ScrollBarHit { track, thumb, max_value: max_off });
+        } else {
+            self.hit.v_scrollbar = None;
         }
 
         // Horizontal scrollbar — appears only when the columns overflow the
@@ -1336,7 +1436,11 @@ impl MonitorApp {
             let thumb_w = (track.width() * frac_h).max(24.0);
             let pos = (sx / h_overflow).clamp(0.0, 1.0);
             let tx0 = track.x0 + (track.width() - thumb_w) * pos;
-            charts::fill_rrect(scene, t, Rect::new(tx0, track.y0, tx0 + thumb_w, track.y1), 2.0, with_alpha(c.text_dim, 160));
+            let thumb = Rect::new(tx0, track.y0, tx0 + thumb_w, track.y1);
+            charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+            self.hit.h_scrollbar = Some(ScrollBarHit { track, thumb, max_value: h_overflow });
+        } else {
+            self.hit.h_scrollbar = None;
         }
     }
 
@@ -1404,6 +1508,9 @@ impl MonitorApp {
         // Tree/Flat pill.
         let tree_text = if self.tree_mode { "⊟ Tree" } else { "≣ Flat" };
         w += TOOLBAR_PILL_GAP + tr.measure(tree_text, fs, None).0 as f64 + 24.0;
+        // Confirm-kills pill (reserved so the toolbar stacks before the pill
+        // cluster crowds the search box; dropped only at extreme-narrow widths).
+        w += TOOLBAR_PILL_GAP + tr.measure("Confirm kills", fs, None).0 as f64 + 24.0;
         w
     }
 
@@ -1491,11 +1598,35 @@ impl MonitorApp {
         tr.draw_text(scene, tree_text, fs, if self.tree_mode { c.text_primary } else { c.text_dim }, t * Affine::translate((tree_r.center().x - ttw as f64 / 2.0, tree_r.center().y - fs as f64 / 2.0 - 1.0)), None);
         self.hit.tree_toggle = tree_r;
 
+        // Confirm-kills toggle pill, left of the tree pill. Accent-filled when
+        // on. This is the only affordance that reaches the persisted
+        // `confirm_kill` preference. Drawn whenever it fits within the pills
+        // row; at extreme-narrow widths (where the toolbar is already stacked)
+        // it's dropped rather than clipped off the left edge.
+        let confirm_text = "Confirm kills";
+        let cfw = tr.measure(confirm_text, fs, None).0 as f64 + 24.0;
+        let confirm_x1 = tree_r.x0 - TOOLBAR_PILL_GAP;
+        let confirm_x0 = confirm_x1 - cfw;
+        // Left edge of the pill cluster — the search box stops before this so
+        // the box and the pills can never overlap however narrow the window.
+        let cluster_left = if confirm_x0 >= pills_row.x0 {
+            let confirm_r = Rect::new(confirm_x0, pills_row.y0 + 2.0, confirm_x1, pills_row.y1 - 2.0);
+            let ck = self.prefs.confirm_kill;
+            charts::fill_rrect(scene, t, confirm_r, confirm_r.height() / 2.0, if ck { with_alpha(c.accent[5], 60) } else { c.surface_white_5 });
+            charts::stroke_rrect(scene, t, confirm_r, confirm_r.height() / 2.0, if ck { c.accent[5] } else { c.border_standard }, 1.0);
+            let (cftw, _) = tr.measure(confirm_text, fs, None);
+            tr.draw_text(scene, confirm_text, fs, if ck { c.text_primary } else { c.text_dim }, t * Affine::translate((confirm_r.center().x - cftw as f64 / 2.0, confirm_r.center().y - fs as f64 / 2.0 - 1.0)), None);
+            self.hit.confirm_toggle = confirm_r;
+            confirm_r.x0
+        } else {
+            self.hit.confirm_toggle = Rect::ZERO;
+            tree_r.x0
+        };
+
         // ---- search box in `search_row` -----------------------------------
         // Stacked: full width on its own row. Side-by-side: fill from the left
         // up to the pill cluster (capped at a comfortable preferred width), so
         // the box and the pills can never overlap however narrow the window.
-        let cluster_left = tree_r.x0;
         let search_r = if stacked {
             Rect::new(search_row.x0, search_row.y0, search_row.x1, search_row.y1)
         } else {
@@ -1531,11 +1662,7 @@ impl MonitorApp {
         if !stacked {
             let total = self.model.processes.iter().filter(|p| self.prefs.show_kernel_threads || !p.kernel).count();
             let shown = self.visible_rows().len();
-            let count = if let Some(pid) = self.copied_pid {
-                format!("PID {pid} copied  ·  {shown} of {total} shown")
-            } else {
-                format!("{shown} of {total} shown")
-            };
+            let count = format!("{shown} of {total} shown");
             let (cw, _) = tr.measure(&count, fs, None);
             let cxx = (search_r.x1 + cluster_left) / 2.0 - cw as f64 / 2.0;
             if cluster_left - (search_r.x1 + 10.0) > cw as f64 + 8.0 {
@@ -1731,12 +1858,121 @@ impl MonitorApp {
         let (w, h) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
         tr.draw_text_weighted(scene, label, fs, color, t * Affine::translate((r.center().x - w as f64 / 2.0, r.center().y - h as f64 / 2.0)), None, TextWeight::Semibold);
     }
+
+    /// The transient "PID N copied" toast — a small pill centred near the
+    /// bottom of the window for a short window after a Copy PID action, then
+    /// it expires on its own (the redraw loop keeps ticking). Real transient
+    /// feedback, not text jammed into the toolbar count label.
+    fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if !self.copy_toast_active() {
+            return;
+        }
+        let Some(pid) = self.copied_pid else { return };
+        let c = &theme.tokens.colors;
+        let label = format!("PID {pid} copied to clipboard");
+        let fs = theme.tokens.typography.scale.sm;
+        let (lw, lh) = tr.measure_weighted(&label, fs, None, TextWeight::Medium);
+        let pad = 16.0;
+        let icon_w = 22.0;
+        let w = lw as f64 + pad * 2.0 + icon_w;
+        let h = 34.0;
+        let cx = self.rect.center().x;
+        let x0 = cx - w / 2.0;
+        let y1 = self.rect.y1 - OUTER_PAD - 6.0;
+        let y0 = y1 - h;
+        let toast = Rect::new(x0, y0, x0 + w, y1);
+        charts::fill_rrect(scene, t, toast, h / 2.0, c.surfaces.raised);
+        charts::stroke_rrect(scene, t, toast, h / 2.0, c.border_standard, 1.0);
+        let icon_r = Rect::new(toast.x0 + pad, toast.center().y - 8.0, toast.x0 + pad + 16.0, toast.center().y + 8.0);
+        icons::draw_icon(scene, t, icon_r, Icon::Check, c.semantic.success, 1.8);
+        tr.draw_text_weighted(scene, &label, fs, c.text_primary, t * Affine::translate((icon_r.x1 + 8.0, toast.center().y - lh as f64 / 2.0)), None, TextWeight::Medium);
+    }
 }
 
 // ==========================================================================
 // Event handling
 // ==========================================================================
 impl MonitorApp {
+    /// If `p` lands on a scrollbar, either begin a thumb drag (press on the
+    /// thumb) or page toward the click (press on the track). Returns whether it
+    /// consumed the press. Checked before row/summary hit-testing so dragging
+    /// the row scrollbar never selects the row it overlaps.
+    fn begin_scroll_interaction(&mut self, p: Point) -> bool {
+        // Page bar (Resources whole-view). Present only on the Resources tab.
+        if let Some(sb) = self.hit.page_scrollbar {
+            if sb.track.contains(p) {
+                if sb.thumb.contains(p) {
+                    self.scroll_drag = Some(ScrollDrag::Page { grab: p.y - sb.thumb.y0 });
+                } else {
+                    let dir = if p.y < sb.thumb.y0 { -1.0 } else { 1.0 };
+                    let page = (self.viewport_h * 0.9) as f32;
+                    let max_y = sb.max_value as f32;
+                    self.view_scroll_y = (self.view_scroll_y + dir * page).clamp(0.0, max_y);
+                }
+                return true;
+            }
+        }
+        // Vertical row bar. Present only on the Processes tab.
+        if let Some(sb) = self.hit.v_scrollbar {
+            if sb.track.contains(p) {
+                if sb.thumb.contains(p) {
+                    self.scroll_drag = Some(ScrollDrag::Rows { grab: p.y - sb.thumb.y0 });
+                } else {
+                    let dir = if p.y < sb.thumb.y0 { -1.0 } else { 1.0 };
+                    self.scroll_off = (self.scroll_off + dir * self.rows_per_page as f32).max(0.0);
+                    self.clamp_scroll();
+                }
+                return true;
+            }
+        }
+        // Horizontal column bar.
+        if let Some(sb) = self.hit.h_scrollbar {
+            if sb.track.contains(p) {
+                if sb.thumb.contains(p) {
+                    self.scroll_drag = Some(ScrollDrag::Cols { grab: p.x - sb.thumb.x0 });
+                } else {
+                    let dir = if p.x < sb.thumb.x0 { -1.0 } else { 1.0 };
+                    let max_x = sb.max_value as f32;
+                    self.table_scroll_x = (self.table_scroll_x + dir * self.table_cols_w as f32).clamp(0.0, max_x);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Advance an in-progress scrollbar drag to the current cursor position,
+    /// mapping the thumb's grabbed point to a scroll value along the bar axis.
+    fn apply_scroll_drag(&mut self, p: Point) {
+        let Some(drag) = self.scroll_drag else { return };
+        match drag {
+            ScrollDrag::Rows { grab } => {
+                if let Some(sb) = self.hit.v_scrollbar {
+                    let travel = (sb.track.height() - sb.thumb.height()).max(1.0);
+                    let frac = ((p.y - grab - sb.track.y0) / travel).clamp(0.0, 1.0);
+                    self.scroll_off = (frac * sb.max_value) as f32;
+                    self.clamp_scroll();
+                }
+            }
+            ScrollDrag::Cols { grab } => {
+                if let Some(sb) = self.hit.h_scrollbar {
+                    let travel = (sb.track.width() - sb.thumb.width()).max(1.0);
+                    let frac = ((p.x - grab - sb.track.x0) / travel).clamp(0.0, 1.0);
+                    let max_x = (self.table_content_w - self.table_cols_w).max(0.0) as f32;
+                    self.table_scroll_x = ((frac * sb.max_value) as f32).clamp(0.0, max_x);
+                }
+            }
+            ScrollDrag::Page { grab } => {
+                if let Some(sb) = self.hit.page_scrollbar {
+                    let travel = (sb.track.height() - sb.thumb.height()).max(1.0);
+                    let frac = ((p.y - grab - sb.track.y0) / travel).clamp(0.0, 1.0);
+                    let max_y = (self.content_h - self.viewport_h).max(0.0) as f32;
+                    self.view_scroll_y = ((frac * sb.max_value) as f32).clamp(0.0, max_y);
+                }
+            }
+        }
+    }
+
     fn on_click(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         // Modal takes priority.
         if let Some((pid, kind)) = self.confirm_stop {
@@ -1776,6 +2012,14 @@ impl MonitorApp {
             return;
         }
 
+        // Scrollbar thumbs/tracks take precedence over the content beneath them,
+        // so a press on the row scrollbar drags/pages instead of selecting the
+        // row it overlaps.
+        if self.begin_scroll_interaction(p) {
+            *handled = true;
+            return;
+        }
+
         // Lose search focus unless the search box itself is clicked.
         let clicked_search = self.hit.search.contains(p);
         self.search_focused = clicked_search;
@@ -1788,13 +2032,14 @@ impl MonitorApp {
         }
 
         // A click on a summary-strip cell (Processes) jumps to the Resources
-        // dashboard, where that stat's full gauge/chart lives.
-        for cell in self.hit.summary_cells.clone() {
+        // dashboard AND scrolls that stat's own chart into view — so the four
+        // cells land on four different charts rather than all dumping the user
+        // at the top.
+        for (i, cell) in self.hit.summary_cells.clone().into_iter().enumerate() {
             if cell.contains(p) {
-                if self.tab != Tab::Resources {
-                    self.view_scroll_y = 0.0;
-                }
                 self.tab = Tab::Resources;
+                let (body_w, viewport_h) = self.body_metrics();
+                self.view_scroll_y = self.resources_scroll_for_stat(i, body_w, viewport_h);
                 *handled = true;
                 return;
             }
@@ -1832,6 +2077,13 @@ impl MonitorApp {
                 self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
                 self.prefs.store(doc, path);
                 self.clamp_scroll();
+                *handled = true;
+                return;
+            }
+            // Confirm-kills preference toggle (persisted).
+            if self.hit.confirm_toggle.contains(p) {
+                self.prefs.confirm_kill = !self.prefs.confirm_kill;
+                self.prefs.store(doc, path);
                 *handled = true;
                 return;
             }
@@ -2210,15 +2462,18 @@ impl Widget for MonitorApp {
 
         if scrolling {
             scene.pop_layer();
-            // Page scrollbar down the right edge of the body viewport.
-            let track = Rect::new(body.x1 - 5.0, body.y0, body.x1 - 1.0, body.y1);
+            // Page scrollbar down the right edge of the body viewport — a
+            // draggable thumb over a page-able track.
+            let track = Rect::new(body.x1 - 8.0, body.y0, body.x1 - 1.0, body.y1);
             let c = &theme.tokens.colors;
             charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
             let frac_v = (viewport_h / self.content_h).clamp(0.0, 1.0);
             let thumb_h = (track.height() * frac_v).max(24.0);
             let pos = if page_overflow > 0.0 { dy / page_overflow } else { 0.0 };
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
-            charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
+            let thumb = Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h);
+            charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+            self.hit.page_scrollbar = Some(ScrollBarHit { track, thumb, max_value: page_overflow });
         }
 
         // A `--shots` request to open the context menu over a seeded pid: now
@@ -2262,6 +2517,9 @@ impl Widget for MonitorApp {
             self.hit.menu_items.clear();
         }
 
+        // The "PID copied" toast floats above the content, below the modal.
+        self.draw_toast(scene, t, text_renderer, theme);
+
         if let Some((pid, kind)) = self.confirm_stop {
             self.draw_modal(scene, t, text_renderer, theme, pid, kind);
         }
@@ -2282,6 +2540,11 @@ impl Widget for MonitorApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // A live scrollbar thumb drag follows the cursor.
+                if self.scroll_drag.is_some() {
+                    self.apply_scroll_drag(self.last_cursor);
+                    *handled = true;
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.confirm_stop.is_some() {
@@ -2340,6 +2603,16 @@ impl Widget for MonitorApp {
             } => {
                 let p = self.last_cursor;
                 self.on_right_click(p, doc, path, handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // End any scrollbar thumb drag.
+                if self.scroll_drag.take().is_some() {
+                    *handled = true;
+                }
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if ke.state == ElementState::Pressed =>
@@ -2710,7 +2983,7 @@ mod tests {
         // the clamp ceiling.
         for _ in 0..40 {
             let ev = WindowEvent::MouseWheel {
-                device_id: unsafe { winit::event::DeviceId::dummy() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(-50.0, 0.0),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -2825,7 +3098,13 @@ mod tests {
         assert!(labels.iter().any(|l| l.starts_with("Stop")), "has Stop: {labels:?}");
         assert!(labels.iter().any(|l| l.starts_with("Kill")), "has Kill: {labels:?}");
         assert!(labels.iter().any(|l| l == "Copy PID"), "has Copy PID");
-        assert!(labels.iter().any(|l| l == "Show details"), "has Show details");
+        // On a WIDE window the detail strip is always visible and the
+        // right-click already selected the row, so "Show details" is a no-op
+        // and is deliberately omitted (it would otherwise be a dead action).
+        assert!(
+            !labels.iter().any(|l| l == "Show details"),
+            "Show details is omitted on wide (it would be a no-op): {labels:?}"
+        );
     }
 
     /// Clicking the "Stop" item in the open menu dispatches a SIGTERM via the
@@ -2970,9 +3249,10 @@ mod tests {
                 ("tree", a.hit.tree_toggle),
                 ("sum", a.hit.sum_toggle),
                 ("kernel", a.hit.kernel_toggle),
+                ("confirm", a.hit.confirm_toggle),
             ] {
                 if pill == Rect::ZERO {
-                    continue; // sum pill is absent in flat mode
+                    continue; // sum pill is absent in flat mode; confirm is dropped at extreme narrow
                 }
                 assert!(
                     !overlaps(search, pill),
@@ -3085,5 +3365,481 @@ mod tests {
             "the running process appears in the real table (data is live, not mock)"
         );
         assert!(!a.model.metrics.cores.is_empty(), "real per-core readings sampled");
+    }
+
+    // ---- input-path coverage: click / key / wheel through the real handlers --
+
+    /// Dispatch a real `WindowEvent` through the production `handle_event`
+    /// entry point (scale 1.0, no modifiers), returning whether it was handled.
+    fn dispatch_ev(a: &mut MonitorApp, ev: &WindowEvent) -> bool {
+        let modifiers = winit::event::Modifiers::default();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        let mut handled = false;
+        let mut focus = None;
+        a.handle_event(ev, 1.0, &modifiers, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+    fn synth_cursor(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+    fn synth_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn synth_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+    fn synth_wheel(dx: f32, dy: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(dx, dy),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+
+    /// Clicking the interval pill cycles the cadence AND persists it to the
+    /// CRDT — the full `on_click` → `cycle_interval` → `store` production path.
+    #[test]
+    fn interval_pill_click_cycles_and_persists() {
+        let mut a = app();
+        a.hit.interval = Rect::new(0.0, 0.0, 80.0, 30.0);
+        let before = a.prefs.interval_ms;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h, "interval pill consumed the click");
+        assert_ne!(a.prefs.interval_ms, before, "cadence advanced");
+        assert_eq!(
+            Prefs::load(&doc, &root).interval_ms,
+            a.prefs.interval_ms,
+            "new cadence persisted to the CRDT"
+        );
+    }
+
+    /// Clicking the kernel-threads pill flips the pref, persists it, and the
+    /// table now lists kernel threads — the whole `on_click` path, not a direct
+    /// field poke.
+    #[test]
+    fn kernel_toggle_click_flips_persists_and_reveals_threads() {
+        let mut a = app();
+        assert!(a.visible_processes().iter().all(|p| !p.kernel));
+        a.hit.kernel_toggle = Rect::new(0.0, 0.0, 160.0, 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(a.prefs.show_kernel_threads, "toggled on");
+        assert!(Prefs::load(&doc, &root).show_kernel_threads, "persisted to the CRDT");
+        assert!(a.visible_processes().iter().any(|p| p.kernel), "kernel threads now visible");
+    }
+
+    /// Clicking the Tree/Flat pill toggles the view; flat rows are all depth 0.
+    #[test]
+    fn tree_flat_pill_click_toggles_mode() {
+        let mut a = app();
+        assert!(a.tree_mode);
+        a.hit.tree_toggle = Rect::new(0.0, 0.0, 80.0, 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(!a.tree_mode, "toggled to flat");
+        assert!(a.visible_rows().iter().all(|r| r.depth == 0), "flat rows carry no tree depth");
+    }
+
+    /// Clicking a sort-header sets that column as the sort key (numeric columns
+    /// default descending) — the `on_click` → `set_sort` path.
+    #[test]
+    fn sort_header_click_sets_sort_key() {
+        let mut a = app();
+        a.hit.sort_headers = vec![(SortKey::Mem, Rect::new(0.0, 0.0, 60.0, 26.0))];
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(matches!(a.sort_key, SortKey::Mem));
+        assert!(a.sort_desc, "MEM is numeric → defaults descending");
+    }
+
+    /// Clicking the detail-strip Kill button routes through the gated kill
+    /// path (with confirm on it pops the modal) — via `on_click`, not a direct
+    /// `request_kill`.
+    #[test]
+    fn kill_button_click_requests_gated_kill() {
+        let mut a = app();
+        a.prefs.confirm_kill = true;
+        let pid = a.selected_pid.unwrap();
+        a.hit.kill_btn = Rect::new(0.0, 0.0, 96.0, 32.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert_eq!(a.confirm_stop, Some((pid, StopKind::Kill)), "Kill button gated → confirm modal");
+    }
+
+    /// The confirm modal's Kill button dispatches the signal; its Cancel button
+    /// dismisses without killing — both through the `on_click` confirm branch.
+    #[test]
+    fn confirm_modal_buttons_confirm_and_cancel() {
+        let mut a = app();
+        let pid = a.visible_rows()[0].pid;
+        a.selected_pid = Some(pid);
+        a.confirm_stop = Some((pid, StopKind::Kill));
+        a.hit.modal_kill = Rect::new(0.0, 0.0, 110.0, 36.0);
+        a.hit.modal_cancel = Rect::new(200.0, 0.0, 310.0, 36.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(a.confirm_stop.is_none(), "modal dismissed after confirm");
+        assert!(a.model.processes.iter().all(|p| p.pid != pid), "process killed on confirm");
+
+        let mut b = app();
+        let pid2 = b.visible_rows()[0].pid;
+        b.confirm_stop = Some((pid2, StopKind::Kill));
+        b.hit.modal_kill = Rect::new(0.0, 0.0, 110.0, 36.0);
+        b.hit.modal_cancel = Rect::new(200.0, 0.0, 310.0, 36.0);
+        let mut h2 = false;
+        b.on_click(Point::new(250.0, 10.0), &mut doc, &root, &mut h2);
+        assert!(h2);
+        assert!(b.confirm_stop.is_none(), "Cancel dismissed the modal");
+        assert!(b.model.processes.iter().any(|p| p.pid == pid2), "Cancel did not kill");
+    }
+
+    /// The confirm modal's keyboard: Enter confirms the kill, Escape cancels.
+    #[test]
+    fn confirm_modal_keyboard_enter_confirms_escape_cancels() {
+        let mut a = app();
+        let pid = a.visible_rows()[0].pid;
+        a.confirm_stop = Some((pid, StopKind::Kill));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_key(&Key::Named(NamedKey::Enter), None, false, &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(a.confirm_stop.is_none());
+        assert!(a.model.processes.iter().all(|p| p.pid != pid), "Enter confirmed the kill");
+
+        let mut b = app();
+        let pid2 = b.visible_rows()[0].pid;
+        b.confirm_stop = Some((pid2, StopKind::Kill));
+        let mut h2 = false;
+        b.on_key(&Key::Named(NamedKey::Escape), None, false, &mut doc, &root, &mut h2);
+        assert!(h2);
+        assert!(b.confirm_stop.is_none());
+        assert!(b.model.processes.iter().any(|p| p.pid == pid2), "Escape cancelled the kill");
+    }
+
+    /// Clicking the search box focuses it, and the keyboard editing path
+    /// (chars, Space, Backspace, Escape) drives the real filter.
+    #[test]
+    fn search_click_focus_and_keyboard_editing_filters() {
+        let mut a = app();
+        a.hit.search = Rect::new(0.0, 0.0, 300.0, 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h && a.search_focused, "clicking the search box focuses it");
+        for ch in "brow".chars() {
+            let s = ch.to_string();
+            let mut hk = false;
+            a.on_key(&Key::Character(s.as_str().into()), Some(s.as_str()), false, &mut doc, &root, &mut hk);
+            assert!(hk, "typed char handled");
+        }
+        assert_eq!(a.filter, "brow");
+        let mut hsp = false;
+        a.on_key(&Key::Named(NamedKey::Space), None, false, &mut doc, &root, &mut hsp);
+        assert_eq!(a.filter, "brow ");
+        let mut hbs = false;
+        a.on_key(&Key::Named(NamedKey::Backspace), None, false, &mut doc, &root, &mut hbs);
+        assert_eq!(a.filter, "brow");
+        assert!(
+            a.visible_processes().iter().all(|p| p.name.to_lowercase().contains("brow")
+                || p.user.to_lowercase().contains("brow")
+                || p.pid.to_string().contains("brow")),
+            "typed filter actually narrows the list"
+        );
+        let mut hesc = false;
+        a.on_key(&Key::Named(NamedKey::Escape), None, false, &mut doc, &root, &mut hesc);
+        assert!(hesc && !a.search_focused, "Escape leaves the search box");
+    }
+
+    /// On a narrow window, selecting a row through the real click path pushes
+    /// the detail pane (the app-level wiring of `ProcPush`, not the unit).
+    #[test]
+    fn narrow_selecting_row_pushes_detail_pane() {
+        let mut a = app();
+        a.tree_mode = false;
+        draw_at(&mut a, 520.0, 900.0);
+        assert!(a.is_narrow());
+        let (pid, rect) = a.hit.rows.first().cloned().expect("rows laid out");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(rect.center(), &mut doc, &root, &mut h);
+        assert!(h);
+        assert_eq!(a.selected_pid, Some(pid));
+        assert_eq!(a.proc_push.pane(), ProcPane::Detail, "selecting a row pushes the detail pane");
+    }
+
+    /// On a narrow window the Back chip click and Esc both pop the pushed
+    /// detail back to the table — through the real `on_click`/`on_key` paths.
+    #[test]
+    fn narrow_back_chip_and_escape_return_to_table() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 520.0, 900.0);
+        assert!(a.is_narrow());
+        a.proc_push.snap(ProcPane::Detail);
+        a.hit.detail_back = Rect::new(0.0, 0.0, 120.0, 32.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert_eq!(a.proc_push.pane(), ProcPane::Table, "Back chip returns to the table");
+
+        a.proc_push.snap(ProcPane::Detail);
+        let mut he = false;
+        a.on_key(&Key::Named(NamedKey::Escape), None, false, &mut doc, &root, &mut he);
+        assert!(he);
+        assert_eq!(a.proc_push.pane(), ProcPane::Table, "Esc pops the pushed detail");
+    }
+
+    /// A vertical wheel over the process table scrolls its rows, and a wheel on
+    /// the Resources tab scrolls the whole page — both through `handle_event`.
+    #[test]
+    fn wheel_scrolls_rows_and_resources_page() {
+        // Rows: many flat rows in a modest table so they overflow.
+        let mut a = app();
+        a.tree_mode = false;
+        draw_at(&mut a, 1280.0, 520.0);
+        assert!(a.hit.v_scrollbar.is_some(), "many rows overflow → vertical scrollbar");
+        a.last_cursor = a.table_viewport.center();
+        let before = a.scroll_off;
+        dispatch_ev(&mut a, &synth_wheel(0.0, -3.0));
+        assert!(a.scroll_off > before, "vertical wheel over the table scrolls the rows");
+
+        // Page: Resources dashboard taller than a short viewport.
+        let mut b = app();
+        b.tab = Tab::Resources;
+        b.model.metrics.cores = vec![20.0; 24];
+        draw_at(&mut b, 900.0, 360.0);
+        assert!(b.hit.page_scrollbar.is_some(), "Resources overflows → page scrollbar");
+        b.last_cursor = Point::new(450.0, 200.0);
+        let pbefore = b.view_scroll_y;
+        dispatch_ev(&mut b, &synth_wheel(0.0, -3.0));
+        assert!(b.view_scroll_y > pbefore, "wheel scrolls the Resources page");
+    }
+
+    /// On a narrow window the context menu offers "Show details", and clicking
+    /// it pushes the detail pane for the target row.
+    #[test]
+    fn context_menu_show_details_pushes_detail_on_narrow() {
+        let mut a = app();
+        a.tree_mode = false;
+        draw_at(&mut a, 520.0, 900.0);
+        assert!(a.is_narrow());
+        let (pid, rect) = a.hit.rows.first().cloned().expect("rows");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut hr = false;
+        a.on_right_click(rect.center(), &mut doc, &root, &mut hr);
+        assert!(a.context.is_open());
+        let idx = a
+            .context
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Show details"))
+            .expect("Show details present on narrow");
+        let mrect = a
+            .context_menu_item_rects()
+            .into_iter()
+            .find(|(i, _)| *i == idx)
+            .map(|(_, r)| r)
+            .unwrap();
+        let mut hc = false;
+        a.on_click(mrect.center(), &mut doc, &root, &mut hc);
+        assert!(hc);
+        assert_eq!(a.selected_pid, Some(pid));
+        assert_eq!(a.proc_push.pane(), ProcPane::Detail, "Show details pushes the detail pane");
+    }
+
+    /// Clicking a summary-strip cell switches to Resources AND scrolls that
+    /// stat's own chart into view — each of the four cells lands on a different
+    /// scroll offset (not the identical "top of Resources" stub).
+    #[test]
+    fn summary_cell_click_switches_and_scrolls_to_that_stat() {
+        let mut a = app();
+        // Narrow + short → the Resources dashboard page-scrolls, so the target
+        // offsets are distinct and non-zero.
+        draw_at(&mut a, 480.0, 520.0);
+        let cells = a.hit.summary_cells.clone();
+        assert_eq!(cells.len(), 4, "four summary cells");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h0 = false;
+        a.on_click(cells[0].center(), &mut doc, &root, &mut h0); // CPU
+        assert!(h0);
+        assert_eq!(a.tab, Tab::Resources);
+        let cpu_scroll = a.view_scroll_y;
+
+        // Back to Processes, re-lay, then click the Disk cell.
+        a.tab = Tab::Processes;
+        a.view_scroll_y = 0.0;
+        draw_at(&mut a, 480.0, 520.0);
+        let cells = a.hit.summary_cells.clone();
+        let mut h3 = false;
+        a.on_click(cells[3].center(), &mut doc, &root, &mut h3); // Disk
+        assert!(h3);
+        assert_eq!(a.tab, Tab::Resources);
+        let disk_scroll = a.view_scroll_y;
+        assert!(
+            disk_scroll > cpu_scroll,
+            "Disk cell scrolls lower than CPU: disk={disk_scroll} cpu={cpu_scroll}"
+        );
+        // The offset matches the production stat-scroll math for this body.
+        let (bw, vh) = a.body_metrics();
+        assert_eq!(disk_scroll, a.resources_scroll_for_stat(3, bw, vh));
+    }
+
+    /// Clicking the vertical row scrollbar pages the rows and — critically —
+    /// does NOT select the row beneath it (the old dead-scrollbar bug).
+    #[test]
+    fn clicking_row_scrollbar_pages_and_does_not_select() {
+        let mut a = app();
+        a.tree_mode = false;
+        draw_at(&mut a, 1280.0, 520.0);
+        let sb = a.hit.v_scrollbar.expect("vertical scrollbar present");
+        let before_sel = a.selected_pid;
+        let before_off = a.scroll_off;
+        let click = Point::new(sb.track.center().x, (sb.thumb.y1 + 4.0).min(sb.track.y1 - 1.0));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(click, &mut doc, &root, &mut h);
+        assert!(h, "scrollbar consumed the click");
+        assert!(a.scroll_off > before_off, "clicking below the thumb pages down");
+        assert_eq!(a.selected_pid, before_sel, "the row beneath the scrollbar is NOT selected");
+    }
+
+    /// Dragging the vertical row scrollbar thumb scrolls the rows; release ends
+    /// the drag — the full press → move → release path through `handle_event`.
+    #[test]
+    fn dragging_row_scrollbar_thumb_scrolls_rows() {
+        let mut a = app();
+        a.tree_mode = false;
+        draw_at(&mut a, 1280.0, 520.0);
+        let sb = a.hit.v_scrollbar.expect("vertical scrollbar");
+        dispatch_ev(&mut a, &synth_cursor(sb.thumb.center().x, sb.thumb.center().y));
+        dispatch_ev(&mut a, &synth_press());
+        assert!(matches!(a.scroll_drag, Some(ScrollDrag::Rows { .. })), "press on thumb starts a row drag");
+        let before = a.scroll_off;
+        dispatch_ev(&mut a, &synth_cursor(sb.thumb.center().x, sb.track.y1 - 2.0));
+        assert!(a.scroll_off > before, "dragging the thumb down scrolls rows");
+        dispatch_ev(&mut a, &synth_release());
+        assert!(a.scroll_drag.is_none(), "release ends the drag");
+    }
+
+    /// Dragging the horizontal column scrollbar thumb scrolls the columns.
+    #[test]
+    fn dragging_column_scrollbar_thumb_scrolls_columns() {
+        let mut a = app();
+        draw_at(&mut a, 520.0, 700.0);
+        let sb = a.hit.h_scrollbar.expect("horizontal scrollbar present when columns overflow");
+        dispatch_ev(&mut a, &synth_cursor(sb.thumb.center().x, sb.thumb.center().y));
+        dispatch_ev(&mut a, &synth_press());
+        assert!(matches!(a.scroll_drag, Some(ScrollDrag::Cols { .. })));
+        let before = a.table_scroll_x;
+        dispatch_ev(&mut a, &synth_cursor(sb.track.x1 - 2.0, sb.thumb.center().y));
+        assert!(a.table_scroll_x > before, "dragging the thumb right scrolls columns");
+        dispatch_ev(&mut a, &synth_release());
+        assert!(a.scroll_drag.is_none());
+    }
+
+    /// Dragging the whole-view page scrollbar thumb scrolls the Resources page.
+    #[test]
+    fn dragging_page_scrollbar_thumb_scrolls_view() {
+        let mut a = app();
+        a.tab = Tab::Resources;
+        a.model.metrics.cores = vec![20.0; 24];
+        draw_at(&mut a, 900.0, 360.0);
+        let sb = a.hit.page_scrollbar.expect("page scrollbar");
+        dispatch_ev(&mut a, &synth_cursor(sb.thumb.center().x, sb.thumb.center().y));
+        dispatch_ev(&mut a, &synth_press());
+        assert!(matches!(a.scroll_drag, Some(ScrollDrag::Page { .. })));
+        let before = a.view_scroll_y;
+        dispatch_ev(&mut a, &synth_cursor(sb.thumb.center().x, sb.track.y1 - 2.0));
+        assert!(a.view_scroll_y > before, "dragging the page thumb down scrolls the view");
+        dispatch_ev(&mut a, &synth_release());
+        assert!(a.scroll_drag.is_none());
+    }
+
+    /// Copy PID records the pid (also pushed to the OS clipboard) and raises a
+    /// transient toast that expires on its own rather than sticking forever.
+    #[test]
+    fn copy_pid_records_and_shows_expiring_toast() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let pid = a.model.processes[3].pid;
+        a.apply_action(ProcAction::CopyPid(pid), &mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(a.copied_pid, Some(pid), "copy recorded");
+        assert!(a.copied_at.is_some());
+        assert!(a.copy_toast_active(), "toast active immediately after copying");
+        // The toast is time-limited: an old timestamp is no longer active.
+        a.copied_at = Instant::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
+        assert!(!a.copy_toast_active(), "toast expires after its window (not a permanent caption)");
+    }
+
+    /// The Confirm-kills pill reaches the persisted preference: clicking it
+    /// flips + stores `confirm_kill`, after which a kill is un-gated.
+    #[test]
+    fn confirm_kills_pill_toggles_persists_and_ungates_kill() {
+        let mut a = app();
+        assert!(a.prefs.confirm_kill, "confirm defaults on");
+        a.hit.confirm_toggle = Rect::new(0.0, 0.0, 140.0, 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(!a.prefs.confirm_kill, "pill toggled the pref off");
+        assert!(!Prefs::load(&doc, &root).confirm_kill, "persisted to the CRDT");
+        // With confirm off, a kill goes straight through — proving the pill
+        // actually reaches the gating logic.
+        let pid = a.visible_rows()[0].pid;
+        a.request_kill(pid, &mut doc, &root);
+        assert!(a.confirm_stop.is_none(), "confirm off → kill is immediate");
+        assert!(a.model.processes.iter().all(|p| p.pid != pid));
+    }
+
+    /// The confirm pill is actually laid out on the real draw path at a normal
+    /// width (not just a hand-seated rect).
+    #[test]
+    fn confirm_pill_is_laid_out_on_wide_toolbar() {
+        let mut a = app();
+        draw_at(&mut a, 1280.0, 720.0);
+        assert_ne!(a.hit.confirm_toggle, Rect::ZERO, "confirm pill drawn at a normal width");
+        assert!(!overlaps(a.hit.confirm_toggle, a.hit.search), "confirm pill clears the search box");
+        assert!(!overlaps(a.hit.confirm_toggle, a.hit.tree_toggle), "confirm pill clears the tree pill");
     }
 }
