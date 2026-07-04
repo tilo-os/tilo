@@ -89,6 +89,74 @@ fn service_req_parse_required_defaults_to_v1() {
 }
 
 #[test]
+fn cli_block_roundtrips() {
+    let src = fixtures::render_template(
+        fixtures::CLI_APP_MANIFEST_TEMPLATE,
+        &"aa".repeat(32),
+    );
+    let m = Manifest::from_toml_str(&src).expect("decode");
+    let ep = m.entrypoint.as_ref().expect("entrypoint");
+    assert_eq!(ep.r#type, pkg::EntrypointType::Cli);
+    let cli = m.cli.as_ref().expect("[cli] block present");
+    assert_eq!(cli.commands, vec!["notes".to_string()]);
+    // round-trip preserves both.
+    let re = m.to_toml_string().expect("encode");
+    let m2 = Manifest::from_toml_str(&re).expect("decode-2");
+    assert_eq!(m, m2, "cli manifest round-trips");
+}
+
+#[test]
+fn entrypoint_type_both_prefers_split_bins() {
+    let src = fixtures::render_template(
+        fixtures::BOTH_APP_MANIFEST_TEMPLATE,
+        &"aa".repeat(32),
+    );
+    let m = Manifest::from_toml_str(&src).expect("decode");
+    let ep = m.entrypoint.as_ref().expect("entrypoint");
+    assert_eq!(ep.r#type, pkg::EntrypointType::Both);
+    assert_eq!(
+        ep.gui_bin_path().map(|p| p.to_string_lossy().into_owned()),
+        Some("bin/notes-gui".to_string())
+    );
+    assert_eq!(
+        ep.cli_bin_path().map(|p| p.to_string_lossy().into_owned()),
+        Some("bin/notes".to_string())
+    );
+    // Absent `[cli]` even on `type = both` is allowed — the CLI
+    // just publishes zero PATH commands.
+    let cli = m.cli.as_ref().expect("[cli] present in template");
+    assert_eq!(cli.commands, vec!["notes".to_string()]);
+    let re = m.to_toml_string().expect("encode");
+    let m2 = Manifest::from_toml_str(&re).expect("decode-2");
+    assert_eq!(m, m2, "both-flavour manifest round-trips");
+}
+
+#[test]
+fn entrypoint_type_defaults_to_gui() {
+    // The original SAMPLE_APP_MANIFEST_TEMPLATE has no `type` — it
+    // should decode as Gui and pass validation.
+    let src = fixtures::render_template(
+        fixtures::SAMPLE_APP_MANIFEST_TEMPLATE,
+        &"aa".repeat(32),
+    );
+    let m = Manifest::from_toml_str(&src).expect("decode");
+    let ep = m.entrypoint.as_ref().expect("entrypoint");
+    assert_eq!(ep.r#type, pkg::EntrypointType::Gui);
+    assert!(m.cli.is_none());
+    validate_manifest(&m).expect("gui manifest still validates");
+}
+
+#[test]
+fn cli_manifest_validates() {
+    let src = fixtures::render_template(
+        fixtures::CLI_APP_MANIFEST_TEMPLATE,
+        &"aa".repeat(32),
+    );
+    let m = Manifest::from_toml_str(&src).expect("decode");
+    validate_manifest(&m).expect("cli manifest validates");
+}
+
+#[test]
 fn service_req_parse_rejects_garbage() {
     let e = ServiceReq::parse("collab", "Garbage").unwrap_err();
     assert!(
