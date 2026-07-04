@@ -34,6 +34,17 @@ pub enum RunError {
     Spawn(#[source] std::io::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "manifest declares runtime `{runtime}` but no bundle was found at any of: {paths:?}. \
+         Install it with `qos-install runtime install --version <v> --from-host`, \
+         or pass --allow-missing-runtime to fall back to --minimal-libs / no runtime binds."
+    )]
+    RuntimeBundleMissing {
+        runtime: String,
+        paths: Vec<PathBuf>,
+    },
+    #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
+    RuntimeReferenceMalformed(String),
 }
 
 impl RunError {
@@ -61,19 +72,23 @@ impl Default for LaunchMode {
 pub struct RunOptions {
     /// Skip all service-socket resolution.
     pub no_services: bool,
-    /// Host directory holding the qos-runtime tree; mounted ro at
-    /// `/usr/lib/qos-runtime/<version>/`. Version is hard-coded to
-    /// "1" today — qos-pkg will pin this on integration.
+    /// Explicit override for the host directory holding a qos-runtime
+    /// bundle. When set, wins over the manifest's `runtime` field and
+    /// the automatic lookup under `$XDG_DATA_HOME/qos-runtime/`.
+    /// Version is hard-coded to "1" for compatibility with the older
+    /// mount path when this is the only signal; when the manifest
+    /// declares a runtime, its version is used instead.
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
     /// Bind-mount the minimum host paths a dynamically-linked ELF
     /// needs to `execve()`: ld-linux + libc + libgcc_s + friends,
-    /// plus `/etc/ld.so.cache`. Read-only. This is a stopgap until
-    /// the qos-runtime bundle path lands — apps that declare
-    /// `runtime = "qos-runtime/..."` should NOT need this. The
-    /// bind set is deliberately narrow (no full `/usr` or
-    /// `/lib64`) to keep the attack surface small.
+    /// plus `/etc/ld.so.cache`. Read-only. This is a stopgap that
+    /// preceded the runtime-bundle path — apps that declare
+    /// `runtime = "qos-runtime/..."` and have that bundle installed
+    /// don't need it (and if both are set, the runtime bundle wins
+    /// and `minimal_libs` is silently ignored). Deprecated: kept
+    /// working for backward compatibility.
     pub minimal_libs: bool,
     /// Route the exec through the `__sandbox-exec` shim so Landlock
     /// is installed *inside* bwrap's mount namespace before the
@@ -87,6 +102,77 @@ pub struct RunOptions {
     /// `bin`), forward argv from the user's shell, and inherit
     /// stdio instead of trying to attach a Wayland surface.
     pub mode: LaunchMode,
+    /// When the manifest declares a runtime but no bundle can be
+    /// resolved, fall back to whatever `minimal_libs` implies instead
+    /// of aborting. Escape hatch for debugging / bring-up; default:
+    /// off.
+    pub allow_missing_runtime: bool,
+}
+
+/// Resolve which runtime bundle to mount, if any.
+///
+/// Priority:
+/// 1. `opts.runtime_root` (explicit CLI / test override) — paired
+///    with the manifest's declared version when present, else "1"
+///    for backward compat with the older `--runtime <path>` shape.
+/// 2. `manifest.runtime` → look up under the default per-user path,
+///    then the system fallback.
+/// 3. Nothing: no runtime bind.
+///
+/// The `Ok(None)` branch is deliberately distinct from `Err(...)`:
+/// no runtime declaration is fine (apps might rely on --minimal-libs
+/// still), whereas a declaration that can't be resolved is an error
+/// unless `allow_missing_runtime` is set.
+/// Shim identical to [`resolve_runtime`], re-exported under a
+/// test-friendly name so integration tests don't need to duplicate
+/// the resolution logic.
+pub fn resolve_runtime_test_helper(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Option<(PathBuf, String)>, RunError> {
+    resolve_runtime(manifest, opts)
+}
+
+pub fn resolve_runtime(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Option<(PathBuf, String)>, RunError> {
+    // 1. Explicit override wins.
+    if let Some(explicit) = &opts.runtime_root {
+        let version = manifest
+            .runtime_ref()
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_else(|| "1".to_string());
+        return Ok(Some((explicit.clone(), version)));
+    }
+    // 2. Manifest declaration.
+    let Some(raw) = manifest.runtime.as_deref() else {
+        return Ok(None);
+    };
+    let (_, version) = raw
+        .split_once('/')
+        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
+    // Look up: per-user first, then system.
+    let per_user = runtime_bundle::default_bundle_path(version).ok();
+    let system = runtime_bundle::system_bundle_path(version);
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    for cand in &candidates {
+        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            return Ok(Some((cand.clone(), version.to_string())));
+        }
+    }
+    if opts.allow_missing_runtime {
+        tracing::warn!(
+            "manifest declares runtime `{raw}` but no bundle found; \
+             continuing with --minimal-libs={} (allow_missing_runtime=on)",
+            opts.minimal_libs
+        );
+        return Ok(None);
+    }
+    Err(RunError::RuntimeBundleMissing {
+        runtime: raw.to_string(),
+        paths: candidates,
+    })
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.
@@ -136,8 +222,18 @@ pub fn run_with(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
-    // 3. Argv. Pick the bin per launch mode.
-    let runtime_arg = opts.runtime_root.as_deref().map(|p| (p, "1"));
+    // 3. Argv.
+    // Runtime bundle resolution. A resolved bundle wins over
+    // --minimal-libs: when the app has a proper runtime, we mount that
+    // and skip the loader-bind stopgap entirely.
+    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let runtime_arg = resolved_runtime
+        .as_ref()
+        .map(|(p, v)| (p.as_path(), v.as_str()));
+
+    // Pick the entrypoint bin per launch mode. GUI uses the default
+    // `bin`; CLI uses `cli_bin()` if set (falling back to `bin`) and
+    // splices QOS_CLI_COMMAND / forwards passthrough argv.
     let entry_bin_owned: String;
     let (mut argv, extra_setenv, cli_passthrough) = match &opts.mode {
         LaunchMode::Gui => (
@@ -158,10 +254,6 @@ pub fn run_with(
                 &binds,
                 &entry_bin_owned,
             );
-            // Tag the invoked command name so multi-command CLI
-            // packages can dispatch off it. Splice in via `--setenv`
-            // in the landlock-shim / prefix step below so bwrap's
-            // flag-parse still sees the entrypoint path last.
             (
                 v,
                 Some(("QOS_CLI_COMMAND".to_string(), command.clone())),
@@ -182,9 +274,16 @@ pub fn run_with(
     // Optional: narrow dynamic-loader binds. Deliberately not the whole
     // /usr — just the files a plain dynamically-linked binary needs to
     // execve(). Split off in front of the entrypoint token (last argv
-    // entry) so the mounts happen before exec.
+    // entry) so the mounts happen before exec. Skipped when a runtime
+    // bundle is mounted — the bundle already carries the loader.
     let mut extra_ro_paths: Vec<String> = Vec::new();
-    if opts.minimal_libs {
+    let use_minimal_libs = opts.minimal_libs && resolved_runtime.is_none();
+    if opts.minimal_libs && resolved_runtime.is_some() {
+        tracing::info!(
+            "runtime bundle mounted; ignoring --minimal-libs (loader + libc come from the bundle)"
+        );
+    }
+    if use_minimal_libs {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         for path in minimal_loader_binds() {
             if std::path::Path::new(path).exists() {
@@ -216,10 +315,21 @@ pub fn run_with(
         let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
         argv.push("--ro".to_string());
         argv.push(payload_mount.display().to_string());
-        if let Some((_, ver)) = runtime_arg {
+        if let Some((rt_root, ver)) = runtime_arg {
             let rt = crate::sandbox::runtime_mount_for(ver);
             argv.push("--ro".to_string());
             argv.push(rt.display().to_string());
+            // Also allow the canonical loader paths we re-bound out of
+            // the bundle — otherwise the app entry ELF (which has its
+            // INTERP at `/lib64/ld-linux-...`) gets blocked by
+            // Landlock even though the bind is there.
+            for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+                let no_slash = canonical.trim_start_matches('/');
+                if rt_root.join("lib").join(no_slash).exists() {
+                    argv.push("--ro".to_string());
+                    argv.push((*canonical).to_string());
+                }
+            }
         }
         for p in &extra_ro_paths {
             argv.push("--ro".to_string());
@@ -383,8 +493,13 @@ pub fn run_with_captured(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
-    // Argv.
-    let runtime_arg = opts.runtime_root.as_deref().map(|p| (p, "1"));
+    // Argv. run_with_captured is a lighter-weight sibling that skips
+    // Landlock + minimal-libs — but must still honour a manifest-declared
+    // runtime bundle so exec succeeds inside the sandbox.
+    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let runtime_arg = resolved_runtime
+        .as_ref()
+        .map(|(p, v)| (p.as_path(), v.as_str()));
     let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds);
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));

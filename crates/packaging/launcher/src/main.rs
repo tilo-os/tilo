@@ -25,8 +25,8 @@ enum Cmd {
         /// Directory containing the unpacked package payload.
         #[arg(long)]
         payload_root: PathBuf,
-        /// Optional path to a qos-runtime tree (mounted ro at
-        /// /usr/lib/qos-runtime/1/).
+        /// Explicit path to a runtime bundle directory. Wins over the
+        /// manifest's `runtime = "..."` lookup. Mostly for debugging.
         #[arg(long)]
         runtime: Option<PathBuf>,
         /// Skip well-known service-socket resolution. Required services
@@ -34,11 +34,18 @@ enum Cmd {
         #[arg(long)]
         no_services: bool,
         /// Bind the minimum host libraries a dynamically-linked ELF needs
-        /// (ld-linux + libc + libgcc_s + /etc/ld.so.cache) — stopgap until
-        /// the qos-runtime bundle path lands. Read-only. Deliberately
-        /// NARROWER than the whole /usr or /lib64 tree.
-        #[arg(long)]
+        /// (ld-linux + libc + libgcc_s + /etc/ld.so.cache). Deprecated —
+        /// prefer a manifest `runtime = "qos-runtime/<v>"` declaration
+        /// plus `qos-install runtime install`. Left in for backward
+        /// compat; silently overridden when a runtime bundle is
+        /// mounted.
+        #[arg(long, hide = true)]
         minimal_libs: bool,
+        /// When the manifest declares a runtime but no bundle is
+        /// installed, don't refuse to launch — fall back to whatever
+        /// --minimal-libs implies. Escape hatch.
+        #[arg(long)]
+        allow_missing_runtime: bool,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -91,7 +98,15 @@ fn main() -> ExitCode {
             runtime,
             no_services,
             minimal_libs,
+            allow_missing_runtime,
         } => {
+            if minimal_libs {
+                eprintln!(
+                    "qos-launcher: --minimal-libs is deprecated. \
+                     Prefer a manifest `runtime = \"qos-runtime/<v>\"` declaration \
+                     plus `qos-install runtime install --version <v> --from-host`."
+                );
+            }
             let opts = RunOptions {
                 no_services,
                 runtime_root: runtime,
@@ -99,6 +114,7 @@ fn main() -> ExitCode {
                 minimal_libs,
                 landlock_enforce: true,
                 mode: LaunchMode::Gui,
+                allow_missing_runtime,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -214,6 +230,7 @@ fn run_installed(
             command: command.to_string(),
             passthrough_argv: rest,
         },
+        allow_missing_runtime: false,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
