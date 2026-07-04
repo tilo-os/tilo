@@ -616,8 +616,15 @@ impl PdfApp {
                 Key::Named(NamedKey::End) => self.edit_home_end(true),
                 Key::Character(c) => {
                     if ctrl {
-                        // Leave app-level Ctrl chords (copy/paste land here
-                        // later) alone; only plain typing edits the field.
+                        // Real clipboard chords against the field's text. The
+                        // hand-rolled editor has no selection, so copy/cut act
+                        // on the whole buffer and paste inserts at the caret.
+                        match c.as_str() {
+                            "c" | "C" => self.edit_clipboard_copy(),
+                            "x" | "X" => self.edit_clipboard_cut(),
+                            "v" | "V" => self.edit_clipboard_paste(),
+                            _ => {}
+                        }
                     } else {
                         self.edit_insert(c.as_str());
                     }
@@ -1245,5 +1252,251 @@ mod event_tests {
         app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         let menu = app.context_menu.as_ref().unwrap();
         assert!(menu.item_rect.area() > 1.0, "the Delete item rect is captured for hit-testing");
+    }
+
+    /// A ctrl-held `Modifiers`, mirroring the workspace convention (see
+    /// `ui::widget::command_palette`'s `ctrl_a_selects_query`).
+    fn ctrl_mods() -> winit::event::Modifiers {
+        let mut s = winit::keyboard::ModifiersState::empty();
+        s.set(winit::keyboard::ModifiersState::CONTROL, true);
+        winit::event::Modifiers::from(s)
+    }
+
+    /// Right-click a placed annotation, then click the context menu's Delete
+    /// item — all through the real `handle_event` path — and confirm the item
+    /// is removed from the shared document.
+    #[test]
+    fn right_click_delete_removes_item_through_event_path() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.go_to_page(1);
+
+        // The seeded sticky note to right-click + delete.
+        let note = app
+            .annotations
+            .iter()
+            .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
+            .unwrap()
+            .clone();
+        let (nx, ny) = match note.kind {
+            AnnoKind::Note { x, y } => (x, y),
+            _ => unreachable!(),
+        };
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        let origin = app.page_origins()[0];
+        let screen = (origin.x + nx * app.zoom(), origin.y + ny * app.zoom());
+
+        // Right-click over the note opens the context menu targeting it.
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(screen.0, screen.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Right });
+        assert!(app.context_menu.is_some(), "right-click over the note opens its delete menu");
+
+        // A draw pass captures the Delete item rect (exactly as it does live).
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let item = app.context_menu.as_ref().unwrap().item_rect;
+        assert!(item.area() > 1.0, "the Delete item rect is captured");
+
+        // Left-click the Delete item removes the annotation from the doc.
+        let before = app.annotations.len();
+        let ic = ((item.x0 + item.x1) / 2.0, (item.y0 + item.y1) / 2.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(ic.0, ic.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+
+        assert!(app.context_menu.is_none(), "the menu closes after the delete");
+        assert_eq!(app.annotations.len(), before - 1, "the targeted annotation is removed");
+        assert!(!app.annotations.iter().any(|a| a.id == note.id), "specifically the right-clicked note");
+        assert!(
+            !PdfDoc::list_annotations(&st.doc).iter().any(|a| a.id == note.id),
+            "and it is gone from the shared document"
+        );
+    }
+
+    /// The Select tool discriminates a press-move-release (pan) from a
+    /// press-release (click-to-select), both driven through `handle_event`.
+    #[test]
+    fn select_tool_drag_pans_while_a_click_selects() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.tool = Tool::Select;
+        app.go_to_page(1);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // --- press + drag upward past PAN_SLOP = pan (scroll moves, nothing selected). ---
+        // The sample seeds a pre-selected note; clear it so we can prove a pan
+        // never triggers a click-selection of its own.
+        app.selected_anno = None;
+        let a = (app.canvas_rect.x0 + 200.0, app.canvas_rect.y0 + 300.0);
+        let b = (a.0, a.1 - 200.0); // drag up -> content scrolls down
+        let sy0 = app.scroll_y();
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(a.0, a.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(b.0, b.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
+        assert!(app.scroll_y() > sy0 + 1.0, "a Select drag pans the canvas ({sy0} -> {})", app.scroll_y());
+        assert!(app.selected_anno.is_none(), "a pan does not select an annotation");
+
+        // --- press + release without moving, over the seeded highlight = select. ---
+        app.go_to_page(1);
+        let hl = app
+            .annotations
+            .iter()
+            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .unwrap()
+            .clone();
+        let rect = match hl.kind {
+            AnnoKind::Highlight { rect } => rect,
+            _ => unreachable!(),
+        };
+        let origin = app.page_origins()[0];
+        let (cx, cy) = rect.center();
+        let p = (origin.x + cx * app.zoom(), origin.y + cy * app.zoom());
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p.0, p.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
+        assert_eq!(
+            app.selected_anno.as_deref(),
+            Some(hl.id.as_str()),
+            "a Select click selects the annotation under it"
+        );
+    }
+
+    /// On a narrow (overlay) window, clicking the canvas scrim beside an open
+    /// panel dismisses the panels — driven through the real event path.
+    #[test]
+    fn overlay_scrim_click_dismisses_open_panels() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        // Narrow window -> overlay mode; panels auto-close on the transition.
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.reconcile_overlay();
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        assert!(app.overlay_mode, "narrow window is in overlay mode");
+        // User opens the sidebar as a floating overlay over the canvas.
+        app.toggle_sidebar();
+        assert!(app.show_sidebar, "sidebar opened as an overlay");
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Click the scrim: a canvas point on the far left, clear of the panel.
+        let scrim = (app.canvas_rect.x0 + 8.0, app.canvas_rect.y0 + 40.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(scrim.0, scrim.1) });
+        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        assert!(!app.show_sidebar && !app.show_rail, "clicking the scrim closes the overlay panels");
+    }
+
+    /// Ctrl+C / Ctrl+X in the inline editor are real clipboard chords, not
+    /// typed characters — driven through `handle_event`. The cut's field-clear
+    /// is deterministic regardless of platform-clipboard availability.
+    #[test]
+    fn editor_ctrl_chords_are_not_typed_and_cut_clears_the_field() {
+        use ui::Widget as _;
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let ctrl = ctrl_mods();
+
+        let cid = app.comments[0].id.clone();
+        app.begin_edit(EditTarget::CommentBody(cid), "hello".into());
+
+        // Ctrl+C is a clipboard chord, not a keystroke: the field stays "hello".
+        let ev = key_event(winit::keyboard::Key::Character("c".into()));
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        assert!(handled, "the editor consumes the chord");
+        assert_eq!(app.editing.as_ref().unwrap().buffer, "hello", "Ctrl+C does not type a literal 'c'");
+
+        // Ctrl+X cuts: the whole field clears.
+        let ev = key_event(winit::keyboard::Key::Character("x".into()));
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        assert_eq!(app.editing.as_ref().unwrap().buffer, "", "Ctrl+X clears the field");
+        assert_eq!(app.editing.as_ref().unwrap().caret, 0, "and resets the caret");
+    }
+
+    /// Paste inserts the system clipboard's text at the caret via the real
+    /// editor path. Guarded on clipboard availability: where the platform
+    /// clipboard works the round-trip is asserted; where it is unavailable
+    /// (headless CI) paste must be a safe no-op that never corrupts the field.
+    #[test]
+    fn editor_paste_inserts_clipboard_text_at_caret() {
+        let (mut app, _st) = app();
+        let cid = app.comments[0].id.clone();
+        app.begin_edit(EditTarget::CommentBody(cid), "AB".into()); // caret at end
+
+        ui::clipboard_copy("XY");
+        if ui::clipboard_paste().as_deref() == Some("XY") {
+            app.edit_clipboard_paste();
+            assert_eq!(
+                app.editing.as_ref().unwrap().buffer,
+                "ABXY",
+                "paste inserts the clipboard text at the caret"
+            );
+        } else {
+            // No usable platform clipboard here — paste must leave the field intact.
+            app.edit_clipboard_paste();
+            assert_eq!(
+                app.editing.as_ref().unwrap().buffer,
+                "AB",
+                "paste with no clipboard is a safe no-op"
+            );
+        }
     }
 }
