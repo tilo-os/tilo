@@ -32,7 +32,9 @@ pub mod tree;
 
 pub use app::MonitorApp;
 
-/// Build and return the app's root widget tree.
+/// Build and return the app's root widget tree for the live window. Uses the
+/// live constructor so the first frame samples real `sysinfo` data instead of
+/// the deterministic sample snapshot (which is reserved for `--shots`/tests).
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(MonitorApp::new())
+    Box::new(MonitorApp::new_live())
 }
