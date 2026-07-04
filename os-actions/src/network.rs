@@ -213,3 +213,112 @@ mod tests {
         assert_eq!(nets[0].ssid, "Real");
     }
 }
+
+/// Wired (ethernet) connection snapshot for the Settings network panel.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WiredInfo {
+    /// `true` when a wired device is present and in the `connected` state.
+    pub connected: bool,
+    /// The primary wired device name (e.g. `eth0`, `enp3s0`), if any.
+    pub device: Option<String>,
+    /// Negotiated link speed as reported by nmcli (e.g. `1000 Mb/s`).
+    pub speed: Option<String>,
+    /// The device's first IPv4 address (no CIDR suffix).
+    pub ipv4: Option<String>,
+}
+
+/// Snapshot the primary wired (ethernet) device via `nmcli`. Returns a
+/// default (`connected: false`) `WiredInfo` when no ethernet device is
+/// present, so the Settings panel renders an "unplugged" card without an
+/// error path.
+pub fn get_wired() -> Result<WiredInfo, String> {
+    let status = run_capture("nmcli", &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])?;
+    let Some((device, connected)) = parse_nmcli_wired_status(&status) else {
+        return Ok(WiredInfo::default());
+    };
+    let mut info = WiredInfo { connected, device: Some(device.clone()), speed: None, ipv4: None };
+    if let Ok(show) = run_capture(
+        "nmcli",
+        &["-t", "-f", "CAPABILITIES.SPEED,IP4.ADDRESS", "device", "show", &device],
+    ) {
+        let (speed, ipv4) = parse_nmcli_wired_show(&show);
+        info.speed = speed;
+        info.ipv4 = ipv4;
+    }
+    Ok(info)
+}
+
+/// First ethernet device + connected flag, from terse
+/// `nmcli -t -f DEVICE,TYPE,STATE device status` (`DEVICE:TYPE:STATE`).
+fn parse_nmcli_wired_status(stdout: &str) -> Option<(String, bool)> {
+    for line in stdout.lines() {
+        let mut it = line.splitn(3, ':');
+        let device = it.next().unwrap_or("").trim();
+        let ty = it.next().unwrap_or("").trim();
+        let state = it.next().unwrap_or("").trim();
+        if ty == "ethernet" && !device.is_empty() {
+            return Some((device.to_string(), state == "connected"));
+        }
+    }
+    None
+}
+
+/// Link speed + first IPv4 from terse
+/// `nmcli -t -f CAPABILITIES.SPEED,IP4.ADDRESS device show <dev>`
+/// (`FIELD:value`, with `IP4.ADDRESS[1]:1.2.3.4/24`).
+fn parse_nmcli_wired_show(stdout: &str) -> (Option<String>, Option<String>) {
+    let mut speed = None;
+    let mut ipv4 = None;
+    for line in stdout.lines() {
+        let Some((field, value)) = line.split_once(':') else { continue };
+        let value = value.trim();
+        if field == "CAPABILITIES.SPEED" {
+            if !value.is_empty() && value != "unknown" {
+                speed = Some(value.to_string());
+            }
+        } else if field.starts_with("IP4.ADDRESS") && ipv4.is_none() {
+            let addr = value.split('/').next().unwrap_or("").trim();
+            if !addr.is_empty() {
+                ipv4 = Some(addr.to_string());
+            }
+        }
+    }
+    (speed, ipv4)
+}
+
+#[cfg(test)]
+mod wired_tests {
+    use super::*;
+
+    #[test]
+    fn parses_connected_ethernet_from_status() {
+        let out = "lo:loopback:unmanaged\neth0:ethernet:connected\nwlan0:wifi:connected\n";
+        assert_eq!(parse_nmcli_wired_status(out), Some(("eth0".to_string(), true)));
+    }
+
+    #[test]
+    fn disconnected_ethernet_reports_device_but_not_connected() {
+        let out = "enp3s0:ethernet:disconnected\n";
+        assert_eq!(parse_nmcli_wired_status(out), Some(("enp3s0".to_string(), false)));
+    }
+
+    #[test]
+    fn no_ethernet_device_is_none() {
+        assert_eq!(parse_nmcli_wired_status("wlan0:wifi:connected\n"), None);
+    }
+
+    #[test]
+    fn parses_speed_and_first_ipv4_from_show() {
+        let out = "CAPABILITIES.SPEED:1000 Mb/s\nIP4.ADDRESS[1]:192.168.1.42/24\nIP4.ADDRESS[2]:10.0.0.9/8\n";
+        let (speed, ipv4) = parse_nmcli_wired_show(out);
+        assert_eq!(speed.as_deref(), Some("1000 Mb/s"));
+        assert_eq!(ipv4.as_deref(), Some("192.168.1.42"));
+    }
+
+    #[test]
+    fn unknown_speed_and_missing_ip_are_none() {
+        let (speed, ipv4) = parse_nmcli_wired_show("CAPABILITIES.SPEED:unknown\n");
+        assert!(speed.is_none());
+        assert!(ipv4.is_none());
+    }
+}
