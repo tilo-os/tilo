@@ -25,6 +25,7 @@ use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::Tooltip;
+use ui::widget::{SmallContentAlign, ViewportState};
 use ui::Widget;
 
 use crate::doc::PdfDoc;
@@ -45,9 +46,14 @@ const RAIL_W_MAX: f64 = 280.0;
 const RAIL_GRIP: f64 = 6.0;
 const SIDEBAR_W: f64 = 324.0;
 const SEARCH_H: f64 = 46.0;
-const CANVAS_TOPPAD: f64 = 28.0;
+/// Screen-px padding the viewport reserves around the page stack (top / sides
+/// alike). Handed to [`ViewportState::with_padding`] so the shared kernel and
+/// the reader agree on where the content origin sits.
+const VIEW_PAD: f64 = 28.0;
+/// Gap between stacked pages, in **content (page-point) space** — it scales
+/// with zoom, exactly like the page it separates, because the whole stack is a
+/// single [`ViewportState`] content rect.
 const PAGE_GAP: f64 = 22.0;
-const SIDE_PAD: f64 = 40.0;
 const ZOOM_MIN: f64 = 0.25;
 const ZOOM_MAX: f64 = 6.0;
 /// A drag shorter than this (in screen px) is treated as a click, not a pan.
@@ -125,33 +131,6 @@ enum ToolbarHit {
     Open,
 }
 
-/// One row in the in-app file browser: a sub-directory to descend into or a
-/// `.pdf` file to open.
-#[derive(Clone)]
-struct OpenEntry {
-    name: String,
-    path: std::path::PathBuf,
-    is_dir: bool,
-}
-
-/// The in-app "Open a PDF" browser. Lists the real sub-directories and PDF
-/// files of `dir`; picking a folder descends, picking a file loads it in
-/// place. Hit rects are captured during draw so a click lands on the row the
-/// pixel shows.
-struct OpenDialog {
-    dir: std::path::PathBuf,
-    entries: Vec<OpenEntry>,
-    /// A human-readable reason the directory couldn't be listed, if any.
-    error: Option<String>,
-    scroll: f64,
-    row_hits: Vec<(usize, Rect)>,
-    up_rect: Rect,
-    close_rect: Rect,
-    panel_rect: Rect,
-    list_rect: Rect,
-    content_h: f64,
-}
-
 #[derive(Clone)]
 enum SidebarHit {
     Tab(SidebarTab),
@@ -220,10 +199,18 @@ pub struct PdfApp {
 
     // View state — local / per-peer, never in the shared doc.
     rect: Rect,
+    /// The user's fit *intent* (page / width / a pinned custom zoom). The
+    /// actual zoom + scroll live in [`self.viewport`]; `fit` only records what
+    /// to re-derive when the window resizes and drives the toolbar label.
     fit: FitMode,
-    zoom: f64,
-    scroll_y: f64,
-    scroll_x: f64,
+    /// Shared zoom/pan kernel (`ui::ViewportState`). Owns the zoom factor,
+    /// the scroll offsets, the content↔screen transform and every pan/zoom
+    /// reducer, so the reader's zoom behaves exactly like the other document
+    /// apps (typst / ebook / maps) instead of a hand-rolled scale. The
+    /// multi-page stack is projected into its single content rect: content
+    /// width is one page, content height is the whole page stack including
+    /// inter-page gaps (see [`Self::content_stack_h`]).
+    viewport: ViewportState,
     current_page: usize,
     tool: Tool,
     swatch: Swatch,
@@ -281,10 +268,13 @@ pub struct PdfApp {
     /// spinning forever.
     tooltip_pending: bool,
 
-    /// The in-app file browser, shown when the user asks to open a document
-    /// from within the reader (toolbar folder button, Ctrl+O, or the empty
-    /// state's Open button). `None` when no picker is on screen.
-    open_dialog: Option<OpenDialog>,
+    /// An in-flight XDG-portal file-open. When the user asks to open a
+    /// document (toolbar folder button, Ctrl+O, or the empty state's Open
+    /// button) the portal round-trip runs on a worker thread and hands the
+    /// chosen path back over this channel, which is drained once per frame in
+    /// [`Widget::sync`]. `None` when no picker is in flight — the app never
+    /// draws its own picker (HIG §5).
+    portal_rx: Option<crate::portal::PortalChannel>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -362,16 +352,6 @@ impl PdfApp {
         Self::empty()
     }
 
-    /// Screenshot-only: the empty state with the in-app file browser open on
-    /// the bundled fixtures directory, so a still frame shows the picker with a
-    /// real, openable document listed. Never reached at runtime.
-    pub fn open_dialog_demo() -> Self {
-        let mut app = Self::empty();
-        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
-        app.open_file_dialog(dir);
-        app
-    }
-
     fn build(doc: Document, seed_sample: bool) -> Self {
         let author = std::env::var("QUICK_APP_ID")
             .ok()
@@ -391,9 +371,10 @@ impl PdfApp {
             seeded: false,
             rect: Rect::ZERO,
             fit: FitMode::Page,
-            zoom: 0.85,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
+            viewport: ViewportState::new()
+                .with_zoom_bounds(ZOOM_MIN, ZOOM_MAX)
+                .with_padding(VIEW_PAD)
+                .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             current_page: 1,
             tool: Tool::Select,
             swatch: Swatch::Yellow,
@@ -426,7 +407,7 @@ impl PdfApp {
             tooltip: Tooltip::new("").with_delay(Duration::from_millis(350)),
             tooltip_anchor: Rect::ZERO,
             tooltip_pending: false,
-            open_dialog: None,
+            portal_rx: None,
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
@@ -446,9 +427,10 @@ impl PdfApp {
     fn seed(&mut self, state: &mut AutoCommit) {
         PdfDoc::set_meta(state, &self.doc.title, &self.doc.author);
 
-        // A highlight over the abstract, an ink emphasis loop circling the
-        // pull-quote, a sticky note, and a placed review signature — all on
-        // page 1 so the default screenshot is rich.
+        // Two highlights over the abstract, a sticky note, and a placed review
+        // signature — all on page 1 so the default screenshot shows real
+        // review markup anchored to real text (no free-floating scribble over
+        // empty whitespace).
         let highlight = Annotation {
             id: Annotation::new_id(),
             page: 1,
@@ -462,13 +444,6 @@ impl PdfApp {
             kind: AnnoKind::Highlight { rect: PtRect::new(64.0, 210.0, 300.0, 14.0) },
             color: Swatch::Yellow,
             author: "Bob".into(),
-        };
-        let ink = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::Ink { points: ink_loop(300.0, 430.0, 232.0, 30.0) },
-            color: Swatch::Pink,
-            author: "Alice".into(),
         };
         let note = Annotation {
             id: Annotation::new_id(),
@@ -488,7 +463,7 @@ impl PdfApp {
 
         let note_id = note.id.clone();
         let hl_id = highlight.id.clone();
-        for a in [&highlight, &highlight2, &ink, &note] {
+        for a in [&highlight, &highlight2, &note] {
             PdfDoc::add_annotation(state, a);
         }
         PdfDoc::add_signature(state, &sig);
@@ -623,104 +598,138 @@ impl PdfApp {
         }
     }
 
+    // ---- viewport (zoom + pan) --------------------------------------
+    //
+    // The zoom factor and scroll offsets live in `self.viewport`
+    // (`ui::ViewportState`) — the same shared kernel typst / ebook / maps
+    // use. These accessors + projection helpers adapt its single content rect
+    // to the reader's vertical multi-page stack.
+
+    /// Current uniform zoom (page-points → screen px).
+    fn zoom(&self) -> f64 {
+        self.viewport.zoom()
+    }
+    fn scroll_x(&self) -> f64 {
+        self.viewport.scroll_x()
+    }
+    fn scroll_y(&self) -> f64 {
+        self.viewport.scroll_y()
+    }
+
+    /// Content-space pitch from one page's top to the next (page height plus
+    /// the inter-page gap). Because the gap lives in content space it scales
+    /// with zoom, exactly like the pages.
+    fn stack_unit(&self) -> f64 {
+        self.ph() + PAGE_GAP
+    }
+
+    /// Total content-space height of the page stack (all pages + the gaps
+    /// between them). This is the viewport's content height.
+    fn content_stack_h(&self) -> f64 {
+        let n = self.doc.page_count() as f64;
+        n * self.ph() + (n - 1.0).max(0.0) * PAGE_GAP
+    }
+
+    /// Push the current canvas rect + content size into the viewport, then
+    /// re-apply the fit intent. Called every layout pass so a resize reflows
+    /// the zoom and re-clamps the scroll through the shared kernel.
+    fn sync_viewport_frame(&mut self) {
+        self.viewport.set_rect(self.canvas_rect);
+        self.viewport.set_content_size(self.pw(), self.content_stack_h());
+        self.recompute_zoom();
+    }
+
+    /// The zoom that fits one whole page inside the canvas (both axes), the
+    /// Fit-page target. Mirrors `ViewportState::fit_zoom` but against a single
+    /// page rather than the whole stack.
+    fn fit_page_zoom(&self) -> f64 {
+        let r = self.viewport.rect();
+        let avail_w = r.width() - 2.0 * VIEW_PAD;
+        let avail_h = r.height() - 2.0 * VIEW_PAD;
+        if self.pw() <= 0.0 || self.ph() <= 0.0 || avail_w <= 0.0 || avail_h <= 0.0 {
+            return self.viewport.zoom();
+        }
+        (avail_w / self.pw())
+            .min(avail_h / self.ph())
+            .clamp(ZOOM_MIN, ZOOM_MAX)
+    }
+
+    /// Re-apply the current fit intent to the viewport. Fit-page / fit-width
+    /// derive a fresh zoom from the canvas size; a pinned custom zoom is left
+    /// to the kernel (idempotent — `set_zoom` to the value it already holds is
+    /// a no-op).
     fn recompute_zoom(&mut self) {
-        let cw = self.canvas_rect.width();
-        let ch = self.canvas_rect.height();
-        self.zoom = match self.fit {
-            FitMode::Page => ((cw - 2.0 * SIDE_PAD) / self.pw())
-                .min((ch - 2.0 * CANVAS_TOPPAD) / self.ph())
-                .clamp(ZOOM_MIN, ZOOM_MAX),
-            FitMode::Width => ((cw - 2.0 * SIDE_PAD) / self.pw()).clamp(ZOOM_MIN, ZOOM_MAX),
+        let z = match self.fit {
+            FitMode::Page => self.fit_page_zoom(),
+            FitMode::Width => self.viewport.fit_width_zoom(),
             FitMode::Custom(z) => z.clamp(ZOOM_MIN, ZOOM_MAX),
         };
-    }
-
-    fn page_step(&self) -> f64 {
-        self.ph() * self.zoom + PAGE_GAP
-    }
-
-    fn content_height(&self) -> f64 {
-        let n = self.doc.page_count() as f64;
-        n * self.ph() * self.zoom + (n - 1.0).max(0.0) * PAGE_GAP + 2.0 * CANVAS_TOPPAD
-    }
-
-    /// Full width the zoomed page occupies, plus side padding. When this
-    /// exceeds the canvas width the user can pan horizontally to reach it.
-    fn content_width(&self) -> f64 {
-        self.pw() * self.zoom + 2.0 * SIDE_PAD
-    }
-
-    fn max_scroll(&self) -> f64 {
-        (self.content_height() - self.canvas_rect.height()).max(0.0)
-    }
-
-    fn max_scroll_x(&self) -> f64 {
-        (self.content_width() - self.canvas_rect.width()).max(0.0)
+        self.viewport.set_zoom(z);
     }
 
     /// Whether the zoomed page is wider than the viewport — drives whether
     /// the arrow keys pan horizontally and whether the h-scrollbar shows.
     fn is_overflowing_x(&self) -> bool {
-        self.max_scroll_x() > 1.0
+        self.viewport.overflows_x()
     }
 
     fn clamp_scroll(&mut self) {
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll());
-        self.scroll_x = self.scroll_x.clamp(0.0, self.max_scroll_x());
+        self.viewport.clamp_scroll();
     }
 
-    /// Screen-space top-left origin of each page card. When the page fits
-    /// horizontally it is centred; once it overflows it is left-anchored and
-    /// shifted by `scroll_x` so panning can reach the full zoomed width.
+    /// Screen-space top-left origin of each page card, projected through the
+    /// viewport's content→screen transform. Page `i` sits at content
+    /// `(0, i * stack_unit)`, so horizontal centring, scroll and zoom all fall
+    /// out of the shared kernel.
     fn page_origins(&self) -> Vec<Point> {
-        let pagew = self.pw() * self.zoom;
-        let x = if self.is_overflowing_x() {
-            self.canvas_rect.x0 + SIDE_PAD - self.scroll_x
-        } else {
-            self.canvas_rect.x0 + ((self.canvas_rect.width() - pagew) / 2.0).max(SIDE_PAD * 0.5)
-        };
-        let mut out = Vec::with_capacity(self.doc.page_count());
-        let mut y = self.canvas_rect.y0 + CANVAS_TOPPAD - self.scroll_y;
-        for _ in 0..self.doc.page_count() {
-            out.push(Point::new(x, y));
-            y += self.page_step();
-        }
-        out
+        let unit = self.stack_unit();
+        (0..self.doc.page_count())
+            .map(|i| self.viewport.content_point_to_screen(Point::new(0.0, i as f64 * unit)))
+            .collect()
     }
 
     /// Map a screen point to (page-number, page-point) if it lands on a page.
     fn hit_page(&self, p: Point) -> Option<(usize, (f64, f64))> {
-        let pagew = self.pw() * self.zoom;
-        let pageh = self.ph() * self.zoom;
-        for (i, origin) in self.page_origins().iter().enumerate() {
-            let card = Rect::new(origin.x, origin.y, origin.x + pagew, origin.y + pageh);
-            if card.contains(p) {
-                let px = (p.x - origin.x) / self.zoom;
-                let py = (p.y - origin.y) / self.zoom;
-                return Some((i + 1, (px, py)));
-            }
+        let cp = self.viewport.screen_to_content(p);
+        if cp.x < 0.0 || cp.x > self.pw() {
+            return None;
         }
-        None
+        let unit = self.stack_unit();
+        if cp.y < 0.0 {
+            return None;
+        }
+        let idx = (cp.y / unit).floor();
+        let i = idx as usize;
+        if i >= self.doc.page_count() {
+            return None;
+        }
+        let py = cp.y - idx * unit;
+        if py < 0.0 || py > self.ph() {
+            return None;
+        }
+        Some((i + 1, (cp.x, py)))
     }
 
+    /// The page whose top edge currently sits nearest the top of the canvas.
     fn nearest_page(&self) -> usize {
-        let target = self.canvas_rect.y0 + CANVAS_TOPPAD;
-        let mut best = 1;
-        let mut best_d = f64::MAX;
-        for (i, o) in self.page_origins().iter().enumerate() {
-            let d = (o.y - target).abs();
-            if d < best_d {
-                best_d = d;
-                best = i + 1;
-            }
+        let n = self.doc.page_count().max(1);
+        let unit = self.stack_unit();
+        if unit <= 0.0 {
+            return 1;
         }
-        best
+        // Content-space y at the very top of the canvas viewport.
+        let top_content = self
+            .viewport
+            .screen_to_content(Point::new(self.canvas_rect.x0, self.canvas_rect.y0))
+            .y;
+        let p = (top_content / unit).round() as i64 + 1;
+        p.clamp(1, n as i64) as usize
     }
 
     fn go_to_page(&mut self, page: usize) {
         let page = page.clamp(1, self.doc.page_count());
-        self.scroll_y = (page - 1) as f64 * self.page_step();
-        self.clamp_scroll();
+        let target_y = (page - 1) as f64 * self.stack_unit() * self.viewport.zoom();
+        self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
         self.current_page = page;
         self.dirty = true;
     }
@@ -1074,60 +1083,31 @@ impl PdfApp {
     }
 
     /// Zoom keeping the viewport centre fixed (used by the +/- buttons and
-    /// Ctrl +/-). Delegates to the focal-point path with the canvas centre.
+    /// Ctrl +/-). Pins the fit intent to the resulting custom zoom.
     fn zoom_by(&mut self, factor: f64) {
-        let c = self.canvas_rect.center();
-        self.zoom_at(factor, Point::new(c.x, c.y));
+        self.viewport.zoom_by(factor);
+        self.fit = FitMode::Custom(self.viewport.zoom());
+        self.current_page = self.nearest_page();
+        self.dirty = true;
     }
 
     /// Zoom by `factor` while holding the document point under `focal`
     /// (a screen-space point) stationary, so Ctrl+wheel zooms toward the
-    /// cursor and the content under it doesn't drift.
+    /// cursor and the content under it doesn't drift. The focal-tracking math
+    /// and scroll clamping are the shared kernel's.
     fn zoom_at(&mut self, factor: f64, focal: Point) {
-        let old_zoom = self.zoom;
-        let new_zoom = (old_zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
-        if (new_zoom - old_zoom).abs() < 1e-9 {
-            return;
-        }
-
-        // Document coordinate (in page-point space along each axis) currently
-        // under the focal point, derived from the present origins/scroll.
-        let canvas = self.canvas_rect;
-        // Vertical: distance from the canvas content-top, in zoom-independent
-        // "scroll units" measured at the page-point scale.
-        let doc_y = (focal.y - (canvas.y0 + CANVAS_TOPPAD) + self.scroll_y) / old_zoom;
-        // Horizontal: only meaningful when overflowing; otherwise the page is
-        // centred and scroll_x stays zero.
-        let was_overflow = self.is_overflowing_x();
-        let left0 = if was_overflow {
-            canvas.x0 + SIDE_PAD - self.scroll_x
-        } else {
-            canvas.x0 + ((canvas.width() - self.pw() * old_zoom) / 2.0).max(SIDE_PAD * 0.5)
-        };
-        let doc_x = (focal.x - left0) / old_zoom;
-
-        self.fit = FitMode::Custom(new_zoom);
-        self.recompute_zoom(); // clamps + applies new_zoom
-        let z = self.zoom;
-
-        // Re-derive scroll so the same document point lands back under focal.
-        self.scroll_y = doc_y * z - (focal.y - (canvas.y0 + CANVAS_TOPPAD));
-        if self.max_scroll_x() > 1.0 {
-            let left_target = focal.x - doc_x * z;
-            self.scroll_x = canvas.x0 + SIDE_PAD - left_target;
-        } else {
-            self.scroll_x = 0.0;
-        }
-        self.clamp_scroll();
+        self.viewport.zoom_at(factor, focal);
+        self.fit = FitMode::Custom(self.viewport.zoom());
         self.current_page = self.nearest_page();
         self.dirty = true;
     }
 
     fn reset_zoom(&mut self) {
         self.fit = FitMode::Page;
-        self.recompute_zoom();
-        self.scroll_x = 0.0;
-        self.clamp_scroll();
+        let z = self.fit_page_zoom();
+        self.viewport.set_zoom(z);
+        self.viewport.set_scroll(0.0, 0.0);
+        self.current_page = self.nearest_page();
         self.dirty = true;
     }
 
@@ -1213,95 +1193,55 @@ impl PdfApp {
         None
     }
 
-    // ---- in-app file open -------------------------------------------
+    // ---- host-native file open (XDG portal) -------------------------
 
-    /// Where the file browser starts. Prefers an explicit override, then the
-    /// qOS workspace mount, then the user's home, then the process directory —
-    /// each only if it is a readable directory.
-    fn open_start_dir() -> std::path::PathBuf {
-        use std::path::PathBuf;
-        let candidates = [
-            std::env::var_os("QOS_PDF_OPEN_DIR").map(PathBuf::from),
-            Some(PathBuf::from("/var/workspace")),
-            std::env::var_os("HOME").map(PathBuf::from),
-        ];
-        for cand in candidates.into_iter().flatten() {
-            if cand.is_dir() {
-                return cand;
-            }
+    /// Ask the host desktop's file chooser to open a PDF. Per HIG §5 the app
+    /// never draws its own picker: the portal round-trip runs on a worker
+    /// thread ([`crate::portal::request_open`]) and the chosen path comes back
+    /// over a channel drained each frame in [`Self::drain_portal`]. A second
+    /// request while one is in flight is ignored, so a double-click on the
+    /// Open button can't stack two host dialogs.
+    fn request_open_via_portal(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
         }
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    }
-
-    /// List the sub-directories and `.pdf` files of `dir`, folders first then
-    /// files, each alphabetically. Hidden entries are skipped. Any read error
-    /// is returned so the dialog can surface it rather than showing a blank.
-    fn scan_dir(dir: &std::path::Path) -> (Vec<OpenEntry>, Option<String>) {
-        let mut entries = Vec::new();
-        let rd = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(e) => return (entries, Some(format!("Can't open this folder: {e}"))),
-        };
-        for ent in rd.flatten() {
-            let name = ent.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            let path = ent.path();
-            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            if is_dir {
-                entries.push(OpenEntry { name, path, is_dir: true });
-            } else if path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("pdf"))
-                .unwrap_or(false)
-            {
-                entries.push(OpenEntry { name, path, is_dir: false });
-            }
-        }
-        entries.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-        (entries, None)
-    }
-
-    /// Show the file browser rooted at `dir` (scanned immediately).
-    fn open_file_dialog(&mut self, dir: std::path::PathBuf) {
-        let (entries, error) = Self::scan_dir(&dir);
-        self.open_dialog = Some(OpenDialog {
-            dir,
-            entries,
-            error,
-            scroll: 0.0,
-            row_hits: Vec::new(),
-            up_rect: Rect::ZERO,
-            close_rect: Rect::ZERO,
-            panel_rect: Rect::ZERO,
-            list_rect: Rect::ZERO,
-            content_h: 0.0,
-        });
+        self.portal_rx = Some(crate::portal::request_open());
         self.dirty = true;
     }
 
-    /// Descend into (or climb out of) `dir` within the open browser.
-    fn browse_to(&mut self, dir: std::path::PathBuf) {
-        let (entries, error) = Self::scan_dir(&dir);
-        if let Some(d) = self.open_dialog.as_mut() {
-            d.dir = dir;
-            d.entries = entries;
-            d.error = error;
-            d.scroll = 0.0;
+    /// Drain a completed portal request, if any. Called once per frame from
+    /// [`Widget::sync`]; loads the chosen document, surfaces a failure on the
+    /// empty state, and clears the in-flight channel. Never blocks — a still
+    /// pending picker simply leaves the channel installed for the next frame.
+    fn drain_portal(&mut self, state: &mut AutoCommit) {
+        let Some(rx) = self.portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => self.load_path(&path, state),
+                    // A cancel is not an error — leave the current view intact.
+                    crate::portal::PortalOutcome::Cancelled => {}
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        if !self.has_document {
+                            self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                        }
+                        self.dirty = true;
+                    }
+                }
+            }
+            // Still waiting on the host dialog, or the worker vanished.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+            }
         }
-        self.dirty = true;
     }
 
     /// Load a real PDF from `path` into the running reader, replacing whatever
     /// was open. On success the view resets to page one at fit-page and the
     /// prior document's markup is cleared; on failure the empty state surfaces
-    /// the reason. The picker closes either way.
+    /// the reason.
     fn load_path(&mut self, path: &std::path::Path, state: &mut AutoCommit) {
         match crate::source::open(path) {
             Ok(loaded) => {
@@ -1315,9 +1255,7 @@ impl PdfApp {
                 self.commit_pending = true;
                 // Reset per-peer view state for the fresh document.
                 self.fit = FitMode::Page;
-                self.zoom = 0.85;
-                self.scroll_x = 0.0;
-                self.scroll_y = 0.0;
+                self.viewport.set_scroll(0.0, 0.0);
                 self.current_page = 1;
                 self.selected_anno = None;
                 self.selected_sig = None;
@@ -1327,16 +1265,15 @@ impl PdfApp {
                 self.matches.clear();
                 self.text_lines.clear();
                 self.prev_overlay = None; // re-derive panel docking for the new doc
+                self.reconcile_overlay();
                 self.recompute_regions();
-                self.recompute_zoom();
-                self.clamp_scroll();
+                self.sync_viewport_frame();
             }
             Err(e) => {
                 self.has_document = false;
                 self.load_error = Some(format!("Could not open {}: {e}", path.display()));
             }
         }
-        self.open_dialog = None;
         self.dirty = true;
     }
 
@@ -1350,44 +1287,6 @@ impl PdfApp {
         let h = 38.0;
         Rect::new(cx - w / 2.0, cy + 78.0, cx + w / 2.0, cy + 78.0 + h)
     }
-
-    /// Route a click while the file browser is open. Returns `true` if the
-    /// dialog consumed the click (which is always — it is modal).
-    fn apply_open_dialog(&mut self, p: Point, state: &mut AutoCommit) -> bool {
-        // Copy out everything the click needs so the immutable borrow of
-        // `open_dialog` is released before we mutate `self`.
-        let Some(d) = self.open_dialog.as_ref() else { return false };
-        let (close, panel, up) = (d.close_rect, d.panel_rect, d.up_rect);
-        let parent = d.dir.parent().map(|pp| pp.to_path_buf());
-        let picked = d
-            .row_hits
-            .iter()
-            .find(|(_, r)| r.contains(p))
-            .and_then(|(i, _)| d.entries.get(*i))
-            .cloned();
-
-        // Outside the panel, or on the close button: dismiss.
-        if close.contains(p) || !panel.contains(p) {
-            self.open_dialog = None;
-            self.dirty = true;
-            return true;
-        }
-        if up.area() > 1.0 && up.contains(p) {
-            if let Some(parent) = parent {
-                self.browse_to(parent);
-            }
-            return true;
-        }
-        // A row: descend into a folder or open a file.
-        if let Some(entry) = picked {
-            if entry.is_dir {
-                self.browse_to(entry.path);
-            } else {
-                self.load_path(&entry.path, state);
-            }
-        }
-        true
-    }
 }
 
 impl Default for PdfApp {
@@ -1396,23 +1295,15 @@ impl Default for PdfApp {
     }
 }
 
-// Generate a loose ink "emphasis loop" — an ellipse-ish polyline.
-fn ink_loop(cx: f64, cy: f64, rx: f64, ry: f64) -> Vec<(f64, f64)> {
-    let mut pts = Vec::new();
-    let n = 22;
-    for i in 0..=n {
-        let t = i as f64 / n as f64 * std::f64::consts::TAU * 1.05;
-        let wobble = 1.0 + 0.06 * (t * 3.0).sin();
-        pts.push((cx + rx * wobble * t.cos(), cy + ry * wobble * t.sin()));
-    }
-    pts
-}
-
 include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // Pull in any file the host portal picker returned since the last
+        // frame (off-thread; never blocks the UI).
+        self.drain_portal(state);
+
         if !self.seeded {
             // Demonstration markup is seeded only on the screenshot / test
             // path; a real document opens with whatever markup the shared
@@ -1463,8 +1354,7 @@ impl Widget for PdfApp {
         );
         self.reconcile_overlay();
         self.recompute_regions();
-        self.recompute_zoom();
-        self.clamp_scroll();
+        self.sync_viewport_frame();
         self.current_page = self.nearest_page();
     }
 
@@ -1557,8 +1447,181 @@ mod tests {
         // Give it a viewport so geometry is meaningful.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
-        app.recompute_zoom();
+        app.sync_viewport_frame();
         (app, st)
+    }
+
+    /// Run one full `ui::App`-equivalent frame against `app`: build the taffy
+    /// tree, compute layout at `w`×`h`, apply it, then draw. Mirrors
+    /// `ui::App`'s RedrawRequested sequence so a driven test exercises the
+    /// *live* path, not a shortcut.
+    ///
+    /// A PNG is written to `out` **only when `PDF_SHOTS=1`** in the
+    /// environment. The default `cargo test` run therefore never touches the
+    /// GPU (the offscreen `wgpu` renderer serialises on a process-wide context
+    /// and is slow/contended under the parallel suite) — the behavioural
+    /// assertions still run every time. Regenerate the shots deliberately with
+    /// `PDF_SHOTS=1 … cargo test drive_review -- --test-threads=1`.
+    fn full_frame(app: &mut PdfApp, st: &mut ui::State, w: f64, h: f64, out: Option<&str>) {
+        use std::collections::HashMap;
+        use ui::offscreen::OffscreenRenderer;
+        use ui::permissions::PermissionContext;
+        use ui::presence::PresenceCtx;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+
+        let want_png = std::env::var("PDF_SHOTS").as_deref() == Ok("1");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        app.sync(&mut st.doc, &st.root);
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trm = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: taffy::AvailableSpace::Definite(w as f32), height: taffy::AvailableSpace::Definite(h as f32) },
+                    |known, avail, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, avail, trm) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        app.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty(), &PermissionContext::permissive());
+        if let (Some(path), true) = (out, want_png) {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let mut r = OffscreenRenderer::new(w as u32, h as u32);
+            r.render_png(&scene, vello::peniko::Color::from_rgb8(10, 12, 16), std::path::Path::new(path));
+        }
+    }
+
+    /// Set the zoom to an exact factor via the viewport kernel + fit intent,
+    /// then run a live frame and (optionally) shoot it. Returns the page-card
+    /// width on screen so a test can assert the scale really changed.
+    fn set_zoom_and_frame(app: &mut PdfApp, st: &mut ui::State, z: f64, out: Option<&str>) -> f64 {
+        app.fit = FitMode::Custom(z);
+        app.viewport.set_zoom(z);
+        full_frame(app, st, 1280.0, 800.0, out);
+        app.pw() * app.zoom()
+    }
+
+    /// Drive-review on the real bundled `sample.pdf`: exact 50 / 100 / 200 %
+    /// zoom, a panned view, and a placed annotation — each run through the live
+    /// frame path and shot to `/tmp/pdf_repro`. Proves zoom actually changes
+    /// the on-screen page size and that horizontal pan reaches new content.
+    #[test]
+    fn drive_review_zoom_pan_annotate_shots() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+        let mut app = PdfApp::open(path);
+        let mut st = ui::State::new();
+        assert!(app.has_document, "sample.pdf must load");
+        eprintln!("DRIVE backend: {}", if app.raster.is_some() { "RASTER (pdfium)" } else { "TEXT" });
+
+        // --- exact 50 / 100 / 200 % zoom, each a live frame + shot. ---
+        let w50 = set_zoom_and_frame(&mut app, &mut st, 0.5, Some("/tmp/pdf_repro/zoom_50.png"));
+        let w100 = set_zoom_and_frame(&mut app, &mut st, 1.0, Some("/tmp/pdf_repro/zoom_100.png"));
+        let w200 = set_zoom_and_frame(&mut app, &mut st, 2.0, Some("/tmp/pdf_repro/zoom_200.png"));
+        eprintln!("DRIVE page-card width px: 50%={w50:.1}  100%={w100:.1}  200%={w200:.1}");
+        assert!((w100 - 2.0 * w50).abs() < 1.0, "100% page must be twice the 50% page");
+        assert!((w200 - 2.0 * w100).abs() < 1.0, "200% page must be twice the 100% page");
+
+        // --- Ctrl+wheel zoom changes scale (the wheel handler's reducer). ---
+        let before = app.zoom();
+        let c = app.canvas_rect.center();
+        app.zoom_at(1.0 + 56.0 / 240.0, Point::new(c.x, c.y));
+        assert!(app.zoom() > before + 1e-3, "ctrl+wheel-equivalent zoom must change scale");
+
+        // --- horizontal pan at 200%: the page overflows, so panning right must
+        //     move the content and reach new offsets. ---
+        app.fit = FitMode::Custom(2.0);
+        app.viewport.set_zoom(2.0);
+        full_frame(&mut app, &mut st, 1280.0, 800.0, None);
+        assert!(app.is_overflowing_x(), "200% must overflow the viewport horizontally");
+        let sx0 = app.scroll_x();
+        app.viewport.pan_by(240.0, 0.0); // arrow/drag-equivalent rightward pan
+        let sx1 = app.scroll_x();
+        assert!(sx1 > sx0 + 1.0, "panning right must increase scroll_x ({sx0} -> {sx1})");
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some("/tmp/pdf_repro/panned_200.png"));
+        eprintln!("DRIVE pan: scroll_x {sx0:.1} -> {sx1:.1} (max {:.1})", app.viewport.max_scroll_x());
+
+        // --- place an annotation on the real document and shoot it. ---
+        app.fit = FitMode::Page;
+        app.viewport.set_zoom(app.fit_page_zoom());
+        full_frame(&mut app, &mut st, 1280.0, 800.0, None);
+        let a0 = app.annotations.len();
+        app.tool = Tool::Highlight;
+        // Drag across a text line on page 1 (page-point coords).
+        app.drag = Some(DragState {
+            tool: Tool::Highlight,
+            page: 1,
+            start: (70.0, 150.0),
+            cur: (360.0, 165.0),
+            points: vec![],
+        });
+        app.commit_drag(&mut st.doc);
+        assert!(app.annotations.len() > a0, "a highlight drag adds an annotation");
+        app.go_to_page(1); // bring the freshly-placed highlight into view
+        eprintln!("DRIVE annotate scroll_y after go_to_page(1) = {:.1}", app.scroll_y());
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some("/tmp/pdf_repro/annotated.png"));
+        eprintln!("DRIVE annotate: {} -> {} annotations; scroll_y after frame = {:.1}", a0, app.annotations.len(), app.scroll_y());
+    }
+
+    /// Drive-review the review features on the seeded sample document:
+    /// annotations render anchored to real text (no free-floating ellipse over
+    /// whitespace), search highlights matches, and the Contents outline draws.
+    /// Shots to `/tmp/pdf_repro`.
+    #[test]
+    fn drive_review_features_shots() {
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+
+        // Default sample view — seeded highlights + note + signature on page 1.
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some("/tmp/pdf_repro/sample_markup.png"));
+        // The seeded markup must contain NO free-form ink stroke (the removed
+        // "emphasis loop" that circled empty whitespace).
+        assert!(
+            !app.annotations.iter().any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
+            "no seeded ink 'emphasis loop' should remain"
+        );
+        assert!(
+            app.annotations.iter().any(|a| matches!(a.kind, AnnoKind::Highlight { .. })),
+            "seeded highlights remain"
+        );
+
+        // Search: whole-word + case toggles narrow results.
+        app.open_search();
+        app.query = "sandbox".into();
+        app.recompute_matches();
+        let loose = app.matches.len();
+        assert!(loose > 0, "search finds 'sandbox' in the sample");
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some("/tmp/pdf_repro/search_results.png"));
+        app.search_whole_word = true;
+        app.recompute_matches();
+        assert!(app.matches.len() <= loose, "whole-word never yields more matches");
+        app.close_search();
+
+        // Contents (outline) tab renders the document's section list.
+        app.sidebar_tab = SidebarTab::Outline;
+        assert!(!app.doc.outline.is_empty(), "sample has an outline");
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some("/tmp/pdf_repro/outline.png"));
+        eprintln!("DRIVE features: {} annotations, {} search hits, {} outline items", app.annotations.len(), loose, app.doc.outline.len());
     }
 
     #[test]
@@ -1683,14 +1746,13 @@ mod tests {
         // during the zoom — the focal point can then stay exactly put.
         app.fit = FitMode::Custom(2.0);
         app.recompute_zoom();
-        app.scroll_x = app.max_scroll_x() / 2.0;
         app.go_to_page(1);
-        app.scroll_x = app.max_scroll_x() / 2.0;
-        app.clamp_scroll();
+        let (half_x, sy) = (app.viewport.max_scroll_x() / 2.0, app.scroll_y());
+        app.viewport.set_scroll(half_x, sy);
         // Build a focal point that demonstrably lands inside page 1's card so
         // neither axis is at a scroll clamp.
         let origin = app.page_origins()[0];
-        let focal = Point::new(origin.x + 300.0 * app.zoom, origin.y + 200.0 * app.zoom);
+        let focal = Point::new(origin.x + 300.0 * app.zoom(), origin.y + 200.0 * app.zoom());
         let before = app.hit_page(focal).expect("focal lands on a page");
         app.zoom_at(1.3, focal);
         let after = app.hit_page(focal).expect("focal still on a page");
@@ -1705,11 +1767,11 @@ mod tests {
         for _ in 0..40 {
             app.zoom_by(1.5);
         }
-        assert!(app.zoom <= ZOOM_MAX + 1e-6);
+        assert!(app.zoom() <= ZOOM_MAX + 1e-6);
         for _ in 0..40 {
             app.zoom_by(0.5);
         }
-        assert!(app.zoom >= ZOOM_MIN - 1e-6);
+        assert!(app.zoom() >= ZOOM_MIN - 1e-6);
     }
 
     #[test]
@@ -1719,11 +1781,11 @@ mod tests {
         app.recompute_zoom();
         app.clamp_scroll();
         assert!(app.is_overflowing_x(), "3x zoom must overflow the viewport");
-        app.scroll_x = f64::MAX;
-        app.clamp_scroll();
+        let sy = app.scroll_y();
+        app.viewport.set_scroll(f64::MAX, sy);
         // The full reachable width is content_width - canvas width.
-        let expected = (app.content_width() - app.canvas_rect.width()).max(0.0);
-        assert!((app.scroll_x - expected).abs() < 1.0, "pan should reach the full zoomed width");
+        let expected = (app.viewport.scaled_content_width() - app.canvas_rect.width()).max(0.0);
+        assert!((app.scroll_x() - expected).abs() < 1.0, "pan should reach the full zoomed width");
     }
 
     #[test]
