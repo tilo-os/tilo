@@ -33,6 +33,7 @@ pub mod notes_app;
 pub mod notification;
 pub mod overlay_host;
 pub mod overview;
+pub mod peer_join_toast;
 pub mod peer_view;
 pub mod persist;
 pub mod qs_actions;
