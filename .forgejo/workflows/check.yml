@@ -1,7 +1,7 @@
 name: Check + test the whole workspace
 
 # Fast feedback that EVERY crate compiles + its tests pass — the image build only
-# compiles the 6 OS binaries, so without this the ~45 apps could (and did) rot
+# compiles the OS binaries, so without this the ~45 apps could (and did) rot
 # undetected. Runs on push/PR to main; the heavier image build stays separate.
 
 on:
@@ -21,15 +21,14 @@ jobs:
     container:
       image: quay.io/fedora/fedora:42
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-
-      - name: Install build deps (mirror os/Containerfile builder + a headless Vulkan driver for GPU tests)
+      # First, because the fedora container ships neither node (which
+      # actions/checkout needs) nor the Rust build deps. capnproto is required by
+      # runtime-collab's build.rs; the Vulkan driver lets the GPU tests run headless.
+      - name: Install deps (node for checkout, capnproto for runtime-collab, build + Vulkan)
         run: |
           dnf install -y \
-            rust cargo sccache \
+            nodejs \
+            rust cargo sccache capnproto \
             gcc gcc-c++ make cmake perl perl-FindBin python3 git \
             clang clang-devel pkgconf-pkg-config \
             libxkbcommon-devel wayland-devel \
@@ -41,6 +40,11 @@ jobs:
             nasm \
             vulkan-loader mesa-vulkan-drivers \
           && dnf clean all
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Workspace membership guard (no crate silently dropped)
         run: ./scripts/check-workspace-complete.sh
