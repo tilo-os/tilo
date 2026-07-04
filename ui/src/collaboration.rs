@@ -1,11 +1,49 @@
-use std::os::unix::net::UnixStream;
-use std::io::{Read, Write};
-use serde::{Serialize, Deserialize};
+//! Toolkit-side collab client.
+//!
+//! Historical shape (still the public API, so every downstream app —
+//! `apps/notes`, `apps/word-processor`, `apps/permissions`,
+//! `apps/collab-broker`, plus the toolkit's own `ui::App` — keeps
+//! compiling): a synchronous, non-blocking `send` / `poll` pair
+//! trading typed [`CollabRequest`] / [`CollabEvent`] frames.
+//!
+//! Under the hood the manager now delegates to the `runtime-collab`
+//! Cap'n Proto SDK. `try_connect` is called on a shovel thread the
+//! manager owns; on `Ok` it stands up a `tokio::task::LocalSet`,
+//! spawns fan-out subscription tasks for signed ops / roster
+//! updates / presence, and bridges winit-side `send` / `poll` to the
+//! SDK via a pair of `tokio::sync::mpsc::UnboundedChannel`s. On
+//! [`runtime_portal::NotAvailable`] the manager enters "disabled"
+//! mode — `poll()` returns empty, `send()` is a no-op, no thread is
+//! spawned, no panic ever fires. Widgets that already branch on
+//! [`Self::is_connected`] pick that up transparently.
+//!
+//! The legacy JSON-over-Unix-socket dialect is kept behind the
+//! `legacy-broker` feature flag (default on) so the in-tree test
+//! suites, the `collab-broker` binary and the shell's production
+//! broker keep compiling while the fleet migrates onto the SDK.
+
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
+
+#[cfg(feature = "legacy-broker")]
+use std::io::{Read, Write};
+#[cfg(feature = "legacy-broker")]
+use std::os::unix::net::UnixStream;
+
+// `RawFd` is used unconditionally in the test-only `SdkConnectSource::Fd`
+// variant and in `from_sdk_fd_for_test`. Both are `#[cfg(test)]` so a
+// release build without tests doesn't need it — the cfg-gated import
+// below keeps the release build warning-free.
+#[cfg(test)]
+use std::os::fd::RawFd;
+use std::sync::mpsc;
+use std::thread;
+use tokio::sync::mpsc as tokio_mpsc;
+use tokio::task::LocalSet;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum CollabRequest {
@@ -263,16 +301,100 @@ impl SigningIdentity {
     }
 }
 
-pub struct CollaborationManager {
-    stream: Option<UnixStream>,
+// -----------------------------------------------------------------------------
+// Backend + shovel machinery
+// -----------------------------------------------------------------------------
+
+/// Which transport the manager is speaking. Enum-per-mode instead of
+/// trait-object'ing because the runtime cost of a match on `send` /
+/// `poll` is negligible and the code stays flat for a reader.
+enum Backend {
+    /// No collab service reachable. `poll` yields nothing, `send`
+    /// is a black hole. Every downstream widget already handles
+    /// "manager isn't connected" via [`CollaborationManager::is_connected`];
+    /// no widget contract changes.
+    Disabled,
+    /// Talking Cap'n Proto to `runtime-collab`. The shovel thread owns
+    /// the SDK client + subscriptions; winit-side send / poll bridge
+    /// through unbounded mpsc pairs.
+    Sdk(SdkChannel),
+    /// Legacy JSON-over-Unix-socket dialect. Gated behind the
+    /// `legacy-broker` feature (default on). Preserved so tests, the
+    /// `collab-broker` binary, and the shell's existing broker keep
+    /// working during the fleet migration.
+    #[cfg(feature = "legacy-broker")]
+    Legacy(LegacyStream),
+}
+
+/// Owned mpsc pair + shovel-thread handle for SDK mode.
+///
+/// **Channel sizing:** both directions use `tokio::sync::mpsc::unbounded_channel`.
+/// The winit side always drains completely each frame (`poll()` is
+/// non-blocking) and the tokio side always `.recv().await`s, so
+/// neither side has an upper bound in normal operation. Presence
+/// bursts from a very active peer stay small compared to the frame
+/// budget. If a future SDK contract requires backpressure we can swap
+/// in bounded channels and drop-on-full for outbound presence; that's
+/// a policy decision, not a wire change.
+///
+/// **Shutdown:** dropping `CollaborationManager` drops `outbound_tx`.
+/// The shovel thread's `.recv().await` on `outbound_rx` then yields
+/// `None`, its main task returns, the `LocalSet` drops every spawned
+/// subscription task, the runtime shuts down cleanly, and the thread
+/// exits. `_thread` is retained only so the thread's `JoinHandle` is
+/// not detached — `drop(handle)` is intentional.
+struct SdkChannel {
+    outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
+    inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
+    _thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "legacy-broker")]
+struct LegacyStream {
+    stream: UnixStream,
     /// Persistent read buffer. The socket is non-blocking, so a single
     /// `poll` can see a frame split across reads (large `SyncCRDT`
     /// payloads especially) or several frames coalesced. We accumulate
-    /// raw bytes here and only extract *complete* length-prefixed frames,
-    /// leaving any partial tail for the next poll. Reading the body with
-    /// `read_exact` directly (the old approach) dropped split frames and
-    /// desynced the stream.
+    /// raw bytes here and only extract *complete* length-prefixed
+    /// frames, leaving any partial tail for the next poll.
     rbuf: Vec<u8>,
+}
+
+/// How the shovel thread reaches the broker.
+///
+/// `Env` is the production path: the launcher passed `QOS_SVC_COLLAB_FD`;
+/// `runtime_collab::try_connect()` reads it. `Fd` is for the in-tree
+/// tests — the mock server hands us a specific connected fd (no env
+/// var, no cross-test races).
+enum SdkConnectSource {
+    Env,
+    #[cfg(test)]
+    Fd(RawFd),
+}
+
+impl SdkConnectSource {
+    /// Build a `CollabClient` on the current tokio `LocalSet` for
+    /// whichever source this is. Returns `NotAvailable` when the
+    /// fd cannot be lifted into RPC — same contract as `try_connect`.
+    fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
+        match self {
+            SdkConnectSource::Env => runtime_collab::try_connect(),
+            #[cfg(test)]
+            SdkConnectSource::Fd(fd) => {
+                use capnp_rpc::rpc_twoparty_capnp;
+                let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
+                    fd,
+                    rpc_twoparty_capnp::Side::Client,
+                )?;
+                let raw: runtime_collab::CollabServiceClient = unix.bootstrap();
+                Ok(runtime_collab::CollabClient::from_raw(raw))
+            }
+        }
+    }
+}
+
+pub struct CollaborationManager {
+    backend: Backend,
     /// Optional Phase 3 signing identity. When `Some`, calls to
     /// [`Self::send_signed_op`] mint a [`collab_types::SignedOp`]
     /// envelope and dispatch it as a
@@ -284,37 +406,124 @@ pub struct CollaborationManager {
 }
 
 impl CollaborationManager {
+    /// Standard constructor.
+    ///
+    /// Selection order:
+    /// 1. If the `legacy-broker` feature is on **and** `QUICK_COLLAB_SOCK`
+    ///    is set, use the legacy Unix-socket JSON dialect (unchanged
+    ///    behaviour for existing tests and the shell's in-process broker).
+    /// 2. Otherwise try `runtime_collab::try_connect()` and enter SDK
+    ///    mode on `Ok`; enter Disabled mode on `Err(NotAvailable)`.
+    ///
+    /// SDK mode auto-sends `Hello { app_id, cluster_id }` derived from
+    /// `QUICK_APP_ID` / `QUICK_CLUSTER_ID` (nil-uuid fallback) to
+    /// preserve the legacy auto-join behaviour every existing app
+    /// depends on.
     pub fn new() -> Self {
-        let stream = if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK") {
-            UnixStream::connect(path).ok()
-        } else {
-            None
-        };
-
-        let mut manager = Self { stream, rbuf: Vec::new(), identity: None };
-
-        if manager.stream.is_some() {
-            let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
-            let cluster_id = std::env::var("QUICK_CLUSTER_ID")
-                .ok()
-                .and_then(|s| Uuid::parse_str(&s).ok())
-                .unwrap_or_else(Uuid::nil);
-
-            manager.send(CollabRequest::Hello { 
-                app_id,
-                cluster_id,
-            });
+        #[cfg(feature = "legacy-broker")]
+        if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK") {
+            if let Ok(stream) = UnixStream::connect(&path) {
+                let mut manager = Self {
+                    backend: Backend::Legacy(LegacyStream {
+                        stream,
+                        rbuf: Vec::new(),
+                    }),
+                    identity: None,
+                };
+                let (app_id, cluster_id) = auto_hello_env();
+                manager.send(CollabRequest::Hello { app_id, cluster_id });
+                return manager;
+            }
         }
 
+        match Self::spawn_sdk(SdkConnectSource::Env) {
+            Ok(sdk) => {
+                let mut manager = Self {
+                    backend: Backend::Sdk(sdk),
+                    identity: None,
+                };
+                let (app_id, cluster_id) = auto_hello_env();
+                manager.send(CollabRequest::Hello { app_id, cluster_id });
+                manager
+            }
+            Err(_) => Self {
+                backend: Backend::Disabled,
+                identity: None,
+            },
+        }
+    }
+
+    /// Test-only: build a manager talking to an SDK broker on the
+    /// given already-connected client fd. Bypasses env-var lookup so
+    /// two tests in the same process do not race on `QOS_SVC_COLLAB_FD`.
+    ///
+    /// Auto-sends the same auto-Hello the production constructor
+    /// does, using the passed `app_id` / `cluster_id` for a
+    /// deterministic test fixture.
+    #[cfg(test)]
+    fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
+        let sdk = Self::spawn_sdk(SdkConnectSource::Fd(fd))
+            .expect("spawn_sdk from Fd source must succeed in tests");
+        let mut manager = Self {
+            backend: Backend::Sdk(sdk),
+            identity: None,
+        };
+        manager.send(CollabRequest::Hello {
+            app_id: app_id.to_owned(),
+            cluster_id,
+        });
         manager
     }
 
-    /// True when connected to a broker (a `QUICK_COLLAB_SOCK` was set and
-    /// the connection succeeded). The event loop uses this to tick while
-    /// collaborating so the socket is drained promptly instead of only on
-    /// local input.
+    /// Stand up the shovel thread + its tokio `current_thread` runtime.
+    ///
+    /// Runs `try_connect` **inside** the shovel thread's `LocalSet`
+    /// because capnp-rpc futures are `!Send` and the resulting
+    /// `CollabClient` cannot cross a thread boundary. Errors from the
+    /// initial connect are surfaced via [`InitStatus`] on a one-shot
+    /// std mpsc so the caller can pick "Disabled vs Sdk" before
+    /// returning; if we deferred the decision to the first `send`
+    /// call, apps that only ever `poll` would never notice they were
+    /// running against a dead broker.
+    fn spawn_sdk(source: SdkConnectSource) -> Result<SdkChannel, runtime_portal::NotAvailable> {
+        let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<CollabRequest>();
+        let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
+        let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
+
+        // Extract the raw fd (if any) *before* moving the source into
+        // the closure — `SdkConnectSource::Fd` is `!Send` in principle
+        // (RawFd is Send, but this keeps the intent explicit).
+        let handle = thread::Builder::new()
+            .name("ui-collab-shovel".into())
+            .spawn(move || run_shovel(source, outbound_rx, inbound_tx, init_tx))
+            .expect("spawn ui-collab-shovel thread");
+
+        // Wait for the shovel to report initial connect status. This
+        // is a bounded wait: `run_shovel` reports before entering its
+        // event loop.
+        let status = init_rx
+            .recv()
+            .expect("shovel thread must send an init status before its main loop");
+
+        match status {
+            InitStatus::Ready => Ok(SdkChannel {
+                outbound_tx,
+                inbound_rx,
+                _thread: Some(handle),
+            }),
+            InitStatus::Failed(e) => {
+                // Let the (empty-body) thread exit cleanly.
+                let _ = handle.join();
+                Err(e)
+            }
+        }
+    }
+
+    /// True when connected to a live broker (SDK or legacy). The event
+    /// loop uses this to tick while collaborating so the socket / RPC
+    /// stream is drained promptly instead of only on local input.
     pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
+        !matches!(self.backend, Backend::Disabled)
     }
 
     /// Phase 3: bind a signing identity to this manager. Once set,
@@ -376,66 +585,425 @@ impl CollaborationManager {
         Ok(())
     }
 
+    /// Fire-and-forget send. Non-blocking on every backend:
+    /// - SDK: pushes onto the outbound mpsc; the shovel thread does
+    ///   the actual RPC.
+    /// - Legacy: writes the length-prefixed JSON frame directly.
+    /// - Disabled: no-op.
+    ///
+    /// Delivery failures never surface to the caller by design — the
+    /// legacy path already had that contract (the shell can recover
+    /// via the next sync round) and the SDK path preserves it. Apps
+    /// that need delivery confirmation build on top of `poll` events.
     pub fn send(&mut self, req: CollabRequest) {
-        if let Some(ref mut s) = self.stream {
-            if let Ok(json) = serde_json::to_vec(&req) {
-                // Block for writes so a large frame (a full-document
-                // `SyncCRDT` snapshot) is sent in full. `poll` flips the
-                // socket to non-blocking for reads; the two alternate on
-                // one thread, so toggling here is safe. Without this a big
-                // `write_all` on a non-blocking socket returns WouldBlock
-                // partway and the frame is truncated.
-                let _ = s.set_nonblocking(false);
-                let len = json.len() as u32;
-                let _ = s.write_all(&len.to_le_bytes());
-                let _ = s.write_all(&json);
+        match &mut self.backend {
+            Backend::Disabled => {}
+            Backend::Sdk(ch) => {
+                // UnboundedSender::send only errors when the receiver
+                // has been dropped, which for us means the shovel
+                // thread has exited. Silently ignore — the next poll
+                // will observe the same shutdown and the caller can
+                // check `is_connected` if they care.
+                let _ = ch.outbound_tx.send(req);
             }
-        }
-    }
-
-    pub fn poll(&mut self) -> Vec<CollabEvent> {
-        // 1. Drain everything currently available on the socket into the
-        //    persistent buffer. `read` (unlike `read_exact`) returns
-        //    whatever bytes are ready without losing a partially-arrived
-        //    frame.
-        if let Some(ref mut s) = self.stream {
-            let _ = s.set_nonblocking(true);
-            let mut chunk = [0u8; 8192];
-            loop {
-                match s.read(&mut chunk) {
-                    Ok(0) => break, // EOF
-                    Ok(n) => self.rbuf.extend_from_slice(&chunk[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(_) => break,
+            #[cfg(feature = "legacy-broker")]
+            Backend::Legacy(l) => {
+                if let Ok(json) = serde_json::to_vec(&req) {
+                    // Block for writes so a large frame (a full-document
+                    // `SyncCRDT` snapshot) is sent in full. `poll` flips the
+                    // socket to non-blocking for reads; the two alternate on
+                    // one thread, so toggling here is safe. Without this a big
+                    // `write_all` on a non-blocking socket returns WouldBlock
+                    // partway and the frame is truncated.
+                    let _ = l.stream.set_nonblocking(false);
+                    let len = json.len() as u32;
+                    let _ = l.stream.write_all(&len.to_le_bytes());
+                    let _ = l.stream.write_all(&json);
                 }
             }
         }
+    }
 
-        // 2. Extract every *complete* length-prefixed frame from the
-        //    buffer, leaving any partial tail for the next poll.
-        let mut events = Vec::new();
-        loop {
-            if self.rbuf.len() < 4 {
-                break;
+    /// Drain every event pending on the current backend. Non-blocking.
+    ///
+    /// The signature stays `Vec<CollabEvent>` (not `Option<...>`) because
+    /// every call-site — `ui::App::pump_collab_presence`, the test hook
+    /// `poll_and_apply_collab_events`, integration harnesses — is
+    /// already `for event in manager.poll()`. Migrating to Option would
+    /// touch every caller for zero win.
+    pub fn poll(&mut self) -> Vec<CollabEvent> {
+        match &mut self.backend {
+            Backend::Disabled => Vec::new(),
+            Backend::Sdk(ch) => {
+                let mut events = Vec::new();
+                // try_recv is the only shape that makes sense here:
+                // pump the queue empty and return. The shovel thread
+                // pushes concurrently so a rare bounded loop is fine —
+                // if it filled forever we would still drain a bounded
+                // slice per frame because the event loop calls us at
+                // most a few thousand times per second.
+                while let Ok(evt) = ch.inbound_rx.try_recv() {
+                    events.push(evt);
+                }
+                events
             }
-            let len = u32::from_le_bytes([
-                self.rbuf[0],
-                self.rbuf[1],
-                self.rbuf[2],
-                self.rbuf[3],
-            ]) as usize;
-            if self.rbuf.len() < 4 + len {
-                break; // frame not fully arrived yet
-            }
-            let frame: Vec<u8> = self.rbuf[4..4 + len].to_vec();
-            self.rbuf.drain(..4 + len);
-            if let Ok(event) = serde_json::from_slice(&frame) {
-                events.push(event);
+            #[cfg(feature = "legacy-broker")]
+            Backend::Legacy(l) => {
+                let _ = l.stream.set_nonblocking(true);
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match l.stream.read(&mut chunk) {
+                        Ok(0) => break, // EOF
+                        Ok(n) => l.rbuf.extend_from_slice(&chunk[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
+
+                let mut events = Vec::new();
+                loop {
+                    if l.rbuf.len() < 4 {
+                        break;
+                    }
+                    let len = u32::from_le_bytes([
+                        l.rbuf[0], l.rbuf[1], l.rbuf[2], l.rbuf[3],
+                    ]) as usize;
+                    if l.rbuf.len() < 4 + len {
+                        break; // frame not fully arrived yet
+                    }
+                    let frame: Vec<u8> = l.rbuf[4..4 + len].to_vec();
+                    l.rbuf.drain(..4 + len);
+                    if let Ok(event) = serde_json::from_slice(&frame) {
+                        events.push(event);
+                    }
+                }
+                events
             }
         }
-        events
     }
 }
+
+/// Read `QUICK_APP_ID` / `QUICK_CLUSTER_ID` env vars (with the same
+/// defaults the legacy new() used) and return the tuple for a
+/// [`CollabRequest::Hello`].
+fn auto_hello_env() -> (String, Uuid) {
+    let app_id =
+        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
+    let cluster_id = std::env::var("QUICK_CLUSTER_ID")
+        .ok()
+        .and_then(|s| Uuid::parse_str(&s).ok())
+        .unwrap_or_else(Uuid::nil);
+    (app_id, cluster_id)
+}
+
+/// One-shot init-result value emitted by the shovel thread before it
+/// enters its main loop. Lets `spawn_sdk` decide immediately whether
+/// to hand out `SdkChannel` or fall back to `Backend::Disabled`
+/// without polling the SDK for a "ready" signal.
+enum InitStatus {
+    Ready,
+    Failed(runtime_portal::NotAvailable),
+}
+
+/// The shovel thread's body. Owns a `current_thread` tokio runtime + a
+/// `LocalSet` (capnp-rpc futures are `!Send`), stands up the SDK
+/// client, subscribes the three streams (signed ops, roster context,
+/// presence), and forwards outbound `CollabRequest`s to matching SDK
+/// calls. Exits cleanly when `outbound_rx.recv()` returns `None`
+/// (i.e. the manager was dropped).
+fn run_shovel(
+    source: SdkConnectSource,
+    outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
+    inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
+    init_tx: mpsc::SyncSender<InitStatus>,
+) {
+    // Building `current_thread` is fallible (it can OOM in extreme
+    // conditions). If that fires we can't do anything useful, so
+    // surface as Disabled — no service means the app runs local-only.
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = init_tx.send(InitStatus::Failed(
+                runtime_portal::NotAvailable::ConnectionFailed(e),
+            ));
+            return;
+        }
+    };
+
+    let local = LocalSet::new();
+    local.block_on(&rt, async move {
+        let client = match source.build_client() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = init_tx.send(InitStatus::Failed(e));
+                return;
+            }
+        };
+        // Ready. Manager may now hand out `send` / `poll`.
+        let _ = init_tx.send(InitStatus::Ready);
+
+        drive_shovel(client, outbound_rx, inbound_tx).await;
+    });
+}
+
+/// SDK-side event loop. Consumes outbound `CollabRequest`s, calls the
+/// matching SDK method, and spawns one `spawn_local` subscription task
+/// per stream on the first successful `join_channel`. Kept in its own
+/// async fn so the outer `run_shovel` handles all setup / teardown and
+/// this body reads as pure protocol translation.
+async fn drive_shovel(
+    client: runtime_collab::CollabClient,
+    mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
+    inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    // Cached handles. `channel` is set on the first Hello; every
+    // downstream RPC (send / send_unsigned_*, fetch_scrollback,
+    // presence.publish_*) requires it.
+    let mut channel: Option<runtime_collab::ChannelHandle> = None;
+    let mut presence: Option<runtime_collab::PresenceHandle> = None;
+
+    while let Some(req) = outbound_rx.recv().await {
+        match req {
+            CollabRequest::Hello { app_id: _, cluster_id } => {
+                // The SDK contract wants opaque identity bytes; we do
+                // not yet have a real identity blob on this path
+                // (runtime-identity provisioning is a separate task).
+                // Passing empty bytes matches the "no identity" case
+                // the broker already tolerates — validation lives on
+                // the signed-op path.
+                let identity_blob: Vec<u8> = Vec::new();
+                let channel_id = cluster_id.to_string();
+                let ch = match client.join_channel(&channel_id, &identity_blob).await {
+                    Ok(ch) => ch,
+                    Err(_) => continue,
+                };
+
+                // subscribe(): forward signed op events.
+                if let Ok(sub) = ch.subscribe().await {
+                    let itx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let Ok(evt) = sub.read().await else {
+                                break;
+                            };
+                            // The SDK carries the postcard-encoded
+                            // SignedOp on the wire; decode into the
+                            // typed envelope callers already handle.
+                            let Ok(envelope) =
+                                postcard::from_bytes::<SignedOp>(&evt.op)
+                            else {
+                                continue;
+                            };
+                            if itx
+                                .send(CollabEvent::SignedCRDTIncremental {
+                                    envelope: Box::new(envelope),
+                                    from_user_id: evt.from_user_id,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                }
+
+                // subscribeContext(): forward roster / permission snapshots.
+                if let Ok(ctx_stream) = ch.subscribe_context().await {
+                    let itx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let Ok(ctx) = ctx_stream.read().await else {
+                                break;
+                            };
+                            let collaborators = ctx
+                                .collaborators
+                                .into_iter()
+                                .map(|c| Collaborator {
+                                    id: c.user_id,
+                                    name: c.display_name,
+                                    color: unpack_color(c.color),
+                                })
+                                .collect();
+                            if itx
+                                .send(CollabEvent::Context {
+                                    collaborators,
+                                    permissions: ctx.permissions,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                }
+
+                // presence + subscribeAll(): forward every presence
+                // variant. Cursor → RemoteCursorMoved (with the empty
+                // PresenceKey the legacy dialect used for pointers);
+                // every other payload → RemotePresenceUpdate keyed by
+                // the decoded PresenceKey.
+                if let Ok(ph) = ch.presence().await {
+                    if let Ok(ps) = ph.subscribe_all().await {
+                        let itx = inbound_tx.clone();
+                        tokio::task::spawn_local(async move {
+                            loop {
+                                let Ok(evt) = ps.read().await else {
+                                    break;
+                                };
+                                let translated = translate_presence_event(evt);
+                                if itx.send(translated).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                    presence = Some(ph);
+                }
+
+                channel = Some(ch);
+            }
+            CollabRequest::SignedSyncIncremental { envelope } => {
+                if let Some(ch) = channel.as_ref() {
+                    if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
+                        let _ = ch.send(&bytes).await;
+                    }
+                }
+            }
+            CollabRequest::SyncCRDT { data } => {
+                if let Some(ch) = channel.as_ref() {
+                    let _ = ch.send_unsigned_snapshot(&data).await;
+                }
+            }
+            CollabRequest::SyncIncremental { data } => {
+                if let Some(ch) = channel.as_ref() {
+                    let _ = ch.send_unsigned_incremental(&data).await;
+                }
+            }
+            CollabRequest::Presence { key, payload } => {
+                let Some(ph) = presence.as_ref() else { continue };
+                match payload {
+                    PresencePayload::Pointer { x, y } => {
+                        let _ = ph.publish_cursor(x, y).await;
+                    }
+                    PresencePayload::Caret { pos } => {
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph.publish_caret(&key_bytes, pos as u64).await;
+                    }
+                    PresencePayload::Selection { start, end } => {
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph
+                            .publish_selection(&key_bytes, start as u64, end as u64)
+                            .await;
+                    }
+                    PresencePayload::Arrived => {
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph.publish_arrived(&key_bytes).await;
+                    }
+                    PresencePayload::Left => {
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph.publish_left(&key_bytes).await;
+                    }
+                }
+            }
+            CollabRequest::FetchScrollback {
+                artifact,
+                before_seq,
+                max,
+            } => {
+                let Some(ch) = channel.as_ref() else { continue };
+                match ch.fetch_scrollback(before_seq, max as u32).await {
+                    Ok(batch) => {
+                        let mut ops = Vec::with_capacity(batch.ops.len());
+                        for op_bytes in batch.ops {
+                            if let Ok(env) = postcard::from_bytes::<SignedOp>(&op_bytes) {
+                                ops.push(Box::new(env));
+                            }
+                        }
+                        let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
+                            artifact,
+                            ops,
+                            exhausted: batch.done,
+                        });
+                    }
+                    Err(_) => {
+                        // Signal exhaustion so callers unstick their
+                        // paging state instead of hanging.
+                        let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
+                            artifact,
+                            ops: Vec::new(),
+                            exhausted: true,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Unpack the SDK's 0x00RRGGBB u32 into normalised [R, G, B] floats.
+/// The legacy dialect carries colour as `[f32; 3]` in linear-0..1;
+/// preserving that gives every existing consumer identical rendering.
+fn unpack_color(packed: u32) -> [f32; 3] {
+    let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
+    let g = ((packed >> 8) & 0xFF) as f32 / 255.0;
+    let b = (packed & 0xFF) as f32 / 255.0;
+    [r, g, b]
+}
+
+/// Translate a SDK-side [`runtime_collab::PresenceEvent`] into the
+/// public `CollabEvent` variant the App layer already dispatches.
+///
+/// Extracted so the subscription task body stays skimmable and the
+/// unit test can round-trip payloads without spinning a broker.
+fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
+    // Cursor keeps the legacy shape: `user_id + x + y` on
+    // `RemoteCursorMoved`. Every other variant carries the
+    // (postcard-decoded) `PresenceKey` on
+    // `RemotePresenceUpdate`. If key decoding fails on a non-Cursor
+    // variant we fall back to a synthetic key; the peer's presence is
+    // still visible but bound to a placeholder scope.
+    match evt.payload {
+        runtime_collab::PresencePayload::Cursor { x, y } => CollabEvent::RemoteCursorMoved {
+            user_id: evt.user_id,
+            x,
+            y,
+        },
+        other => {
+            let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| {
+                PresenceKey::Tab {
+                    id: String::from("<undecodable>"),
+                }
+            });
+            let payload = match other {
+                runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
+                    pos: pos as usize,
+                },
+                runtime_collab::PresencePayload::Selection { start, end } => {
+                    PresencePayload::Selection {
+                        start: start as usize,
+                        end: end as usize,
+                    }
+                }
+                runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
+                runtime_collab::PresencePayload::Left => PresencePayload::Left,
+                // Handled in the outer arm; make match exhaustive.
+                runtime_collab::PresencePayload::Cursor { .. } => unreachable!(),
+            };
+            CollabEvent::RemotePresenceUpdate {
+                user_id: evt.user_id,
+                key,
+                payload,
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Legacy N-peer broker.
+// -----------------------------------------------------------------------------
 
 /// Standalone N-peer fan-out broker for `QUICK_COLLAB_SOCK`.
 ///
@@ -454,6 +1022,7 @@ impl CollaborationManager {
 /// Late-join document convergence is handled at the app layer (a new
 /// peer broadcasts `Presence::Arrived`; peers already in the room reply
 /// with a full `SyncCRDT`) — the broker needs no special case for it.
+#[cfg(feature = "legacy-broker")]
 pub mod broker {
     use std::collections::HashMap;
     use std::io::{Read, Write};
@@ -633,6 +1202,948 @@ pub mod broker {
                     write_frame(&mut peer.write, &bytes);
                 }
             }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit tests: SDK translation + shovel-thread round-trip against a fake broker.
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::cell::RefCell;
+    use std::os::fd::IntoRawFd;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    use capnp::capability::Promise;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio::net::UnixStream as TokioUnixStream;
+    use tokio::task::LocalSet as TokioLocalSet;
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+    use runtime_collab::PresencePayload as SdkPayload;
+    use runtime_collab::raw::{
+        channel_context, channel_handle, collab_service, context_stream, presence_event,
+        presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+    };
+
+    // --- shared capture / seed state -------------------------------------
+
+    #[derive(Default)]
+    struct Captures {
+        joined: Vec<(String, Vec<u8>)>,
+        signed_ops: Vec<Vec<u8>>,
+        unsigned_snapshots: Vec<Vec<u8>>,
+        unsigned_incrementals: Vec<Vec<u8>>,
+        cursor_publishes: Vec<(f32, f32)>,
+        caret_publishes: Vec<(Vec<u8>, u64)>,
+        selection_publishes: Vec<(Vec<u8>, u64, u64)>,
+        arrived: Vec<Vec<u8>>,
+        left: Vec<Vec<u8>>,
+        scrollback_requests: Vec<(u64, u32)>,
+    }
+
+    /// Shared between the test-thread's tokio LocalSet and the caller.
+    /// `Arc<Mutex<_>>` (not `Rc<RefCell<_>>`) because the broker
+    /// struct crosses a `thread::spawn` boundary before it's driven
+    /// through the RPC system.
+    type SharedCaptures = std::sync::Arc<std::sync::Mutex<Captures>>;
+
+    #[derive(Clone)]
+    struct SeedPresence {
+        user_id: String,
+        key_bytes: Vec<u8>,
+        payload: SeedPayload,
+    }
+
+    #[derive(Clone)]
+    enum SeedPayload {
+        Cursor { x: f32, y: f32 },
+        Caret { pos: u64 },
+        Selection { start: u64, end: u64 },
+        Arrived,
+        Left,
+    }
+
+    #[derive(Clone)]
+    struct SeedContext {
+        collaborators: Vec<(String, String, u32)>,
+        permissions: Vec<String>,
+    }
+
+    #[derive(Clone)]
+    struct SeedScrollback {
+        ops: Vec<Vec<u8>>,
+        earliest_seq: u64,
+        latest_seq: u64,
+        done: bool,
+    }
+
+    // --- fake presence stream -------------------------------------------
+
+    struct FakePresenceStream {
+        backlog: Rc<RefCell<Vec<SeedPresence>>>,
+    }
+
+    impl presence_stream::Server for FakePresenceStream {
+        fn read(
+            self: Rc<Self>,
+            _params: presence_stream::ReadParams,
+            mut results: presence_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut backlog = self.backlog.borrow_mut();
+            if backlog.is_empty() {
+                // Never resolve — clients that outrun the backlog
+                // simply wait forever, which mirrors the real broker.
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            }
+            let seed = backlog.remove(0);
+            let mut ev: presence_event::Builder = results.get().init_event();
+            ev.set_user_id(&seed.user_id);
+            ev.set_key_bytes(&seed.key_bytes);
+            let mut payload: presence_payload::Builder = ev.init_payload();
+            match seed.payload {
+                SeedPayload::Cursor { x, y } => {
+                    let mut b = payload.init_cursor();
+                    b.set_x(x);
+                    b.set_y(y);
+                }
+                SeedPayload::Caret { pos } => {
+                    payload.init_caret().set_pos(pos);
+                }
+                SeedPayload::Selection { start, end } => {
+                    let mut b = payload.init_selection();
+                    b.set_start(start);
+                    b.set_end(end);
+                }
+                SeedPayload::Arrived => payload.set_arrived(()),
+                SeedPayload::Left => payload.set_left(()),
+            }
+            Promise::ok(())
+        }
+    }
+
+    // --- fake presence handle -------------------------------------------
+
+    struct FakePresence {
+        captures: SharedCaptures,
+        presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
+    }
+
+    impl presence_handle::Server for FakePresence {
+        fn publish_cursor(
+            self: Rc<Self>,
+            params: presence_handle::PublishCursorParams,
+            _results: presence_handle::PublishCursorResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            self.captures
+                .lock()
+                .unwrap()
+                .cursor_publishes
+                .push((r.get_x(), r.get_y()));
+            Promise::ok(())
+        }
+
+        fn subscribe_remote_cursors(
+            self: Rc<Self>,
+            _params: presence_handle::SubscribeRemoteCursorsParams,
+            _results: presence_handle::SubscribeRemoteCursorsResults,
+        ) -> Promise<(), capnp::Error> {
+            // Not driven — ui::CollaborationManager only opens
+            // `subscribeAll`.
+            Promise::err(capnp::Error::unimplemented(
+                "subscribe_remote_cursors".into(),
+            ))
+        }
+
+        fn publish_caret(
+            self: Rc<Self>,
+            params: presence_handle::PublishCaretParams,
+            _results: presence_handle::PublishCaretResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            self.captures
+                .lock()
+                .unwrap()
+                .caret_publishes
+                .push((k.to_vec(), r.get_pos()));
+            Promise::ok(())
+        }
+
+        fn publish_selection(
+            self: Rc<Self>,
+            params: presence_handle::PublishSelectionParams,
+            _results: presence_handle::PublishSelectionResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            self.captures.lock().unwrap().selection_publishes.push((
+                k.to_vec(),
+                r.get_start(),
+                r.get_end(),
+            ));
+            Promise::ok(())
+        }
+
+        fn publish_arrived(
+            self: Rc<Self>,
+            params: presence_handle::PublishArrivedParams,
+            _results: presence_handle::PublishArrivedResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            self.captures.lock().unwrap().arrived.push(k.to_vec());
+            Promise::ok(())
+        }
+
+        fn publish_left(
+            self: Rc<Self>,
+            params: presence_handle::PublishLeftParams,
+            _results: presence_handle::PublishLeftResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            self.captures.lock().unwrap().left.push(k.to_vec());
+            Promise::ok(())
+        }
+
+        fn subscribe_all(
+            self: Rc<Self>,
+            _params: presence_handle::SubscribeAllParams,
+            mut results: presence_handle::SubscribeAllResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: presence_stream::Client = capnp_rpc::new_client(FakePresenceStream {
+                backlog: self.presence_backlog.clone(),
+            });
+            results.get().set_stream(client);
+            Promise::ok(())
+        }
+    }
+
+    // --- fake op stream ---------------------------------------------------
+
+    struct FakeOpStream {
+        backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+    }
+
+    impl stream::Server for FakeOpStream {
+        fn read(
+            self: Rc<Self>,
+            _params: stream::ReadParams,
+            mut results: stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut backlog = self.backlog.borrow_mut();
+            if backlog.is_empty() {
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            }
+            let (op, from) = backlog.remove(0);
+            let mut r = results.get();
+            r.set_op(&op);
+            r.set_from_user_id(&from);
+            Promise::ok(())
+        }
+    }
+
+    // --- fake context stream ---------------------------------------------
+
+    struct FakeContextStream {
+        backlog: Rc<RefCell<Vec<SeedContext>>>,
+    }
+
+    impl context_stream::Server for FakeContextStream {
+        fn read(
+            self: Rc<Self>,
+            _params: context_stream::ReadParams,
+            mut results: context_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut backlog = self.backlog.borrow_mut();
+            if backlog.is_empty() {
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            }
+            let seed = backlog.remove(0);
+            let mut ctx: channel_context::Builder = results.get().init_ctx();
+            {
+                let mut collabs = ctx
+                    .reborrow()
+                    .init_collaborators(seed.collaborators.len() as u32);
+                for (i, (uid, name, color)) in seed.collaborators.iter().enumerate() {
+                    let mut c = collabs.reborrow().get(i as u32);
+                    c.set_user_id(uid);
+                    c.set_display_name(name);
+                    c.set_color(*color);
+                }
+            }
+            {
+                let mut perms = ctx.init_permissions(seed.permissions.len() as u32);
+                for (i, p) in seed.permissions.iter().enumerate() {
+                    perms.set(i as u32, p.as_str());
+                }
+            }
+            Promise::ok(())
+        }
+    }
+
+    // --- fake channel handle ---------------------------------------------
+
+    struct FakeChannel {
+        captures: SharedCaptures,
+        op_backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+        presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
+        context_backlog: Rc<RefCell<Vec<SeedContext>>>,
+        scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
+    }
+
+    impl channel_handle::Server for FakeChannel {
+        fn send(
+            self: Rc<Self>,
+            params: channel_handle::SendParams,
+            _results: channel_handle::SendResults,
+        ) -> Promise<(), capnp::Error> {
+            let op = match params.get().and_then(|r| r.get_op()) {
+                Ok(o) => o.to_vec(),
+                Err(e) => return Promise::err(e),
+            };
+            self.captures.lock().unwrap().signed_ops.push(op);
+            Promise::ok(())
+        }
+
+        fn subscribe(
+            self: Rc<Self>,
+            _params: channel_handle::SubscribeParams,
+            mut results: channel_handle::SubscribeResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: stream::Client = capnp_rpc::new_client(FakeOpStream {
+                backlog: self.op_backlog.clone(),
+            });
+            results.get().set_stream(client);
+            Promise::ok(())
+        }
+
+        fn presence(
+            self: Rc<Self>,
+            _params: channel_handle::PresenceParams,
+            mut results: channel_handle::PresenceResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: presence_handle::Client = capnp_rpc::new_client(FakePresence {
+                captures: self.captures.clone(),
+                presence_backlog: self.presence_backlog.clone(),
+            });
+            results.get().set_handle(client);
+            Promise::ok(())
+        }
+
+        fn send_unsigned_snapshot(
+            self: Rc<Self>,
+            params: channel_handle::SendUnsignedSnapshotParams,
+            _results: channel_handle::SendUnsignedSnapshotResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(d) = params.get().and_then(|r| r.get_data()) else {
+                return Promise::ok(());
+            };
+            self.captures.lock().unwrap().unsigned_snapshots.push(d.to_vec());
+            Promise::ok(())
+        }
+
+        fn send_unsigned_incremental(
+            self: Rc<Self>,
+            params: channel_handle::SendUnsignedIncrementalParams,
+            _results: channel_handle::SendUnsignedIncrementalResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(d) = params.get().and_then(|r| r.get_data()) else {
+                return Promise::ok(());
+            };
+            self.captures
+                .lock()
+                .unwrap()
+                .unsigned_incrementals
+                .push(d.to_vec());
+            Promise::ok(())
+        }
+
+        fn subscribe_context(
+            self: Rc<Self>,
+            _params: channel_handle::SubscribeContextParams,
+            mut results: channel_handle::SubscribeContextResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
+                backlog: self.context_backlog.clone(),
+            });
+            results.get().set_stream(client);
+            Promise::ok(())
+        }
+
+        fn fetch_scrollback(
+            self: Rc<Self>,
+            params: channel_handle::FetchScrollbackParams,
+            mut results: channel_handle::FetchScrollbackResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(p) = params.get() else { return Promise::ok(()) };
+            self.captures
+                .lock()
+                .unwrap()
+                .scrollback_requests
+                .push((p.get_before_seq(), p.get_max()));
+            let seed = self
+                .scrollback_response
+                .borrow()
+                .clone()
+                .unwrap_or(SeedScrollback {
+                    ops: Vec::new(),
+                    earliest_seq: 0,
+                    latest_seq: 0,
+                    done: true,
+                });
+            let mut batch: scrollback_batch::Builder = results.get().init_batch();
+            {
+                let mut ops = batch.reborrow().init_ops(seed.ops.len() as u32);
+                for (i, op) in seed.ops.iter().enumerate() {
+                    ops.set(i as u32, op);
+                }
+            }
+            batch.set_earliest_seq(seed.earliest_seq);
+            batch.set_latest_seq(seed.latest_seq);
+            batch.set_done(seed.done);
+            Promise::ok(())
+        }
+    }
+
+    // --- fake broker + wiring --------------------------------------------
+
+    struct FakeBroker {
+        captures: SharedCaptures,
+        op_backlog: Vec<(Vec<u8>, String)>,
+        presence_backlog: Vec<SeedPresence>,
+        context_backlog: Vec<SeedContext>,
+        scrollback_response: Option<SeedScrollback>,
+    }
+
+    impl collab_service::Server for FakeBroker {
+        fn join_channel(
+            self: Rc<Self>,
+            params: collab_service::JoinChannelParams,
+            mut results: collab_service::JoinChannelResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(reader) = params.get() else { return Promise::ok(()) };
+            let channel_id = reader
+                .get_channel_id()
+                .and_then(|t| {
+                    t.to_str()
+                        .map(|s| s.to_owned())
+                        .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
+                })
+                .unwrap_or_default();
+            let identity = reader
+                .get_identity()
+                .map(|b| b.to_vec())
+                .unwrap_or_default();
+            self.captures.lock().unwrap().joined.push((channel_id, identity));
+
+            let chan = FakeChannel {
+                captures: self.captures.clone(),
+                op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
+                presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
+                context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
+                scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
+            };
+            let client: channel_handle::Client = capnp_rpc::new_client(chan);
+            results.get().set_handle(client);
+            Promise::ok(())
+        }
+    }
+
+    /// Stand up a fake `CollabService` on one end of a Unix socket
+    /// pair and return the client-side raw fd + the captures state so
+    /// tests can assert.
+    fn stand_up_fake_broker(
+        broker: FakeBroker,
+    ) -> (RawFd, SharedCaptures, thread::JoinHandle<()>) {
+        let captures = broker.captures.clone();
+        // Build the socket pair on the caller thread — pair() is
+        // synchronous.
+        let (server_side, client_side) = std::os::unix::net::UnixStream::pair().unwrap();
+        server_side.set_nonblocking(true).unwrap();
+        client_side.set_nonblocking(true).unwrap();
+        let client_fd = client_side.into_raw_fd();
+
+        let handle = thread::Builder::new()
+            .name("ui-collab-test-broker".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let local = TokioLocalSet::new();
+                local.block_on(&rt, async move {
+                    let tokio_stream =
+                        TokioUnixStream::from_std(server_side).expect("wrap server side");
+                    let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
+                    let (r, w) = tokio_stream.into_split();
+                    let network = Box::new(twoparty::VatNetwork::new(
+                        r.compat(),
+                        w.compat_write(),
+                        rpc_twoparty_capnp::Side::Server,
+                        Default::default(),
+                    ));
+                    let rpc = RpcSystem::new(network, Some(broker_client.client));
+                    let _ = rpc.await;
+                });
+            })
+            .unwrap();
+
+        (client_fd, captures, handle)
+    }
+
+    fn drain_events(mgr: &mut CollaborationManager, deadline: Duration) -> Vec<CollabEvent> {
+        let start = Instant::now();
+        let mut events = Vec::new();
+        while start.elapsed() < deadline {
+            events.extend(mgr.poll());
+            if !events.is_empty() {
+                thread::sleep(Duration::from_millis(5));
+                events.extend(mgr.poll());
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        events
+    }
+
+    fn wait_until<F: FnMut() -> bool>(mut cond: F, deadline: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < deadline {
+            if cond() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    // --- tests -----------------------------------------------------------
+
+    #[test]
+    fn disconnected_manager_is_a_no_op() {
+        // No SDK, no legacy socket set. `new` cannot reach anything —
+        // falls through to `Backend::Disabled`.
+        // Guard the env var against pollution from a co-running test.
+        // SAFETY: the crate is single-threaded per-test module here.
+        unsafe {
+            std::env::remove_var("QOS_SVC_COLLAB_FD");
+            std::env::remove_var("QUICK_COLLAB_SOCK");
+        }
+        let mut mgr = CollaborationManager::new();
+        assert!(!mgr.is_connected(), "no service = not connected");
+        mgr.send(CollabRequest::SyncCRDT { data: b"nope".to_vec() });
+        assert!(mgr.poll().is_empty(), "no events on Disabled backend");
+    }
+
+    #[test]
+    fn hello_joins_channel_and_send_forwards_signed_op() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let cluster = Uuid::new_v4();
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
+
+        // Auto-Hello reaches the broker.
+        assert!(
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            "join_channel must be observed"
+        );
+        let joined = captures.lock().unwrap().joined.clone();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].0, cluster.to_string());
+
+        // Signed op forwarded.
+        let mut op = SignedOp::new_unsigned(
+            b"payload".to_vec(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
+        let expected_bytes = postcard::to_stdvec(&op).unwrap();
+        mgr.send(CollabRequest::SignedSyncIncremental {
+            envelope: Box::new(op),
+        });
+
+        assert!(
+            wait_until(
+                || !captures.lock().unwrap().signed_ops.is_empty(),
+                Duration::from_secs(2),
+            ),
+            "send() must reach the SDK",
+        );
+        let seen = captures.lock().unwrap().signed_ops.clone();
+        assert_eq!(seen, vec![expected_bytes]);
+    }
+
+    #[test]
+    fn sync_crdt_and_sync_incremental_hit_legacy_sdk_calls() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+
+        assert!(
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            "join_channel must be observed",
+        );
+
+        mgr.send(CollabRequest::SyncCRDT { data: b"snap".to_vec() });
+        mgr.send(CollabRequest::SyncIncremental { data: b"delta".to_vec() });
+
+        assert!(
+            wait_until(
+                || {
+                    let c = captures.lock().unwrap();
+                    !c.unsigned_snapshots.is_empty() && !c.unsigned_incrementals.is_empty()
+                },
+                Duration::from_secs(2),
+            ),
+            "both legacy sends must reach the SDK",
+        );
+        let c = captures.lock().unwrap();
+        assert_eq!(c.unsigned_snapshots, vec![b"snap".to_vec()]);
+        assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
+    }
+
+    #[test]
+    fn presence_variants_map_to_correct_sdk_publishes() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        assert!(
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            "join_channel must be observed",
+        );
+
+        let key = PresenceKey::Tab { id: "note-1".to_owned() };
+        let expected_key_bytes = postcard::to_stdvec(&key).unwrap();
+
+        mgr.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Pointer { x: 1.5, y: 2.5 },
+        });
+        mgr.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Caret { pos: 12 },
+        });
+        mgr.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Selection { start: 3, end: 9 },
+        });
+        mgr.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Arrived,
+        });
+        mgr.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: PresencePayload::Left,
+        });
+
+        assert!(
+            wait_until(
+                || {
+                    let c = captures.lock().unwrap();
+                    c.cursor_publishes.len() == 1
+                        && c.caret_publishes.len() == 1
+                        && c.selection_publishes.len() == 1
+                        && c.arrived.len() == 1
+                        && c.left.len() == 1
+                },
+                Duration::from_secs(2),
+            ),
+            "every presence variant must reach the corresponding SDK method",
+        );
+        let c = captures.lock().unwrap();
+        assert_eq!(c.cursor_publishes, vec![(1.5, 2.5)]);
+        assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
+        assert_eq!(
+            c.selection_publishes,
+            vec![(expected_key_bytes.clone(), 3, 9)]
+        );
+        assert_eq!(c.arrived, vec![expected_key_bytes.clone()]);
+        assert_eq!(c.left, vec![expected_key_bytes]);
+    }
+
+    #[test]
+    fn signed_op_stream_translates_to_signed_crdt_incremental() {
+        let mut op = SignedOp::new_unsigned(
+            b"remote-payload".to_vec(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            42,
+        );
+        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
+        let op_bytes = postcard::to_stdvec(&op).unwrap();
+
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![(op_bytes, "peer-bob".to_owned())],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let events = drain_events(&mut mgr, Duration::from_secs(2));
+
+        let signed: Vec<_> = events
+            .into_iter()
+            .filter_map(|e| match e {
+                CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
+                    Some((envelope, from_user_id))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(signed.len(), 1, "one SignedCRDTIncremental expected");
+        assert_eq!(signed[0].1, "peer-bob");
+        assert_eq!(signed[0].0.payload, b"remote-payload");
+        assert_eq!(signed[0].0.seq, 42);
+    }
+
+    #[test]
+    fn context_stream_translates_to_context_event() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![SeedContext {
+                collaborators: vec![
+                    ("alice".to_owned(), "Alice".to_owned(), 0x00FF8000),
+                    ("bob".to_owned(), "Bob".to_owned(), 0x000080FF),
+                ],
+                permissions: vec!["edit".to_owned(), "share".to_owned()],
+            }],
+            scrollback_response: None,
+        };
+        let (fd, _captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let events = drain_events(&mut mgr, Duration::from_secs(2));
+
+        let ctx = events
+            .iter()
+            .find_map(|e| match e {
+                CollabEvent::Context {
+                    collaborators,
+                    permissions,
+                } => Some((collaborators.clone(), permissions.clone())),
+                _ => None,
+            })
+            .expect("must receive a Context event");
+        let (collabs, perms) = ctx;
+        assert_eq!(collabs.len(), 2);
+        assert_eq!(collabs[0].id, "alice");
+        assert_eq!(collabs[0].name, "Alice");
+        // 0x00FF8000 → R=255, G=128, B=0.
+        assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
+        assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
+        assert!(collabs[0].color[2].abs() < 1e-3);
+        assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+    }
+
+    #[test]
+    fn presence_stream_translates_cursor_and_all_other_variants() {
+        let key = PresenceKey::Tab { id: "note-1".to_owned() };
+        let key_bytes = postcard::to_stdvec(&key).unwrap();
+        let presence_backlog = vec![
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Cursor { x: 4.0, y: 5.0 },
+            },
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Caret { pos: 7 },
+            },
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Selection { start: 1, end: 3 },
+            },
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Arrived,
+            },
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Left,
+            },
+        ];
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog,
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let events = drain_events(&mut mgr, Duration::from_secs(2));
+
+        // Extract the presence-relevant events in order.
+        let mut cursor_moves = Vec::new();
+        let mut updates = Vec::new();
+        for e in events {
+            match e {
+                CollabEvent::RemoteCursorMoved { x, y, .. } => cursor_moves.push((x, y)),
+                CollabEvent::RemotePresenceUpdate { payload, .. } => updates.push(payload),
+                _ => {}
+            }
+        }
+        assert!(
+            cursor_moves.contains(&(4.0, 5.0)),
+            "cursor payload must land on RemoteCursorMoved"
+        );
+        assert!(
+            updates.contains(&PresencePayload::Caret { pos: 7 }),
+            "caret variant translated"
+        );
+        assert!(
+            updates.contains(&PresencePayload::Selection { start: 1, end: 3 }),
+            "selection variant translated"
+        );
+        assert!(
+            updates.contains(&PresencePayload::Arrived),
+            "arrived variant translated"
+        );
+        assert!(
+            updates.contains(&PresencePayload::Left),
+            "left variant translated"
+        );
+    }
+
+    #[test]
+    fn fetch_scrollback_returns_batch_event() {
+        let mut op = SignedOp::new_unsigned(
+            b"old-payload".to_vec(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            5,
+        );
+        op.signature = collab_types::Signature::from_bytes([0u8; 64]);
+        let op_bytes = postcard::to_stdvec(&op).unwrap();
+        let seed = SeedScrollback {
+            ops: vec![op_bytes],
+            earliest_seq: 5,
+            latest_seq: 5,
+            done: true,
+        };
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: Some(seed),
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        assert!(
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            "join_channel must precede scrollback fetch",
+        );
+
+        let artifact = collab_types::ArtifactId::new();
+        mgr.send(CollabRequest::FetchScrollback {
+            artifact,
+            before_seq: 10,
+            max: 50,
+        });
+        let events = drain_events(&mut mgr, Duration::from_secs(2));
+        let batch = events
+            .into_iter()
+            .find_map(|e| match e {
+                CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
+                _ => None,
+            })
+            .expect("must receive a ScrollbackBatch event");
+        assert_eq!(batch.0.len(), 1);
+        assert_eq!(batch.0[0].payload, b"old-payload");
+        assert!(batch.1, "seeded broker reports exhausted");
+        assert_eq!(
+            captures.lock().unwrap().scrollback_requests,
+            vec![(10, 50)],
+            "before_seq / max round-tripped verbatim",
+        );
+    }
+
+    #[test]
+    fn translate_presence_event_is_symmetric_over_all_payload_variants() {
+        // Straight unit test of `translate_presence_event` — no broker
+        // required, no threading. Covers cursor / caret / selection /
+        // arrived / left and the undecodable-key fallback.
+        let key = PresenceKey::Widget {
+            path: vec![crate::presence::PathSegment::Field("body".into())],
+        };
+        let key_bytes = postcard::to_stdvec(&key).unwrap();
+
+        // Cursor
+        let e = translate_presence_event(runtime_collab::PresenceEvent {
+            user_id: "peer".into(),
+            key_bytes: key_bytes.clone(),
+            payload: SdkPayload::Cursor { x: 7.0, y: 8.0 },
+        });
+        matches!(e, CollabEvent::RemoteCursorMoved { .. });
+
+        // Caret
+        let e = translate_presence_event(runtime_collab::PresenceEvent {
+            user_id: "peer".into(),
+            key_bytes: key_bytes.clone(),
+            payload: SdkPayload::Caret { pos: 3 },
+        });
+        if let CollabEvent::RemotePresenceUpdate { key: k, payload, .. } = e {
+            assert_eq!(k, key);
+            assert_eq!(payload, PresencePayload::Caret { pos: 3 });
+        } else {
+            panic!("expected RemotePresenceUpdate");
+        }
+
+        // Undecodable key → fallback.
+        let e = translate_presence_event(runtime_collab::PresenceEvent {
+            user_id: "peer".into(),
+            key_bytes: vec![0xFF, 0xFF, 0xFF],
+            payload: SdkPayload::Arrived,
+        });
+        if let CollabEvent::RemotePresenceUpdate { key: k, .. } = e {
+            assert!(matches!(k, PresenceKey::Tab { .. }));
+        } else {
+            panic!("expected RemotePresenceUpdate on undecodable key");
         }
     }
 }
