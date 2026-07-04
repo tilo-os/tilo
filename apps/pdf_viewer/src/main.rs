@@ -54,8 +54,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn build_widget(args: &Args) -> Box<dyn Widget> {
     if let Some(file) = &args.file {
         pdf_viewer::app_root_open(file)
-    } else if args.scenario.as_deref() == Some("open-dialog") {
-        pdf_viewer::app_root_open_dialog()
     } else if args.scenario.as_deref() == Some("edit-comment") {
         pdf_viewer::app_root_sample_editing()
     } else if args.sample {

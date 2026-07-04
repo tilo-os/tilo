@@ -19,6 +19,7 @@
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod portal;
 pub mod render;
 
 pub use app::PdfApp;
@@ -51,9 +52,4 @@ pub fn app_root_sample() -> Box<dyn Widget> {
 /// so a still frame can show the caret + focus ring.
 pub fn app_root_sample_editing() -> Box<dyn Widget> {
     Box::new(PdfApp::sample_editing())
-}
-
-/// Screenshot-only: the empty state with the in-app file browser open.
-pub fn app_root_open_dialog() -> Box<dyn Widget> {
-    Box::new(PdfApp::open_dialog_demo())
 }
