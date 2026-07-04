@@ -1,4 +1,4 @@
-//! `qos-collab-types` — the cryptographic foundation for qOS Spaces,
+//! `collab-types` — the cryptographic foundation for qOS Spaces,
 //! Channels, and role-based access control.
 //!
 //! This crate implements **Phase 2** of the

@@ -1,4 +1,4 @@
-//! HEADLINE INTEROP — threshold sigs ↔ `qos-collab-types`.
+//! HEADLINE INTEROP — threshold sigs ↔ `collab-types`.
 //!
 //! This is the test the whole crate was built for: a signature
 //! produced by collaborative threshold signing across multiple

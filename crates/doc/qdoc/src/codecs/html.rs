@@ -1,4 +1,4 @@
-//! Built-in HTML **import** codec. The inverse of the `dochtml` export crate: it
+//! Built-in HTML **import** codec. The inverse of the `qdoc-html` export crate: it
 //! parses an `.html` / `.htm` document back onto the canonical rich-text model so
 //! the word processor can *open* HTML files.
 //!
@@ -8,7 +8,7 @@
 //! malformed markup, it degrades unknown tags to their text content, and it
 //! unescapes the common HTML entities itself.
 //!
-//! ### Tag → model mapping (mirrors `dochtml`'s emit side)
+//! ### Tag → model mapping (mirrors `qdoc-html`'s emit side)
 //!
 //! - `<h1>`…`<h6>`            → `heading` block carrying a `level` attr (1..=6).
 //! - `<p>`                    → `paragraph` block.
@@ -37,9 +37,9 @@
 //! common named ones) are unescaped in text and attribute values.
 //!
 //! `export` is intentionally `Unsupported`: HTML *export* lives in the editor via
-//! the `dochtml` crate (it renders from a materialized `DocSnapshot`, which a
-//! `FormatProvider` does not get). `qdoc` cannot depend on `dochtml` to reuse its
-//! writer without a dependency cycle (`dochtml` depends on `qdoc`), so there is
+//! the `qdoc-html` crate (it renders from a materialized `DocSnapshot`, which a
+//! `FormatProvider` does not get). `qdoc` cannot depend on `qdoc-html` to reuse its
+//! writer without a dependency cycle (`qdoc-html` depends on `qdoc`), so there is
 //! exactly one HTML writer and it lives outside this crate.
 
 use crate::format::{CodecError, Confidence, FormatProvider};
@@ -76,12 +76,12 @@ impl FormatProvider for HtmlCodec {
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
         // Export deliberately lives in the editor via `qdoc_html::render_html`, which
         // renders from a materialized `DocSnapshot`. A `FormatProvider::export`
-        // only gets a `DocRef`; reusing the `dochtml` writer here is impossible
-        // anyway because `dochtml` depends on `qdoc` (a `qdoc → dochtml` dep would
+        // only gets a `DocRef`; reusing the `qdoc-html` writer here is impossible
+        // anyway because `qdoc-html` depends on `qdoc` (a `qdoc → qdoc-html` dep would
         // be a cycle). We keep a single HTML writer and surface a clear error if
         // someone routes HTML export through the registry.
         Err(CodecError::Unsupported(
-            "HTML export is provided by the `dochtml` crate (editor), not the qdoc codec".to_string(),
+            "HTML export is provided by the `qdoc-html` crate (editor), not the qdoc codec".to_string(),
         ))
     }
 }
@@ -388,7 +388,7 @@ fn attr_value(raw: &str, key: &str) -> Option<String> {
 
 /// Parse a `style="…"` declaration string into the model run-marks it implies.
 /// Mirrors the markdown codec's `marks_from_span_style` so marks merge across
-/// codecs (and back-convert what `dochtml` emits on its span styles).
+/// codecs (and back-convert what `qdoc-html` emits on its span styles).
 fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
     let mut out: Vec<(&'static str, MarkVal)> = Vec::new();
     for decl in style.split(';') {
@@ -823,7 +823,7 @@ fn insert_image(
 
 /// Decode a `data:[mime][;base64],payload` URI into bytes. Returns `None` for a
 /// non-data URI or an undecodable payload. Only base64 payloads are supported
-/// (the form `dochtml` emits).
+/// (the form `qdoc-html` emits).
 fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let rest = src.strip_prefix("data:").or_else(|| src.strip_prefix("DATA:"))?;
     let comma = rest.find(',')?;

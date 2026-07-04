@@ -84,9 +84,9 @@ small-suite. Picked because:
 A future Phase 7.x can introduce a second suite under a versioned
 handshake.
 
-## Integration with `qos-collab-types`
+## Integration with `collab-types`
 
-This crate ships two extensions to `qos-collab-types`:
+This crate ships two extensions to `collab-types`:
 
 1. `SignedOp.encryption: Option<EncryptionMetadata>`. `None` means the
    payload is cleartext (legacy / unencrypted channels keep working);

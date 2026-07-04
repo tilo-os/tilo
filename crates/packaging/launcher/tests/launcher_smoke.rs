@@ -51,7 +51,7 @@ fn build_hello(out_dir: &Path) -> PathBuf {
 /// fixture binary can find libc inside the sandbox. We don't ship a
 /// fully static binary because that needs `musl` toolchain which isn't
 /// present in distrobox; bind-mounting host libs read-only is the
-/// pragmatic option and mirrors what real apps will do via `qos-runtime`.
+/// pragmatic option and mirrors what real apps will do via `runtime`.
 fn with_glibc_binds(mut m: MinimalManifest) -> MinimalManifest {
     for p in ["/usr/lib", "/usr/lib64", "/lib", "/lib64"] {
         if std::path::Path::new(p).exists() {

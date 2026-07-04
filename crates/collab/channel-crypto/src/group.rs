@@ -139,7 +139,7 @@ impl ChannelGroup {
     /// generated via [`MemberKey::fresh_key_package`] and shipped
     /// out-of-band to the owner (or to whichever member is
     /// authorised to call `add_member` — typically the channel
-    /// owner; the role-table check in `qos-collab-types` enforces
+    /// owner; the role-table check in `collab-types` enforces
     /// who is allowed to issue this op upstream).
     ///
     /// On success:
@@ -330,7 +330,7 @@ impl ChannelGroup {
     ///
     /// The current member's signer signs the inner MLS handshake-level
     /// commit framing; the outer `SignedOp.signature` is a separate
-    /// `qos-collab-types` signature over the canonical bytes view of
+    /// `collab-types` signature over the canonical bytes view of
     /// the envelope (including the ciphertext). Both signatures are
     /// needed: the inner one binds the message to an MLS group member;
     /// the outer one binds it to a `qos-collab-types::Identity` /

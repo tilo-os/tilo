@@ -64,16 +64,16 @@ pub enum WpFormat {
     Odt,
     Docx,
     Markdown,
-    /// PDF — **export only** (rendered via the `docpdf` crate). Importing PDF is
+    /// PDF — **export only** (rendered via the `qdoc-pdf` crate). Importing PDF is
     /// not supported and returns a clear error.
     Pdf,
-    /// HTML — export via the `dochtml` crate; **import** via `qdoc::HtmlCodec` (so
+    /// HTML — export via the `qdoc-html` crate; **import** via `qdoc::HtmlCodec` (so
     /// `.html`/`.htm` files can be opened as well as saved).
     Html,
-    /// RTF — export via the `docrtf` crate; **import** via `qdoc::RtfCodec` (so
+    /// RTF — export via the `qdoc-rtf` crate; **import** via `qdoc::RtfCodec` (so
     /// `.rtf` files can be opened as well as saved).
     Rtf,
-    /// EPUB — **export only** (rendered via the `docepub` crate). Importing EPUB
+    /// EPUB — **export only** (rendered via the `qdoc-epub` crate). Importing EPUB
     /// is not supported and returns a clear error.
     Epub,
 }
@@ -102,10 +102,10 @@ impl WpFormat {
                 "opening PDF documents is not supported (PDF is export-only)".to_string(),
             )),
             // HTML import is handled by the `qdoc::HtmlCodec` codec (export still
-            // routes through `dochtml` below).
+            // routes through `qdoc-html` below).
             WpFormat::Html => qdoc::HtmlCodec.import(bytes, dm),
             // RTF import is handled by the `qdoc::RtfCodec` codec (export still
-            // routes through `docrtf` below).
+            // routes through `qdoc-rtf` below).
             WpFormat::Rtf => qdoc::RtfCodec.import(bytes, dm),
             WpFormat::Epub => Err(qdoc::CodecError::Unsupported(
                 "opening EPUB documents is not supported (EPUB is export-only)".to_string(),
@@ -120,13 +120,13 @@ impl WpFormat {
             WpFormat::Docx => qdoc::DocxCodec.export(dr),
             WpFormat::Markdown => qdoc::MarkdownCodec.export(dr),
             // PDF isn't a `FormatProvider` codec — it renders from the materialized
-            // snapshot via `docpdf`. Map its error into the shared `CodecError`.
+            // snapshot via `qdoc-pdf`. Map its error into the shared `CodecError`.
             WpFormat::Pdf => {
                 let snap = dr.materialize();
                 qdoc_pdf::render_pdf(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
             // HTML/RTF aren't `FormatProvider` codecs either — they render from
-            // the materialized snapshot via `dochtml`/`docrtf`, returning UTF-8
+            // the materialized snapshot via `qdoc-html`/`qdoc-rtf`, returning UTF-8
             // bytes.
             WpFormat::Html => {
                 let snap = dr.materialize();
@@ -137,7 +137,7 @@ impl WpFormat {
                 Ok(qdoc_rtf::render_rtf(&snap).into_bytes())
             }
             // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
-            // ZIP container from the materialized snapshot via `docepub`. Map its
+            // ZIP container from the materialized snapshot via `qdoc-epub`. Map its
             // error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(snap_a.blocks.len(), 2, "both concurrent edits are present");
     }
 
-    /// Saving to a `*.pdf` path routes through `docpdf` and writes a valid PDF
+    /// Saving to a `*.pdf` path routes through `qdoc-pdf` and writes a valid PDF
     /// (the bytes start with the `%PDF` signature). PDF is export-only.
     #[test]
     fn save_document_to_pdf_writes_valid_pdf() {
@@ -497,7 +497,7 @@ mod tests {
         assert!(matches!(err, qdoc::CodecError::Unsupported(_)), "got {err:?}");
     }
 
-    /// Saving to a `*.html` path routes through `dochtml` and writes a complete
+    /// Saving to a `*.html` path routes through `qdoc-html` and writes a complete
     /// HTML document. HTML is export-only.
     #[test]
     fn save_document_to_html_writes_html() {
@@ -524,7 +524,7 @@ mod tests {
         );
     }
 
-    /// Saving to a `*.rtf` path routes through `docrtf` and writes a valid RTF
+    /// Saving to a `*.rtf` path routes through `qdoc-rtf` and writes a valid RTF
     /// document (the bytes start with the `{\rtf` signature). RTF is export-only.
     #[test]
     fn save_document_to_rtf_writes_rtf() {
@@ -549,7 +549,7 @@ mod tests {
         );
     }
 
-    /// Saving to a `*.epub` path routes through `docepub` and writes a valid
+    /// Saving to a `*.epub` path routes through `qdoc-epub` and writes a valid
     /// EPUB OCF container: the bytes are a ZIP archive (`PK` magic) whose first
     /// entry is the literal `mimetype` member. EPUB is export-only.
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(first.text, "Opened from RTF", "first paragraph text: {snap:?}");
     }
 
-    /// Full round-trip: render a Markdown-built document to `.rtf` via `docrtf`
+    /// Full round-trip: render a Markdown-built document to `.rtf` via `qdoc-rtf`
     /// (the export path), re-open it through `WpFormat::Rtf.import` (the new
     /// import path), and assert the text and a bold run survive.
     #[test]
@@ -660,7 +660,7 @@ mod tests {
             MarkdownCodec.import(b"Hello **world** today\n", &mut dm).unwrap();
         }
 
-        // Export to RTF bytes via the editor's export path (docrtf).
+        // Export to RTF bytes via the editor's export path (qdoc-rtf).
         let containers = qdoc::model::open(&s.doc, &s.root).unwrap();
         let dr = qdoc::DocRef { doc: &s.doc, c: &containers };
         let rtf = WpFormat::Rtf.export(dr).expect("rtf export");

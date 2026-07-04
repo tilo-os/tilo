@@ -1,4 +1,4 @@
-//! `qos-channel-crypto` — per-channel MLS group encryption for qOS.
+//! `channel-crypto` — per-channel MLS group encryption for qOS.
 //!
 //! This crate implements **Phase 7** of the
 //! `2026-06-29-spaces-channels-and-cryptographic-roles.md` design
@@ -45,7 +45,7 @@
 //! `MlsMessageIn`. The broker treats these as opaque; the encrypting
 //! and decrypting [`ChannelGroup`] is what gives them meaning.
 //!
-//! ## Integration with `qos-collab-types`
+//! ## Integration with `collab-types`
 //!
 //! - [`collab_types::SignedOp`] now carries an
 //!   `encryption: Option<EncryptionMetadata>` field. `None` means

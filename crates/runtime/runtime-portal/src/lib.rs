@@ -1,4 +1,4 @@
-//! `qos-runtime-portal` — service discovery and connected-fd → RPC
+//! `runtime-portal` — service discovery and connected-fd → RPC
 //! plumbing for qOS apps.
 //!
 //! qOS apps run inside a launcher-managed sandbox. The launcher
@@ -11,7 +11,7 @@
 //!   compositor at all, or as a stock Flatpak on a vanilla desktop?
 //! - [`UnixCapnpClient`] — lift a connected `RawFd` into a tokio
 //!   Cap'n Proto two-party RPC client. Higher-level service crates
-//!   (`qos-runtime-collab`, `qos-runtime-fs`) build typed clients
+//!   (`runtime-collab`, `runtime-fs`) build typed clients
 //!   on top of the bootstrap returned here.
 //! - [`NotAvailable`] — the single error type service clients
 //!   surface when the platform can't provide the requested service.

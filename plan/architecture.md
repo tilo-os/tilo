@@ -2,7 +2,7 @@
 
 ## Overview
 
-qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora Bootc. Instead of a traditional desktop metaphor, users navigate an infinite 2D canvas of **workspaces** — clusters of application windows organized into strips and tab-groups. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora Bootc. Instead of a traditional desktop metaphor, users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
@@ -28,7 +28,7 @@ qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora B
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │ │
 │  │  │  openh264 │ │ PipeWire │ │   Control socket  │  │ │
-│  │  │ (peer enc)│ │(screencst)│ │   (NIRIOS_TEST_…) │  │ │
+│  │  │ (peer enc)│ │(screencst)│ │ (QOS_TEST_CONTROL)│  │ │
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  └──────────────────────────────────────────────────── │ │
 │                                                          │
@@ -145,14 +145,14 @@ Three layers cover different parts of the stack:
 
 The control socket is the out-of-process path for covering the seat layer, frame-pacing regressions, and focus-stealing behaviour the in-process driver can't reproduce.
 
-## Project directory structure (Cargo workspace + submodules)
+## Project directory structure (Cargo workspace / monorepo)
 
 ```
-quickdesktop/                            # superproject
+quickdesktop/                            # workspace root
 ├── plan/                                # this directory — design intent
 ├── docs/                                # architecture + testing + superpowers plans/specs
-├── ui/                            # in-tree — UI toolkit
-├── shell/                         # submodule — compositor + shell
+├── ui/                                  # UI toolkit
+├── shell/                               # compositor + shell
 │   └── src/
 │       ├── compositor/                  # smithay state, backends, frame, tab-binding, test_control
 │       │   └── backend/{winit,drm}/
@@ -161,17 +161,18 @@ quickdesktop/                            # superproject
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
 │       ├── network/                     # libp2p actor, behaviour, hub, replica, encoder, invite
 │       └── bin/{shots,qos-control}/  # e2e harness + control-socket CLI
-├── fs/                       # submodule — FUSE3 driver
-├── apps/{terminal,file-explorer,browser}/  # submodules
-└── os/                                  # submodule — Containerfile + systemd units
+├── fs/                                  # FUSE3 driver
+├── apps/{terminal,file-explorer,browser,…}/  # native apps
+├── crates/<domain>/                     # supporting libraries (collab, doc, runtime, packaging, …)
+└── os/                                  # Containerfile + systemd units
 ```
 
-Only `ui` lives in the main repo; everything else is a submodule. See `CLAUDE.md` for the submodule workflow.
+Everything lives in this one repository — see `CLAUDE.md` for the monorepo workflow.
 
 ## Key spatial concepts
 
-- **Canvas**: the infinite 2D surface the user navigates via the wheel disc and palette.
-- **Workspace**: a cluster of strips on the canvas that can be shared with peers; the unit of sandboxing, capability grants, and CRDT replication.
+- **Wheel disc**: the left-edge radial switcher; each workspace is a spoke, dragged/rotated to switch the active workspace.
+- **Workspace**: a stack of strips that can be shared with peers; the unit of sandboxing, capability grants, and CRDT replication.
 - **Strip**: a horizontal lane within a workspace, containing one or more window-groups.
 - **WindowGroup**: a tabbed container holding one or more tabs (formerly "deck"). Tracks `maximized` and `width`.
 - **Tab**: a single application window. Either `TileContent::Native(...)` (a ui app) or `Tab::Foreign { app_id, surface_id }` (a Wayland client adopted via app-id matching).

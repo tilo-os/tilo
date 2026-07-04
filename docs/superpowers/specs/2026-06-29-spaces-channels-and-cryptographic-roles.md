@@ -282,7 +282,7 @@ No cryptography. No new wire format. Just history+UI work.
 - Add a stable `Identity` keypair, persisted under `~/.config/qos/identity/`. Single-device (no threshold yet).
 - Wire identity into the libp2p layer (replaces the per-shell-instance keypair as the *display* identity; libp2p's transport key stays underneath as a device key).
 - Generate identity at first boot. Label defaults to system username.
-- Define `SignedOp`, `RoleAttestation`, `ChannelEvent` wire types in a new `qos-collab-types` crate.
+- Define `SignedOp`, `RoleAttestation`, `ChannelEvent` wire types in a new `collab-types` crate.
 - Implement signing + verification primitives. Canonical-bytes serialisation (postcard or similar deterministic format).
 - Unit tests for envelope round-trip, signature verification, tamper detection.
 
