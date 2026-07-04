@@ -42,6 +42,7 @@ use crate::diagnostics::PeerSurfaceMetrics;
 use crate::network::decoder::{DecodedFrame, DecodedPixels, VideoDecoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
+use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 
 /// Ceiling on the receive-side decode queue depth. `push_encoded_with_latency`
 /// enforces this via `frames_pending`; once the caller has more than
@@ -91,15 +92,18 @@ pub struct PeerView {
     /// `peer` field on `RemoteInput`. Wired through from the shell at
     /// construction.
     local_peer: PeerId,
-    /// Active decoder — H.264 for SDR streams via the SDR default
-    /// constructor. Constructed lazily on first `push_encoded` so the
-    /// PSNR-style construction failure path stays out of widget init.
-    /// HEVC / HDR routing lands in a follow-on so this field stays
-    /// [`VideoDecoder::H264`] for now.
+    /// Active decoder — H.264 for SDR, HEVC Main10 for HDR. Chosen at
+    /// construction from `SurfaceStreamStart.codec`; SDR default so
+    /// legacy peers that call [`Self::new`] without a codec label
+    /// still work.
     decoder: VideoDecoder,
     /// Most recent decoded frame, ready to paint. `None` until the first
     /// successful decode.
     latest: Option<DecodedFrame>,
+    /// HDR configuration snapshot from the stream-start message. `None`
+    /// on SDR streams; drives the tone-map decision on
+    /// [`Self::ensure_image`].
+    hdr_tonemap: Option<HdrTonemapConfig>,
     /// Cached `peniko::ImageData` derived from `latest`. Rebuilt only when
     /// `latest` changes so the steady-state draw path doesn't reallocate.
     cached_image: Option<vello::peniko::ImageData>,
@@ -160,6 +164,7 @@ impl PeerView {
             local_peer,
             decoder: VideoDecoder::H264(crate::network::decoder::H264Decoder::new()),
             latest: None,
+            hdr_tonemap: None,
             cached_image: None,
             pending_inputs: Vec::new(),
             rect: Rect::ZERO,
@@ -167,6 +172,76 @@ impl PeerView {
             metrics,
             frames_pending: 0,
         }
+    }
+
+    /// Codec-aware constructor. Picks the decoder based on the wire
+    /// label from `SurfaceStreamStart.codec` — `"h264"` for SDR,
+    /// `"hevc-main10"` for HDR — and captures the tone-map config
+    /// derived from the stream's HDR static metadata. On unknown /
+    /// unsupported codec labels the peer view falls back to SDR so the
+    /// caller can still show the placeholder + a diagnostic in the
+    /// OSD, rather than the entire share silently vanishing.
+    pub fn new_for_stream(
+        surface_id: SurfaceId,
+        local_peer: PeerId,
+        codec: &str,
+        metrics: PeerSurfaceMetrics,
+        display_caps: &crate::shell::hdr_display::DisplayCapabilities,
+        hdr_static_metadata: Option<
+            crate::collab::hdr_metadata::Hdr10Metadata,
+        >,
+    ) -> Self {
+        let decoder = VideoDecoder::for_wire_codec(codec)
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    surface = surface_id,
+                    codec = codec,
+                    error = %e,
+                    "peer view falling back to H264 SDR decoder"
+                );
+                VideoDecoder::H264(crate::network::decoder::H264Decoder::new())
+            });
+        // HDR tone-map only applies when the stream is HEVC-Main10
+        // AND the display can't do PQ passthrough. `HdrTonemapConfig`
+        // captures the decision + the mastering luminance to size
+        // compression against.
+        let hdr_tonemap = if matches!(decoder, VideoDecoder::H264(_)) {
+            None
+        } else if display_caps.supports_pq_output {
+            // Passthrough path — no tone-map required. The Wayland
+            // color-management wiring hands the PQ metadata to the
+            // compositor; the widget's blit stays a straight upload.
+            None
+        } else {
+            Some(HdrTonemapConfig::from_metadata(hdr_static_metadata))
+        };
+        Self {
+            title: format!("Peer surface #{surface_id}"),
+            surface_id,
+            local_peer,
+            decoder,
+            latest: None,
+            hdr_tonemap,
+            cached_image: None,
+            pending_inputs: Vec::new(),
+            rect: Rect::ZERO,
+            dirty: true,
+            metrics,
+            frames_pending: 0,
+        }
+    }
+
+    /// Whether this peer view is running the HDR path — either an
+    /// HDR tone-map is active or the decoded frames carry a HDR
+    /// colorimetry. Diagnostics-only.
+    pub fn is_hdr(&self) -> bool {
+        if self.hdr_tonemap.is_some() {
+            return true;
+        }
+        self.decoder
+            .last_colorimetry()
+            .map(|c| c.is_hdr())
+            .unwrap_or(false)
     }
 
     /// Borrow the metrics handle. Clone it to hand to an OSD overlay
@@ -304,25 +379,48 @@ impl PeerView {
     }
 
     /// Rebuild the cached `peniko::ImageData` from `latest` if needed.
-    /// Cheap when `cached_image` is already populated; otherwise clones
-    /// the RGBA bytes once into a `Blob<u8>` and re-uses it across
-    /// subsequent paints.
+    /// Cheap when `cached_image` is already populated. On rebuild:
     ///
-    /// Only the SDR RGBA path is wired today. HDR P010 frames from the
-    /// HEVC Main10 decoder are dropped (falls back to the placeholder)
-    /// — the tone-map + display-passthrough routing lands in a
-    /// follow-on that plumbs `HdrTonemapConfig` + `DisplayCapabilities`
-    /// through this method.
+    /// - SDR RGBA frames → straight blob upload (unchanged fast path).
+    /// - HDR P010 frames + no HDR display → CPU-side tone-map
+    ///   ([`tonemap_p010_to_rgba8`]) into a fresh RGBA blob so the
+    ///   existing vello blit still shows a reasonable SDR
+    ///   approximation. Preserves 10-bit precision through the
+    ///   compression curve — only the last step (writing to
+    ///   `Rgba8UnormSrgb`) drops back to 8 bit.
+    /// - HDR P010 frames + HDR display → same tone-map for now; the
+    ///   direct `Rgb10a2Unorm` passthrough path is the Wayland
+    ///   `color-management-v1` follow-on and slots in at
+    ///   [`PeerView::new_for_stream`]'s `hdr_tonemap = None` branch.
+    ///   Until then, tone-mapping HDR content on an HDR display just
+    ///   compresses to display peak — visually indistinguishable from
+    ///   the SDR fallback until the real path is wired.
     fn ensure_image(&mut self) -> Option<&vello::peniko::ImageData> {
         if self.cached_image.is_none() {
             if let Some(frame) = &self.latest {
                 let rgba = match &frame.pixels {
                     DecodedPixels::Rgba8(bytes) => bytes.clone(),
-                    DecodedPixels::P010 { .. } => {
-                        // TODO(HDR routing): wire the tone-map here.
-                        // Until then, drop the P010 frame — the
-                        // placeholder in `draw` shows up instead.
-                        return None;
+                    DecodedPixels::P010 {
+                        y,
+                        uv,
+                        y_stride,
+                        uv_stride,
+                    } => {
+                        let cfg = self
+                            .hdr_tonemap
+                            .as_ref()
+                            .copied()
+                            .unwrap_or_default();
+                        tonemap_p010_to_rgba8(
+                            y,
+                            uv,
+                            *y_stride,
+                            *uv_stride,
+                            frame.width,
+                            frame.height,
+                            frame.colorimetry,
+                            cfg,
+                        )
                     }
                 };
                 let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
