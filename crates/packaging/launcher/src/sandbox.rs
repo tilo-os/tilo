@@ -145,26 +145,41 @@ pub fn build_bwrap_argv_for_entry(
         }
     }
 
-    // FS read/write rules from the manifest. Both source and dest use
-    // the host-side expanded path — the app sees the same paths it
-    // declared, so e.g. `~/Documents` resolves identically in and out of
-    // the sandbox. Same convention as the per-workspace profile.
-    for entry in &manifest.sandbox.fs.read {
-        let host = expand_path(entry);
-        push_bind(&mut argv, "--ro-bind", &host, &host);
-    }
-    for entry in &manifest.sandbox.fs.write {
-        let host = expand_path(entry);
-        push_bind(&mut argv, "--bind", &host, &host);
-    }
-
-    // Standard "every app needs these" mounts.
+    // Standard "every app needs these" mounts. Come BEFORE the
+    // manifest fs binds so that a device path (e.g. `/dev/dri`) declared
+    // in `sandbox.fs.{read,write}` lands on top of the `--dev` tmpfs
+    // instead of underneath it.
     argv.push("--tmpfs".to_string());
     argv.push("/tmp".to_string());
     argv.push("--proc".to_string());
     argv.push("/proc".to_string());
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
+
+    // FS read/write rules from the manifest. Both source and dest use
+    // the host-side expanded path — the app sees the same paths it
+    // declared, so e.g. `~/Documents` resolves identically in and out of
+    // the sandbox. Same convention as the per-workspace profile.
+    // Device paths (anything under `/dev`) get `--dev-bind` instead of
+    // `--ro-bind`/`--bind` so bwrap accepts the character-device inode.
+    for entry in &manifest.sandbox.fs.read {
+        let host = expand_path(entry);
+        let flag = if host.starts_with("/dev") {
+            "--dev-bind-try"
+        } else {
+            "--ro-bind"
+        };
+        push_bind(&mut argv, flag, &host, &host);
+    }
+    for entry in &manifest.sandbox.fs.write {
+        let host = expand_path(entry);
+        let flag = if host.starts_with("/dev") {
+            "--dev-bind-try"
+        } else {
+            "--bind"
+        };
+        push_bind(&mut argv, flag, &host, &host);
+    }
 
     // XDG portals: if the manifest declares any portal as `ViaHost`,
     // bind the host session D-Bus socket into the sandbox and set the

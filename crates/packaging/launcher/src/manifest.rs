@@ -346,6 +346,26 @@ pub fn expand_path(raw: &str) -> PathBuf {
         buf.push(rel);
         return buf;
     }
+    // GUI apps typically need `$XDG_RUNTIME_DIR/wayland-*` bound in.
+    // Expand it (and a small allowlist of similar env vars) so
+    // manifests stay portable across users.
+    for (var, prefix) in [
+        ("XDG_RUNTIME_DIR", "$XDG_RUNTIME_DIR"),
+        ("XDG_CONFIG_HOME", "$XDG_CONFIG_HOME"),
+        ("XDG_DATA_HOME", "$XDG_DATA_HOME"),
+        ("XDG_CACHE_HOME", "$XDG_CACHE_HOME"),
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            if let Some(value) = std::env::var_os(var) {
+                let mut buf = PathBuf::from(value);
+                let rel = rest.trim_start_matches('/');
+                if !rel.is_empty() {
+                    buf.push(rel);
+                }
+                return buf;
+            }
+        }
+    }
     // Last-ditch: replace HOME-style `~` mid-string is not supported.
     if s.starts_with('~') {
         // bare "~" with no slash — return $HOME if set.
