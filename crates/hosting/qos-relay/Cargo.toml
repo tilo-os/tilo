@@ -1,0 +1,86 @@
+[package]
+name = "qos-relay"
+version = "0.1.0"
+edition = "2024"
+description = "qOS host + relay daemon: authenticated iroh transport for workspace CRDT ops, pins WorkspaceDirectory, store-and-forwards for offline peers."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "qos_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-relay"
+path = "src/main.rs"
+
+[[bin]]
+name = "qos-relay-admin"
+path = "src/admin.rs"
+
+# The host / relay daemon.
+#
+# `qos-relay` is the WAN transport + host tier of the sync/host model:
+# an authenticated iroh endpoint that any of the user's devices dial
+# to publish workspace-CRDT deltas + presence, receives, persists,
+# and fans out to every other connected peer bound to the same
+# workspace. If a target peer is offline the update is buffered on
+# disk under `pending/<peer_id>/` and delivered on next connect.
+#
+# Design axioms:
+# - Same identity model as devices — the relay holds a device
+#   keypair + a signed cert (capability `can_act_as_host`) issued by
+#   the user's root. Every inbound peer must present a valid cert
+#   chaining to the same user identity.
+# - Passive CRDT peer — the relay never *originates* mutations, only
+#   receives, stores, and forwards.
+# - Multi-host by construction — several relays bound to the same
+#   workspace merge like any other automerge peers.
+# - Fully in-process testable — `Relay::start` binds a random-port
+#   iroh endpoint so the integration tests spin up two relays + N
+#   peers without any external service.
+[dependencies]
+# Iroh 0.96.x — pinned to the same versions the `fs/` crate uses so
+# they share a single build of the transport across the workspace.
+# The unified iroh transport is the SP2 decision this crate implements.
+iroh = "0.96.1"
+iroh-base = "0.96.1"
+
+# Identity + workspace directory + cert-chain verification.
+qos-user-identity = { path = "../../identity/qos-user-identity" }
+
+# Workspace CRDT (same version as identity + shell).
+automerge = "0.8.0"
+
+# Wire encoding — postcard for the framed messages exchanged over
+# the ALPN. Same encoding the identity crate uses so byte layouts
+# stay compatible.
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+postcard = { version = "1", features = ["use-std"] }
+bytes = "1"
+
+# Signing / hashing — reused for the connection-level nonce challenge.
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+rand = "0.8"
+blake3 = "1"
+hex = "0.4"
+
+# Runtime + config.
+tokio = { version = "1", features = ["full"] }
+futures-lite = "2"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+thiserror = "1"
+
+# Observability.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
+# outside a systemd session.
+sd-notify = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

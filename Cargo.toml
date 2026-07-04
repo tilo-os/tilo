@@ -45,6 +45,7 @@ members = [
     "crates/packaging/cli-shim",
     "crates/packaging/notes-cli",
     "crates/identity/qos-user-identity",
+    "crates/hosting/qos-relay",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
