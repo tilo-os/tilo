@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::manifest::{MinimalManifest, expand_path};
+use crate::manifest::{MinimalManifest, PortalPolicy, expand_path};
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
@@ -98,6 +98,25 @@ pub fn build_bwrap_argv(
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
 
+    // XDG portals: if the manifest declares any portal as `ViaHost`,
+    // bind the host session D-Bus socket into the sandbox and set the
+    // env var so `ashpd` finds it. If NO portal is declared (or every
+    // portal is `Deny`), the bus is NOT exposed — apps that didn't
+    // ask for it can't reach the wide D-Bus attack surface.
+    if let Some(bus_addr) = host_dbus_bus_address_if_needed(&manifest.sandbox.portals) {
+        // Only `unix:path=<path>` bus addresses are proxyable via a
+        // bind-mount. Abstract-namespace sockets can't be bind-
+        // mounted; when we see one we silently degrade — the app's
+        // ashpd call will surface `NotAvailable`, which is the
+        // documented graceful-degradation path.
+        if let Some(path) = parse_unix_path_bus_address(&bus_addr) {
+            push_bind(&mut argv, "--ro-bind", Path::new(&path), Path::new(&path));
+            argv.push("--setenv".to_string());
+            argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
+            argv.push(bus_addr);
+        }
+    }
+
     // Service fds: --file <host_fd> /run/qos/services/<name>.sock
     // (matches the well-known service path inside the sandbox).
     for sb in service_binds {
@@ -147,6 +166,44 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
+/// If the manifest declared at least one portal as `ViaHost`, return
+/// the current `$DBUS_SESSION_BUS_ADDRESS` — else `None` (bus stays
+/// out of the sandbox).
+pub fn host_dbus_bus_address_if_needed(
+    portals: &std::collections::BTreeMap<String, PortalPolicy>,
+) -> Option<String> {
+    let wants_bus = portals
+        .values()
+        .any(|p| matches!(p, PortalPolicy::ViaHost));
+    if !wants_bus {
+        return None;
+    }
+    std::env::var("DBUS_SESSION_BUS_ADDRESS").ok()
+}
+
+/// Extract the `unix:path=<path>` filesystem path from a D-Bus bus
+/// address (or None if the address has no `unix:path=` transport).
+///
+/// The address is a semicolon-separated list of transports; we return
+/// the first `unix:path=` we see. Abstract-namespace sockets
+/// (`unix:abstract=...`) can't be bind-mounted so we skip them —
+/// callers surface that as graceful "portal unavailable".
+pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
+    for entry in addr.split(';') {
+        let Some(rest) = entry.strip_prefix("unix:") else {
+            continue;
+        };
+        for kv in rest.split(',') {
+            if let Some(path) = kv.strip_prefix("path=") {
+                if !path.is_empty() {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +226,7 @@ mod tests {
                     write: vec!["/var/lib/qos/notes".to_string()],
                 },
                 services: BTreeMap::new(),
+                portals: BTreeMap::new(),
             },
         }
     }
@@ -256,6 +314,98 @@ mod tests {
             argv.last().map(String::as_str),
             Some("/var/qos-apps/com.example.notes/bin/notes")
         );
+    }
+
+    #[test]
+    fn parse_unix_path_bus_address_extracts_path() {
+        assert_eq!(
+            parse_unix_path_bus_address("unix:path=/run/user/1000/bus"),
+            Some("/run/user/1000/bus".to_string())
+        );
+        assert_eq!(
+            parse_unix_path_bus_address(
+                "unix:path=/run/user/1000/bus,guid=deadbeef"
+            ),
+            Some("/run/user/1000/bus".to_string())
+        );
+        // Abstract socket → None (can't be bind-mounted).
+        assert_eq!(
+            parse_unix_path_bus_address("unix:abstract=/tmp/dbus-xyz"),
+            None
+        );
+        // No unix transport.
+        assert_eq!(parse_unix_path_bus_address("tcp:host=127.0.0.1"), None);
+    }
+
+    #[test]
+    fn argv_binds_dbus_when_via_host_portal_declared() {
+        // SAFETY: single-thread env mutation for test setup.
+        unsafe {
+            std::env::set_var(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/run/user/1234/bus",
+            );
+        }
+        let mut m = mk_manifest("off");
+        m.sandbox.portals.insert(
+            "notifications".to_string(),
+            PortalPolicy::ViaHost,
+        );
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        // --ro-bind /run/user/1234/bus /run/user/1234/bus
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/run/user/1234/bus"
+                && w[2] == "/run/user/1234/bus"),
+            "dbus socket ro-bind missing from argv: {argv:?}"
+        );
+        // --setenv DBUS_SESSION_BUS_ADDRESS unix:path=/run/user/1234/bus
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "DBUS_SESSION_BUS_ADDRESS"
+                && w[2] == "unix:path=/run/user/1234/bus"),
+            "dbus setenv missing from argv: {argv:?}"
+        );
+        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
+    }
+
+    #[test]
+    fn argv_does_not_bind_dbus_without_portal() {
+        // SAFETY: single-thread env mutation for test setup.
+        unsafe {
+            std::env::set_var(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/run/user/1234/bus",
+            );
+        }
+        let m = mk_manifest("off"); // no portals declared
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        assert!(
+            !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
+            "bus must not leak into sandbox without a portal declaration: {argv:?}"
+        );
+        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
+    }
+
+    #[test]
+    fn argv_does_not_bind_dbus_when_only_deny_portals() {
+        // SAFETY: single-thread env mutation for test setup.
+        unsafe {
+            std::env::set_var(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/run/user/1234/bus",
+            );
+        }
+        let mut m = mk_manifest("off");
+        m.sandbox
+            .portals
+            .insert("screencast".to_string(), PortalPolicy::Deny);
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[]);
+        assert!(
+            !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
+            "bus must stay out when every portal is Deny: {argv:?}"
+        );
+        unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
     }
 
     #[test]
