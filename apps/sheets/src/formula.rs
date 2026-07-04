@@ -18,7 +18,123 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{a1_to_addr, Addr, CellFormat, CellValue, FormatCategory};
+use crate::model::{a1_to_addr, addr_to_a1, Addr, CellFormat, CellValue, FormatCategory};
+
+// ---------------------------------------------------------------------------
+// Reference extraction (for editor highlighting + click-to-insert)
+// ---------------------------------------------------------------------------
+
+/// A cell or range reference located inside a formula body, used to tint the
+/// reference where it appears in the formula text and to outline the cells it
+/// points at on the grid — the coloured-reference cue Excel/Calc show while a
+/// formula is being edited.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefSpan {
+    /// Char index into the body (the text after `=`) where the reference
+    /// token starts.
+    pub start: usize,
+    /// Char index one past the reference token's end.
+    pub end: usize,
+    /// Top-left cell of the referenced rectangle (equals `br` for a single
+    /// cell), normalized so `tl <= br`.
+    pub tl: Addr,
+    /// Bottom-right cell of the referenced rectangle.
+    pub br: Addr,
+    /// Stable key used for colour assignment — identical references (ignoring
+    /// `$` anchors and letter case) share a colour.
+    pub key: String,
+}
+
+/// Scan a formula body (the text after the leading `=`) for cell and range
+/// references, returning each one's character span and target rectangle.
+///
+/// String literals are skipped, and an identifier immediately followed by `(`
+/// is treated as a function name rather than a reference (so `SUM` in
+/// `SUM(A1:A3)` is not tinted, but `A1:A3` is). Numeric exponents like `1e3`
+/// are never mistaken for references.
+pub fn references(body: &str) -> Vec<RefSpan> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1; // closing quote
+            }
+            continue;
+        }
+        if c == '$' || c.is_ascii_alphabetic() {
+            let start = i;
+            while i < chars.len() && (chars[i] == '$' || chars[i].is_ascii_alphanumeric()) {
+                i += 1;
+            }
+            // A run right after a digit/dot is an exponent (`1e3`), not a ref.
+            let prev_numish =
+                start > 0 && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.');
+            // An identifier followed by `(` is a function name, not a ref.
+            let mut k = i;
+            while k < chars.len() && chars[k].is_whitespace() {
+                k += 1;
+            }
+            let is_call = k < chars.len() && chars[k] == '(';
+            if prev_numish || is_call {
+                continue;
+            }
+            let token: String = chars[start..i].iter().collect();
+            let Some(a0) = a1_to_addr(&token) else {
+                continue; // TRUE / FALSE / function names / bare words
+            };
+            // A `:` (optionally spaced) followed by another reference makes a
+            // range that spans from `token` to the second reference.
+            let mut j = i;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == ':' {
+                let mut m = j + 1;
+                while m < chars.len() && chars[m].is_whitespace() {
+                    m += 1;
+                }
+                let tstart = m;
+                while m < chars.len() && (chars[m] == '$' || chars[m].is_ascii_alphanumeric()) {
+                    m += 1;
+                }
+                let tok2: String = chars[tstart..m].iter().collect();
+                if let Some(a1v) = a1_to_addr(&tok2) {
+                    let tl = (a0.0.min(a1v.0), a0.1.min(a1v.1));
+                    let br = (a0.0.max(a1v.0), a0.1.max(a1v.1));
+                    let key = format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1));
+                    out.push(RefSpan { start, end: m, tl, br, key });
+                    i = m;
+                    continue;
+                }
+            }
+            let key = addr_to_a1(a0.0, a0.1);
+            out.push(RefSpan { start, end: i, tl: a0, br: a0, key });
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Hand each reference span a colour slot so identical references share a
+/// slot; slots are assigned in first-appearance order. Returns a vector
+/// parallel to `spans`. The view layer maps a slot to a concrete colour.
+pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
+    let mut map: HashMap<&str, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(spans.len());
+    for s in spans {
+        let next = map.len();
+        out.push(*map.entry(s.key.as_str()).or_insert(next));
+    }
+    out
+}
 
 // ---------------------------------------------------------------------------
 // Tokenizer
@@ -1334,6 +1450,49 @@ mod tests {
         let f = fmts(&[("A1", CellFormat::Currency(Currency::USD))]);
         assert_eq!(infer_result_format("A1>100", &f), None);
         assert_eq!(infer_result_format("A1&\"x\"", &f), None);
+    }
+
+    // --- reference extraction -----------------------------------------------
+
+    #[test]
+    fn references_single_cells_get_spans_and_targets() {
+        // Body of `=B9-B7`: two single-cell refs, distinct colour slots.
+        let spans = references("B9-B7");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
+        assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
+        assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
+        // The spans point at the actual characters `B9` and `B7`.
+        assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
+        assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
+        let slots = ref_color_slots(&spans);
+        assert_eq!(slots, vec![0, 1], "two different refs → two colours");
+    }
+
+    #[test]
+    fn references_expand_ranges_and_share_colour_for_duplicates() {
+        // `SUM(B2:D2)+B2`: the range B2:D2 and the single B2 are different
+        // keys; a repeated B2 would reuse a slot.
+        let spans = references("SUM(B2:D2)+B2");
+        assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
+        assert_eq!(spans[0].key, "B2:D2");
+        assert_eq!(spans[0].tl, a1_to_addr("B2").unwrap());
+        assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
+        assert_eq!(spans[1].key, "B2");
+
+        // A ref repeated twice keeps one colour slot.
+        let dup = references("A1+A1");
+        let slots = ref_color_slots(&dup);
+        assert_eq!(slots, vec![0, 0]);
+    }
+
+    #[test]
+    fn references_skip_strings_and_functions() {
+        // `IF(B7>B9,"A1","B2")`: refs are B7 and B9 only; the quoted A1/B2 are
+        // string literals and IF is a function name.
+        let spans = references("IF(B7>B9,\"A1\",\"B2\")");
+        let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, vec!["B7", "B9"]);
     }
 
     #[test]

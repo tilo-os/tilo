@@ -7,20 +7,24 @@
 //! ## Architecture
 //! - [`model`] — pure data (locations, snapshots, units), no IO.
 //! - [`wxcode`] — WMO weather-code → condition/icon family mapping.
-//! - [`units`] — °C/°F + km/h/mph preferences and conversions.
+//! - [`units`] — °C/°F + km/h/mph conversions.
+//! - [`region`] — read-only consumer of the shared Settings store, from which
+//!   the display units are derived (Settings owns the toggle, not this app).
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
 //! - [`net`] — the live background fetch worker (reqwest + tokio).
-//! - [`doc`] — the Automerge CRDT projection (saved places, units, the
-//!   last-fetched snapshot per place).
+//! - [`doc`] — the Automerge CRDT projection (saved places + the last-fetched
+//!   snapshot per place).
 //! - [`sample`] — bundled, fully-populated offline data.
 //! - [`icon`] / [`chart`] — custom Vello vector drawing (weather glyphs,
 //!   the temperature curve).
-//! - [`sidebar`] — the adaptive flap (docked vs. overlay) state machine,
-//!   resolved from the widget's allocated width.
 //! - [`interaction`] — direct-manipulation state for the saved-place list:
 //!   drag-to-reorder, swipe-to-delete, and the right-click context menu,
 //!   with swipe⇔menu action parity.
-//! - [`app`] — the root [`WeatherApp`] widget that composes it all.
+//! - [`core`] — the shared model + the two content panels (city-list overview
+//!   and forecast detail) rendered into the shell's rects.
+//! - [`panes`] — the thin overview/detail widgets the [`ui::widget::NavShell`]
+//!   hosts.
+//! - [`app`] — the root [`WeatherApp`] widget composing the responsive shell.
 //!
 //! ## `--shots`/tests vs. live
 //! The offscreen screenshot path renders one frame with no event loop and no
@@ -37,13 +41,15 @@
 pub mod api;
 pub mod app;
 pub mod chart;
+pub mod core;
 pub mod doc;
 pub mod icon;
 pub mod interaction;
 pub mod model;
 pub mod net;
+pub mod panes;
+pub mod region;
 pub mod sample;
-pub mod sidebar;
 pub mod units;
 pub mod wxcode;
 
