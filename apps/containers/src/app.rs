@@ -1,0 +1,939 @@
+//! Root widget for the container manager.
+//!
+//! `ContainersApp` is a single self-laying-out widget that owns the engine
+//! snapshot (containers / images / distroboxes mirrored from rootless
+//! podman) and renders the whole surface — a left navigation rail, a master
+//! list with inline lifecycle actions, a tabbed detail view, a create-
+//! container form, and confirm/create modals. Navigation and selection state
+//! live in the shared CRDT document (see [`crate::doc`]) so undo/redo and
+//! live collaboration work without extra plumbing; the engine projection is
+//! transient host data and stays in memory.
+//!
+//! The widget hit-tests in `handle_event` against rectangles it recorded
+//! during `draw`, which keeps the dense, data-driven layout (variable row
+//! counts, wrapped port chips, tab strips) under direct control without
+//! fighting a flexbox tree.
+
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
+
+use automerge::{AutoCommit, ObjId};
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{FlapState, SplitLayout, Widget};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
+use vello::Scene;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+
+use taffy::prelude::*;
+
+use crate::combobox::ComboState;
+use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
+use crate::draw;
+use crate::model::{Container, Engine};
+use crate::podman::{self, Action, ImageAction, StreamMsg};
+
+const RAIL_WIDTH: f64 = 200.0;
+/// Width of the rail when collapsed — a thin strip that still shows the
+/// section icons and the expand toggle.
+const RAIL_COLLAPSED: f64 = 56.0;
+pub(crate) const HEADER_HEIGHT: f64 = 64.0;
+pub(crate) const ROW_HEIGHT: f64 = 64.0;
+pub(crate) const DETAIL_WIDTH: f64 = 420.0;
+const TOAST_MS: u128 = 4000;
+
+/// A clickable region recorded during draw and resolved in `handle_event`.
+#[derive(Clone)]
+pub(crate) enum Hit {
+    Section(Section),
+    NewContainer,
+    SelectContainer(String),
+    SelectImage(usize),
+    Action { id: String, action: Action },
+    /// An image lifecycle action (remove / pull-again), keyed by reference.
+    ImageAct { reference: String, action: ImageAction },
+    /// Pull the image reference under the cursor (re-pull / update).
+    PullImage(String),
+    /// Pull the reference currently typed into the create-form image field.
+    PullTyped,
+    /// Tag the selected image — opens the tag dialog.
+    TagImage(String),
+    /// Inspect the image (toast/inspect view).
+    InspectImage(String),
+    /// Volume lifecycle.
+    CreateVolume,
+    RemoveVolume(String),
+    /// Attach an interactive shell to a running container in a real terminal.
+    AttachShell(String),
+    DistroEnter(String),
+    DistroCreate,
+    DetailTab(DetailTab),
+    CloseDetail,
+    ConfirmOk,
+    ConfirmCancel,
+    CreateField(CreateField),
+    CreateSubmit,
+    CreateCancel,
+    /// Toggle the image-combobox suggestion dropdown.
+    ComboToggle,
+    /// Pick option `idx` (into the filtered list) from the combobox.
+    ComboPick(usize),
+    SearchFocus,
+    ClearSearch,
+    /// Collapse / expand the navigation sidebar.
+    ToggleSidebar,
+    /// A simple text-prompt dialog OK / Cancel (volume create, image tag).
+    PromptOk,
+    PromptCancel,
+}
+
+pub(crate) struct HitRegion {
+    pub(crate) rect: Rect,
+    pub(crate) hit: Hit,
+}
+
+/// What a destructive confirm targets — a container, an image, or a volume.
+#[derive(Clone)]
+pub(crate) enum ConfirmTarget {
+    Container { id: String, action: Action },
+    Image { reference: String },
+    Volume { name: String },
+}
+
+/// A transient confirm dialog for a destructive action.
+pub(crate) struct Confirm {
+    /// Display name shown in the dialog body.
+    pub(crate) name: String,
+    /// Verb label shown in the title + OK button.
+    pub(crate) verb: String,
+    pub(crate) target: ConfirmTarget,
+}
+
+/// Kind of text the prompt dialog collects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptKind {
+    /// Create a new named volume.
+    NewVolume,
+    /// Tag an existing image (`source` carried in `Prompt::context`).
+    TagImage,
+}
+
+/// A transient single-line text prompt (new volume name, image tag).
+pub(crate) struct Prompt {
+    pub(crate) kind: PromptKind,
+    pub(crate) title: String,
+    pub(crate) placeholder: String,
+    pub(crate) value: String,
+    /// Extra context (e.g. the image being tagged).
+    pub(crate) context: String,
+}
+
+/// Live progress of a streaming `podman pull`.
+pub(crate) struct PullProgress {
+    pub(crate) reference: String,
+    /// Most recent progress lines (tail-bounded).
+    pub(crate) lines: Vec<String>,
+    pub(crate) done: bool,
+    pub(crate) failed: Option<String>,
+}
+
+/// A transient status toast.
+pub(crate) struct Toast {
+    pub(crate) message: String,
+    pub(crate) error: bool,
+    pub(crate) born: Instant,
+}
+
+/// Background-thread message: a fresh engine probe arrived, or a streaming
+/// op (pull) emitted a line / finished.
+enum Bg {
+    Snapshot(Engine),
+    Pull(StreamMsg),
+}
+
+pub struct ContainersApp {
+    /// The live (or sample) engine projection.
+    pub(crate) engine: Engine,
+    rect: Rect,
+    /// Mouse position in logical coords (for hover + hit-testing).
+    pub(crate) cursor: Point,
+    /// Click regions recorded during the last draw.
+    pub(crate) hits: Vec<HitRegion>,
+    /// Per-section scroll offsets (list scroll).
+    pub(crate) list_scroll: f64,
+    pub(crate) detail_scroll: f64,
+    /// Active confirm dialog, if any.
+    pub(crate) confirm: Option<Confirm>,
+    /// Active text-prompt dialog, if any (new volume / image tag).
+    pub(crate) prompt: Option<Prompt>,
+    /// Whether the create-container modal is open.
+    pub(crate) create_open: bool,
+    /// Which create field has keyboard focus (index into CreateField::ALL).
+    pub(crate) create_focus: usize,
+    /// State of the typeable image combobox inside the create modal.
+    pub(crate) combo: ComboState,
+    /// Live pull progress overlay, if a pull is running.
+    pub(crate) pull: Option<PullProgress>,
+    /// Whether the search box has keyboard focus.
+    pub(crate) search_focus: bool,
+    /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
+    pub(crate) sidebar_flap: FlapState,
+    /// Wall-clock anchor for advancing the sidebar slide from the draw path.
+    pub(crate) sidebar_tick: Option<Instant>,
+    /// Current toast.
+    pub(crate) toast: Option<Toast>,
+    /// Background refresh plumbing. `None` in headless/shots mode.
+    bg_rx: Option<Receiver<Bg>>,
+    bg_tx: Option<Sender<Bg>>,
+    last_refresh: Instant,
+    pub(crate) live: bool,
+    /// In offline/demo mode, seed an initial selection on the first sync so a
+    /// fresh document renders a populated detail view (notably for `--shots`).
+    seed_demo: bool,
+    seeded: bool,
+    /// Whether a structural change happened this frame (forces relayout).
+    pub(crate) structure_dirty: bool,
+    /// Cached snapshot of the CRDT-backed view state. Refreshed in `sync`
+    /// and at the tail of every `handle_event`; `draw` reads it because the
+    /// draw pass has no document access.
+    view: ViewState,
+}
+
+impl ContainersApp {
+    /// Construct the manager. `live` enables the background podman poller and
+    /// real lifecycle actions; `false` (used by `--shots`) renders the
+    /// bundled sample snapshot deterministically with no process spawning.
+    pub fn new(live: bool) -> Self {
+        let engine = if live {
+            podman::probe().engine
+        } else {
+            crate::model::sample_engine()
+        };
+        let (bg_tx, bg_rx) = if live {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        Self {
+            engine,
+            rect: Rect::ZERO,
+            cursor: Point::ZERO,
+            hits: Vec::new(),
+            list_scroll: 0.0,
+            detail_scroll: 0.0,
+            confirm: None,
+            prompt: None,
+            create_open: false,
+            create_focus: 0,
+            combo: ComboState::default(),
+            pull: None,
+            search_focus: false,
+            sidebar_flap: FlapState::open_when_docked(),
+            sidebar_tick: None,
+            toast: None,
+            bg_rx,
+            bg_tx,
+            last_refresh: Instant::now(),
+            live,
+            seed_demo: !live,
+            seeded: false,
+            structure_dirty: false,
+            view: ViewState::default(),
+        }
+    }
+
+    pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
+        self.toast = Some(Toast { message: message.into(), error, born: Instant::now() });
+    }
+
+    /// Kick a background podman re-probe so stats stay fresh without blocking
+    /// the UI thread. No-op offline.
+    fn spawn_refresh(&mut self) {
+        if !self.live {
+            return;
+        }
+        let Some(tx) = self.bg_tx.clone() else { return };
+        self.last_refresh = Instant::now();
+        std::thread::spawn(move || {
+            let engine = podman::probe().engine;
+            let _ = tx.send(Bg::Snapshot(engine));
+        });
+    }
+
+    /// Drain any background snapshot, preserving per-container detail
+    /// (logs/env/mounts) for the selected container that `ps` doesn't carry.
+    fn drain_bg(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = &self.bg_rx else { return };
+        let mut latest = None;
+        let mut pull_msgs = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Bg::Snapshot(e) => latest = Some(e),
+                Bg::Pull(m) => pull_msgs.push(m),
+            }
+        }
+        for msg in pull_msgs {
+            self.apply_pull_msg(msg);
+        }
+        if let Some(mut fresh) = latest {
+            // Carry over the selected container's hydrated detail so the
+            // detail tabs don't flicker empty between probes.
+            if let Some(sel) = ViewDoc::selected(doc) {
+                if let Some(old) = self.engine.find(&sel).cloned() {
+                    if let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel) {
+                        if newc.logs.is_empty() {
+                            newc.logs = old.logs;
+                        }
+                        if newc.env.is_empty() {
+                            newc.env = old.env;
+                        }
+                        if newc.mounts.is_empty() {
+                            newc.mounts = old.mounts;
+                        }
+                    }
+                }
+            }
+            self.engine = fresh;
+        }
+    }
+
+    /// Hydrate the selected container's detail (logs + inspect) on demand.
+    fn hydrate_selection(&mut self, doc: &mut AutoCommit) {
+        let Some(sel) = ViewDoc::selected(doc) else { return };
+        let needs = self
+            .engine
+            .containers
+            .iter()
+            .find(|c| c.id == sel)
+            .map(|c| c.logs.is_empty() && c.env.is_empty())
+            .unwrap_or(false);
+        if !needs || !self.live {
+            return;
+        }
+        let logs = podman::fetch_logs(&sel, 200);
+        if let Some(c) = self.engine.containers.iter_mut().find(|c| c.id == sel) {
+            podman::inspect_into(c);
+            if !logs.is_empty() {
+                c.logs = logs;
+            }
+        }
+    }
+
+    /// Apply a lifecycle action, then re-probe. Destructive ones come through
+    /// the confirm dialog so this is only ever invoked post-confirmation.
+    pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
+        let name = self
+            .engine
+            .find(id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| id.to_string());
+        if self.live {
+            match podman::run_action(action, id) {
+                Ok(()) => self.show_toast(format!("{} {}", action.label(), name), false),
+                Err(e) => self.show_toast(format!("{} failed: {}", action.label(), e), true),
+            }
+            self.spawn_refresh();
+        } else {
+            // Offline: reflect the action in the local snapshot so the
+            // sample surface still responds to clicks.
+            self.apply_action_offline(action, id);
+            self.show_toast(format!("{} {}", action.label(), name), false);
+        }
+    }
+
+    /// Mutate the in-memory snapshot to mirror a lifecycle verb when no
+    /// engine is present. Keeps the demo interactive.
+    fn apply_action_offline(&mut self, action: Action, id: &str) {
+        use crate::model::ContainerStatus as S;
+        match action {
+            Action::Remove => self.engine.containers.retain(|c| c.id != id),
+            other => {
+                if let Some(c) = self.engine.containers.iter_mut().find(|c| c.id == id) {
+                    c.status = match other {
+                        Action::Start | Action::Restart | Action::Unpause => S::Running,
+                        Action::Stop => S::Exited,
+                        Action::Pause => S::Paused,
+                        Action::Remove => c.status,
+                    };
+                    c.status_detail = match c.status {
+                        S::Running => "Up just now".into(),
+                        S::Exited => "Exited (0) just now".into(),
+                        S::Paused => "Paused".into(),
+                        _ => c.status_detail.clone(),
+                    };
+                    if !c.status.is_running() {
+                        c.stats = crate::model::Stats::default();
+                    }
+                }
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    // --- streaming pull -------------------------------------------------
+
+    /// Start a streaming `podman pull` of `reference` on a worker thread,
+    /// opening the progress overlay. Offline it simulates a quick success so
+    /// the demo surface responds.
+    pub(crate) fn start_pull(&mut self, reference: &str) {
+        let reference = reference.trim().to_string();
+        if reference.is_empty() {
+            self.show_toast("Enter an image reference to pull", true);
+            return;
+        }
+        self.pull = Some(PullProgress {
+            reference: reference.clone(),
+            lines: vec![format!("Trying to pull {reference}...")],
+            done: false,
+            failed: None,
+        });
+        if self.live {
+            if let Some(tx) = self.bg_tx.clone() {
+                let args = podman::pull_args(&reference);
+                std::thread::spawn(move || {
+                    let (ptx, prx) = std::sync::mpsc::channel();
+                    let worker = std::thread::spawn(move || podman::stream_command(&args, ptx));
+                    while let Ok(msg) = prx.recv() {
+                        let last = matches!(msg, StreamMsg::Done | StreamMsg::Failed(_));
+                        if tx.send(Bg::Pull(msg)).is_err() || last {
+                            break;
+                        }
+                    }
+                    let _ = worker.join();
+                });
+            }
+        } else {
+            // Offline: deterministic simulated progress so --shots/demo works.
+            if let Some(p) = &mut self.pull {
+                p.lines.push("Getting image source signatures".into());
+                p.lines.push("Copying blob sha256:1a2b3c… done".into());
+                p.lines.push("Writing manifest to image destination".into());
+                p.done = true;
+            }
+        }
+    }
+
+    /// Fold one streamed pull message into the progress overlay.
+    fn apply_pull_msg(&mut self, msg: StreamMsg) {
+        let Some(p) = &mut self.pull else { return };
+        match msg {
+            StreamMsg::Line(l) => {
+                p.lines.push(l);
+                // Bound the overlay to a readable tail.
+                let n = p.lines.len();
+                if n > 200 {
+                    p.lines.drain(0..n - 200);
+                }
+            }
+            StreamMsg::Done => {
+                p.done = true;
+                let r = p.reference.clone();
+                self.show_toast(format!("Pulled {r}"), false);
+                self.spawn_refresh();
+            }
+            StreamMsg::Failed(e) => {
+                p.failed = Some(e.clone());
+                self.show_toast(format!("Pull failed: {e}"), true);
+            }
+        }
+    }
+
+    // --- image / volume actions ----------------------------------------
+
+    /// Remove an image (post-confirmation). Force-removes so an unused tag
+    /// goes even if a stopped container references it.
+    pub(crate) fn remove_image(&mut self, reference: &str) {
+        if self.live {
+            match podman::remove_image(reference, true) {
+                Ok(()) => self.show_toast(format!("Removed {reference}"), false),
+                Err(e) => self.show_toast(format!("Remove failed: {e}"), true),
+            }
+            self.spawn_refresh();
+        } else {
+            self.engine.images.retain(|i| i.reference() != reference);
+            self.show_toast(format!("Removed {reference}"), false);
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Tag an image with a new reference.
+    pub(crate) fn tag_image(&mut self, source: &str, new_tag: &str) {
+        let new_tag = new_tag.trim();
+        if new_tag.is_empty() {
+            self.show_toast("Enter a new tag", true);
+            return;
+        }
+        if self.live {
+            match podman::tag_image(source, new_tag) {
+                Ok(()) => self.show_toast(format!("Tagged {source} as {new_tag}"), false),
+                Err(e) => self.show_toast(format!("Tag failed: {e}"), true),
+            }
+            self.spawn_refresh();
+        } else {
+            self.show_toast(format!("podman tag {source} {new_tag}"), false);
+        }
+    }
+
+    /// Create a named volume.
+    pub(crate) fn create_volume(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            self.show_toast("Enter a volume name", true);
+            return;
+        }
+        if self.live {
+            match podman::create_volume(name) {
+                Ok(()) => self.show_toast(format!("Created volume {name}"), false),
+                Err(e) => self.show_toast(format!("Create failed: {e}"), true),
+            }
+            self.spawn_refresh();
+        } else {
+            self.engine.volumes.push(crate::model::Volume {
+                name: name.to_string(),
+                driver: "local".into(),
+                mountpoint: format!(".../volumes/{name}/_data"),
+                created: "just now".into(),
+                in_use_by: 0,
+            });
+            self.engine.volumes.sort_by(|a, b| a.name.cmp(&b.name));
+            self.show_toast(format!("Created volume {name}"), false);
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Remove a named volume (post-confirmation).
+    pub(crate) fn remove_volume(&mut self, name: &str) {
+        if self.live {
+            match podman::remove_volume(name, false) {
+                Ok(()) => self.show_toast(format!("Removed volume {name}"), false),
+                Err(e) => self.show_toast(format!("Remove failed: {e}"), true),
+            }
+            self.spawn_refresh();
+        } else {
+            self.engine.volumes.retain(|v| v.name != name);
+            self.show_toast(format!("Removed volume {name}"), false);
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Attach a real interactive shell to a running container by spawning the
+    /// qOS terminal app running `podman exec -it <id> <shell>`.
+    pub(crate) fn attach_shell(&mut self, id: &str) {
+        let short = id.chars().take(12).collect::<String>();
+        if self.live {
+            match crate::terminal::spawn_exec_attach(id, "/bin/sh") {
+                Ok(()) => self.show_toast(format!("Attached shell to {short}"), false),
+                Err(e) => self.show_toast(format!("Terminal failed: {e}"), true),
+            }
+        } else {
+            self.show_toast(format!("podman exec -it {short} /bin/sh"), false);
+        }
+    }
+
+    pub(crate) fn submit_create(&mut self, doc: &mut AutoCommit) {
+        let args = ViewDoc::create_run_args(doc);
+        let Some(args) = args else {
+            self.show_toast("Image is required to create a container", true);
+            return;
+        };
+        let name = ViewDoc::create_field(doc, CreateField::Image);
+        if self.live {
+            // Run `podman run` off the UI thread; report the result back via a
+            // toast streamed through the bg channel, then re-probe.
+            self.show_toast(format!("Creating container from {name}…"), false);
+            ViewDoc::clear_create(doc);
+            self.create_open = false;
+            self.combo.close();
+            if let Some(tx) = self.bg_tx.clone() {
+                std::thread::spawn(move || {
+                    let out = std::process::Command::new("podman").args(&args).output();
+                    // Whatever the result, push a fresh snapshot so the new
+                    // container appears (or the failure is implied by absence).
+                    let _ = out;
+                    let _ = tx.send(Bg::Snapshot(podman::probe().engine));
+                });
+            }
+        } else {
+            self.show_toast(format!("podman {}", args.join(" ")), false);
+            ViewDoc::clear_create(doc);
+            self.create_open = false;
+            self.combo.close();
+        }
+    }
+
+    /// Filtered containers for the current search query, sorted running-first.
+    pub(crate) fn visible_containers(&self, query: &str) -> Vec<&Container> {
+        let mut v: Vec<&Container> =
+            self.engine.containers.iter().filter(|c| c.matches(query)).collect();
+        v.sort_by(|a, b| {
+            b.status
+                .is_running()
+                .cmp(&a.status.is_running())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        v
+    }
+}
+
+// =====================================================================
+// Widget impl
+// =====================================================================
+
+impl Widget for ContainersApp {
+    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        self.drain_bg(doc);
+        // Seed a representative selection on the very first sync of a demo /
+        // shots session so the detail view is populated out of the box.
+        if self.seed_demo && !self.seeded {
+            self.seeded = true;
+            // An optional env hook selects a demo scene for screenshots
+            // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
+            // `inspect` / `create` / `combo` / `pull` / `collapsed`).
+            let scene = std::env::var("QOS_CONTAINERS_DEMO").unwrap_or_default();
+            match scene.as_str() {
+                "images" => ViewDoc::set_section(doc, Section::Images),
+                "volumes" => ViewDoc::set_section(doc, Section::Volumes),
+                "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
+                "create" | "combo" => {
+                    self.create_open = true;
+                    self.create_focus = 1;
+                    ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
+                    ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
+                    ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
+                    ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
+                    ViewDoc::set_create_field(doc, CreateField::Volumes, "site:/usr/share/nginx/html");
+                    if scene == "combo" {
+                        // Open the image suggestion dropdown for the shot.
+                        self.combo.open = true;
+                    }
+                }
+                "pull" => {
+                    ViewDoc::set_section(doc, Section::Images);
+                    self.pull = Some(PullProgress {
+                        reference: "docker.io/library/alpine:3.20".into(),
+                        lines: vec![
+                            "Trying to pull docker.io/library/alpine:3.20...".into(),
+                            "Getting image source signatures".into(),
+                            "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB".into(),
+                            "Copying config sha256:1a2b3c4d5e6f done".into(),
+                        ],
+                        done: false,
+                        failed: None,
+                    });
+                }
+                "collapsed" => self.sidebar_flap.snap(false),
+                _ => {}
+            }
+            let tab = match scene.as_str() {
+                "stats" => DetailTab::Stats,
+                "inspect" => DetailTab::Inspect,
+                "terminal" => DetailTab::Terminal,
+                _ => DetailTab::Logs,
+            };
+            let list_scene =
+                matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
+            if !list_scene && ViewDoc::selected(doc).is_none() {
+                if let Some(first) = self
+                    .engine
+                    .containers
+                    .iter()
+                    .find(|c| c.status.is_running())
+                    .or_else(|| self.engine.containers.first())
+                {
+                    ViewDoc::set_selected(doc, Some(&first.id));
+                    ViewDoc::set_tab(doc, tab);
+                }
+            }
+        }
+        // Periodically re-probe the engine for fresh stats / state.
+        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
+            self.spawn_refresh();
+        }
+        self.hydrate_selection(doc);
+        self.refresh_view(doc);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        // Keep syncing while live so the background poller's snapshots and
+        // the toast timeout are picked up without needing input. A running
+        // pull also streams in via the bg channel.
+        self.live || self.toast.is_some() || self.pull.as_ref().is_some_and(|p| !p.done && p.failed.is_none())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Toast fade, the sidebar collapse slide, and live pull progress all
+        // keep the host pumping frames.
+        self.toast.is_some()
+            || self.sidebar_flap.is_animating(SplitLayout::Docked)
+            || self.pull.as_ref().is_some_and(|p| !p.done && p.failed.is_none())
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // The widget self-lays-out in apply_layout/draw, so it only needs a
+        // single full-bleed leaf node.
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        // Install the host's DPI transform so every draw helper this frame
+        // composes onto it (HiDPI-correct without threading it everywhere).
+        draw::set_base(transform);
+        // Advance the sidebar collapse slide off a real per-frame delta.
+        self.tick_sidebar();
+        // Expire the toast.
+        if let Some(t) = &self.toast {
+            if t.born.elapsed().as_millis() > TOAST_MS {
+                self.toast = None;
+            }
+        }
+        self.hits.clear();
+        let r = self.rect;
+        let c = &theme.tokens.colors;
+
+        // App background.
+        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
+
+        // The draw pass has no document access; it renders from the view
+        // snapshot refreshed in `sync` / `handle_event`.
+        let view = self.view.clone();
+
+        // --- Navigation rail (animated width) ---
+        let rail = Rect::new(r.x0, r.y0, r.x0 + self.rail_width(), r.y1);
+        self.draw_rail(scene, tr, theme, rail, &view);
+
+        // --- Content area ---
+        let content = Rect::new(rail.x1, r.y0, r.x1, r.y1);
+        match view.section {
+            Section::Containers => self.draw_containers(scene, tr, theme, content, &view),
+            Section::Images => self.draw_images(scene, tr, theme, content, &view),
+            Section::Volumes => self.draw_volumes(scene, tr, theme, content, &view),
+            Section::Distrobox => self.draw_distrobox(scene, tr, theme, content, &view),
+        }
+
+        // --- Overlays ---
+        if self.create_open {
+            self.draw_create_modal(scene, tr, theme, r, &view);
+        }
+        if self.pull.is_some() {
+            self.draw_pull_overlay(scene, tr, theme, r);
+        }
+        if self.prompt.is_some() {
+            self.draw_prompt(scene, tr, theme, r);
+        }
+        if let Some(confirm) = &self.confirm {
+            Self::draw_confirm(scene, tr, theme, r, confirm, &mut self.hits);
+        }
+        if let Some(toast) = &self.toast {
+            Self::draw_toast(scene, tr, theme, r, toast);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Hover changes button shading — request a redraw.
+                *handled = true;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
+                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                // Scroll the panel under the cursor.
+                if self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(doc) {
+                    self.detail_scroll = (self.detail_scroll - dy).max(0.0);
+                } else {
+                    self.list_scroll = (self.list_scroll - dy).max(0.0);
+                }
+                *handled = true;
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                self.on_click(doc, handled);
+            }
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                self.on_key(doc, key_event, modifiers, handled);
+            }
+            _ => {}
+        }
+        // Refresh the cached view state after any mutation so the next draw
+        // reflects it (draw has no doc access).
+        self.refresh_view(doc);
+    }
+
+    fn name(&self) -> &str {
+        "ContainersApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+// =====================================================================
+// Cached view state
+//
+// `draw` has no access to the CRDT document, so the app keeps a small
+// snapshot of the doc-backed view state refreshed at the tail of every
+// `handle_event` and in `sync`.
+// =====================================================================
+
+#[derive(Clone)]
+pub(crate) struct ViewState {
+    pub section: Section,
+    pub selected: Option<String>,
+    pub tab: DetailTab,
+    pub search: String,
+    pub create: [String; CreateField::COUNT],
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            section: Section::Containers,
+            selected: None,
+            tab: DetailTab::Logs,
+            search: String::new(),
+            create: Default::default(),
+        }
+    }
+}
+
+impl ContainersApp {
+    pub(crate) fn refresh_view(&mut self, doc: &mut AutoCommit) {
+        let mut create: [String; CreateField::COUNT] = Default::default();
+        for field in CreateField::ALL {
+            create[field.index()] = ViewDoc::create_field(doc, field);
+        }
+        self.view = ViewState {
+            section: ViewDoc::section(doc),
+            selected: ViewDoc::selected(doc),
+            tab: ViewDoc::tab(doc),
+            search: ViewDoc::search(doc),
+            create,
+        };
+    }
+
+    /// Width of the list panel (full content width when no detail is open,
+    /// otherwise content minus the detail column).
+    fn list_area_width(&self, _doc: &AutoCommit) -> f64 {
+        let content_w = (self.rect.width() - self.rail_width()).max(0.0);
+        if self.view.selected.is_some() && self.view.section == Section::Containers {
+            (content_w - DETAIL_WIDTH).max(240.0)
+        } else {
+            content_w
+        }
+    }
+
+    /// The current (animated) navigation-rail width. Eased between fully
+    /// expanded ([`RAIL_WIDTH`]) and a thin collapsed strip that still shows
+    /// the section icons, using the shared `ui` flap kernel.
+    pub fn rail_width(&self) -> f64 {
+        let reveal = self.sidebar_flap.reveal();
+        RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * reveal
+    }
+
+    /// `true` once the rail has revealed enough to show its text labels.
+    pub fn rail_expanded(&self) -> bool {
+        self.sidebar_flap.reveal() > 0.5
+    }
+
+    /// Toggle the sidebar collapsed/expanded.
+    pub(crate) fn toggle_sidebar(&mut self) {
+        self.sidebar_flap.toggle(SplitLayout::Docked);
+    }
+
+    // --- public test / embedding hooks ---------------------------------
+    //
+    // The app renders with manual hit-testing rather than the retained widget
+    // tree, so its transient UI state isn't reachable through child widgets.
+    // These thin accessors let the e2e suite drive the create flow + combobox
+    // through the same fields the production event path mutates.
+
+    /// Open the create-container modal with the image combobox focused +
+    /// dropdown shown (the create-with-combobox flow).
+    pub fn open_create_with_combo(&mut self) {
+        self.create_open = true;
+        self.create_focus = CreateField::Image.index();
+        self.combo.open = true;
+        self.combo.highlight = 0;
+    }
+
+    /// Whether the create modal is open.
+    pub fn is_create_open(&self) -> bool {
+        self.create_open
+    }
+
+    /// Whether the image combobox suggestion dropdown is showing.
+    pub fn is_combo_open(&self) -> bool {
+        self.combo.open
+    }
+
+    /// Advance the sidebar slide off a real per-frame delta (driven from the
+    /// draw path, mirroring `NavSplit::self_tick`). The first draw sees
+    /// `dt == 0` so the rail never teleports.
+    pub(crate) fn tick_sidebar(&mut self) {
+        let now = Instant::now();
+        let dt = self
+            .sidebar_tick
+            .map(|t| now.duration_since(t).as_secs_f64().min(0.1))
+            .unwrap_or(0.0);
+        self.sidebar_tick = Some(now);
+        self.sidebar_flap.tick(SplitLayout::Docked, dt);
+    }
+}

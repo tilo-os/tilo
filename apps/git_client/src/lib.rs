@@ -1,0 +1,43 @@
+//! Git — a graphical git client for qOS, built on the `ui` toolkit.
+//!
+//! The app presents three screens over a repository:
+//!
+//! * **Changes** — staged / unstaged / untracked file lists with one-click
+//!   stage and unstage, a syntax-highlighted diff pane (unified or
+//!   side-by-side) with per-hunk staging, and a commit box.
+//! * **History** — a commit graph with branch and merge lanes, author and
+//!   date, plus a detail panel showing each commit's message, refs and
+//!   changed files.
+//! * **Branches & Remotes** — cards for branches, tags, stashes and
+//!   remotes, with fetch / pull / push actions and ahead/behind tracking.
+//!
+//! The live binary reads a real repository through [`repo`] (libgit2 via
+//! `git2`). When no repository is reachable — notably the headless
+//! `--shots` renderer — it falls back to a bundled, realistic [`sample`]
+//! so the screenshot shows a fully populated state offline. All rendering
+//! is theme-driven; durable UI preferences live in the CRDT via
+//! [`settings`].
+
+use ui::widget::Widget;
+
+pub mod app;
+pub mod changes;
+pub mod diff;
+pub mod diffview;
+pub mod draw;
+pub mod graph;
+pub mod history;
+pub mod model;
+pub mod panels;
+pub mod repo;
+pub mod sample;
+pub mod settings;
+
+pub use app::GitClientApp;
+
+/// Build and return the app's root widget tree. This is the single
+/// integration point used by both the live event loop and the `--shots`
+/// offscreen renderer.
+pub fn app_root() -> Box<dyn Widget> {
+    Box::new(GitClientApp::new())
+}

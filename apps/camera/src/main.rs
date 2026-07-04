@@ -1,0 +1,191 @@
+//! Camera — thin binary entry point. All logic lives in the library.
+//!
+//! Modes:
+//!   * default        — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
+//!                       (headless screenshot; identical passes to the live app).
+
+use std::collections::HashMap;
+
+use ui::offscreen::OffscreenRenderer;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
+use taffy::prelude::*;
+use vello::Scene;
+use vello::kurbo::{Affine, Point};
+use vello::peniko::Color;
+
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let args: Vec<String> = std::env::args().collect();
+
+    // Headless helper: populate a directory with real image files (procedural
+    // scenes + a scannable QR poster) so the disk-backed gallery / offline
+    // scanner can be screenshotted against real content. Dev/test only.
+    if let Some(dir) = parse_flag(&args, "--emit-photos") {
+        emit_photos(std::path::Path::new(&dir))?;
+        println!("camera: wrote sample photos to {dir}");
+        return Ok(());
+    }
+
+    if let Some(out) = parse_shots_arg(&args) {
+        // Shots-only flags mirror the env hooks the widget reads, so the
+        // headless harness can reach every state without relying on the
+        // parent shell's environment surviving the sandbox boundary. None of
+        // these affect the live event-loop path.
+        if let Some(screen) = parse_flag(&args, "--screen") {
+            unsafe { std::env::set_var("CAMERA_SCREEN", screen) };
+        }
+        if let Some(dir) = parse_flag(&args, "--dir") {
+            unsafe { std::env::set_var("CAMERA_DIR", dir) };
+        }
+        if let Some(px) = parse_flag(&args, "--scroll") {
+            unsafe { std::env::set_var("CAMERA_SCROLL", px) };
+        }
+        if has_flag(&args, "--select") {
+            unsafe { std::env::set_var("CAMERA_SELECT", "1") };
+        }
+        if has_flag(&args, "--scan-first") {
+            unsafe { std::env::set_var("CAMERA_SCAN_FIRST", "1") };
+        }
+        let (dw, dh) = DEFAULT_SHOTS_VIEWPORT;
+        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(dw);
+        let h = parse_flag(&args, "--height").and_then(|s| s.parse().ok()).unwrap_or(dh);
+        // Screenshots + tests default to the hermetic sample source — never
+        // the disk or a camera device. `--disk` (or `CAMERA_SHOTS_DISK`) opts
+        // into the real live source (honoring `--dir`/`CAMERA_DIR`) to capture
+        // the real empty-library / no-camera / offline-scan states.
+        let disk = has_flag(&args, "--disk") || std::env::var_os("CAMERA_SHOTS_DISK").is_some();
+        let root = if disk { camera::app_root() } else { camera::shots_root() };
+        render_shot_to_png(root, (w, h), &out)?;
+        return Ok(());
+    }
+
+    let state = ui::State::new();
+    let app = ui::App::new(state, camera::app_root());
+    app.run();
+    Ok(())
+}
+
+fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--shots" {
+            return iter.next().map(std::path::PathBuf::from);
+        }
+        if let Some(rest) = arg.strip_prefix("--shots=") {
+            return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// True if a bare `--flag` is present.
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+/// Write a handful of real PNGs into `dir`: procedural scenes plus one QR
+/// poster the offline scanner can decode. Timestamped writes are spaced so
+/// each lands with a distinct name. Headless dev/test tooling only.
+fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    for seed in 0..5u8 {
+        let fb = camera::frame::thumbnail(seed, 960, 640);
+        camera::library::write_photo(dir, &fb)?;
+        std::thread::sleep(std::time::Duration::from_millis(4));
+    }
+    let (qr, _) = camera::frame::scanner_frame(4, 900, 640, "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;");
+    camera::library::write_photo(dir, &qr)?;
+    Ok(())
+}
+
+/// Read `--flag VALUE` or `--flag=VALUE` from the argument list.
+fn parse_flag(args: &[String], flag: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
+/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+fn render_shot_to_png(
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    let mut text_renderer = TextRenderer::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+
+    let mut state = ui::State::new();
+    widget.sync(&mut state.doc, &state.root);
+
+    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
+            ..Default::default()
+        },
+        &[child],
+    )?;
+
+    {
+        let measure_map = node_map.clone();
+        let tr = &mut text_renderer;
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
+    }
+    widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    let mut scene = Scene::new();
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("camera: wrote shot to {}", out.display());
+    Ok(())
+}

@@ -1,0 +1,46 @@
+[package]
+name = "calendar"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "calendar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "calendar"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+
+# Live CalDAV sync (PROPFIND discovery, calendar-query/sync-collection REPORTs,
+# ETag-guarded PUTs). This pulls a TLS/HTTP stack, so it is OPTIONAL and gated
+# behind the `live` feature (OFF by default). The default build — and `--shots`
+# — uses the offline path in `caldav.rs`, which synthesises each calendar's
+# events as real iCalendar and parses them through the in-tree `ics` module,
+# staying small, green, and deterministic. The data types the offline path uses
+# (`CalDavConfig`, `RemoteCalendar`, `Event`, `Task`) are exactly the shapes a
+# CalDAV client consumes and produces, so enabling `live` is a drop-in.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
+
+[features]
+# The real CalDAV transport ships on by default so a configured account syncs
+# for real over HTTPS. It runs on a background thread (see `app::CalendarApp`),
+# so the UI never blocks on the network, and it degrades gracefully: with no
+# account configured, or the `live` feature turned off for a lean headless
+# build, sync is an instant no-op that reports "no accounts" rather than
+# fabricating events.
+default = ["live"]
+live = ["dep:reqwest"]

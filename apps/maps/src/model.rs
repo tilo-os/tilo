@@ -1,0 +1,553 @@
+//! Pure data model for the Maps app.
+//!
+//! Everything the app persists or replicates lives here as plain serde
+//! types. The CRDT (see [`crate::doc`]) stores the JSON serialisation of
+//! [`MapModel`] so that saved places, recent searches and the current view
+//! converge across collaborating peers and ride the undo/redo machinery for
+//! free. Widget structs hold only render/layout caches — never app state.
+
+use serde::{Deserialize, Serialize};
+
+/// A WGS-84 geographic coordinate (degrees).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LatLon {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl LatLon {
+    pub const fn new(lat: f64, lon: f64) -> Self {
+        Self { lat, lon }
+    }
+}
+
+/// Point-of-interest category. Drives the marker colour and the place-card
+/// icon. Kept deliberately small and OSM-flavoured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Category {
+    Landmark,
+    Cafe,
+    Restaurant,
+    Bar,
+    Museum,
+    Park,
+    Transit,
+    Hotel,
+    Shop,
+    Hospital,
+    Other,
+}
+
+impl Category {
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Landmark => "Landmark",
+            Category::Cafe => "Café",
+            Category::Restaurant => "Restaurant",
+            Category::Bar => "Bar",
+            Category::Museum => "Museum",
+            Category::Park => "Park",
+            Category::Transit => "Transit stop",
+            Category::Hotel => "Hotel",
+            Category::Shop => "Shop",
+            Category::Hospital => "Hospital",
+            Category::Other => "Place",
+        }
+    }
+
+    /// A single glyph used as the marker's pictogram.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Category::Landmark => "★",
+            Category::Cafe => "☕",
+            Category::Restaurant => "🍴",
+            Category::Bar => "🍺",
+            Category::Museum => "🏛",
+            Category::Park => "🌳",
+            Category::Transit => "Ⓜ",
+            Category::Hotel => "🛏",
+            Category::Shop => "🛍",
+            Category::Hospital => "✚",
+            Category::Other => "•",
+        }
+    }
+
+    /// Best-effort mapping from a Nominatim `class`/`type` pair.
+    pub fn from_osm(class: &str, kind: &str) -> Category {
+        match (class, kind) {
+            ("amenity", "cafe") => Category::Cafe,
+            ("amenity", "restaurant" | "fast_food" | "food_court") => Category::Restaurant,
+            ("amenity", "bar" | "pub" | "biergarten" | "nightclub") => Category::Bar,
+            ("amenity", "hospital" | "clinic" | "doctors") => Category::Hospital,
+            ("tourism", "museum" | "gallery" | "artwork") => Category::Museum,
+            ("tourism", "hotel" | "hostel" | "guest_house" | "motel") => Category::Hotel,
+            ("tourism", "attraction" | "viewpoint" | "monument") => Category::Landmark,
+            ("historic", _) => Category::Landmark,
+            ("leisure", "park" | "garden" | "nature_reserve") => Category::Park,
+            ("shop", _) => Category::Shop,
+            ("railway", _) | ("public_transport", _) => Category::Transit,
+            ("highway", "bus_stop") => Category::Transit,
+            _ => Category::Other,
+        }
+    }
+}
+
+/// A point of interest. `id` is stable; markers, the place card and the
+/// saved-list all reference it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub id: String,
+    pub name: String,
+    pub category: Category,
+    pub address: String,
+    pub pos: LatLon,
+    pub rating: Option<f32>,
+    /// User note attached to a saved place.
+    pub note: Option<String>,
+    pub saved: bool,
+}
+
+impl Place {
+    pub fn new(id: &str, name: &str, category: Category, address: &str, pos: LatLon) -> Self {
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            category,
+            address: address.to_string(),
+            pos,
+            rating: None,
+            note: None,
+            saved: false,
+        }
+    }
+
+    pub fn with_rating(mut self, r: f32) -> Self {
+        self.rating = Some(r);
+        self
+    }
+}
+
+/// Routing profile for the directions engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TravelMode {
+    Car,
+    Bike,
+    Foot,
+}
+
+impl TravelMode {
+    pub const ALL: [TravelMode; 3] = [TravelMode::Car, TravelMode::Bike, TravelMode::Foot];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TravelMode::Car => "Drive",
+            TravelMode::Bike => "Cycle",
+            TravelMode::Foot => "Walk",
+        }
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            TravelMode::Car => "🚗",
+            TravelMode::Bike => "🚲",
+            TravelMode::Foot => "🚶",
+        }
+    }
+
+    /// OSRM public-server profile path component.
+    pub fn osrm_profile(self) -> &'static str {
+        match self {
+            TravelMode::Car => "driving",
+            TravelMode::Bike => "cycling",
+            TravelMode::Foot => "foot",
+        }
+    }
+
+    /// Plausible average speed (km/h) for the offline fallback estimator.
+    pub fn speed_kmh(self) -> f64 {
+        match self {
+            TravelMode::Car => 32.0,
+            TravelMode::Bike => 15.0,
+            TravelMode::Foot => 4.8,
+        }
+    }
+}
+
+/// Turn type for a routing step. Maps to OSRM's `maneuver.modifier`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Maneuver {
+    Depart,
+    Continue,
+    SlightLeft,
+    Left,
+    SharpLeft,
+    SlightRight,
+    Right,
+    SharpRight,
+    Uturn,
+    Roundabout,
+    Merge,
+    Arrive,
+}
+
+impl Maneuver {
+    /// A directional arrow glyph for the step row.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Maneuver::Depart => "◉",
+            Maneuver::Continue | Maneuver::Merge => "↑",
+            Maneuver::SlightLeft => "↖",
+            Maneuver::Left => "←",
+            Maneuver::SharpLeft => "↩",
+            Maneuver::SlightRight => "↗",
+            Maneuver::Right => "→",
+            Maneuver::SharpRight => "↪",
+            Maneuver::Uturn => "⇩",
+            Maneuver::Roundabout => "↻",
+            Maneuver::Arrive => "⚑",
+        }
+    }
+
+    pub fn from_osrm(kind: &str, modifier: &str) -> Maneuver {
+        match kind {
+            "depart" => Maneuver::Depart,
+            "arrive" => Maneuver::Arrive,
+            "roundabout" | "rotary" | "roundabout turn" => Maneuver::Roundabout,
+            "merge" => Maneuver::Merge,
+            "uturn" => Maneuver::Uturn,
+            _ => match modifier {
+                "uturn" => Maneuver::Uturn,
+                "sharp left" => Maneuver::SharpLeft,
+                "left" => Maneuver::Left,
+                "slight left" => Maneuver::SlightLeft,
+                "sharp right" => Maneuver::SharpRight,
+                "right" => Maneuver::Right,
+                "slight right" => Maneuver::SlightRight,
+                _ => Maneuver::Continue,
+            },
+        }
+    }
+}
+
+/// One turn-by-turn instruction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RouteStep {
+    pub instruction: String,
+    pub distance_m: f64,
+    pub maneuver: Maneuver,
+}
+
+/// A computed road route between two points.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Route {
+    pub mode: TravelMode,
+    pub distance_m: f64,
+    pub duration_s: f64,
+    /// Decoded polyline, WGS-84.
+    pub geometry: Vec<LatLon>,
+    pub steps: Vec<RouteStep>,
+    pub from: LatLon,
+    pub to: LatLon,
+}
+
+/// Mode of one public-transport leg.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransitMode {
+    Walk,
+    Bus,
+    Tram,
+    Subway,
+    Rail,
+    Ferry,
+}
+
+impl TransitMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            TransitMode::Walk => "Walk",
+            TransitMode::Bus => "Bus",
+            TransitMode::Tram => "Tram",
+            TransitMode::Subway => "Metro",
+            TransitMode::Rail => "Train",
+            TransitMode::Ferry => "Ferry",
+        }
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            TransitMode::Walk => "🚶",
+            TransitMode::Bus => "🚌",
+            TransitMode::Tram => "🚊",
+            TransitMode::Subway => "Ⓜ",
+            TransitMode::Rail => "🚆",
+            TransitMode::Ferry => "⛴",
+        }
+    }
+
+    /// Distinct branding hue index hint, resolved against the theme accent
+    /// ramp by the renderer. We avoid hard-coding RGB here.
+    pub fn from_motis(mode: &str) -> TransitMode {
+        match mode.to_ascii_uppercase().as_str() {
+            "WALK" => TransitMode::Walk,
+            "BUS" | "COACH" => TransitMode::Bus,
+            "TRAM" | "STREETCAR" | "LIGHT_RAIL" => TransitMode::Tram,
+            "SUBWAY" | "METRO" => TransitMode::Subway,
+            "RAIL" | "REGIONAL_RAIL" | "REGIONAL_FAST_RAIL" | "LONG_DISTANCE"
+            | "HIGHSPEED_RAIL" | "NIGHT_RAIL" => TransitMode::Rail,
+            "FERRY" => TransitMode::Ferry,
+            _ => TransitMode::Bus,
+        }
+    }
+}
+
+/// One leg of a public-transport itinerary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransitLeg {
+    pub mode: TransitMode,
+    /// Line label, e.g. "U3", "58", "S1". Empty for walking legs.
+    pub line: String,
+    pub headsign: String,
+    pub from_name: String,
+    pub to_name: String,
+    /// "HH:MM" local clock.
+    pub dep: String,
+    pub arr: String,
+    pub duration_min: u32,
+    pub num_stops: u32,
+    pub geometry: Vec<LatLon>,
+}
+
+/// A full door-to-door public-transport journey option.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransitJourney {
+    pub dep: String,
+    pub arr: String,
+    pub duration_min: u32,
+    pub transfers: u32,
+    pub legs: Vec<TransitLeg>,
+}
+
+/// Whether a transit query is anchored to a departure or an arrival time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransitTimeMode {
+    /// Leave at the chosen time (the default, "leave now").
+    Depart,
+    /// Arrive by the chosen time.
+    Arrive,
+}
+
+/// The depart/arrive anchor for the Transit planner. Defaults to "leave now"
+/// (`Depart` at a zero offset); the user shifts the anchor in ±15-minute
+/// steps and the offset is applied to the wall clock when the query is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitTime {
+    pub mode: TransitTimeMode,
+    /// Minutes relative to "now". `0` with `Depart` means "leave now".
+    pub offset_min: i32,
+}
+
+impl Default for TransitTime {
+    fn default() -> Self {
+        Self {
+            mode: TransitTimeMode::Depart,
+            offset_min: 0,
+        }
+    }
+}
+
+impl TransitTime {
+    /// True when the anchor is the plain "leave now" default.
+    pub fn is_now(&self) -> bool {
+        self.mode == TransitTimeMode::Depart && self.offset_min == 0
+    }
+
+    /// True when the query should be anchored to the arrival time.
+    pub fn arrive_by(&self) -> bool {
+        self.mode == TransitTimeMode::Arrive
+    }
+}
+
+/// Which side panel is currently active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Panel {
+    Explore,
+    Directions,
+    Transit,
+}
+
+impl Panel {
+    pub const ALL: [Panel; 3] = [Panel::Explore, Panel::Directions, Panel::Transit];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Panel::Explore => "Explore",
+            Panel::Directions => "Directions",
+            Panel::Transit => "Transit",
+        }
+    }
+}
+
+/// The entire application state. Serialised into the CRDT.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MapModel {
+    /// All places known to the app: sample POIs, search results that were
+    /// pinned, and saved favourites. The marker layer renders these.
+    pub places: Vec<Place>,
+    /// Recently searched query strings, most-recent first.
+    pub recents: Vec<String>,
+    /// Currently selected place id (drives the place card).
+    pub selected: Option<String>,
+    /// Active road route, if any.
+    pub route: Option<Route>,
+    /// Public-transport itinerary options.
+    pub transit: Vec<TransitJourney>,
+    /// Index of the highlighted transit option.
+    pub transit_choice: usize,
+    pub panel: Panel,
+    pub mode: TravelMode,
+    /// Current search text.
+    pub query: String,
+    /// Text typed into the Directions "From" field (a real geocoding input).
+    #[serde(default)]
+    pub origin_query: String,
+    /// Text typed into the Directions "To" field (a real geocoding input).
+    #[serde(default)]
+    pub dest_query: String,
+    /// Depart/arrive anchor for the Transit planner.
+    #[serde(default)]
+    pub transit_time: TransitTime,
+    /// Live search results (subset shown in the Explore panel).
+    pub results: Vec<Place>,
+    /// Route origin — "your location". Sample data seeds a plausible spot.
+    pub origin: Option<LatLon>,
+    /// Origin label for the directions panel.
+    pub origin_name: String,
+    /// Route destination. Held separately from `selected` so the directions
+    /// panel can swap the two endpoints without the destination collapsing
+    /// back onto the origin (which would route a point to itself).
+    #[serde(default)]
+    pub dest: Option<LatLon>,
+    /// Destination label for the directions/transit panels.
+    #[serde(default)]
+    pub dest_name: String,
+    /// Map view centre + fractional zoom (slippy-map z).
+    pub center: LatLon,
+    pub zoom: f64,
+    /// One-line network/status message for the status bar.
+    pub status: String,
+}
+
+impl Default for MapModel {
+    fn default() -> Self {
+        Self {
+            places: Vec::new(),
+            recents: Vec::new(),
+            selected: None,
+            route: None,
+            transit: Vec::new(),
+            transit_choice: 0,
+            panel: Panel::Explore,
+            mode: TravelMode::Car,
+            query: String::new(),
+            origin_query: String::new(),
+            dest_query: String::new(),
+            transit_time: TransitTime::default(),
+            results: Vec::new(),
+            origin: None,
+            // Without a real location fix, routes start from the map centre.
+            origin_name: "Map centre".to_string(),
+            dest: None,
+            dest_name: String::new(),
+            center: LatLon::new(48.1371, 11.5754),
+            zoom: 14.4,
+            status: String::new(),
+        }
+    }
+}
+
+impl MapModel {
+    pub fn place(&self, id: &str) -> Option<&Place> {
+        self.places.iter().find(|p| p.id == id)
+    }
+
+    pub fn selected_place(&self) -> Option<&Place> {
+        self.selected.as_deref().and_then(|id| self.place(id))
+    }
+
+    pub fn saved_places(&self) -> Vec<&Place> {
+        self.places.iter().filter(|p| p.saved).collect()
+    }
+
+    /// Toggle the saved flag on a place by id, returning the new state.
+    pub fn toggle_saved(&mut self, id: &str) -> bool {
+        if let Some(p) = self.places.iter_mut().find(|p| p.id == id) {
+            p.saved = !p.saved;
+            p.saved
+        } else {
+            false
+        }
+    }
+
+    /// Insert (or move-to-front) a recent search query, capped at 8.
+    pub fn push_recent(&mut self, q: &str) {
+        let q = q.trim();
+        if q.is_empty() {
+            return;
+        }
+        self.recents.retain(|r| !r.eq_ignore_ascii_case(q));
+        self.recents.insert(0, q.to_string());
+        self.recents.truncate(8);
+    }
+
+    /// Merge a freshly-fetched place into `places` (dedupe by id) so the
+    /// marker layer and the saved list stay coherent.
+    pub fn upsert_place(&mut self, p: Place) {
+        if let Some(existing) = self.places.iter_mut().find(|e| e.id == p.id) {
+            let saved = existing.saved || p.saved;
+            let note = existing.note.clone().or(p.note.clone());
+            *existing = Place { saved, note, ..p };
+        } else {
+            self.places.push(p);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recents_dedupe_and_cap() {
+        let mut m = MapModel::default();
+        for i in 0..12 {
+            m.push_recent(&format!("q{i}"));
+        }
+        assert_eq!(m.recents.len(), 8);
+        assert_eq!(m.recents[0], "q11");
+        // Re-pushing an existing term moves it to front, not duplicates.
+        m.push_recent("Q7");
+        assert_eq!(m.recents[0], "Q7");
+        assert_eq!(m.recents.iter().filter(|r| r.eq_ignore_ascii_case("q7")).count(), 1);
+    }
+
+    #[test]
+    fn toggle_saved_flips() {
+        let mut m = MapModel::default();
+        m.places.push(Place::new("a", "A", Category::Cafe, "", LatLon::new(0.0, 0.0)));
+        assert!(m.toggle_saved("a"));
+        assert!(!m.toggle_saved("a"));
+        assert!(!m.toggle_saved("missing"));
+    }
+
+    #[test]
+    fn upsert_preserves_saved_flag() {
+        let mut m = MapModel::default();
+        let mut p = Place::new("x", "X", Category::Shop, "addr", LatLon::new(1.0, 2.0));
+        p.saved = true;
+        m.upsert_place(p);
+        // Re-fetch (unsaved) must not clobber the saved flag.
+        m.upsert_place(Place::new("x", "X2", Category::Shop, "addr2", LatLon::new(1.0, 2.0)));
+        assert!(m.place("x").unwrap().saved);
+        assert_eq!(m.place("x").unwrap().name, "X2");
+    }
+}

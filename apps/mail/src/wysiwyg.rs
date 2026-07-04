@@ -1,0 +1,929 @@
+//! A small, self-contained **WYSIWYG rich-text editor** for HTML mail bodies.
+//!
+//! It is built only from primitives any app on the `ui` toolkit already has
+//! (`TextRenderer::draw_text_styled`, a Vello `Scene`, raw winit events), so it
+//! has no dependency on Mail itself and could be lifted into `ui` wholesale —
+//! see the promotion note at the bottom of this file. The toolkit's existing
+//! `BlockEditor` is Markdown-only, single-line-per-block, and has no
+//! underline / block-quote / `href` link, so an HTML-mail editor needs its own
+//! component; this is that component, kept clean enough to reuse.
+//!
+//! ## Model
+//! A document is a list of [`Block`]s. Each block has a [`BlockKind`]
+//! (paragraph, H1–H3, bullet / numbered list item, block-quote) and a run of
+//! text carrying per-character inline [`Style`] flags (bold / italic /
+//! underline) plus an optional link target. The caret is a `(block, byte)`
+//! pair; a selection is an ordered caret pair. This is deliberately a flat,
+//! easy-to-serialise model rather than a tree.
+//!
+//! ## Serialisation
+//! * [`Wysiwyg::to_html`] emits clean, semantic HTML
+//!   (`<h1>`/`<p>`/`<ul><li>`/`<ol><li>`/`<blockquote>`, with `<b>`/`<i>`/`<u>`/
+//!   `<a href>` inline) suitable for the `text/html` MIME part.
+//! * [`Wysiwyg::to_plain`] flattens to plain text (one block per line, list
+//!   markers preserved) for the `text/plain` alternative / raw-text mode.
+//! * [`Wysiwyg::from_plain`] seeds the document from plain text (used when the
+//!   user switches Raw → HTML, or to import a reply quote).
+
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use ui::color_compat::ColorCompat;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+
+/// Inline character styling. Stored per byte run; toggled over the selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Style {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
+/// One styled character. Keeping style per-char (rather than per-span) makes
+/// toggling a mark over an arbitrary selection trivial and correct; runs are
+/// re-coalesced at draw / serialise time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Glyph {
+    ch: char,
+    style: Style,
+    /// Index into [`Block::links`] if this character is part of a link.
+    link: Option<usize>,
+}
+
+/// Block-level kind. Lists carry the marker only; consecutive list blocks of
+/// the same kind are wrapped in a single `<ul>`/`<ol>` at serialise time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    Paragraph,
+    Heading(u8),
+    Bullet,
+    Numbered,
+    Quote,
+}
+
+impl BlockKind {
+    fn html_tag(self) -> &'static str {
+        match self {
+            BlockKind::Paragraph => "p",
+            BlockKind::Heading(1) => "h1",
+            BlockKind::Heading(2) => "h2",
+            BlockKind::Heading(_) => "h3",
+            BlockKind::Bullet | BlockKind::Numbered => "li",
+            BlockKind::Quote => "blockquote",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Block {
+    kind: BlockKind,
+    glyphs: Vec<Glyph>,
+    /// Link targets referenced by `Glyph::link`.
+    links: Vec<String>,
+}
+
+impl Block {
+    fn paragraph() -> Self {
+        Self { kind: BlockKind::Paragraph, glyphs: Vec::new(), links: Vec::new() }
+    }
+
+    fn text(&self) -> String {
+        self.glyphs.iter().map(|g| g.ch).collect()
+    }
+}
+
+/// A `(block index, glyph index)` caret position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Caret {
+    block: usize,
+    glyph: usize,
+}
+
+const FONT_SIZE: f32 = 14.0;
+const LINE_GAP: f64 = 6.0;
+const BLOCK_GAP: f64 = 10.0;
+const PAD_X: f64 = 12.0;
+const PAD_Y: f64 = 10.0;
+const LIST_INDENT: f64 = 22.0;
+const QUOTE_INDENT: f64 = 16.0;
+
+/// The editor. Owns its document, caret, selection, focus, scroll, and the
+/// laid-out per-block rects used for hit-testing.
+pub struct Wysiwyg {
+    blocks: Vec<Block>,
+    caret: Caret,
+    /// Selection anchor; `Some` while a selection is active.
+    anchor: Option<Caret>,
+    focused: bool,
+    rect: Rect,
+    /// "Next typed character takes these marks" — set when the user toggles a
+    /// mark with an empty selection (so they can turn on bold then type).
+    pending: Style,
+    /// Per-block laid-out content rects (in screen coords), recomputed each
+    /// `layout`. Used for click hit-testing and caret placement.
+    block_rects: Vec<Rect>,
+    /// Cached x-offsets of every glyph boundary per visible block line, filled
+    /// during `draw`; index by block. Each inner vec has `glyphs.len()+1` xs.
+    glyph_xs: Vec<Vec<f64>>,
+    scroll_y: f64,
+    dirty: bool,
+}
+
+impl Default for Wysiwyg {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Wysiwyg {
+    pub fn new() -> Self {
+        Self {
+            blocks: vec![Block::paragraph()],
+            caret: Caret { block: 0, glyph: 0 },
+            anchor: None,
+            focused: false,
+            rect: Rect::ZERO,
+            pending: Style::default(),
+            block_rects: Vec::new(),
+            glyph_xs: Vec::new(),
+            scroll_y: 0.0,
+            dirty: true,
+        }
+    }
+
+    /// Seed the document from plain text. Blank lines separate paragraphs;
+    /// lines beginning with `> ` become block-quotes (so a reply quote imports
+    /// sensibly). Caret parks at the end.
+    pub fn from_plain(text: &str) -> Self {
+        let mut ed = Self::new();
+        ed.set_plain(text);
+        ed
+    }
+
+    /// Replace the whole document with plain text (used by Raw → HTML switch).
+    pub fn set_plain(&mut self, text: &str) {
+        self.blocks.clear();
+        for line in text.split('\n') {
+            let (kind, body) = if let Some(rest) = line.strip_prefix("> ") {
+                (BlockKind::Quote, rest)
+            } else {
+                (BlockKind::Paragraph, line)
+            };
+            let mut b = Block { kind, glyphs: Vec::new(), links: Vec::new() };
+            for ch in body.chars() {
+                b.glyphs.push(Glyph { ch, style: Style::default(), link: None });
+            }
+            self.blocks.push(b);
+        }
+        if self.blocks.is_empty() {
+            self.blocks.push(Block::paragraph());
+        }
+        let last = self.blocks.len() - 1;
+        self.caret = Caret { block: last, glyph: self.blocks[last].glyphs.len() };
+        self.anchor = None;
+        self.dirty = true;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.blocks.iter().all(|b| b.glyphs.is_empty())
+    }
+
+    /// Append a block built from styled segments. Each segment is `(text,
+    /// style)`. Used to seed representative formatted content (and a handy
+    /// authoring helper for any host that wants to insert pre-styled blocks).
+    pub fn push_styled_block(&mut self, kind: BlockKind, segments: &[(&str, Style)]) {
+        // Replace the initial empty paragraph the constructor leaves in place.
+        if self.blocks.len() == 1 && self.blocks[0].glyphs.is_empty() {
+            self.blocks.clear();
+        }
+        let mut b = Block { kind, glyphs: Vec::new(), links: Vec::new() };
+        for (text, style) in segments {
+            for ch in text.chars() {
+                b.glyphs.push(Glyph { ch, style: *style, link: None });
+            }
+        }
+        self.blocks.push(b);
+        let last = self.blocks.len() - 1;
+        self.caret = Caret { block: last, glyph: self.blocks[last].glyphs.len() };
+        self.dirty = true;
+    }
+
+    pub fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.dirty = true;
+        }
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    pub fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    // ---- serialisation ------------------------------------------------
+
+    /// Emit semantic HTML for the `text/html` MIME part. Adjacent list items of
+    /// the same kind are wrapped in one `<ul>` / `<ol>`.
+    pub fn to_html(&self) -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while i < self.blocks.len() {
+            let b = &self.blocks[i];
+            match b.kind {
+                BlockKind::Bullet | BlockKind::Numbered => {
+                    let ordered = matches!(b.kind, BlockKind::Numbered);
+                    out.push_str(if ordered { "<ol>" } else { "<ul>" });
+                    while i < self.blocks.len() && self.blocks[i].kind == b.kind {
+                        out.push_str("<li>");
+                        out.push_str(&self.inline_html(&self.blocks[i]));
+                        out.push_str("</li>");
+                        i += 1;
+                    }
+                    out.push_str(if ordered { "</ol>" } else { "</ul>" });
+                    continue;
+                }
+                _ => {
+                    let tag = b.kind.html_tag();
+                    out.push('<');
+                    out.push_str(tag);
+                    out.push('>');
+                    out.push_str(&self.inline_html(b));
+                    out.push_str("</");
+                    out.push_str(tag);
+                    out.push('>');
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Render one block's glyph run to inline HTML, coalescing equal-style runs
+    /// and wrapping links. HTML-special characters are escaped.
+    fn inline_html(&self, block: &Block) -> String {
+        let mut out = String::new();
+        let mut idx = 0;
+        while idx < block.glyphs.len() {
+            let g = &block.glyphs[idx];
+            // Group a maximal run with identical style + link.
+            let mut end = idx + 1;
+            while end < block.glyphs.len()
+                && block.glyphs[end].style == g.style
+                && block.glyphs[end].link == g.link
+            {
+                end += 1;
+            }
+            let text: String = block.glyphs[idx..end].iter().map(|x| x.ch).collect();
+            let mut frag = escape_html(&text);
+            if g.style.bold {
+                frag = format!("<b>{frag}</b>");
+            }
+            if g.style.italic {
+                frag = format!("<i>{frag}</i>");
+            }
+            if g.style.underline {
+                frag = format!("<u>{frag}</u>");
+            }
+            if let Some(li) = g.link {
+                if let Some(href) = block.links.get(li) {
+                    frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
+                }
+            }
+            out.push_str(&frag);
+            idx = end;
+        }
+        out
+    }
+
+    /// Flatten to plain text for the `text/plain` part / raw-text mode.
+    pub fn to_plain(&self) -> String {
+        let mut out = String::new();
+        let mut num = 1;
+        for (i, b) in self.blocks.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            match b.kind {
+                BlockKind::Bullet => out.push_str("• "),
+                BlockKind::Numbered => {
+                    out.push_str(&format!("{num}. "));
+                    num += 1;
+                }
+                BlockKind::Quote => out.push_str("> "),
+                _ => {}
+            }
+            if !matches!(b.kind, BlockKind::Numbered) {
+                num = 1;
+            }
+            out.push_str(&b.text());
+        }
+        out
+    }
+
+    // ---- formatting commands (driven by the compose toolbar) ----------
+
+    /// Toggle a bold/italic/underline mark over the current selection, or arm
+    /// it for the next typed character when the selection is empty.
+    pub fn toggle_inline(&mut self, which: InlineMark) {
+        let Some((a, b)) = self.ordered_selection() else {
+            // No selection: toggle the pending style for the next character.
+            match which {
+                InlineMark::Bold => self.pending.bold = !self.pending.bold,
+                InlineMark::Italic => self.pending.italic = !self.pending.italic,
+                InlineMark::Underline => self.pending.underline = !self.pending.underline,
+            }
+            self.dirty = true;
+            return;
+        };
+        // Decide add vs remove: if every selected char already has the mark,
+        // remove it; otherwise add it.
+        let all_set = self.selection_glyphs(a, b).all(|g| match which {
+            InlineMark::Bold => g.style.bold,
+            InlineMark::Italic => g.style.italic,
+            InlineMark::Underline => g.style.underline,
+        });
+        self.for_each_selected_glyph(a, b, |g| match which {
+            InlineMark::Bold => g.style.bold = !all_set,
+            InlineMark::Italic => g.style.italic = !all_set,
+            InlineMark::Underline => g.style.underline = !all_set,
+        });
+        self.dirty = true;
+    }
+
+    /// Set the block kind of every block touched by the selection (or the caret
+    /// block). Toggling a kind that's already set reverts to Paragraph.
+    pub fn set_block_kind(&mut self, kind: BlockKind) {
+        let (a, b) = self.ordered_selection().unwrap_or((self.caret, self.caret));
+        let already = (a.block..=b.block).all(|i| self.blocks[i].kind == kind);
+        for i in a.block..=b.block {
+            self.blocks[i].kind = if already { BlockKind::Paragraph } else { kind };
+        }
+        self.dirty = true;
+    }
+
+    /// Wrap the current selection in a link to `href`. With an empty selection
+    /// this inserts the href text itself as the link label.
+    pub fn set_link(&mut self, href: &str) {
+        if href.trim().is_empty() {
+            return;
+        }
+        if self.ordered_selection().is_none() {
+            // Insert the URL as its own linked text.
+            for ch in href.chars() {
+                self.insert_char(ch);
+            }
+            // Re-select what we just inserted and link it.
+            let end = self.caret;
+            let start = Caret { block: end.block, glyph: end.glyph - href.chars().count() };
+            self.anchor = Some(start);
+            self.caret = end;
+        }
+        let (a, b) = self.ordered_selection().unwrap();
+        // One link entry per block touched (links don't span blocks here).
+        for bi in a.block..=b.block {
+            let li = self.blocks[bi].links.len();
+            self.blocks[bi].links.push(href.to_string());
+            let (s, e) = self.block_selection_bounds(bi, a, b);
+            for g in &mut self.blocks[bi].glyphs[s..e] {
+                g.link = Some(li);
+                g.style.underline = true;
+            }
+        }
+        self.dirty = true;
+    }
+
+    // ---- internal selection helpers -----------------------------------
+
+    fn ordered_selection(&self) -> Option<(Caret, Caret)> {
+        let anchor = self.anchor?;
+        if anchor == self.caret {
+            return None;
+        }
+        Some(if anchor <= self.caret { (anchor, self.caret) } else { (self.caret, anchor) })
+    }
+
+    /// The `[start, end)` glyph range of block `bi` that lies inside selection
+    /// `(a, b)`.
+    fn block_selection_bounds(&self, bi: usize, a: Caret, b: Caret) -> (usize, usize) {
+        let len = self.blocks[bi].glyphs.len();
+        let s = if bi == a.block { a.glyph } else { 0 };
+        let e = if bi == b.block { b.glyph } else { len };
+        (s.min(len), e.min(len))
+    }
+
+    fn selection_glyphs<'a>(&'a self, a: Caret, b: Caret) -> impl Iterator<Item = &'a Glyph> + 'a {
+        (a.block..=b.block).flat_map(move |bi| {
+            let (s, e) = self.block_selection_bounds(bi, a, b);
+            self.blocks[bi].glyphs[s..e].iter()
+        })
+    }
+
+    fn for_each_selected_glyph(&mut self, a: Caret, b: Caret, mut f: impl FnMut(&mut Glyph)) {
+        for bi in a.block..=b.block {
+            let (s, e) = self.block_selection_bounds(bi, a, b);
+            for g in &mut self.blocks[bi].glyphs[s..e] {
+                f(g);
+            }
+        }
+    }
+
+    // ---- text editing -------------------------------------------------
+
+    fn delete_selection(&mut self) -> bool {
+        let Some((a, b)) = self.ordered_selection() else {
+            return false;
+        };
+        if a.block == b.block {
+            self.blocks[a.block].glyphs.drain(a.glyph..b.glyph);
+        } else {
+            // Keep head of first block, tail of last block, drop the middle.
+            let tail: Vec<Glyph> = self.blocks[b.block].glyphs.split_off(b.glyph);
+            self.blocks[a.block].glyphs.truncate(a.glyph);
+            self.blocks[a.block].glyphs.extend(tail);
+            self.blocks.drain(a.block + 1..=b.block);
+        }
+        self.caret = a;
+        self.anchor = None;
+        self.dirty = true;
+        true
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        self.delete_selection();
+        let style = self.pending;
+        let b = &mut self.blocks[self.caret.block];
+        b.glyphs.insert(self.caret.glyph, Glyph { ch, style, link: None });
+        self.caret.glyph += 1;
+        self.dirty = true;
+    }
+
+    fn split_block(&mut self) {
+        self.delete_selection();
+        let tail = self.blocks[self.caret.block].glyphs.split_off(self.caret.glyph);
+        let cur_kind = self.blocks[self.caret.block].kind;
+        // Pressing Enter in a list continues the list; elsewhere a new
+        // paragraph. An Enter on an empty list item exits the list.
+        let new_kind = match cur_kind {
+            BlockKind::Bullet | BlockKind::Numbered
+                if self.blocks[self.caret.block].glyphs.is_empty() =>
+            {
+                self.blocks[self.caret.block].kind = BlockKind::Paragraph;
+                self.dirty = true;
+                return;
+            }
+            BlockKind::Bullet | BlockKind::Numbered => cur_kind,
+            _ => BlockKind::Paragraph,
+        };
+        let new = Block { kind: new_kind, glyphs: tail, links: Vec::new() };
+        self.blocks.insert(self.caret.block + 1, new);
+        self.caret = Caret { block: self.caret.block + 1, glyph: 0 };
+        self.pending = Style::default();
+        self.dirty = true;
+    }
+
+    fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        if self.caret.glyph > 0 {
+            self.blocks[self.caret.block].glyphs.remove(self.caret.glyph - 1);
+            self.caret.glyph -= 1;
+        } else if self.caret.block > 0 {
+            // Merge with previous block.
+            let prev = self.caret.block - 1;
+            let prev_len = self.blocks[prev].glyphs.len();
+            let moved = std::mem::take(&mut self.blocks[self.caret.block].glyphs);
+            self.blocks[prev].glyphs.extend(moved);
+            self.blocks.remove(self.caret.block);
+            self.caret = Caret { block: prev, glyph: prev_len };
+        }
+        self.dirty = true;
+    }
+
+    fn move_caret(&mut self, dx: i32, extend: bool) {
+        if extend && self.anchor.is_none() {
+            self.anchor = Some(self.caret);
+        } else if !extend {
+            self.anchor = None;
+        }
+        if dx < 0 {
+            if self.caret.glyph > 0 {
+                self.caret.glyph -= 1;
+            } else if self.caret.block > 0 {
+                self.caret.block -= 1;
+                self.caret.glyph = self.blocks[self.caret.block].glyphs.len();
+            }
+        } else if self.caret.glyph < self.blocks[self.caret.block].glyphs.len() {
+            self.caret.glyph += 1;
+        } else if self.caret.block + 1 < self.blocks.len() {
+            self.caret.block += 1;
+            self.caret.glyph = 0;
+        }
+        self.pending = Style::default();
+        self.dirty = true;
+    }
+
+    // ---- layout, draw, events -----------------------------------------
+
+    pub fn apply_layout(&mut self, rect: Rect) {
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
+    /// Current marks at the caret (selection-wide if any) — drives the
+    /// toolbar's active-button highlighting.
+    pub fn active_marks(&self) -> Style {
+        if let Some((a, b)) = self.ordered_selection() {
+            let mut all = Style { bold: true, italic: true, underline: true };
+            let mut any = false;
+            for g in self.selection_glyphs(a, b) {
+                any = true;
+                all.bold &= g.style.bold;
+                all.italic &= g.style.italic;
+                all.underline &= g.style.underline;
+            }
+            if any {
+                return all;
+            }
+        }
+        self.pending
+    }
+
+    /// Block kind at the caret — drives toolbar block-button highlighting.
+    pub fn active_block_kind(&self) -> BlockKind {
+        self.blocks.get(self.caret.block).map(|b| b.kind).unwrap_or(BlockKind::Paragraph)
+    }
+
+    pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        self.block_rects.clear();
+        self.glyph_xs.clear();
+        let content_w = (self.rect.width() - 2.0 * PAD_X).max(40.0);
+        let mut y = self.rect.y0 + PAD_Y - self.scroll_y;
+        let mut list_num = 1;
+
+        if self.is_empty() && !self.focused {
+            tr.draw_text(
+                scene,
+                "Write your message…",
+                FONT_SIZE,
+                c.text_dim,
+                t * Affine::translate((self.rect.x0 + PAD_X, self.rect.y0 + PAD_Y)),
+                None,
+            );
+        }
+
+        for (bi, b) in self.blocks.iter().enumerate() {
+            let (size, weight) = match b.kind {
+                BlockKind::Heading(1) => (20.0_f32, TextWeight::Bold),
+                BlockKind::Heading(2) => (17.0, TextWeight::Bold),
+                BlockKind::Heading(_) => (15.0, TextWeight::Semibold),
+                _ => (FONT_SIZE, TextWeight::Regular),
+            };
+            let line_h = (size as f64) * 1.25 + LINE_GAP;
+            let indent = match b.kind {
+                BlockKind::Bullet | BlockKind::Numbered => LIST_INDENT,
+                BlockKind::Quote => QUOTE_INDENT,
+                _ => 0.0,
+            };
+            let bx = self.rect.x0 + PAD_X + indent;
+
+            // Quote bar.
+            if matches!(b.kind, BlockKind::Quote) {
+                let bar = Rect::new(self.rect.x0 + PAD_X, y, self.rect.x0 + PAD_X + 3.0, y + line_h - LINE_GAP);
+                scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &bar);
+            }
+            // List marker.
+            if matches!(b.kind, BlockKind::Bullet) {
+                tr.draw_text(scene, "•", size, c.text_dim, t * Affine::translate((self.rect.x0 + PAD_X + 4.0, y)), None);
+            } else if matches!(b.kind, BlockKind::Numbered) {
+                tr.draw_text(scene, &format!("{list_num}."), size, c.text_dim, t * Affine::translate((self.rect.x0 + PAD_X, y)), None);
+                list_num += 1;
+            }
+            if !matches!(b.kind, BlockKind::Numbered) {
+                list_num = 1;
+            }
+
+            // Draw glyph runs (coalesced by style) and record glyph x-positions.
+            let mut xs = Vec::with_capacity(b.glyphs.len() + 1);
+            let mut x = bx;
+            xs.push(x);
+            let mut idx = 0;
+            while idx < b.glyphs.len() {
+                let g = &b.glyphs[idx];
+                let mut end = idx + 1;
+                while end < b.glyphs.len() && b.glyphs[end].style == g.style && b.glyphs[end].link == g.link {
+                    end += 1;
+                }
+                let run: String = b.glyphs[idx..end].iter().map(|x| x.ch).collect();
+                let col = if g.link.is_some() { c.accent[4] } else { c.text_primary };
+                let (rw, _) = tr.measure_weighted(&run, size, None, if g.style.bold { TextWeight::Bold } else { weight });
+                tr.draw_text_styled(
+                    scene,
+                    &run,
+                    size,
+                    col,
+                    t * Affine::translate((x, y)),
+                    None,
+                    if g.style.bold { TextWeight::Bold } else { weight },
+                    g.style.italic,
+                    false,
+                );
+                if g.style.underline || g.link.is_some() {
+                    let uy = y + size as f64 * 1.05;
+                    let ul = Rect::new(x, uy, x + rw as f64, uy + 1.2);
+                    scene.fill(vello::peniko::Fill::NonZero, t, col, None, &ul);
+                }
+                // Per-character xs (approximate by even division within run for
+                // caret hit precision; exact enough at body sizes).
+                let n = (end - idx) as f64;
+                for k in 1..=(end - idx) {
+                    xs.push(x + rw as f64 * (k as f64) / n);
+                }
+                x += rw as f64;
+                idx = end;
+            }
+
+            let brect = Rect::new(bx, y, self.rect.x0 + PAD_X + content_w, y + line_h - LINE_GAP);
+            // Caret.
+            if self.focused && self.caret.block == bi {
+                let cx = *xs.get(self.caret.glyph).unwrap_or(&bx);
+                let car = Rect::new(cx, y, cx + 1.6, y + size as f64 * 1.2);
+                scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &car);
+            }
+            // Selection highlight.
+            if let Some((sa, sb)) = self.ordered_selection() {
+                if bi >= sa.block && bi <= sb.block {
+                    let (s, e) = self.block_selection_bounds(bi, sa, sb);
+                    let x0 = *xs.get(s).unwrap_or(&bx);
+                    let x1 = *xs.get(e).unwrap_or(&x);
+                    if x1 > x0 {
+                        let sel = Rect::new(x0, y, x1, y + size as f64 * 1.2);
+                        scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5].with_alpha_factor(0.28), None, &sel);
+                    }
+                }
+            }
+            self.block_rects.push(brect);
+            self.glyph_xs.push(xs);
+            y += line_h + if matches!(b.kind, BlockKind::Heading(_)) { BLOCK_GAP } else { 2.0 };
+        }
+    }
+
+    /// Hit-test a click to a caret position and place it (extending selection
+    /// when `extend`).
+    fn place_caret_at(&mut self, pt: Point, extend: bool) {
+        if extend && self.anchor.is_none() {
+            self.anchor = Some(self.caret);
+        } else if !extend {
+            self.anchor = None;
+        }
+        // Find the block whose vertical band contains pt.y (clamp to nearest).
+        let mut best = 0usize;
+        let mut best_dy = f64::MAX;
+        for (i, r) in self.block_rects.iter().enumerate() {
+            let dy = if pt.y < r.y0 { r.y0 - pt.y } else if pt.y > r.y1 { pt.y - r.y1 } else { 0.0 };
+            if dy < best_dy {
+                best_dy = dy;
+                best = i;
+            }
+        }
+        let glyph = self
+            .glyph_xs
+            .get(best)
+            .map(|xs| {
+                let mut g = 0;
+                let mut bd = f64::MAX;
+                for (k, &gx) in xs.iter().enumerate() {
+                    let d = (gx - pt.x).abs();
+                    if d < bd {
+                        bd = d;
+                        g = k;
+                    }
+                }
+                g
+            })
+            .unwrap_or(0);
+        self.caret = Caret { block: best, glyph };
+        self.pending = Style::default();
+        self.dirty = true;
+    }
+
+    /// Forward a pointer-moved (for hover/drag-select). `pt` is logical coords.
+    pub fn on_cursor_moved(&mut self, pt: Point, dragging: bool) {
+        if dragging && self.focused {
+            self.place_caret_at(pt, true);
+        }
+    }
+
+    /// Handle a mouse press inside the editor. Returns true if consumed.
+    pub fn on_mouse_press(&mut self, pt: Point) -> bool {
+        if !self.rect.contains(pt) {
+            return false;
+        }
+        self.focused = true;
+        self.place_caret_at(pt, false);
+        true
+    }
+
+    /// Handle a key event while focused. Returns true if consumed.
+    pub fn on_key(&mut self, event: &WindowEvent, shift: bool, ctrl: bool) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: ElementState::Pressed, .. }, .. } = event else {
+            return false;
+        };
+        // Keyboard shortcuts for inline marks (Ctrl-B/I/U).
+        if ctrl {
+            if let Key::Character(ch) = logical_key {
+                match ch.to_ascii_lowercase().as_str() {
+                    "b" => { self.toggle_inline(InlineMark::Bold); return true; }
+                    "i" => { self.toggle_inline(InlineMark::Italic); return true; }
+                    "u" => { self.toggle_inline(InlineMark::Underline); return true; }
+                    "a" => { self.select_all(); return true; }
+                    _ => {}
+                }
+            }
+        }
+        match logical_key {
+            Key::Named(NamedKey::Backspace) => { self.backspace(); true }
+            Key::Named(NamedKey::Delete) => {
+                if self.ordered_selection().is_some() {
+                    self.delete_selection();
+                } else {
+                    self.move_caret(1, true);
+                    self.delete_selection();
+                }
+                true
+            }
+            Key::Named(NamedKey::Enter) => { self.split_block(); true }
+            Key::Named(NamedKey::Space) => { self.insert_char(' '); true }
+            Key::Named(NamedKey::ArrowLeft) => { self.move_caret(-1, shift); true }
+            Key::Named(NamedKey::ArrowRight) => { self.move_caret(1, shift); true }
+            Key::Named(NamedKey::Tab) => { false }
+            _ => {
+                if let Some(txt) = text {
+                    let s = txt.as_str();
+                    if !s.is_empty() && !s.chars().any(|ch| ch.is_control()) {
+                        for ch in s.chars() {
+                            self.insert_char(ch);
+                        }
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    fn select_all(&mut self) {
+        if self.blocks.is_empty() {
+            return;
+        }
+        self.anchor = Some(Caret { block: 0, glyph: 0 });
+        let last = self.blocks.len() - 1;
+        self.caret = Caret { block: last, glyph: self.blocks[last].glyphs.len() };
+        self.dirty = true;
+    }
+}
+
+/// Inline mark kinds the toolbar can toggle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineMark {
+    Bold,
+    Italic,
+    Underline,
+}
+
+fn escape_html(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => o.push_str("&amp;"),
+            '<' => o.push_str("&lt;"),
+            '>' => o.push_str("&gt;"),
+            _ => o.push(ch),
+        }
+    }
+    o
+}
+
+fn escape_attr(s: &str) -> String {
+    escape_html(s).replace('"', "&quot;")
+}
+
+// ---------------------------------------------------------------------------
+// PROMOTION NOTE
+// ---------------------------------------------------------------------------
+// This editor is built only on `TextRenderer::draw_text_styled` + a Vello
+// `Scene` + raw winit events, with no dependency on the Mail app. It fills a
+// real gap in `ui`: the toolkit's `BlockEditor` is Markdown-only, single-line
+// per block, and has no underline / block-quote / `href` link. Lifting this
+// module into `ui/src/widget/` (renamed e.g. `HtmlEditor`) would give every app
+// a reusable WYSIWYG HTML body editor. Promotion work: bind the document to a
+// CRDT object (mirror `BlockEditor::bind_blocks`) for collaborative editing,
+// and add full per-character x-metrics from `TextRenderer` for pixel-exact
+// caret hit-testing (this version approximates within a style run).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_round_trips_into_blocks() {
+        let ed = Wysiwyg::from_plain("First line\nSecond line");
+        assert_eq!(ed.blocks.len(), 2);
+        assert_eq!(ed.blocks[0].text(), "First line");
+    }
+
+    #[test]
+    fn typing_then_bold_serialises_to_html() {
+        let mut ed = Wysiwyg::new();
+        ed.set_focus(true);
+        for ch in "Hello".chars() {
+            ed.insert_char(ch);
+        }
+        // Select "Hello" and bold it.
+        ed.select_all();
+        ed.toggle_inline(InlineMark::Bold);
+        let html = ed.to_html();
+        assert!(html.contains("<b>Hello</b>"), "got: {html}");
+        assert!(html.starts_with("<p>"));
+    }
+
+    #[test]
+    fn heading_and_list_serialise() {
+        let mut ed = Wysiwyg::new();
+        ed.set_focus(true);
+        for ch in "Title".chars() {
+            ed.insert_char(ch);
+        }
+        ed.set_block_kind(BlockKind::Heading(1));
+        ed.split_block();
+        for ch in "Item".chars() {
+            ed.insert_char(ch);
+        }
+        ed.set_block_kind(BlockKind::Bullet);
+        let html = ed.to_html();
+        assert!(html.contains("<h1>Title</h1>"), "got: {html}");
+        assert!(html.contains("<ul><li>Item</li></ul>"), "got: {html}");
+    }
+
+    #[test]
+    fn adjacent_list_items_share_one_list() {
+        let mut ed = Wysiwyg::new();
+        ed.set_focus(true);
+        for ch in "One".chars() { ed.insert_char(ch); }
+        ed.set_block_kind(BlockKind::Bullet);
+        ed.split_block();
+        for ch in "Two".chars() { ed.insert_char(ch); }
+        // split_block continues the bullet list
+        let html = ed.to_html();
+        assert_eq!(html.matches("<ul>").count(), 1, "got: {html}");
+        assert_eq!(html.matches("<li>").count(), 2, "got: {html}");
+    }
+
+    #[test]
+    fn html_escapes_special_chars() {
+        let mut ed = Wysiwyg::new();
+        ed.set_focus(true);
+        for ch in "a < b & c".chars() {
+            ed.insert_char(ch);
+        }
+        let html = ed.to_html();
+        assert!(html.contains("a &lt; b &amp; c"), "got: {html}");
+    }
+
+    #[test]
+    fn plain_export_keeps_list_markers() {
+        let mut ed = Wysiwyg::new();
+        ed.set_focus(true);
+        for ch in "task".chars() { ed.insert_char(ch); }
+        ed.set_block_kind(BlockKind::Bullet);
+        assert_eq!(ed.to_plain(), "• task");
+    }
+
+    #[test]
+    fn link_wraps_selection_in_anchor() {
+        let mut ed = Wysiwyg::new();
+        ed.set_focus(true);
+        for ch in "site".chars() { ed.insert_char(ch); }
+        ed.select_all();
+        ed.set_link("https://qos.example");
+        let html = ed.to_html();
+        assert!(html.contains("<a href=\"https://qos.example\">"), "got: {html}");
+    }
+}
