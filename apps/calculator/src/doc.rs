@@ -21,6 +21,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{put_if_changed, put_text_diffed};
 
 use crate::model::{CalcModel, HistoryEntry, Mode, PlotFn, View2d, View3d};
 
@@ -69,76 +70,20 @@ pub fn is_seeded(doc: &AutoCommit) -> bool {
     doc.get(&ROOT, "mode").ok().flatten().is_some()
 }
 
-/// Rewrite a `Text` field, splicing **only the changed span**.
-///
-/// The naive "delete everything, reinsert everything" approach turns a single
-/// keystroke into O(len) text operations and — because Automerge keeps every
-/// inserted element as a tombstone forever — accumulates O(len²) ops over a
-/// typing session. That makes every subsequent `store` progressively slower
-/// until the app appears to freeze. Here we diff `cur` against `value` down to
-/// the common prefix + suffix and splice just the middle, so appending one
-/// character costs one op, not `len`.
-fn put_text(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
-    let tid = match doc.get(obj, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => id,
-        _ => doc
-            .put_object(obj, key, ObjType::Text)
-            .expect("put_object text"),
-    };
-    let cur = doc.text(&tid).unwrap_or_default();
-    if cur == value {
-        return;
-    }
-    let cur_chars: Vec<char> = cur.chars().collect();
-    let new_chars: Vec<char> = value.chars().collect();
-    // Longest common prefix.
-    let mut p = 0;
-    while p < cur_chars.len() && p < new_chars.len() && cur_chars[p] == new_chars[p] {
-        p += 1;
-    }
-    // Longest common suffix that doesn't overlap the prefix.
-    let mut s = 0;
-    while s < cur_chars.len() - p
-        && s < new_chars.len() - p
-        && cur_chars[cur_chars.len() - 1 - s] == new_chars[new_chars.len() - 1 - s]
-    {
-        s += 1;
-    }
-    let del = (cur_chars.len() - p - s) as isize;
-    let ins: String = new_chars[p..new_chars.len() - s].iter().collect();
-    let _ = doc.splice_text(&tid, p, del, &ins);
-}
-
 // -- change-guarded scalar writes ----------------------------------------
 //
 // The old `store` blindly re-`put` every field on every call, so a single
 // digit press (which only changes `expr`) still emitted ~20 ops and permanently
-// grew the document. These helpers emit an op only when the value actually
-// differs from what the document already holds, so a keystroke writes just the
-// one span that changed.
-
-fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, val: &str) {
-    if get_str(doc, obj, key).as_deref() != Some(val) {
-        let _ = doc.put(obj, key, val);
-    }
-}
-
-fn put_bool_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, val: bool) {
-    if get_bool(doc, obj, key) != Some(val) {
-        let _ = doc.put(obj, key, val);
-    }
-}
+// grew the document. The shared `ui::put_if_changed` emits an op only when the
+// value actually differs, and `ui::put_text_diffed` splices only the changed
+// span of a `Text` — so a keystroke writes just the one span that changed.
+// `f64` keeps a bit-exact guard here because `NaN != NaN` would defeat the
+// generic scalar guard (a `NaN` result would re-emit an op every frame).
 
 fn put_f64_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, val: f64) {
     // Bit-exact compare: the model is the author of truth, so only a genuine
     // change (not a re-store of the same value) should emit an op.
     if get_f64(doc, obj, key).map(f64::to_bits) != Some(val.to_bits()) {
-        let _ = doc.put(obj, key, val);
-    }
-}
-
-fn put_int_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, val: i64) {
-    if get_f64(doc, obj, key) != Some(val as f64) {
         let _ = doc.put(obj, key, val);
     }
 }
@@ -167,7 +112,7 @@ fn history_matches(doc: &AutoCommit, hist: &[HistoryEntry]) -> bool {
 /// Reconcile the document's `funcs` list against the model **in place**: grow /
 /// shrink the list to length, then update each row's fields with a
 /// change-guarded write. Each formula is a diff-spliced `Text` object (see
-/// [`put_text`]), so a per-character edit is a genuine CRDT op on a stable
+/// [`put_text_diffed`]), so a per-character edit is a genuine CRDT op on a stable
 /// object — collaborative editing / multi-cursor become possible and a keystroke
 /// no longer rewrites the whole list (the old wholesale delete+reinsert both
 /// broke character-level merge and churned the document each keystroke).
@@ -197,8 +142,8 @@ fn store_funcs(doc: &mut AutoCommit, funcs: &[PlotFn]) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
             _ => continue,
         };
-        put_text(doc, &row, "expr", &f.expr);
-        put_bool_if_changed(doc, &row, "visible", f.visible);
+        put_text_diffed(doc, &row, "expr", &f.expr);
+        put_if_changed(doc, &row, "visible", f.visible);
     }
 }
 
@@ -231,15 +176,15 @@ fn mode_from(s: &str) -> Mode {
 /// just `expr`) from re-writing the entire document every frame — the churn
 /// that made every subsequent `store` slower until the app froze.
 pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
-    put_str_if_changed(doc, &ROOT, "mode", mode_str(m.mode));
-    put_bool_if_changed(doc, &ROOT, "deg", m.deg);
-    put_text(doc, &ROOT, "expr", &m.expr);
+    put_if_changed(doc, &ROOT, "mode", mode_str(m.mode));
+    put_if_changed(doc, &ROOT, "deg", m.deg);
+    put_text_diffed(doc, &ROOT, "expr", &m.expr);
     put_f64_if_changed(doc, &ROOT, "ans", m.ans);
     put_f64_if_changed(doc, &ROOT, "memory", m.memory);
     // The surface formula is a diff-spliced Text (CRDT-backed, character-level
     // merge) just like the calculator `expr`, not a wholesale-rewritten string.
-    put_text(doc, &ROOT, "surface", m.surface.as_str());
-    put_int_if_changed(doc, &ROOT, "active", m.active_fn as i64);
+    put_text_diffed(doc, &ROOT, "surface", m.surface.as_str());
+    put_if_changed(doc, &ROOT, "active", m.active_fn as i64);
 
     // history / funcs: only rewrite when the list actually differs. Rewriting a
     // list wholesale on every keystroke (even unchanged) permanently grew the
