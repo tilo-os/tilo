@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# qos-relay standalone container image
+# ----------------------------------------------------------------------------
+# Ships the relay daemon + its systemd unit as a small OCI image
+# usable outside of the full bootc host mode. Two use cases:
+#
+#   1. Home users who want a relay container next to another home
+#      service (Nextcloud, Home Assistant, ...) on an existing
+#      Debian/Fedora/Podman-quadlet setup.
+#   2. Enterprise cloud tier: the relay image is the deployable
+#      unit; instances get provisioned per-tenant via k8s or a
+#      podman-quadlet fleet.
+#
+# Build from the repo root:
+#
+#     podman build -f os/containers/qos-relay/Containerfile \
+#         -t code.podesta.ai/qos/qos-relay:latest .
+#
+# Publish via the existing forgejo CI workflow — see
+# `.forgejo/workflows/qos-relay.yaml` (companion to the OS image job).
+# ============================================================================
+
+# ---- Stage 1: builder --------------------------------------------------------
+FROM quay.io/fedora/fedora-bootc:44 AS builder
+
+RUN dnf install -y \
+        rust cargo \
+        gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+        clang clang-devel pkgconf-pkg-config \
+        openssl-devel \
+    && dnf clean all
+
+WORKDIR /build
+COPY . /build
+
+# Build only qos-relay and its runtime deps — trims build time to
+# minutes rather than tens.
+RUN cargo build --release -p qos-relay --bins
+
+# ---- Stage 2: runtime --------------------------------------------------------
+FROM quay.io/fedora/fedora-minimal:44
+
+# Runtime deps: openssl for iroh's TLS side; ca-certificates for the
+# hosted iroh relay endpoints.
+RUN microdnf install -y ca-certificates && microdnf clean all
+
+COPY --from=builder /build/target/release/qos-relay /usr/bin/qos-relay
+COPY --from=builder /build/target/release/qos-relay-admin /usr/bin/qos-relay-admin
+COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
+
+# Where the daemon writes state + reads config. The container
+# operator mounts a volume here for persistence.
+VOLUME ["/var/lib/qos-relay", "/var/lib/qos", "/etc/qos"]
+
+# Iroh uses UDP + hole-punching, but for a public-relay deployment
+# a stable UDP port is nice to have. iroh's default bind is
+# ephemeral; the config file lets an operator pin a fixed port.
+EXPOSE 4433/udp
+
+# Default command: daemon. Operator can override with `admin`.
+ENTRYPOINT ["/usr/bin/qos-relay"]
+CMD ["--config", "/etc/qos/relay.toml", "run"]
