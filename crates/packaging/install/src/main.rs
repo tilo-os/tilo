@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
+use install::shim;
 use pkg::blobs::BlobStore;
 use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify};
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,11 @@ enum Cmd {
         /// Package id.
         pkg_id: String,
     },
+    /// Print the directory the shim installer writes PATH shims
+    /// into, plus a snippet the user can drop into their shell rc.
+    /// Prepend this to PATH to make `notes`, `notes-import`, etc.
+    /// resolve.
+    Path,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +120,8 @@ enum Error {
     Io(#[from] std::io::Error),
     #[error("unpack: {0}")]
     Unpack(String),
+    #[error("shim install/remove: {0}")]
+    Shim(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +142,11 @@ struct RegistryEntry {
     pinned: bool,
     /// Unix seconds of install.
     installed_at: u64,
+    /// PATH command names the package published shims for. Retained
+    /// on the entry so `remove` can un-write them without re-reading
+    /// the manifest. Empty when the package has no `[cli]` block.
+    #[serde(default)]
+    cli_commands: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -143,6 +156,11 @@ struct Registry {
 }
 
 fn data_root() -> Result<PathBuf, Error> {
+    // Honour QOS_APPS_DATA_DIR when set (integration tests, dev
+    // installs). Matches what qos-launcher::registry reads.
+    if let Some(dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
     let base = dirs::data_dir().ok_or(Error::NoDataDir)?;
     Ok(base.join("qos-apps"))
 }
@@ -153,6 +171,10 @@ fn registry_path() -> Result<PathBuf, Error> {
 
 fn payloads_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("payloads"))
+}
+
+fn bin_root() -> Result<PathBuf, Error> {
+    Ok(data_root()?.join("bin"))
 }
 
 fn load_registry() -> Result<Registry, Error> {
@@ -235,6 +257,44 @@ fn install(qpkg: &Path, pinned: bool, force: bool) -> Result<(), Error> {
     let installed_at = now();
     let package_id_hex = hex_of(pkg_id.as_bytes());
 
+    // If the manifest has a [cli] block, drop a shim into
+    // ~/.local/share/qos-apps/bin/ per declared command. The
+    // launcher override picks up an env var so integration
+    // tests can point the shim at a target/debug/qos-launcher.
+    let cli_commands: Vec<String> = manifest
+        .cli
+        .as_ref()
+        .map(|c| c.commands.clone())
+        .unwrap_or_default();
+    if !cli_commands.is_empty() {
+        let bin_dir = bin_root()?;
+        let shim_source = shim::locate_shim_source();
+        if !shim_source.exists() {
+            eprintln!(
+                "qos-install: WARNING — cannot find qos-cli-shim at {}. \
+                 Skipping shim install. Set QOS_CLI_SHIM_PATH or install the qOS runtime first.",
+                shim_source.display()
+            );
+        } else {
+            let launcher_override_owned = std::env::var_os("QOS_LAUNCHER_PATH")
+                .map(PathBuf::from);
+            let launcher_override = launcher_override_owned.as_deref();
+            let spec = shim::ShimInstall {
+                package_id: &id_field,
+                commands: &cli_commands,
+                shim_source: &shim_source,
+                bin_dir: &bin_dir,
+                launcher_override,
+            };
+            shim::write_shims(&spec).map_err(|e| Error::Shim(e.to_string()))?;
+            println!("  shims    : wrote {} shim(s) into {}", cli_commands.len(), bin_dir.display());
+            println!(
+                "  PATH     : prepend {} to your shell's PATH to pick them up (see `qos-install path`).",
+                bin_dir.display()
+            );
+        }
+    }
+
     reg.entry.push(RegistryEntry {
         id: id_field.clone(),
         version: version_field.clone(),
@@ -244,6 +304,7 @@ fn install(qpkg: &Path, pinned: bool, force: bool) -> Result<(), Error> {
         publisher_key_hex,
         pinned,
         installed_at,
+        cli_commands,
     });
     save_registry(&reg)?;
 
@@ -282,6 +343,14 @@ fn remove(pkg_id: &str) -> Result<(), Error> {
     if entry.payload_root.exists() {
         fs::remove_dir_all(&entry.payload_root)?;
     }
+    // Undo the PATH shims. Best-effort — a missing bin_dir means
+    // the shims weren't installed in the first place.
+    if !entry.cli_commands.is_empty() {
+        let bin_dir = bin_root()?;
+        shim::remove_shims(&bin_dir, &entry.cli_commands)
+            .map_err(|e| Error::Shim(e.to_string()))?;
+        println!("  removed {} PATH shim(s) from {}", entry.cli_commands.len(), bin_dir.display());
+    }
     save_registry(&reg)?;
     println!("removed: {pkg_id}");
     Ok(())
@@ -318,6 +387,21 @@ fn run(pkg_id: &str, no_services: bool, minimal_libs: bool, no_landlock: bool) -
     Err(Error::Io(err))
 }
 
+fn print_path() -> Result<(), Error> {
+    let bin_dir = bin_root()?;
+    println!("{}", bin_dir.display());
+    println!();
+    println!("# Prepend the above to your shell's PATH so CLI commands");
+    println!("# installed via `qos-install install <pkg.qpkg>` are picked up.");
+    println!("#");
+    println!("# bash / zsh (~/.bashrc, ~/.zshrc):");
+    println!("export PATH=\"{}:$PATH\"", bin_dir.display());
+    println!("#");
+    println!("# fish (~/.config/fish/config.fish):");
+    println!("fish_add_path -pg {}", bin_dir.display());
+    Ok(())
+}
+
 fn inspect(pkg_id: &str) -> Result<(), Error> {
     let reg = load_registry()?;
     let entry = reg
@@ -346,6 +430,7 @@ fn main() {
             run(&pkg_id, no_services, minimal_libs, no_landlock)
         }
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
+        Cmd::Path => print_path(),
     };
     if let Err(e) = result {
         eprintln!("qos-install: {e}");
