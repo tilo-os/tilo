@@ -71,6 +71,32 @@ pub enum NeighbourMsg {
         codec: String,
         /// Owner-side timestamp (monotonic nanoseconds).
         ts: u64,
+        /// Sender's monotonic-clock reading at the moment the message
+        /// left the encode task. Same origin as [`Self::SurfaceFrame::ts`]
+        /// on this session.
+        ///
+        /// The receiver captures its own `Instant::now()` when it
+        /// decodes the message and derives the sender↔receiver clock
+        /// offset:
+        /// `offset = receiver_now_ns - sender_monotonic_ns_at_send`.
+        /// It then translates every subsequent per-frame `ts` into the
+        /// receiver's clock domain via
+        /// [`crate::diagnostics::PeerSurfaceMetrics::end_to_end_latency_ns`],
+        /// yielding real motion-to-photon numbers even across hosts
+        /// whose monotonic origins are (arbitrarily) offset from each
+        /// other.
+        ///
+        /// `#[serde(default)]` so this field is wire-compatible with
+        /// pre-handshake peers: those emit `sender_monotonic_ns_at_send
+        /// = 0`, which
+        /// [`crate::diagnostics::PeerSurfaceMetrics::set_clock_offset`]
+        /// treats as "skip cross-host latency measurements" rather than
+        /// stamping a bogus offset. The rest of the pipeline degrades
+        /// gracefully — the OSD shows "—" for cross-host latency and
+        /// same-host / loopback measurements (which are trivially at
+        /// offset zero) still work.
+        #[serde(default)]
+        sender_monotonic_ns_at_send: u64,
     },
     /// Explicit end-of-stream — the owner tore down the share, or the
     /// captured surface unmapped.
@@ -265,7 +291,30 @@ mod tests {
             height: 720,
             codec: "h264".to_string(),
             ts: 1_700_000_002,
+            sender_monotonic_ns_at_send: 1_700_000_002,
         });
+    }
+
+    #[test]
+    fn surface_stream_start_backfill_when_field_missing() {
+        // Older peer emits the JSON without `sender_monotonic_ns_at_send`;
+        // the `#[serde(default)]` marker must backfill it as 0 so the
+        // receiver's `set_clock_offset(0, _)` path fires (which the
+        // diagnostics layer treats as "skip cross-host latency").
+        let legacy = r#"{"SurfaceStreamStart":{"surface":9,"source_peer":123,"width":320,"height":240,"codec":"h264","ts":1234567}}"#;
+        let parsed: NeighbourMsg = serde_json::from_str(legacy).expect("legacy parses");
+        match parsed {
+            NeighbourMsg::SurfaceStreamStart {
+                sender_monotonic_ns_at_send,
+                ..
+            } => {
+                assert_eq!(
+                    sender_monotonic_ns_at_send, 0,
+                    "missing field must serde-default to 0 for legacy peer compat"
+                );
+            }
+            other => panic!("expected SurfaceStreamStart, got {other:?}"),
+        }
     }
 
     #[test]
@@ -288,6 +337,7 @@ mod tests {
             height: 1080,
             codec: "h264".to_string(),
             ts: 1_700_000_004,
+            sender_monotonic_ns_at_send: 1_700_000_004,
         };
         let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
         let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
