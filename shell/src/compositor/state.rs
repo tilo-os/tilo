@@ -35,9 +35,15 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::utils::Serial;
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::{Buffer, Format, Modifier};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
+};
+use smithay::wayland::dmabuf::{
+    DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::shell::xdg::{
@@ -47,7 +53,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
-    delegate_compositor, delegate_output, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_dmabuf, delegate_output, delegate_seat, delegate_shm,
     delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
@@ -84,6 +90,24 @@ pub struct State {
     /// `wl_shm` global state — software buffer support. Empty extra-format
     /// list for now; `wl_shm` always advertises ARGB8888 + XRGB8888.
     pub shm_state: ShmState,
+    /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
+    /// GPU-allocated (usually GBM) buffers to their surfaces. When
+    /// present, the encoder path can `av_hwframe_map` a shared
+    /// surface's committed buffer straight into a VA-API surface with
+    /// zero CPU-side copy.
+    ///
+    /// The advertised format list is the intersection of "what the
+    /// compositor's wgpu/vello backend will accept for sampling" and
+    /// "what a hardware H.264 encoder can consume as
+    /// `AV_PIX_FMT_DRM_PRIME`". BGRA/XRGB8888 covers the common
+    /// client-side render output; NV12 matches VA-API's native encode
+    /// input; P010 is retained for eventual HDR paths but currently
+    /// falls back to SHM at the encoder side.
+    pub dmabuf_state: DmabufState,
+    /// The advertised `zwp_linux_dmabuf_v1` global handle. Held for
+    /// the process lifetime — dropping it would revoke the global
+    /// from clients that already bound it.
+    pub dmabuf_global: DmabufGlobal,
     /// `wl_seat` collection. Phase 2 doesn't add a seat yet; phase 4 will.
     pub seat_state: SeatState<Self>,
     /// `wl_output` + xdg-output manager. Phase 2 advertises the manager
@@ -190,6 +214,42 @@ impl State {
         let output_manager_state =
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
+        // Advertise a small, deliberately safe DMABUF format set — the
+        // intersection of "the compositor can render / sample this"
+        // and "a downstream H.264 encoder can consume it directly".
+        // Every format is offered under LINEAR only (implicit modifier
+        // negotiation would require an EGL-side format probe we don't
+        // do here). Vendor-specific tiling / DCC modifiers are a
+        // follow-up once the wgpu backend exposes the driver's
+        // modifier list.
+        //
+        // Format rationale:
+        // - BGRA/XRGB8888: client-side RGBA output (most GPU-rendered
+        //   toplevels).
+        // - NV12: VA-API's native H.264 encode input; a GPU that
+        //   composites into NV12 skips the RGBA→NV12 swscale on the
+        //   encoder side.
+        // - P010: 10-bit HDR; kept in the advertisement so a future
+        //   HDR client can attach one, even though the VA-API path
+        //   currently falls back to SHM for P010.
+        let dmabuf_formats: Vec<Format> = [
+            Fourcc::Argb8888,
+            Fourcc::Xrgb8888,
+            Fourcc::Abgr8888,
+            Fourcc::Xbgr8888,
+            Fourcc::Nv12,
+            Fourcc::P010,
+        ]
+        .into_iter()
+        .map(|code| Format {
+            code,
+            modifier: Modifier::Linear,
+        })
+        .collect();
+        let mut dmabuf_state = DmabufState::new();
+        let dmabuf_global =
+            dmabuf_state.create_global::<Self>(&display_handle, dmabuf_formats);
+
         // D-1 fix: register a real seat with a pointer device so
         // `apply_remote_input` has something to inject into. The seat
         // name matches the wayland.rs sibling so multi-binary apps see
@@ -218,6 +278,8 @@ impl State {
             compositor_state,
             xdg_shell_state,
             shm_state,
+            dmabuf_state,
+            dmabuf_global,
             seat_state,
             output_manager_state,
             workspace_tree: WorkspaceTree::bootstrap_default(),
@@ -269,6 +331,28 @@ impl State {
         let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
             return false;
         };
+        // DMABUF-direct path takes priority when the compositor's
+        // commit hook stashed a Dmabuf on this tick — `take_latest_dmabuf`
+        // drains it so a re-tick without a fresh commit finds no
+        // stale entry. Failing over to SHM if no DMABUF is present
+        // covers the mixed-mode case (a client that briefly attaches
+        // a SHM buffer between DMABUF commits).
+        if let Some(dmabuf) = self.surface_tracker.take_latest_dmabuf(surface_id) {
+            session.deposit_captured_dmabuf(dmabuf);
+            let emitted = session.encode_next_frame(std::time::Instant::now());
+            if emitted.is_some() {
+                // Encoder actually consumed the DMABUF. Only *now* do
+                // we bump the tracker's `dmabuf_direct_count` — the
+                // metric reflects real zero-copy, not "the buffer was
+                // DMABUF-shaped but the encoder rejected it and we
+                // fell back to SHM on the following commit".
+                self.surface_tracker.note_capture_path(
+                    surface_id,
+                    crate::compositor::surface_readback::CapturePath::DmabufDirect,
+                );
+            }
+            return true;
+        }
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
@@ -558,33 +642,39 @@ impl CompositorHandler for State {
                     match result {
                         Ok(_) => {}
                         Err(crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported) => {
-                            // The zero-copy DMABUF-direct path is
-                            // recorded via `note_capture_path` above,
-                            // but the fd/fourcc/plane-stride tuple
-                            // isn't yet extracted into the tracker.
+                            // The tentative path is `DmabufDirect`.
+                            // Pull the Dmabuf off the wl_buffer via
+                            // smithay's dmabuf-role lookup and stash
+                            // it on the tracker — `tick_share_session_for_surface`
+                            // will drain it via
+                            // `take_latest_dmabuf` on the same tick.
                             //
-                            // TODO(dmabuf-direct-fd-extract): pull the
-                            // Dmabuf handle off `buffer` via
-                            // `smithay::wayland::dmabuf::get_dmabuf`,
-                            // stash the fd + planes on the tracker
-                            // slot, and expose them via
-                            // `SurfaceTracker::take_latest_dmabuf` so
-                            // `SharedFlatpakSession::deposit_captured_dmabuf`
-                            // can build a `FrameInput::DmabufFd` and
-                            // hand it straight to the VA-API backend's
-                            // `av_hwframe_map` import.  Blocked on
-                            // wiring `DmabufState` + `DmabufHandler`
-                            // into the compositor state — until then
-                            // clients that attach a dmabuf stall on
-                            // the encode side (the readback path
-                            // rejects them and the tracker slot stays
-                            // empty).
-                            tracing::debug!(
-                                target: "shell::compositor::state",
-                                surface_id,
-                                path = ?path,
-                                "dmabuf buffer detected; direct-import fd extraction pending"
-                            );
+                            // If `get_dmabuf` fails despite the
+                            // detection saying "not shm" (a client
+                            // that attached an unrecognised buffer
+                            // type — e.g. `wl_drm` from an obsolete
+                            // MIT-shm-less path), the tracker slot
+                            // stays empty for this tick; the frame
+                            // is dropped and no counter is bumped
+                            // (which is the correct behaviour for
+                            // "we don't know how to handle this
+                            // buffer at all").
+                            match smithay::wayland::dmabuf::get_dmabuf(buffer) {
+                                Ok(dmabuf) => {
+                                    self.surface_tracker.note_dmabuf_committed(
+                                        surface_id,
+                                        dmabuf.clone(),
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::warn!(
+                                        target: "shell::compositor::state",
+                                        surface_id,
+                                        path = ?path,
+                                        "buffer is neither shm nor dmabuf (unknown role); dropping frame"
+                                    );
+                                }
+                            }
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -625,6 +715,48 @@ impl BufferHandler for State {
         &mut self,
         _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
     ) {
+    }
+}
+
+impl DmabufHandler for State {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        // Phase 4 v3: accept every advertised DMABUF import.
+        //
+        // Smithay's `DmabufHandler` is the "does your renderer accept
+        // this DMABUF?" gate — the compositor is free to refuse a
+        // format the wgpu/vello backend can't sample. In practice the
+        // advertised format list is the same list we'd accept, and
+        // the eventual failure surface for a bad buffer is the render
+        // pass itself (which drops the frame with a warn). So we
+        // accept unconditionally; `notifier.successful()` registers
+        // the Dmabuf as the buffer's user-data so the compositor's
+        // commit hook can later pull it back via
+        // [`smithay::wayland::dmabuf::get_dmabuf`].
+        //
+        // We don't stash the Dmabuf here because we don't yet know
+        // which surface it will land on — a client can import
+        // DMABUFs eagerly and attach them to different surfaces
+        // later. The tracker's per-surface cache is populated at
+        // commit-time via `SurfaceTracker::note_dmabuf_committed`
+        // when the compositor's commit hook sees the buffer attached
+        // to a shared surface.
+        let _ = notifier.successful::<Self>();
+        tracing::debug!(
+            target: "shell::compositor::state",
+            width = dmabuf.width(),
+            height = dmabuf.height(),
+            fourcc = ?dmabuf.format().code,
+            "dmabuf imported and accepted"
+        );
     }
 }
 
@@ -749,6 +881,7 @@ impl OutputHandler for State {}
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
 delegate_shm!(State);
+delegate_dmabuf!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_output!(State);
