@@ -95,6 +95,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && cp os/Cargo.lock.pinned Cargo.lock \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
+        -p runtime-bundle -p launcher \
     && mkdir -p /out \
     && cp target/release/shell \
           target/release/fs \
@@ -102,8 +103,38 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/file-explorer \
           target/release/qos-greeter \
           target/release/qos-installer \
+          target/release/qos-runtime-bundle \
+          target/release/qos-launcher \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
+
+# ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
+# Runs at image-build time so the produced OS image ships a pre-mounted
+# /usr/lib/qos-runtime/<RUNTIME_VERSION>/ that the launcher can find
+# without a post-boot `qos-install runtime install`.
+#
+# The signing key is generated fresh per build. Its pubkey is baked into
+# /usr/share/qos/runtime-bundle-trusted-publishers.txt so the launcher's
+# signature-verify step accepts this bake. The private key is discarded
+# once the bundle is signed — this is fine for a build-time attestation
+# (nothing else ever needs to sign as this identity again).
+ARG RUNTIME_VERSION=1
+ENV RUNTIME_VERSION=${RUNTIME_VERSION}
+RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+    && ARCH="$(uname -m)" \
+    && /out/qos-runtime-bundle build \
+        --version "${RUNTIME_VERSION}" \
+        --arch "${ARCH}" \
+        --from / \
+        --identity /out/runtime-bundle-identity.json \
+        --out "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
+    && /out/qos-runtime-bundle key pubkey \
+        --identity /out/runtime-bundle-identity.json \
+        > /out/runtime-bundle-publisher.hex \
+    && /out/qos-runtime-bundle verify \
+        "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
+        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+    && rm -f /out/runtime-bundle-identity.json
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
@@ -219,8 +250,35 @@ COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
 # Graphical installer. Primarily consumed by the layered installer image
 # (Containerfile.installer); bundled here so it no longer needs a host build.
 COPY --from=builder /out/qos-installer /usr/bin/qos-installer
+# App launcher + runtime-bundle CLI. `qos-launcher` is what actually
+# execs installed / declared packages inside their bwrap sandbox;
+# `qos-runtime-bundle` is the CLI over the same crate that produced
+# the baked bundle at image-build time — shipping it lets operators
+# `verify` or extend the bundle from a running system.
+COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
+COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
-              /usr/bin/file-explorer /usr/bin/qos-greeter /usr/bin/qos-installer
+              /usr/bin/file-explorer /usr/bin/qos-greeter /usr/bin/qos-installer \
+              /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle
+
+# ---- Baked signed runtime bundle -------------------------------------------
+# The builder stage produced a signed content-addressed bundle from THIS
+# image's own rootfs at /out/qos-runtime-bundle-tree/${RUNTIME_VERSION}
+# and wrote its publisher pubkey to /out/runtime-bundle-publisher.hex.
+# Install both here so:
+#   * The launcher's `/usr/lib/qos-runtime/<v>/` lookup succeeds out
+#     of the box — no `qos-install runtime install --from-host` needed
+#     after first boot.
+#   * The signature check the launcher performs before every mount
+#     accepts this bake (the pubkey is the trust root).
+COPY --from=builder /out/qos-runtime-bundle-tree/ /usr/lib/qos-runtime/
+COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/qos/runtime-bundle-publisher.hex
+# Trust list read by the launcher — one hex pubkey per line, `#` for
+# comments. The baked publisher is the only entry by default; operators
+# can extend it via `echo <hex> >> /etc/qos/runtime-bundle-trusted-publishers.txt`.
+RUN mkdir -p /etc/qos \
+    && cat /usr/share/qos/runtime-bundle-publisher.hex \
+        > /etc/qos/runtime-bundle-trusted-publishers.txt
 
 # FUSE mount service
 COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
