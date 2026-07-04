@@ -317,14 +317,27 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let _collab_broker: Option<crate::shell::collab_broker::BrokerHandle> =
         if let Some(path) = std::env::var_os("QUICK_COLLAB_SOCK") {
             let socket_path = std::path::PathBuf::from(path);
-            match crate::shell::collab_broker::spawn_with_peer_sync(
+            // Optional native Cap'n Proto socket alongside the legacy
+            // JSON one. When bound, apps using the `runtime-collab`
+            // SDK connect directly to the shell without needing the
+            // `collab-bridge` translator. Both transports share
+            // fanout: an event delivered on one lands on subscribers
+            // of the other.
+            let capnp_socket_path = std::env::var_os("QUICK_COLLAB_CAPNP_SOCK")
+                .map(std::path::PathBuf::from);
+            match crate::shell::collab_broker::spawn_full(
                 socket_path.clone(),
+                capnp_socket_path.clone(),
                 peer_sync.clone(),
             ) {
                 Ok(handle) => {
                     tracing::info!(
-                        "collab_broker: bound {} for local CRDT fan-out (peer_sync={})",
+                        "collab_broker: bound {} (json) + {} (capnp) — peer_sync={}",
                         socket_path.display(),
+                        capnp_socket_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "<none>".to_string()),
                         peer_sync.is_some()
                     );
                     Some(handle)
