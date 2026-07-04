@@ -63,11 +63,18 @@ hex = "0.4"
 # transitive dep via frost-ed25519).
 sha2 = "0.10"
 
+# `ed25519-dalek` is used for the on-disk-format single-device
+# bootstrap helper (`bootstrap_single_device_seed`). The frost
+# single-device SigningKey stores a scalar, not the seed
+# `ed25519-dalek` expands via SHA-512 to reach the same scalar —
+# so if you round-trip through the on-disk JSON schema that
+# `runtime-identity` (which is dalek-based) reads, the two derive
+# different signing scalars and produced sigs stop verifying. The
+# helper below generates a real dalek seed + derives the matching
+# verifying key so the JSON record round-trips cleanly.
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+
 [dev-dependencies]
-# Used in the interop test to confirm that a threshold-produced
-# signature on canonical bytes is accepted by standard Ed25519
-# verification via `qos_collab_types::verify_event`.
-ed25519-dalek = { version = "2", features = ["serde"] }
 # Same dep that qos-collab-types uses for ArtifactId / ChannelId /
 # SpaceId UUIDs; we mint a few in the SignedOp interop test.
 uuid = { version = "1", features = ["v4", "serde"] }

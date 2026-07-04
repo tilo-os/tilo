@@ -151,6 +151,36 @@ impl ThresholdIdentity {
         matches!(self.inner, InnerKey::SingleDevice(_))
     }
 
+    /// First-device bootstrap: 1-of-1 mode, dalek-seed variant.
+    ///
+    /// Returns a fresh Ed25519 keypair as `(seed_bytes,
+    /// group_public_key)` — where `seed_bytes` is the 32-byte
+    /// input to `ed25519_dalek::SigningKey::from_bytes` and
+    /// `group_public_key` is the derived verifying key.
+    ///
+    /// This is the code path the on-disk identity record used by
+    /// `runtime-identity` requires. The frost variant of
+    /// `bootstrap_single_device` stores a signing SCALAR — but the
+    /// on-disk JSON schema's `secret_bytes` field is loaded via
+    /// `ed25519_dalek::SigningKey::from_bytes`, which expands its
+    /// input as a SEED via SHA-512 to reach the scalar. Round-
+    /// tripping the frost scalar through that path derives a
+    /// different key and produced signatures stop verifying — see
+    /// the "soft mismatch" note in `runtime-identity`.
+    ///
+    /// Callers persisting a single-device identity to disk (the
+    /// compositor's first-boot hook) should use this helper; the
+    /// frost variant remains the right choice for in-process
+    /// signing without a disk round-trip.
+    pub fn bootstrap_single_device_seed<R: CryptoRng + RngCore>(
+        rng: &mut R,
+    ) -> ([u8; 32], Ed25519PublicKey) {
+        let sk = ed25519_dalek::SigningKey::generate(rng);
+        let seed = *sk.as_bytes();
+        let pk = sk.verifying_key().to_bytes();
+        (seed, Ed25519PublicKey::from_bytes(pk))
+    }
+
     /// First-device bootstrap: 1-of-1 mode.
     ///
     /// Generates a fresh Ed25519 keypair, stores the secret as a
