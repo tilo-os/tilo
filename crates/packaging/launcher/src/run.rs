@@ -45,6 +45,16 @@ pub enum RunError {
     },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
+    #[error(
+        "runtime bundle at {path} is unsigned — refuse to launch. Pass \
+         --allow-unsigned-runtime for bring-up / debugging."
+    )]
+    RuntimeBundleUnsigned { path: PathBuf },
+    #[error(
+        "runtime bundle at {path} failed signature check: {reason}. Rebuild the \
+         bundle with a trusted publisher or pass --allow-unsigned-runtime."
+    )]
+    RuntimeBundleSignature { path: PathBuf, reason: String },
 }
 
 impl RunError {
@@ -107,6 +117,16 @@ pub struct RunOptions {
     /// of aborting. Escape hatch for debugging / bring-up; default:
     /// off.
     pub allow_missing_runtime: bool,
+    /// Accept an unsigned runtime bundle. Default: refuse. This is a
+    /// bring-up / debug escape hatch — signed bundles are what the
+    /// OS image ships (see `os/scripts/bake-runtime-bundle.sh`), so
+    /// production launches never need it.
+    pub allow_unsigned_runtime: bool,
+    /// If set, require the bundle's `publisher_hex` to equal this
+    /// (Ed25519 pubkey, hex). Left empty in typical launches; used
+    /// by policy-strict callers and by tests. The launcher's trust
+    /// config (a follow-up) will pin this by default.
+    pub require_runtime_publisher: Option<String>,
 }
 
 /// Resolve which runtime bundle to mount, if any.
@@ -137,12 +157,16 @@ pub fn resolve_runtime(
     manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
 ) -> Result<Option<(PathBuf, String)>, RunError> {
-    // 1. Explicit override wins.
+    // 1. Explicit override wins. Verify signature policy against the
+    //    caller-supplied path just like the manifest path — an operator
+    //    passing --runtime <path> to a debug launch is still subject to
+    //    the same "signed unless opted out" rule.
     if let Some(explicit) = &opts.runtime_root {
         let version = manifest
             .runtime_ref()
             .map(|(_, v)| v.to_string())
             .unwrap_or_else(|| "1".to_string());
+        enforce_bundle_policy(explicit, opts)?;
         return Ok(Some((explicit.clone(), version)));
     }
     // 2. Manifest declaration.
@@ -158,6 +182,7 @@ pub fn resolve_runtime(
     let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            enforce_bundle_policy(cand, opts)?;
             return Ok(Some((cand.clone(), version.to_string())));
         }
     }
@@ -173,6 +198,100 @@ pub fn resolve_runtime(
         runtime: raw.to_string(),
         paths: candidates,
     })
+}
+
+/// Verify the bundle at `path` against the run-time signature policy.
+/// Unless `allow_unsigned_runtime` is set, a bundle must be signed.
+///
+/// Publisher policy is:
+///   1. If `opts.require_runtime_publisher` is set, the bundle's
+///      publisher must equal that (case-insensitive hex).
+///   2. Else, if the system trust-list file
+///      (`/etc/qos/runtime-bundle-trusted-publishers.txt` — or the
+///      `QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE` override) exists and
+///      is non-empty, the publisher must be listed in it.
+///   3. Else, any signed publisher is accepted (the pre-trust-file
+///      default the runtime-bundle crate ships).
+///
+/// This layered check is what lets the OS image bake a fresh key at
+/// build time and pin it into the trust list, without every launcher
+/// caller having to plumb the pubkey through as a flag.
+fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError> {
+    let require_publisher = match opts.require_runtime_publisher.clone() {
+        Some(explicit) => Some(explicit),
+        None => trusted_publisher_pin_from_file(),
+    };
+    let verify_opts = runtime_bundle::VerifyOptions {
+        require_publisher,
+        require_signature: !opts.allow_unsigned_runtime,
+        require_arch: None,
+    };
+    match runtime_bundle::verify_bundle_with(path, &verify_opts) {
+        Ok(manifest) => {
+            // Multi-publisher trust list: if the file names more than
+            // one key, `require_publisher` above was `None` (since we
+            // could only pin one). Do the check by hand here.
+            if let Some(list) = load_trusted_publisher_list() {
+                if !list.is_empty() {
+                    let ok = manifest
+                        .publisher_hex
+                        .as_deref()
+                        .map(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)))
+                        .unwrap_or(false);
+                    if !ok {
+                        return Err(RunError::RuntimeBundleSignature {
+                            path: path.to_path_buf(),
+                            reason: format!(
+                                "publisher {:?} not in trust list",
+                                manifest.publisher_hex.as_deref().unwrap_or("<none>"),
+                            ),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+        Err(runtime_bundle::BundleError::NotSigned) => {
+            Err(RunError::RuntimeBundleUnsigned { path: path.to_path_buf() })
+        }
+        Err(e) => Err(RunError::RuntimeBundleSignature {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        }),
+    }
+}
+
+/// If the trust list contains exactly one entry, that's the pin we
+/// hand to `runtime_bundle::verify_bundle_with` — the crate's
+/// `require_publisher` field takes a single hex string. Multi-entry
+/// lists are handled in a second pass after verify returns.
+fn trusted_publisher_pin_from_file() -> Option<String> {
+    let list = load_trusted_publisher_list()?;
+    if list.len() == 1 {
+        Some(list.into_iter().next().unwrap())
+    } else {
+        None
+    }
+}
+
+/// Read the trusted-publisher list from disk. Ignores blank + `#`
+/// lines. Returns `None` when neither the env override nor the
+/// default file exists (so \"no policy\" is distinct from \"empty
+/// list\").
+fn load_trusted_publisher_list() -> Option<Vec<String>> {
+    let path: PathBuf = match std::env::var_os("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE") {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from("/etc/qos/runtime-bundle-trusted-publishers.txt"),
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let list: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect();
+    Some(list)
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.
