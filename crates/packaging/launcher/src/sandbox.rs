@@ -48,6 +48,27 @@ pub fn build_bwrap_argv(
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
 ) -> Vec<String> {
+    // GUI launch: pick the GUI-flavour bin. Falls back to the
+    // legacy top-level `bin` when neither split is set (i.e. old
+    // manifest with `type` unset).
+    let entry = manifest
+        .entrypoint
+        .gui_bin()
+        .unwrap_or(&manifest.entrypoint.bin);
+    build_bwrap_argv_for_entry(manifest, payload_root, runtime, service_binds, entry)
+}
+
+/// `build_bwrap_argv` variant that lets the caller pick which of
+/// the manifest's binaries to exec. Used by the `run-installed`
+/// subcommand to launch the CLI-flavour entrypoint instead of the
+/// GUI one.
+pub fn build_bwrap_argv_for_entry(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    runtime: Option<(&Path, &str)>,
+    service_binds: &[ServiceBind],
+    entry_bin: &str,
+) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
 
     // Namespace + lifetime defaults.
@@ -65,6 +86,13 @@ pub fn build_bwrap_argv(
         payload_root,
         &payload_mount,
     );
+
+    // Tell the SDK who we are. Apps use QOS_PACKAGE_ID to pick a
+    // per-app fallback state dir in standalone mode; the launcher
+    // is the only source of truth for it.
+    argv.push("--setenv".to_string());
+    argv.push("QOS_PACKAGE_ID".to_string());
+    argv.push(manifest.package_id.clone());
 
     // Runtime bind: host runtime_root -> /usr/lib/qos-runtime/<version>/
     // and set LD_LIBRARY_PATH inside the sandbox so the entrypoint can
@@ -133,7 +161,7 @@ pub fn build_bwrap_argv(
     }
 
     // The entrypoint command, joined onto the in-sandbox payload mount.
-    let entry_abs = payload_mount.join(&manifest.entrypoint.bin);
+    let entry_abs = payload_mount.join(entry_bin);
     argv.push(entry_abs.display().to_string());
 
     argv
@@ -216,6 +244,9 @@ mod tests {
             version: "0.1.0".to_string(),
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
+                r#type: crate::manifest::EntrypointType::Gui,
+                gui_bin: None,
+                cli_bin: None,
             },
             sandbox: crate::manifest::Sandbox {
                 net: crate::manifest::Net {
@@ -228,6 +259,7 @@ mod tests {
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
             },
+            cli_commands: Vec::new(),
         }
     }
 
@@ -406,6 +438,23 @@ mod tests {
             "bus must stay out when every portal is Deny: {argv:?}"
         );
         unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
+    }
+
+    #[test]
+    fn build_bwrap_argv_for_entry_uses_provided_bin() {
+        let m = mk_manifest("off");
+        let argv = build_bwrap_argv_for_entry(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            "bin/notes-cli",
+        );
+        // The last argv token is the entrypoint absolute path.
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/var/qos-apps/com.example.notes/bin/notes-cli")
+        );
     }
 
     #[test]
