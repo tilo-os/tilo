@@ -1,0 +1,81 @@
+name: app-model-e2e
+
+# End-to-end verification that the app-model tooling still installs
+# and runs a qOS-native app from source: build the packaging binaries,
+# run `crates/packaging/hello/demo.sh`, then assert the hello probes
+# actually came out the far side of the sandbox.
+
+on:
+  push:
+    paths:
+      - "crates/packaging/**"
+      - "crates/runtime/**"
+      - "apps/notes/**"
+      - "apps/hello/**"
+      - ".forgejo/workflows/app-model-e2e.yaml"
+  pull_request:
+    paths:
+      - "crates/packaging/**"
+      - "crates/runtime/**"
+      - "apps/notes/**"
+      - "apps/hello/**"
+      - ".forgejo/workflows/app-model-e2e.yaml"
+  workflow_dispatch:
+
+jobs:
+  build-pack-install-run:
+    runs-on: runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build packaging binaries (release, in distrobox)
+        run: |
+          distrobox enter my-distrobox -- bash -c \
+            'cargo build -p pkg-cli -p launcher -p install -p hello -p runtime-bundle --release'
+
+      - name: Run hello demo (pack + install + sandboxed run)
+        id: demo
+        run: |
+          set -o pipefail
+          # Capture full demo output (stdout+stderr) so the assertion
+          # step can grep it after the fact. Failing here aborts the
+          # workflow with the raw log intact.
+          bash crates/packaging/hello/demo.sh 2>&1 | tee demo.log
+
+      - name: Assert probe lines are in the hello output
+        # Explicit assertions on the strings the app-model UX contract
+        # promises. Any of these regressing means the sandbox / graceful-
+        # degradation surface silently broke, which the build step alone
+        # would not catch.
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            local label="$1" pattern="$2"
+            if grep -Pzq -- "$pattern" demo.log; then
+              printf '  ok   %s\n' "$label"
+            else
+              printf '  FAIL %s (pattern: %s)\n' "$label" "$pattern" >&2
+              fail=1
+            fi
+          }
+          # Multi-line regex (-Pz treats the file as one string).
+          check "hello banner"        '(?s)qos-hello: a qOS-native app, running\.'
+          check "landlock enforced"   '(?s)landlock: (partially|fully) enforced'
+          check "services/collab"     '(?s)services[^\n]*\n[^\n]*collab[^\n]*unavailable'
+          check "xdg portal probes"   '(?s)xdg portal probes'
+          if [ "$fail" -ne 0 ]; then
+            echo "one or more app-model probe assertions failed — see demo.log above" >&2
+            exit 1
+          fi
+
+      - name: Upload demo log on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: app-model-e2e-demo-log
+          path: demo.log
+          if-no-files-found: warn
