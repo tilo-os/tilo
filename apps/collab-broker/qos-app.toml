@@ -1,0 +1,74 @@
+# Package manifest for `collab-broker` as a qOS app.
+#
+# Pack and install with:
+#
+#     cargo build -p collab-broker -p pkg-cli -p install --release
+#     mkdir -p target/collab-broker-payload/bin
+#     cp target/release/collab-broker target/collab-broker-payload/bin/collab-broker
+#     target/release/qos-pkg pack \
+#         --manifest apps/collab-broker/qos-app.toml \
+#         --payload  target/collab-broker-payload \
+#         --output   target/collab-broker.qpkg
+#     target/release/qos-install install target/collab-broker.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.collab-broker
+#
+# collab-broker is a headless server, not a GUI. It binds a Unix
+# socket under $XDG_RUNTIME_DIR (or a caller-supplied path) and
+# fans out `ui::collaboration::CollabEvent` frames between the
+# apps that connect to it. No GPU / font surface is needed.
+
+[package]
+id      = "dev.qos.collab-broker"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "/usr/lib64",
+    "/usr/lib",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/sys",
+]
+write = [
+    "$XDG_RUNTIME_DIR",
+    "~/.local/share/dev.qos.collab-broker",
+    "/tmp",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/collab-broker"
+splash-segments = ["bin/collab-broker[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
