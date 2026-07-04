@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime};
 
 use ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
 use ui::{App, State};
-use qos_collab_types::ChannelId;
+use collab_types::ChannelId;
 
 fn ch(
     name: &str,

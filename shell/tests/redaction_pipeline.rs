@@ -43,7 +43,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use ed25519_dalek::SigningKey;
-use qos_collab_types::{
+use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest,
     RedactedMarker, Role, RoleAttestation, Signature, SignedOp, ValidationError,

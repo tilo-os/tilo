@@ -19,7 +19,7 @@
 
 use std::time::SystemTime;
 
-use qos_collab_types::{ArtifactKind, OpClass};
+use collab_types::{ArtifactKind, OpClass};
 
 /// Stable opaque identifier for one entry in an artifact's history.
 ///
@@ -102,7 +102,7 @@ pub struct RedactionDisplay {
     pub redactor_label: String,
     /// Free-text reason as recorded by the owner at redact time.
     /// Capped at 512 bytes upstream (the
-    /// `qos_collab_types::MAX_REDACTION_REASON_BYTES` bound).
+    /// `collab_types::MAX_REDACTION_REASON_BYTES` bound).
     pub reason: String,
     /// When the redaction was issued. The widget renders this with
     /// the same relative-time helper used for the row's own

@@ -23,7 +23,7 @@ use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use ed25519_dalek::SigningKey as DalekSigningKey;
-use qos_collab_types::{ChannelId, Ed25519PublicKey, Role};
+use collab_types::{ChannelId, Ed25519PublicKey, Role};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -524,7 +524,7 @@ impl Widget for InviteMintScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_collab_types::generate_keypair;
+    use collab_types::generate_keypair;
     use std::time::Duration;
 
     #[test]
