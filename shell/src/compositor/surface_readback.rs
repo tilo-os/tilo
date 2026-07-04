@@ -319,6 +319,12 @@ impl SurfaceTracker {
     /// On error the slot is left empty (so a subsequent `take_latest`
     /// returns `None`); the caller decides whether to log + drop or
     /// retry.
+    ///
+    /// The `trace`-level `capture.on_commit` span makes this method
+    /// visible in the profile-pass output (see the demo binary's
+    /// `latency-profile.txt`). Producing the SHM readback is the
+    /// dominant cost per frame on the send side.
+    #[tracing::instrument(level = "trace", skip(self, buffer), fields(surface_id))]
     pub fn on_commit(
         &mut self,
         surface_id: SurfaceId,
