@@ -1,0 +1,681 @@
+//! Shared chrome state for the nirios shell root.
+//!
+//! Chrome widgets (TopBarChrome, SidebarWheelChrome, ShellOverlayHost)
+//! live at sibling positions in the widget tree and need to mutate the
+//! same set of fields — overlay visibility flags and the workspace tree
+//! itself. This module packages that state into one `Rc<RefCell<_>>`
+//! handle so each widget can hold a clone and read/write without routing
+//! every interaction through the tree's root.
+//!
+//! This is the shell's equivalent of the Elm-style `Model` that widgets
+//! mutate via events; keeping it out of the Automerge doc is deliberate
+//! — overlay visibility is local UI state that should not sync to peers,
+//! and the WorkspaceTree already has its own JSON persistence layer.
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+
+use crate::notifications::{CloseReason, NotificationBridge};
+use crate::shell::notification::{
+    MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
+};
+use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
+use crate::shell::state::{AppId, Capability, WorkspaceTree, WorkspaceTreeHandle};
+// Re-export WsTab so chrome users can refer to the tab routing enum
+// without reaching into `workspace_settings`. The enum itself lives
+// next to the modal widget; the chrome holds a copy of the active tab
+// as a typed field — see `ChromeState::ws_settings_tab`.
+pub use crate::shell::workspace_settings::WsTab;
+
+/// Snapshot of which shell overlays are currently on screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OverlayFlags {
+    pub overview: bool,
+    pub quick_settings: bool,
+    pub ws_settings: bool,
+    /// Collaborator dropdown, opened by clicking the avatar stack in the
+    /// top bar's right cluster. Lists every peer by name so invites and
+    /// session handoff have a visible surface; pure UI state — the roster
+    /// itself lives on `WorkspaceTree::collaborators`.
+    pub collaborators: bool,
+}
+
+/// Global-search scope. Mirrors the concept's "context banner" scope
+/// radios; defaults to `Workspace` so ⌘K results stay scoped to the
+/// active workspace unless the user explicitly widens to everything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchScope {
+    #[default]
+    Workspace,
+    All,
+}
+
+impl SearchScope {
+    /// Short label shown inside the scope pill.
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchScope::Workspace => "Workspace",
+            SearchScope::All => "All",
+        }
+    }
+}
+
+/// Quick-settings tray values. Local UI state; does not sync to peers —
+/// device settings like brightness, volume, and radio toggles are always
+/// per-device, never shared.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuickSettingsState {
+    /// Brightness level, 0.0..=1.0.
+    pub brightness: f32,
+    /// Volume level, 0.0..=1.0.
+    pub volume: f32,
+    pub wifi: bool,
+    pub bluetooth: bool,
+    /// Navigation stack for the popover. The renderer dispatches on
+    /// `nav_stack.last()` (always at least `Root`) — pushing `Wifi` or
+    /// `Bluetooth` flips the popover body to the drill-in list.
+    /// Concept ref: `QuickSettings.tsx:108-128, 101-162`.
+    pub nav_stack: Vec<QsLevel>,
+    /// Demo WiFi networks rendered in the WiFi drill-in list. Mock data
+    /// until real scanning lands; concept ref: `QuickSettings.tsx:108-128`.
+    pub wifi_networks: Vec<WifiNetwork>,
+    /// Demo Bluetooth devices rendered in the BT drill-in list. Mock data
+    /// until real pairing lands; concept ref: `QuickSettings.tsx:140-160`.
+    pub bt_devices: Vec<BtDevice>,
+    /// Active power profile, mirrored from `powerprofilesctl` when the
+    /// panel opens and pushed back via `set_power_profile` when the
+    /// user cycles the chip. Defaults to `Balanced` so a host without
+    /// `power-profiles-daemon` still renders a sensible label.
+    pub power_profile: PowerProfile,
+}
+
+impl Default for QuickSettingsState {
+    fn default() -> Self {
+        Self {
+            brightness: 0.6,
+            volume: 0.4,
+            wifi: true,
+            bluetooth: false,
+            nav_stack: vec![QsLevel::Root],
+            wifi_networks: vec![
+                WifiNetwork {
+                    ssid: "Home_Network".to_string(),
+                    signal: 4,
+                    secure: true,
+                    connected: true,
+                },
+                WifiNetwork {
+                    ssid: "Cafe_Guest".to_string(),
+                    signal: 3,
+                    secure: false,
+                    connected: false,
+                },
+                WifiNetwork {
+                    ssid: "Neighbour_5G".to_string(),
+                    signal: 2,
+                    secure: true,
+                    connected: false,
+                },
+                WifiNetwork {
+                    ssid: "FreeWiFi".to_string(),
+                    signal: 1,
+                    secure: false,
+                    connected: false,
+                },
+            ],
+            bt_devices: vec![
+                BtDevice {
+                    name: "AirPods Pro".to_string(),
+                    battery: 80,
+                    connected: true,
+                },
+                BtDevice {
+                    name: "Magic Mouse".to_string(),
+                    battery: 65,
+                    connected: false,
+                },
+                BtDevice {
+                    name: "Keychron K2".to_string(),
+                    battery: 40,
+                    connected: false,
+                },
+            ],
+            power_profile: PowerProfile::Balanced,
+        }
+    }
+}
+
+impl QuickSettingsState {
+    /// Currently visible level — the renderer's dispatch key. Defaults to
+    /// `Root` if the stack is somehow empty (`new()` always seeds it).
+    pub fn current_level(&self) -> &QsLevel {
+        self.nav_stack.last().unwrap_or(&QsLevel::Root)
+    }
+
+    /// Push a new level onto the nav stack. Used by the toggle-card
+    /// chevron-affordance click in `draw_quick_settings`.
+    pub fn push_level(&mut self, level: QsLevel) {
+        self.nav_stack.push(level);
+    }
+
+    /// Pop the top level. No-op when only `Root` remains so the popover
+    /// can't be emptied.
+    pub fn pop_level(&mut self) {
+        if self.nav_stack.len() > 1 {
+            self.nav_stack.pop();
+        }
+    }
+}
+
+/// Mutable chrome state shared across the shell widget tree.
+#[derive(Debug)]
+pub struct ChromeState {
+    /// Shared workspace tree handle. The portal (grants) and peer-sync
+    /// (replica) hold clones of the same `Arc<RwLock<_>>` so every
+    /// mutation is observed across subsystems. See C-3 RFC at
+    /// `docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`.
+    ///
+    /// Field is named `tree_handle` (not `tree`) so unmigrated call-sites
+    /// that still read `chrome.tree.workspaces.iter()` get a clear
+    /// type-mismatch error rather than silently borrowing the wrong
+    /// thing. Use [`Self::tree`] / [`Self::tree_mut`] for guarded access.
+    pub tree_handle: WorkspaceTreeHandle,
+    pub overlays: OverlayFlags,
+    pub quick_settings: QuickSettingsState,
+    /// When `Some`, the workspace-settings modal's Name input is in text-
+    /// entry mode. The string is the edit buffer (may diverge from the
+    /// active workspace's persisted name until the user commits with
+    /// Enter). Cleared on commit or Esc.
+    pub editing_workspace_name: Option<String>,
+    /// Caret + selection inside `editing_workspace_name`. Only
+    /// meaningful while the option is `Some(_)` — when no edit is
+    /// in flight this is a collapsed `Selection::default()` placeholder.
+    /// `begin_workspace_name_edit` seeds it to a collapsed selection
+    /// at the buffer's end so typing immediately appends; the overlay
+    /// host's keyboard handler mutates it on arrow / shift / backspace
+    /// / Ctrl-chord events.
+    pub editing_workspace_name_selection: ui::text_selection::Selection,
+    /// Active global-search scope. The overlay host paints a scope-pill
+    /// banner above the palette, and clicking a pill rotates through the
+    /// variants of [`SearchScope`].
+    pub search_scope: SearchScope,
+    /// Currently-active tab inside the Workspace Settings modal.
+    /// Independent of [`Self::editing_workspace_name`] (which is only
+    /// the name-input edit buffer). `Default::default()` is
+    /// [`WsTab::General`]; the renderer dispatches its modal-body
+    /// content on this field.
+    ///
+    /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tabs are
+    /// independent UI state, never entangled with the name-edit buffer.
+    pub ws_settings_tab: WsTab,
+    /// Monotonic counter bumped every time the tree is mutated. Widgets
+    /// poll this in `update` to re-sync their caches; cheaper than running
+    /// diff logic and easier than an event bus.
+    pub revision: u64,
+    /// Queue of pending capability grants the user must respond to.
+    /// Phase 4 Task 4.3 (the portal D-Bus backend) pushes onto the back
+    /// of this queue when a sandboxed app calls one of the portal's
+    /// request methods; the overlay host renders a [`PermissionPrompt`]
+    /// for `front()` and drains the entry once the user clicks an
+    /// action button. v1 stores pairs of `(app_id, capability)` —
+    /// the capability's `scope` is set by the portal layer before
+    /// pushing (typically `GrantScope::Once`, since the prompt
+    /// itself escalates to `Session`/`Always` based on the user's
+    /// click). Empty by default.
+    pub pending_grants: VecDeque<(AppId, Capability)>,
+    /// Test-only override for the `is_active_workspace_owner` helper
+    /// in `overlay_host.rs`. `None` (the default) keeps production
+    /// behaviour: the helper returns `true` unconditionally because
+    /// the shell has no logged-in-user identity yet (Sandbox 4.2's
+    /// stub). `Some(false)` flips the helper to non-owner so the
+    /// Sandbox Phase 6 Permissions tab tests can exercise the
+    /// disabled-Revoke code path. Real ownership tracking will
+    /// replace this field once the peer-sync work lands a
+    /// `local_user_id` + `Workspace::owner_id` pair.
+    pub test_only_owner_override: Option<bool>,
+    /// Active toast / banner notifications. Ordered oldest-first so the
+    /// stack widget paints from the top of the screen downward in the
+    /// same order entries were pushed. Capped at
+    /// [`MAX_NOTIFICATIONS`]; pushing past the cap evicts the oldest
+    /// entry (FIFO drop). Any subsystem can append via
+    /// [`Self::push_notification`] / [`Self::push_notification_full`];
+    /// the [`crate::shell::notification::NotificationStack`] widget
+    /// reads from here and drives expiry via
+    /// [`Self::update_notification_lifecycle`] each frame.
+    pub notifications: Vec<Notification>,
+    /// Bridge to the `org.freedesktop.Notifications` D-Bus service
+    /// (Track D1). `None` until the compositor wires it up
+    /// ([`Self::set_notification_bridge`]); tests and the offscreen
+    /// `shots` path run without it. When present, toast lifecycle
+    /// transitions (dismiss / expire / close / action) emit the
+    /// corresponding D-Bus signal back to the originating app via the
+    /// bridge's reverse-event queues.
+    notification_bridge: Option<NotificationBridge>,
+    /// Whether the session is currently locked (mirrored from the
+    /// compositor's `SessionManager` each frame). Drives notification
+    /// lock-suppression: while `true`, the notification stack withholds
+    /// app names / summaries / bodies and shows only a count.
+    session_locked: bool,
+}
+
+impl ChromeState {
+    /// Back-compat constructor: takes an owned [`WorkspaceTree`] and
+    /// wraps it in a fresh [`WorkspaceTreeHandle`]. Existing call-sites
+    /// (every test fixture in `quick-shell/tests/*`) keep this shape;
+    /// production callers that need to share the handle with portal /
+    /// peer-sync go through [`Self::new_with_handle`] instead.
+    pub fn new(tree: WorkspaceTree) -> Rc<RefCell<Self>> {
+        Self::new_with_handle(tree.shared())
+    }
+
+    /// Construct a [`ChromeState`] sharing an existing
+    /// [`WorkspaceTreeHandle`]. Used by the hosted entry point so the
+    /// portal's `GrantStoreHandle` and peer-sync's
+    /// `WorkspaceTreeReplica` mutate the same underlying tree as the
+    /// shell chrome — closes audit finding C-3.
+    pub fn new_with_handle(tree_handle: WorkspaceTreeHandle) -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
+            tree_handle,
+            overlays: OverlayFlags::default(),
+            quick_settings: QuickSettingsState::default(),
+            editing_workspace_name: None,
+            editing_workspace_name_selection: ui::text_selection::Selection::default(),
+            search_scope: SearchScope::default(),
+            ws_settings_tab: WsTab::default(),
+            revision: 0,
+            pending_grants: VecDeque::new(),
+            test_only_owner_override: None,
+            notifications: Vec::new(),
+            notification_bridge: None,
+            session_locked: false,
+        }))
+    }
+
+    /// Read-guard accessor for the shared workspace tree. The returned
+    /// guard derefs to `&WorkspaceTree`, so existing patterns like
+    /// `state.tree().workspaces.iter()` work verbatim. Cheap (~10 ns
+    /// uncontended on `parking_lot::RwLock`).
+    pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
+        self.tree_handle.read()
+    }
+
+    /// Write-guard accessor for the shared workspace tree. Used by
+    /// mutating helpers (`append_empty_workspace`, `set_active`, etc.)
+    /// — the guard is dropped at the end of the borrow scope, so
+    /// concurrent readers (paint, portal lookup, peer-sync export)
+    /// unblock as soon as the mutation lands.
+    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+        self.tree_handle.write()
+    }
+
+    /// Test-only / observability accessor for the underlying shared
+    /// handle. Tests use this to assert that portal mutations land on
+    /// the same instance the chrome reads from (see
+    /// `grant_inserted_via_portal_is_visible_in_ws_settings`).
+    pub fn tree_handle(&self) -> WorkspaceTreeHandle {
+        self.tree_handle.clone()
+    }
+
+    /// Commit the current `editing_workspace_name` buffer (if any) to the
+    /// active workspace's name and clear the buffer. Empty buffers are
+    /// treated as a cancel — we never overwrite the name with "".
+    pub fn commit_workspace_name(&mut self) {
+        if let Some(buf) = self.editing_workspace_name.take() {
+            let trimmed = buf.trim();
+            if !trimmed.is_empty() {
+                if let Some(ws) = self.tree_mut().active_workspace_mut() {
+                    ws.name = trimmed.to_string();
+                }
+            }
+            self.bump();
+        }
+    }
+
+    pub fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Route a winit `WindowEvent::DroppedFile` payload into the active
+    /// workspace's first strip's first window group via
+    /// [`super::workspace_drop::apply_workspace_drop_from_path`]. Bumps
+    /// the revision counter so widgets re-sync on the next frame.
+    /// Returns the new tab id, or `None` if the path has no filename.
+    pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
+        let tab_id = {
+            let mut tree = self.tree_mut();
+            super::workspace_drop::apply_workspace_drop_from_path(&mut *tree, path)
+        };
+        if tab_id.is_some() {
+            self.bump();
+        }
+        tab_id
+    }
+
+    /// Append a new empty workspace to `tree.workspaces`, activate it,
+    /// and bump the revision counter so widgets re-sync on the next
+    /// frame. Returns the new workspace's id.
+    ///
+    /// This is the plain "add workspace" entrypoint — the wheel-disc's
+    /// "+" slot (`sidebar_wheel_disc::SidebarWheelDisc::plus_rect`) calls
+    /// it directly on press. The concept's sidebar `+` button has the
+    /// same semantics: it creates a fresh workspace and switches to it
+    /// without opening any settings modal. Closes the concept's
+    /// `## Known gaps` #4 ("Plus button") in
+    /// `docs/nirios/wheel-disc-design.md`.
+    pub fn add_workspace(&mut self, name: impl Into<String>) -> crate::shell::state::WorkspaceId {
+        let id = {
+            let mut tree = self.tree_mut();
+            let id = tree.append_empty_workspace(&name.into());
+            tree.set_active(id);
+            id
+        };
+        self.bump();
+        id
+    }
+
+    /// Cycle the active tab within the active group of the active strip
+    /// of the active workspace by `dir` (sign-extracted; ±1). Wraps
+    /// around the tab list ends — a forward step past the last tab
+    /// lands on the first, and vice versa. Returns true if a tab
+    /// switch actually occurred (false if there's no active workspace
+    /// / strip / group, or the group has fewer than two tabs).
+    ///
+    /// Used by the DE-level horizontal-scroll fallback in
+    /// `overlay_host`: when the focused app/widget doesn't consume a
+    /// horizontal-dominant wheel event, the shell promotes the scroll
+    /// to a tab cycle so "swipe sideways = next window" works
+    /// everywhere — including over the empty desktop, where no app
+    /// is positioned to claim the gesture in the first place.
+    pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
+        let dir = dir.signum();
+        if dir == 0 {
+            return false;
+        }
+        let switched = {
+            let mut tree = self.tree_mut();
+            let ws_id = tree.active;
+            let strip_id_opt = tree.active_strip.get(&ws_id).copied().or_else(|| {
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .and_then(|w| w.strips.first().map(|s| s.id))
+            });
+            let Some(strip_id) = strip_id_opt else {
+                return false;
+            };
+            let group_id_opt = tree.active_group.get(&strip_id).copied().or_else(|| {
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .and_then(|w| w.strips.iter().find(|s| s.id == strip_id))
+                    .and_then(|s| s.window_groups.first().map(|g| g.id))
+            });
+            let Some(group_id) = group_id_opt else {
+                return false;
+            };
+            let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+                return false;
+            };
+            let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) else {
+                return false;
+            };
+            let Some(group) = strip
+                .window_groups
+                .iter_mut()
+                .find(|g| g.id == group_id)
+            else {
+                return false;
+            };
+            if group.tabs.len() < 2 {
+                return false;
+            }
+            let Some(cur_idx) = group.tabs.iter().position(|t| t.id == group.active_tab) else {
+                return false;
+            };
+            let n = group.tabs.len() as i32;
+            let new_idx = ((cur_idx as i32 + dir).rem_euclid(n)) as usize;
+            group.active_tab = group.tabs[new_idx].id;
+            true
+        };
+        if switched {
+            self.bump();
+        }
+        switched
+    }
+
+    /// Switch to the workspace at the given direction (±1). Returns true
+    /// if the active workspace changed.
+    pub fn switch_workspace(&mut self, dir: i32) -> bool {
+        let changed = {
+            let mut tree = self.tree_mut();
+            match dir.signum() {
+                -1 => tree.switch_up(),
+                1 => tree.switch_down(),
+                _ => false,
+            }
+        };
+        if changed {
+            // Smoke-test the notification system: every successful
+            // workspace switch pushes a transient toast naming the
+            // new active workspace. Any subsystem can call
+            // `push_notification`; this is just the canonical first
+            // consumer so the system is visibly exercised.
+            let new_name = self
+                .tree()
+                .active_workspace()
+                .map(|ws| ws.name.clone())
+                .unwrap_or_else(|| "(unnamed)".to_string());
+            self.push_notification(
+                format!("Switched to workspace {new_name}"),
+                String::new(),
+            );
+            self.bump();
+        }
+        changed
+    }
+
+    // ---------- Notifications ----------
+
+    /// Read-only view of the currently active notifications, ordered
+    /// oldest first.
+    pub fn notifications(&self) -> &[Notification] {
+        &self.notifications
+    }
+
+    /// Push a new info-level notification with the given title and
+    /// body. Returns the freshly assigned id so callers can dismiss
+    /// it later via [`Self::dismiss_notification`]. Bumps the chrome
+    /// revision so widgets re-sync on the next frame.
+    pub fn push_notification(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> u64 {
+        self.push_notification_full(Notification::new(title, body))
+    }
+
+    /// Push a fully-formed [`Notification`] (typically constructed
+    /// with `.with_severity(...)` / `.with_dismiss_after(...)`).
+    /// Returns the notification's id. Enforces the
+    /// [`MAX_NOTIFICATIONS`] cap by dropping oldest entries first.
+    pub fn push_notification_full(&mut self, n: Notification) -> u64 {
+        let id = n.id;
+        self.notifications.push(n);
+        while self.notifications.len() > MAX_NOTIFICATIONS {
+            self.notifications.remove(0);
+        }
+        self.bump();
+        id
+    }
+
+    /// Convenience: push a warning-severity notification.
+    pub fn push_warning_notification(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> u64 {
+        self.push_notification_full(
+            Notification::new(title, body)
+                .with_severity(NotificationSeverity::Warning)
+                .with_icon_kind(NotificationIconKind::Generic),
+        )
+    }
+
+    /// Convenience: push an error-severity notification.
+    pub fn push_error_notification(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> u64 {
+        self.push_notification_full(
+            Notification::new(title, body)
+                .with_severity(NotificationSeverity::Error)
+                .with_icon_kind(NotificationIconKind::Generic),
+        )
+    }
+
+    /// Dismiss a notification by its internal id. No-op if the id has
+    /// already expired or was never pushed. If the removed toast came
+    /// from a D-Bus `Notify`, emits `NotificationClosed(id, 2)` (reason:
+    /// dismissed-by-user) via the bridge.
+    pub fn dismiss_notification(&mut self, id: u64) {
+        if let Some(pos) = self.notifications.iter().position(|n| n.id == id) {
+            let removed = self.notifications.remove(pos);
+            self.emit_closed(&removed, CloseReason::Dismissed);
+            self.bump();
+        }
+    }
+
+    /// Activate a notification by its internal id (the user clicked the
+    /// toast body, not the X). If the toast carries actions, emits
+    /// `ActionInvoked(id, key)` for the default/first action before
+    /// removing it; otherwise behaves exactly like
+    /// [`Self::dismiss_notification`]. Returns `true` if a toast was
+    /// found.
+    pub fn activate_notification(&mut self, id: u64) -> bool {
+        let Some(pos) = self.notifications.iter().position(|n| n.id == id) else {
+            return false;
+        };
+        let removed = self.notifications.remove(pos);
+        if let (Some(bridge), Some(dbus_id)) =
+            (self.notification_bridge.as_ref(), removed.dbus_id)
+        {
+            if let Some(key) = removed.default_action_key() {
+                bridge.note_action(dbus_id, key);
+            }
+            bridge.note_closed(dbus_id, CloseReason::Dismissed);
+        }
+        self.bump();
+        true
+    }
+
+    /// Close a notification by its freedesktop (`dbus_id`) id with an
+    /// explicit reason. Used by the `CloseNotification` pump path. No-op
+    /// if no live toast carries that id.
+    pub fn close_notification_by_dbus_id(&mut self, dbus_id: u32, reason: CloseReason) {
+        if let Some(pos) = self
+            .notifications
+            .iter()
+            .position(|n| n.dbus_id == Some(dbus_id))
+        {
+            let removed = self.notifications.remove(pos);
+            self.emit_closed(&removed, reason);
+            self.bump();
+        }
+    }
+
+    /// Drop every notification whose `created_at + dismiss_after`
+    /// has passed `now`. Returns the number of entries removed.
+    /// Called by [`crate::shell::notification::NotificationStack::update`]
+    /// each frame so the stack shrinks automatically. Expired toasts that
+    /// came from a D-Bus `Notify` emit `NotificationClosed(id, 1)`.
+    pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
+        let mut closed_dbus_ids = Vec::new();
+        let before = self.notifications.len();
+        self.notifications.retain(|n| {
+            let keep = !n.is_expired_at(now);
+            if !keep {
+                if let Some(d) = n.dbus_id {
+                    closed_dbus_ids.push(d);
+                }
+            }
+            keep
+        });
+        let dropped = before - self.notifications.len();
+        if let Some(bridge) = self.notification_bridge.as_ref() {
+            for d in closed_dbus_ids {
+                bridge.note_closed(d, CloseReason::Expired);
+            }
+        }
+        if dropped > 0 {
+            self.bump();
+        }
+        dropped
+    }
+
+    /// Number of currently active notifications (used by the lock screen
+    /// to show "N notifications" without exposing any content).
+    pub fn notification_count(&self) -> usize {
+        self.notifications.len()
+    }
+
+    // ---------- Track D1: D-Bus notification wiring ----------
+
+    /// Install the [`NotificationBridge`] the compositor shares with the
+    /// `org.freedesktop.Notifications` D-Bus service. Once set, the toast
+    /// lifecycle emits `NotificationClosed` / `ActionInvoked` events back
+    /// to apps via the bridge.
+    pub fn set_notification_bridge(&mut self, bridge: NotificationBridge) {
+        self.notification_bridge = Some(bridge);
+    }
+
+    /// Mirror the compositor's session-lock state into the chrome so the
+    /// notification stack can suppress content while locked.
+    pub fn set_session_locked(&mut self, locked: bool) {
+        if self.session_locked != locked {
+            self.session_locked = locked;
+            self.bump();
+        }
+    }
+
+    /// Whether the session is currently locked.
+    pub fn session_locked(&self) -> bool {
+        self.session_locked
+    }
+
+    /// Drain the D-Bus notification bridge into the live toast stack:
+    /// every queued `Notify` becomes a toast (honouring `replaces_id` by
+    /// evicting the prior toast with the same `dbus_id` first), and every
+    /// `CloseNotification` removes the matching toast. Called once per
+    /// frame by the compositor; a no-op when no bridge is installed.
+    pub fn pump_dbus_notifications(&mut self) {
+        let Some(bridge) = self.notification_bridge.clone() else {
+            return;
+        };
+        for inc in bridge.drain_incoming() {
+            let dbus_id = inc.dbus_id;
+            // `replaces_id` semantics: a fresh Notify with an existing id
+            // supersedes the prior toast.
+            self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
+            self.push_notification_full(Notification::from_incoming(inc));
+        }
+        for id in bridge.drain_close_requests() {
+            self.close_notification_by_dbus_id(id, CloseReason::Closed);
+        }
+    }
+
+    /// Emit a `NotificationClosed` for a removed toast iff it originated
+    /// from D-Bus and the bridge is installed.
+    fn emit_closed(&self, removed: &Notification, reason: CloseReason) {
+        if let (Some(bridge), Some(dbus_id)) =
+            (self.notification_bridge.as_ref(), removed.dbus_id)
+        {
+            bridge.note_closed(dbus_id, reason);
+        }
+    }
+}
+
+pub type Chrome = Rc<RefCell<ChromeState>>;
