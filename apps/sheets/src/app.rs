@@ -127,6 +127,17 @@ struct TabRename {
     rect: Rect,
 }
 
+/// A transient "Name box" (Go-To) editor. Clicking the cell-reference box in
+/// the formula bar opens it seeded with the active cell's reference; the user
+/// types an A1 reference (`B7`) or range (`A1:C3`) and presses Enter to jump
+/// the selection there. `select_all` mirrors Excel: the box opens with the
+/// current reference fully selected so the first keystroke replaces it.
+struct NameBoxEdit {
+    chars: Vec<char>,
+    caret: usize,
+    select_all: bool,
+}
+
 /// Palette of tab colours. Stored per sheet as an index into this list.
 const TAB_PALETTE: [(u8, u8, u8); 6] = [
     (0xe2, 0x5b, 0x5b), // red
@@ -182,6 +193,13 @@ pub struct SheetsApp {
     tab_menu_swatches: Vec<(Rect, Option<u32>)>,
     /// An inline sheet-tab rename editor, when active.
     tab_rename: Option<TabRename>,
+    /// The name box (cell-reference / Go-To field) hit-rect, and the "fx"
+    /// formula-insert affordance's hit-rect, both to the left of the formula
+    /// field. Derived in `relayout` so `handle_event` can route clicks to them.
+    name_box_rect: Rect,
+    fx_rect: Rect,
+    /// An active Name box Go-To entry, when the user has clicked the name box.
+    name_box_edit: Option<NameBoxEdit>,
     formula_field_rect: Rect,
     /// Cumulative x (layout space) of each character boundary in the formula
     /// bar's current text, rebuilt each draw. Drives click-to-position-caret,
@@ -274,6 +292,9 @@ impl SheetsApp {
             tab_menu_rows: Vec::new(),
             tab_menu_swatches: Vec::new(),
             tab_rename: None,
+            name_box_rect: Rect::ZERO,
+            fx_rect: Rect::ZERO,
+            name_box_edit: None,
             formula_field_rect: Rect::ZERO,
             formula_char_x: Vec::new(),
             formula_bar_selecting: false,
@@ -650,29 +671,10 @@ impl SheetsApp {
             }
             self.grid.select_range_public(target, last);
         } else if let Some(text) = system {
-            let cur = self.default_currency();
-            let normalized = text.replace('\r', "");
-            let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
-            if body.is_empty() {
+            if !self.paste_tsv(doc, target, &text) {
                 self.status = "Clipboard is empty".into();
                 return;
             }
-            let mut last = target;
-            for (ri, line) in body.split('\n').enumerate() {
-                for (ci, field) in line.split('\t').enumerate() {
-                    let addr = (target.0 + ci as u32, target.1 + ri as u32);
-                    if field.is_empty() {
-                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
-                        SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
-                    } else {
-                        let inferred = infer_entry(field, cur);
-                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &inferred.raw);
-                        SheetsDoc::set_cell_format(doc, self.active_sheet, addr, inferred.format);
-                    }
-                    last = addr;
-                }
-            }
-            self.grid.select_range_public(target, last);
         } else {
             self.status = "Clipboard is empty".into();
             return;
@@ -681,6 +683,36 @@ impl SheetsApp {
         self.needs_commit = true;
         self.reload(doc);
         self.status = format!("Pasted into {}", self.grid.selection_label());
+    }
+
+    /// Parse `text` as a tab/newline-separated grid pasted from another app and
+    /// write it starting at `target`, smart-typing each non-empty field.
+    /// Selects the pasted rectangle. Returns `false` (writing nothing) when the
+    /// payload has no content. This is the system-clipboard branch of `paste`.
+    fn paste_tsv(&mut self, doc: &mut AutoCommit, target: Addr, text: &str) -> bool {
+        let cur = self.default_currency();
+        let normalized = text.replace('\r', "");
+        let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
+        if body.is_empty() {
+            return false;
+        }
+        let mut last = target;
+        for (ri, line) in body.split('\n').enumerate() {
+            for (ci, field) in line.split('\t').enumerate() {
+                let addr = (target.0 + ci as u32, target.1 + ri as u32);
+                if field.is_empty() {
+                    SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
+                    SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+                } else {
+                    let inferred = infer_entry(field, cur);
+                    SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &inferred.raw);
+                    SheetsDoc::set_cell_format(doc, self.active_sheet, addr, inferred.format);
+                }
+                last = addr;
+            }
+        }
+        self.grid.select_range_public(target, last);
+        true
     }
 
     /// AutoSum: scan upward from the active cell for a run of numeric cells
@@ -1029,6 +1061,20 @@ impl SheetsApp {
 
         // Formula bar field (after the name box + fx label).
         let fx_w = 30.0;
+        self.name_box_rect = Rect::new(
+            self.formula_rect.x0 + 6.0,
+            self.formula_rect.y0 + 4.0,
+            self.formula_rect.x0 + NAME_BOX_W,
+            self.formula_rect.y1 - 4.0,
+        );
+        // The clickable "fx" affordance spans the gap between the name box and
+        // the formula field.
+        self.fx_rect = Rect::new(
+            self.formula_rect.x0 + NAME_BOX_W,
+            self.formula_rect.y0 + 4.0,
+            self.formula_rect.x0 + NAME_BOX_W + fx_w + 8.0,
+            self.formula_rect.y1 - 4.0,
+        );
         self.formula_field_rect = Rect::new(
             self.formula_rect.x0 + NAME_BOX_W + fx_w + 8.0,
             self.formula_rect.y0 + 4.0,
@@ -1349,30 +1395,64 @@ impl SheetsApp {
 
         // Formula bar.
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &self.formula_rect);
-        let name_box = Rect::new(
-            self.formula_rect.x0 + 6.0,
-            self.formula_rect.y0 + 4.0,
-            self.formula_rect.x0 + NAME_BOX_W,
-            self.formula_rect.y1 - 4.0,
-        );
+        let name_box = self.name_box_rect;
+        let nb_editing = self.name_box_edit.is_some();
         let nb_shape = RoundedRect::from_rect(name_box, theme.tokens.radii.sm as f64);
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &nb_shape);
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &nb_shape);
-        let sm = theme.tokens.typography.scale.sm;
-        let label = self.grid.selection_label();
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            sm,
-            colors.text_primary,
-            transform
-                * Affine::translate((
-                    name_box.x0 + 8.0,
-                    name_box.y0 + (name_box.height() - sm as f64) / 2.0,
-                )),
+        scene.stroke(
+            &Stroke::new(if nb_editing { 2.0 } else { 1.0 }),
+            transform,
+            if nb_editing { colors.accent[5] } else { colors.border_standard },
             None,
-            TextWeight::Semibold,
+            &nb_shape,
         );
+        let sm = theme.tokens.typography.scale.sm;
+        let nb_text_x = name_box.x0 + 8.0;
+        let nb_text_y = name_box.y0 + (name_box.height() - sm as f64) / 2.0;
+        if let Some(nb) = &self.name_box_edit {
+            let text: String = nb.chars.iter().collect();
+            // The pre-filled reference draws fully selected until the first edit.
+            if nb.select_all && !text.is_empty() {
+                let (tw, _) = tr.measure(&text, sm, None);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5].with_alpha_factor(0.30),
+                    None,
+                    &Rect::new(nb_text_x, name_box.y0 + 4.0, nb_text_x + tw as f64, name_box.y1 - 4.0),
+                );
+            }
+            tr.draw_text_weighted(
+                scene,
+                &text,
+                sm,
+                colors.text_primary,
+                transform * Affine::translate((nb_text_x, nb_text_y)),
+                None,
+                TextWeight::Semibold,
+            );
+            let prefix: String = nb.chars[..nb.caret.min(nb.chars.len())].iter().collect();
+            let (cw, _) = tr.measure(&prefix, sm, None);
+            let cx = nb_text_x + cw as f64;
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                colors.accent[5],
+                None,
+                &Line::new((cx, name_box.y0 + 4.0), (cx, name_box.y1 - 4.0)),
+            );
+        } else {
+            let label = self.grid.selection_label();
+            tr.draw_text_weighted(
+                scene,
+                &label,
+                sm,
+                colors.text_primary,
+                transform * Affine::translate((nb_text_x, nb_text_y)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
         tr.draw_text_styled(
             scene,
             "fx",
@@ -2173,6 +2253,22 @@ fn char_boundaries(tr: &mut TextRenderer, text: &str, size: f32, x0: f64) -> Vec
     xs
 }
 
+/// Parse a Name box (Go-To) entry into an `(anchor, active)` selection. Accepts
+/// a single reference (`B7`) or a range (`A1:C3`), case-insensitive, tolerating
+/// absolute markers (`$A$1`). Returns `None` for anything that isn't a valid
+/// reference or `ref:ref` range.
+fn parse_ref_target(s: &str) -> Option<(Addr, Addr)> {
+    let s = s.trim();
+    if let Some((a, b)) = s.split_once(':') {
+        let a = a1_to_addr(a.trim())?;
+        let b = a1_to_addr(b.trim())?;
+        Some((a, b))
+    } else {
+        let a = a1_to_addr(s)?;
+        Some((a, a))
+    }
+}
+
 /// A short, user-facing label for a path (its file name) for status messages.
 fn file_label(path: &std::path::Path) -> String {
     path.file_name()
@@ -2289,6 +2385,18 @@ impl Widget for SheetsApp {
                     return;
                 }
 
+                // The Name box (Go-To) editor is modal while open: a click
+                // inside it keeps focus; a click anywhere else cancels the
+                // pending entry (Excel behaviour) without navigating.
+                if self.name_box_edit.is_some() {
+                    if !self.name_box_rect.contains(p) {
+                        self.name_box_edit = None;
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
+
                 // Open tab context menu: route clicks to its rows / swatches or
                 // dismiss it.
                 if let Some(target) = self.tab_menu_target {
@@ -2364,6 +2472,19 @@ impl Widget for SheetsApp {
                         self.dirty = true;
                         *handled = true;
                     }
+                    return;
+                }
+
+                // Name box → open a Go-To entry seeded with the active cell.
+                if self.name_box_rect.contains(p) {
+                    self.begin_name_box_edit();
+                    *handled = true;
+                    return;
+                }
+                // "fx" → focus the active cell for a formula entry (seed `=`).
+                if self.fx_rect.contains(p) {
+                    self.start_formula_entry();
+                    *handled = true;
                     return;
                 }
 
@@ -2481,6 +2602,18 @@ impl Widget for SheetsApp {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
+                // The Name box owns the keyboard while a Go-To entry is open.
+                if self.name_box_edit.is_some() {
+                    if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                        if ke.state.is_pressed() {
+                            self.name_box_key(ke, modifiers);
+                        }
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+
                 // An inline rename owns the keyboard while it is open.
                 if self.tab_rename.is_some() {
                     if let WindowEvent::KeyboardInput { event: ke, .. } = event {
@@ -2822,6 +2955,160 @@ impl SheetsApp {
             }
             self.dirty = true;
         }
+    }
+
+    // --- name box (Go-To) + fx formula entry -------------------------------
+
+    /// Open the Name box for a Go-To entry, seeded with the active cell's
+    /// reference and fully selected (Excel-style: the first keystroke replaces
+    /// it). Closes any other overlay so the box owns input.
+    fn begin_name_box_edit(&mut self) {
+        self.open_menu = OpenMenu::None;
+        self.settings_panel = SettingsPanel::None;
+        self.tab_menu_target = None;
+        let (c, r) = self.grid.active();
+        let chars: Vec<char> = crate::model::addr_to_a1(c, r).chars().collect();
+        let caret = chars.len();
+        self.name_box_edit = Some(NameBoxEdit { chars, caret, select_all: true });
+        self.dirty = true;
+    }
+
+    /// Insert typed text into the Name box, dropping whitespace (references
+    /// never contain spaces). A pending select-all is cleared first so the
+    /// pre-filled reference is replaced.
+    fn name_box_insert(&mut self, s: &str) {
+        if let Some(nb) = &mut self.name_box_edit {
+            if nb.select_all {
+                nb.chars.clear();
+                nb.caret = 0;
+                nb.select_all = false;
+            }
+            for ch in s.chars() {
+                if ch.is_whitespace() {
+                    continue;
+                }
+                nb.chars.insert(nb.caret, ch);
+                nb.caret += 1;
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn name_box_key(&mut self, ke: &winit::event::KeyEvent, mods: &Modifiers) {
+        use winit::keyboard::{Key, NamedKey};
+        match &ke.logical_key {
+            Key::Named(NamedKey::Enter) => self.commit_name_box(),
+            Key::Named(NamedKey::Escape) => {
+                self.name_box_edit = None;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(nb) = &mut self.name_box_edit {
+                    if nb.select_all {
+                        nb.chars.clear();
+                        nb.caret = 0;
+                        nb.select_all = false;
+                    } else if nb.caret > 0 {
+                        nb.chars.remove(nb.caret - 1);
+                        nb.caret -= 1;
+                    }
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                if let Some(nb) = &mut self.name_box_edit {
+                    if nb.select_all {
+                        nb.chars.clear();
+                        nb.caret = 0;
+                        nb.select_all = false;
+                    } else if nb.caret < nb.chars.len() {
+                        nb.chars.remove(nb.caret);
+                    }
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if let Some(nb) = &mut self.name_box_edit {
+                    nb.select_all = false;
+                    nb.caret = nb.caret.saturating_sub(1);
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if let Some(nb) = &mut self.name_box_edit {
+                    nb.select_all = false;
+                    if nb.caret < nb.chars.len() {
+                        nb.caret += 1;
+                    }
+                }
+            }
+            Key::Named(NamedKey::Home) => {
+                if let Some(nb) = &mut self.name_box_edit {
+                    nb.select_all = false;
+                    nb.caret = 0;
+                }
+            }
+            Key::Named(NamedKey::End) => {
+                if let Some(nb) = &mut self.name_box_edit {
+                    nb.select_all = false;
+                    nb.caret = nb.chars.len();
+                }
+            }
+            Key::Character(s) => {
+                let ctrl = mods.state().control_key() || mods.state().super_key();
+                if !ctrl {
+                    self.name_box_insert(s);
+                }
+            }
+            _ => {
+                if let Some(t) = &ke.text {
+                    self.name_box_insert(t);
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Commit a Name box entry: parse it as a single reference or a range and
+    /// move the selection there (scrolling it into view), or report an invalid
+    /// reference without changing the selection.
+    fn commit_name_box(&mut self) {
+        let Some(nb) = self.name_box_edit.take() else {
+            return;
+        };
+        let text: String = nb.chars.iter().collect();
+        let text = text.trim();
+        if text.is_empty() {
+            self.dirty = true;
+            return;
+        }
+        match parse_ref_target(text) {
+            Some((anchor, active)) => {
+                if anchor == active {
+                    self.grid.select_only(anchor);
+                } else {
+                    self.grid.select_range_public(anchor, active);
+                }
+                self.status = format!("Went to {}", self.grid.selection_label());
+            }
+            None => {
+                self.status = format!("Invalid cell reference: {text}");
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The "fx" formula-insert affordance: focus the active cell for a formula
+    /// entry, seeding it with `=` (prepended to any existing content) and
+    /// placing the caret at the end so typing continues the formula.
+    fn start_formula_entry(&mut self) {
+        if !self.grid.is_editing() {
+            self.grid.begin_edit_in_place();
+        }
+        if !self.grid.active_display_raw().starts_with('=') {
+            self.grid.set_edit_caret(0, false);
+            self.grid.insert_text_public("=");
+        }
+        let len = self.grid.active_display_raw().chars().count();
+        self.grid.set_edit_caret(len, false);
+        self.status = "Editing formula".into();
+        self.dirty = true;
     }
 
     /// Execute a tab context-menu action against sheet `idx`.
@@ -3406,5 +3693,275 @@ mod tests {
         assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (0, 0)), "hello");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // --- name box (Go-To) + fx formula entry -------------------------------
+
+    /// Parsing helper the Name box feeds: single refs and ranges, case- and
+    /// absolute-marker-insensitive; junk is rejected.
+    #[test]
+    fn parse_ref_target_handles_cells_ranges_and_junk() {
+        assert_eq!(parse_ref_target("b7"), Some(((1, 6), (1, 6))));
+        assert_eq!(parse_ref_target("$A$1"), Some(((0, 0), (0, 0))));
+        assert_eq!(parse_ref_target("A1:C3"), Some(((0, 0), (2, 2))));
+        assert_eq!(parse_ref_target("not-a-ref"), None);
+        assert_eq!(parse_ref_target("A1:"), None);
+        assert_eq!(parse_ref_target(""), None);
+    }
+
+    /// Clicking the Name box, typing a reference, and pressing Enter moves the
+    /// selection there — the real `begin_name_box_edit` → `name_box_insert` →
+    /// `commit_name_box` path `handle_event` runs on a click + Enter.
+    #[test]
+    fn name_box_goto_navigates_to_a_cell() {
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_only((0, 0));
+        app.begin_name_box_edit(); // seeds "A1", fully selected
+        assert!(app.name_box_edit.is_some());
+        app.name_box_insert("C5"); // replaces the pre-filled reference
+        app.commit_name_box();
+        assert!(app.name_box_edit.is_none());
+        assert_eq!(app.grid.active(), (2, 4));
+        assert!(app.status.contains("Went to"), "status={}", app.status);
+    }
+
+    /// A `ref:ref` Name box entry selects the whole range.
+    #[test]
+    fn name_box_goto_selects_a_range() {
+        let (mut app, _doc) = seeded_app();
+        app.begin_name_box_edit();
+        app.name_box_insert("B2:D4");
+        app.commit_name_box();
+        let (tl, br) = app.grid.selection_bounds();
+        assert_eq!(tl, (1, 1));
+        assert_eq!(br, (3, 3));
+    }
+
+    /// An invalid Name box entry reports the error and leaves the selection put.
+    #[test]
+    fn name_box_invalid_reference_keeps_selection() {
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_only((4, 1)); // E2
+        app.begin_name_box_edit();
+        app.name_box_insert("nope!");
+        app.commit_name_box();
+        assert_eq!(app.grid.active(), (4, 1), "selection must not move");
+        assert!(app.status.contains("Invalid"), "status={}", app.status);
+    }
+
+    /// Committing an emptied Name box is a no-op that just closes the editor.
+    #[test]
+    fn name_box_empty_commit_is_a_noop() {
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_only((4, 1));
+        app.begin_name_box_edit();
+        if let Some(nb) = &mut app.name_box_edit {
+            nb.chars.clear();
+            nb.select_all = false;
+            nb.caret = 0;
+        }
+        app.commit_name_box();
+        assert!(app.name_box_edit.is_none());
+        assert_eq!(app.grid.active(), (4, 1));
+    }
+
+    /// The Name box and "fx" affordance get real, ordered, non-overlapping
+    /// hit-rects to the left of the formula field, so `handle_event`'s
+    /// `contains(p)` routing lands on the right target.
+    #[test]
+    fn name_box_and_fx_rects_are_hit_testable() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        app.relayout();
+        assert!(app.name_box_rect.width() > 0.0 && app.name_box_rect.height() > 0.0);
+        assert!(app.fx_rect.width() > 0.0 && app.fx_rect.height() > 0.0);
+        // Ordered left→right, non-overlapping: name box, then fx, then field.
+        assert!(app.name_box_rect.x1 <= app.fx_rect.x0 + 0.01, "name box overlaps fx");
+        assert!(app.fx_rect.x1 <= app.formula_field_rect.x0 + 0.01, "fx overlaps field");
+        // Both sit inside the formula bar row.
+        assert!(app.formula_rect.contains(app.name_box_rect.center()));
+        assert!(app.formula_rect.contains(app.fx_rect.center()));
+    }
+
+    /// The "fx" affordance opens a formula edit on an empty cell, seeded with
+    /// `=` and the caret at the end.
+    #[test]
+    fn fx_starts_a_formula_on_an_empty_cell() {
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_only((0, 20)); // A21, empty
+        assert!(!app.grid.is_editing());
+        app.start_formula_entry();
+        assert!(app.grid.is_editing());
+        assert_eq!(app.grid.active_display_raw(), "=");
+        assert_eq!(app.grid.edit_caret(), Some(1));
+    }
+
+    /// On a cell that already holds a value, "fx" prepends `=` so the value
+    /// becomes the start of a formula, and it evaluates once committed.
+    #[test]
+    fn fx_prepends_equals_to_existing_content() {
+        let (mut app, mut doc) = seeded_app();
+        app.apply_cmds(
+            &mut doc,
+            vec![
+                GridCmd::SetCell { addr: (0, 21), raw: "5".into() },
+                GridCmd::Commit,
+            ],
+        );
+        app.grid.select_only((0, 21)); // A22 = 5
+        app.start_formula_entry();
+        assert_eq!(app.grid.active_display_raw(), "=5");
+        // Commit the edit through the real flush → apply_cmds path.
+        let mut out = Vec::new();
+        app.grid.flush_edit(&mut out);
+        app.apply_cmds(&mut doc, out);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 21)), "=5");
+        assert_eq!(value_at(&app, (0, 21)), Some(CellValue::Number(5.0)));
+    }
+
+    // --- fill-right / clear-format / switch-sheet --------------------------
+
+    /// Fill-right copies the left column of the selection rightward, shifting
+    /// relative formula references per column — the real Ctrl+R path.
+    #[test]
+    fn fill_right_copies_and_shifts_formulas() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_range_public((4, 1), (6, 1)); // E2:G2, E2 = =SUM(B2:D2)
+        app.fill_right(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 1)), "=SUM(C2:E2)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (6, 1)), "=SUM(D2:F2)");
+        match value_at(&app, (5, 1)) {
+            Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
+            other => panic!("expected numeric fill result, got {other:?}"),
+        }
+    }
+
+    /// Clear-format resets an applied format back to General — the real Format
+    /// menu "Clear format" path.
+    #[test]
+    fn clear_format_resets_applied_format() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 25)); // A26, empty
+        app.apply_format(&mut doc, CellFormat::Percent);
+        assert_eq!(app.format_of_active(), CellFormat::Percent);
+        app.clear_format(&mut doc);
+        assert_eq!(app.format_of_active(), CellFormat::General);
+        // General is not persisted in the snapshot, so the explicit format is gone.
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+        assert_eq!(snap.fmt.get(&(0, 25)).copied(), None);
+    }
+
+    /// Clicking a sheet tab flushes the pending in-cell edit onto the current
+    /// sheet, then switches the active sheet — the real `switch_sheet` path.
+    #[test]
+    fn switch_sheet_flushes_edit_then_changes_active() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 30)); // A31 on sheet 0
+        app.grid.begin_edit_in_place();
+        app.grid.insert_text_public("draft");
+        app.switch_sheet(&mut doc, 1); // click the "Sales" tab
+        assert_eq!(SheetsDoc::active_index(&mut doc), 1);
+        assert_eq!(app.active_sheet, 1);
+        // The pending edit landed on sheet 0, not sheet 1.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 30)), "draft");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 30)), "");
+    }
+
+    // --- external-clipboard (TSV) paste + auto-sum guards ------------------
+
+    /// Pasting a tab/newline grid from another app parses and smart-types each
+    /// field — the real system-clipboard branch of `paste` (`paste_tsv`).
+    #[test]
+    fn paste_tsv_parses_external_grid() {
+        let (mut app, mut doc) = seeded_app();
+        let target = (0, 40); // A41, empty region
+        assert!(app.paste_tsv(&mut doc, target, "10\t20\n30\t40\n"));
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 40)), "10");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 40)), "20");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 41)), "30");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 41)), "40");
+        app.reload(&mut doc);
+        assert_eq!(value_at(&app, (1, 41)), Some(CellValue::Number(40.0)));
+        // Empty payload writes nothing.
+        assert!(!app.paste_tsv(&mut doc, target, ""));
+    }
+
+    /// AutoSum on row 1 has nothing above it: it reports so and writes no formula.
+    #[test]
+    fn auto_sum_guard_nothing_above() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 0)); // A1, row 0
+        app.auto_sum(&mut doc);
+        assert_eq!(app.status, "Nothing above to sum");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Category"); // unchanged
+    }
+
+    /// AutoSum directly under a non-numeric cell finds no run and writes nothing.
+    #[test]
+    fn auto_sum_guard_no_numeric_run() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 1)); // A2, directly under A1 = "Category" (text)
+        let before = SheetsDoc::cell_raw(&mut doc, 0, (0, 1));
+        app.auto_sum(&mut doc);
+        assert_eq!(app.status, "No numeric run above");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), before);
+        assert!(!SheetsDoc::cell_raw(&mut doc, 0, (0, 1)).starts_with("=SUM"));
+    }
+
+    // --- app-level import/export flows -------------------------------------
+
+    /// Force the import/export folder to resolve inside `tmp` (never the user's
+    /// real Documents dir) by scoping every path source the resolver consults.
+    fn scope_docs_env(tmp: &std::path::Path) {
+        unsafe {
+            std::env::set_var("HOME", tmp);
+            std::env::set_var("XDG_DATA_HOME", tmp);
+            std::env::set_var("XDG_CONFIG_HOME", tmp.join("config"));
+            std::env::remove_var("XDG_DOCUMENTS_DIR");
+        }
+    }
+
+    /// The menu-driven Export → write-file then Import → new-sheet round trip
+    /// for each interchange format, exercised end to end through real file I/O.
+    fn export_then_import_roundtrip(ext: &str, export: fn(&mut SheetsApp, &mut AutoCommit), import: fn(&mut SheetsApp, &mut AutoCommit)) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("qos-sheets-io-{ext}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        scope_docs_env(&tmp);
+        // Guard: the resolved folder must be inside our temp before any write.
+        let ed = exports_dir().expect("exports dir");
+        assert!(ed.starts_with(&tmp), "exports dir escaped temp: {ed:?}");
+
+        let (mut app, mut doc) = seeded_app();
+        export(&mut app, &mut doc);
+        assert!(app.status.starts_with("Exported"), "export status: {}", app.status);
+        // The file physically exists in the folder.
+        assert!(newest_with_ext(&ed, ext).is_some(), "no .{ext} written to {ed:?}");
+
+        let before = SheetsDoc::sheet_count(&mut doc);
+        import(&mut app, &mut doc);
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1, "import must add a sheet");
+        assert!(app.status.starts_with("Imported"), "import status: {}", app.status);
+        // The re-imported sheet carries the Budget header text through the file.
+        let last = SheetsDoc::sheet_count(&mut doc) - 1;
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, last, (0, 0)), "Category");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn csv_export_then_import_roundtrips() {
+        export_then_import_roundtrip("csv", SheetsApp::export_csv, SheetsApp::import_csv);
+    }
+
+    #[test]
+    fn xlsx_export_then_import_roundtrips() {
+        export_then_import_roundtrip("xlsx", SheetsApp::export_xlsx, SheetsApp::import_xlsx);
+    }
+
+    #[test]
+    fn ods_export_then_import_roundtrips() {
+        export_then_import_roundtrip("ods", SheetsApp::export_ods, SheetsApp::import_ods);
     }
 }
