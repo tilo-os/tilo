@@ -41,7 +41,9 @@ pub mod collab_capnp {
 use capnp_rpc::rpc_twoparty_capnp;
 
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
+pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::cursor_stream::Client as CursorStreamClient;
+pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 
 /// Try to dial the qOS collab broker via the launcher-supplied
@@ -105,10 +107,32 @@ pub struct ChannelHandle {
 
 impl ChannelHandle {
     /// Submit a single signed op into the channel. The op blob is
-    /// a postcard-encoded `qos-collab-types::SignedOp`.
+    /// a postcard-encoded `collab-types::SignedOp`.
     pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_request();
         req.get().set_op(op);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// LEGACY — publish an unsigned full-document snapshot. Present
+    /// so apps that have not yet been provisioned with a signing
+    /// identity keep working across the ui-collab → runtime-collab
+    /// migration; will be removed once identity provisioning covers
+    /// the whole fleet. Prefer [`Self::send`] with a signed op.
+    pub async fn send_unsigned_snapshot(&self, data: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.send_unsigned_snapshot_request();
+        req.get().set_data(data);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// LEGACY — publish an unsigned incremental Automerge change
+    /// blob. Same transitional contract as
+    /// [`Self::send_unsigned_snapshot`].
+    pub async fn send_unsigned_incremental(&self, data: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.send_unsigned_incremental_request();
+        req.get().set_data(data);
         req.send().promise.await?;
         Ok(())
     }
@@ -131,6 +155,57 @@ impl ChannelHandle {
         let handle = reply.get()?.get_handle()?;
         Ok(PresenceHandle { inner: Rc::new(handle) })
     }
+
+    /// Subscribe to roster + permission updates. The broker emits a
+    /// fresh [`ChannelContext`] whenever its view changes; the
+    /// stream is client-pulled like every other stream in this
+    /// schema.
+    pub async fn subscribe_context(&self) -> Result<ContextStream, NotAvailable> {
+        let req = self.inner.subscribe_context_request();
+        let reply = req.send().promise.await?;
+        let stream = reply.get()?.get_stream()?;
+        Ok(ContextStream { inner: Rc::new(stream) })
+    }
+
+    /// Fetch a page of previously-validated signed ops with
+    /// `seq < before_seq`. See [`ScrollbackBatch`] for the response
+    /// shape.
+    pub async fn fetch_scrollback(
+        &self,
+        before_seq: u64,
+        max: u32,
+    ) -> Result<ScrollbackBatch, NotAvailable> {
+        let mut req = self.inner.fetch_scrollback_request();
+        {
+            let mut b = req.get();
+            b.set_before_seq(before_seq);
+            b.set_max(max);
+        }
+        let reply = req.send().promise.await?;
+        let batch = reply.get()?.get_batch()?;
+        let ops_reader = batch.get_ops()?;
+        let mut ops = Vec::with_capacity(ops_reader.len() as usize);
+        for i in 0..ops_reader.len() {
+            ops.push(ops_reader.get(i)?.to_vec());
+        }
+        Ok(ScrollbackBatch {
+            ops,
+            earliest_seq: batch.get_earliest_seq(),
+            latest_seq: batch.get_latest_seq(),
+            done: batch.get_done(),
+        })
+    }
+}
+
+/// A single signed op as delivered by [`OpStream::read`]. `op` is
+/// the postcard-encoded envelope; `from_user_id` is the broker's
+/// attribution string for the author. Duplicating the id on the
+/// RPC lets non-Rust clients cheaply route by author without
+/// decoding the payload.
+#[derive(Debug, Clone)]
+pub struct OpEvent {
+    pub op: Vec<u8>,
+    pub from_user_id: String,
 }
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
@@ -140,12 +215,19 @@ pub struct OpStream {
 }
 
 impl OpStream {
-    /// Pull the next op. Resolves when the broker has one available.
-    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
+    /// Pull the next op along with the broker's attribution string
+    /// for its author. Resolves when the broker has one available.
+    pub async fn read(&self) -> Result<OpEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
-        let op = reply.get()?.get_op()?;
-        Ok(op.to_vec())
+        let r = reply.get()?;
+        let op = r.get_op()?.to_vec();
+        let from_user_id = r
+            .get_from_user_id()?
+            .to_str()
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 from_user_id: {e}")))?
+            .to_owned();
+        Ok(OpEvent { op, from_user_id })
     }
 }
 
@@ -168,12 +250,75 @@ impl PresenceHandle {
         Ok(())
     }
 
-    /// Subscribe to remote-cursor updates.
+    /// Publish the local caret position on the artifact identified
+    /// by `key_bytes`. `key_bytes` is a postcard-encoded
+    /// `ui::PresenceKey`; the broker treats it as an opaque routing
+    /// tag.
+    pub async fn publish_caret(&self, key_bytes: &[u8], pos: u64) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_caret_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_pos(pos);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Publish a selection range on the keyed artifact. `start ==
+    /// end` MAY be used to represent a caret; either publish path
+    /// is accepted.
+    pub async fn publish_selection(
+        &self,
+        key_bytes: &[u8],
+        start: u64,
+        end: u64,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_selection_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_start(start);
+            b.set_end(end);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Publish "the local user has arrived at the keyed object".
+    pub async fn publish_arrived(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_arrived_request();
+        req.get().set_key_bytes(key_bytes);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Publish "the local user has left the keyed object".
+    pub async fn publish_left(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_left_request();
+        req.get().set_key_bytes(key_bytes);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// LEGACY — subscribe to only remote-cursor updates. Kept so
+    /// clients built against schema v1 keep compiling; new code
+    /// uses [`Self::subscribe_all`].
     pub async fn subscribe_remote_cursors(&self) -> Result<CursorStream, NotAvailable> {
         let req = self.inner.subscribe_remote_cursors_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
         Ok(CursorStream { inner: Rc::new(stream) })
+    }
+
+    /// Subscribe to every kind of remote presence update in one
+    /// stream. Each event carries the full [`PresencePayload`]
+    /// union; clients discriminate on payload variant.
+    pub async fn subscribe_all(&self) -> Result<PresenceStream, NotAvailable> {
+        let req = self.inner.subscribe_all_request();
+        let reply = req.send().promise.await?;
+        let stream = reply.get()?.get_stream()?;
+        Ok(PresenceStream { inner: Rc::new(stream) })
     }
 }
 
@@ -208,6 +353,163 @@ impl CursorStream {
             y: r.get_y(),
         })
     }
+}
+
+/// Rust mirror of the capnp `PresencePayload` union. Kept as a
+/// typed enum here so app code doesn't have to touch the generated
+/// Reader / Builder types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PresencePayload {
+    Cursor { x: f32, y: f32 },
+    Caret { pos: u64 },
+    Selection { start: u64, end: u64 },
+    Arrived,
+    Left,
+}
+
+/// A single remote presence update. `user_id` is the broker's
+/// attribution string, `key_bytes` is the postcard of a
+/// `ui::PresenceKey` (opaque to the SDK), `payload` discriminates
+/// the variant.
+#[derive(Debug, Clone)]
+pub struct PresenceEvent {
+    pub user_id: String,
+    pub key_bytes: Vec<u8>,
+    pub payload: PresencePayload,
+}
+
+/// Client-pulled unified presence stream.
+#[derive(Clone)]
+pub struct PresenceStream {
+    inner: Rc<PresenceStreamClient>,
+}
+
+impl PresenceStream {
+    /// Pull the next presence event across all payload kinds.
+    pub async fn read(&self) -> Result<PresenceEvent, NotAvailable> {
+        let req = self.inner.read_request();
+        let reply = req.send().promise.await?;
+        let r = reply.get()?;
+        let evt = r.get_event()?;
+        let user_id = evt
+            .get_user_id()?
+            .to_str()
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 user_id: {e}")))?
+            .to_owned();
+        let key_bytes = evt.get_key_bytes()?.to_vec();
+        let payload = decode_presence_payload(evt.get_payload()?)?;
+        Ok(PresenceEvent {
+            user_id,
+            key_bytes,
+            payload,
+        })
+    }
+}
+
+fn decode_presence_payload(
+    reader: collab_capnp::presence_payload::Reader<'_>,
+) -> Result<PresencePayload, capnp::Error> {
+    use collab_capnp::presence_payload::Which as W;
+    Ok(match reader.which()? {
+        W::Cursor(r) => PresencePayload::Cursor {
+            x: r.get_x(),
+            y: r.get_y(),
+        },
+        W::Caret(r) => PresencePayload::Caret { pos: r.get_pos() },
+        W::Selection(r) => PresencePayload::Selection {
+            start: r.get_start(),
+            end: r.get_end(),
+        },
+        W::Arrived(()) => PresencePayload::Arrived,
+        W::Left(()) => PresencePayload::Left,
+    })
+}
+
+/// A single collaborator in a [`ChannelContext`].
+#[derive(Debug, Clone)]
+pub struct Collaborator {
+    pub user_id: String,
+    pub display_name: String,
+    /// Packed as `0x00RRGGBB`; the top byte is reserved and MUST be
+    /// zero on the wire. Consumers unpack into their native colour
+    /// space.
+    pub color: u32,
+}
+
+/// Roster + local permissions snapshot delivered on
+/// [`ContextStream`]. See the capnp docs for the exact semantics.
+#[derive(Debug, Clone)]
+pub struct ChannelContext {
+    pub collaborators: Vec<Collaborator>,
+    pub permissions: Vec<String>,
+}
+
+/// Client-pulled channel-context stream.
+#[derive(Clone)]
+pub struct ContextStream {
+    inner: Rc<ContextStreamClient>,
+}
+
+impl ContextStream {
+    /// Pull the next roster / permission snapshot.
+    pub async fn read(&self) -> Result<ChannelContext, NotAvailable> {
+        let req = self.inner.read_request();
+        let reply = req.send().promise.await?;
+        let r = reply.get()?;
+        let ctx = r.get_ctx()?;
+        let collabs_reader = ctx.get_collaborators()?;
+        let mut collaborators = Vec::with_capacity(collabs_reader.len() as usize);
+        for i in 0..collabs_reader.len() {
+            let c = collabs_reader.get(i);
+            let user_id = c
+                .get_user_id()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("invalid utf8 user_id: {e}")))?
+                .to_owned();
+            let display_name = c
+                .get_display_name()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("invalid utf8 display_name: {e}")))?
+                .to_owned();
+            collaborators.push(Collaborator {
+                user_id,
+                display_name,
+                color: c.get_color(),
+            });
+        }
+        let perms_reader = ctx.get_permissions()?;
+        let mut permissions = Vec::with_capacity(perms_reader.len() as usize);
+        for i in 0..perms_reader.len() {
+            permissions.push(
+                perms_reader
+                    .get(i)?
+                    .to_str()
+                    .map_err(|e| capnp::Error::failed(format!("invalid utf8 permission: {e}")))?
+                    .to_owned(),
+            );
+        }
+        Ok(ChannelContext {
+            collaborators,
+            permissions,
+        })
+    }
+}
+
+/// A page of previously-validated signed ops returned by
+/// [`ChannelHandle::fetch_scrollback`].
+#[derive(Debug, Clone)]
+pub struct ScrollbackBatch {
+    /// Postcard-encoded `SignedOp` blobs in ascending `seq` order.
+    pub ops: Vec<Vec<u8>>,
+    /// Lowest `seq` in the page (inclusive). Zero when `ops` is
+    /// empty.
+    pub earliest_seq: u64,
+    /// Highest `seq` in the page (inclusive). Zero when `ops` is
+    /// empty.
+    pub latest_seq: u64,
+    /// True iff the broker has no further in-memory history in the
+    /// requested range.
+    pub done: bool,
 }
 
 /// Re-export the raw generated module for power users that need to

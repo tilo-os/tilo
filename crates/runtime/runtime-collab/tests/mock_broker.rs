@@ -51,7 +51,9 @@ impl stream::Server for FakeStream {
             return Promise::err(capnp::Error::failed("backlog exhausted".into()));
         }
         let next = backlog.remove(0);
-        results.get().set_op(&next[..]);
+        let mut r = results.get();
+        r.set_op(&next[..]);
+        r.set_from_user_id("fake-broker");
         Promise::ok(())
     }
 }
@@ -226,8 +228,10 @@ async fn round_trip_join_send_subscribe_read() {
             let op2 = stream.read().await.expect("read 2");
 
             // 7. assertions
-            assert_eq!(op1, b"first-op");
-            assert_eq!(op2, b"second-op");
+            assert_eq!(op1.op, b"first-op");
+            assert_eq!(op1.from_user_id, "fake-broker");
+            assert_eq!(op2.op, b"second-op");
+            assert_eq!(op2.from_user_id, "fake-broker");
             let joins = captured_joins.borrow().clone();
             assert_eq!(joins.len(), 1);
             assert_eq!(joins[0].0, "test-channel");
