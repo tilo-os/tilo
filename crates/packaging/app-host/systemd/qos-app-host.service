@@ -1,0 +1,13 @@
+[Unit]
+Description=qOS app host (content-addressed package store)
+After=default.target
+
+[Service]
+ExecStart=/usr/libexec/qos-app-host --socket %t/qos/services/app-host.sock --store %h/.local/share/qos-apps
+Type=notify
+Restart=on-failure
+RuntimeDirectory=qos/services
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=default.target
