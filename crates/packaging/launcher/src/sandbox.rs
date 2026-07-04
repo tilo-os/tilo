@@ -29,12 +29,23 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
 /// Canonical absolute paths we re-expose out of the runtime bundle so
 /// dynamically-linked ELFs (both the launcher-shim and the app entry
 /// binary) can find their loader + libc where their `INTERP` header
-/// points. Kept in sync with `runtime_bundle::HOST_MINIMAL_PATHS`.
+/// points. Superset across supported archs — the runtime-bind loop
+/// only re-binds paths whose corresponding file actually exists in the
+/// bundle, so listing both x86_64 and aarch64 entries here is safe.
+/// Kept in sync with `runtime_bundle::host_minimal_paths_for`.
 pub const CANONICAL_LOADER_PATHS: &[&str] = &[
+    // x86_64 loader shapes.
     "/lib64/ld-linux-x86-64.so.2",
     "/lib/ld-linux-x86-64.so.2",
     "/lib/ld-linux.so.2",
     "/usr/lib64/ld-linux-x86-64.so.2",
+    "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+    // aarch64 loader shapes.
+    "/lib/ld-linux-aarch64.so.1",
+    "/lib64/ld-linux-aarch64.so.1",
+    "/usr/lib64/ld-linux-aarch64.so.1",
+    "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+    // Common libc + friends (Fedora-ish /lib64).
     "/lib64/libc.so.6",
     "/lib64/libgcc_s.so.1",
     "/lib64/libm.so.6",
@@ -42,6 +53,28 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/libpthread.so.0",
     "/lib64/librt.so.1",
     "/lib64/libutil.so.1",
+    "/usr/lib64/libc.so.6",
+    "/usr/lib64/libgcc_s.so.1",
+    "/usr/lib64/libm.so.6",
+    "/usr/lib64/libdl.so.2",
+    "/usr/lib64/libpthread.so.0",
+    "/usr/lib64/librt.so.1",
+    "/usr/lib64/libutil.so.1",
+    // Debian-ish multiarch layouts.
+    "/lib/x86_64-linux-gnu/libc.so.6",
+    "/lib/x86_64-linux-gnu/libgcc_s.so.1",
+    "/lib/x86_64-linux-gnu/libm.so.6",
+    "/lib/x86_64-linux-gnu/libdl.so.2",
+    "/lib/x86_64-linux-gnu/libpthread.so.0",
+    "/lib/x86_64-linux-gnu/librt.so.1",
+    "/lib/x86_64-linux-gnu/libutil.so.1",
+    "/lib/aarch64-linux-gnu/libc.so.6",
+    "/lib/aarch64-linux-gnu/libgcc_s.so.1",
+    "/lib/aarch64-linux-gnu/libm.so.6",
+    "/lib/aarch64-linux-gnu/libdl.so.2",
+    "/lib/aarch64-linux-gnu/libpthread.so.0",
+    "/lib/aarch64-linux-gnu/librt.so.1",
+    "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
 /// Build the bwrap argv from a manifest plus the launcher's resolved
