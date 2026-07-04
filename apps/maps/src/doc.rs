@@ -38,11 +38,7 @@ impl MapsDoc {
             Ok(j) => j,
             Err(_) => return,
         };
-        let cur = doc.text(&id).unwrap_or_default();
-        if cur != json {
-            let n = cur.chars().count() as isize;
-            let _ = doc.splice_text(&id, 0, n, &json);
-        }
+        ui::doc::splice_text_diffed(doc, &id, &json);
     }
 }
 
@@ -67,5 +63,37 @@ mod tests {
     fn load_empty_doc_is_none() {
         let doc = AutoCommit::new();
         assert!(MapsDoc::load(&doc).is_none());
+    }
+
+    #[test]
+    fn small_model_edit_is_a_bounded_splice() {
+        // A one-char change to the serialized model must splice only the diff,
+        // not rewrite the whole JSON blob.
+        let mut doc = AutoCommit::new();
+        let mut model = sample::default_model();
+        MapsDoc::save(&mut doc, &model);
+        let before = doc.save().len();
+        model.recents[0].push('!');
+        MapsDoc::save(&mut doc, &model);
+        let grew = doc.save().len() - before;
+        assert_eq!(
+            MapsDoc::load(&doc).unwrap().recents[0],
+            model.recents[0],
+            "value round-trips"
+        );
+        assert!(grew < 40, "one-char model edit grew doc by {grew} bytes — diff regressed");
+    }
+
+    #[test]
+    fn repeated_save_keeps_doc_bounded() {
+        let mut doc = AutoCommit::new();
+        let model = sample::default_model();
+        MapsDoc::save(&mut doc, &model);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            MapsDoc::save(&mut doc, &model);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-saving the same model grew the document {a} -> {b}");
     }
 }

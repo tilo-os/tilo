@@ -122,11 +122,7 @@ impl SlidesDoc {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
             _ => doc.put_object(obj, key, ObjType::Text).expect("put text"),
         };
-        let cur = doc.text(&tid).unwrap_or_default();
-        if cur != value {
-            let n = cur.chars().count() as isize;
-            let _ = doc.splice_text(&tid, 0, n, value);
-        }
+        ui::doc::splice_text_diffed(doc, &tid, value);
     }
 
     fn write_element(doc: &mut AutoCommit, obj: &ObjId, el: &Element) {
@@ -487,6 +483,42 @@ fn bool_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::model::{seed_deck, ElementKind};
+
+    #[test]
+    fn write_text_append_one_char_is_bounded() {
+        // `write_text` is the production text-write path for every deck string
+        // (title / notes / element text). Appending one char must splice only
+        // the new char, not rewrite the whole value.
+        let mut doc = AutoCommit::new();
+        let obj = doc.put_object(&ROOT, "scratch", ObjType::Map).unwrap();
+        let long = "t".repeat(300);
+        SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
+        let before = doc.save().len();
+        let mut longer = long.clone();
+        longer.push('!');
+        SlidesDoc::write_text(&mut doc, &obj, "notes", &longer);
+        let grew = doc.save().len() - before;
+        let tid = match doc.get(&obj, "notes") {
+            Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            _ => panic!("notes text missing"),
+        };
+        assert_eq!(doc.text(&tid).unwrap(), longer, "value round-trips");
+        assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
+    }
+
+    #[test]
+    fn write_text_repeated_store_keeps_doc_bounded() {
+        let mut doc = AutoCommit::new();
+        let obj = doc.put_object(&ROOT, "scratch", ObjType::Map).unwrap();
+        let long = "s".repeat(300);
+        SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
+    }
 
     #[test]
     fn deck_round_trips_through_crdt() {

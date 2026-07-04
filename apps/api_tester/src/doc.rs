@@ -58,10 +58,7 @@ impl ApiDoc {
     /// actually differs — avoids churn that would defeat incremental sync.
     pub fn set_text(doc: &mut AutoCommit, root: &ObjId, key: &str, value: &str) {
         let obj = Self::text_obj(doc, root, key);
-        let cur = doc.text(&obj).unwrap_or_default();
-        if cur != value {
-            let _ = doc.splice_text(&obj, 0, cur.chars().count() as isize, value);
-        }
+        ui::doc::splice_text_diffed(doc, &obj, value);
     }
 
     /// Get-or-create the live `Text` object backing the active request's
@@ -212,6 +209,40 @@ mod tests {
         ApiDoc::set_text(&mut d, &root, "request", "{}");
         // No-op write must not advance the document.
         assert_eq!(heads_before, d.get_heads());
+    }
+
+    #[test]
+    fn appending_one_char_is_a_bounded_splice() {
+        // Anti-churn: growing a long Text field by one char must splice only
+        // the new char, not rewrite the whole value.
+        let (mut d, root) = doc();
+        let long = "x".repeat(300);
+        ApiDoc::set_text(&mut d, &root, "body", &long);
+        let before = d.save().len();
+        let mut longer = long.clone();
+        longer.push('!');
+        ApiDoc::set_text(&mut d, &root, "body", &longer);
+        let grew = d.save().len() - before;
+        assert_eq!(ApiDoc::read_text(&d, &root, "body"), longer, "value round-trips");
+        assert!(
+            grew < 40,
+            "appending one char grew the doc by {grew} bytes (expected a single-char splice)"
+        );
+    }
+
+    #[test]
+    fn repeated_set_text_keeps_doc_bounded() {
+        // Idempotent store: re-writing the same text must emit no ops, so the
+        // serialized document does not grow at all.
+        let (mut d, root) = doc();
+        let long = "y".repeat(300);
+        ApiDoc::set_text(&mut d, &root, "body", &long);
+        let a = d.save().len();
+        for _ in 0..50 {
+            ApiDoc::set_text(&mut d, &root, "body", &long);
+        }
+        let b = d.save().len();
+        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
     }
 
     #[test]
