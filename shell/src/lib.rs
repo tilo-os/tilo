@@ -17,3 +17,12 @@ pub mod notifications;
 // First-boot setup invoked by `quick-desktop-firstboot.service` via
 // `quick-desktop --firstboot`. See `src/firstboot.rs`.
 pub mod firstboot;
+// Observability counters aggregated per peer surface — read by the OSD
+// overlay and by the flatpak-share e2e test. See `src/diagnostics.rs`.
+pub mod diagnostics;
+// End-to-end orchestration for the "share a Flatpak app window to peers"
+// story. Composes the surface capture / H.264 encoder / share registry /
+// `NeighbourMsg` pipeline that already exists in `network::streaming` +
+// `compositor::surface_readback` behind a single public entry point.
+// See `src/collab/flatpak_share.rs`.
+pub mod collab;

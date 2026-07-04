@@ -389,12 +389,48 @@ impl CompositorHandler for State {
             let mut attrs = states.cached_state.get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
-                    match self.surface_tracker.on_commit(surface_id, buffer) {
+                    // Route through path detection — DMABUF buffers
+                    // take the direct path (recorded via the tracker's
+                    // capture-path counter; encoder pulls the fd from
+                    // the wl_buffer). SHM buffers fall through to the
+                    // readback + swizzle path.
+                    let (path, result) =
+                        self.surface_tracker.on_commit_with_path_detection(surface_id, buffer);
+                    match result {
                         Ok(_) => {}
+                        Err(crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported) => {
+                            // The zero-copy DMABUF-direct path is
+                            // recorded via `note_capture_path` above,
+                            // but the fd/fourcc/plane-stride tuple
+                            // isn't yet extracted into the tracker.
+                            //
+                            // TODO(dmabuf-direct-fd-extract): pull the
+                            // Dmabuf handle off `buffer` via
+                            // `smithay::wayland::dmabuf::get_dmabuf`,
+                            // stash the fd + planes on the tracker
+                            // slot, and expose them via
+                            // `SurfaceTracker::take_latest_dmabuf` so
+                            // `SharedFlatpakSession::deposit_captured_dmabuf`
+                            // can build a `FrameInput::DmabufFd` and
+                            // hand it straight to the VA-API backend's
+                            // `av_hwframe_map` import.  Blocked on
+                            // wiring `DmabufState` + `DmabufHandler`
+                            // into the compositor state — until then
+                            // clients that attach a dmabuf stall on
+                            // the encode side (the readback path
+                            // rejects them and the tracker slot stays
+                            // empty).
+                            tracing::debug!(
+                                target: "shell::compositor::state",
+                                surface_id,
+                                path = ?path,
+                                "dmabuf buffer detected; direct-import fd extraction pending"
+                            );
+                        }
                         Err(err) => {
                             tracing::warn!(
                                 target: "shell::compositor::state",
-                                surface_id, ?err,
+                                surface_id, ?err, ?path,
                                 "surface readback failed; tracker slot left empty",
                             );
                         }
