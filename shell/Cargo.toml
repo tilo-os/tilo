@@ -236,6 +236,12 @@ futures-util = "0.3"
 # `cargo test` races on the memo's walk-counter and surfaces as a
 # flaky `apply_grants_dev_scan_is_memoised` failure.
 serial_test = "3"
+# Naga is the WGSL parser/validator wgpu already pulls in transitively.
+# `tests/hdr_tonemap_shader.rs` uses it to spot-check the tone-map
+# WGSL kernel at test time so a shader edit doesn't silently break the
+# GPU path in production. Pinned to the same minor as wgpu 29 so Cargo
+# collapses to one copy in the workspace lock.
+naga = { version = "29", features = ["wgsl-in"] }
 
 # Real-input e2e Phase 5: the `qos-control` CLI is a thin wrapper over the
 # `QOS_TEST_CONTROL` JSON socket — humans and shell scripts use it instead
