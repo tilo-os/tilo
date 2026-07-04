@@ -32,7 +32,7 @@
 //! ## Usage
 //!
 //! ```ignore
-//! let identity = qos_runtime_identity::load()?;
+//! let identity = runtime_identity::load()?;
 //! let sig = identity.sign(b"hello")?;
 //! let pk = identity.group_public_key();
 //! ```
@@ -47,7 +47,7 @@ use std::path::PathBuf;
 
 use ed25519_dalek::{Signer, SigningKey};
 
-pub use qos_runtime_portal::NotAvailable;
+pub use runtime_portal::NotAvailable;
 
 /// Environment-variable name the launcher sets to a path pointing
 /// at the on-disk identity record.

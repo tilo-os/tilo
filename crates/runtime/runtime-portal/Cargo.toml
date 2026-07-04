@@ -1,5 +1,5 @@
 [package]
-name = "qos-runtime-portal"
+name = "runtime-portal"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,7 +9,7 @@ edition = "2024"
 # clients (collab, fs, identity) sit on top of this crate.
 
 [lib]
-name = "qos_runtime_portal"
+name = "runtime_portal"
 path = "src/lib.rs"
 
 [dependencies]

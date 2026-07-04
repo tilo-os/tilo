@@ -27,9 +27,9 @@ use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use qos_runtime_collab::raw::{channel_handle, collab_service, presence_handle, stream};
-use qos_runtime_collab::{CollabClient, CollabServiceClient};
-use qos_runtime_portal::UnixCapnpClient;
+use runtime_collab::raw::{channel_handle, collab_service, presence_handle, stream};
+use runtime_collab::{CollabClient, CollabServiceClient};
+use runtime_portal::UnixCapnpClient;
 
 // --- Server impls --------------------------------------------------------
 
