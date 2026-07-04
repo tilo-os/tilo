@@ -32,9 +32,12 @@ pub mod account;
 pub mod app;
 pub mod compose;
 pub mod doc;
+pub mod draw;
 pub mod engine;
 pub mod model;
+pub mod pane;
 pub mod sample;
+pub mod state;
 pub mod transport;
 pub mod util;
 pub mod wysiwyg;
@@ -43,29 +46,34 @@ pub use app::MailApp;
 
 use ui::widget::Widget;
 
-/// The single integration point used by both the live event loop and the
-/// `--shots` offscreen renderer.
+/// The live event-loop root: a real account list loaded from disk and the
+/// account engine spawned. No fabricated sample corpus — an unconfigured
+/// account shows an empty state.
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(MailApp::new_sample())
+    Box::new(MailApp::new_live())
 }
 
 /// The viewport a named `--shots` scenario should render at.
 pub fn shot_viewport(scenario: &str) -> (u32, u32) {
     match scenario {
-        // Narrow single-pane responsive layout.
-        "narrow" => (560, 860),
+        "narrow" | "narrow_detail" | "narrow_drawer" => (560, 860),
+        "mid" => (1000, 720),
+        "compose" => (1180, 820),
+        "setup" => (1100, 780),
         _ => (1280, 800),
     }
 }
 
-/// Build the root widget for a named `--shots` scenario, pre-seeded so a single
-/// offscreen frame shows the feature in question. The same widget the live app
-/// uses — only the initial state differs.
+/// Build the root widget for a named `--shots` scenario, pre-seeded from the
+/// bundled sample corpus so a single offscreen frame shows the feature. The
+/// sample corpus is hermetic — used only here and in tests, never at runtime.
 pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
     let mut app = MailApp::new_sample();
     match scenario {
         "compose" => app.prime_compose_shot(),
-        "narrow" => app.prime_narrow_shot(),
+        "narrow_detail" => app.prime_detail_shot(),
+        "narrow_drawer" => app.prime_drawer_shot(),
+        "setup" => app.prime_setup_shot(),
         _ => {}
     }
     Box::new(app)
