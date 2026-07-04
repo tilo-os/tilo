@@ -1641,20 +1641,20 @@ impl MusicApp {
         let cached = self.lib.downloaded_tracks();
         let count = cached.len();
         let total_s: u64 = cached.iter().map(|tk| tk.duration_s as u64).sum();
-        // Approx size at 256 kbps.
-        let mb = total_s as f64 * 256.0 / 8.0 / 1024.0;
         let ids: Vec<String> = cached.iter().map(|tk| tk.id.clone()).collect();
 
-        // Stat banner.
+        // Stat banner: only real facts — how many tracks are marked to keep
+        // offline and their combined runtime. (The bytes are cached lazily by
+        // the streaming layer on play, so we don't fabricate a size here.)
         let banner = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
         fill_rrect(scene, t, banner, 12.0, c.card);
         icon::draw(scene, t, Icon::Downloaded, Point::new(banner.x0 + 34.0, banner.center().y), 24.0, c.success);
-        draw_text(tr, scene, t, &format!("{count} songs available offline"), banner.x0 + 60.0, banner.y0 + 14.0, 15.0, c.text, TextWeight::Semibold, None);
-        draw_text(tr, scene, t, &format!("{} · ~{:.0} MB cached at /var/cache/qos-fs", fmt_duration(total_s), mb), banner.x0 + 60.0, banner.y0 + 36.0, 12.0, c.dim, TextWeight::Regular, None);
+        draw_text(tr, scene, t, &format!("{count} songs kept for offline"), banner.x0 + 60.0, banner.y0 + 14.0, 15.0, c.text, TextWeight::Semibold, None);
+        draw_text(tr, scene, t, &fmt_duration(total_s), banner.x0 + 60.0, banner.y0 + 36.0, 12.0, c.dim, TextWeight::Regular, None);
         y += 84.0;
 
         if ids.is_empty() {
-            draw_text(tr, scene, t, "No downloads yet. Tap the download icon on any track.", body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
+            draw_text(tr, scene, t, "Nothing kept offline yet. Tap the download icon on any track.", body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
             return y + 40.0;
         }
         let rows = self.gather_tracks(&ids);
@@ -1982,7 +1982,17 @@ impl MusicApp {
 
         let vol_icon_c = Point::new(r.x1 - right_w + 64.0, r.y0 + NOWPLAYING_H / 2.0);
         let vol = self.pb.volume as f64 / 100.0;
-        icon::draw(scene, t, if vol <= 0.001 { Icon::VolumeMute } else { Icon::VolumeHigh }, vol_icon_c, 18.0, c.dim);
+        let muted = self.pb.volume == 0;
+        // The speaker icon is a mute toggle: click to silence, click to restore.
+        let mh = self.push_hit(square_around(vol_icon_c, 28.0), Action::ToggleMute);
+        icon::draw(
+            scene,
+            t,
+            if muted { Icon::VolumeMute } else { Icon::VolumeHigh },
+            vol_icon_c,
+            18.0,
+            if muted { c.accent } else if mh { c.text } else { c.dim },
+        );
         let vbar_x0 = vol_icon_c.x + 18.0;
         let vbar_x1 = r.x1 - 24.0;
         let vbar_y = r.y0 + NOWPLAYING_H / 2.0;
