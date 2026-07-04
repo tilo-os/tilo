@@ -18,7 +18,7 @@
 use semver::Version;
 
 use crate::id::Kind;
-use crate::manifest::Manifest;
+use crate::manifest::{EntrypointType, Manifest};
 
 /// Validation failure reasons. Each variant is a single concrete
 /// invariant a manifest can violate; the CLI surfaces these
@@ -64,13 +64,49 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     }
 
     match m.package.kind {
-        Kind::App => match m.entrypoint.as_ref() {
-            None => return Err(ManifestError::AppMissingEntrypoint),
-            Some(ep) if ep.bin.as_os_str().is_empty() => {
+        Kind::App => {
+            let ep = m
+                .entrypoint
+                .as_ref()
+                .ok_or(ManifestError::AppMissingEntrypoint)?;
+            // Which paths are load-bearing depends on the
+            // entrypoint's declared flavour. `Gui` and `Cli` both
+            // fall back to the top-level `bin`; `Both` requires
+            // at least one of `gui_bin` / `cli_bin` (or the
+            // legacy `bin` in the fallback slot).
+            let has_bin = match ep.r#type {
+                EntrypointType::Gui | EntrypointType::Cli => !ep.bin.as_os_str().is_empty(),
+                EntrypointType::Both => {
+                    ep.gui_bin
+                        .as_ref()
+                        .map(|p| !p.as_os_str().is_empty())
+                        .unwrap_or(false)
+                        || ep
+                            .cli_bin
+                            .as_ref()
+                            .map(|p| !p.as_os_str().is_empty())
+                            .unwrap_or(false)
+                        || !ep.bin.as_os_str().is_empty()
+                }
+            };
+            if !has_bin {
                 return Err(ManifestError::AppMissingEntrypoint);
             }
-            Some(_) => {}
-        },
+            // A `[cli]` block is meaningful iff the entrypoint
+            // opts in. We do NOT reject a `[cli]` block on a
+            // `Gui` entrypoint — the schema is forward-compatible;
+            // the installer just refuses to install shims from it.
+            if matches!(ep.r#type, EntrypointType::Cli | EntrypointType::Both)
+                && m.cli
+                    .as_ref()
+                    .map(|c| c.commands.is_empty())
+                    .unwrap_or(true)
+            {
+                // A CLI entrypoint with no commands is fine —
+                // the package is still runnable via
+                // `qos-install run <id>`. No error surfaced.
+            }
+        }
         Kind::FormatProvider => {
             if m.providers.mime.is_empty() {
                 return Err(ManifestError::FormatProviderMissingMime);
