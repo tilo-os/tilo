@@ -64,6 +64,17 @@ fn host_target_arch() -> Result<TargetArch, SeccompError> {
 }
 
 /// The deny-list, named so a future Flatpak-policy bump diffs cleanly.
+///
+/// `clone3` is deliberately NOT denied — Flatpak's historical rationale
+/// for blocking it was "some older container tooling doesn't understand
+/// clone3, force the clone(2) fallback for consistency." That deny
+/// broke modern glibc's `pthread_create`, which uses clone3 as the
+/// primary syscall and only occasionally falls back to clone. Symptom
+/// was `zbus` (portal client) panicking with "Operation not permitted"
+/// on worker-thread spawn. Since we already allow `clone`, denying
+/// `clone3` blocks nothing of substance — it just makes a common code
+/// path unreliable. Enabling clone3 restores the portal-inside-sandbox
+/// path.
 const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_ptrace,
     libc::SYS_mount,
@@ -74,7 +85,6 @@ const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_setns,
     libc::SYS_bpf,
     libc::SYS_keyctl,
-    libc::SYS_clone3,
 ];
 
 fn build_baseline_filter() -> Result<SeccompFilter, SeccompError> {
