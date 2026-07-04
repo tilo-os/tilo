@@ -12,6 +12,8 @@
 
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
+use crate::search::{CategoryFilter, SearchIndex, SourceKind};
+
 /// Alpha the shell overlay host tints the GlobalSearch palette surface
 /// with. Concept §5.1 specifies `bg-slate-900/70 backdrop-blur-md`; until
 /// the pinned Vello grows a blur primitive we honour just the /70 alpha
@@ -37,6 +39,13 @@ pub enum SearchContext {
 pub struct GlobalSearch {
     palette: CommandPalette,
     context: SearchContext,
+    /// Multi-source registry the palette's Enter path uses to
+    /// resolve a hit back to a launch / install / run action. See
+    /// `crate::search` for the ranking + source implementations.
+    index: SearchIndex,
+    /// The category chip currently active. Palette chrome flips this
+    /// via [`Self::set_category_filter`] on chip clicks.
+    category: CategoryFilter,
 }
 
 impl GlobalSearch {
@@ -44,6 +53,8 @@ impl GlobalSearch {
         Self {
             palette: CommandPalette::new(),
             context: SearchContext::Any,
+            index: SearchIndex::with_default_sources(),
+            category: CategoryFilter::all(),
         }
     }
 
@@ -62,6 +73,39 @@ impl GlobalSearch {
         }
     }
 
+    /// Refresh every source and repopulate the palette with
+    /// [`CommandEntry`] rows derived from the ranked hits. Runs on
+    /// the false → true palette-visibility transition; also
+    /// available to test code so mocked sources can drive the
+    /// palette without waiting on a background task.
+    ///
+    /// The palette's existing filter closure is left intact; this
+    /// method only replaces the `entries` vector.
+    pub fn refresh_and_populate(&mut self, seed_defaults: bool) {
+        let _ = self.index.refresh_all();
+        // Rebuild the palette from scratch — the palette owns the
+        // canonical row order.
+        self.palette = CommandPalette::new();
+        if seed_defaults {
+            self.seed_default_commands();
+        }
+        let ranked = self.index.ranked("", self.category);
+        for r in ranked {
+            // Row label: "<name> — <description>" so the palette's
+            // built-in `fuzzy_score(query, label)` filter still
+            // matches on both name and description. Prepend the
+            // action-affordance glyph so the row visually announces
+            // launch vs install vs run.
+            let glyph = affordance_glyph(&r.item.action);
+            let label = if r.item.description.is_empty() {
+                format!("{glyph}  {}", r.item.name)
+            } else {
+                format!("{glyph}  {} — {}", r.item.name, r.item.description)
+            };
+            self.palette.push(CommandEntry::new(r.item.id.clone(), label));
+        }
+    }
+
     pub fn palette(&self) -> &CommandPalette {
         &self.palette
     }
@@ -72,6 +116,36 @@ impl GlobalSearch {
 
     pub fn context(&self) -> &SearchContext {
         &self.context
+    }
+
+    /// Read the source registry — call sites (mostly tests) use this
+    /// to introspect what's been fetched.
+    pub fn index(&self) -> &SearchIndex {
+        &self.index
+    }
+
+    /// Mutable handle to the source registry. The overlay host calls
+    /// [`SearchIndex::refresh_all`] through this on the palette-open
+    /// transition.
+    pub fn index_mut(&mut self) -> &mut SearchIndex {
+        &mut self.index
+    }
+
+    /// Which category-chip mask the palette is showing.
+    pub fn category_filter(&self) -> CategoryFilter {
+        self.category
+    }
+
+    /// Rotate the category filter through the palette-chrome states.
+    /// The palette chrome flips this on chip clicks.
+    pub fn set_category_filter(&mut self, filter: CategoryFilter) {
+        self.category = filter;
+    }
+
+    /// Toggle a single [`SourceKind`] on / off — bound to the
+    /// palette's category-chip keyboard shortcuts.
+    pub fn toggle_category(&mut self, kind: SourceKind) {
+        self.category = self.category.toggle(kind);
     }
 
     /// Translucent-tint fallback alpha for the palette surface. See
@@ -118,5 +192,21 @@ impl GlobalSearch {
 impl Default for GlobalSearch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The affordance glyph painted at the head of every result row —
+/// `▶` for a launch, `+` for an add / install, `❯` for a `PATH`
+/// command run.
+///
+/// Kept as a free function so both [`GlobalSearch::refresh_and_populate`]
+/// and the palette chrome (which paints its own per-row overlay for
+/// the affordance colour) can share one source of truth.
+pub fn affordance_glyph(action: &crate::search::SearchAction) -> &'static str {
+    use crate::search::SearchAction;
+    match action {
+        SearchAction::LaunchInstalled { .. } => "\u{25B6}",
+        SearchAction::AddQosApp { .. } | SearchAction::InstallFlatpak { .. } => "+",
+        SearchAction::RunCommand { .. } => "\u{276F}",
     }
 }
