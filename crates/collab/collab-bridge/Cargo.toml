@@ -1,0 +1,42 @@
+[package]
+name = "collab-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "qOS collab-bridge: Cap'n Proto SDK surface (runtime-collab) in front of the shell's legacy serde-JSON CollabRequest/CollabEvent broker."
+
+[[bin]]
+name = "qos-collab-bridge"
+path = "src/main.rs"
+
+[lib]
+name = "collab_bridge"
+path = "src/lib.rs"
+
+[dependencies]
+runtime-collab = { path = "../../runtime/runtime-collab" }
+collab-types = { path = "../collab-types" }
+
+capnp = "0.26"
+capnp-rpc = "0.26"
+
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "signal", "time", "sync"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+postcard = { version = "1", features = ["use-std"] }
+
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sd-notify = "0.4"
+parking_lot = "0.12"
+anyhow = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+runtime-portal = { path = "../../runtime/runtime-portal" }
