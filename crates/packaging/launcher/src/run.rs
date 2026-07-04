@@ -50,6 +50,12 @@ impl RunError {
     }
 }
 
+impl Default for LaunchMode {
+    fn default() -> Self {
+        LaunchMode::Gui
+    }
+}
+
 /// Optional knobs for `run_with`.
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
@@ -76,6 +82,11 @@ pub struct RunOptions {
     /// on. Turning it off is a debug-only escape hatch and is
     /// logged prominently.
     pub landlock_enforce: bool,
+    /// Launch mode — GUI (the default) or CLI. In CLI mode we
+    /// pick the `cli_bin()` off the entrypoint (falling back to
+    /// `bin`), forward argv from the user's shell, and inherit
+    /// stdio instead of trying to attach a Wayland surface.
+    pub mode: LaunchMode,
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.
@@ -88,6 +99,24 @@ pub fn run(
 ) -> Result<ExitStatus, RunError> {
     let manifest = read_manifest(manifest_path)?;
     run_with(&manifest, payload_root, opts)
+}
+
+/// Launch mode — which of the entrypoint binaries we're targeting
+/// and what extra args to forward.
+#[derive(Debug, Clone)]
+pub enum LaunchMode {
+    /// The default: GUI-flavour bin. `run` / `run_with` use this
+    /// implicitly.
+    Gui,
+    /// CLI-flavour bin. `passthrough_argv` is what follows `--`
+    /// on the shim command line — forwarded verbatim to the
+    /// entrypoint. `command` names the manifest entry we resolved
+    /// against; the shim + launcher tag it into the env so the
+    /// child can distinguish (e.g. multi-subcommand packages).
+    Cli {
+        command: String,
+        passthrough_argv: Vec<String>,
+    },
 }
 
 /// `run` variant taking a pre-parsed manifest. Useful for tests that
@@ -107,9 +136,48 @@ pub fn run_with(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
-    // 3. Argv.
+    // 3. Argv. Pick the bin per launch mode.
     let runtime_arg = opts.runtime_root.as_deref().map(|p| (p, "1"));
-    let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds);
+    let entry_bin_owned: String;
+    let (mut argv, extra_setenv, cli_passthrough) = match &opts.mode {
+        LaunchMode::Gui => (
+            build_bwrap_argv(manifest, payload_root, runtime_arg, &binds),
+            None,
+            Vec::new(),
+        ),
+        LaunchMode::Cli { command, passthrough_argv } => {
+            entry_bin_owned = manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string();
+            let v = crate::sandbox::build_bwrap_argv_for_entry(
+                manifest,
+                payload_root,
+                runtime_arg,
+                &binds,
+                &entry_bin_owned,
+            );
+            // Tag the invoked command name so multi-command CLI
+            // packages can dispatch off it. Splice in via `--setenv`
+            // in the landlock-shim / prefix step below so bwrap's
+            // flag-parse still sees the entrypoint path last.
+            (
+                v,
+                Some(("QOS_CLI_COMMAND".to_string(), command.clone())),
+                passthrough_argv.clone(),
+            )
+        }
+    };
+    // Splice in the QOS_CLI_COMMAND setenv before the trailing
+    // entrypoint token so bwrap still parses it as a flag.
+    if let Some((k, v)) = extra_setenv {
+        let entry = argv.pop().expect("argv non-empty");
+        argv.push("--setenv".to_string());
+        argv.push(k);
+        argv.push(v);
+        argv.push(entry);
+    }
 
     // Optional: narrow dynamic-loader binds. Deliberately not the whole
     // /usr — just the files a plain dynamically-linked binary needs to
@@ -193,6 +261,11 @@ pub fn run_with(
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
+
+    // CLI passthrough: everything after the entrypoint token is
+    // opaque to bwrap and forwarded to the sandboxed program as
+    // its argv[1..]. The vec is empty for GUI launches.
+    argv.extend(cli_passthrough);
 
     // 4. Build the bwrap Command.
     let bwrap = opts
