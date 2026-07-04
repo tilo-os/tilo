@@ -123,25 +123,25 @@ impl WpFormat {
             // snapshot via `docpdf`. Map its error into the shared `CodecError`.
             WpFormat::Pdf => {
                 let snap = dr.materialize();
-                docpdf::render_pdf(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
+                qdoc_pdf::render_pdf(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
             // HTML/RTF aren't `FormatProvider` codecs either — they render from
             // the materialized snapshot via `dochtml`/`docrtf`, returning UTF-8
             // bytes.
             WpFormat::Html => {
                 let snap = dr.materialize();
-                Ok(dochtml::render_html(&snap, dochtml::HtmlOptions::default()).into_bytes())
+                Ok(qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default()).into_bytes())
             }
             WpFormat::Rtf => {
                 let snap = dr.materialize();
-                Ok(docrtf::render_rtf(&snap).into_bytes())
+                Ok(qdoc_rtf::render_rtf(&snap).into_bytes())
             }
             // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
             // ZIP container from the materialized snapshot via `docepub`. Map its
             // error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
-                docepub::render_epub(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
+                qdoc_epub::render_epub(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
         }
     }
