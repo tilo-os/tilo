@@ -68,6 +68,9 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
         version: "0.0.0".to_string(),
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
+            r#type: launcher::manifest::EntrypointType::Gui,
+            gui_bin: None,
+            cli_bin: None,
         },
         sandbox: Sandbox {
             net: Net {
@@ -76,6 +79,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
             fs: Fs::default(),
             services,
         },
+        cli_commands: Vec::new(),
     }
 }
 
@@ -115,9 +119,8 @@ fn required_service_missing_fails() {
     let m = hello_manifest(dir.path(), svcs);
     let opts = RunOptions {
         no_services: false,
-        ..Default::default(),
-                landlock_enforce: true,
-            };
+        ..Default::default()
+    };
     let err = run_with(&m, dir.path(), &opts).unwrap_err();
     assert_eq!(err.to_exit_code(), EXIT_REQUIRED_SERVICE_MISSING);
     let msg = format!("{err}");
@@ -157,8 +160,9 @@ fn hello_world_runs() {
         runtime_root: None,
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
-                landlock_enforce: true,
-            };
+        landlock_enforce: true,
+        mode: launcher::run::LaunchMode::Gui,
+    };
     let (status, stdout) =
         run_with_captured(&m, payload.path(), &opts).expect("launch");
     assert!(status.success(), "child exited non-zero: {status:?}");
@@ -189,8 +193,9 @@ fn no_services_flag_skips_required() {
         runtime_root: None,
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
-                landlock_enforce: true,
-            };
+        landlock_enforce: true,
+        mode: launcher::run::LaunchMode::Gui,
+    };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success());
 }
@@ -219,8 +224,9 @@ fn optional_service_missing_warns_and_runs() {
         runtime_root: None,
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
-                landlock_enforce: true,
-            };
+        landlock_enforce: true,
+        mode: launcher::run::LaunchMode::Gui,
+    };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success(), "optional missing should still run");
 }
@@ -249,8 +255,9 @@ fn read_only_fs_enforced() {
         runtime_root: None,
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
-                landlock_enforce: true,
-            };
+        landlock_enforce: true,
+        mode: launcher::run::LaunchMode::Gui,
+    };
     let status = run_with(&m, payload.path(), &opts).expect("launch");
     assert!(status.success());
 }
