@@ -128,6 +128,19 @@ pub struct RunOptions {
     /// by policy-strict callers and by tests. The launcher's trust
     /// config (a follow-up) will pin this by default.
     pub require_runtime_publisher: Option<String>,
+    /// Explicit host path to the user identity JSON. When `None`,
+    /// the launcher resolves the default location from the process's
+    /// `$XDG_CONFIG_HOME` / `$HOME` env vars and uses it only if the
+    /// file actually exists. Tests supply an override so they can
+    /// point at a tempdir without shimming `$HOME`.
+    ///
+    /// When resolved (either explicitly or from env), the file is
+    /// ro-bound into the sandbox at
+    /// [`crate::sandbox::SANDBOX_IDENTITY_PATH`] and
+    /// `QOS_USER_IDENTITY` is set to that path — so the sandboxed
+    /// `runtime-identity::load()` finds a real identity to attach to
+    /// join_channel presence + signed-op attribution.
+    pub identity_host_path: Option<PathBuf>,
 }
 
 /// Resolve which runtime bundle to mount, if any.
@@ -152,6 +165,52 @@ pub fn resolve_runtime_test_helper(
     opts: &RunOptions,
 ) -> Result<Option<(PathBuf, String)>, RunError> {
     resolve_runtime(manifest, opts)
+}
+
+/// Resolve the host path to the user identity JSON.
+///
+/// Priority:
+/// 1. `opts.identity_host_path` explicit override — used verbatim,
+///    without an existence check (tests may point at a not-yet-created
+///    file that a fixture will materialise before the sandbox runs).
+/// 2. `$XDG_CONFIG_HOME/qos/identity/primary.json` if the env var is
+///    set + the file exists.
+/// 3. `$HOME/.config/qos/identity/primary.json` if it exists.
+/// 4. `None` — no identity to plumb; apps fall back to the "no
+///    identity" path unchanged.
+///
+/// The env-var path also matches what `shell::firstboot` writes on
+/// first login and what `shell::identity_provisioning::DiskIdentityStore`
+/// uses, so a machine with a fresh boot chain converges on one file.
+pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
+    if let Some(p) = &opts.identity_host_path {
+        return Some(p.clone());
+    }
+    let file_name = "primary.json";
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            let p = PathBuf::from(xdg)
+                .join("qos")
+                .join("identity")
+                .join(file_name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        if !home.is_empty() {
+            let p = PathBuf::from(home)
+                .join(".config")
+                .join("qos")
+                .join("identity")
+                .join(file_name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 pub fn resolve_runtime(
@@ -357,13 +416,27 @@ pub fn run_with(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
+    // Identity resolution: host location of the user identity JSON.
+    // Threaded through both bwrap-argv builders so the child receives
+    // a `QOS_USER_IDENTITY` env var pointing at the sandbox-side path
+    // — that's the loader the `runtime-identity::load` SDK calls.
+    let identity_host = resolve_identity_host_path(opts);
+    let identity_arg = identity_host.as_deref();
+
     // Pick the entrypoint bin per launch mode. GUI uses the default
     // `bin`; CLI uses `cli_bin()` if set (falling back to `bin`) and
     // splices QOS_CLI_COMMAND / forwards passthrough argv.
     let entry_bin_owned: String;
     let (mut argv, extra_setenv, cli_passthrough) = match &opts.mode {
         LaunchMode::Gui => (
-            build_bwrap_argv(manifest, payload_root, runtime_arg, &binds, dbus_plan.as_ref()),
+            build_bwrap_argv(
+                manifest,
+                payload_root,
+                runtime_arg,
+                &binds,
+                dbus_plan.as_ref(),
+                identity_arg,
+            ),
             None,
             Vec::new(),
         ),
@@ -379,6 +452,7 @@ pub fn run_with(
                 runtime_arg,
                 &binds,
                 dbus_plan.as_ref(),
+                identity_arg,
                 &entry_bin_owned,
             );
             (
@@ -468,13 +542,21 @@ pub fn run_with(
             argv.push(expanded.display().to_string());
         }
         // If we bound a D-Bus socket in for portal use, Landlock must
-        // also grant read on the *sandbox-side* path so ashpd's
-        // connect() doesn't surface EACCES. That path is either
-        // `/run/user/<uid>/bus` (proxy) or the raw bus path (direct
-        // fallback) — [`DBusBindPlan::sandbox_path`] carries it.
+        // also grant read on the sandbox-side path so ashpd's connect()
+        // doesn't surface EACCES. Path is either `/run/user/<uid>/bus`
+        // (proxy) or the raw bus path (direct fallback); the plan
+        // carries it.
         if let Some(plan) = &dbus_plan {
             argv.push("--ro".to_string());
             argv.push(plan.sandbox_path.display().to_string());
+        }
+        // Same story for the ro-bound identity file: without a
+        // Landlock grant on the sandbox-side path, the app's
+        // `runtime-identity::load()` open() surfaces EACCES and the
+        // whole feature quietly no-ops.
+        if identity_arg.is_some() {
+            argv.push("--ro".to_string());
+            argv.push(crate::sandbox::SANDBOX_IDENTITY_PATH.to_string());
         }
         for path in &manifest.sandbox.fs.write {
             let expanded = crate::manifest::expand_path(path);
@@ -625,7 +707,16 @@ pub fn run_with_captured(
         .map(|(p, v)| (p.as_path(), v.as_str()));
     // D-Bus plan (same decision path as `run_with`).
     let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
-    let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds, dbus_plan.as_ref());
+    let identity_host = resolve_identity_host_path(opts);
+    let identity_arg = identity_host.as_deref();
+    let mut argv = build_bwrap_argv(
+        manifest,
+        payload_root,
+        runtime_arg,
+        &binds,
+        dbus_plan.as_ref(),
+        identity_arg,
+    );
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
@@ -870,3 +961,110 @@ fn current_uid() -> u32 {
     // SAFETY: getuid always succeeds and returns a uid_t.
     unsafe { libc::getuid() }
 }
+
+#[cfg(test)]
+mod identity_resolution_tests {
+    use super::*;
+
+    // A serial guard: these tests mutate `XDG_CONFIG_HOME` / `HOME`,
+    // which are shared with every other test in the process. Cargo's
+    // parallel runner would race them without the mutex.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn snapshot_and_clear() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
+        let x = std::env::var_os("XDG_CONFIG_HOME");
+        let h = std::env::var_os("HOME");
+        // SAFETY: guarded by ENV_MUTEX in each test.
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("HOME");
+        }
+        (x, h)
+    }
+
+    fn restore(x: Option<std::ffi::OsString>, h: Option<std::ffi::OsString>) {
+        // SAFETY: guarded by ENV_MUTEX in each test.
+        unsafe {
+            match x {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match h {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_override_wins_and_skips_existence_check() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = snapshot_and_clear();
+        let opts = RunOptions {
+            identity_host_path: Some(PathBuf::from("/nowhere/does/not/exist.json")),
+            ..RunOptions::default()
+        };
+        let resolved = resolve_identity_host_path(&opts);
+        restore(saved.0, saved.1);
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/nowhere/does/not/exist.json")),
+            "explicit path is used verbatim, no exists() check"
+        );
+    }
+
+    #[test]
+    fn xdg_wins_when_file_exists_there() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = snapshot_and_clear();
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = tmp
+            .path()
+            .join("qos")
+            .join("identity")
+            .join("primary.json");
+        std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
+        std::fs::write(&ident, b"{}").unwrap();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", tmp.path()) };
+        let opts = RunOptions::default();
+        let resolved = resolve_identity_host_path(&opts);
+        restore(saved.0, saved.1);
+        assert_eq!(resolved, Some(ident));
+    }
+
+    #[test]
+    fn home_fallback_used_when_no_xdg() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = snapshot_and_clear();
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = tmp
+            .path()
+            .join(".config")
+            .join("qos")
+            .join("identity")
+            .join("primary.json");
+        std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
+        std::fs::write(&ident, b"{}").unwrap();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let opts = RunOptions::default();
+        let resolved = resolve_identity_host_path(&opts);
+        restore(saved.0, saved.1);
+        assert_eq!(resolved, Some(ident));
+    }
+
+    #[test]
+    fn none_when_nothing_resolves() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = snapshot_and_clear();
+        let opts = RunOptions::default();
+        let resolved = resolve_identity_host_path(&opts);
+        restore(saved.0, saved.1);
+        assert_eq!(resolved, None);
+    }
+}
+
+// The prior HEAD block above the identity_resolution_tests module
+// carried the resolve_dbus_bind helper; find_proxy_binary and
+// spawn_dbus_proxy live in the crate::dbus_proxy module.
