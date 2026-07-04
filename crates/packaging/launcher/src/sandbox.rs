@@ -87,6 +87,13 @@ pub fn build_bwrap_argv_for_entry(
         &payload_mount,
     );
 
+    // Tell the SDK who we are. Apps use QOS_PACKAGE_ID to pick a
+    // per-app fallback state dir in standalone mode; the launcher
+    // is the only source of truth for it.
+    argv.push("--setenv".to_string());
+    argv.push("QOS_PACKAGE_ID".to_string());
+    argv.push(manifest.package_id.clone());
+
     // Runtime bind: host runtime_root -> /usr/lib/qos-runtime/<version>/
     // and set LD_LIBRARY_PATH inside the sandbox so the entrypoint can
     // find the shared libs the runtime ships.
