@@ -95,14 +95,6 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
-    /// True after a click on the panel that wasn't routed to a block
-    /// — used to grant scroll focus so wheel events target the panel
-    /// even when the editor itself isn't focused. Stored so a future
-    /// trackpad/keyboard-scroll path has somewhere to read it. Always
-    /// safe to be true: the panel is the only scrollable region in
-    /// the notes app.
-    #[allow(dead_code)]
-    has_scroll_focus: bool,
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
     local_author: Option<String>,
@@ -120,7 +112,6 @@ impl MainPanel {
             title_node: None,
             dirty: true,
             scroll_y: 0.0,
-            has_scroll_focus: false,
             local_author: None,
         }
     }
@@ -274,6 +265,14 @@ impl MainPanel {
     /// the resulting markdown.
     pub fn editor_mut(&mut self) -> &mut BlockEditor {
         &mut self.editor
+    }
+
+    /// Test hook: the panel's current vertical scroll offset in px.
+    /// Lets integration tests assert wheel scrolling + the
+    /// `apply_layout` overflow clamp through the real event path.
+    #[doc(hidden)]
+    pub fn scroll_y_for_test(&self) -> f64 {
+        self.scroll_y
     }
 }
 
