@@ -24,6 +24,9 @@ winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Explicit rustls ring provider so we can install_default() at startup — the tree
+# has both ring + aws-lc-rs, which rustls 0.23 won't auto-disambiguate.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 png = "0.18.1"
 # Device location through the XDG Desktop Portal (org.freedesktop.portal.Location,
 # GeoClue2 behind it). Runs off the UI thread on its own small Tokio runtime; the

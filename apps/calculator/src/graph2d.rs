@@ -27,6 +27,13 @@ pub fn series_color(theme: &Theme, i: usize) -> Color {
     }
 }
 
+/// Below this body width the Functions panel can't dock without eating half the
+/// plot, so it collapses to a toggle + overlay drawer (matching Calc's history
+/// sidebar and the OS Adwaita overlay-sidebar pattern).
+const PANEL_DOCK_MIN_W: f64 = 720.0;
+/// Overlay drawer width when the panel floats over the canvas.
+const PANEL_OVERLAY_W: f64 = 300.0;
+
 pub struct Graph2dScreen {
     pub panel: Rect,
     pub canvas: Rect,
@@ -34,6 +41,17 @@ pub struct Graph2dScreen {
     vis_rects: Vec<Rect>,
     edit_rects: Vec<Rect>,
     add_rect: Rect,
+    /// Panel is an overlay drawer (narrow) rather than docked (wide).
+    overlay: bool,
+    /// Whether the panel is currently shown.
+    panel_open: bool,
+    /// Whether the user explicitly toggled the panel this session; until they
+    /// do, open/closed tracks the breakpoint so a resize feels natural.
+    user_toggled: bool,
+    /// Toggle pill (only present in overlay mode, to open the drawer).
+    toggle_rect: Rect,
+    /// Dismiss scrim behind an open overlay drawer.
+    scrim_rect: Rect,
     pub hovered_row: Option<usize>,
     /// One real math editor per function row, kept in sync with `model.funcs`.
     fields: Vec<MathField>,
@@ -57,6 +75,14 @@ impl Default for Graph2dScreen {
             vis_rects: Vec::new(),
             edit_rects: Vec::new(),
             add_rect: Rect::ZERO,
+            overlay: false,
+            panel_open: true,
+            // Shots-only: force the panel open so the headless narrow-width
+            // screenshot can show the overlay drawer. No effect when unset, so
+            // live behaviour (breakpoint-driven default) is unchanged.
+            user_toggled: std::env::var_os("QOS_CALC_PANEL_OPEN").is_some(),
+            toggle_rect: Rect::ZERO,
+            scrim_rect: Rect::ZERO,
             hovered_row: None,
             fields: Vec::new(),
             card_heights: Vec::new(),
@@ -126,14 +152,49 @@ const ROW_GAP: f64 = 8.0;
 const BASE_ROW_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * CARD_PAD_Y;
 
 impl Graph2dScreen {
+    /// Resolve docked-vs-overlay and the panel / canvas / scrim / toggle rects
+    /// from the current width. Re-derived every layout pass so a resize reflows.
+    fn resolve_panel(&mut self, area: Rect) {
+        let can_dock = area.width() >= PANEL_DOCK_MIN_W;
+        self.overlay = !can_dock;
+        if !self.user_toggled {
+            self.panel_open = can_dock;
+        }
+
+        if can_dock && self.panel_open {
+            let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
+            self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
+            self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
+            self.scrim_rect = Rect::ZERO;
+            self.toggle_rect = Rect::ZERO;
+        } else {
+            self.canvas = Rect::new(area.x0, area.y0, area.x1, area.y1);
+            if self.overlay && self.panel_open {
+                let w = PANEL_OVERLAY_W.min(area.width() - 40.0);
+                self.panel = Rect::new(area.x0, area.y0, area.x0 + w, area.y1);
+                self.scrim_rect = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
+                // "Hide" chip at the drawer header's right edge.
+                self.toggle_rect = Rect::new(self.panel.x1 - 66.0, self.panel.y0 + 14.0, self.panel.x1 - 16.0, self.panel.y0 + 42.0);
+            } else {
+                self.panel = Rect::ZERO;
+                self.scrim_rect = Rect::ZERO;
+                // Closed overlay: a toggle pill floats at the canvas top-left.
+                self.toggle_rect = Rect::new(area.x0 + 12.0, area.y0 + 12.0, area.x0 + 152.0, area.y0 + 44.0);
+            }
+        }
+    }
+
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
-        let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
-        self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
-        self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
+        self.resolve_panel(area);
 
         self.row_rects.clear();
         self.vis_rects.clear();
         self.edit_rects.clear();
+        if self.panel == Rect::ZERO {
+            // Panel hidden (collapsed overlay): no rows to place.
+            self.add_rect = Rect::ZERO;
+            return;
+        }
         let list_top = self.panel.y0 + 64.0;
         // Cards flow top-to-bottom with per-row heights (a fraction's card is
         // taller than a plain line's), so the list reflows to accommodate them.
@@ -221,6 +282,14 @@ impl Graph2dScreen {
         }
     }
 
+    /// Paint remote collaborators' carets into the active function field,
+    /// snapping each scene-space cursor to the field's 2D glyph layout.
+    pub fn draw_remote_carets(&self, scene: &mut Scene, t: Affine, active: usize, cursors: &[(Point, Color)]) {
+        if let Some(f) = self.fields.get(active) {
+            f.draw_remote_carets(scene, t, cursors);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -248,9 +317,22 @@ impl Graph2dScreen {
         // canvas frame
         draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
 
+        // Collapsed overlay: nothing but a floating toggle over the plot.
+        if self.panel == Rect::ZERO {
+            if self.overlay {
+                self.draw_toggle(scene, t, tr, theme);
+            }
+            return;
+        }
+        // Open overlay drawer: lay a dismiss scrim over the canvas first.
+        if self.overlay {
+            draw::fill_rect(scene, t, self.scrim_rect, draw::with_alpha(Color::BLACK, 110));
+        }
+
         // ----- function panel ----------------------------------------------
-        draw::fill_rect(scene, t, self.panel, c.surfaces.base);
-        draw::line(scene, t, Point::new(self.panel.x1, self.panel.y0), Point::new(self.panel.x1, self.panel.y1), c.border_standard, 1.0);
+        let panel_bg = if self.overlay { c.surfaces.raised } else { c.surfaces.base };
+        draw::fill_rect(scene, t, self.panel, panel_bg);
+        draw::line(scene, t, Point::new(self.panel.x1, self.panel.y0), Point::new(self.panel.x1, self.panel.y1), c.border_standard, if self.overlay { 1.5 } else { 1.0 });
         let head = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 12.0, self.panel.x1 - 16.0, self.panel.y0 + 36.0);
         draw::text_in(scene, tr, t, head, "Functions", 16.0, c.text_primary, Align::Left, TextWeight::Semibold);
         let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 36.0, self.panel.x1 - 16.0, self.panel.y0 + 56.0);
@@ -322,6 +404,65 @@ impl Graph2dScreen {
         } else {
             draw::text_in(scene, tr, t, l3, "drag to pan · scroll to zoom", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
         }
+
+        // Overlay drawer keeps a "Hide" chip in its header so it can be
+        // dismissed without hunting for the scrim.
+        if self.overlay {
+            self.draw_toggle(scene, t, tr, theme);
+        }
+    }
+
+    /// Draw the panel toggle: a floating "Functions" pill over the canvas when
+    /// the drawer is closed, or a compact "Hide" chip in the drawer header when
+    /// it's open.
+    fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if self.toggle_rect == Rect::ZERO {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let r = self.toggle_rect;
+        if self.panel_open {
+            draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
+            draw::text_in(scene, tr, t, r, "Hide", 12.0, c.text_dim, Align::Center, TextWeight::Semibold);
+        } else {
+            draw::fill_rrect(scene, t, r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+            draw::text_in(scene, tr, t, r, "ƒ  Functions", 13.0, c.accent[6], Align::Center, TextWeight::Semibold);
+        }
+    }
+
+    // -- overlay panel chrome ------------------------------------------------
+
+    /// Whether `p` hit the panel toggle (open/close the Functions drawer).
+    pub fn toggle_at(&self, p: Point) -> bool {
+        self.toggle_rect != Rect::ZERO && self.toggle_rect.contains(p)
+    }
+    /// Whether `p` landed on the dismiss scrim of an open overlay drawer.
+    pub fn scrim_at(&self, p: Point) -> bool {
+        self.overlay && self.panel_open && self.scrim_rect.contains(p)
+    }
+    /// Flip the panel open/closed and remember the user's explicit choice.
+    pub fn toggle_panel(&mut self) {
+        self.panel_open = !self.panel_open;
+        self.user_toggled = true;
+    }
+    /// Force the overlay drawer shut (e.g. a scrim tap).
+    pub fn close_panel(&mut self) {
+        self.panel_open = false;
+        self.user_toggled = true;
+    }
+    /// Whether an open overlay drawer is covering `p` (so a click there must not
+    /// fall through to the canvas as a pan).
+    pub fn overlay_captures(&self, p: Point) -> bool {
+        self.overlay && self.panel_open && self.panel.contains(p)
+    }
+    /// Whether the Functions panel is currently shown (test/introspection).
+    pub fn panel_open(&self) -> bool {
+        self.panel_open
+    }
+    /// Center of the panel toggle, if one is placed this frame (test helper).
+    pub fn toggle_center(&self) -> Option<Point> {
+        (self.toggle_rect != Rect::ZERO).then(|| self.toggle_rect.center())
     }
 
     // ----- canvas internals -------------------------------------------------
@@ -522,6 +663,12 @@ impl Graph2dScreen {
         self.add_rect.contains(p)
     }
     pub fn canvas_contains(&self, p: Point) -> bool {
+        // While an overlay drawer (and its scrim) is up, the canvas is not
+        // directly interactive — a press there dismisses the drawer instead of
+        // panning/tracing.
+        if self.overlay && self.panel_open {
+            return false;
+        }
         self.canvas.contains(p)
     }
 }
@@ -592,6 +739,65 @@ mod tests {
         let canvas = Rect::new(360.0, 60.0, 1280.0, 800.0);
         s.canvas = canvas;
         (s, canvas)
+    }
+
+    #[test]
+    fn wide_docks_the_functions_panel() {
+        let mut s = Graph2dScreen::default();
+        let m = CalcModel::seeded();
+        let area = Rect::new(0.0, 60.0, 1280.0, 800.0);
+        s.layout(area, &m);
+        assert!(!s.overlay, "wide window docks the panel");
+        assert!(s.panel_open);
+        assert!(s.panel.width() > 0.0 && s.panel.x0 == area.x0, "docked panel on the left");
+        assert!(s.canvas.x0 >= s.panel.x1 - 0.5, "canvas starts after the docked panel");
+    }
+
+    #[test]
+    fn narrow_collapses_panel_to_overlay() {
+        let mut s = Graph2dScreen::default();
+        let m = CalcModel::seeded();
+        let area = Rect::new(0.0, 60.0, 560.0, 800.0);
+        s.layout(area, &m);
+        assert!(s.overlay, "narrow window uses the overlay drawer");
+        assert!(!s.panel_open, "narrow default is collapsed so the plot keeps the width");
+        assert_eq!(s.panel, Rect::ZERO, "collapsed → no docked panel eating the canvas");
+        assert!((s.canvas.width() - area.width()).abs() < 0.5, "canvas gets the full width when collapsed");
+        assert!(s.toggle_at(s.toggle_rect.center()), "a floating toggle must be present to open it");
+    }
+
+    #[test]
+    fn narrow_overlay_opens_with_scrim_and_dismisses() {
+        let mut s = Graph2dScreen::default();
+        let m = CalcModel::seeded();
+        let area = Rect::new(0.0, 60.0, 560.0, 800.0);
+        s.layout(area, &m);
+        // Open via the toggle.
+        s.toggle_panel();
+        s.layout(area, &m);
+        assert!(s.panel_open && s.overlay);
+        assert!(s.panel.width() > 0.0, "open overlay draws a drawer");
+        assert!(s.scrim_rect.width() > 0.0, "open overlay lays down a dismiss scrim");
+        // A press inside the drawer must not pan the canvas.
+        assert!(!s.canvas_contains(s.panel.center()));
+        // Scrim tap dismisses.
+        let scrim_pt = Point::new(s.scrim_rect.x0 + 10.0, s.scrim_rect.center().y);
+        assert!(s.scrim_at(scrim_pt));
+        s.close_panel();
+        s.layout(area, &m);
+        assert!(!s.panel_open);
+    }
+
+    #[test]
+    fn narrow_panel_reflows_back_to_docked_when_widened() {
+        // Re-derive from the current width each pass: a fresh (un-toggled) screen
+        // must dock when wide and overlay when narrow, proving no first-frame cache.
+        let mut s = Graph2dScreen::default();
+        let m = CalcModel::seeded();
+        s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
+        assert!(s.overlay && !s.panel_open);
+        s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
+        assert!(!s.overlay && s.panel_open, "widening must re-dock the panel");
     }
 
     #[test]

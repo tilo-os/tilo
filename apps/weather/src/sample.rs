@@ -283,6 +283,20 @@ pub fn sample_model() -> WeatherModel {
     model
 }
 
+/// A representative geocode result set (a "Par…" query) for the offscreen
+/// screenshot + tests of the search dropdown. The live path fetches these
+/// from Open-Meteo's geocoder; this bundled set keeps the headless shot of
+/// the dropdown honest without a network round-trip.
+pub fn sample_geocode_results() -> Vec<SavedLocation> {
+    vec![
+        SavedLocation::new("Paris", "Île-de-France", "France", "FR", 48.8566, 2.3522, "Europe/Paris"),
+        SavedLocation::new("Paris", "Texas", "United States", "US", 33.6609, -95.5555, "America/Chicago"),
+        SavedLocation::new("Parma", "Emilia-Romagna", "Italy", "IT", 44.8015, 10.3279, "Europe/Rome"),
+        SavedLocation::new("Parramatta", "New South Wales", "Australia", "AU", -33.815, 151.0, "Australia/Sydney"),
+        SavedLocation::new("Pardubice", "Pardubický", "Czechia", "CZ", 50.0343, 15.7812, "Europe/Prague"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

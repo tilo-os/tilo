@@ -35,7 +35,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_clicks_bench(shots_viewport(), n);
     }
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(calculator::app_root(), shots_viewport(), &out)?;
+        // The headless screenshot shows the lived-in demo state; the live loop
+        // (below) boots empty via `app_root`. `QOS_CALC_EMPTY` lets a shot
+        // capture that real empty-launch state for verification.
+        let root = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
+            calculator::app_root()
+        } else {
+            calculator::app_root_offline()
+        };
+        render_shot_to_png(root, shots_viewport(), &out)?;
         return Ok(());
     }
 
@@ -269,7 +277,17 @@ fn render_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
+    let mut presence = PresenceCtx::empty();
+    // Shots-only: seed a remote collaborator's cursor at `x,y` so the headless
+    // frame shows a peer caret mapped into the active math field's 2D layout.
+    if let Some(spec) = std::env::var_os("QOS_CALC_REMOTE_CURSOR") {
+        let spec = spec.to_string_lossy();
+        if let Some((sx, sy)) = spec.split_once(',') {
+            if let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>()) {
+                presence.upsert_remote_cursor("alice".into(), [x, y], Some("Alice"));
+            }
+        }
+    }
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();

@@ -579,6 +579,32 @@ pub fn date_to_serial(y: i64, m: u32, d: u32) -> f64 {
     (days_from_civil(y, m, d) + 25569) as f64
 }
 
+/// Split an Excel serial into its `(year, month, day)` calendar parts.
+pub fn serial_to_ymd(serial: f64) -> (i64, u32, u32) {
+    civil_from_days(serial.floor() as i64 - 25569)
+}
+
+/// The weekday of a serial as Excel's default numbering: `1` = Sunday …
+/// `7` = Saturday.
+pub fn weekday_from_serial(serial: f64) -> u32 {
+    let days = serial.floor() as i64 - 25569; // days since 1970-01-01 (a Thursday)
+    // Sunday=0 .. Saturday=6, then shift to Excel's 1-based Sunday-first.
+    let dow = (((days + 4) % 7) + 7) % 7;
+    dow as u32 + 1
+}
+
+/// The current instant as an Excel serial (integer days + fractional day).
+/// Uses the system clock in UTC — there is no timezone database in this
+/// environment, so `TODAY()`/`NOW()` read as UTC dates.
+pub fn now_serial() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    secs / 86400.0 + 25569.0
+}
+
 /// Inverse of days_from_civil: days since Unix epoch -> (year, month, day).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;

@@ -406,6 +406,7 @@ pub mod link_popover;   pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_palette;   pub use page_palette::PageJumpPalette;
 mod dropdown;    pub use dropdown::Dropdown;
 pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
+pub mod scrollbar; pub use scrollbar::{Scrollbar, ScrollMetrics, PressOutcome};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
 mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};

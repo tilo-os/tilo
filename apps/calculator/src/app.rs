@@ -39,6 +39,12 @@ pub struct CalculatorApp {
     seg_rects: [Rect; 3],
     rad_rect: Rect,
     deg_rect: Rect,
+    /// Whether the topbar has room for the "Calculator" wordmark this frame.
+    /// Re-derived from the current width every `relayout`, never cached.
+    show_title: bool,
+    /// Whether the mode segments are too narrow for full labels and must use
+    /// the short forms ("Calc" / "2D" / "3D"). Re-derived every `relayout`.
+    seg_short: bool,
 
     mouse: Point,
     dragging: bool,
@@ -64,9 +70,21 @@ pub struct CalculatorApp {
 const COMMIT_COALESCE: std::time::Duration = std::time::Duration::from_millis(600);
 
 impl CalculatorApp {
+    /// The live app: boots empty in Calculator mode. Persisted state (if any)
+    /// is adopted from the CRDT on the first [`Widget::sync`].
     pub fn new() -> Self {
+        Self::with_model(CalcModel::default())
+    }
+
+    /// A lived-in demo instance (populated history / plots / surface) used by
+    /// the headless `--shots` renderer and tests. Never used by the live loop.
+    pub fn seeded() -> Self {
+        Self::with_model(CalcModel::seeded())
+    }
+
+    fn with_model(model: CalcModel) -> Self {
         Self {
-            model: CalcModel::seeded(),
+            model,
             calc: CalcScreen::default(),
             g2: Graph2dScreen::default(),
             g3: Graph3dScreen::default(),
@@ -76,6 +94,8 @@ impl CalculatorApp {
             seg_rects: [Rect::ZERO; 3],
             rad_rect: Rect::ZERO,
             deg_rect: Rect::ZERO,
+            show_title: true,
+            seg_short: false,
             mouse: Point::ZERO,
             dragging: false,
             drag_last: Point::ZERO,
@@ -89,23 +109,47 @@ impl CalculatorApp {
         }
     }
 
-    /// Recompute the header geometry from `self.area`.
+    /// Recompute the header geometry from `self.area`. The mode switcher and the
+    /// RAD/DEG toggle are packed so they never overlap or clip, reflowing down to
+    /// a ~400 px window: the wordmark drops out first, then the mode labels
+    /// condense to short forms and the toggle shrinks. All of this is derived
+    /// from the *current* width every call, so a resize between breakpoints
+    /// reflows rather than staying frozen at the launch layout.
     fn relayout(&mut self) {
         self.topbar = Rect::new(self.area.x0, self.area.y0, self.area.x1, self.area.y0 + TOPBAR_H);
         self.body = Rect::new(self.area.x0, self.area.y0 + TOPBAR_H, self.area.x1, self.area.y1);
 
-        let seg_w = 128.0;
+        let w = self.area.width();
         let seg_h = 36.0;
-        let x = self.area.x0 + 196.0;
         let y0 = self.area.y0 + (TOPBAR_H - seg_h) / 2.0;
+
+        // The wordmark needs room; drop it before anything else gets cramped.
+        self.show_title = w >= 680.0;
+        let brand_right = self.area.x0 + if self.show_title { 190.0 } else { 50.0 };
+
+        // RAD/DEG anchored to the right edge; compact form when tight.
+        let compact_toggle = w < 620.0;
+        let toggle_w = if compact_toggle { 100.0 } else { 124.0 };
+        let right_margin = if compact_toggle { 12.0 } else { 24.0 };
+        let ax1 = self.area.x1 - right_margin;
+        let ax0 = ax1 - toggle_w;
+        let half = toggle_w / 2.0;
+        self.rad_rect = Rect::new(ax0, y0, ax0 + half, y0 + seg_h);
+        self.deg_rect = Rect::new(ax0 + half, y0, ax1, y0 + seg_h);
+
+        // The mode switcher fills the gap between the brand and the toggle,
+        // centred, with each segment clamped to a tappable width.
+        let seg_area_left = brand_right + 12.0;
+        let seg_area_right = ax0 - 12.0;
+        let avail = (seg_area_right - seg_area_left).max(3.0 * 46.0);
+        let seg_w = (avail / 3.0).clamp(46.0, 128.0);
+        self.seg_short = seg_w < 104.0;
+        let seg_total = seg_w * 3.0;
+        let seg_start = seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
         for i in 0..3 {
-            let sx = x + i as f64 * seg_w;
+            let sx = seg_start + i as f64 * seg_w;
             self.seg_rects[i] = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
         }
-        let ax1 = self.area.x1 - 24.0;
-        let ax0 = ax1 - 124.0;
-        self.rad_rect = Rect::new(ax0, y0, ax0 + 62.0, y0 + seg_h);
-        self.deg_rect = Rect::new(ax0 + 62.0, y0, ax1, y0 + seg_h);
     }
 
     fn layout_active(&mut self) {
@@ -119,6 +163,19 @@ impl CalculatorApp {
     fn set_mode(&mut self, m: Mode) {
         if self.model.mode != m {
             self.model.mode = m;
+            // Give a freshly-entered graph mode something to edit rather than a
+            // blank void: an empty `y =` row for 2D, the starter surface for 3D.
+            // These are editor affordances (empty/example), not restored data.
+            match m {
+                Mode::Graph2d if self.model.funcs.is_empty() => {
+                    self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
+                    self.model.active_fn = 0;
+                }
+                Mode::Graph3d if self.model.surface.trim().is_empty() => {
+                    self.model.surface = model::DEFAULT_SURFACE.to_string();
+                }
+                _ => {}
+            }
             self.model_dirty = true;
         }
     }
@@ -139,8 +196,10 @@ impl CalculatorApp {
         let dot = Rect::new(self.area.x0 + 24.0, self.topbar.center().y - 9.0, self.area.x0 + 42.0, self.topbar.center().y + 9.0);
         draw::fill_rrect(scene, t, dot, 5.0, c.accent[5]);
         draw::text_in(scene, tr, t, dot, "=", 16.0, Color::WHITE, Align::Center, TextWeight::Bold);
-        let title = Rect::new(self.area.x0 + 52.0, self.topbar.y0, self.area.x0 + 190.0, self.topbar.y1);
-        draw::text_in(scene, tr, t, title, "Calculator", 19.0, c.text_primary, Align::Left, TextWeight::Bold);
+        if self.show_title {
+            let title = Rect::new(self.area.x0 + 52.0, self.topbar.y0, self.area.x0 + 190.0, self.topbar.y1);
+            draw::text_in(scene, tr, t, title, "Calculator", 19.0, c.text_primary, Align::Left, TextWeight::Bold);
+        }
 
         // segmented mode control
         let outer = Rect::new(self.seg_rects[0].x0 - 4.0, self.seg_rects[0].y0 - 4.0, self.seg_rects[2].x1 + 4.0, self.seg_rects[2].y1 + 4.0);
@@ -152,7 +211,8 @@ impl CalculatorApp {
                 draw::fill_rrect(scene, t, r, 8.0, c.accent[5]);
             }
             let col = if i == sel { Color::WHITE } else { c.text_dim };
-            draw::text_in(scene, tr, t, r, m.label(), 14.0, col, Align::Center, TextWeight::Semibold);
+            let label = if self.seg_short { m.short_label() } else { m.label() };
+            draw::text_in(scene, tr, t, r, label, 14.0, col, Align::Center, TextWeight::Semibold);
         }
 
         // DEG / RAD toggle
@@ -203,11 +263,18 @@ impl CalculatorApp {
             Mode::Calc => self.on_press_calc(p),
             Mode::Graph2d => self.on_press_g2(p, double),
             Mode::Graph3d => {
-                if self.g3.expr_contains(p) {
+                if self.g3.toggle_at(p) {
+                    self.g3.toggle_panel();
+                } else if self.g3.scrim_at(p) {
+                    self.g3.close_panel();
+                } else if self.g3.expr_contains(p) {
                     self.g3.sync_field(&self.model);
                     self.g3.field_mut().on_press_cached(p, double);
                     self.field_dragging = true;
                     self.model_dirty = true;
+                } else if self.g3.overlay_captures(p) {
+                    // A press inside the drawer that isn't the field/chip: consume
+                    // it so it doesn't fall through to an orbit drag.
                 } else if self.g3.canvas_contains(p) {
                     self.dragging = true;
                     self.drag_last = p;
@@ -249,6 +316,15 @@ impl CalculatorApp {
     }
 
     fn on_press_g2(&mut self, p: Point, double: bool) {
+        // Overlay-drawer chrome takes priority over the canvas underneath.
+        if self.g2.toggle_at(p) {
+            self.g2.toggle_panel();
+            return;
+        }
+        if self.g2.scrim_at(p) {
+            self.g2.close_panel();
+            return;
+        }
         if self.g2.add_at(p) {
             self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
             self.model.active_fn = self.model.funcs.len() - 1;
@@ -267,6 +343,9 @@ impl CalculatorApp {
         } else if let Some(i) = self.g2.row_at(p) {
             self.model.active_fn = i;
             self.model_dirty = true;
+        } else if self.g2.overlay_captures(p) {
+            // Press inside an open drawer (not a widget): consume it so it
+            // doesn't fall through to the canvas as a pan.
         } else if self.g2.canvas_contains(p) {
             self.dragging = true;
             self.drag_last = p;
@@ -515,6 +594,27 @@ impl CalculatorApp {
     }
 }
 
+/// Flatten a [`PresenceCtx`]'s remote cursors into `(scene point, colour)`
+/// pairs the math fields can snap onto their glyph layout. Colours come from
+/// the peer palette already resolved by the collab layer.
+fn remote_carets(presence: &PresenceCtx) -> Vec<(Point, Color)> {
+    presence
+        .remote_cursors
+        .iter()
+        .map(|rc| {
+            let p = Point::new(rc.position[0] as f64, rc.position[1] as f64);
+            let to_u8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let col = Color::from_rgba8(
+                to_u8(rc.color[0]),
+                to_u8(rc.color[1]),
+                to_u8(rc.color[2]),
+                to_u8(rc.color[3]),
+            );
+            (p, col)
+        })
+        .collect()
+}
+
 /// Whether a key is one the math field acts on (so the app knows to route it
 /// there and consume it, vs. letting it fall through to mode-level handling).
 fn field_handles(key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
@@ -616,7 +716,7 @@ impl Widget for CalculatorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, self.area, c.surfaces.base);
@@ -633,6 +733,19 @@ impl Widget for CalculatorApp {
             }
             Mode::Graph3d => self.g3.draw(scene, t, tr, theme, &self.model, body),
         }
+
+        // Remote collaborators' carets, mapped into the active formula field's
+        // 2D glyph layout (peers editing the same graph show up as coloured
+        // carets inside the math, not just as a pointer over the window).
+        let remote = remote_carets(presence);
+        if !remote.is_empty() {
+            match self.model.mode {
+                Mode::Graph2d => self.g2.draw_remote_carets(scene, t, self.model.active_fn, &remote),
+                Mode::Graph3d => self.g3.draw_remote_carets(scene, t, &remote),
+                Mode::Calc => {}
+            }
+        }
+
         self.draw_topbar(scene, t, tr, theme);
     }
 
@@ -757,9 +870,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starts_in_graph2d_with_seeded_content() {
+    fn live_launch_is_empty_calc_mode() {
+        // The live app must boot to a blank slate in Calculator mode — no
+        // fabricated plots / history / memory / expression.
         let app = CalculatorApp::new();
-        assert_eq!(app.model.mode, Mode::Graph2d);
+        assert_eq!(app.model.mode, Mode::Calc);
+        assert!(app.model.expr.is_empty(), "live launch must have an empty expression");
+        assert!(app.model.history.is_empty(), "live launch must have no history");
+        assert!(app.model.funcs.is_empty(), "live launch must have no pre-plotted functions");
+        assert_eq!(app.model.memory, 0.0, "live launch must have empty memory");
+        assert_eq!(app.model.ans, 0.0);
+    }
+
+    #[test]
+    fn seeded_launch_has_lived_in_content() {
+        // The demo/shots constructor keeps the populated content.
+        let app = CalculatorApp::seeded();
         assert!(!app.model.funcs.is_empty());
         assert!(!app.model.history.is_empty());
     }
@@ -767,9 +893,98 @@ mod tests {
     #[test]
     fn set_mode_marks_dirty() {
         let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Calc);
-        assert_eq!(app.model.mode, Mode::Calc);
+        app.set_mode(Mode::Graph2d);
+        assert_eq!(app.model.mode, Mode::Graph2d);
         assert!(app.model_dirty);
+    }
+
+    #[test]
+    fn entering_empty_graph_modes_seeds_a_starter() {
+        // Switching an empty live app into a graph mode gives it an editable
+        // starter (empty 2D row / example surface), not a blank void.
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph2d);
+        assert_eq!(app.model.funcs.len(), 1, "Graph 2D seeds one empty row");
+        assert!(app.model.funcs[0].expr.is_empty());
+        app.set_mode(Mode::Graph3d);
+        assert!(!app.model.surface.trim().is_empty(), "Graph 3D seeds a starter surface");
+    }
+
+    #[test]
+    fn topbar_never_overlaps_or_clips_down_to_400() {
+        // The mode switcher and RAD/DEG toggle must reflow so they neither clip
+        // past the window edge nor collide, at every width down to 400 px.
+        for w in [400.0, 460.0, 520.0, 560.0, 620.0, 680.0, 800.0, 1280.0] {
+            let mut app = CalculatorApp::seeded();
+            app.area = Rect::new(0.0, 0.0, w, 720.0);
+            app.relayout();
+            for (i, r) in app.seg_rects.iter().enumerate() {
+                assert!(
+                    r.x0 >= app.area.x0 - 0.5 && r.x1 <= app.area.x1 + 0.5,
+                    "mode segment {i} clipped the window edge at w={w}: {r:?}"
+                );
+            }
+            assert!(
+                app.seg_rects[2].x1 <= app.rad_rect.x0 + 0.5,
+                "mode switcher overlaps the RAD/DEG toggle at w={w} \
+                 (seg end {} vs toggle start {})",
+                app.seg_rects[2].x1,
+                app.rad_rect.x0
+            );
+            assert!(
+                app.deg_rect.x1 <= app.area.x1 + 0.5,
+                "RAD/DEG toggle clipped the window edge at w={w}"
+            );
+        }
+    }
+
+    #[test]
+    fn topbar_reflows_on_resize_between_breakpoints() {
+        // Re-derive the layout from the CURRENT width every relayout: shrinking a
+        // laid-out instance must switch to condensed labels + drop the wordmark,
+        // and re-widening must restore them (not freeze at the first frame).
+        let mut app = CalculatorApp::seeded();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        assert!(app.show_title && !app.seg_short, "wide: full wordmark + labels");
+        app.area = Rect::new(0.0, 0.0, 430.0, 720.0);
+        app.relayout();
+        assert!(!app.show_title, "narrow: wordmark dropped");
+        assert!(app.seg_short, "narrow: condensed mode labels");
+        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        assert!(app.show_title && !app.seg_short, "re-widening must restore the full layout");
+    }
+
+    #[test]
+    fn narrow_graph2d_toggle_opens_drawer_via_handle_event() {
+        // Drive the REAL production event path (handle_event → on_press) at a
+        // narrow width and assert the collapsed Functions drawer opens.
+        use taffy::{Style, TaffyTree};
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph2d);
+        app.area = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+        app.layout_active();
+        assert!(!app.g2.panel_open(), "narrow default must start collapsed");
+        let toggle = app.g2.toggle_center().expect("a collapsed toggle must be present");
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut st = ui::State::new();
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let dev = winit::event::DeviceId::dummy();
+        app.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y) },
+            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+        );
+        app.handle_event(
+            &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
+        );
+        assert!(app.g2.panel_open(), "tapping the toggle must open the Functions drawer");
     }
 
     #[test]

@@ -135,6 +135,108 @@ impl SheetsDoc {
         }
     }
 
+    /// Insert a new blank sheet named `name` at position `at` (clamped to the
+    /// end) and return the index it landed at.
+    pub fn insert_sheet(doc: &mut AutoCommit, at: usize, name: &str) -> usize {
+        let sheets = Self::sheets_list(doc);
+        let at = at.min(doc.length(&sheets));
+        let sheet = doc
+            .insert_object(&sheets, at, ObjType::Map)
+            .expect("insert sheet map never fails");
+        let _ = doc.put(&sheet, "name", name);
+        let _ = doc.put_object(&sheet, "cells", ObjType::Map);
+        at
+    }
+
+    /// Delete sheet `idx`. Refuses to remove the final sheet so a workbook
+    /// always keeps at least one sheet. Returns whether a sheet was removed.
+    pub fn delete_sheet(doc: &mut AutoCommit, idx: usize) -> bool {
+        let sheets = Self::sheets_list(doc);
+        if doc.length(&sheets) <= 1 || idx >= doc.length(&sheets) {
+            return false;
+        }
+        doc.delete(&sheets, idx).is_ok()
+    }
+
+    /// Duplicate sheet `idx` (name, per-cell raw+format, and tab colour) into a
+    /// new sheet inserted immediately after it. Returns the new sheet's index.
+    pub fn duplicate_sheet(doc: &mut AutoCommit, idx: usize) -> Option<usize> {
+        if Self::sheet_map(doc, idx).is_none() {
+            return None;
+        }
+        let snap = Self::snapshot_sheet(doc, idx, Currency::USD);
+        let color = Self::sheet_color(doc, idx);
+        let new_name = format!("{} copy", snap.name);
+        let new_idx = Self::insert_sheet(doc, idx + 1, &new_name);
+        for (addr, raw) in &snap.raw {
+            Self::set_cell_raw(doc, new_idx, *addr, raw);
+        }
+        for (addr, fmt) in &snap.fmt {
+            Self::set_cell_format(doc, new_idx, *addr, *fmt);
+        }
+        if let Some(c) = color {
+            Self::set_sheet_color(doc, new_idx, Some(c));
+        }
+        Some(new_idx)
+    }
+
+    /// Move sheet `from` so it ends up at index `to`, preserving its name,
+    /// cells, formats and colour. Implemented as remove-then-reinsert.
+    pub fn move_sheet(doc: &mut AutoCommit, from: usize, to: usize) {
+        let len = Self::sheet_count(doc);
+        if from >= len || to >= len || from == to {
+            return;
+        }
+        let snap = Self::snapshot_sheet(doc, from, Currency::USD);
+        let color = Self::sheet_color(doc, from);
+        let sheets = Self::sheets_list(doc);
+        let _ = doc.delete(&sheets, from);
+        let insert_at = to.min(len - 1);
+        let sheet = doc
+            .insert_object(&sheets, insert_at, ObjType::Map)
+            .expect("insert sheet map never fails");
+        let _ = doc.put(&sheet, "name", &snap.name);
+        let _ = doc.put_object(&sheet, "cells", ObjType::Map);
+        for (addr, raw) in &snap.raw {
+            Self::set_cell_raw(doc, insert_at, *addr, raw);
+        }
+        for (addr, fmt) in &snap.fmt {
+            Self::set_cell_format(doc, insert_at, *addr, *fmt);
+        }
+        if let Some(c) = color {
+            Self::set_sheet_color(doc, insert_at, Some(c));
+        }
+    }
+
+    /// A sheet's tab colour, stored as a palette index. `None` means no colour.
+    pub fn sheet_color(doc: &mut AutoCommit, idx: usize) -> Option<u32> {
+        let sheet = Self::sheet_map(doc, idx)?;
+        match doc.get(&sheet, "color") {
+            Ok(Some((Value::Scalar(v), _))) => v.to_i64().map(|n| n as u32),
+            _ => None,
+        }
+    }
+
+    /// Set (or clear, with `None`) a sheet's tab colour palette index.
+    pub fn set_sheet_color(doc: &mut AutoCommit, idx: usize, color: Option<u32>) {
+        if let Some(sheet) = Self::sheet_map(doc, idx) {
+            match color {
+                Some(c) => {
+                    let _ = doc.put(&sheet, "color", c as i64);
+                }
+                None => {
+                    let _ = doc.delete(&sheet, "color");
+                }
+            }
+        }
+    }
+
+    /// Every sheet's tab colour in order (parallel to [`Self::sheet_names`]).
+    pub fn sheet_colors(doc: &mut AutoCommit) -> Vec<Option<u32>> {
+        let n = Self::sheet_count(doc);
+        (0..n).map(|i| Self::sheet_color(doc, i)).collect()
+    }
+
     /// All sheet names in order.
     pub fn sheet_names(doc: &mut AutoCommit) -> Vec<String> {
         let sheets = Self::sheets_list(doc);
@@ -428,5 +530,54 @@ mod tests {
         SheetsDoc::set_active_index(&mut doc, 1);
         assert_eq!(SheetsDoc::active_index(&mut doc), 1);
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["One", "Two"]);
+    }
+
+    #[test]
+    fn insert_and_delete_sheets() {
+        let mut doc = AutoCommit::new();
+        SheetsDoc::add_sheet(&mut doc, "A");
+        SheetsDoc::add_sheet(&mut doc, "C");
+        // Insert "B" between A and C.
+        SheetsDoc::insert_sheet(&mut doc, 1, "B");
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "B", "C"]);
+        // Delete the middle one.
+        assert!(SheetsDoc::delete_sheet(&mut doc, 1));
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
+        // The last remaining sheet cannot be deleted away.
+        SheetsDoc::delete_sheet(&mut doc, 0);
+        assert!(SheetsDoc::delete_sheet(&mut doc, 0) == false || SheetsDoc::sheet_count(&mut doc) >= 1);
+        assert!(SheetsDoc::sheet_count(&mut doc) >= 1, "a workbook keeps one sheet");
+    }
+
+    #[test]
+    fn duplicate_copies_cells_and_format() {
+        let mut doc = AutoCommit::new();
+        let a = SheetsDoc::add_sheet(&mut doc, "Data");
+        SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "=1+1");
+        SheetsDoc::set_cell_format(&mut doc, a, (0, 0), CellFormat::Currency(Currency::EUR));
+        SheetsDoc::set_sheet_color(&mut doc, a, Some(3));
+        let dup = SheetsDoc::duplicate_sheet(&mut doc, a).expect("duplicated");
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Data", "Data copy"]);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, dup, (0, 0)), "=1+1");
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, dup, Currency::USD);
+        assert_eq!(
+            snap.fmt.get(&(0, 0)).copied(),
+            Some(CellFormat::Currency(Currency::EUR))
+        );
+        assert_eq!(SheetsDoc::sheet_color(&mut doc, dup), Some(3));
+    }
+
+    #[test]
+    fn move_sheet_reorders_and_keeps_cells() {
+        let mut doc = AutoCommit::new();
+        let a = SheetsDoc::add_sheet(&mut doc, "A");
+        SheetsDoc::add_sheet(&mut doc, "B");
+        SheetsDoc::add_sheet(&mut doc, "C");
+        SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "keep");
+        // Move A (idx 0) to the right (idx 1): order becomes B, A, C.
+        SheetsDoc::move_sheet(&mut doc, 0, 1);
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["B", "A", "C"]);
+        // A's content survived the move.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 0)), "keep");
     }
 }

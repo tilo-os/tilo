@@ -41,19 +41,30 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Affordance, NavShell, Widget};
+use ui::widget::{Affordance, NavShell, ShellMode, Widget};
 
 use crate::core::{Core, NavIntent};
 use crate::doc::WeatherDoc;
 use crate::net::WeatherService;
 use crate::panes::{DetailPane, OverviewPane};
 
-/// Fixed width of the city-list (overview) panel in the side-by-side layout.
+/// Width of the city-list (overview) panel in the side-by-side layout.
 const OVERVIEW_WIDTH: f64 = 340.0;
+/// Width of the collapsed overview **rail** (glanceable icon column). It sits
+/// below [`crate::core`]'s rail threshold, so allocating this width switches
+/// the overview to its rail rendering with no separate flag to keep in sync.
+const OVERVIEW_RAIL_WIDTH: f64 = 68.0;
 
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
+
+    /// Whether the city list is collapsed to a rail in the side-by-side
+    /// layout. Drives the overview width the shell is rebuilt with.
+    overview_collapsed: bool,
+    /// Set when the shell is rebuilt (collapse toggle) so the event loop
+    /// re-runs `build_layout` on the fresh shell before the next draw.
+    structure_dirty: bool,
 
     live: bool,
     service: Option<WeatherService>,
@@ -63,19 +74,47 @@ pub struct WeatherApp {
 }
 
 impl WeatherApp {
-    fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
+    /// Build the responsive shell at the overview width implied by `collapsed`
+    /// (full list vs. rail). Both pane widgets share the one [`Core`].
+    fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool) -> NavShell {
         let overview: Box<dyn Widget> = Box::new(OverviewPane::new(core.clone()));
-        let detail: Box<dyn Widget> = Box::new(DetailPane::new(core.clone()));
-        let nav = NavShell::new(overview, detail).with_overview_width(OVERVIEW_WIDTH);
+        let detail: Box<dyn Widget> = Box::new(DetailPane::new(core));
+        let width = if collapsed { OVERVIEW_RAIL_WIDTH } else { OVERVIEW_WIDTH };
+        NavShell::new(overview, detail).with_overview_width(width)
+    }
+
+    fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
+        let nav = Self::build_nav(core.clone(), false);
         Self {
             core,
             nav,
+            overview_collapsed: false,
+            structure_dirty: false,
             live,
             service: None,
             initial_fetch_done: false,
             seeded_doc: false,
             last_activity: Instant::now(),
         }
+    }
+
+    /// Rebuild the shell after the collapse state changed, flagging a
+    /// structure change so the event loop re-lays-out the new shell.
+    fn set_overview_collapsed(&mut self, collapsed: bool) {
+        if self.overview_collapsed == collapsed {
+            return;
+        }
+        self.overview_collapsed = collapsed;
+        self.nav = Self::build_nav(self.core.clone(), collapsed);
+        self.structure_dirty = true;
+    }
+
+    /// Tell the core whether the collapse affordance applies this frame. It is
+    /// offered only in the side-by-side layout — in the narrow push layout the
+    /// list is already the full screen, so collapsing it would be meaningless.
+    fn sync_overview_collapsible(&self) {
+        let collapsible = self.nav.mode() == ShellMode::Wide;
+        self.core.borrow_mut().set_overview_collapsible(collapsible);
     }
 
     /// Offscreen / test configuration: bundled sample data, metric units, no
@@ -161,6 +200,10 @@ impl WeatherApp {
     ///   to capture the pushed detail + the Back button).
     /// * `"drag"` — a reorder drag of the second saved place is in flight.
     /// * `"scrolled"` — the forecast parked at the bottom.
+    /// * `"collapsed"` — the city list collapsed to its rail (wide viewport).
+    /// * `"search"` — the live-search dropdown showing geocoded matches.
+    /// * `"search_loading"` — the dropdown's in-flight loading state.
+    /// * `"search_empty"` — the dropdown's "no matches" state.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "detail" => {
@@ -169,6 +212,16 @@ impl WeatherApp {
             }
             "drag" => self.core.borrow_mut().seed_drag(),
             "scrolled" => self.core.borrow_mut().seed_scrolled(),
+            "collapsed" => {
+                self.set_overview_collapsed(true);
+                self.core.borrow_mut().set_overview_collapsible(true);
+            }
+            "search" => self
+                .core
+                .borrow_mut()
+                .seed_search("Par", crate::sample::sample_geocode_results()),
+            "search_loading" => self.core.borrow_mut().seed_search_loading("Reykjav"),
+            "search_empty" => self.core.borrow_mut().seed_search_empty("Zzqx"),
             _ => {}
         }
     }
@@ -241,6 +294,7 @@ impl Widget for WeatherApp {
     ) {
         self.tick_network();
         self.sync_reserve_back();
+        self.sync_overview_collapsible();
         self.nav.draw(scene, transform, text_renderer, theme, presence);
     }
 
@@ -255,6 +309,7 @@ impl Widget for WeatherApp {
     ) {
         self.tick_network();
         self.sync_reserve_back();
+        self.sync_overview_collapsible();
         self.nav
             .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
     }
@@ -292,6 +347,11 @@ impl Widget for WeatherApp {
             self.nav.show_detail();
         }
 
+        // The collapse / expand chip rebuilds the shell at the new width.
+        if self.core.borrow_mut().take_collapse_toggle() {
+            self.set_overview_collapsed(!self.overview_collapsed);
+        }
+
         self.tick_network();
         let mut core = self.core.borrow_mut();
         if core.pending_doc_write {
@@ -320,7 +380,7 @@ impl Widget for WeatherApp {
         let core_busy = {
             let core = self.core.borrow();
             (core.is_fetching() && self.last_activity.elapsed().as_secs() < 12)
-                || core.debounce_pending()
+                || core.search_pending()
         };
         core_busy || self.nav.needs_animation_frame()
     }
@@ -328,13 +388,17 @@ impl Widget for WeatherApp {
     fn needs_idle_sync(&self) -> bool {
         let core_busy = {
             let core = self.core.borrow();
-            core.is_fetching() || core.debounce_pending()
+            // Keep pumping while a geocode is armed OR in flight, so its
+            // result is drained and the dropdown updates promptly rather than
+            // parking on the loading state until the next input event.
+            core.is_fetching() || core.search_pending()
         };
         core_busy || self.nav.needs_idle_sync()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.nav.take_structure_dirty()
+        let mine = std::mem::take(&mut self.structure_dirty);
+        self.nav.take_structure_dirty() || mine
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -569,5 +633,87 @@ mod interaction_tests {
             .any(|r| matches!(r, crate::net::Request::Forecast { .. }));
         assert!(has_forecast_req, "selecting a city queues a real forecast fetch");
         let _ = KPoint::ZERO;
+    }
+
+    #[test]
+    fn collapsing_the_city_list_reclaims_forecast_width() {
+        let mut h = Harness::new(1280.0, 720.0);
+        assert_eq!(h.app.nav.content_layout(), ContentLayout::SideBySide);
+        let detail_w_open = h.app.nav.detail_rect().width();
+        let over = h.app.nav.overview_rect();
+        assert!(over.width() > 300.0, "expanded list is full-width");
+
+        // The draw pass sets `overview_collapsible` and builds the chip's
+        // hotspot; click the collapse chip (top-right of the overview panel).
+        h.redraw();
+        let cx = over.x1 - 35.0; // chip spans x+w-30..x+w, RP=20 → over.x1-50..-20
+        let cy = over.y0 + 28.0;
+        h.click(cx, cy);
+        assert!(h.app.overview_collapsed, "the collapse chip collapses the list");
+
+        // Re-lay-out the rebuilt shell (the real loop does this on the
+        // structure-dirty signal) and confirm the forecast reclaimed width.
+        h.layout(1280.0, 720.0);
+        let over_w = h.app.nav.overview_rect().width();
+        let detail_w = h.app.nav.detail_rect().width();
+        assert!(over_w < 120.0, "collapsed overview becomes a rail (got {over_w})");
+        assert!(
+            detail_w > detail_w_open + 100.0,
+            "collapsing reclaims width for the forecast ({detail_w_open} → {detail_w})"
+        );
+
+        // Expanding via the rail's chip restores the full list.
+        h.redraw();
+        let rail = h.app.nav.overview_rect();
+        h.click((rail.x0 + rail.x1) / 2.0, rail.y0 + 30.0);
+        assert!(!h.app.overview_collapsed, "the rail chip expands the list back");
+    }
+
+    #[test]
+    fn collapsed_rail_is_not_frozen_across_a_resize() {
+        // The rail vs. full-list render is derived from the allocated width on
+        // every pass, never cached — so a resize reflows even while collapsed.
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        let over = h.app.nav.overview_rect();
+        h.click(over.x1 - 35.0, over.y0 + 28.0); // collapse
+        h.layout(1280.0, 720.0);
+        assert!(h.app.nav.overview_rect().width() < 120.0, "wide + collapsed is a rail");
+
+        // Resize to narrow on the SAME instance: the push layout ignores the
+        // rail width, so the overview is full-screen (not a frozen rail).
+        h.layout(560.0, 720.0);
+        assert_eq!(h.app.nav.mode(), ShellMode::Narrow);
+        let ow = h.app.nav.overview_rect().width();
+        assert!((ow - 560.0).abs() < 1.0, "narrow overview is full-screen even when collapsed ({ow})");
+
+        // Back to wide → the rail returns (state preserved, still reflowing).
+        h.layout(1280.0, 720.0);
+        assert!(h.app.nav.overview_rect().width() < 120.0, "widening restores the rail");
+    }
+
+    #[test]
+    fn picking_a_search_result_adds_and_selects_it() {
+        let mut h = Harness::new(1280.0, 720.0);
+        let before = h.app.core.borrow().model.locations.len();
+        h.app
+            .core
+            .borrow_mut()
+            .seed_search("Par", crate::sample::sample_geocode_results());
+        h.redraw(); // build the dropdown + its result-row hotspots
+
+        // First result row, anchored below the search field.
+        let over = h.app.nav.overview_rect();
+        let rx = over.x0 + 60.0;
+        let ry = over.y0 + 56.0 + 38.0 + 6.0 + 6.0 + 23.0; // field + gap + pad + half row
+        h.click(rx, ry);
+
+        let model = &h.app.core.borrow().model;
+        assert_eq!(model.locations.len(), before + 1, "picking a geocoded result adds the city");
+        assert_eq!(
+            model.selected_location().unwrap().name,
+            "Paris",
+            "the added city becomes selected"
+        );
     }
 }
