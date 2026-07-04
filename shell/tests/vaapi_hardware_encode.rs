@@ -163,6 +163,7 @@ fn shared_flatpak_session_rolls_up_vaapi() {
         max_bitrate_kbps: 4000,
         target_fps: 30,
         encoder: EncoderChoice::Auto,
+        hdr: None,
     };
     let session =
         SharedFlatpakSession::start(0xBBBB, "org.gimp.GIMP", 42, 640, 480, cfg).expect("session");

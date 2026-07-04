@@ -29,6 +29,7 @@ fn cfg(choice: EncoderChoice) -> FlatpakShareConfig {
         max_bitrate_kbps: 8000,
         target_fps: 30,
         encoder: choice,
+        hdr: None,
     }
 }
 

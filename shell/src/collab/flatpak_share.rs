@@ -106,7 +106,10 @@ use crate::network::streaming::{
 };
 use crate::network::surface_stream::SurfaceStreamSender;
 
-/// v1 codec label — matches [`crate::network::NeighbourMsg::SurfaceStreamStart::codec`].
+/// v1 codec label — kept for tests that still assert on the pre-HDR
+/// wire shape. Runtime `stream_start_msg` derives the label from the
+/// codec chosen by the HDR config.
+#[allow(dead_code)]
 const CODEC_LABEL: &str = "h264";
 
 /// Software-encoder-imposed frame-rate ceiling. See the module doc.
@@ -362,21 +365,20 @@ impl SharedFlatpakSession {
             return Err(ShareError::DimensionsExceeded { width, height });
         }
 
-        // Probe every compiled-in backend and pick the highest-priority
-        // available one. The probe respects the config's explicit
-        // choice by short-circuiting hardware probes when the caller
-        // asked for openh264. Every outcome is captured so we can log
-        // it — invaluable for diagnosing "why VA-API isn't being
-        // picked on this box" without turning on debug tracing.
-        let (chosen, outcomes) = probe(Some(config.encoder));
+        // Codec + colorimetry follow the HDR config: SDR → H.264 +
+        // BT.709, HDR → HEVC Main10 + BT.2020-PQ (or HLG). A missing
+        // HDR config leaves the SDR pipeline in place — pre-HDR
+        // callers see identical behaviour.
+        let codec = match config.hdr {
+            None => super::encoder::Codec::H264,
+            Some(_) => super::encoder::Codec::HevcMain10,
+        };
+        let (chosen, outcomes) = probe(codec, Some(config.encoder));
         log_probe_outcomes(&outcomes, chosen);
 
         // Software encoder needs the fps clamp; hardware paths lift it.
-        // We only clamp to the SW ceiling if the chosen backend is
-        // openh264 — the flatpak_share_e2e test still asserts against
-        // the 30 fps ceiling for backwards compatibility, and hardware
-        // paths will report a higher `snapshot_config().target_fps` in
-        // a follow-up.
+        // Only clamp under openh264 (H.264 8-bit) — hardware HEVC on
+        // NVENC easily sustains 60 fps.
         let effective_fps = if chosen == EncoderKind::Openh264 {
             config.target_fps.min(SOFTWARE_FPS_CEILING).max(1)
         } else {
@@ -384,19 +386,31 @@ impl SharedFlatpakSession {
         };
 
         // Flow the workspace's configured bitrate cap through the
-        // encoder init. The openh264 backend was previously taking the
-        // library's 120 kbps default and skip-framing most frames as
-        // too-expensive — the config knob had no wiring. Clamping the
-        // floor at 500 kbps prevents pathologically bad output when a
-        // profile misconfigures max_bitrate_kbps below the codec's
-        // usable range.
-        let effective_bitrate_kbps = config.max_bitrate_kbps.max(500);
-        let init = EncoderInit {
-            width,
-            height,
-            fps: effective_fps,
-            bitrate_kbps: effective_bitrate_kbps,
-            keyframe_interval_secs: 1,
+        // encoder init. HDR needs a higher floor: BT.2020-PQ at 720p
+        // needs ~10 Mbps for reasonable quality vs 4 Mbps for SDR.
+        let sdr_floor = 500u32;
+        let hdr_floor = 4000u32;
+        let effective_bitrate_kbps = if codec.bit_depth() == 10 {
+            config.max_bitrate_kbps.max(hdr_floor)
+        } else {
+            config.max_bitrate_kbps.max(sdr_floor)
+        };
+        let init = match config.hdr {
+            None => EncoderInit::sdr_h264(
+                width,
+                height,
+                effective_fps,
+                effective_bitrate_kbps,
+                1,
+            ),
+            Some(hdr_cfg) => EncoderInit::hdr10_hevc(
+                width,
+                height,
+                effective_fps,
+                effective_bitrate_kbps,
+                1,
+                hdr_cfg,
+            ),
         };
         let encoder = build(chosen, init).map_err(|e| match e {
             EncoderError::Unavailable { .. } => {
@@ -488,14 +502,31 @@ impl SharedFlatpakSession {
         // the two values by a couple of hundred nanoseconds and yield a
         // handshake that's off by the same amount — small, but avoidable.
         let now_ns = self.monotonic_ns_now();
+        let (codec_label, colorimetry, hdr_static, bit_depth) = match self.config.hdr {
+            None => (
+                super::encoder::Codec::H264.wire_label().to_string(),
+                Some(crate::collab::colorimetry::Colorimetry::sdr_bt709()),
+                None,
+                8u8,
+            ),
+            Some(hdr_cfg) => (
+                super::encoder::Codec::HevcMain10.wire_label().to_string(),
+                Some(hdr_cfg.colorimetry()),
+                Some(hdr_cfg.metadata),
+                10u8,
+            ),
+        };
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,
             source_peer: self.host_user_id,
             width: self.width,
             height: self.height,
-            codec: CODEC_LABEL.to_string(),
+            codec: codec_label,
             ts: now_ns,
             sender_monotonic_ns_at_send: now_ns,
+            colorimetry,
+            hdr_static_metadata: hdr_static,
+            bit_depth,
         }
     }
 
@@ -852,6 +883,7 @@ mod tests {
             max_bitrate_kbps: 8000,
             target_fps: 30,
             encoder: EncoderChoice::Openh264,
+            hdr: None,
         }
     }
 
@@ -940,18 +972,25 @@ mod tests {
                 codec,
                 ts,
                 sender_monotonic_ns_at_send,
+                colorimetry,
+                hdr_static_metadata,
+                bit_depth,
             } => {
                 assert_eq!(surface, 42);
                 assert_eq!(source_peer, 0xBEEF);
                 assert_eq!(width, 64);
                 assert_eq!(height, 64);
                 assert_eq!(codec, "h264");
-                // Clock-offset handshake: sender stamps its own monotonic
-                // reading. Same value as `ts` (single clock read at
-                // encode-msg time), non-zero so the receiver's offset
-                // handshake kicks in.
                 assert!(sender_monotonic_ns_at_send > 0);
                 assert_eq!(sender_monotonic_ns_at_send, ts);
+                // SDR pipeline: colorimetry populated to BT.709, no
+                // HDR metadata, bit depth 8.
+                assert_eq!(
+                    colorimetry,
+                    Some(crate::collab::colorimetry::Colorimetry::sdr_bt709())
+                );
+                assert!(hdr_static_metadata.is_none());
+                assert_eq!(bit_depth, 8);
             }
             other => panic!("expected SurfaceStreamStart, got {other:?}"),
         }

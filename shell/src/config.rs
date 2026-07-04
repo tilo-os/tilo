@@ -85,6 +85,17 @@ pub struct FlatpakShareConfig {
     /// Which encoder to select. `Auto` runtime-detects — v1's detect is
     /// "always pick openh264" because hardware bindings are not in-tree.
     pub encoder: EncoderChoice,
+    /// HDR pipeline configuration. `None` → SDR H.264 (default,
+    /// widest compatibility). `Some(HdrConfig)` → HEVC Main10 with the
+    /// configured transfer (PQ or HLG) + static metadata. HDR requires
+    /// a hardware encoder that supports HEVC Main10 (`hevc_vaapi` on
+    /// modern Intel/AMD; `hevc_nvenc` on NVIDIA); on hosts without one
+    /// the session constructor returns
+    /// [`crate::collab::flatpak_share::ShareError::EncoderUnavailable`]
+    /// rather than silently downgrading — the UI must surface an HDR-
+    /// unsupported error.
+    #[serde(default)]
+    pub hdr: Option<crate::collab::hdr_metadata::HdrConfig>,
 }
 
 impl Default for FlatpakShareConfig {
@@ -93,6 +104,7 @@ impl Default for FlatpakShareConfig {
             max_bitrate_kbps: 8000,
             target_fps: 60,
             encoder: EncoderChoice::Auto,
+            hdr: None,
         }
     }
 }
