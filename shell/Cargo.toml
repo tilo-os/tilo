@@ -10,7 +10,7 @@ edition = "2024"
 # `ui::UserEvent`s into the App via winit's `EventLoopProxy`. Disable
 # in production builds to drop the test surface (`--no-default-features
 # --features ...`).
-default = ["hosted-test-control"]
+default = ["hosted-test-control", "hdr-decode"]
 hosted-test-control = []
 # VA-API hardware H.264 encoder for Intel iGPU / AMD Radeon / ARM SoCs.
 # Opt-in — pulls in `ffmpeg-next` + libavcodec so the shell still
@@ -23,6 +23,13 @@ vaapi = ["ffmpeg-next"]
 # (`h264_nvenc`). If libavcodec wasn't built against NVENC the probe
 # reports unavailable and Auto falls through to openh264.
 nvenc = ["ffmpeg-next"]
+# HEVC Main10 receive-side decoder for HDR PeerView. Default-on because
+# a peer streaming HDR content wouldn't have anywhere for its bytes to
+# go without it. Pulls in `ffmpeg-next` for libavcodec's HEVC decoder;
+# the tone-map + display-probe machinery is always compiled — only the
+# decoder side is feature-gated because software HEVC decode is the one
+# piece that needs libavcodec.
+hdr-decode = ["ffmpeg-next"]
 
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
