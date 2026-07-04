@@ -1,0 +1,68 @@
+name: wasm-format-provider
+
+# Build the standalone wasm32-wasip2 Markdown format-provider component
+# and prove the format-host can instantiate + round-trip through it.
+#
+# The provider crate is intentionally excluded from the top-level
+# Cargo workspace (see `Cargo.toml`), so we build it directly with
+# `--manifest-path` — that also matches what the format-host's
+# integration tests reach for (see
+# crates/format/format-host/tests/integration.rs::markdown_wasm).
+
+on:
+  push:
+    paths:
+      - "crates/doc/qdoc-codec-markdown-wasm/**"
+      - "crates/doc/qdoc/**"
+      - "crates/format/**"
+      - ".forgejo/workflows/wasm-format-provider.yaml"
+  pull_request:
+    paths:
+      - "crates/doc/qdoc-codec-markdown-wasm/**"
+      - "crates/doc/qdoc/**"
+      - "crates/format/**"
+      - ".forgejo/workflows/wasm-format-provider.yaml"
+  workflow_dispatch:
+
+jobs:
+  build-and-instantiate:
+    runs-on: runner
+    env:
+      WASM_OUT: crates/doc/qdoc-codec-markdown-wasm/target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add wasm32-wasip2 target + build the component
+        run: |
+          distrobox enter my-distrobox -- bash -c \
+            'rustup target add wasm32-wasip2 \
+             && cargo build \
+                 --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml \
+                 --target wasm32-wasip2 --release'
+
+      - name: Assert the .wasm exists and is non-empty
+        # Bare-minimum sanity: the target directory contains a real
+        # component. Missing / zero-byte here means the build
+        # silently produced nothing.
+        run: |
+          set -euo pipefail
+          if [ ! -s "$WASM_OUT" ]; then
+            echo "expected wasm component at $WASM_OUT but it is missing or empty" >&2
+            ls -la crates/doc/qdoc-codec-markdown-wasm/target/wasm32-wasip2/release/ || true
+            exit 1
+          fi
+          size="$(stat -c %s "$WASM_OUT")"
+          echo "built component: $WASM_OUT ($size bytes)"
+
+      - name: Instantiate via format-host round-trip test
+        # `single_provider_round_trip` picks up the built .wasm via
+        # `markdown_wasm()` and drives detect → importAs → exportAs
+        # through the Cap'n Proto surface. The test skips if the
+        # wasm is absent — the previous step guarantees it isn't.
+        run: |
+          distrobox enter my-distrobox -- bash -c \
+            'cargo test -p format-host --release --test integration \
+                single_provider_round_trip -- --nocapture'
