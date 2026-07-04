@@ -10,37 +10,71 @@
 # Streaming caveat (capnp-rpc 0.26): there is no first-class
 # server-push streaming primitive. We model "stream" as a long-lived
 # capability the client polls with `read @0`. Each `read` returns a
-# single op (or a remote-cursor update). The server side blocks the
-# `read` promise until a value is available; the client invokes
-# `read` again in a loop. This is also how capnproto's own examples
-# (`calculator.capnp`) model unbounded fan-out. Back-pressure is
-# implicit (no `read` outstanding = no delivery).
+# single event; the server side blocks the `read` promise until a
+# value is available; the client invokes `read` again in a loop.
+# This is also how capnproto's own examples (`calculator.capnp`)
+# model unbounded fan-out. Back-pressure is implicit (no `read`
+# outstanding = no delivery).
+#
+# ## Schema evolution rules
+#
+# All method / field ordinals below are the wire contract. When
+# adding a new method / field, ONLY append a new ordinal. Never
+# reorder or reassign an existing one — doing so silently breaks
+# any client compiled against an older schema.
 
 interface CollabService {
   # Join (or create-if-absent) a channel by id, signing the join as
   # `identity`. The wire `identity` is opaque bytes; the broker
-  # interprets it as a qos-collab-types serialised identity record
+  # interprets it as a collab-types serialised identity record
   # (postcard-encoded). We pass bytes rather than a typed struct
-  # because the identity format is qos-collab-types' domain and we
+  # because the identity format is collab-types' domain and we
   # don't want this schema to drift every time that crate adds a
   # field.
   joinChannel @0 (channelId :Text, identity :Data) -> (handle :ChannelHandle);
 }
 
 interface ChannelHandle {
-  # Submit a single signed op. `op` is a qos-collab-types
-  # SignedOp (postcard-encoded). The broker validates, fan-outs to
-  # other subscribers, and persists.
+  # Submit a single signed op. `op` is a collab-types SignedOp
+  # (postcard-encoded). The broker validates, fan-outs to other
+  # subscribers, and persists.
   send @0 (op :Data) -> ();
 
-  # Open a subscription. Returned `Stream` capability yields ops
-  # (postcard SignedOp bytes) one per `read` call.
+  # Open a subscription. Returned `Stream` capability yields signed
+  # ops one per `read` call, each annotated with the broker's view
+  # of who authored it.
   subscribe @1 () -> (stream :Stream);
 
   # Open the presence channel for this membership. Returned handle
-  # owns cursor publish + remote-cursor subscription for this
-  # channel only.
+  # owns cursor / caret / selection / arrived / left publish + a
+  # unified subscription that carries the full presence payload
+  # union (cursor was the only variant in schema v1).
   presence @2 () -> (handle :PresenceHandle);
+
+  # LEGACY — unsigned full-document snapshot. Present so apps that
+  # have not yet been provisioned with a signing identity keep
+  # working across the ui-collab → runtime-collab migration.
+  # Callers on the migration target path use `send` with a
+  # collab-types SignedOp instead. Will be removed once identity
+  # provisioning covers every fleet app.
+  sendUnsignedSnapshot @3 (data :Data) -> ();
+
+  # LEGACY — unsigned incremental Automerge change blob. Same
+  # transitional contract as `sendUnsignedSnapshot`; removal
+  # deferred until the whole fleet has an identity.
+  sendUnsignedIncremental @4 (data :Data) -> ();
+
+  # Subscribe to broker roster + permission-list updates. Returned
+  # stream yields a fresh `ChannelContext` snapshot every time the
+  # broker's view changes (peer joined / left / channel-owner
+  # granted a new role). Client-pull like all streams here.
+  subscribeContext @5 () -> (stream :ContextStream);
+
+  # Fetch a page of previously-validated signed ops with
+  # `seq < beforeSeq` on the join'd channel. Backing the "scroll
+  # up to older edits after late-join" UX; see
+  # `ScrollbackBatch` for the response shape.
+  fetchScrollback @6 (beforeSeq :UInt64, max :UInt32) -> (batch :ScrollbackBatch);
 }
 
 interface Stream {
@@ -48,16 +82,48 @@ interface Stream {
   # caller is responsible for invoking `read` in a loop; the
   # underlying flow-control is implicit (no outstanding `read` =
   # nothing delivered).
-  read @0 () -> (op :Data);
+  #
+  # `fromUserId` is the broker's attribution string for the author
+  # (typically the sending identity's `app_id` or, for peers that
+  # never sent `Hello`, a synthetic `peer-<idx>` id). Duplicating
+  # this field on the RPC rather than folding it into the postcard
+  # envelope lets non-Rust clients cheaply route by author without
+  # decoding the payload.
+  read @0 () -> (op :Data, fromUserId :Text);
 }
 
 interface PresenceHandle {
   # Publish this user's cursor position into the channel.
   publishCursor @0 (x :Float32, y :Float32) -> ();
 
-  # Subscribe to remote-cursor updates for the channel. Stream
-  # is server-pulled (see `Stream` above).
+  # LEGACY — pre-`subscribeAll` remote-cursor stream. Yields only
+  # cursor-payload events, dropping caret / selection / arrived /
+  # left. Kept so schema-v1 clients keep compiling; new code uses
+  # `subscribeAll` and discriminates on the payload union.
   subscribeRemoteCursors @1 () -> (stream :CursorStream);
+
+  # Publish the local caret position on the artifact identified by
+  # `keyBytes`. `keyBytes` is a postcard-encoded `ui::PresenceKey`;
+  # the broker treats it as an opaque routing tag, so the schema
+  # never has to grow when `ui` adds a new key variant.
+  publishCaret @2 (keyBytes :Data, pos :UInt64) -> ();
+
+  # Publish a selection range. `start == end` MAY be used to
+  # represent a caret; either publish path is accepted.
+  publishSelection @3 (keyBytes :Data, start :UInt64, end :UInt64) -> ();
+
+  # Publish "the local user has arrived at the keyed object" — the
+  # broker fans this out so peers can render an entry badge.
+  publishArrived @4 (keyBytes :Data) -> ();
+
+  # Publish "the local user has left the keyed object" — the
+  # counterpart to `publishArrived`.
+  publishLeft @5 (keyBytes :Data) -> ();
+
+  # Subscribe to every kind of remote presence update in one
+  # stream. Each event carries the full `PresencePayload` union
+  # (see below); clients discriminate on payload variant.
+  subscribeAll @6 () -> (stream :PresenceStream);
 }
 
 interface CursorStream {
@@ -65,4 +131,86 @@ interface CursorStream {
   # short string id), the x/y position. Promise resolves when an
   # update is available.
   read @0 () -> (userId :Text, x :Float32, y :Float32);
+}
+
+interface PresenceStream {
+  # Pull the next presence event across all payload kinds. Promise
+  # resolves when an update is available.
+  read @0 () -> (event :PresenceEvent);
+}
+
+interface ContextStream {
+  # Pull the next channel-context snapshot. Promise resolves when
+  # the broker's roster / permission view changes.
+  read @0 () -> (ctx :ChannelContext);
+}
+
+# Presence update as delivered on `PresenceStream`. `userId` is the
+# broker-assigned attribution string (same shape as
+# `Stream.read().fromUserId`). `keyBytes` is a postcard-encoded
+# `ui::PresenceKey`; the broker treats it as an opaque routing tag.
+# `payload` discriminates the variant — cursor / caret / selection
+# / arrived / left.
+struct PresenceEvent {
+  userId    @0 :Text;
+  keyBytes  @1 :Data;
+  payload   @2 :PresencePayload;
+}
+
+# Presence payload union. Mirrors `ui::collaboration::PresencePayload`
+# 1:1. Kept as a native capnp union rather than opaque bytes so
+# non-Rust broker peers can discriminate without a postcard
+# decoder.
+struct PresencePayload {
+  union {
+    cursor :group {
+      x @0 :Float32;
+      y @1 :Float32;
+    }
+    caret :group {
+      pos @2 :UInt64;
+    }
+    selection :group {
+      start @3 :UInt64;
+      end   @4 :UInt64;
+    }
+    arrived @5 :Void;
+    left    @6 :Void;
+  }
+}
+
+# Roster + permission snapshot delivered on `ContextStream`.
+# `collaborators` is the full current membership; `permissions` is
+# a bag of string tags naming grants held by the *local* identity
+# on this channel (the caller). The broker sends a fresh snapshot
+# every time its view changes rather than diffing — this bounds
+# the client-side state to O(members) and keeps a slow reader from
+# drifting.
+struct ChannelContext {
+  collaborators @0 :List(Collaborator);
+  permissions   @1 :List(Text);
+}
+
+# A single collaborator in a `ChannelContext`. `color` is packed as
+# 0x00RRGGBB (top byte reserved, MUST be zero); consumers unpack
+# into their native colour space. This keeps the wire compact
+# without committing to a specific colour representation.
+struct Collaborator {
+  userId      @0 :Text;
+  displayName @1 :Text;
+  color       @2 :UInt32;
+}
+
+# A page of previously-validated signed ops returned by
+# `fetchScrollback`. `ops` are postcard-encoded `SignedOp` blobs in
+# ascending `seq` order; `earliestSeq` / `latestSeq` bracket the
+# page (both inclusive) so clients can request the next page
+# without decoding. `done == true` means the broker has no further
+# in-memory history in the requested range — clients that want
+# older ops can then fall back to the cooperative gossipsub path.
+struct ScrollbackBatch {
+  ops         @0 :List(Data);
+  earliestSeq @1 :UInt64;
+  latestSeq   @2 :UInt64;
+  done        @3 :Bool;
 }
