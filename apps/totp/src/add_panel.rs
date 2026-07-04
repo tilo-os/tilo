@@ -46,9 +46,10 @@ use crate::model::{self, Account, Algorithm};
 pub enum AddPanelEvent {
     Cancel,
     Save(Account),
-    /// The user asked to import a QR code from an image file. The app owns
-    /// the file picker (it needs the cluster's file-access capability), runs
-    /// the decode, and calls [`AddAccountPanel::apply_uri`] with the result.
+    /// The user asked to import a QR code from an image file. The app routes
+    /// this to the **host** file chooser (the XDG Desktop Portal — the app
+    /// never draws its own picker, HIG §5), then runs the decode and calls
+    /// [`AddAccountPanel::apply_uri`] with the result.
     PickImageForQr,
 }
 
@@ -1024,7 +1025,7 @@ impl AddAccountPanel {
 
             // Method cards.
             if self.image_card_rect.contains(p) {
-                // The app owns the file picker + decode (file-access cap).
+                // The app routes to the host portal chooser + runs the decode.
                 self.event = Some(AddPanelEvent::PickImageForQr);
                 return;
             }
