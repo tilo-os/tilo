@@ -59,11 +59,7 @@ impl FirewallDoc {
     pub fn store(doc: &mut AutoCommit, cfg: &FirewallConfig) -> String {
         let json = cfg.to_json();
         let id = Self::config_text(doc);
-        let cur = doc.text(&id).unwrap_or_default();
-        if cur != json {
-            let cur_chars = cur.chars().count() as isize;
-            let _ = doc.splice_text(&id, 0, cur_chars, &json);
-        }
+        ui::doc::splice_text_diffed(doc, &id, &json);
         json
     }
 }
@@ -98,6 +94,43 @@ mod tests {
         // A second identical store must not grow the document into two
         // copies; load still yields exactly one parseable config.
         assert_eq!(FirewallDoc::load(&doc).unwrap(), cfg);
+    }
+
+    #[test]
+    fn repeated_store_keeps_doc_bounded() {
+        // The freeze came from `store` rewriting the whole config Text each
+        // frame. With the diff-splice, an unchanged re-store is a no-op.
+        let mut doc = AutoCommit::new();
+        let cfg = sample_config();
+        FirewallDoc::store(&mut doc, &cfg);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            FirewallDoc::store(&mut doc, &cfg);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing the same config grew the document {a} -> {b}");
+    }
+
+    #[test]
+    fn small_config_edit_is_a_bounded_splice() {
+        // A one-field change must splice only the changed JSON span, not
+        // re-insert the whole blob.
+        let mut doc = AutoCommit::new();
+        let json_len = FirewallDoc::store(&mut doc, &sample_config()).len();
+        let before = doc.save().len();
+        let mut cfg2 = sample_config();
+        cfg2.enabled = !cfg2.enabled;
+        FirewallDoc::store(&mut doc, &cfg2);
+        let grew = doc.save().len() - before;
+        assert_eq!(
+            FirewallDoc::load(&doc).unwrap().enabled,
+            cfg2.enabled,
+            "value round-trips"
+        );
+        assert!(
+            grew < json_len,
+            "a one-field edit spliced ~the whole {json_len}-char JSON ({grew} bytes) — diff regressed"
+        );
     }
 
     #[test]
