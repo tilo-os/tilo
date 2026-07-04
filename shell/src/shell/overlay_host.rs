@@ -216,6 +216,19 @@ pub struct ShellOverlayHost {
     /// assert that clicks routed through the popover translate into
     /// the expected shell-outs without actually invoking `nmcli` etc.
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// Multi-source search backend for the palette. Populated on the
+    /// false → true palette-visibility transition — the palette then
+    /// paints each item as one row alongside the four built-in
+    /// commands. See `crate::search`.
+    search_index: crate::search::SearchIndex,
+    /// The last successful refresh timestamp for the
+    /// [`Self::search_index`]. Used to gate refresh on palette-open
+    /// against [`crate::search::sources::DEFAULT_REFRESH_TTL`] so
+    /// rapid re-opens don't hammer the registry / Flathub.
+    search_last_refreshed: Option<Instant>,
+    /// The category-chip mask the palette is showing. Palette chrome
+    /// flips this via [`Self::set_search_category_filter`].
+    search_category: crate::search::CategoryFilter,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -398,6 +411,9 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            search_index: crate::search::SearchIndex::with_default_sources(),
+            search_last_refreshed: None,
+            search_category: crate::search::CategoryFilter::all(),
         }
     }
 
@@ -1246,7 +1262,122 @@ impl ShellOverlayHost {
         if !was_visible && self.palette_visible {
             self.palette.set_focus(true);
             self.palette.set_query("");
+            // Kick a background refresh of the search sources — the
+            // palette-open path is the only place the multi-source
+            // registry gets refreshed. `refresh_search_if_stale`
+            // gates on TTL so rapid re-opens don't hammer the
+            // network sources.
+            self.refresh_search_if_stale();
+            self.repopulate_palette_from_sources();
         }
+    }
+
+    /// Repopulate the palette's `CommandEntry` list from the current
+    /// [`crate::search::SearchIndex`] items. Preserves the four
+    /// built-in commands seeded on construction and appends one row
+    /// per ranked hit.
+    ///
+    /// Public so headless tests + the `shots` scenario harness can
+    /// force a repopulate without re-driving the ⌘K keyboard path.
+    pub fn repopulate_palette_from_sources(&mut self) {
+        // Rebuild the palette in-place. Keep the same primary keyed
+        // filter (peer-sync flag, etc.) intact by reconstructing it
+        // through `CommandPalette::new()` + re-adding the built-in
+        // entries — the peer-sync `/invite` / `/connect` entries are
+        // re-added below via `with_peer_sync_enabled`'s cached flag.
+        //
+        // `CommandPalette::new()` resets `is_focused = false`; if the
+        // palette is already open we re-focus it below so the
+        // repopulate call doesn't strand keystrokes on the desktop.
+        let was_focused = self.palette.is_focused();
+        let old_query = self.palette.query().to_string();
+        self.palette = CommandPalette::new();
+        for entry in [
+            CommandEntry::new("search.open", "Open global search"),
+            CommandEntry::new("overview.toggle", "Toggle overview"),
+            CommandEntry::new("settings.open", "Open workspace settings"),
+            CommandEntry::new("quick-settings.open", "Open quick settings"),
+        ] {
+            self.palette.push(entry);
+        }
+        if self.peer_sync_enabled {
+            for entry in [
+                CommandEntry::new("/invite", "Peer sync: issue invite token"),
+                CommandEntry::new("/connect", "Peer sync: paste invite token"),
+            ] {
+                self.palette.push(entry);
+            }
+        }
+        let ranked = self.search_index.ranked("", self.search_category);
+        for r in ranked {
+            let glyph = crate::shell::search::affordance_glyph(&r.item.action);
+            let label = if r.item.description.is_empty() {
+                format!("{glyph}  {}", r.item.name)
+            } else {
+                format!("{glyph}  {} — {}", r.item.name, r.item.description)
+            };
+            // Prefix the id with `search:` to keep the source entries
+            // in a separate namespace from the built-in `settings.*`
+            // etc. commands, so downstream handlers can dispatch on
+            // the prefix.
+            self.palette
+                .push(CommandEntry::new(format!("search:{}", r.item.id), label));
+        }
+        // Restore focus + query so a live open-then-repopulate flow
+        // (Cmd+K → refresh finishes → repopulate) doesn't strand
+        // keystrokes on the desktop.
+        use ui::Widget as _;
+        if was_focused {
+            self.palette.set_focus(true);
+        }
+        if !old_query.is_empty() {
+            self.palette.set_query(&old_query);
+        }
+    }
+
+    /// Refresh the [`crate::search::SearchIndex`] if the last
+    /// refresh is older than the default TTL (or never happened).
+    /// Blocking synchronous refresh — the palette-open path is not
+    /// on the compositor's per-frame hot path, so the reqwest
+    /// timeout on the network sources caps latency at a few
+    /// hundred ms.
+    ///
+    /// A future task should move this to
+    /// `tokio::task::spawn_blocking` and mirror a spinner in the
+    /// palette footer.
+    fn refresh_search_if_stale(&mut self) {
+        let stale = match self.search_last_refreshed {
+            None => true,
+            Some(t) => {
+                t.elapsed() >= crate::search::sources::DEFAULT_REFRESH_TTL
+            }
+        };
+        if stale {
+            let _ = self.search_index.refresh_all();
+            self.search_last_refreshed = Some(Instant::now());
+        }
+    }
+
+    /// Access the multi-source search registry. The `shots` scenario
+    /// harness uses this to seed a deterministic item list before
+    /// opening the palette so screenshots pin known content.
+    pub fn search_index_mut(&mut self) -> &mut crate::search::SearchIndex {
+        &mut self.search_index
+    }
+
+    /// Read the search-index category chip mask.
+    pub fn search_category(&self) -> crate::search::CategoryFilter {
+        self.search_category
+    }
+
+    /// Flip the category chip mask. Palette chrome calls this from
+    /// chip clicks; the next `repopulate_palette_from_sources` call
+    /// re-applies it.
+    pub fn set_search_category_filter(
+        &mut self,
+        filter: crate::search::CategoryFilter,
+    ) {
+        self.search_category = filter;
     }
 
     /// Read-only accessor for the command-palette ("global search")
