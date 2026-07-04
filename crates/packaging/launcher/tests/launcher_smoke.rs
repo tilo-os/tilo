@@ -20,9 +20,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use qos_launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
-use qos_launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
-use qos_launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
+use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
+use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
+use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 
 // ---------------------------------------------------------------- helpers
 
@@ -134,7 +134,7 @@ fn no_services_flag_skips_required_resolution() {
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "required@1".to_string());
     let resolved =
-        qos_launcher::services::resolve_service_binds(&svcs, true).expect("no-services infallible");
+        launcher::services::resolve_service_binds(&svcs, true).expect("no-services infallible");
     assert!(resolved.is_empty());
 }
 

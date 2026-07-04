@@ -1,10 +1,10 @@
 [package]
-name = "qos-pkg"
+name = "pkg"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "qos_pkg"
+name = "pkg"
 path = "src/lib.rs"
 
 # The foundation crate for qOS packages (.qpkg). Defines the manifest
@@ -18,10 +18,10 @@ path = "src/lib.rs"
 # identity's group key; verify is a regular Ed25519 verify against
 # the group public key, so callers only need the verifying-key
 # bytes — not the threshold machinery — to verify a .qpkg.
-qos-threshold-identity = { path = "../qos-threshold-identity" }
+qos-threshold-identity = { path = "../../../qos-threshold-identity" }
 # Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
 # signed-bytes shape matches the rest of qOS's signed wire types.
-qos-collab-types       = { path = "../qos-collab-types" }
+qos-collab-types       = { path = "../../../qos-collab-types" }
 
 blake3       = "1.8.5"
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }

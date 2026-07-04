@@ -3,8 +3,8 @@
 mod fixtures;
 
 use ed25519_dalek::SigningKey;
-use qos_pkg::manifest::Manifest;
-use qos_pkg::{
+use pkg::manifest::Manifest;
+use pkg::{
     MemoryBlobStore, SigningIdentity, Verification, pack, unpack, verify,
 };
 use rand::rngs::OsRng;
@@ -93,8 +93,8 @@ fn tampered_manifest_fails_verify() {
     let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
 
     // Tamper: flip one byte in the manifest blob.
-    use qos_pkg::blobs::{BlobHash, BlobStore};
-    use qos_pkg::signed::SignedRoot;
+    use pkg::blobs::{BlobHash, BlobStore};
+    use pkg::signed::SignedRoot;
     let signed_bytes = store
         .get(&BlobHash(*id.as_bytes()))
         .unwrap()
@@ -110,7 +110,7 @@ fn tampered_manifest_fails_verify() {
     // Surgical replace via the public iter() snapshot is not
     // possible; rebuild a tampered store with the flipped
     // manifest under the original hash.
-    let mut tampered = qos_pkg::MemoryBlobStore::new();
+    let mut tampered = pkg::MemoryBlobStore::new();
     for (h, b) in store.iter() {
         if h == &manifest_hash {
             // skip; reinsert with tampered bytes below
@@ -132,7 +132,7 @@ fn tampered_manifest_fails_verify() {
     // We still need the signed-root blob in the tampered store.
     tampered.put(&signed_bytes).unwrap();
     // Walk the original collection too so payload blobs exist.
-    use qos_pkg::blobs::Collection;
+    use pkg::blobs::Collection;
     let collection_bytes = store
         .get(&signed.payload_root_hash)
         .unwrap()
@@ -171,8 +171,8 @@ fn tampered_payload_byte_fails_verify() {
     let identity = SigningIdentity::from_signing_key(sk.clone());
     let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
 
-    use qos_pkg::blobs::{BlobHash, BlobStore, Collection};
-    use qos_pkg::signed::SignedRoot;
+    use pkg::blobs::{BlobHash, BlobStore, Collection};
+    use pkg::signed::SignedRoot;
 
     let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
     let signed = SignedRoot::decode(&signed_bytes).unwrap();
@@ -191,12 +191,12 @@ fn tampered_payload_byte_fails_verify() {
         inner: std::collections::BTreeMap<BlobHash, Vec<u8>>,
     }
     impl BlobStore for Tampered {
-        fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, qos_pkg::BlobStoreError> {
+        fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, pkg::BlobStoreError> {
             let h = BlobHash::of(bytes);
             self.inner.insert(h, bytes.to_vec());
             Ok(h)
         }
-        fn get(&self, h: &BlobHash) -> Result<Option<Vec<u8>>, qos_pkg::BlobStoreError> {
+        fn get(&self, h: &BlobHash) -> Result<Option<Vec<u8>>, pkg::BlobStoreError> {
             Ok(self.inner.get(h).cloned())
         }
     }
@@ -222,11 +222,11 @@ fn tampered_payload_byte_fails_verify() {
 
 #[test]
 fn unsigned_root_fails_verify_with_not_signed() {
-    use qos_pkg::blobs::BlobStore;
-    use qos_pkg::signed::SignedRoot;
+    use pkg::blobs::BlobStore;
+    use pkg::signed::SignedRoot;
     let unsigned = SignedRoot::unsigned(
-        qos_pkg::BlobHash([1u8; 32]),
-        qos_pkg::BlobHash([2u8; 32]),
+        pkg::BlobHash([1u8; 32]),
+        pkg::BlobHash([2u8; 32]),
         [3u8; 32],
     );
     let id = unsigned.package_id();
