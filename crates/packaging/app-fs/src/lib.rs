@@ -35,11 +35,13 @@
 pub mod cache;
 pub mod collection;
 pub mod fs;
+pub mod mount;
 pub mod store;
 
 pub use cache::{PAGE_SIZE, PageCache, PageCacheStats};
 pub use collection::{Collection, CollectionDecodeError};
 pub use fs::QosAppFs;
+pub use mount::{Mount, MountError, MountOptions};
 pub use store::{
     BlobError, BlobStore, CountingStore, CounterSnapshot, DiskBlobStore, MemoryBlobStore,
 };
