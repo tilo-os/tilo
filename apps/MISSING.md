@@ -50,23 +50,15 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       avg, RAM/Swap bars, System info (real host/CPU/cores), Per-Core bars, and
       large CPU/Mem/Net/Disk graphs. No fake sidebar — reads as content → verified.
 
-## pdf_viewer
-- [ ] ZOOM DOES NOT WORK (raised before, and I failed to record it — now recorded).
-      The +/- / Fit buttons and ctrl+wheel must actually change the page scale on
-      a LOADED document; plus horizontal pan. Adopt the shared ui DocumentViewport
-      (zoom/pan) instead of the app's hand-rolled scale so it behaves like the
-      other document apps. VERIFY by opening the sample PDF and driving zoom in/out
-      + pan (not an empty-state shot).
-- [ ] The open flow draws the app's OWN bespoke `OpenDialog` — WRONG. Open/save
-      must go through the **XDG Desktop Portal** (`org.freedesktop.portal.FileChooser`
-      via `ashpd`) so the HOST desktop provides the picker: on GNOME the user sees
-      GNOME's file picker; on real qOS the compositor's portal backend provides
-      qOS's picker (and enforces the sandbox/file-access prompt). The app must NOT
-      draw a picker itself (neither the bespoke dialog nor an app-drawn
-      ui::FilePicker). Remove the bespoke OpenDialog; call the portal.
-- [ ] Re-review ALL previously-claimed pdf features by DRIVING them on a real
-      document: zoom, pan, markers/annotations, tooltips, search (whole-word/case),
-      sidebar focus, delete — several were "verified" only via static shots.
+## pdf_viewer — CLEAR (verified on a real loaded PDF, committed ba0c8ab)
+- [x] Zoom adopted onto ui::ViewportState: verified on the 3-page sample —
+      page width 306/612/1224px at 50/100/200% (exact 2×), Ctrl+wheel focal zoom,
+      h-pan, +/-/Fit + scrollbars. (The old "zoom broken" was a static empty-state
+      proof; the real regression was the verification — now driven on a loaded doc.)
+- [x] File open via the XDG portal (ashpd, off-thread); bespoke OpenDialog removed.
+- [x] Drive-reviewed on the loaded doc: zoom/pan/highlight/search(whole-word+case)/
+      sidebar/delete all work; removed the demo ellipse over whitespace → markup
+      anchored to real text.
 
 ## calendar
 - [x] HIG §1 three-panel model: genuine sidebar (calendars/smart-lists/projects,
@@ -89,7 +81,7 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       workflow's verify agent crashed on an API drop, so I rendered + checked the
       shots myself).
 
-## chat — CLEAR (verified)
+## chat — UI defects CLEAR; deeper FEATURE gaps below (audit 2026-07-04)
 - [x] Call-overlay tiles packed into a bounded region (grid picks the column count
       that fits N; partial last row centred) — no right-edge overflow at any width
       (verified 1280/800/560) → fixed.
@@ -98,6 +90,50 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [x] Attachment chip shows only "TYPE · SIZE" (e.g. "MD · 18.5 KB") — no
       /var/workspace path (test asserts no '/', 'workspace', 'shared via') → fixed.
 - [x] Stale `tint` gradient stand-in comment removed → fixed.
+- [x] Emoji reactions — REAL (model + Automerge CRDT + UI, cross-peer convergence
+      tested). Image attachments — REAL (ui::ImageStore + real FUSE fs.read; the
+      synthesized `qos-demo://` images are shots-only). No action.
+- [ ] CALLING IS UI-ONLY (not real): the overlay is view-state + a join/leave beep.
+      NO camera/mic capture, NO opus/H.264 codec, NO transport — IrohTransport
+      never binds an endpoint (media.rs:232), connect()=false, send() loops back
+      in-process, so no peer ever receives a frame. request_screencast() is a None
+      stub (media.rs:189). To make it real: (a) capture via portal ScreenCast +
+      a pipewire/GStreamer mic source; (b) opus (audio) + H.264 (video) codec;
+      (c) transport — EITHER reuse the compositor's REAL H.264 pipeline
+      (shell/src/network/encoder.rs + peer_view.rs over gossipsub, already has
+      host-wins arbitration + signed invite tokens) OR bind the iroh QUIC seam —
+      pick ONE and wire it end-to-end.
+- [ ] P2P-by-default + APPOINTED-HOST routing does not exist. User's model: direct
+      P2P by default, but route a workspace through an appointed host (e.g. a home
+      server also running qOS) when one exists. Foundation exists in the compositor
+      (session-host designation + "host always wins" for surface sharing); needs a
+      persistent self-hosted workspace-host / relay concept built on top.
+- [ ] Message EDITING has no user entry point: the CRDT writer `edit_message` +
+      the read-only "(edited) · view history" popover exist, but nothing calls
+      edit_message outside tests/seed (doc.rs:1143). Add a context-menu "Edit" /
+      ArrowUp-to-edit-last-message that calls ChatDoc::edit_message (doc.rs:593).
+- [ ] VIDEO attachments ABSENT: Attachment is only Image|File (model.rs:140); a
+      shared video renders as a plain file chip — no poster, no inline playback.
+      Add a Video variant + inline player (depends on the ui video core below).
+
+## video playback (ui layer) — REAL but SILOED (audit 2026-07-04)
+- [ ] The working decode (NoFlush single persistent decoder) lives ONLY in tube
+      (apps/tube/src/playback.rs). The shared ui::widget::VideoPlayer still flushes
+      after every decode → drops ~95% of a real stream's frames (playback.rs:13).
+      Extract tube's robust decode into a shared `ui` video core (or fix
+      ui::VideoPlayer) so ANY app (chat, a general player, file preview) gets real
+      playback, not just tube.
+- [ ] ui::VideoPlayer is not production-grade: no container demux (caller must feed
+      Annex-B NALUs), no fetch, no audio, placeholder 60s scrub with the thumb
+      pinned to start (video_player.rs:118,336,462). Needs a media-length setter +
+      a playhead clock for real seek.
+- [ ] No general video-player app; no inline video in chat or file-explorer preview.
+      Tube's watch page is the only video UI and it's `--features live`-gated +
+      network-dependent (offline/hermetic build shows posters only —
+      OfflineBackend::resolve_video_stream errors, backend/mod.rs:166).
+- [ ] No AUDIO anywhere in the video stack (tube is video-only by design) — a real
+      player needs an audio track + A/V sync. No hardware decode (openh264/CPU only;
+      OK for a 144p probe, insufficient for real playback resolutions).
 
 ## maps
 - [x] Unbounded failed-tile refetch loop → fixed.
@@ -156,11 +192,10 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Shared CRDT caret/selection text-editing core adopted by fields that today
       hand-roll editing (calculator formula field, etc.). (HIG §3)
 - [ ] Sweep the O(n²) `doc::store()` CRDT churn across the ~19 text apps. (HIG §5)
-- [ ] File open/save is via the **XDG Desktop Portal** (`ashpd`), NOT an
-      app-drawn picker: the host desktop provides the UI (GNOME's picker on GNOME;
-      the qOS compositor's portal backend on qOS). Provide a small shared helper
-      (`ui`) that wraps the portal open/save call so every app uses it uniformly,
-      and SWEEP all apps that currently draw their own dialog (pdf_viewer's
-      OpenDialog; audit sheets/ebook/code_editor/etc.) onto it. `ui::FilePicker`
-      is only for the qOS compositor's own portal-backend rendering (or non-file
-      in-cluster pickers), never drawn by an app for OS file open/save.
+- [x] SWEEP done: every app that drew its own OS file picker now uses the XDG
+      portal (ashpd) — pdf_viewer, slides, diffmerge, totp migrated; chat + maps
+      already portal. No app-drawn OpenDialog/ui::FilePicker for OS file open/save
+      remains (scout confirmed only those 4 offenders).
+- [ ] FOLLOW-UP (dedup, not a bug): the 6 apps each carry a near-identical copy of
+      `portal.rs`. Promote a shared `ui::portal` open/save helper and collapse the
+      copies onto it (same "recurring pattern → framework" move as ui::doc).
