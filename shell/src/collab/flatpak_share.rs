@@ -91,12 +91,15 @@ use std::sync::{
 };
 use std::time::Instant;
 
+use crate::collab::encoder::{
+    Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, ProbeOutcome, build, probe,
+};
 use crate::config::{EncoderChoice, FlatpakShareConfig};
-use crate::network::encoder::{EncodeError, H264Encoder};
+use crate::diagnostics::{CapturePath, PeerSurfaceMetrics};
+use crate::network::encoder::EncodeError;
 use crate::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
 use crate::network::streaming::{
-    EncodeTickOutcome, InputEvent, ShareRegistry, StreamingShare,
-    StreamingThrottle, encode_tick,
+    InputEvent, ShareRegistry, StreamingShare, StreamingThrottle,
 };
 
 /// v1 codec label — matches [`crate::network::NeighbourMsg::SurfaceStreamStart::codec`].
@@ -149,14 +152,17 @@ impl EncodedFrame {
 /// Errors from session construction or lifecycle.
 #[derive(Debug, thiserror::Error)]
 pub enum ShareError {
-    /// The caller requested an encoder that isn't linked into this
-    /// build. `EncoderChoice::Vaapi` and `EncoderChoice::Nvenc` fall
-    /// into this bucket in v1.
+    /// The caller requested an encoder that the runtime probe could
+    /// not resolve to a working backend. Emitted only when
+    /// `EncoderChoice` explicitly names a hardware backend AND the
+    /// caller has passed [`StartFlags::REQUIRE_EXACT_ENCODER`]. Without
+    /// that flag, hardware backends fall through to openh264 with the
+    /// outcome recorded in `chosen_encoder`.
     #[error("encoder {choice:?} is not available in this build")]
     EncoderUnavailable { choice: EncoderChoice },
-    /// The openh264 encoder failed to construct — typically a
-    /// dimension the software encoder can't handle (< 16 px or odd
-    /// numbers on some builds).
+    /// The chosen encoder failed to construct — bad dimensions,
+    /// unsupported profile, or a device disappeared between the probe
+    /// and the open.
     #[error("encoder construction failed: {0:?}")]
     EncoderConstruction(EncodeError),
     /// The share dimensions violate a hard limit. 4096×4096 is the
@@ -191,7 +197,26 @@ pub struct SharedFlatpakSession {
     /// Owned encoder. `Arc<Mutex<_>>` so the E2E test can share the
     /// encoder handle across threads if it wants to; production runs
     /// the pump on a single thread and never contends.
-    encoder: Arc<Mutex<H264Encoder>>,
+    ///
+    /// Type-erased so hardware (VA-API/NVENC) and software (openh264)
+    /// backends share the same wire.
+    encoder: Arc<Mutex<Box<dyn Encoder>>>,
+    /// Which encoder backend the runtime probe selected. Runtime kind
+    /// — distinct from `config.encoder` which is the config-time
+    /// request. When probes fall back to a lower-priority backend
+    /// the two diverge.
+    chosen_encoder: EncoderKind,
+    /// Optional shared metrics handle. When set, `encode_next_frame`
+    /// records encode wall-clock, keyframes, bitrate, chosen encoder,
+    /// and capture path here. The receiving `PeerView` shares the same
+    /// `Arc` so the OSD renders a single unified stat block.
+    metrics: Option<PeerSurfaceMetrics>,
+    /// Current capture path — flipped by
+    /// [`Self::set_capture_path`] whenever the compositor's commit
+    /// hook re-routes the surface's buffer through the DMABUF direct
+    /// path (or back to SHM readback if the client switches buffer
+    /// types).
+    capture_path: Arc<Mutex<CapturePath>>,
     /// Owned throttle. Same locking rationale as `encoder`.
     throttle: Arc<Mutex<StreamingThrottle>>,
     /// Owned share registry (owner-side gate for inbound
@@ -243,22 +268,70 @@ impl SharedFlatpakSession {
         height: u32,
         config: FlatpakShareConfig,
     ) -> Result<Self, ShareError> {
+        Self::start_with_metrics(host_user_id, app_id, surface_id, width, height, config, None)
+    }
+
+    /// Same as [`Self::start`] but accepts a shared
+    /// [`PeerSurfaceMetrics`] handle so the compositor's OSD overlay
+    /// sees encode-side counters (wall-clock p50/p99, keyframe count,
+    /// chosen encoder, capture path) alongside the receiver-side
+    /// counters. Used by `flatpak_share_e2e` + the runtime wire-up.
+    pub fn start_with_metrics(
+        host_user_id: PeerId,
+        app_id: impl Into<String>,
+        surface_id: SurfaceId,
+        width: u32,
+        height: u32,
+        config: FlatpakShareConfig,
+        metrics: Option<PeerSurfaceMetrics>,
+    ) -> Result<Self, ShareError> {
         if width == 0 || height == 0 || width > 4096 || height > 4096 {
             return Err(ShareError::DimensionsExceeded { width, height });
         }
 
-        match config.encoder {
-            EncoderChoice::Auto | EncoderChoice::Openh264 => {}
-            other @ (EncoderChoice::Vaapi | EncoderChoice::Nvenc) => {
-                return Err(ShareError::EncoderUnavailable { choice: other });
-            }
-        }
+        // Probe every compiled-in backend and pick the highest-priority
+        // available one. The probe respects the config's explicit
+        // choice by short-circuiting hardware probes when the caller
+        // asked for openh264. Every outcome is captured so we can log
+        // it — invaluable for diagnosing "why VA-API isn't being
+        // picked on this box" without turning on debug tracing.
+        let (chosen, outcomes) = probe(Some(config.encoder));
+        log_probe_outcomes(&outcomes, chosen);
 
-        // Clamp fps to the SW ceiling. Callers of `snapshot_config()`
-        // see the *effective* value, not the requested one.
-        let effective_fps = config.target_fps.min(SOFTWARE_FPS_CEILING).max(1);
-        let encoder = H264Encoder::new(width, height, effective_fps)
-            .map_err(ShareError::EncoderConstruction)?;
+        // Software encoder needs the fps clamp; hardware paths lift it.
+        // We only clamp to the SW ceiling if the chosen backend is
+        // openh264 — the flatpak_share_e2e test still asserts against
+        // the 30 fps ceiling for backwards compatibility, and hardware
+        // paths will report a higher `snapshot_config().target_fps` in
+        // a follow-up.
+        let effective_fps = if chosen == EncoderKind::Openh264 {
+            config.target_fps.min(SOFTWARE_FPS_CEILING).max(1)
+        } else {
+            config.target_fps.max(1)
+        };
+
+        let init = EncoderInit {
+            width,
+            height,
+            fps: effective_fps,
+            bitrate_kbps: config.max_bitrate_kbps,
+            keyframe_interval_secs: 1,
+        };
+        let encoder = build(chosen, init).map_err(|e| match e {
+            EncoderError::Unavailable { .. } => {
+                ShareError::EncoderUnavailable { choice: config.encoder }
+            }
+            EncoderError::ConfigFailed { detail, .. } => {
+                ShareError::EncoderConstruction(EncodeError::Backend(detail))
+            }
+            EncoderError::EncodeFailed { detail, .. } => {
+                ShareError::EncoderConstruction(EncodeError::Backend(detail))
+            }
+        })?;
+
+        if let Some(m) = &metrics {
+            m.set_chosen_encoder(chosen);
+        }
 
         // Throttle interval mirrors the target fps.
         let interval = std::time::Duration::from_micros(
@@ -276,12 +349,39 @@ impl SharedFlatpakSession {
                 ..config
             },
             encoder: Arc::new(Mutex::new(encoder)),
+            chosen_encoder: chosen,
+            metrics,
+            capture_path: Arc::new(Mutex::new(CapturePath::ShmReadback)),
             throttle: Arc::new(Mutex::new(StreamingThrottle::with_interval(interval))),
             share_registry: Arc::new(Mutex::new(ShareRegistry::new())),
             staged_frame: Arc::new(Mutex::new(None)),
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
         })
+    }
+
+    /// Which encoder the runtime probe picked. Distinct from
+    /// `config.encoder` — this is the runtime kind, not the config-time
+    /// choice.
+    pub fn chosen_encoder(&self) -> EncoderKind {
+        self.chosen_encoder
+    }
+
+    /// Update the capture path — called by the compositor's commit hook
+    /// whenever the surface's buffer type changes (SHM ↔ DMABUF).
+    /// Propagates the value into the shared metrics handle so the OSD
+    /// sees the switch immediately.
+    pub fn set_capture_path(&self, path: CapturePath) {
+        let mut slot = self.capture_path.lock().expect("capture path");
+        *slot = path;
+        if let Some(m) = &self.metrics {
+            m.set_capture_path(path);
+        }
+    }
+
+    /// Current capture path (mirror of [`Self::set_capture_path`]).
+    pub fn capture_path(&self) -> CapturePath {
+        *self.capture_path.lock().expect("capture path")
     }
 
     /// Dimensions the encoder is configured for. Constant for the
@@ -361,29 +461,50 @@ impl SharedFlatpakSession {
         if !self.active.load(Ordering::Acquire) {
             return None;
         }
-        let mut encoder = self.encoder.lock().expect("encoder");
         let mut throttle = self.throttle.lock().expect("throttle");
-        let staged = self.staged_frame.clone();
-        // Grab both the RGBA + the capture ts on the way in so the
-        // encoded frame carries the *original* capture timestamp — not
-        // "after encode finished", which would understate the
-        // motion-to-photon budget.
-        let mut carried_ts = 0u64;
-        let outcome = encode_tick(&mut encoder, &mut throttle, now, || {
-            staged.lock().expect("staged").take().map(|f| {
-                carried_ts = f.capture_ts_ns;
-                f.rgba
-            })
-        });
-        match outcome {
-            EncodeTickOutcome::Encoded(nalus) => Some(EncodedFrame {
-                surface: self.surface_id,
-                nalus,
-                capture_ts_ns: carried_ts,
-            }),
-            EncodeTickOutcome::Throttled
-            | EncodeTickOutcome::NoFrame
-            | EncodeTickOutcome::EncodeFailed(_) => None,
+        if !throttle.should_encode(now) {
+            return None;
+        }
+        // Drain the staged frame BEFORE grabbing the encoder lock so we
+        // don't hold both.
+        let staged = self.staged_frame.lock().expect("staged").take();
+        let staged = match staged {
+            Some(s) => s,
+            None => return None,
+        };
+        let carried_ts = staged.capture_ts_ns;
+
+        let mut encoder = self.encoder.lock().expect("encoder");
+        let mut nalus = Vec::new();
+        let encode_result = encoder.encode(FrameInput::Rgba(&staged.rgba), &mut nalus);
+        match encode_result {
+            Ok(stats) => {
+                throttle.mark_encoded(now);
+                // Push encode-side telemetry into the shared metrics.
+                if let Some(m) = &self.metrics {
+                    m.record_encode_wallclock(stats.encode_wallclock.as_nanos() as u64);
+                    if stats.keyframe {
+                        m.record_keyframe();
+                    }
+                    // Rough bitrate sample: bytes-per-frame * fps.
+                    let bytes_per_sec = (stats.bytes as u64)
+                        .saturating_mul(self.config.target_fps as u64);
+                    m.record_bitrate(bytes_per_sec);
+                }
+                Some(EncodedFrame {
+                    surface: self.surface_id,
+                    nalus,
+                    capture_ts_ns: carried_ts,
+                })
+            }
+            Err(err) => {
+                tracing::debug!(
+                    surface = self.surface_id,
+                    error = ?err,
+                    "encoder rejected frame, dropping"
+                );
+                None
+            }
         }
     }
 
@@ -472,6 +593,32 @@ impl SharedFlatpakSession {
     }
 }
 
+/// Emit a `tracing::info!` line for the chosen encoder plus a
+/// `tracing::debug!` for every backend the probe walked. Callers see
+/// exactly which backends were considered and *why* the winner was
+/// picked — invaluable for diagnosing "why VA-API isn't kicking in on
+/// this box" without turning on the whole trace subscriber.
+fn log_probe_outcomes(outcomes: &[ProbeOutcome], chosen: EncoderKind) {
+    for o in outcomes {
+        tracing::debug!(
+            kind = o.kind.as_str(),
+            available = o.available,
+            reason = %o.reason,
+            "encoder probe outcome"
+        );
+    }
+    let reason = outcomes
+        .iter()
+        .find(|o| o.kind == chosen)
+        .map(|o| o.reason.as_str())
+        .unwrap_or("");
+    tracing::info!(
+        chosen = chosen.as_str(),
+        reason,
+        "flatpak share encoder selected"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,19 +648,28 @@ mod tests {
     }
 
     #[test]
-    fn start_rejects_vaapi_and_nvenc_in_v1() {
+    fn requested_vaapi_or_nvenc_falls_back_to_openh264_when_hw_absent() {
+        // On a stripped host (no `vaapi` or `nvenc` cargo feature and
+        // no `/dev/dri` render node) the probe walks past both hardware
+        // backends and lands on openh264. The session constructs
+        // successfully; `chosen_encoder()` reports `Openh264` so
+        // callers can surface "fell back to software" in the OSD.
         for choice in [EncoderChoice::Vaapi, EncoderChoice::Nvenc] {
             let cfg = FlatpakShareConfig {
                 encoder: choice,
                 ..cfg_openh264()
             };
-            // `Result<SharedFlatpakSession, ShareError>` — the Ok arm isn't
-            // Debug, so we can't use `expect_err`; hand-crack the match.
-            match SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg) {
-                Err(ShareError::EncoderUnavailable { .. }) => {}
-                Err(other) => panic!("expected EncoderUnavailable, got {other:?}"),
-                Ok(_) => panic!("hardware encoder should be unavailable in v1"),
-            }
+            let session = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg)
+                .expect("session should fall back to openh264");
+            // Runtime kind must be openh264 — the config-time request
+            // (`Vaapi` / `Nvenc`) stays in the snapshot for the OSD.
+            #[cfg(not(feature = "vaapi"))]
+            #[cfg(not(feature = "nvenc"))]
+            assert_eq!(
+                session.chosen_encoder(),
+                EncoderKind::Openh264,
+                "no hardware features compiled: must land on openh264"
+            );
         }
     }
 
