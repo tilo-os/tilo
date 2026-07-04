@@ -51,11 +51,13 @@ use smithay::{
     delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
+use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
+use smithay::backend::input::KeyState;
 
 /// The compositor's process-wide state.
 ///
@@ -133,6 +135,27 @@ pub struct State {
     /// Wall-clock anchor for input timestamps. Pointer events ship
     /// with a `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
+    /// Per-peer virtual seats.
+    ///
+    /// [`InputEvent::PointerEnter`] auto-grabs the peer's keyboard
+    /// focus onto the target surface for downstream `Key` events;
+    /// [`InputEvent::PointerLeave`] releases the grab. See
+    /// [`crate::compositor::remote_seat::RemoteSeats`] for the full
+    /// contract. Multi-user typing interleaves at the physical seat
+    /// level — this map is bookkeeping for the per-peer focus state,
+    /// not a per-peer independent input pipeline (v1).
+    pub remote_seats: RemoteSeats,
+    /// Optional surface-id → WlSurface resolver installed by the
+    /// backend (`native::run` wires this to the compositor's
+    /// wayland-server tracker).
+    ///
+    /// Populated at boot from the same map the render layer uses to
+    /// find surfaces by their protocol id; consulted by
+    /// [`Self::apply_remote_input`]'s keyboard-focus flip on
+    /// `PointerEnter`. When `None` (headless tests) the focus flip is
+    /// a bookkeeping-only no-op — the peer's `RemoteSeat` still
+    /// records the target so tests can observe the focus intent.
+    pub surface_resolver: Option<Box<dyn Fn(SurfaceId) -> Option<WlSurface> + Send + Sync>>,
 }
 
 impl State {
@@ -187,6 +210,8 @@ impl State {
             seat,
             serial_counter: 0,
             start_time: std::time::Instant::now(),
+            remote_seats: RemoteSeats::new(),
+            surface_resolver: None,
         }
     }
 
@@ -235,32 +260,40 @@ impl State {
 // `RemoteInputSink` impl: receives the gated events from
 // `ShareRegistry::route_to`.
 //
-// D-1 fix: this previously only logged + recorded the event in
-// `last_remote_input`, leaving the boolean return of
-// `apply_remote_input` as the only signal that anything had happened.
-// The seat path was a no-op. Post-fix, pointer motion / button events
-// drive the real smithay `Seat<Self>` (constructed in `State::new`)
-// via `PointerHandle::motion` / `button`, matching the production
-// shape used by `network::wayland::WaylandServer::handle_input`.
+// The pointer path drives the real smithay `Seat<Self>` (constructed in
+// `State::new`) via `PointerHandle::motion` / `button`, matching the
+// production shape used by `network::wayland::WaylandServer::handle_input`.
 //
-// Keyboard injection is intentionally deferred to a follow-up — the
-// keymap load + key-code translation is non-trivial and the
-// foreign-tab remote-control use case the Phase 4 spec calls out is
-// pointer-driven. The `Key` variant still records into
-// `last_remote_input` so a future wire-up can flip it on without
-// shifting the public API.
+// Keyboard injection: `InputEvent::Key { keysym, pressed, modifiers }` fires
+// `KeyboardHandle::input`. The wire `keysym` is treated as a raw keycode
+// (see the `InputEvent` doc for the compat rationale). Modifier state
+// flows via explicit modifier-key press/release events the peer sends —
+// smithay's `KeyboardInternal::key_input` maintains modifier state from
+// the keycode stream, so shifted / ctrl'd key runs work as long as the
+// peer sends the modifier keys in order. The `modifiers` bitfield is
+// recorded into `last_remote_input` for diagnostics and per-user "typing"
+// overlays.
+//
+// Focus grab: `PointerEnter { surface }` grabs keyboard focus onto the
+// peer's virtual `RemoteSeat` — physically, the compositor's single
+// `Seat<State>`'s `KeyboardHandle::set_focus` is flipped to point at the
+// target `WlSurface` (resolved via `surface_resolver`). `PointerLeave`
+// releases the grab. When the resolver returns `None` (headless tests,
+// or a peer targeting a surface the local compositor doesn't own), the
+// focus flip is a bookkeeping-only no-op and the peer's `RemoteSeat`
+// still records the intent. Multi-user typing interleaves at the
+// physical seat.
 impl RemoteInputSink for State {
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
             target: "shell::compositor::state",
             peer, surface, ?event,
-            "remote-input applied (D-1: pointer events injected into seat; \
-             keyboard injection deferred)"
+            "remote-input applied"
         );
         // Mirror the event into `last_remote_input` so legacy callers
         // / integration tests that introspect the field still see the
-        // routing decision. Pre-fix this was the *only* side effect;
-        // post-fix it's a redundant trace.
+        // routing decision, and per-user "typing" overlays can find
+        // the origin peer id in one place.
         self.last_remote_input = Some((peer, surface, event.clone()));
 
         let time = self.start_time.elapsed().as_millis() as u32;
@@ -309,10 +342,74 @@ impl RemoteInputSink for State {
                     }
                 }
             }
-            InputEvent::Key { .. } => {
-                // Keyboard injection deferred — see module comment.
-                // We've already stamped `last_remote_input`, which is
-                // the read-only-gate-passed signal callers rely on.
+            InputEvent::PointerEnter { surface: target } => {
+                // Grab keyboard focus for the peer's virtual seat.
+                let prev = self.remote_seats.seat_mut(peer).enter(target);
+                // Only flip the physical seat's keyboard focus if the
+                // target actually changed — noisy re-enters otherwise
+                // stomp the client's focus state.
+                if prev != Some(target) {
+                    if let (Some(resolver), Some(keyboard)) =
+                        (&self.surface_resolver, self.seat.get_keyboard())
+                    {
+                        let target_surface = resolver(target);
+                        keyboard.set_focus(self, target_surface, serial);
+                    }
+                }
+            }
+            InputEvent::PointerLeave { surface: _ } => {
+                // Release the peer's grab. We only clear the physical
+                // seat's keyboard focus if this peer was actually the
+                // one holding it — a `PointerLeave` from a peer that
+                // never entered is a no-op.
+                let prev = self.remote_seats.seat_mut(peer).leave();
+                if prev.is_some() {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        keyboard.set_focus(self, None, serial);
+                    }
+                }
+            }
+            InputEvent::Key {
+                keysym,
+                pressed,
+                modifiers: _modifiers,
+            } => {
+                // The peer's wire `keysym` is treated as a raw keycode
+                // — see the `InputEvent` doc comment. `KeyboardHandle::input`
+                // walks the seat's xkbcommon state and delivers into the
+                // focused client.
+                //
+                // Modifier state is *not* force-set here: smithay's
+                // internal `key_input` maintains modifier state from
+                // the running keycode stream, so peers that need
+                // Shift+A send Shift-press → A-press → A-release →
+                // Shift-release. The `modifiers` bitfield on the wire
+                // is diagnostics only (recorded in
+                // `last_remote_input`); a follow-up can force-set
+                // modifiers via `Seat::keyboard_shortcuts_inhibitor`
+                // when we want to guarantee a specific mod state
+                // without waiting for the modifier keycode stream.
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    let key_state = if pressed {
+                        KeyState::Pressed
+                    } else {
+                        KeyState::Released
+                    };
+                    // Smithay's Keycode wraps u32 — Keysym on the wire
+                    // is the value passed straight through. See the
+                    // wayland.rs sibling's `handle_input` for the
+                    // production shape we mirror here.
+                    let _: Option<()> = keyboard.input(
+                        self,
+                        keysym.into(),
+                        key_state,
+                        serial,
+                        time,
+                        |_, _, _| {
+                            smithay::input::keyboard::FilterResult::<()>::Forward
+                        },
+                    );
+                }
             }
         }
     }
