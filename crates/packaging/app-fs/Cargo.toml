@@ -1,0 +1,35 @@
+[package]
+name = "app-fs"
+version = "0.1.0"
+edition = "2024"
+description = "FUSE3 driver that page-fault streams qOS package payloads from a content-addressed blob store."
+
+[lib]
+name = "app_fs"
+path = "src/lib.rs"
+
+[dependencies]
+fuser = "0.17.0"
+blake3 = "1"
+lru = "0.16.3"
+thiserror = "2"
+libc = "0.2"
+tracing = "0.1"
+
+[dependencies.clap]
+version = "4"
+features = ["derive"]
+optional = true
+
+[features]
+default = ["cli"]
+cli = ["clap"]
+
+[[bin]]
+name = "qos-app-mount"
+path = "src/bin/qos-app-mount.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+tempfile = "3"
+hex = "0.4"
