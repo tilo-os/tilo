@@ -89,7 +89,9 @@ const GROUPS: &[Group] = &[
     Group {
         label: "Pages",
         rows: &[
+            ("New page", "+ button"),
             ("New child of selected", "Cmd-N / Ctrl-N"),
+            ("Reorder page up / down", "Alt-↑ / Alt-↓"),
             ("Rename page", "double-click / F2"),
             ("Delete page", "Delete"),
         ],
