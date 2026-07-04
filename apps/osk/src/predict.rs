@@ -1,0 +1,253 @@
+//! Next-word / completion prediction (W9b).
+//!
+//! An **offline** n-gram language model: unigram frequency (from the
+//! [`Dictionary`]) + a bigram table (`apps/osk/data/bigrams.txt`). It serves
+//! two jobs the suggestion bar needs:
+//!
+//! * **next-word** — after a word commits, what word usually follows?
+//!   (`prev_word = Some("good")`, `prefix = ""` → `morning`, `luck`, …).
+//! * **completion** — as the user types, complete the in-progress word, biased
+//!   by the preceding word when there is one
+//!   (`prev_word = Some("how"), prefix = "ar"` → `are`).
+//!
+//! Both are exposed through one call, [`Predictor::predict_next`], which blends
+//! bigram context, prefix match, and raw frequency.
+//!
+//! A larger neural model (candle / llama.cpp) is a documented future
+//! enhancement; this n-gram baseline ships working and is the seam everything
+//! else is wired against.
+
+use std::collections::HashMap;
+
+use crate::dict::Dictionary;
+
+/// Embedded bigram table: `w1<TAB>w2<TAB>weight` per line. ~40k common pairs.
+const BIGRAMS_TXT: &str = include_str!("../data/bigrams.txt");
+
+/// Offline n-gram next-word predictor.
+#[derive(Clone, Debug)]
+pub struct Predictor {
+    dict: Dictionary,
+    /// prev_word -> [(next_word_index_into_dict_or_string, weight)]. We keep
+    /// the successor strings directly (they are all dictionary words) for a
+    /// simple, allocation-light lookup.
+    bigrams: HashMap<String, Vec<(String, u32)>>,
+    max_bigram_weight: u32,
+}
+
+impl Predictor {
+    /// Build the predictor over the embedded English dictionary + bigrams.
+    pub fn english() -> Self {
+        Self::from_data(Dictionary::english(), BIGRAMS_TXT)
+    }
+
+    /// Build from a dictionary and a `w1<TAB>w2<TAB>weight` bigram table.
+    /// Exposed for tests / custom corpora.
+    pub fn from_data(dict: Dictionary, bigram_data: &str) -> Self {
+        let mut bigrams: HashMap<String, Vec<(String, u32)>> = HashMap::new();
+        let mut max_bigram_weight = 1u32;
+        for line in bigram_data.lines() {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            let mut it = line.split('\t');
+            let (Some(w1), Some(w2), Some(w)) = (it.next(), it.next(), it.next()) else {
+                continue;
+            };
+            let Ok(weight) = w.trim().parse::<u32>() else {
+                continue;
+            };
+            max_bigram_weight = max_bigram_weight.max(weight);
+            bigrams
+                .entry(w1.to_lowercase())
+                .or_default()
+                .push((w2.to_lowercase(), weight));
+        }
+        // Sort each successor list by weight descending for fast top-N.
+        for v in bigrams.values_mut() {
+            v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        }
+        Self {
+            dict,
+            bigrams,
+            max_bigram_weight,
+        }
+    }
+
+    pub fn dictionary(&self) -> &Dictionary {
+        &self.dict
+    }
+
+    /// Number of distinct preceding-words with bigram successors.
+    pub fn bigram_contexts(&self) -> usize {
+        self.bigrams.len()
+    }
+
+    /// Predict the next/completion words, ranked best-first, as
+    /// `(word, score)` with `score` in roughly `0.0..=1.0`.
+    ///
+    /// * `prev_word` — the word just committed, if any (lower-cased internally).
+    /// * `prefix` — the in-progress word fragment (may be empty).
+    ///
+    /// Scoring blends three signals:
+    /// * **bigram** — P(word | prev_word) from the bigram table (dominant when
+    ///   present),
+    /// * **prefix** — does the candidate start with `prefix` (required when
+    ///   `prefix` is non-empty),
+    /// * **frequency** — the unigram prior.
+    pub fn predict_next(&self, prev_word: Option<&str>, prefix: &str) -> Vec<(String, f32)> {
+        self.predict_next_n(prev_word, prefix, 8)
+    }
+
+    /// As [`predict_next`](Self::predict_next) but with an explicit cap.
+    pub fn predict_next_n(
+        &self,
+        prev_word: Option<&str>,
+        prefix: &str,
+        n: usize,
+    ) -> Vec<(String, f32)> {
+        if n == 0 {
+            return Vec::new();
+        }
+        let prefix = prefix.to_lowercase();
+        let prev = prev_word.map(|w| w.to_lowercase());
+
+        // Accumulate the best score per candidate word.
+        let mut scores: HashMap<String, f32> = HashMap::new();
+
+        // --- bigram successors of prev_word -----------------------------
+        if let Some(succ) = prev.as_deref().and_then(|p| self.bigrams.get(p)) {
+            for (w2, weight) in succ {
+                if !prefix.is_empty() && !w2.starts_with(&prefix) {
+                    continue;
+                }
+                let bigram_score = *weight as f32 / self.max_bigram_weight as f32;
+                // Bigram is the strongest signal — weight it heavily.
+                let freq = self.dict.frequency(w2);
+                let s = 0.7 * bigram_score + 0.3 * freq;
+                upsert_max(&mut scores, w2, s);
+            }
+        }
+
+        // --- prefix completion from the dictionary ----------------------
+        // When there is a prefix, fold in frequency-ranked completions so we
+        // still suggest even without a bigram hit. When there is no prefix and
+        // no bigram context, fall back to the most common words.
+        if !prefix.is_empty() {
+            for entry in self.dict.complete(&prefix, n * 4) {
+                let freq = self.dict.frequency(&entry.word);
+                // Completion-only candidates score below bigram hits.
+                let s = 0.45 * freq;
+                upsert_max(&mut scores, &entry.word, s);
+            }
+        } else if prev.is_none() || !self.bigrams.contains_key(prev.as_deref().unwrap_or("")) {
+            // Cold start: no context, no prefix → most common words.
+            for entry in self.dict.words().iter().take(n * 2) {
+                let freq = self.dict.frequency(&entry.word);
+                upsert_max(&mut scores, &entry.word, 0.3 * freq);
+            }
+        }
+
+        let mut out: Vec<(String, f32)> = scores.into_iter().collect();
+        out.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.truncate(n);
+        out
+    }
+}
+
+/// Keep the maximum score seen for a word (a word may be reached via several
+/// signals; we don't want to double-count, we want its best evidence).
+fn upsert_max(scores: &mut HashMap<String, f32>, word: &str, s: f32) {
+    let e = scores.entry(word.to_string()).or_insert(0.0);
+    if s > *e {
+        *e = s;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn small() -> Predictor {
+        let dict = Dictionary::from_str(
+            "the\t100\nmorning\t60\nmore\t70\nmood\t40\ngood\t80\nluck\t50\nare\t90\nart\t30\n",
+        );
+        let bigrams = "good\tmorning\t900\ngood\tluck\t700\nhow\tare\t950\n";
+        Predictor::from_data(dict, bigrams)
+    }
+
+    #[test]
+    fn embedded_predictor_loads_bigrams() {
+        let p = Predictor::english();
+        assert!(
+            p.bigram_contexts() > 1000,
+            "want many bigram contexts, got {}",
+            p.bigram_contexts()
+        );
+    }
+
+    #[test]
+    fn next_word_uses_bigram_context() {
+        let p = small();
+        let preds = p.predict_next(Some("good"), "");
+        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+        // "morning" and "luck" are good's bigram successors and should lead.
+        assert_eq!(words[0], "morning", "got {words:?}");
+        assert!(words.contains(&"luck"));
+    }
+
+    #[test]
+    fn prefix_completion_respects_prefix() {
+        let p = small();
+        let preds = p.predict_next(None, "mo");
+        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+        assert!(words.iter().all(|w| w.starts_with("mo")), "got {words:?}");
+        // Frequency order among "mo*": more(70) > morning(60) > mood(40).
+        assert_eq!(words[0], "more", "got {words:?}");
+    }
+
+    #[test]
+    fn bigram_plus_prefix_filters_to_matching_successor() {
+        let p = small();
+        // After "good", typing "m" should surface "morning" (the matching
+        // bigram successor), not "luck".
+        let preds = p.predict_next(Some("good"), "m");
+        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+        assert_eq!(words[0], "morning", "got {words:?}");
+        assert!(!words.contains(&"luck"), "luck doesn't start with m");
+    }
+
+    #[test]
+    fn embedded_real_bigram_predicts_sensibly() {
+        let p = Predictor::english();
+        // "of" -> "the" is the single most common English bigram.
+        let preds = p.predict_next(Some("of"), "");
+        assert!(!preds.is_empty());
+        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+        assert_eq!(words[0], "the", "expected 'the' after 'of', got {words:?}");
+    }
+
+    #[test]
+    fn cold_start_returns_common_words() {
+        let p = small();
+        let preds = p.predict_next(None, "");
+        assert!(!preds.is_empty());
+        // Most common word in the toy dict is "the".
+        assert_eq!(preds[0].0, "the");
+    }
+
+    #[test]
+    fn unknown_context_falls_back_to_prefix_or_common() {
+        let p = small();
+        // No bigram for "xyzzy"; with a prefix we still complete.
+        let preds = p.predict_next(Some("xyzzy"), "ar");
+        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+        assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
+        assert!(words.contains(&"are"));
+    }
+}

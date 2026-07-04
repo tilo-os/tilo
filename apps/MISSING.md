@@ -1,0 +1,201 @@
+# MISSING — open per-app issues to fix before showing again
+
+Rule: **never present an app to the user while it has an unchecked entry here.**
+Each item is confirmed fixed (self-verified: build + shot + driven interaction,
+graded against `ui/HIG.md`) before its box is checked. Governed by the qOS HIG.
+
+**Review discipline (do not skip):** an item is only checked after DRIVING the
+real interaction that exercises it — never off a static empty-state shot. For a
+document app that means OPEN a document and actually zoom / pan / annotate; for a
+control that means click it and confirm it does the thing. A screenshot of an
+empty state proves nothing. (I violated this by showing pdf_viewer from an empty
+"No document open" shot without ever driving zoom or open — never again.)
+
+---
+
+## calculator
+- [x] Cards grow-to-fit (up to 96px max) then scroll; fractions + 3D default show
+      in full, list reflows, never clips → fixed.
+- [x] Real CRDT editor: Text-backed diff-splice buffer, undo/redo via ui::State,
+      selection + clipboard → fixed (drive-verify undo live before showing).
+- [ ] Minor: in Graph 3D the `sin` function name renders oversized relative to
+      its `(√x²+y²)` argument — legible + un-clipped but typographically off. Make
+      the function name and its parenthesised argument consistent size.
+- [ ] Remaining: remote multi-cursor is not rendered inside the math field (local
+      structured caret only) — peer carets need mapping into the 2D layout.
+
+## sheets (spreadsheet) — CLEAR (verified, committed b0fe3e2)
+- [x] Cell-reference visualisation: each distinct ref in a formula gets a stable
+      colour, tinted in the in-cell text + formula bar AND outlined on the grid in
+      the matching colour → fixed (verified: `=B2+C2` → B2 blue + C2 red in text
+      and as grid outlines; `=SUM(B2:D2)` → blue range rectangle).
+- [x] Formula-building by click (point mode): while editing a formula, click a
+      cell to insert its ref, drag to insert a range, click after an operator to
+      append → fixed (verified: C10 `=B2+C2` built by clicking).
+- [x] Excel-style multi-range selection → confirmed live (ctrl-selected B2:B7 +
+      E2:E7 = 11 cells, status bar shows Sum $14,750 · Avg $1,340.91 · Count 11).
+
+## weather — CLEAR (verified, committed b0fe3e2)
+- [x] Units (°C/°F, km/h/mph) removed from the app; read from the shared Settings
+      store (locale.measurement) → fixed.
+- [x] HIG §1b content panels via ui::NavShell: contentful city list + forecast
+      side-by-side on desktop; narrow = full-screen list → tap city → forecast
+      pushes in with a ‹ Back button (never an X). Old overlay-flap removed →
+      fixed (verified wide + narrow-pushed-detail). Real Open-Meteo data.
+
+## monitor (system monitor) — CLEAR (verified, committed 1571bc5)
+- [x] Re-architected: Processes view = a compact CPU/Memory/Network/Disk summary
+      strip above a full-width process table (PID/name/user/CPU%/mem/threads +
+      selected-process detail + Kill); Resources view = Processor donut + load
+      avg, RAM/Swap bars, System info (real host/CPU/cores), Per-Core bars, and
+      large CPU/Mem/Net/Disk graphs. No fake sidebar — reads as content → verified.
+
+## pdf_viewer — CLEAR (verified on a real loaded PDF, committed ba0c8ab)
+- [x] Zoom adopted onto ui::ViewportState: verified on the 3-page sample —
+      page width 306/612/1224px at 50/100/200% (exact 2×), Ctrl+wheel focal zoom,
+      h-pan, +/-/Fit + scrollbars. (The old "zoom broken" was a static empty-state
+      proof; the real regression was the verification — now driven on a loaded doc.)
+- [x] File open via the XDG portal (ashpd, off-thread); bespoke OpenDialog removed.
+- [x] Drive-reviewed on the loaded doc: zoom/pan/highlight/search(whole-word+case)/
+      sidebar/delete all work; removed the demo ellipse over whitespace → markup
+      anchored to real text.
+
+## calendar
+- [x] HIG §1 three-panel model: genuine sidebar (calendars/smart-lists/projects,
+      chevron collapse never an X) + month/week/day grid overview + event detail;
+      three abreast on desktop, only the sidebar collapses; narrow = overlay
+      drawer + overview→detail push. Hand-rolled (not NavShell) but well-reasoned,
+      HIG-correct, and richer than a generic fill — kept per judgement; its
+      collapse behaviour is a candidate to fold into ui. Committed f917913.
+- [x] Responsive reflow re-derives the breakpoint each layout pass (test) → fixed.
+- [x] Narrow view-switcher (Month/Week/Day/Agenda) is pointer-reachable inside the
+      overlay drawer → verified.
+- [x] Week-view period title no longer clips — reads "29 Jun – 5 Jul" in full at
+      1280px with the detail panel open → verified.
+
+## email (mail) — CLEAR (verified, committed f917913)
+- [x] Adopted ui::NavShell three-panel: accounts+folders genuine sidebar (chevron
+      collapse, not X) + message-list overview + threaded-message detail, three
+      abreast on desktop; narrow = overlay drawer + list full-screen → message
+      pushes in with ‹ Back → fixed (verified wide 3-panel + narrow pushed detail;
+      workflow's verify agent crashed on an API drop, so I rendered + checked the
+      shots myself).
+
+## chat — UI defects CLEAR; deeper FEATURE gaps below (audit 2026-07-04)
+- [x] Call-overlay tiles packed into a bounded region (grid picks the column count
+      that fits N; partial last row centred) — no right-edge overflow at any width
+      (verified 1280/800/560) → fixed.
+- [x] Remotes are honest — every tile shows an avatar + caption ("Camera off" /
+      "No video"), no fabricated gradient video (HIG §4) → fixed (verified).
+- [x] Attachment chip shows only "TYPE · SIZE" (e.g. "MD · 18.5 KB") — no
+      /var/workspace path (test asserts no '/', 'workspace', 'shared via') → fixed.
+- [x] Stale `tint` gradient stand-in comment removed → fixed.
+- [x] Emoji reactions — REAL (model + Automerge CRDT + UI, cross-peer convergence
+      tested). Image attachments — REAL (ui::ImageStore + real FUSE fs.read; the
+      synthesized `qos-demo://` images are shots-only). No action.
+- [ ] CALLING IS UI-ONLY (not real): the overlay is view-state + a join/leave beep.
+      NO camera/mic capture, NO opus/H.264 codec, NO transport — IrohTransport
+      never binds an endpoint (media.rs:232), connect()=false, send() loops back
+      in-process, so no peer ever receives a frame. request_screencast() is a None
+      stub (media.rs:189). To make it real: (a) capture via portal ScreenCast +
+      a pipewire/GStreamer mic source; (b) opus (audio) + H.264 (video) codec;
+      (c) transport — EITHER reuse the compositor's REAL H.264 pipeline
+      (shell/src/network/encoder.rs + peer_view.rs over gossipsub, already has
+      host-wins arbitration + signed invite tokens) OR bind the iroh QUIC seam —
+      pick ONE and wire it end-to-end.
+- [ ] P2P-by-default + APPOINTED-HOST routing does not exist. User's model: direct
+      P2P by default, but route a workspace through an appointed host (e.g. a home
+      server also running qOS) when one exists. Foundation exists in the compositor
+      (session-host designation + "host always wins" for surface sharing); needs a
+      persistent self-hosted workspace-host / relay concept built on top.
+- [ ] Message EDITING has no user entry point: the CRDT writer `edit_message` +
+      the read-only "(edited) · view history" popover exist, but nothing calls
+      edit_message outside tests/seed (doc.rs:1143). Add a context-menu "Edit" /
+      ArrowUp-to-edit-last-message that calls ChatDoc::edit_message (doc.rs:593).
+- [ ] VIDEO attachments ABSENT: Attachment is only Image|File (model.rs:140); a
+      shared video renders as a plain file chip — no poster, no inline playback.
+      Add a Video variant + inline player (depends on the ui video core below).
+
+## video playback (ui layer) — REAL but SILOED (audit 2026-07-04)
+- [ ] The working decode (NoFlush single persistent decoder) lives ONLY in tube
+      (apps/tube/src/playback.rs). The shared ui::widget::VideoPlayer still flushes
+      after every decode → drops ~95% of a real stream's frames (playback.rs:13).
+      Extract tube's robust decode into a shared `ui` video core (or fix
+      ui::VideoPlayer) so ANY app (chat, a general player, file preview) gets real
+      playback, not just tube.
+- [ ] ui::VideoPlayer is not production-grade: no container demux (caller must feed
+      Annex-B NALUs), no fetch, no audio, placeholder 60s scrub with the thumb
+      pinned to start (video_player.rs:118,336,462). Needs a media-length setter +
+      a playhead clock for real seek.
+- [ ] No general video-player app; no inline video in chat or file-explorer preview.
+      Tube's watch page is the only video UI and it's `--features live`-gated +
+      network-dependent (offline/hermetic build shows posters only —
+      OfflineBackend::resolve_video_stream errors, backend/mod.rs:166).
+- [ ] No AUDIO anywhere in the video stack (tube is video-only by design) — a real
+      player needs an audio track + A/V sync. No hardware decode (openh264/CPU only;
+      OK for a 144p probe, insufficient for real playback resolutions).
+
+## maps
+- [x] Unbounded failed-tile refetch loop → fixed.
+- [x] Swap-ends (separate origin/dest + labels) → fixed.
+- [x] Transit tab triggers the departures fetch → fixed.
+- [x] First-run/offline shows a grid + "Loading map…" affordance → fixed.
+- [x] Typeable From/To origin fields + "Use my location" via the location portal
+      (org.freedesktop.portal.Location) + transit time picker → fixed (6a9ad41).
+      (Location's real coords depend on the host location service + permission —
+      wiring is real + unit-tested; live fix unverifiable headlessly.)
+
+## typst_editor
+- [x] Horizontal scroll / keep caret in view → fixed.
+- [x] Idle spin while editor focused → fixed.
+
+## contacts
+- [x] Toasts auto-dismiss → fixed.
+- [x] Detail-pane name no longer truncates at 800px → fixed.
+
+## totp
+- [x] QR-image import wired to a real picker → fixed. (Follow-up: it must go
+      through the XDG portal per HIG §5 — audit in the picker sweep.)
+- [x] Advanced options scroll into view → fixed.
+- [x] Vault encrypted at rest → fixed.
+
+## slides (presentation) — CLEAR (verified, committed 6c2e54b)
+- [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
+      overlap → fixed.
+- [x] Deck-theme palette pills fit their full labels + wrap to a 2nd row
+      (Indigo/Emerald/Amber · Rose/Sky) — no truncation → fixed.
+- [x] Responsive toolbar: overflow ⋯ menu keeps every insert tool
+      pointer-reachable at 1280/800/560 (verified: clicked ⋯ at 560, all 6 tools
+      shown) → fixed.
+- [x] Selection handles anchored outside the content rect (+8px) — never cover
+      the first glyph → fixed.
+- [x] Rail + overview vertical scroll for large decks; action buttons never
+      overlapped → fixed.
+- [x] Image insert goes through the XDG portal (ashpd FileChooser off-thread),
+      renders a real raster; app-drawn FilePicker + mountain-glyph removed → fixed.
+- [x] Present mode rests when idle → fixed (caveat: ui::App has no timed-wake
+      hook, so present returns false = wait-for-input rather than an autonomous
+      1 Hz tick; correct per "not every vsync").
+- [x] Crate stays named `slides`.
+
+---
+
+## toolkit (ui) — enablers
+- [x] Build the HIG §1 navigation primitive (NavShell) → DONE (ui 13e2928; genuine
+      collapsible sidebar docked/overlay-drawer + content master/detail
+      side-by-side/push, proper collapse chevron never an X). NEXT: apps must
+      ADOPT it — weather, calendar, email, monitor. (Adoption is tracked per app.)
+- [ ] (superseded — see the DONE item above) Build the HIG §1 navigation
+      primitive (NavShell): a genuine collapsible
+      web-style overlay-everywhere sidebar. Apps adopt this, not hand-rolled
+      layouts.
+- [ ] Shared CRDT caret/selection text-editing core adopted by fields that today
+      hand-roll editing (calculator formula field, etc.). (HIG §3)
+- [ ] Sweep the O(n²) `doc::store()` CRDT churn across the ~19 text apps. (HIG §5)
+- [x] SWEEP done: every app that drew its own OS file picker now uses the XDG
+      portal (ashpd) — pdf_viewer, slides, diffmerge, totp migrated; chat + maps
+      already portal. No app-drawn OpenDialog/ui::FilePicker for OS file open/save
+      remains (scout confirmed only those 4 offenders).
+- [ ] FOLLOW-UP (dedup, not a bug): the 6 apps each carry a near-identical copy of
+      `portal.rs`. Promote a shared `ui::portal` open/save helper and collapse the
+      copies onto it (same "recurring pattern → framework" move as ui::doc).

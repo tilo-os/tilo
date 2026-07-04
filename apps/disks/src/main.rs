@@ -1,0 +1,166 @@
+//! Disks — thin binary entry point. All logic lives in the library.
+//!
+//! Modes:
+//!   * default        — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
+//!                       (headless screenshot; identical passes to the live app).
+
+use std::collections::HashMap;
+
+use disks::DisksApp;
+use ui::offscreen::OffscreenRenderer;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
+use taffy::prelude::*;
+use vello::Scene;
+use vello::kurbo::{Affine, Point};
+use vello::peniko::Color;
+
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+/// A phone-width capture used to exercise the responsive overlay flap. Below
+/// the app's 900px breakpoint the drive list collapses to an overlay.
+const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(out) = parse_shots_arg(&args) {
+        // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
+        // collapsed layout with the drive-list flap revealed over its scrim.
+        let narrow = args.iter().any(|a| a == "--narrow")
+            || parse_viewport_arg(&args).is_some_and(|(w, _)| (w as f64) < 900.0);
+        let viewport = parse_viewport_arg(&args).unwrap_or(if narrow {
+            NARROW_SHOTS_VIEWPORT
+        } else {
+            DEFAULT_SHOTS_VIEWPORT
+        });
+        render_shot_to_png(DisksApp::new(), viewport, narrow, &out)?;
+        return Ok(());
+    }
+
+    // Live mode: probe the real system (lsblk + smartctl). The `--shots`
+    // path above never sets this, so the screenshot stays on the curated
+    // sample topology and is fully populated offline.
+    // SAFETY: set once at startup before any threads read the environment.
+    unsafe {
+        std::env::set_var("DISKS_LIVE", "1");
+    }
+    let state = ui::State::new();
+    let app = ui::App::new(state, disks::app_root());
+    app.run();
+    Ok(())
+}
+
+fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--shots" {
+            return iter.next().map(std::path::PathBuf::from);
+        }
+        if let Some(rest) = arg.strip_prefix("--shots=") {
+            return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Parse an optional `--viewport WIDTHxHEIGHT` (or `--viewport=WxH`) shots
+/// override so a caller can pick any capture size. Returns `None` if absent
+/// or malformed.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let parse = |s: &str| -> Option<(u32, u32)> {
+        let (w, h) = s.split_once(['x', 'X'])?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    };
+    while let Some(arg) = iter.next() {
+        if arg == "--viewport" {
+            return iter.next().and_then(|s| parse(s));
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            return parse(rest);
+        }
+    }
+    None
+}
+
+/// Run one offscreen frame against the app and write RGBA to `out` as PNG.
+/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// `narrow` snaps the drive-list flap open *after* layout so the collapsed
+/// overlay is captured settled rather than mid-animation.
+fn render_shot_to_png(
+    mut widget: DisksApp,
+    viewport: (u32, u32),
+    narrow: bool,
+    out: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    let mut text_renderer = TextRenderer::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+
+    let mut state = ui::State::new();
+    widget.sync(&mut state.doc, &state.root);
+
+    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
+            ..Default::default()
+        },
+        &[child],
+    )?;
+
+    {
+        let measure_map = node_map.clone();
+        let tr = &mut text_renderer;
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
+    }
+    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    // After layout the width (hence the docked/overlay split) is settled, so
+    // snapping the flap here lands a fully-revealed overlay for the capture.
+    if narrow {
+        widget.snap_sidebar(true);
+    }
+
+    let mut scene = Scene::new();
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("disks: wrote shot to {}", out.display());
+    Ok(())
+}
