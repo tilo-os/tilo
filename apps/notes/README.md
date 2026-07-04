@@ -1,14 +1,15 @@
 # notes
 
-A native, CRDT-ready note-taking app for qOS. Pages live in a side-tree;
-each page is a stack of editable blocks (paragraphs, headings, bullets,
+A native note-taking app for qOS. Pages live in a side-tree; each page
+is a stack of editable blocks (paragraphs, headings, bullets,
 checklists, code, dividers) with inline marks for bold, italic, code,
 and `[[Page]]` links. Cmd-K jumps to any page. The bottom status bar
 tells you whether your edits are saved and how many words live on the
 current page.
 
-This is the v0.1 release: feature-complete for solo daily-driver use,
-with the collaboration / sync layer deferred behind the same UI surface.
+The layout is responsive: on a narrow window the page tree collapses
+into an overlay drawer reached from a top-bar button, and the editor
+takes the full width.
 
 ## Running it
 
@@ -17,12 +18,17 @@ cargo run -p notes --release
 ```
 
 The binary opens a window, restores the workspace from
-`~/notes/` (creating a seed "Welcome" page on first launch), and runs
+`~/notes/` (creating a starter "Welcome" page on first launch), and runs
 until you close it. The background saver flushes every change with a
 500 ms debounce; the status bar shows "Saving…" while a write is
-queued and "Saved" once it lands. There is no `--shots` mode yet —
-visual review goes through the offscreen smoke test, which writes a
-PNG when `NOTES_SNAPSHOT=path` is set.
+queued and "Saved" once it lands.
+
+For headless visual review, render one offscreen frame to a PNG:
+
+```bash
+cargo run -p notes --release -- --shots out.png --viewport 800x600
+# add `--scenario drawer` to show the open page drawer on a narrow width
+```
 
 ## Storage layout
 

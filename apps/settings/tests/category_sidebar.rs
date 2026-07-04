@@ -1,14 +1,14 @@
-//! Asserts the sidebar advertises the expected categories.
+//! Asserts the sidebar advertises one entry per category.
 //!
-//! Spec from the skeleton brief: "at least one test that constructs
-//! `SettingsApp`, runs `build_layout` + `apply_layout`, and asserts the
-//! category sidebar has the expected count of entries". We do exactly
-//! that here — the `Category::ALL` slice is the canonical source of
-//! truth, so the assertion uses its length.
+//! Constructs `SettingsApp`, runs `build_layout` + `apply_layout` at a
+//! wide size (so the two-pane layout with the full sidebar is built), then
+//! walks the widget tree counting the sidebar rows. Each sidebar row is a
+//! `SidebarRow` addressable by its category's display label via `test_id`,
+//! so the count is exact (the content pane contains no `SidebarRow`s).
 
-use std::collections::HashMap;
 use settings::categories::Category;
 use settings::SettingsApp;
+use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
 
@@ -24,8 +24,8 @@ fn sidebar_has_one_entry_per_category() {
         .new_with_children(
             taffy::Style {
                 size: taffy::Size {
-                    width: taffy::Dimension::length(1000.0),
-                    height: taffy::Dimension::length(700.0),
+                    width: taffy::Dimension::length(1200.0),
+                    height: taffy::Dimension::length(760.0),
                 },
                 ..Default::default()
             },
@@ -36,29 +36,40 @@ fn sidebar_has_one_entry_per_category() {
         .compute_layout(
             root,
             taffy::Size {
-                width: taffy::AvailableSpace::Definite(1000.0),
-                height: taffy::AvailableSpace::Definite(700.0),
+                width: taffy::AvailableSpace::Definite(1200.0),
+                height: taffy::AvailableSpace::Definite(760.0),
             },
         )
         .unwrap();
     app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
 
-    // Walk the widget tree and collect every node whose name is
-    // "Button" — there's the per-category sidebar Button list. Since
-    // the only Buttons in the skeleton today are the sidebar entries,
-    // the count must equal `Category::ALL.len()`.
-    let mut buttons = 0usize;
+    // Each sidebar entry is a `SidebarRow` exposing its category's full
+    // display label as `test_id`. Collect those labels and assert exactly one
+    // row per category, with the *complete* (untruncated) label.
+    let mut labels: Vec<String> = Vec::new();
     walk(&app, &mut |w| {
-        if w.name() == "Button" {
-            buttons += 1;
+        if w.name() == "SidebarRow" {
+            if let Some(l) = w.test_id() {
+                labels.push(l.to_string());
+            }
         }
     });
 
     assert_eq!(
-        buttons,
+        labels.len(),
         Category::ALL.len(),
-        "expected one sidebar Button per category"
+        "expected exactly one sidebar row per category"
     );
+
+    for category in Category::ALL {
+        let found = labels.iter().filter(|l| l.as_str() == category.label()).count();
+        assert_eq!(
+            found, 1,
+            "expected one sidebar row carrying the full label {:?} for {:?}",
+            category.label(),
+            category
+        );
+    }
 }
 
 fn walk<F: FnMut(&dyn Widget)>(w: &dyn Widget, f: &mut F) {

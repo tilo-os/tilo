@@ -1,0 +1,418 @@
+//! Pure data model for the Music app.
+//!
+//! Everything the user can see or change — the catalog (artists / albums /
+//! tracks), the user's playlists, the cache/download state and the live
+//! playback state — is modelled here as plain Rust structs. The CRDT bridge
+//! in [`crate::doc`] mirrors these into an Automerge document so the whole
+//! library + play-state replicates across a user's devices ("our own
+//! library layer"). The widgets in [`crate::app`] never hold authoritative
+//! state; they read a snapshot of these structs that `sync` refreshes from
+//! the document each frame.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+
+/// Stable identifiers. We use short string ids (not UUIDs) for the seeded
+/// sample catalog so the document is readable and the ids are stable across
+/// runs; user-created playlists get UUID ids.
+pub type ArtistId = String;
+pub type AlbumId = String;
+pub type TrackId = String;
+pub type PlaylistId = String;
+
+/// One artist in the catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Artist {
+    pub id: ArtistId,
+    pub name: String,
+    /// Free-text genre tag, shown on the artist detail header.
+    pub genre: String,
+    /// Monthly-listeners style stat, purely cosmetic.
+    pub monthly_listeners: u64,
+}
+
+/// One album (or single/EP) in the catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Album {
+    pub id: AlbumId,
+    pub title: String,
+    pub artist_id: ArtistId,
+    pub year: u32,
+}
+
+/// One track. `yt_id` is the YouTube-Music video id used to resolve a
+/// streamable audio URL via the [`crate::source`] layer; for the offline
+/// sample library it is a synthetic id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Track {
+    pub id: TrackId,
+    pub title: String,
+    pub album_id: AlbumId,
+    pub artist_id: ArtistId,
+    /// Position within its album (1-based).
+    pub track_no: u32,
+    /// Duration in whole seconds.
+    pub duration_s: u32,
+    /// YouTube-Music video id (streaming source key).
+    pub yt_id: String,
+    /// Play count, used by "most played" sorting and stats.
+    pub plays: u64,
+}
+
+impl Track {
+    pub fn duration_ms(&self) -> u64 {
+        self.duration_s as u64 * 1000
+    }
+}
+
+/// A user-curated playlist: an ordered list of track ids.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Playlist {
+    pub id: PlaylistId,
+    pub name: String,
+    pub description: String,
+    pub track_ids: Vec<TrackId>,
+}
+
+/// Per-track offline/cache state. Models the "downloads / caching" layer:
+/// a track is either streamed on demand, actively downloading (with a
+/// progress fraction) or fully cached for offline playback.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CacheState {
+    /// Not cached — streamed live from the source.
+    Streamed,
+    /// Download in flight; `0.0..=1.0`.
+    Downloading(f32),
+    /// Fully downloaded and available offline.
+    Cached,
+}
+
+impl Default for CacheState {
+    fn default() -> Self {
+        CacheState::Streamed
+    }
+}
+
+/// Repeat mode for the play queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepeatMode {
+    Off,
+    /// Repeat the whole queue.
+    All,
+    /// Repeat the current track.
+    One,
+}
+
+impl RepeatMode {
+    pub fn next(self) -> Self {
+        match self {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Off,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepeatMode::Off => "off",
+            RepeatMode::All => "all",
+            RepeatMode::One => "one",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "all" => RepeatMode::All,
+            "one" => RepeatMode::One,
+            _ => RepeatMode::Off,
+        }
+    }
+}
+
+/// Live playback state. This is genuinely shared across devices: pausing on
+/// one device and resuming on another, the queue, shuffle/repeat and volume
+/// all round-trip through the CRDT.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Playback {
+    /// Currently-loaded track, if any.
+    pub current: Option<TrackId>,
+    /// The play queue (ordered list of track ids). `current` is normally
+    /// `queue[queue_index]`.
+    pub queue: Vec<TrackId>,
+    /// Index of `current` within `queue`.
+    pub queue_index: usize,
+    /// Whether transport is playing (vs paused).
+    pub playing: bool,
+    /// Last persisted playhead position, in milliseconds.
+    pub position_ms: u64,
+    pub shuffle: bool,
+    pub repeat: RepeatMode,
+    /// Volume `0..=100`.
+    pub volume: u8,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            current: None,
+            queue: Vec::new(),
+            queue_index: 0,
+            playing: false,
+            position_ms: 0,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume: 80,
+        }
+    }
+}
+
+/// Stable id of the synthetic "Liked Songs" playlist surfaced in the UI. It
+/// is not a stored [`Playlist`] — it is a virtual projection of [`Library::liked`]
+/// so it always reflects the like set without a second source of truth.
+pub const LIKED_PLAYLIST_ID: &str = "pl_liked";
+
+/// The complete in-memory catalog + user data. The app holds one of these
+/// as a render snapshot, refreshed from the CRDT each `sync`.
+#[derive(Clone, Debug, Default)]
+pub struct Library {
+    pub artists: BTreeMap<ArtistId, Artist>,
+    pub albums: BTreeMap<AlbumId, Album>,
+    pub tracks: BTreeMap<TrackId, Track>,
+    pub playlists: Vec<Playlist>,
+    pub cache: BTreeMap<TrackId, CacheState>,
+    /// Track ids the user has liked ("Liked Songs"). Ordered set so the
+    /// virtual Liked playlist is stable across devices.
+    pub liked: BTreeSet<TrackId>,
+    /// Album ids the user has saved to their library ("Add to library" on an
+    /// album card/header).
+    pub saved_albums: BTreeSet<AlbumId>,
+}
+
+impl Library {
+    pub fn artist(&self, id: &str) -> Option<&Artist> {
+        self.artists.get(id)
+    }
+    pub fn album(&self, id: &str) -> Option<&Album> {
+        self.albums.get(id)
+    }
+    pub fn track(&self, id: &str) -> Option<&Track> {
+        self.tracks.get(id)
+    }
+    pub fn artist_name(&self, id: &str) -> &str {
+        self.artists.get(id).map(|a| a.name.as_str()).unwrap_or("Unknown Artist")
+    }
+    pub fn album_title(&self, id: &str) -> &str {
+        self.albums.get(id).map(|a| a.title.as_str()).unwrap_or("Unknown Album")
+    }
+    pub fn cache_state(&self, id: &str) -> CacheState {
+        self.cache.get(id).copied().unwrap_or_default()
+    }
+
+    /// Tracks of an album, ordered by track number.
+    pub fn album_tracks(&self, album: &str) -> Vec<&Track> {
+        let mut v: Vec<&Track> =
+            self.tracks.values().filter(|t| t.album_id == album).collect();
+        v.sort_by_key(|t| t.track_no);
+        v
+    }
+
+    /// Albums of an artist, newest first.
+    pub fn artist_albums(&self, artist: &str) -> Vec<&Album> {
+        let mut v: Vec<&Album> =
+            self.albums.values().filter(|a| a.artist_id == artist).collect();
+        v.sort_by(|a, b| b.year.cmp(&a.year));
+        v
+    }
+
+    /// All albums, sorted by artist then year.
+    pub fn albums_sorted(&self) -> Vec<&Album> {
+        let mut v: Vec<&Album> = self.albums.values().collect();
+        v.sort_by(|a, b| {
+            self.artist_name(&a.artist_id)
+                .cmp(self.artist_name(&b.artist_id))
+                .then(a.year.cmp(&b.year))
+        });
+        v
+    }
+
+    /// All artists, alphabetical.
+    pub fn artists_sorted(&self) -> Vec<&Artist> {
+        let mut v: Vec<&Artist> = self.artists.values().collect();
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        v
+    }
+
+    /// All tracks, sorted by artist / album / track number.
+    pub fn tracks_sorted(&self) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self.tracks.values().collect();
+        v.sort_by(|a, b| {
+            self.artist_name(&a.artist_id)
+                .cmp(self.artist_name(&b.artist_id))
+                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(a.track_no.cmp(&b.track_no))
+        });
+        v
+    }
+
+    /// Most-played tracks, descending.
+    pub fn top_tracks(&self, n: usize) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self.tracks.values().collect();
+        v.sort_by(|a, b| b.plays.cmp(&a.plays));
+        v.into_iter().take(n).collect()
+    }
+
+    /// Cached (offline) tracks.
+    pub fn downloaded_tracks(&self) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self
+            .tracks
+            .values()
+            .filter(|t| matches!(self.cache_state(&t.id), CacheState::Cached))
+            .collect();
+        v.sort_by(|a, b| a.title.cmp(&b.title));
+        v
+    }
+
+    /// Case-insensitive substring search across tracks, albums and artists.
+    pub fn search(&self, q: &str) -> SearchResults {
+        let needle = q.trim().to_lowercase();
+        if needle.is_empty() {
+            return SearchResults::default();
+        }
+        let mut tracks: Vec<TrackId> = self
+            .tracks
+            .values()
+            .filter(|t| {
+                t.title.to_lowercase().contains(&needle)
+                    || self.artist_name(&t.artist_id).to_lowercase().contains(&needle)
+            })
+            .map(|t| t.id.clone())
+            .collect();
+        tracks.sort_by_key(|id| self.tracks.get(id).map(|t| u64::MAX - t.plays).unwrap_or(0));
+        let albums: Vec<AlbumId> = self
+            .albums
+            .values()
+            .filter(|a| a.title.to_lowercase().contains(&needle))
+            .map(|a| a.id.clone())
+            .collect();
+        let artists: Vec<ArtistId> = self
+            .artists
+            .values()
+            .filter(|a| a.name.to_lowercase().contains(&needle))
+            .map(|a| a.id.clone())
+            .collect();
+        SearchResults { tracks, albums, artists }
+    }
+
+    pub fn playlist(&self, id: &str) -> Option<&Playlist> {
+        self.playlists.iter().find(|p| p.id == id)
+    }
+
+    pub fn total_tracks(&self) -> usize {
+        self.tracks.len()
+    }
+
+    /// Whether a track is in "Liked Songs".
+    pub fn is_liked(&self, id: &str) -> bool {
+        self.liked.contains(id)
+    }
+
+    /// Whether an album is saved to the library.
+    pub fn is_album_saved(&self, id: &str) -> bool {
+        self.saved_albums.contains(id)
+    }
+
+    /// Liked tracks ordered by artist / album / track number (a virtual
+    /// "Liked Songs" playlist surfaced in the UI).
+    pub fn liked_tracks(&self) -> Vec<&Track> {
+        let mut v: Vec<&Track> =
+            self.liked.iter().filter_map(|id| self.tracks.get(id)).collect();
+        v.sort_by(|a, b| {
+            self.artist_name(&a.artist_id)
+                .cmp(self.artist_name(&b.artist_id))
+                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(a.track_no.cmp(&b.track_no))
+        });
+        v
+    }
+
+    /// Track ids of the "Liked Songs" virtual playlist, in display order.
+    pub fn liked_ids(&self) -> Vec<TrackId> {
+        self.liked_tracks().into_iter().map(|t| t.id.clone()).collect()
+    }
+}
+
+/// Result buckets for a library search.
+#[derive(Clone, Debug, Default)]
+pub struct SearchResults {
+    pub tracks: Vec<TrackId>,
+    pub albums: Vec<AlbumId>,
+    pub artists: Vec<ArtistId>,
+}
+
+impl SearchResults {
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty() && self.albums.is_empty() && self.artists.is_empty()
+    }
+}
+
+/// Format a duration in seconds as `m:ss` or `h:mm:ss`.
+pub fn fmt_duration(total_s: u64) -> String {
+    let h = total_s / 3600;
+    let m = (total_s % 3600) / 60;
+    let s = total_s % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::seed;
+
+    #[test]
+    fn sample_library_is_populated() {
+        let lib = seed::sample_library();
+        assert!(lib.artists.len() >= 4);
+        assert!(lib.albums.len() >= 6);
+        assert!(lib.tracks.len() >= 20);
+        assert!(!lib.playlists.is_empty());
+    }
+
+    #[test]
+    fn album_tracks_are_ordered() {
+        let lib = seed::sample_library();
+        for album in lib.albums.keys() {
+            let ts = lib.album_tracks(album);
+            for w in ts.windows(2) {
+                assert!(w[0].track_no <= w[1].track_no);
+            }
+        }
+    }
+
+    #[test]
+    fn search_finds_by_title_and_artist() {
+        let lib = seed::sample_library();
+        // Every track title should be findable by its own title.
+        let some = lib.tracks.values().next().unwrap().clone();
+        let res = lib.search(&some.title);
+        assert!(res.tracks.contains(&some.id));
+        // Empty query yields nothing.
+        assert!(lib.search("   ").is_empty());
+    }
+
+    #[test]
+    fn repeat_cycles() {
+        assert_eq!(RepeatMode::Off.next(), RepeatMode::All);
+        assert_eq!(RepeatMode::All.next(), RepeatMode::One);
+        assert_eq!(RepeatMode::One.next(), RepeatMode::Off);
+    }
+
+    #[test]
+    fn fmt_duration_formats() {
+        assert_eq!(fmt_duration(5), "0:05");
+        assert_eq!(fmt_duration(65), "1:05");
+        assert_eq!(fmt_duration(3725), "1:02:05");
+    }
+}

@@ -18,24 +18,67 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
-use os_actions::{Dispatcher, WifiNetworkInfo};
+use os_actions::{Dispatcher, WifiNetworkInfo, WiredInfo};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Row, Spacer, Text, TextInput, Toggle, Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::widgets::{card, card_with_action, caption, rows, setting_row, value_row, El};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
+pub const VPN_KEY: &str = "network.open_vpn";
+/// CRDT key holding the SSID whose inline password prompt is expanded
+/// (empty string = none). Kept in the document, not a pane field, so the
+/// expansion survives the host's structure rebuilds (which reconstruct the
+/// pane from scratch).
+pub const EXPANDED_KEY: &str = "network.expanded";
 
-/// Build the per-SSID "connect" CRDT key. Inverse of
-/// [`ssid_from_connect_key`].
+/// Build the per-SSID "connect" CRDT key. A click on a network's primary
+/// button writes this `true`; the pane reads it in `sync` and either
+/// connects directly (open network) or expands an inline password prompt
+/// (secure network).
 fn connect_key(ssid: &str) -> String {
     format!("network.connect.{ssid}")
+}
+
+/// Per-SSID "join with password" CRDT key — written `true` by the Join
+/// button in the inline password prompt.
+fn join_key(ssid: &str) -> String {
+    format!("network.join.{ssid}")
+}
+
+/// Per-SSID password-field CRDT key. The secret `TextInput` for the
+/// expanded network writes its (masked) value here; `sync` reads it back
+/// to pass to `connect_wifi`.
+fn password_key(ssid: &str) -> String {
+    format!("network.password.{ssid}")
+}
+
+/// Read a boolean scalar at `key`, defaulting to `false`.
+fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
+    matches!(
+        state.get(root, key),
+        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
+    )
+}
+
+/// Read a string value at `key` — handles both a plain scalar string and
+/// an Automerge `Text` object (which is what `TextInput` writes through).
+fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
+    match state.get(root, key) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            automerge::ScalarValue::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
+        _ => None,
+    }
 }
 
 /// Network-list provider — the prod impl shells out to nmcli, tests
@@ -50,12 +93,23 @@ pub struct NetworkPane {
     /// Cached current network list — refreshed at construction and on
     /// `Refresh` button press.
     networks: Vec<WifiNetworkInfo>,
+    /// Cached wired-connection snapshot, sampled at construction and on
+    /// refresh.
+    wired: WiredInfo,
     initial_wifi_enabled: bool,
     last_wifi_enabled: bool,
     needs_seed: bool,
-    /// Track which `network.connect.<ssid>` keys we already dispatched
+    /// Track which `network.join.<ssid>` keys we already dispatched
     /// for, so a single button press doesn't re-fire on every frame.
     dispatched_connects: Vec<String>,
+    /// The secure SSID whose inline password prompt is currently expanded,
+    /// if any. Mirrors [`EXPANDED_KEY`] in the document; clicking "Connect"
+    /// on a secure network opens it; clicking it again, "Join", or a
+    /// successful connect closes it.
+    expanded_ssid: Option<String>,
+    /// Set when `expanded_ssid` changed this `sync`, so the host re-runs
+    /// `build_layout` and the inline password prompt appears/disappears.
+    structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -71,14 +125,18 @@ impl NetworkPane {
         let lister: NetworkLister = Arc::new(|| os_actions::list_wifi_networks());
         let networks = lister().unwrap_or_default();
         let initial_wifi = os_actions::get_wifi().unwrap_or(true);
+        let wired = os_actions::get_wired().unwrap_or_default();
         Self {
             dispatcher: dispatcher_or_real(None),
             lister,
             networks,
+            wired,
             initial_wifi_enabled: initial_wifi,
             last_wifi_enabled: initial_wifi,
             needs_seed: true,
             dispatched_connects: Vec::new(),
+            expanded_ssid: None,
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -98,13 +156,54 @@ impl NetworkPane {
             dispatcher,
             lister,
             networks,
+            wired: WiredInfo::default(),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
             needs_seed: true,
             dispatched_connects: Vec::new(),
+            expanded_ssid: None,
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// `--shots` helper: a pane with a fixed network list and the real
+    /// dispatcher (clicks would shell out, but the render never clicks).
+    pub fn new_demo(networks: Vec<WifiNetworkInfo>) -> Self {
+        let snapshot = networks.clone();
+        let lister: NetworkLister = Arc::new(move || Ok(snapshot.clone()));
+        Self {
+            dispatcher: dispatcher_or_real(None),
+            lister,
+            networks,
+            wired: WiredInfo::default(),
+            initial_wifi_enabled: true,
+            last_wifi_enabled: true,
+            needs_seed: true,
+            dispatched_connects: Vec::new(),
+            expanded_ssid: None,
+            structure_dirty: false,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// Test/`--shots` helper: pin the wired snapshot so the Wired card
+    /// renders deterministic content.
+    pub fn with_wired(mut self, wired: WiredInfo) -> Self {
+        self.wired = wired;
+        self
+    }
+
+    /// Test/`--shots` helper: pre-expand a network's inline password prompt
+    /// so the deterministic render shows it. Also forces the radio "on" so
+    /// the network list renders.
+    pub fn with_expanded(mut self, ssid: &str) -> Self {
+        self.expanded_ssid = Some(ssid.to_string());
+        self.last_wifi_enabled = true;
+        self.initial_wifi_enabled = true;
+        self
     }
 
     /// Cached network list. Tests read this to assert the panes
@@ -124,60 +223,160 @@ impl NetworkPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let status_row = Row::new()
-            .push(Box::new(
-                Text::new(&self.connection_status_text()).with_size(12.0),
-            ))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Button::new(
-                "settings.network.refresh",
-                "Refresh",
-                Some(REFRESH_KEY),
-            )));
-        let toggle_row = Row::new()
-            .push(Box::new(Text::new("Wi-Fi").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY)
-                    .with_id("network.wifi"),
-            ));
-        let mut col = Column::new()
-            .push(Box::new(status_row))
-            .push(Box::new(toggle_row));
+        // --- Wi-Fi card: header carries the toggle; body is status +
+        //     scanned-network rows + a Refresh action.
+        let wifi_toggle: El = Box::new(
+            Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi"),
+        );
 
-        for net in &self.networks {
-            let signal_glyph = match net.signal {
-                0 => "▁",
-                1 => "▂",
-                2 => "▃",
-                3 => "▆",
-                _ => "█",
-            };
-            let lock_glyph = if net.secure { "🔒" } else { "  " };
-            let label = format!(
-                "{signal_glyph} {lock_glyph} {ssid}",
-                ssid = net.ssid
-            );
-            let key = connect_key(&net.ssid);
-            let cta_id = format!("settings.network.connect.{}", net.ssid);
-            let net_row = Row::new()
-                .push(Box::new(Text::new(&label).with_size(12.0)))
+        let mut wifi_rows: Vec<El> = Vec::new();
+        wifi_rows.push(value_row("Status", &self.connection_status_text()));
+
+        if self.last_wifi_enabled {
+            for net in &self.networks {
+                wifi_rows.push(self.network_row(net));
+                // Inline password prompt expands directly beneath the row
+                // whose "Connect" was pressed (secure networks only).
+                if self.expanded_ssid.as_deref() == Some(net.ssid.as_str()) {
+                    wifi_rows.push(self.password_prompt(&net.ssid));
+                }
+            }
+        }
+        wifi_rows.push(Box::new(
+            Row::new()
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(Button::new(
-                    &cta_id,
-                    if net.connected { "Connected" } else { "Connect" },
-                    Some(&key),
-                )));
-            col = col.push(Box::new(net_row));
-        }
-        col = col.push(Box::new(
-            Text::new(
-                "Wi-Fi list and connection are best-effort via nmcli; \
-                 secure networks require a known password.",
-            )
-            .with_size(11.0),
+                    "settings.network.refresh",
+                    "\u{f0450}  Refresh",
+                    Some(REFRESH_KEY),
+                ))),
         ));
-        Box::new(col)
+        wifi_rows.push(caption(
+            "Wi-Fi scanning and connection are best-effort via nmcli; \
+             secure networks prompt for a password before joining.",
+        ));
+
+        let wifi_card = card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows));
+
+        // --- Wired card (real nmcli snapshot).
+        let wired_card = card("Wired", rows(self.wired_rows()));
+
+        // --- VPN shortcut card (opens the dedicated VPN app/panel).
+        let vpn_card = card(
+            "VPN",
+            rows(vec![
+                setting_row(
+                    "Virtual Private Network",
+                    Box::new(Button::new(
+                        "settings.network.open_vpn",
+                        "\u{f0582}  Manage VPN",
+                        Some(VPN_KEY),
+                    )),
+                ),
+                caption("Configure and connect VPN profiles in the VPN app."),
+            ]),
+        );
+
+        crate::widgets::cards(vec![wifi_card, wired_card, vpn_card])
+    }
+
+    /// One scanned-network row: signal + lock glyph + SSID on the left, a
+    /// Connect / Connected button on the right.
+    fn network_row(&self, net: &WifiNetworkInfo) -> El {
+        let signal_glyph = match net.signal {
+            0 => "\u{2581}",
+            1 => "\u{2582}",
+            2 => "\u{2584}",
+            3 => "\u{2586}",
+            _ => "\u{2588}",
+        };
+        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f0db1}" };
+        let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
+        let key = connect_key(&net.ssid);
+        let cta_id = format!("settings.network.connect.{}", net.ssid);
+        let cta_label = if net.connected {
+            "Connected"
+        } else if self.expanded_ssid.as_deref() == Some(net.ssid.as_str()) {
+            "Cancel"
+        } else {
+            "Connect"
+        };
+        Box::new(
+            Row::new()
+                .push(Box::new(Text::new(&label).with_size(13.0)))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(Button::new(&cta_id, cta_label, Some(&key)))),
+        )
+    }
+
+    /// The inline password prompt shown beneath a secure network when its
+    /// "Connect" is pressed: a masked field bound to the per-SSID password
+    /// key plus a Join button that writes the per-SSID join key.
+    fn password_prompt(&self, ssid: &str) -> El {
+        let pw_key = password_key(ssid);
+        let jk = join_key(ssid);
+        let field_id = format!("settings.network.password.{ssid}");
+        let join_id = format!("settings.network.join.{ssid}");
+        let field = TextInput::new(Vec::new())
+            .with_id(&field_id)
+            .with_on_change_path(&pw_key)
+            .with_secret(true)
+            .with_placeholder("Password")
+            .with_font_size(13.0);
+        Box::new(
+            Row::new()
+                .push(Box::new(field))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(Button::new(&join_id, "Join", Some(&jk)))),
+        )
+    }
+
+    /// Rows for the Wired card, derived from the live `nmcli` snapshot.
+    fn wired_rows(&self) -> Vec<El> {
+        if !self.wired.connected {
+            return vec![
+                value_row("Ethernet", "Not connected"),
+                caption("Plug in an Ethernet cable to use a wired connection."),
+            ];
+        }
+        let mut out = Vec::new();
+        let status = match &self.wired.speed {
+            Some(s) => format!("Connected · {s}"),
+            None => "Connected".to_string(),
+        };
+        out.push(value_row("Ethernet", &status));
+        if let Some(dev) = &self.wired.device {
+            out.push(value_row("Interface", dev));
+        }
+        out.push(value_row(
+            "IPv4",
+            self.wired.ipv4.as_deref().unwrap_or("—"),
+        ));
+        out
+    }
+
+    /// Update which network's password prompt is expanded, mirroring it
+    /// into the document and flagging a structure rebuild so the prompt
+    /// appears/disappears on the next frame.
+    fn set_expanded(&mut self, state: &mut AutoCommit, root: &ObjId, ssid: Option<String>) {
+        if self.expanded_ssid == ssid {
+            return;
+        }
+        let _ = state.put(root, EXPANDED_KEY, ssid.clone().unwrap_or_default());
+        self.expanded_ssid = ssid;
+        self.structure_dirty = true;
+    }
+
+    /// Dispatch a Wi-Fi connection, deduplicated per SSID so a single
+    /// button press doesn't re-fire on every frame.
+    fn do_connect(&mut self, ssid: &str, password: Option<&str>) {
+        if self.dispatched_connects.iter().any(|s| s == ssid) {
+            return;
+        }
+        self.dispatched_connects.push(ssid.to_string());
+        if let Err(e) = self.dispatcher.connect_wifi(ssid, password) {
+            warn!(target: "qos::settings", op = "connect_wifi", error = %e, "network pane dispatch failed");
+        }
     }
 }
 
@@ -188,12 +387,37 @@ pub fn build() -> Box<dyn Widget> {
 impl Widget for NetworkPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
-            let _ = state.put(
-                root,
-                WIFI_ENABLED_KEY,
-                automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
-            );
+            // Seed only keys the document doesn't already carry, so a
+            // structure rebuild (which reconstructs this pane and re-runs
+            // the seed) never clobbers a value the user already changed —
+            // e.g. toggling Wi-Fi off and then expanding a password prompt.
+            if state.get(root, WIFI_ENABLED_KEY).ok().flatten().is_none() {
+                let _ = state.put(
+                    root,
+                    WIFI_ENABLED_KEY,
+                    automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
+                );
+            } else {
+                // Adopt the existing value so the dispatcher-change guard
+                // doesn't re-fire `set_wifi` on the first post-rebuild sync.
+                if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY) {
+                    if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
+                        self.last_wifi_enabled = *b;
+                    }
+                }
+            }
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
+            // Seed the expansion mirror from the field so a pre-expanded
+            // pane (tests / `--shots`) keeps its prompt open through the
+            // first sync (which would otherwise read the empty doc as "no
+            // prompt" and collapse it). Only when nothing's there yet.
+            if state.get(root, EXPANDED_KEY).ok().flatten().is_none() {
+                let _ = state.put(
+                    root,
+                    EXPANDED_KEY,
+                    self.expanded_ssid.clone().unwrap_or_default(),
+                );
+            }
             self.needs_seed = false;
         }
 
@@ -225,21 +449,58 @@ impl Widget for NetworkPane {
             }
         }
 
-        // Per-network connect buttons.
-        let ssids: Vec<String> = self.networks.iter().map(|n| n.ssid.clone()).collect();
-        for ssid in ssids {
-            let key = connect_key(&ssid);
-            let pressed = matches!(
-                state.get(root, key.as_str()),
-                Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-            );
-            if pressed && !self.dispatched_connects.contains(&ssid) {
-                self.dispatched_connects.push(ssid.clone());
-                let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
-                if let Err(e) = self.dispatcher.connect_wifi(&ssid, None) {
-                    warn!(target: "qos::settings", op = "connect_wifi", error = %e, "network pane dispatch failed");
-                }
+        // Restore the expanded-prompt SSID from the document so it
+        // survives the host's structure rebuilds (which reconstruct this
+        // pane). An empty string means "no prompt open".
+        let doc_expanded = read_str(state, root, EXPANDED_KEY).filter(|s| !s.is_empty());
+        if doc_expanded != self.expanded_ssid {
+            self.expanded_ssid = doc_expanded;
+        }
+
+        // Snapshot the network attributes we need without holding a borrow
+        // across the mutating `state` calls below.
+        let nets: Vec<(String, bool)> = self
+            .networks
+            .iter()
+            .map(|n| (n.ssid.clone(), n.secure))
+            .collect();
+
+        // Per-network "Connect" buttons. Open networks connect immediately;
+        // secure networks toggle the inline password prompt instead.
+        for (ssid, secure) in &nets {
+            let key = connect_key(ssid);
+            let pressed = read_bool(state, root, &key);
+            if !pressed {
+                continue;
             }
+            let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
+            if *secure {
+                // Toggle this network's prompt: collapse if it's already
+                // the open one, otherwise open it (closing any other).
+                let now = if self.expanded_ssid.as_deref() == Some(ssid.as_str()) {
+                    None
+                } else {
+                    Some(ssid.clone())
+                };
+                self.set_expanded(state, root, now);
+            } else {
+                // Open network — connect with no password.
+                self.do_connect(ssid, None);
+                self.set_expanded(state, root, None);
+            }
+        }
+
+        // Per-network "Join" buttons in the expanded password prompt:
+        // connect with the typed password, then collapse the prompt.
+        for (ssid, _secure) in &nets {
+            let jk = join_key(ssid);
+            if !read_bool(state, root, &jk) {
+                continue;
+            }
+            let _ = state.put(root, jk.as_str(), automerge::ScalarValue::Boolean(false));
+            let pw = read_str(state, root, &password_key(ssid)).filter(|p| !p.is_empty());
+            self.do_connect(ssid, pw.as_deref());
+            self.set_expanded(state, root, None);
         }
 
         if let Some(c) = &mut self.composed {
@@ -261,7 +522,7 @@ impl Widget for NetworkPane {
             flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
             ..Default::default()
         };
@@ -353,6 +614,19 @@ impl Widget for NetworkPane {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// Bubble the expansion-driven rebuild request (the inline password
+    /// prompt opening/closing) plus any child's own request, so the host
+    /// re-runs `build_layout` and the prompt actually appears.
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self
+            .composed
+            .as_mut()
+            .map(|c| c.take_structure_dirty())
+            .unwrap_or(false);
+        own || child
     }
 }
 
@@ -463,5 +737,121 @@ mod tests {
         let _ = doc.put(&root, REFRESH_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
         assert_eq!(pane.networks(), fresh.as_slice());
+    }
+
+    /// A dispatcher that captures the password handed to `connect_wifi`, so
+    /// the password-prompt test can assert it actually reached the backend
+    /// (the shared `RecordingDispatcher` drops the password).
+    #[derive(Default)]
+    struct PwRecorder {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+    impl Dispatcher for PwRecorder {
+        fn set_brightness(&self, _p: f32) -> Result<(), String> { Ok(()) }
+        fn set_volume(&self, _p: f32) -> Result<(), String> { Ok(()) }
+        fn set_wifi(&self, _e: bool) -> Result<(), String> { Ok(()) }
+        fn set_bluetooth(&self, _e: bool) -> Result<(), String> { Ok(()) }
+        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("connect_wifi({ssid}, pw={})", password.unwrap_or("<none>")));
+            Ok(())
+        }
+        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> { Ok(()) }
+    }
+
+    /// Clicking "Connect" on a SECURE network does not connect immediately —
+    /// it expands the inline password prompt (mirrored into the document)
+    /// and fires no dispatch yet.
+    #[test]
+    fn connect_on_secure_network_opens_password_prompt() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        // Press Connect on the secure "Neighbour_5G".
+        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
+        assert_eq!(
+            read_str(&doc, &root, EXPANDED_KEY).as_deref(),
+            Some("Neighbour_5G"),
+            "expansion is mirrored into the document so it survives rebuilds"
+        );
+        assert!(rec.calls().is_empty(), "no connect dispatched before Join");
+        assert!(pane.take_structure_dirty(), "expanding requests a rebuild");
+    }
+
+    /// Pressing "Join" in the prompt connects WITH the typed password and
+    /// collapses the prompt.
+    #[test]
+    fn join_connects_with_typed_password() {
+        let rec = Arc::new(PwRecorder::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        // Open the prompt, type a password, press Join.
+        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, password_key("Neighbour_5G").as_str(), "hunter2");
+        let _ = doc.put(&root, join_key("Neighbour_5G").as_str(), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            rec.calls.lock().unwrap().as_slice(),
+            ["connect_wifi(Neighbour_5G, pw=hunter2)"]
+        );
+        assert_eq!(pane.expanded_ssid, None, "Join collapses the prompt");
+        assert_eq!(read_str(&doc, &root, EXPANDED_KEY).as_deref(), Some(""));
+    }
+
+    /// Pressing Connect a second time on the same expanded network collapses
+    /// the prompt (it acts as a toggle / Cancel).
+    #[test]
+    fn second_connect_press_collapses_prompt() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
+        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.expanded_ssid, None);
+    }
+
+    #[test]
+    fn wired_rows_reflect_connected_snapshot() {
+        let pane = NetworkPane::new_demo(sample_networks()).with_wired(WiredInfo {
+            connected: true,
+            device: Some("eth0".into()),
+            speed: Some("100 Mb/s".into()),
+            ipv4: Some("10.0.0.7".into()),
+        });
+        // The Wired card body builds three rows when connected.
+        assert_eq!(pane.wired_rows().len(), 3);
+    }
+
+    #[test]
+    fn wired_rows_show_not_connected_when_down() {
+        let pane = NetworkPane::new_demo(sample_networks());
+        // Default WiredInfo is disconnected → status + caption only.
+        assert_eq!(pane.wired_rows().len(), 2);
     }
 }

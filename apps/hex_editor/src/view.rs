@@ -1,0 +1,1341 @@
+//! The hex view widget — the whole editor surface in one custom-drawn
+//! `Widget`. A hex editor is fundamentally a dense, fixed-pitch grid with
+//! a cursor synced across two parallel columns; that is a canvas, not a
+//! composition of stock form widgets, so the view paints everything
+//! itself into the Vello scene and reads all of its colours and metrics
+//! from the `Theme`.
+//!
+//! Regions, top to bottom:
+//!   * header — file name, byte count, edit-mode / endianness pills
+//!   * body   — offset gutter | hex byte columns | ASCII column   (left)
+//!              data inspector panel                              (right)
+//!   * status — cursor offset, selection length, dirty count, hints
+//!   * overlay — search bar and goto-offset prompt (modal-ish, on top)
+//!
+//! State lives in the CRDT: every edit is written straight back into the
+//! Automerge document via [`HexDoc`], so undo/redo and live collaboration
+//! come for free. The view keeps the decoded [`HexModel`] as a render
+//! cache, rebuilt from the document in `sync`.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use ui::Widget;
+use ui::presence::PresenceCtx;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+
+use crate::doc::HexDoc;
+use crate::inspector::{self, Interpretation};
+use crate::model::{Column, EditMode, HexModel};
+use crate::search::{self, SearchKind};
+
+/// Which transient prompt, if any, is capturing keystrokes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overlay {
+    None,
+    Search,
+    Goto,
+}
+
+pub struct HexView {
+    /// Decoded render cache of the document. Rebuilt in `sync`.
+    model: HexModel,
+    /// File name shown in the header (cosmetic; the buffer is the doc).
+    file_name: String,
+    rect: Rect,
+    dirty: bool,
+
+    // --- search state (per-peer; not in the shared doc) ---
+    overlay: Overlay,
+    search_query: String,
+    search_kind: SearchKind,
+    /// Cached match offsets for the current query, recomputed on demand.
+    matches: Vec<usize>,
+    /// Index into `matches` of the currently-focused hit.
+    match_idx: Option<usize>,
+
+    // --- goto state ---
+    goto_query: String,
+
+    /// Whether the user has seeded the doc yet (so the first sync writes
+    /// the model in rather than reading an empty document back out).
+    seeded: bool,
+    /// Rows currently fitting in the grid viewport — updated each draw,
+    /// read by keyboard paging so PageUp/Down move a screenful.
+    visible_rows: usize,
+    /// Last pointer position in logical coords, tracked from `CursorMoved`
+    /// so a left-click can hit-test the cell under the cursor.
+    last_mouse: Point,
+}
+
+impl HexView {
+    pub fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
+        Self {
+            model: HexModel::new(bytes),
+            file_name: file_name.into(),
+            rect: Rect::ZERO,
+            dirty: true,
+            overlay: Overlay::None,
+            search_query: String::new(),
+            search_kind: SearchKind::Hex,
+            matches: Vec::new(),
+            match_idx: None,
+            goto_query: String::new(),
+            seeded: false,
+            visible_rows: 1,
+            last_mouse: Point::ZERO,
+        }
+    }
+
+    /// Test/read accessor for the decoded model.
+    pub fn model(&self) -> &HexModel {
+        &self.model
+    }
+
+    /// Place the initial cursor at `offset`. Useful for opening a file
+    /// "at" a field of interest. Clamped to the buffer.
+    pub fn with_cursor(mut self, offset: usize) -> Self {
+        self.model.move_to(offset, false);
+        self
+    }
+
+    /// Choose the initial inspector endianness. Big-endian suits opening
+    /// network / image formats whose multi-byte fields are big-endian.
+    pub fn with_big_endian(mut self) -> Self {
+        if self.model.endian() != crate::model::Endian::Big {
+            self.model.toggle_endian();
+        }
+        self
+    }
+
+    fn flush(&mut self, doc: &mut AutoCommit) {
+        HexDoc::write_model(doc, &self.model);
+        self.dirty = true;
+    }
+
+    /// Recompute match offsets from the current query + kind.
+    fn recompute_matches(&mut self) {
+        self.matches = match search::needle(&self.search_query, self.search_kind) {
+            Some(n) => search::find_all(self.model.bytes(), &n),
+            None => Vec::new(),
+        };
+        // Keep match_idx pointing at the nearest hit to the cursor.
+        self.match_idx = if self.matches.is_empty() {
+            None
+        } else {
+            let cur = self.model.cursor();
+            Some(
+                self.matches
+                    .iter()
+                    .position(|&m| m >= cur)
+                    .unwrap_or(0),
+            )
+        };
+    }
+
+    fn jump_to_match(&mut self, forward: bool) {
+        let Some(n) = search::needle(&self.search_query, self.search_kind) else {
+            return;
+        };
+        let cur = self.model.cursor();
+        let target = if forward {
+            search::find_next(self.model.bytes(), &n, cur + 1)
+        } else {
+            search::find_prev(self.model.bytes(), &n, cur)
+        };
+        if let Some(off) = target {
+            self.model.move_to(off, false);
+            // Select the whole match so it reads as a found span.
+            self.model.move_to(off + n.len().saturating_sub(1), true);
+            self.model.move_to(off, false);
+            self.model
+                .scroll_into_view(off / self.model.bytes_per_row(), self.visible_rows);
+            self.recompute_matches();
+        }
+    }
+
+    fn commit_goto(&mut self) {
+        let q = self.goto_query.trim();
+        // Accept "0x.." hex or plain decimal.
+        let parsed = if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
+            usize::from_str_radix(hex, 16).ok()
+        } else if q.chars().all(|c| c.is_ascii_hexdigit()) && q.chars().any(|c| c.is_ascii_alphabetic())
+        {
+            usize::from_str_radix(q, 16).ok()
+        } else {
+            q.parse::<usize>().ok()
+        };
+        if let Some(off) = parsed {
+            self.model.move_to(off, false);
+            self.model
+                .scroll_into_view(off / self.model.bytes_per_row(), self.visible_rows);
+        }
+        self.overlay = Overlay::None;
+        self.goto_query.clear();
+    }
+
+    // --- geometry helpers ----------------------------------------------
+
+    /// Metrics for the grid layout at the current width.
+    fn metrics(&self) -> GridMetrics {
+        GridMetrics::new(self.rect, self.model.bytes_per_row())
+    }
+
+    /// Map a mouse point to a byte offset + column, if it lands on a cell.
+    fn hit_test(&self, p: Point) -> Option<(usize, Column)> {
+        let m = self.metrics();
+        let bpr = self.model.bytes_per_row();
+        // Determine the row under the cursor.
+        if p.y < m.grid_top || p.y >= m.grid_bottom {
+            return None;
+        }
+        let row_rel = ((p.y - m.grid_top) / m.row_h) as usize;
+        let row = self.model.top_row() + row_rel;
+
+        // Hex columns region.
+        if p.x >= m.hex_x0 && p.x < m.hex_x1 {
+            let rel = p.x - m.hex_x0;
+            let col = (rel / m.hex_col_w) as usize;
+            if col < bpr {
+                let off = row * bpr + col;
+                if off < self.model.len() {
+                    return Some((off, Column::Hex));
+                }
+            }
+        }
+        // ASCII column region.
+        if p.x >= m.ascii_x0 && p.x < m.ascii_x1 {
+            let rel = p.x - m.ascii_x0;
+            let col = (rel / m.char_w) as usize;
+            if col < bpr {
+                let off = row * bpr + col;
+                if off < self.model.len() {
+                    return Some((off, Column::Ascii));
+                }
+            }
+        }
+        None
+    }
+
+    // --- drawing --------------------------------------------------------
+
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &GridMetrics,
+    ) {
+        let tokens = &theme.tokens;
+        let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, m.header_bottom);
+        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &bar);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            tokens.colors.border_standard,
+            None,
+            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
+        );
+
+        let pad = tokens.spacing.s4 as f64;
+        let cy = bar.y0 + (bar.height() - tokens.typography.scale.lg as f64) / 2.0;
+
+        // File name (semibold) + byte count (dim).
+        tr.draw_text_weighted(
+            scene,
+            &self.file_name,
+            tokens.typography.scale.lg,
+            tokens.colors.text_primary,
+            t * Affine::translate((bar.x0 + pad, cy)),
+            None,
+            TextWeight::Semibold,
+        );
+        let (name_w, _) = tr.measure_weighted(
+            &self.file_name,
+            tokens.typography.scale.lg,
+            None,
+            TextWeight::Semibold,
+        );
+        let meta = format!("{} bytes", self.model.len());
+        tr.draw_text(
+            scene,
+            &meta,
+            tokens.typography.scale.sm,
+            tokens.colors.text_dim,
+            t * Affine::translate((
+                bar.x0 + pad + name_w as f64 + 12.0,
+                bar.y0 + (bar.height() - tokens.typography.scale.sm as f64) / 2.0,
+            )),
+            None,
+        );
+
+        // Right-aligned pills: mode + endianness + width.
+        let mut x = bar.x1 - pad;
+        let width_label = format!("{}/row", self.model.bytes_per_row());
+        x = self.draw_pill(scene, t, tr, theme, x, bar, &width_label, tokens.colors.neutral[3]);
+        x -= 8.0;
+        let endian_color = tokens.colors.accent[4];
+        x = self.draw_pill(scene, t, tr, theme, x, bar, self.model.endian().label(), endian_color);
+        x -= 8.0;
+        let mode_color = match self.model.mode() {
+            EditMode::Overwrite => tokens.colors.neutral[3],
+            EditMode::Insert => tokens.colors.semantic.warning,
+        };
+        let _ = self.draw_pill(scene, t, tr, theme, x, bar, self.model.mode().label(), mode_color);
+    }
+
+    /// Draw a small rounded pill ending at `right_x`; returns its left x.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_pill(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        right_x: f64,
+        bar: Rect,
+        label: &str,
+        fill: Color,
+    ) -> f64 {
+        let size = theme.tokens.typography.scale.xs;
+        let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Bold);
+        let pad_x = 8.0;
+        let w = tw as f64 + pad_x * 2.0;
+        let h = 18.0;
+        let x0 = right_x - w;
+        let y0 = bar.y0 + (bar.height() - h) / 2.0;
+        let shape = RoundedRect::new(x0, y0, right_x, y0 + h, 6.0);
+        scene.fill(Fill::NonZero, t, fill, None, &shape);
+        tr.draw_text_weighted(
+            scene,
+            label,
+            size,
+            contrast_on(fill),
+            t * Affine::translate((x0 + pad_x, y0 + (h - size as f64) / 2.0 + 0.5)),
+            None,
+            TextWeight::Bold,
+        );
+        x0
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_grid(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &GridMetrics,
+    ) {
+        let tokens = &theme.tokens;
+        let bpr = self.model.bytes_per_row();
+        let size = m.cell_font;
+
+        // Column header row: offset label + per-column byte index.
+        let head_y = m.col_header_y;
+        tr.draw_text_styled(
+            scene,
+            "Offset",
+            tokens.typography.scale.xs,
+            tokens.colors.text_dim,
+            t * Affine::translate((m.gutter_x0, head_y)),
+            None,
+            TextWeight::Medium,
+            false,
+            true,
+        );
+        for c in 0..bpr {
+            let label = format!("{:02X}", c);
+            let x = m.hex_x0 + c as f64 * m.hex_col_w;
+            tr.draw_text_styled(
+                scene,
+                &label,
+                tokens.typography.scale.xs,
+                tokens.colors.text_dim,
+                t * Affine::translate((x, head_y)),
+                None,
+                TextWeight::Medium,
+                false,
+                true,
+            );
+        }
+        tr.draw_text_styled(
+            scene,
+            "ASCII",
+            tokens.typography.scale.xs,
+            tokens.colors.text_dim,
+            t * Affine::translate((m.ascii_x0, head_y)),
+            None,
+            TextWeight::Medium,
+            false,
+            true,
+        );
+        // Hairline under the column header.
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            tokens.colors.border_standard,
+            None,
+            &Line::new(
+                (self.rect.x0 + 8.0, m.grid_top - 2.0),
+                (m.ascii_x1 + 8.0, m.grid_top - 2.0),
+            ),
+        );
+        // Vertical separators framing the hex region.
+        for sep_x in [m.hex_x0 - 8.0, m.ascii_x0 - 8.0] {
+            scene.stroke(
+                &Stroke::new(1.0),
+                t,
+                tokens.colors.border_standard,
+                None,
+                &Line::new((sep_x, m.grid_top - 2.0), (sep_x, m.grid_bottom)),
+            );
+        }
+
+        let selection = self.model.selection();
+        let inspector_span = self.inspector_span();
+        let cursor = self.model.cursor();
+
+        let visible = m.visible_rows.max(1);
+        self.visible_rows = visible;
+
+        for vr in 0..visible {
+            let row = self.model.top_row() + vr;
+            let row_off = row * bpr;
+            if row_off > self.model.len() && !self.model.is_empty() {
+                break;
+            }
+            let y = m.grid_top + vr as f64 * m.row_h;
+            let text_y = y + (m.row_h - size as f64) / 2.0;
+
+            // Offset gutter.
+            let gutter = format!("{:08X}", row_off);
+            tr.draw_text_styled(
+                scene,
+                &gutter,
+                size,
+                tokens.colors.accent[6],
+                t * Affine::translate((m.gutter_x0, text_y)),
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
+
+            for c in 0..bpr {
+                let off = row_off + c;
+                let Some(&byte) = self.model.bytes().get(off) else {
+                    continue;
+                };
+                let hex_x = m.hex_x0 + c as f64 * m.hex_col_w;
+                let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
+
+                let selected = selection.map(|(lo, hi)| off >= lo && off <= hi).unwrap_or(false);
+                let inspected = inspector_span
+                    .map(|(lo, hi)| off >= lo && off <= hi)
+                    .unwrap_or(false);
+                let is_cursor = off == cursor;
+                let is_match = self.matches.iter().any(|&mh| {
+                    // Highlight cells inside any match span.
+                    if let Some(n) = search::needle(&self.search_query, self.search_kind) {
+                        off >= mh && off < mh + n.len()
+                    } else {
+                        false
+                    }
+                });
+                let is_dirty = self.model.is_dirty(off);
+
+                // --- cell background layers (lowest to highest) ---
+                let cell_hex = Rect::new(hex_x - 3.0, y, hex_x + m.byte_w + 3.0, y + m.row_h);
+                let cell_ascii =
+                    Rect::new(ascii_x - 1.0, y, ascii_x + m.char_w + 1.0, y + m.row_h);
+
+                if inspected && !is_cursor {
+                    let tint = with_alpha(tokens.colors.accent[5], 40);
+                    scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
+                    scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
+                }
+                if is_match {
+                    let tint = with_alpha(tokens.colors.semantic.warning, 70);
+                    scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
+                    scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
+                }
+                if selected {
+                    let tint = with_alpha(tokens.colors.accent[5], 90);
+                    scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
+                    scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
+                }
+
+                // --- cursor cell outline on the active column ---
+                if is_cursor {
+                    let active_hex = self.model.column() == Column::Hex;
+                    let (cell, other) = if active_hex {
+                        (cell_hex, cell_ascii)
+                    } else {
+                        (cell_ascii, cell_hex)
+                    };
+                    scene.fill(Fill::NonZero, t, tokens.colors.accent[ui_accent_idx()], None, &cell);
+                    // The mirror column gets a faint outline so the synced
+                    // position is visible in both panes.
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        t,
+                        tokens.colors.accent[ui_accent_idx()],
+                        None,
+                        &RoundedRect::from_rect(other, 2.0),
+                    );
+                }
+
+                // --- glyphs ---
+                let hex_color = if is_cursor {
+                    contrast_on(tokens.colors.accent[ui_accent_idx()])
+                } else if is_dirty {
+                    tokens.colors.semantic.warning
+                } else if selected {
+                    tokens.colors.text_primary
+                } else if byte == 0 {
+                    // Zero bytes read as background noise — dim them.
+                    tokens.colors.neutral[5]
+                } else {
+                    tokens.colors.text_primary
+                };
+                tr.draw_text_styled(
+                    scene,
+                    &format!("{:02X}", byte),
+                    size,
+                    hex_color,
+                    t * Affine::translate((hex_x, text_y)),
+                    None,
+                    if is_dirty { TextWeight::Bold } else { TextWeight::Regular },
+                    false,
+                    true,
+                );
+
+                // ASCII glyph.
+                let ch = ascii_glyph(byte);
+                let ascii_color = if is_cursor && self.model.column() == Column::Ascii {
+                    contrast_on(tokens.colors.accent[ui_accent_idx()])
+                } else if is_dirty {
+                    tokens.colors.semantic.warning
+                } else if (0x20..=0x7E).contains(&byte) {
+                    tokens.colors.text_primary
+                } else {
+                    tokens.colors.neutral[5]
+                };
+                tr.draw_text_styled(
+                    scene,
+                    &ch,
+                    size,
+                    ascii_color,
+                    t * Affine::translate((ascii_x, text_y)),
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    true,
+                );
+            }
+        }
+    }
+
+    /// Byte range the current inspector interpretation highlights — the
+    /// widest non-trivial interpretation (u64 when 8 bytes remain, else
+    /// whatever fits). Drives the inspected-range tint on the grid.
+    fn inspector_span(&self) -> Option<(usize, usize)> {
+        let cur = self.model.cursor();
+        if self.model.is_empty() {
+            return None;
+        }
+        let remaining = self.model.len() - cur;
+        let width = remaining.min(8).max(1);
+        Some((cur, cur + width - 1))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inspector(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &GridMetrics,
+    ) {
+        let tokens = &theme.tokens;
+        let panel = Rect::new(m.inspector_x0, m.grid_top - 2.0, self.rect.x1, m.grid_bottom);
+        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.base, None, &panel);
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            tokens.colors.border_standard,
+            None,
+            &Line::new((panel.x0, panel.y0), (panel.x0, panel.y1)),
+        );
+
+        let pad = tokens.spacing.s4 as f64;
+        let x = panel.x0 + pad;
+        let mut y = panel.y0 + pad;
+
+        tr.draw_text_weighted(
+            scene,
+            "DATA INSPECTOR",
+            tokens.typography.scale.xs,
+            tokens.colors.text_dim,
+            t * Affine::translate((x, y)),
+            None,
+            TextWeight::Bold,
+        );
+        y += 22.0;
+
+        // Cursor + endianness sub-header.
+        let sub = format!(
+            "@ 0x{:X}  ·  {}",
+            self.model.cursor(),
+            self.model.endian().label()
+        );
+        tr.draw_text_styled(
+            scene,
+            &sub,
+            tokens.typography.scale.sm,
+            tokens.colors.accent[6],
+            t * Affine::translate((x, y)),
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
+        y += 24.0;
+
+        let rows: Vec<Interpretation> =
+            inspector::inspect(self.model.bytes(), self.model.cursor(), self.model.endian());
+        let label_w = 72.0;
+        let row_h = 22.0;
+        let value_size = tokens.typography.scale.sm;
+
+        for r in &rows {
+            if y + row_h > panel.y1 {
+                break;
+            }
+            // Zebra striping for legibility.
+            let band = Rect::new(panel.x0, y - 3.0, panel.x1, y + row_h - 5.0);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                with_alpha(tokens.colors.surfaces.raised, 60),
+                None,
+                &band,
+            );
+            tr.draw_text_styled(
+                scene,
+                r.label,
+                value_size,
+                tokens.colors.text_dim,
+                t * Affine::translate((x, y)),
+                None,
+                TextWeight::Medium,
+                false,
+                true,
+            );
+            let val_color = if r.value == "—" {
+                tokens.colors.neutral[4]
+            } else {
+                tokens.colors.text_primary
+            };
+            tr.draw_text_styled(
+                scene,
+                &r.value,
+                value_size,
+                val_color,
+                t * Affine::translate((x + label_w, y)),
+                Some((panel.width() - pad * 2.0 - label_w) as f32),
+                TextWeight::Regular,
+                false,
+                true,
+            );
+            y += row_h;
+        }
+    }
+
+    fn draw_status(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &GridMetrics,
+    ) {
+        let tokens = &theme.tokens;
+        let bar = Rect::new(self.rect.x0, m.status_top, self.rect.x1, self.rect.y1);
+        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &bar);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            tokens.colors.border_standard,
+            None,
+            &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0),
+        );
+        let size = tokens.typography.scale.sm;
+        let pad = tokens.spacing.s4 as f64;
+        let cy = bar.y0 + (bar.height() - size as f64) / 2.0;
+
+        // Left: cursor offset (hex + decimal) and selection length.
+        let mut left = format!(
+            "0x{:08X}  ({})",
+            self.model.cursor(),
+            self.model.cursor()
+        );
+        let sel = self.model.selection_len();
+        if sel > 0 {
+            left.push_str(&format!("   sel {} B", sel));
+        }
+        if self.model.dirty_count() > 0 {
+            left.push_str(&format!("   ●{} edited", self.model.dirty_count()));
+        }
+        tr.draw_text_styled(
+            scene,
+            &left,
+            size,
+            tokens.colors.text_primary,
+            t * Affine::translate((bar.x0 + pad, cy)),
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
+
+        // Right: keyboard hints.
+        let hints = "Ctrl+F find · Ctrl+G goto · Tab switch col · Ins mode · E endian · R width";
+        let (hw, _) = tr.measure(hints, tokens.typography.scale.xs, None);
+        tr.draw_text(
+            scene,
+            hints,
+            tokens.typography.scale.xs,
+            tokens.colors.text_dim,
+            t * Affine::translate((
+                bar.x1 - pad - hw as f64,
+                bar.y0 + (bar.height() - tokens.typography.scale.xs as f64) / 2.0,
+            )),
+            None,
+        );
+    }
+
+    fn draw_search_overlay(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let w = 460.0;
+        let h = 56.0;
+        let x0 = self.rect.x1 - w - 24.0;
+        let y0 = self.rect.y0 + 56.0;
+        let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
+        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &panel);
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            tokens.colors.border_focus,
+            None,
+            &panel,
+        );
+
+        let pad = 14.0;
+        let size = tokens.typography.scale.base;
+        // Kind toggle chip.
+        let kind = self.search_kind.label();
+        let chip_w = 48.0;
+        let chip = RoundedRect::new(x0 + pad, y0 + 12.0, x0 + pad + chip_w, y0 + 12.0 + 22.0, 6.0);
+        scene.fill(Fill::NonZero, t, tokens.colors.accent[ui_accent_idx()], None, &chip);
+        tr.draw_text_weighted(
+            scene,
+            kind,
+            tokens.typography.scale.xs,
+            contrast_on(tokens.colors.accent[ui_accent_idx()]),
+            t * Affine::translate((x0 + pad + 8.0, y0 + 12.0 + 5.0)),
+            None,
+            TextWeight::Bold,
+        );
+
+        // Query text + caret.
+        let qx = x0 + pad + chip_w + 12.0;
+        let qy = y0 + (h - size as f64) / 2.0;
+        let display = if self.search_query.is_empty() {
+            "search…".to_string()
+        } else {
+            self.search_query.clone()
+        };
+        let qcolor = if self.search_query.is_empty() {
+            tokens.colors.text_dim
+        } else {
+            tokens.colors.text_primary
+        };
+        tr.draw_text_styled(
+            scene,
+            &display,
+            size,
+            qcolor,
+            t * Affine::translate((qx, qy)),
+            None,
+            TextWeight::Regular,
+            false,
+            self.search_kind == SearchKind::Hex,
+        );
+
+        // Match counter.
+        let count = if self.matches.is_empty() {
+            if self.search_query.is_empty() {
+                String::new()
+            } else {
+                "no matches".to_string()
+            }
+        } else {
+            let pos = self.match_idx.map(|i| i + 1).unwrap_or(0);
+            format!("{}/{}", pos, self.matches.len())
+        };
+        if !count.is_empty() {
+            let (cw, _) = tr.measure(&count, tokens.typography.scale.sm, None);
+            let ccolor = if self.matches.is_empty() {
+                tokens.colors.semantic.danger
+            } else {
+                tokens.colors.text_dim
+            };
+            tr.draw_text(
+                scene,
+                &count,
+                tokens.typography.scale.sm,
+                ccolor,
+                t * Affine::translate((
+                    x0 + w - pad - cw as f64,
+                    y0 + (h - tokens.typography.scale.sm as f64) / 2.0,
+                )),
+                None,
+            );
+        }
+    }
+
+    fn draw_goto_overlay(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let w = 340.0;
+        let h = 56.0;
+        let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
+        let y0 = self.rect.y0 + 80.0;
+        let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
+        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &panel);
+        scene.stroke(&Stroke::new(1.0), t, tokens.colors.border_focus, None, &panel);
+
+        let pad = 14.0;
+        tr.draw_text_weighted(
+            scene,
+            "Go to offset",
+            tokens.typography.scale.xs,
+            tokens.colors.text_dim,
+            t * Affine::translate((x0 + pad, y0 + 8.0)),
+            None,
+            TextWeight::Bold,
+        );
+        let size = tokens.typography.scale.base;
+        let display = if self.goto_query.is_empty() {
+            "0x… or decimal".to_string()
+        } else {
+            self.goto_query.clone()
+        };
+        let color = if self.goto_query.is_empty() {
+            tokens.colors.text_dim
+        } else {
+            tokens.colors.text_primary
+        };
+        tr.draw_text_styled(
+            scene,
+            &display,
+            size,
+            color,
+            t * Affine::translate((x0 + pad, y0 + 26.0)),
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
+    }
+
+    // --- keyboard ------------------------------------------------------
+
+    /// Handle a key while an overlay (search / goto) is open. Returns true
+    /// if consumed. `doc` is needed because committing a goto may move the
+    /// cursor which we persist.
+    fn handle_overlay_key(
+        &mut self,
+        key: &Key,
+        ctrl: bool,
+        shift: bool,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        match self.overlay {
+            Overlay::Search => match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.overlay = Overlay::None;
+                    self.dirty = true;
+                    true
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.jump_to_match(!shift);
+                    self.flush(doc);
+                    true
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.search_query.pop();
+                    self.recompute_matches();
+                    self.dirty = true;
+                    true
+                }
+                Key::Named(NamedKey::Tab) => {
+                    self.search_kind = self.search_kind.toggle();
+                    self.recompute_matches();
+                    self.dirty = true;
+                    true
+                }
+                Key::Character(c) if !ctrl => {
+                    self.search_query.push_str(c.as_str());
+                    self.recompute_matches();
+                    self.dirty = true;
+                    true
+                }
+                Key::Named(NamedKey::Space) if !ctrl => {
+                    self.search_query.push(' ');
+                    self.recompute_matches();
+                    self.dirty = true;
+                    true
+                }
+                _ => false,
+            },
+            Overlay::Goto => match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.overlay = Overlay::None;
+                    self.goto_query.clear();
+                    self.dirty = true;
+                    true
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.commit_goto();
+                    self.flush(doc);
+                    true
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.goto_query.pop();
+                    self.dirty = true;
+                    true
+                }
+                Key::Character(c) if !ctrl => {
+                    self.goto_query.push_str(c.as_str());
+                    self.dirty = true;
+                    true
+                }
+                _ => false,
+            },
+            Overlay::None => false,
+        }
+    }
+}
+
+/// Index into the accent ramp used for the active cursor fill. Bound to a
+/// helper so the choice stays consistent across the grid and overlays.
+fn ui_accent_idx() -> usize {
+    5
+}
+
+impl Widget for HexView {
+    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        if !self.seeded {
+            if HexDoc::is_seeded(doc) {
+                // Adopt an existing peer's document.
+                if let Some(m) = HexDoc::read_model(doc) {
+                    self.model = m;
+                }
+            } else {
+                // Seed ours.
+                HexDoc::write_model(doc, &self.model);
+            }
+            self.seeded = true;
+            self.dirty = true;
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        // App background.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        let m = self.metrics();
+        self.draw_header(scene, transform, text_renderer, theme, &m);
+        self.draw_grid(scene, transform, text_renderer, theme, &m);
+        self.draw_inspector(scene, transform, text_renderer, theme, &m);
+        self.draw_status(scene, transform, text_renderer, theme, &m);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        match self.overlay {
+            Overlay::Search => self.draw_search_overlay(scene, transform, text_renderer, theme),
+            Overlay::Goto => self.draw_goto_overlay(scene, transform, text_renderer, theme),
+            Overlay::None => {}
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        let ctrl = modifiers.state().control_key();
+        let shift = modifiers.state().shift_key();
+
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Click position is tracked via CursorMoved; recompute on
+                // press from the last known position.
+                if let Some((off, col)) = self.hit_test(self.last_mouse) {
+                    self.model.set_column(col);
+                    self.model.move_to(off, shift);
+                    self.flush(state);
+                    *handled = true;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse = Point::new(
+                    position.x / scale_factor,
+                    position.y / scale_factor,
+                );
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
+                };
+                self.model.scroll_by(-(lines.round() as isize) * 3);
+                self.dirty = true;
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput { event: ke, .. } => {
+                if ke.state != ElementState::Pressed {
+                    return;
+                }
+                let key = &ke.logical_key;
+
+                // Overlay capture takes priority.
+                if self.overlay != Overlay::None {
+                    if self.handle_overlay_key(key, ctrl, shift, state) {
+                        *handled = true;
+                    }
+                    return;
+                }
+
+                // Global chords.
+                if ctrl {
+                    if let Key::Character(c) = key {
+                        match c.as_str() {
+                            "f" | "F" => {
+                                self.overlay = Overlay::Search;
+                                self.recompute_matches();
+                                self.dirty = true;
+                                *handled = true;
+                                return;
+                            }
+                            "g" | "G" => {
+                                self.overlay = Overlay::Goto;
+                                self.dirty = true;
+                                *handled = true;
+                                return;
+                            }
+                            "a" | "A" => {
+                                self.model.select_all();
+                                self.flush(state);
+                                *handled = true;
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let mut moved = true;
+                match key {
+                    Key::Named(NamedKey::ArrowLeft) => self.model.move_left(shift),
+                    Key::Named(NamedKey::ArrowRight) => self.model.move_right(shift),
+                    Key::Named(NamedKey::ArrowUp) => self.model.move_up(shift),
+                    Key::Named(NamedKey::ArrowDown) => self.model.move_down(shift),
+                    Key::Named(NamedKey::Home) => {
+                        if ctrl {
+                            self.model.move_doc_start(shift);
+                        } else {
+                            self.model.move_row_start(shift);
+                        }
+                    }
+                    Key::Named(NamedKey::End) => {
+                        if ctrl {
+                            self.model.move_doc_end(shift);
+                        } else {
+                            self.model.move_row_end(shift);
+                        }
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        self.model.page_up(self.visible_rows.saturating_sub(1).max(1), shift)
+                    }
+                    Key::Named(NamedKey::PageDown) => {
+                        self.model.page_down(self.visible_rows.saturating_sub(1).max(1), shift)
+                    }
+                    Key::Named(NamedKey::Tab) => {
+                        self.model.toggle_column();
+                    }
+                    Key::Named(NamedKey::Insert) => {
+                        self.model.toggle_mode();
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        self.model.clear_selection();
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        self.model.backspace();
+                    }
+                    Key::Named(NamedKey::Delete) => {
+                        self.model.delete_at_cursor();
+                    }
+                    Key::Character(c) => {
+                        moved = self.handle_char(c.as_str());
+                    }
+                    _ => moved = false,
+                }
+
+                if moved {
+                    let (row, _) = self.model.cursor_cell();
+                    self.model.scroll_into_view(row, self.visible_rows);
+                    self.flush(state);
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        "HexView"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("hex_view")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+}
+
+impl HexView {
+    /// Dispatch a printable character to the active column / mode. Also
+    /// handles the unshifted single-letter shortcuts (e / r) that only
+    /// apply outside the ASCII column.
+    fn handle_char(&mut self, s: &str) -> bool {
+        let Some(ch) = s.chars().next() else {
+            return false;
+        };
+        match self.model.column() {
+            Column::Hex => {
+                if let Some(d) = ch.to_digit(16) {
+                    return self.model.input_hex_digit(d as u8);
+                }
+                // Non-hex letters act as view shortcuts in the hex column.
+                match ch {
+                    'e' | 'E' => {
+                        self.model.toggle_endian();
+                        true
+                    }
+                    'r' | 'R' => {
+                        self.model.cycle_bytes_per_row();
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            Column::Ascii => self.model.input_ascii_char(ch),
+        }
+    }
+}
+
+/// Computed layout metrics for one frame. All in logical px.
+struct GridMetrics {
+    header_bottom: f64,
+    col_header_y: f64,
+    grid_top: f64,
+    grid_bottom: f64,
+    status_top: f64,
+    row_h: f64,
+    cell_font: f32,
+    byte_w: f64,
+    char_w: f64,
+    hex_col_w: f64,
+    gutter_x0: f64,
+    hex_x0: f64,
+    hex_x1: f64,
+    ascii_x0: f64,
+    ascii_x1: f64,
+    inspector_x0: f64,
+    visible_rows: usize,
+}
+
+impl GridMetrics {
+    fn new(rect: Rect, bpr: usize) -> Self {
+        let header_bottom = rect.y0 + 44.0;
+        let status_h = 28.0;
+        let status_top = rect.y1 - status_h;
+        let col_header_h = 20.0;
+        let col_header_y = header_bottom + 10.0;
+        let grid_top = col_header_y + col_header_h;
+        let grid_bottom = status_top - 8.0;
+
+        let cell_font = 14.0;
+        let row_h = 20.0;
+        // Monospace pitch at this size: roughly 0.6em per glyph.
+        let glyph = (cell_font as f64) * 0.6;
+        let byte_w = glyph * 2.0; // two hex digits
+        let char_w = glyph; // one ASCII glyph
+        let hex_col_w = byte_w + glyph * 0.55; // inter-byte gap
+        let gutter_w = glyph * 8.0; // 8 hex digits of offset
+
+        let left = rect.x0 + 16.0;
+        let gutter_x0 = left;
+        let hex_x0 = gutter_x0 + gutter_w + 22.0;
+        let hex_x1 = hex_x0 + bpr as f64 * hex_col_w;
+        let ascii_x0 = hex_x1 + 22.0;
+        let ascii_x1 = ascii_x0 + bpr as f64 * char_w;
+
+        // Inspector gets the remaining width on the right, min 240px.
+        let inspector_x0 = (ascii_x1 + 24.0).max(rect.x1 - 320.0);
+
+        let visible_rows = ((grid_bottom - grid_top) / row_h).floor().max(1.0) as usize;
+
+        Self {
+            header_bottom,
+            col_header_y,
+            grid_top,
+            grid_bottom,
+            status_top,
+            row_h,
+            cell_font,
+            byte_w,
+            char_w,
+            hex_col_w,
+            gutter_x0,
+            hex_x0,
+            hex_x1,
+            ascii_x0,
+            ascii_x1,
+            inspector_x0,
+            visible_rows,
+        }
+    }
+}
+
+// --- small drawing utilities ------------------------------------------
+
+fn with_alpha(c: Color, a: u8) -> Color {
+    let rgba = c.to_rgba8();
+    Color::from_rgba8(rgba.r, rgba.g, rgba.b, a)
+}
+
+/// Choose black or white text for legibility on `bg` (relative luminance).
+fn contrast_on(bg: Color) -> Color {
+    let rgba = bg.to_rgba8();
+    let lum = 0.299 * rgba.r as f64 + 0.587 * rgba.g as f64 + 0.114 * rgba.b as f64;
+    if lum > 140.0 {
+        Color::from_rgb8(10, 12, 20)
+    } else {
+        Color::WHITE
+    }
+}
+
+/// ASCII glyph for the ASCII column: the printable char, or a centred dot
+/// for control / high bytes (the universal hex-editor convention).
+fn ascii_glyph(b: u8) -> String {
+    if (0x20..=0x7E).contains(&b) {
+        (b as char).to_string()
+    } else {
+        "·".to_string()
+    }
+}

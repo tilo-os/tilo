@@ -1,0 +1,1146 @@
+//! Non-blocking OSM raster-tile layer.
+//!
+//! This is the heart of the map's smoothness. The UI thread must NEVER touch
+//! the network or decode a PNG: both are slow and would stall the frame,
+//! making zoom and pan feel laggy. Instead:
+//!
+//! * [`TileLayer::visible_tiles`] computes which `z/x/y` tiles cover the
+//!   current viewport — pure arithmetic, runs every frame.
+//! * For any tile that is not already decoded in memory, the layer sends a
+//!   [`TileRequest`] over a channel to a background [`worker`] thread and
+//!   *returns immediately*. The frame is drawn from whatever is cached.
+//! * The worker checks the on-disk cache first, then fetches over HTTP and
+//!   decodes the PNG to RGBA — all off the UI thread — and ships the decoded
+//!   pixels back over a channel.
+//! * [`TileLayer::drain`] folds finished tiles into the in-memory store
+//!   between frames; the next frame swaps them in.
+//!
+//! Because zoom changes the integer tile-z, a freshly-zoomed view usually has
+//! no exact-z tiles cached yet. To keep zoom feeling *instant*, draw scales an
+//! already-cached ancestor (lower-z) tile under the hole as a placeholder, so
+//! the user always sees imagery — sharp where cached, soft where pending —
+//! never a blank frame.
+
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::time::{Duration, Instant};
+
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
+    ImageFormat as Format,
+};
+
+use crate::geo;
+use crate::model::LatLon;
+
+/// Slippy-map tile edge length in pixels (matches `geo::TILE_SIZE`).
+pub const TILE_PX: f64 = 256.0;
+
+/// How many decoded tiles we keep resident in RAM. Each tile is 256×256×4 ≈
+/// 256 KiB, so 512 tiles ≈ 128 MiB worst case — comfortable, and far more
+/// than any single viewport needs (a 4K screen covers < 150 tiles).
+const MEM_CACHE_CAP: usize = 512;
+
+/// First retry delay for a tile whose fetch failed. The delay doubles on each
+/// consecutive failure (see [`FAIL_BACKOFF_MAX`]).
+const FAIL_BACKOFF_MIN: Duration = Duration::from_secs(2);
+/// Ceiling for the failed-tile backoff. A tile server that is persistently
+/// unreachable is retried at most this often, never per-frame.
+const FAIL_BACKOFF_MAX: Duration = Duration::from_secs(300);
+/// Cap on the negative-cache size so a long pan across an unreachable region
+/// can't grow it without bound.
+const FAIL_CACHE_CAP: usize = 4096;
+
+/// Negative-cache entry for a tile whose fetch failed. It suppresses further
+/// requests for that tile until `retry_at`, backing off exponentially so an
+/// unreachable server is not hammered and the draw loop can idle instead of
+/// re-requesting the same doomed tile every frame.
+#[derive(Clone, Copy)]
+struct FailedFetch {
+    /// Earliest instant at which the tile may be requested again.
+    retry_at: Instant,
+    /// Current backoff window; doubles per failure up to [`FAIL_BACKOFF_MAX`].
+    delay: Duration,
+}
+
+/// Public OSM raster endpoint. The standard tile server; we send a descriptive
+/// User-Agent per the OSM tile usage policy.
+const TILE_URL: &str = "https://tile.openstreetmap.org";
+
+const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
+
+/// A tile coordinate in the slippy-map scheme.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TileId {
+    pub z: u8,
+    pub x: u32,
+    pub y: u32,
+}
+
+impl TileId {
+    pub fn new(z: u8, x: u32, y: u32) -> Self {
+        Self { z, x, y }
+    }
+
+    /// Number of tiles per axis at this zoom (`2^z`).
+    fn n(z: u8) -> u32 {
+        1u32 << z
+    }
+
+    /// The parent tile one zoom out that contains this one, if any.
+    pub fn parent(&self) -> Option<TileId> {
+        if self.z == 0 {
+            None
+        } else {
+            Some(TileId::new(self.z - 1, self.x / 2, self.y / 2))
+        }
+    }
+
+    /// Relative path under the cache root: `z/x/y.png`.
+    fn cache_rel(&self) -> PathBuf {
+        PathBuf::from(format!("{}/{}/{}.png", self.z, self.x, self.y))
+    }
+
+    fn url(&self, base: &str) -> String {
+        format!("{base}/{}/{}/{}.png", self.z, self.x, self.y)
+    }
+}
+
+/// A decoded, GPU-ready tile image plus its source size.
+#[derive(Clone)]
+pub struct DecodedTile {
+    pub image: PenikoImage,
+}
+
+/// Work item handed to the background worker.
+enum Job {
+    /// Fetch+decode for the live viewport (cache, then network).
+    Fetch(TileId),
+    /// Bulk download for offline use — same path, but counted for progress.
+    Download(TileId),
+}
+
+/// Result shipped back from the worker.
+enum Done {
+    /// A tile finished (or failed): `Some` bytes were decoded, `None` failed.
+    Tile {
+        id: TileId,
+        rgba: Option<(Vec<u8>, u32, u32)>,
+    },
+    /// One bulk-download item finished (success flag for progress accounting).
+    Download { ok: bool },
+}
+
+/// Snapshot of an in-progress offline download.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub total: u32,
+    pub done: u32,
+    pub failed: u32,
+}
+
+impl DownloadProgress {
+    pub fn is_active(&self) -> bool {
+        self.total > 0 && self.done < self.total
+    }
+
+    pub fn fraction(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.done as f64 / self.total as f64
+        }
+    }
+}
+
+/// The non-blocking tile layer owned by the app.
+pub struct TileLayer {
+    /// Decoded tiles resident in memory, keyed by `z/x/y`.
+    mem: HashMap<TileId, DecodedTile>,
+    /// LRU recency queue (front = oldest) used to evict from `mem`.
+    lru: VecDeque<TileId>,
+    /// Tiles already requested and awaiting the worker, so we don't enqueue
+    /// the same tile twice per frame.
+    inflight: std::collections::HashSet<TileId>,
+    /// Tiles whose most recent fetch failed, with an exponential backoff. A
+    /// tile in here is not re-requested until its backoff elapses — this is
+    /// what stops a doomed tile from being re-fetched every frame (which would
+    /// both spin the CPU and hammer the public tile server).
+    failed: HashMap<TileId, FailedFetch>,
+    /// Channel to the worker; `None` in headless/offline mode (no worker).
+    job_tx: Option<Sender<Job>>,
+    /// Finished tiles + download ticks arrive here.
+    done_rx: Option<Receiver<Done>>,
+    /// On-disk cache root (`z/x/y.png` beneath it).
+    cache_dir: PathBuf,
+    /// Live offline-download progress.
+    progress: DownloadProgress,
+}
+
+impl TileLayer {
+    /// Construct a live tile layer that spawns a worker thread.
+    pub fn new() -> Self {
+        Self::with_cache_dir(default_cache_dir())
+    }
+
+    /// Construct a live tile layer rooted at a specific cache directory. The
+    /// worker still runs off the UI thread; the on-disk cache lives under
+    /// `cache_dir`. Used by tests to point the cache at a temp dir.
+    pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
+        Self::with_cache_dir_and_base(cache_dir, TILE_URL.to_string())
+    }
+
+    /// Live tile layer with an explicit tile-server base URL. The default
+    /// (`with_cache_dir`) uses the public OSM endpoint; a custom base lets a
+    /// test exercise the real fetch→fail→negative-cache path against a local
+    /// (closed-port) server without ever touching the public server.
+    fn with_cache_dir_and_base(cache_dir: PathBuf, base_url: String) -> Self {
+        let (job_tx, job_rx) = channel::<Job>();
+        let (done_tx, done_rx) = channel::<Done>();
+        let dir = cache_dir.clone();
+        std::thread::Builder::new()
+            .name("maps-tiles".into())
+            .spawn(move || worker(job_rx, done_tx, dir, base_url))
+            .expect("spawn maps tile worker");
+        Self {
+            mem: HashMap::new(),
+            lru: VecDeque::new(),
+            inflight: std::collections::HashSet::new(),
+            failed: HashMap::new(),
+            job_tx: Some(job_tx),
+            done_rx: Some(done_rx),
+            cache_dir,
+            progress: DownloadProgress::default(),
+        }
+    }
+
+    /// Construct an inert layer with no worker thread and no network — used by
+    /// `--shots` and tests so nothing ever blocks or hits the wire.
+    pub fn offline() -> Self {
+        Self {
+            mem: HashMap::new(),
+            lru: VecDeque::new(),
+            inflight: std::collections::HashSet::new(),
+            failed: HashMap::new(),
+            job_tx: None,
+            done_rx: None,
+            cache_dir: default_cache_dir(),
+            progress: DownloadProgress::default(),
+        }
+    }
+
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.cache_dir
+    }
+
+    pub fn progress(&self) -> DownloadProgress {
+        self.progress
+    }
+
+    /// Number of decoded tiles currently resident in RAM.
+    pub fn mem_len(&self) -> usize {
+        self.mem.len()
+    }
+
+    /// Integer zoom used for tile selection at a fractional map zoom. Tiles
+    /// exist at integer z; we round to the nearest so detail tracks the view.
+    pub fn tile_zoom(map_zoom: f64) -> u8 {
+        map_zoom.round().clamp(0.0, 19.0) as u8
+    }
+
+    /// Compute the `TileId`s whose footprint intersects `viewport` for the
+    /// given camera. Pure arithmetic — safe to call every frame.
+    pub fn visible_tiles(
+        center: LatLon,
+        map_zoom: f64,
+        view_center: vello::kurbo::Point,
+        viewport: Rect,
+    ) -> Vec<(TileId, Rect)> {
+        let z = Self::tile_zoom(map_zoom);
+        // Scale between the integer tile pyramid and the fractional view.
+        let scale = 2f64.powf(map_zoom - z as f64);
+        let tile_screen = TILE_PX * scale;
+        let n = TileId::n(z);
+
+        // World-pixel position of the viewport centre at integer zoom z.
+        let (cwx, cwy) = geo::lonlat_to_world(center, z as f64);
+        // Top-left of the viewport in world-pixel space (scaled).
+        let left_world = cwx - (view_center.x - viewport.x0) / scale;
+        let top_world = cwy - (view_center.y - viewport.y0) / scale;
+
+        let first_x = (left_world / TILE_PX).floor() as i64;
+        let first_y = (top_world / TILE_PX).floor() as i64;
+        let cols = (viewport.width() / tile_screen).ceil() as i64 + 2;
+        let rows = (viewport.height() / tile_screen).ceil() as i64 + 2;
+
+        let mut out = Vec::with_capacity((cols * rows).max(0) as usize);
+        for ty in first_y..first_y + rows {
+            for tx in first_x..first_x + cols {
+                // Wrap X around the antimeridian; clamp Y (no vertical wrap).
+                if ty < 0 || ty >= n as i64 {
+                    continue;
+                }
+                let wx = tx.rem_euclid(n as i64) as u32;
+                let id = TileId::new(z, wx, ty as u32);
+                // Screen rect of this tile: its world origin minus camera, /scale.
+                let world_x = tx as f64 * TILE_PX;
+                let world_y = ty as f64 * TILE_PX;
+                let sx = view_center.x + (world_x - cwx) * scale;
+                let sy = view_center.y + (world_y - cwy) * scale;
+                let rect = Rect::new(sx, sy, sx + tile_screen, sy + tile_screen);
+                out.push((id, rect));
+            }
+        }
+        out
+    }
+
+    /// Fold any finished tiles/download ticks into the store. Call once per
+    /// frame (cheap, non-blocking `try_recv`).
+    pub fn drain(&mut self) {
+        // Collect first so we don't hold an immutable borrow of `done_rx`
+        // while mutating `self` via `insert`.
+        let mut finished: Vec<Done> = Vec::new();
+        if let Some(rx) = &self.done_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => finished.push(msg),
+                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+        for msg in finished {
+            match msg {
+                Done::Tile { id, rgba } => {
+                    self.inflight.remove(&id);
+                    match rgba {
+                        Some((rgba, w, h)) => {
+                            // A successful fetch clears any negative-cache entry
+                            // so a recovered tile loads normally next time.
+                            self.failed.remove(&id);
+                            if let Some(img) = make_image(rgba, w, h) {
+                                self.insert(id, DecodedTile { image: img });
+                            }
+                        }
+                        None => self.note_failure(id),
+                    }
+                }
+                Done::Download { ok } => {
+                    self.progress.done += 1;
+                    if !ok {
+                        self.progress.failed += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Look up a decoded tile, marking it most-recently-used.
+    pub fn get(&mut self, id: TileId) -> Option<&PenikoImage> {
+        if self.mem.contains_key(&id) {
+            self.touch(id);
+            self.mem.get(&id).map(|t| &t.image)
+        } else {
+            None
+        }
+    }
+
+    /// Has this tile been requested but not yet returned?
+    pub fn is_inflight(&self, id: TileId) -> bool {
+        self.inflight.contains(&id)
+    }
+
+    /// Are any tiles currently awaiting the worker?
+    pub fn has_inflight(&self) -> bool {
+        !self.inflight.is_empty()
+    }
+
+    /// Whether at least one recent tile fetch failed and is backing off. Lets
+    /// the map distinguish "still loading imagery" from "imagery unreachable"
+    /// (egress blocked / offline) for the loading affordance.
+    pub fn has_failures(&self) -> bool {
+        !self.failed.is_empty()
+    }
+
+    /// Request `id` from the worker if it isn't already resident, inflight, or
+    /// suppressed by the failure backoff. Returns immediately — the UI thread
+    /// never blocks on I/O or decode.
+    pub fn request(&mut self, id: TileId) {
+        if self.mem.contains_key(&id) || self.inflight.contains(&id) {
+            return;
+        }
+        // Negative cache: a tile whose fetch recently failed is not requested
+        // again until its backoff elapses. Without this, `draw_tiles` would
+        // re-request every non-resident tile every frame, so an unfetchable
+        // tile would spin the loop (it never idles while `has_inflight`) and
+        // hammer the tile server. The entry is kept until a later fetch
+        // succeeds, so repeated failures keep doubling the delay.
+        if let Some(f) = self.failed.get(&id) {
+            if Instant::now() < f.retry_at {
+                return;
+            }
+        }
+        if let Some(tx) = &self.job_tx {
+            if tx.send(Job::Fetch(id)).is_ok() {
+                self.inflight.insert(id);
+            }
+        }
+    }
+
+    /// Record a failed fetch, extending this tile's backoff. The first failure
+    /// waits [`FAIL_BACKOFF_MIN`]; each consecutive failure doubles the window
+    /// up to [`FAIL_BACKOFF_MAX`].
+    fn note_failure(&mut self, id: TileId) {
+        let now = Instant::now();
+        let delay = match self.failed.get(&id) {
+            Some(f) => (f.delay * 2).min(FAIL_BACKOFF_MAX),
+            None => FAIL_BACKOFF_MIN,
+        };
+        self.failed.insert(
+            id,
+            FailedFetch {
+                retry_at: now + delay,
+                delay,
+            },
+        );
+        if self.failed.len() > FAIL_CACHE_CAP {
+            // Entries whose backoff already elapsed no longer suppress a
+            // request, so dropping them keeps the map bounded without causing a
+            // re-request storm (only visible tiles are ever requested).
+            self.failed.retain(|_, f| f.retry_at > now);
+            if self.failed.len() > FAIL_CACHE_CAP {
+                self.failed.clear();
+            }
+        }
+    }
+
+    /// Find the nearest already-cached ancestor tile that covers `id`, for use
+    /// as an instant zoom/pan placeholder. Returns the ancestor and how many
+    /// zoom levels up it is (so the caller can sub-sample its pixels).
+    pub fn ancestor_placeholder(&mut self, id: TileId) -> Option<(TileId, u8)> {
+        let mut cur = id;
+        let mut up = 0u8;
+        while let Some(p) = cur.parent() {
+            up += 1;
+            if self.mem.contains_key(&p) {
+                self.touch(p);
+                return Some((p, up));
+            }
+            cur = p;
+            if up > 8 {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Begin downloading every tile covering `region` across `z0..=z1` into the
+    /// on-disk cache. Non-blocking: the worker streams progress back via
+    /// [`drain`]. Returns the number of tiles queued.
+    pub fn start_download(&mut self, region: GeoBounds, z0: u8, z1: u8) -> u32 {
+        let ids = region.tiles_in_range(z0, z1);
+        let total = ids.len() as u32;
+        self.progress = DownloadProgress {
+            total,
+            done: 0,
+            failed: 0,
+        };
+        if let Some(tx) = &self.job_tx {
+            for id in ids {
+                let _ = tx.send(Job::Download(id));
+            }
+        } else {
+            // Offline layer: nothing to do, mark complete so the UI settles.
+            self.progress.done = total;
+        }
+        total
+    }
+
+    /// Estimate how many tiles a download of `region` across `z0..=z1` covers,
+    /// without enqueuing anything — for the pre-download confirmation.
+    pub fn estimate_download(region: GeoBounds, z0: u8, z1: u8) -> u32 {
+        region.tiles_in_range(z0, z1).len() as u32
+    }
+
+    /// Delete the entire on-disk tile cache and clear RAM. Returns bytes freed.
+    pub fn clear_cache(&mut self) -> u64 {
+        self.mem.clear();
+        self.lru.clear();
+        self.inflight.clear();
+        self.failed.clear();
+        self.progress = DownloadProgress::default();
+        let freed = dir_size(&self.cache_dir);
+        let _ = std::fs::remove_dir_all(&self.cache_dir);
+        freed
+    }
+
+    /// Total bytes the on-disk cache currently occupies.
+    pub fn cache_bytes(&self) -> u64 {
+        dir_size(&self.cache_dir)
+    }
+
+    // --- internal ----------------------------------------------------------
+    fn insert(&mut self, id: TileId, tile: DecodedTile) {
+        if self.mem.insert(id, tile).is_none() {
+            self.lru.push_back(id);
+        } else {
+            self.touch(id);
+        }
+        while self.mem.len() > MEM_CACHE_CAP {
+            if let Some(old) = self.lru.pop_front() {
+                self.mem.remove(&old);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn touch(&mut self, id: TileId) {
+        if let Some(pos) = self.lru.iter().position(|&t| t == id) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(id);
+    }
+
+    // --- test hooks --------------------------------------------------------
+    /// A live layer whose worker fetches from `base_url` instead of the public
+    /// OSM server — so a test can drive the real fetch→fail→negative-cache path
+    /// against a local (closed-port) endpoint without any external traffic.
+    #[cfg(test)]
+    fn with_cache_dir_url(cache_dir: PathBuf, base_url: String) -> Self {
+        Self::with_cache_dir_and_base(cache_dir, base_url)
+    }
+
+    /// The current backoff window recorded for a failed tile, if any.
+    #[cfg(test)]
+    fn failed_delay(&self, id: TileId) -> Option<Duration> {
+        self.failed.get(&id).map(|f| f.delay)
+    }
+
+    /// Whether a tile is currently suppressed by the failure backoff.
+    #[cfg(test)]
+    fn is_backing_off(&self, id: TileId) -> bool {
+        self.failed
+            .get(&id)
+            .map(|f| Instant::now() < f.retry_at)
+            .unwrap_or(false)
+    }
+}
+
+impl Default for TileLayer {
+    fn default() -> Self {
+        Self::offline()
+    }
+}
+
+/// A lat/lon bounding box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeoBounds {
+    pub min: LatLon,
+    pub max: LatLon,
+}
+
+impl GeoBounds {
+    pub fn new(a: LatLon, b: LatLon) -> Self {
+        Self {
+            min: LatLon::new(a.lat.min(b.lat), a.lon.min(b.lon)),
+            max: LatLon::new(a.lat.max(b.lat), a.lon.max(b.lon)),
+        }
+    }
+
+    /// Every tile (across `z0..=z1`) whose footprint intersects the box.
+    pub fn tiles_in_range(&self, z0: u8, z1: u8) -> Vec<TileId> {
+        let (z0, z1) = (z0.min(z1), z0.max(z1).min(19));
+        let mut out = Vec::new();
+        for z in z0..=z1 {
+            let n = TileId::n(z);
+            let (x0, y0) = lonlat_to_tile(self.max.lat, self.min.lon, z);
+            let (x1, y1) = lonlat_to_tile(self.min.lat, self.max.lon, z);
+            let (xa, xb) = (x0.min(x1), x0.max(x1));
+            let (ya, yb) = (y0.min(y1), y0.max(y1));
+            for y in ya..=yb.min(n.saturating_sub(1)) {
+                for x in xa..=xb.min(n.saturating_sub(1)) {
+                    out.push(TileId::new(z, x, y));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Tile column/row containing a coordinate at integer zoom `z`.
+fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
+    let n = TileId::n(z) as f64;
+    let x = ((lon + 180.0) / 360.0 * n).floor();
+    let lat_rad = lat.clamp(-85.05112878, 85.05112878).to_radians();
+    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
+        .floor();
+    let nm = TileId::n(z).saturating_sub(1);
+    (
+        (x as i64).clamp(0, nm as i64) as u32,
+        (y as i64).clamp(0, nm as i64) as u32,
+    )
+}
+
+/// Background worker: services fetch + download jobs entirely off the UI
+/// thread. Disk cache first, then network; decode happens here too.
+fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: String) {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok();
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Fetch(id) => {
+                let rgba = load_tile(&client, &cache_dir, &base_url, id);
+                if tx.send(Done::Tile { id, rgba }).is_err() {
+                    break;
+                }
+            }
+            Job::Download(id) => {
+                // For downloads we only need the bytes on disk; decoding is the
+                // live path's concern. Skip if already cached.
+                let path = cache_dir.join(id.cache_rel());
+                let ok = if path.exists() {
+                    true
+                } else {
+                    fetch_to_disk(&client, &cache_dir, &base_url, id)
+                };
+                if tx.send(Done::Download { ok }).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Load a tile's RGBA pixels: disk cache → network. Writes fetched bytes to
+/// disk so re-views and zoom are instant. Returns `None` on any failure.
+fn load_tile(
+    client: &Option<reqwest::blocking::Client>,
+    cache_dir: &std::path::Path,
+    base_url: &str,
+    id: TileId,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let path = cache_dir.join(id.cache_rel());
+    if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(t) = decode_png(&bytes) {
+            return Some(t);
+        }
+    }
+    let client = client.as_ref()?;
+    let resp = client.get(id.url(base_url)).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().ok()?;
+    let decoded = decode_png(&bytes).ok()?;
+    write_cache(&path, &bytes);
+    Some(decoded)
+}
+
+/// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
+fn fetch_to_disk(
+    client: &Option<reqwest::blocking::Client>,
+    cache_dir: &std::path::Path,
+    base_url: &str,
+    id: TileId,
+) -> bool {
+    let Some(client) = client.as_ref() else {
+        return false;
+    };
+    let path = cache_dir.join(id.cache_rel());
+    match client.get(id.url(base_url)).send().and_then(|r| r.bytes()) {
+        Ok(bytes) if decode_png(&bytes).is_ok() => {
+            write_cache(&path, &bytes);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn write_cache(path: &std::path::Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, bytes);
+}
+
+/// Wrap RGBA bytes in a `peniko::ImageData` for painting.
+fn make_image(rgba: Vec<u8>, w: u32, h: u32) -> Option<PenikoImage> {
+    if rgba.len() != (w as usize) * (h as usize) * 4 {
+        return None;
+    }
+    Some(PenikoImage {
+        data: Blob::new(Arc::new(rgba)),
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: w,
+        height: h,
+    })
+}
+
+/// Decode a PNG to RGBA8. Errors are stringly-typed; the caller only cares
+/// success vs. failure.
+fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    // png 0.18: output_buffer_size returns Option<usize>.
+    let buf_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| "png output buffer size unavailable".to_string())?;
+    let mut buf = vec![0u8; buf_size];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let (w, h) = (info.width, info.height);
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for px in buf.chunks_exact(3) {
+                out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+            }
+            out
+        }
+        png::ColorType::Grayscale => {
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for &g in &buf {
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+            out
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for px in buf.chunks_exact(2) {
+                out.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
+            }
+            out
+        }
+        png::ColorType::Indexed => return Err("indexed PNG unsupported".into()),
+    };
+    Ok((rgba, w, h))
+}
+
+/// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
+/// bootc-friendly `/var/cache/qos-maps` location and finally a temp dir.
+fn default_cache_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        if !xdg.is_empty() {
+            return PathBuf::from(xdg).join("qos-maps/tiles");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home).join(".cache/qos-maps/tiles");
+        }
+    }
+    std::env::temp_dir().join("qos-maps/tiles")
+}
+
+/// Recursively sum file sizes under `dir` (bytes). Cheap enough for the
+/// manage-cache view; the cache is a shallow `z/x/y` tree.
+fn dir_size(dir: &std::path::Path) -> u64 {
+    let mut total = 0;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            total += dir_size(&entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+/// Paint one decoded tile into `dst` (a screen rect). The tile is scaled to
+/// exactly fill `dst` via a brush transform — same idiom as the `ui` image
+/// widget. `opacity < 1.0` is supported via a push/pop layer.
+pub fn paint_tile(scene: &mut Scene, transform: Affine, img: &PenikoImage, dst: Rect) {
+    if dst.width() <= 0.0 || dst.height() <= 0.0 {
+        return;
+    }
+    let iw = img.width.max(1) as f64;
+    let ih = img.height.max(1) as f64;
+    let sx = dst.width() / iw;
+    let sy = dst.height() / ih;
+    let brush_transform =
+        Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
+    let brush = ImageBrush::new(img.clone());
+    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
+}
+
+/// Paint only the sub-quadrant of an ancestor `img` that corresponds to the
+/// descendant tile `levels` zoom-steps below it, stretched across `dst`. This
+/// is how a lower-z tile fills a higher-z hole as a crisp-ish placeholder.
+pub fn paint_ancestor(
+    scene: &mut Scene,
+    transform: Affine,
+    img: &PenikoImage,
+    ancestor: TileId,
+    child: TileId,
+    levels: u8,
+    dst: Rect,
+) {
+    if dst.width() <= 0.0 || dst.height() <= 0.0 || levels == 0 {
+        paint_tile(scene, transform, img, dst);
+        return;
+    }
+    let scale = (1u32 << levels) as f64;
+    // Which sub-cell of the ancestor does `child` fall into?
+    let span = 1u32 << levels;
+    let cell_x = child.x - ancestor.x * span;
+    let cell_y = child.y - ancestor.y * span;
+    let src_w = img.width as f64 / scale;
+    let src_h = img.height as f64 / scale;
+    let src_x = cell_x as f64 * src_w;
+    let src_y = cell_y as f64 * src_h;
+
+    // Brush transform maps dst-space → image-space: place src origin at dst.
+    let sx = dst.width() / src_w;
+    let sy = dst.height() / src_h;
+    let brush_transform = Affine::translate((dst.x0, dst.y0))
+        * Affine::scale_non_uniform(sx, sy)
+        * Affine::translate((-src_x, -src_y));
+    let brush = ImageBrush::new(img.clone());
+    scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &dst);
+    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
+    scene.pop_layer();
+}
+
+/// A flat fill used under pending tiles so a never-seen area shows the map
+/// land colour instead of a transparent hole.
+pub fn paint_placeholder(scene: &mut Scene, transform: Affine, dst: Rect, color: Color) {
+    scene.fill(Fill::NonZero, transform, color, None, &dst);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vello::kurbo::Point;
+
+    #[test]
+    fn tile_zoom_rounds_and_clamps() {
+        assert_eq!(TileLayer::tile_zoom(14.4), 14);
+        assert_eq!(TileLayer::tile_zoom(14.6), 15);
+        assert_eq!(TileLayer::tile_zoom(-3.0), 0);
+        assert_eq!(TileLayer::tile_zoom(99.0), 19);
+    }
+
+    #[test]
+    fn parent_walks_up_the_pyramid() {
+        let t = TileId::new(14, 8800, 5680);
+        let p = t.parent().unwrap();
+        assert_eq!(p, TileId::new(13, 4400, 2840));
+        assert!(TileId::new(0, 0, 0).parent().is_none());
+    }
+
+    #[test]
+    fn visible_tiles_cover_viewport_and_are_in_range() {
+        let center = LatLon::new(48.1371, 11.5754);
+        let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let vc = Point::new(640.0, 400.0);
+        let tiles = TileLayer::visible_tiles(center, 14.0, vc, vp);
+        assert!(!tiles.is_empty());
+        // A 1280×800 viewport needs at least a 6×4 tile block.
+        assert!(tiles.len() >= 20, "got {}", tiles.len());
+        let n = 1u32 << 14;
+        for (id, rect) in &tiles {
+            assert_eq!(id.z, 14);
+            assert!(id.x < n && id.y < n);
+            assert!(rect.width() > 200.0 && rect.width() < 320.0);
+        }
+        // The tile under the viewport centre must contain the centre point.
+        let covers_center = tiles.iter().any(|(_, r)| r.contains(vc));
+        assert!(covers_center);
+    }
+
+    #[test]
+    fn geobounds_tile_count_grows_with_zoom() {
+        let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
+        let small = b.tiles_in_range(12, 12).len();
+        let big = b.tiles_in_range(12, 14).len();
+        assert!(big > small);
+        // Range is inclusive and non-empty.
+        assert!(small >= 1);
+    }
+
+    // --- Non-blocking guarantees -------------------------------------------
+
+    /// Encode a solid-colour RGBA tile to PNG bytes (so a test can seed the
+    /// on-disk cache without any network).
+    fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut writer = enc.write_header().unwrap();
+            let mut data = Vec::with_capacity((w * h * 4) as usize);
+            for _ in 0..(w * h) {
+                data.extend_from_slice(&rgba);
+            }
+            writer.write_image_data(&data).unwrap();
+        }
+        out
+    }
+
+    fn temp_cache() -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        let uniq = format!(
+            "qos-maps-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        dir.push(uniq);
+        dir
+    }
+
+    /// `request()` must return *immediately* (no blocking on I/O or decode) and
+    /// the decoded tile must arrive asynchronously via `drain()`. This is the
+    /// core non-blocking guarantee that makes zoom/pan smooth.
+    #[test]
+    fn request_returns_immediately_results_arrive_via_channel() {
+        let cache = temp_cache();
+        let id = TileId::new(14, 8800, 5680);
+        // Seed the on-disk cache so the worker never needs the network.
+        let path = cache.join(id.cache_rel());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, solid_png(256, 256, [10, 20, 30, 255])).unwrap();
+
+        let mut layer = TileLayer::with_cache_dir(cache.clone());
+
+        // The request call itself must be effectively instant — assert it does
+        // not perform the (slow) decode synchronously.
+        let t0 = std::time::Instant::now();
+        layer.request(id);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(20),
+            "request() blocked for {:?} — it must not fetch/decode on the caller",
+            t0.elapsed()
+        );
+        // Immediately after requesting, the tile is in-flight, NOT resident.
+        assert!(layer.is_inflight(id));
+        assert!(layer.get(id).is_none());
+
+        // Poll drain() until the worker delivers the decoded tile.
+        let mut got = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            layer.drain();
+            if layer.get(id).is_some() {
+                got = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(got, "decoded tile never arrived via the channel");
+        // And it is no longer in-flight once delivered.
+        assert!(!layer.is_inflight(id));
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// A second `request()` for an already-in-flight or resident tile must be a
+    /// no-op — it must not enqueue duplicate work or block.
+    #[test]
+    fn duplicate_request_is_a_noop() {
+        let cache = temp_cache();
+        let id = TileId::new(12, 2200, 1420);
+        let path = cache.join(id.cache_rel());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, solid_png(64, 64, [1, 2, 3, 255])).unwrap();
+
+        let mut layer = TileLayer::with_cache_dir(cache.clone());
+        layer.request(id);
+        assert!(layer.is_inflight(id));
+        // Requesting again while in-flight changes nothing and does not block.
+        let t0 = std::time::Instant::now();
+        layer.request(id);
+        assert!(t0.elapsed() < std::time::Duration::from_millis(20));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && layer.get(id).is_none() {
+            layer.drain();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(layer.get(id).is_some());
+        // Now resident: a fresh request must stay a no-op (not re-enqueue).
+        layer.request(id);
+        assert!(!layer.is_inflight(id));
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// The offline layer (no worker) must never block or enqueue anything, so
+    /// `--shots` and tests are hermetic.
+    #[test]
+    fn offline_layer_never_requests() {
+        let mut layer = TileLayer::offline();
+        let id = TileId::new(14, 100, 100);
+        let t0 = std::time::Instant::now();
+        layer.request(id);
+        layer.drain();
+        assert!(t0.elapsed() < std::time::Duration::from_millis(20));
+        assert!(!layer.is_inflight(id));
+        assert!(layer.get(id).is_none());
+        assert!(!layer.has_inflight());
+    }
+
+    /// LRU eviction keeps the resident set bounded so memory can't grow without
+    /// limit during a long pan.
+    #[test]
+    fn mem_cache_evicts_beyond_capacity() {
+        let mut layer = TileLayer::offline();
+        let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+        for i in 0..(MEM_CACHE_CAP as u32 + 50) {
+            layer.insert(TileId::new(14, i, 0), DecodedTile { image: img.clone() });
+        }
+        assert!(layer.mem_len() <= MEM_CACHE_CAP);
+        // The most-recently-inserted tile must still be resident.
+        assert!(layer.mem.contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0)));
+    }
+
+    /// Starting an offline download enqueues exactly the estimated number of
+    /// tiles and the worker streams progress back via `drain()` — never
+    /// blocking the caller. Seeds the cache so no network is needed.
+    #[test]
+    fn offline_download_streams_progress_without_blocking() {
+        let cache = temp_cache();
+        let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
+        let (z0, z1) = (13u8, 14u8);
+        // Pre-seed every tile in range so the worker hits disk, not the wire.
+        for id in bounds.tiles_in_range(z0, z1) {
+            let p = cache.join(id.cache_rel());
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, solid_png(32, 32, [9, 9, 9, 255])).unwrap();
+        }
+        let mut layer = TileLayer::with_cache_dir(cache.clone());
+
+        let est = TileLayer::estimate_download(bounds, z0, z1);
+        let t0 = std::time::Instant::now();
+        let queued = layer.start_download(bounds, z0, z1);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(50),
+            "start_download blocked for {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(queued, est);
+        assert!(queued > 1);
+        assert!(layer.progress().is_active() || est == 0);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            layer.drain();
+            if !layer.progress().is_active() && layer.progress().done >= queued {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let prog = layer.progress();
+        assert_eq!(prog.done, queued, "download did not complete via channel");
+        assert_eq!(prog.failed, 0, "cached tiles should not fail");
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    // --- Failed-tile negative cache ----------------------------------------
+
+    /// A closed local port: connecting is refused immediately, so a fetch fails
+    /// fast and hermetically — no external server is ever contacted.
+    fn closed_local_base() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port so subsequent connects are refused
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// The core of the fix: a tile whose *real* fetch fails must be
+    /// negative-cached, so a subsequent `request()` (what `draw_tiles` issues
+    /// every frame for each non-resident tile) is suppressed and does NOT
+    /// enqueue new work or mark the tile in-flight. This is what stops the
+    /// per-frame refetch spin and the tile-server hammering. Exercises the full
+    /// production path: request → worker → HTTP failure → drain → suppression.
+    #[test]
+    fn failed_fetch_is_negative_cached_and_suppresses_refetch() {
+        let cache = temp_cache();
+        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+        let id = TileId::new(14, 8801, 5681);
+
+        // First request is dispatched and marked in-flight.
+        layer.request(id);
+        assert!(layer.is_inflight(id), "first request should be in-flight");
+
+        // Wait for the (fast) connection-refused failure to arrive via drain.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && layer.is_inflight(id) {
+            layer.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!layer.is_inflight(id), "a failed fetch must clear in-flight");
+        assert!(layer.get(id).is_none(), "a failed tile is not resident");
+        assert!(layer.is_backing_off(id), "a failed tile must be negative-cached");
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+
+        // The decisive assertion: re-requesting the doomed tile is a no-op while
+        // it is backing off — no new job, nothing in flight. `has_inflight()`
+        // therefore stays false, which is what lets the app's frame loop idle.
+        layer.request(id);
+        assert!(
+            !layer.is_inflight(id),
+            "a backed-off tile must not be re-requested"
+        );
+        assert!(
+            !layer.has_inflight(),
+            "no work should be in flight after a suppressed request — the loop can idle"
+        );
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// The backoff grows exponentially (bounded) across consecutive failures so
+    /// a persistently-unreachable server is retried ever more rarely, and a
+    /// later success clears the entry entirely.
+    #[test]
+    fn failure_backoff_grows_and_clears_on_success() {
+        let mut layer = TileLayer::offline();
+        let id = TileId::new(12, 1, 2);
+        layer.note_failure(id);
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+        layer.note_failure(id);
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
+        layer.note_failure(id);
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
+
+        // A resident tile (success) clears the negative cache. Simulate the
+        // success branch of `drain` by inserting the decoded tile and dropping
+        // the failure entry as that branch does.
+        layer.failed.remove(&id);
+        let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+        layer.insert(id, DecodedTile { image: img });
+        assert!(layer.failed_delay(id).is_none(), "success clears the backoff");
+        assert!(!layer.is_backing_off(id));
+    }
+
+    /// The backoff is capped so it never grows unbounded, even after many
+    /// consecutive failures.
+    #[test]
+    fn failure_backoff_is_capped() {
+        let mut layer = TileLayer::offline();
+        let id = TileId::new(10, 3, 4);
+        for _ in 0..40 {
+            layer.note_failure(id);
+        }
+        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
+    }
+}
