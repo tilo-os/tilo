@@ -25,7 +25,8 @@ use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -86,6 +87,21 @@ pub struct ContextMenu {
     open: bool,
     position: Option<[f32; 2]>,
     rect: Rect,
+    /// Index of the action row the cursor is currently over (for hover
+    /// highlight + keyboard navigation). `None` when the cursor is off the
+    /// menu or on a separator.
+    hovered: Option<usize>,
+    /// Last cursor position in logical coords — `MouseInput` carries none,
+    /// so we track it from `CursorMoved` to map a press to a row.
+    last_cursor: Point,
+    /// Set by `handle_event` to the index of the action row the user just
+    /// chose, drained by [`ContextMenu::take_selection`]. This is the
+    /// `&mut self` + CRDT-friendly action channel: instead of forcing every
+    /// menu action through an `Arc<dyn Fn()>` (which can't splice into an
+    /// Automerge doc the host owns), the host polls `take_selection()` after
+    /// dispatching the event and performs the mutation itself. The legacy
+    /// `Arc` callback still fires too, so existing callers are unaffected.
+    selection: Option<usize>,
 }
 
 impl Default for ContextMenu {
@@ -94,7 +110,15 @@ impl Default for ContextMenu {
 
 impl ContextMenu {
     pub fn new() -> Self {
-        Self { items: Vec::new(), open: false, position: None, rect: Rect::ZERO }
+        Self {
+            items: Vec::new(),
+            open: false,
+            position: None,
+            rect: Rect::ZERO,
+            hovered: None,
+            last_cursor: Point::ZERO,
+            selection: None,
+        }
     }
 
     /// Append a [`MenuItem`] to the end of the menu.
@@ -171,16 +195,57 @@ impl ContextMenu {
     }
 
     /// Invoke the action for the item at `idx` (no-op for separators /
-    /// out-of-range indices). Action items close the menu after firing.
+    /// out-of-range indices). Action items close the menu after firing and
+    /// record the index in [`Self::selection`] so a `&mut self` / CRDT host
+    /// can react via [`Self::take_selection`].
     pub fn click_item(&mut self, idx: usize) {
         let Some(item) = self.items.get(idx) else { return };
         match item {
             MenuItem::Action { action, .. } => {
                 let cb = action.clone();
                 cb();
+                self.selection = Some(idx);
                 self.open = false;
             }
             MenuItem::Separator => {}
+        }
+    }
+
+    /// Drain the index of the action row the user most recently chose (via
+    /// click or Enter). Returns `Some(idx)` exactly once per selection, then
+    /// `None`. This is the CRDT-friendly action channel — poll it after
+    /// dispatching an event to perform a `&mut self` mutation that the
+    /// `Arc<dyn Fn()>` callback model can't express.
+    pub fn take_selection(&mut self) -> Option<usize> {
+        self.selection.take()
+    }
+
+    /// The action row currently under the cursor (for hover highlight), or
+    /// `None`.
+    pub fn hovered(&self) -> Option<usize> {
+        self.hovered
+    }
+
+    /// Move the keyboard hover to the next/previous action row, skipping
+    /// separators. `dir > 0` moves down, `dir < 0` up.
+    fn move_hover(&mut self, dir: i32) {
+        let n = self.items.len();
+        if n == 0 {
+            return;
+        }
+        let start = self.hovered.map(|i| i as i32).unwrap_or(if dir > 0 { -1 } else { n as i32 });
+        let mut i = start;
+        for _ in 0..n {
+            i += dir.signum();
+            if i < 0 {
+                i = n as i32 - 1;
+            } else if i >= n as i32 {
+                i = 0;
+            }
+            if matches!(self.items[i as usize], MenuItem::Action { .. }) {
+                self.hovered = Some(i as usize);
+                return;
+            }
         }
     }
 }
@@ -265,9 +330,26 @@ impl Widget for ContextMenu {
 
         let text_size = theme.tokens.typography.scale.sm;
         let mut y = self.rect.y0 + PADDING;
-        for item in &self.items {
+        for (idx, item) in self.items.iter().enumerate() {
             match item {
                 MenuItem::Action { label, .. } => {
+                    // Hover highlight behind the active row.
+                    if self.hovered == Some(idx) {
+                        let hl = Rect::new(
+                            self.rect.x0 + 4.0,
+                            y + 1.0,
+                            self.rect.x1 - 4.0,
+                            y + ROW_HEIGHT - 1.0,
+                        );
+                        let hl_shape = RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64);
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            theme.tokens.colors.surfaces.overlay,
+                            None,
+                            &hl_shape,
+                        );
+                    }
                     let label_y = y + (ROW_HEIGHT - text_size as f64) / 2.0;
                     text_renderer.draw_text(
                         scene,
@@ -302,22 +384,88 @@ impl Widget for ContextMenu {
 
     fn handle_event(
         &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
+        event: &WindowEvent,
+        scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
-        _handled: &mut bool,
+        handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Input routing (hit-test against rows, dismiss-on-click-outside) is
-        // wired by the first shell consumer; the primitive currently exposes
-        // `click_item` for programmatic / shell-driven dispatch.
+        if !self.open {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor =
+                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
+                // An open menu is a transient overlay; while it's up it owns
+                // the pointer over its own rect. We don't mark hover handled
+                // (so cursor presence still flows), only presses.
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close();
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.move_hover(1);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.move_hover(-1);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(idx) = self.hovered {
+                        self.click_item(idx);
+                    }
+                    *handled = true;
+                }
+                _ => {}
+            },
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
+                    // Row click — fire the action + record the selection,
+                    // then close. Consume so it doesn't reach widgets behind.
+                    self.click_item(idx);
+                    *handled = true;
+                } else {
+                    // Click outside the menu (or on a separator) dismisses.
+                    // An open menu is modal-ish: swallow the dismiss click so
+                    // the press that closed the menu doesn't also activate
+                    // whatever sits underneath.
+                    self.close();
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
     }
 
     fn name(&self) -> &str { "ContextMenu" }
+
+    /// An open context menu traps input over its rect (and dismisses on
+    /// outside-click via `handle_event`), so it participates in the App's
+    /// modal-capture contract — suppressing focus shortcuts while up.
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.open { Some(self.rect) } else { None }
+    }
 
     fn get_rect(&self) -> Rect { self.rect }
 
@@ -337,7 +485,7 @@ impl Widget for ContextMenu {
 }
 
 #[cfg(test)]
-mod tests {
+mod a11y_tests {
     use super::*;
     use crate::widget::Widget;
 
@@ -360,5 +508,176 @@ mod tests {
         let node = Widget::accessibility(&menu).unwrap();
         assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
         assert!(!node.state.hidden, "open menu is visible");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use winit::event::DeviceId;
+
+    /// Open a 3-action menu (with a separator) at (100, 100) and run the
+    /// layout pass so `rect` + row geometry are populated. The callbacks
+    /// must be `Send + Sync` (the `MenuAction` bound), so the counter is an
+    /// `Arc<AtomicU32>`.
+    fn open_menu() -> (ContextMenu, Arc<AtomicU32>) {
+        let fired = Arc::new(AtomicU32::new(0));
+        let f1 = fired.clone();
+        let f2 = fired.clone();
+        let mut m = ContextMenu::new();
+        m.push(MenuItem::action("Cut", move || {
+            f1.fetch_add(1, Ordering::SeqCst);
+        }));
+        m.push(MenuItem::separator());
+        m.push(MenuItem::action("Copy", move || {
+            f2.fetch_add(100, Ordering::SeqCst);
+        }));
+        m.open_at([100.0, 100.0]);
+        lay_out(&mut m);
+        (m, fired)
+    }
+
+    fn lay_out(m: &mut ContextMenu) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = m.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        m.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    fn synth_device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn key(named: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        m.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    #[test]
+    fn click_on_row_fires_action_and_records_selection() {
+        let (mut m, fired) = open_menu();
+        // First action row centre: y0 + PADDING + ROW_HEIGHT/2.
+        let r = m.get_rect();
+        let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
+        let p = Point::new(r.x0 + 20.0, row0_y);
+        dispatch(&mut m, &cursor_at(p));
+        let handled = dispatch(&mut m, &left_press());
+        assert!(handled, "a row click is consumed");
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the first action's callback fired");
+        assert_eq!(m.take_selection(), Some(0), "selection index is exposed");
+        assert!(!m.is_open(), "the menu closes after a selection");
+        assert_eq!(m.take_selection(), None, "selection drains exactly once");
+    }
+
+    #[test]
+    fn click_outside_dismisses_and_is_swallowed() {
+        let (mut m, fired) = open_menu();
+        let r = m.get_rect();
+        let p = Point::new(r.x1 + 50.0, r.y1 + 50.0);
+        dispatch(&mut m, &cursor_at(p));
+        let handled = dispatch(&mut m, &left_press());
+        assert!(handled, "outside click is swallowed (not passed through)");
+        assert!(!m.is_open(), "outside click dismisses the menu");
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "no action fires on an outside click");
+    }
+
+    #[test]
+    fn esc_dismisses() {
+        let (mut m, _f) = open_menu();
+        let handled = dispatch(&mut m, &key(NamedKey::Escape));
+        assert!(handled);
+        assert!(!m.is_open(), "Esc closes the menu");
+    }
+
+    #[test]
+    fn keyboard_nav_skips_separator_and_enter_selects() {
+        let (mut m, fired) = open_menu();
+        // Down → first action (idx 0).
+        dispatch(&mut m, &key(NamedKey::ArrowDown));
+        assert_eq!(m.hovered(), Some(0));
+        // Down again → must skip the separator (idx 1) and land on idx 2.
+        dispatch(&mut m, &key(NamedKey::ArrowDown));
+        assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
+        // Enter selects the hovered row.
+        dispatch(&mut m, &key(NamedKey::Enter));
+        assert_eq!(fired.load(Ordering::SeqCst), 100, "Enter fired the second action");
+        assert_eq!(m.take_selection(), Some(2));
+    }
+
+    #[test]
+    fn hover_tracks_cursor_row() {
+        let (mut m, _f) = open_menu();
+        let r = m.get_rect();
+        let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
+        dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, row0_y)));
+        assert_eq!(m.hovered(), Some(0), "cursor over row 0 highlights it");
+        // Move onto the separator → no hover.
+        let sep_y = r.y0 + PADDING + ROW_HEIGHT + SEPARATOR_HEIGHT / 2.0;
+        dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, sep_y)));
+        assert_eq!(m.hovered(), None, "cursor over a separator clears hover");
+    }
+
+    #[test]
+    fn modal_capture_when_open() {
+        let (m, _f) = open_menu();
+        assert!(Widget::modal_capture(&m).is_some(), "open menu reports capture");
+        let closed = ContextMenu::new();
+        assert!(Widget::modal_capture(&closed).is_none());
     }
 }

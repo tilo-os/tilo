@@ -98,6 +98,14 @@ pub struct ModalDialog<C: Widget> {
     /// Tracked here so `MouseInput` (which carries no position) can map
     /// to a button rect — same trick `permission_prompt` uses.
     last_cursor: Point,
+    /// Isolated taffy tree for the inner content, rebuilt by
+    /// [`Self::place_content`]. Kept alive (rather than dropped at the end
+    /// of layout) so `handle_event` can forward pointer/keyboard events
+    /// into the content widget with a valid node — this is what lets an
+    /// embedded `TextInput` actually focus + take the caret on a click
+    /// inside the dialog box. `None` until the first content layout.
+    content_taffy: Option<TaffyTree<()>>,
+    content_node: Option<NodeId>,
 }
 
 impl<C: Widget> ModalDialog<C> {
@@ -117,6 +125,8 @@ impl<C: Widget> ModalDialog<C> {
             primary_rect: Rect::ZERO,
             secondary_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            content_taffy: None,
+            content_node: None,
         }
     }
 
@@ -254,6 +264,44 @@ impl<C: Widget> ModalDialog<C> {
         );
         self.content
             .apply_layout(&inner_taffy, content_node, Point::new(inner.x0, inner.y0));
+        // Retain the inner tree so `handle_event` can route pointer +
+        // keyboard events into the content with a live node — required for
+        // embedded fields to focus/click.
+        self.content_taffy = Some(inner_taffy);
+        self.content_node = Some(content_node);
+    }
+
+    /// Forward an event into the inner content widget using the retained
+    /// inner taffy tree. No-op until the first content layout has run.
+    /// `handled` is intentionally NOT threaded out — the dialog decides
+    /// consumption at its own level (it's always modal-blocking); the
+    /// content only needs the event delivered so its internal state
+    /// (focus, caret, hover) updates. `focus_target` IS threaded so an
+    /// embedded focusable can request focus.
+    fn forward_to_content(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) {
+        let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) else {
+            return;
+        };
+        let mut inner_handled = false;
+        self.content.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut inner_handled,
+            focus_target,
+            node,
+            taffy,
+        );
     }
 
     /// Test/host accessor for the resolved dialog box rect.
@@ -368,7 +416,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         if !self.open {
             return;
@@ -411,6 +459,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             None,
         );
 
+        // 3b. Inner content — laid out by `place_content` between the title
+        //     bar and the footer. Drawn on top of the box fill so embedded
+        //     fields/messages are visible. (Before this the content was
+        //     measured + positioned but never painted.)
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
+
         // 4. Footer actions — right-aligned. Skip rendering when no
         //    action is wired (e.g. an info-only dialog with just the
         //    Escape-to-dismiss affordance).
@@ -442,21 +497,35 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
+        focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         if !self.open {
             return;
         }
+        // A genuinely modal dialog is *blocking*: while open it consumes
+        // every keyboard event and every pointer event, full stop. The App
+        // additionally suppresses its own focus shortcuts and swallows
+        // click-through (see `Widget::modal_capture`), but the dialog marks
+        // events handled itself so it stays modal even when hosted directly
+        // (tests, headless) without the App's cooperation.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Forward hover to the content so embedded inputs set their
+                // hover flag — a TextInput only takes a click while hovered,
+                // and the preceding CursorMoved is what arms it.
+                self.forward_to_content(
+                    event, scale_factor, modifiers, state, path, focus_target,
+                );
+                // Cursor moves don't "consume" in a way that blocks the App's
+                // presence/redraw bookkeeping; leave `handled` for press/keys.
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -469,8 +538,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             } => {
                 if let Some(cb) = self.on_dismiss.as_mut() {
                     cb();
-                    *handled = true;
                 }
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput { .. } => {
+                // Every other key goes to the content (typing into a field,
+                // etc.) and is then consumed so it never reaches the host.
+                self.forward_to_content(
+                    event, scale_factor, modifiers, state, path, focus_target,
+                );
+                *handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -483,24 +560,40 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 if self.primary_action.is_some() && self.primary_rect.contains(p) {
                     if let Some(action) = self.primary_action.as_mut() {
                         (action.on_click)();
-                        *handled = true;
                     }
                 } else if self.secondary_action.is_some() && self.secondary_rect.contains(p) {
                     if let Some(action) = self.secondary_action.as_mut() {
                         (action.on_click)();
-                        *handled = true;
                     }
-                } else if !self.rect.contains(p) {
-                    // Click outside the dialog box but (implicitly) inside
-                    // the backdrop — dismiss.
+                } else if self.rect.contains(p) {
+                    // Click inside the box but outside any action button —
+                    // forward to the content so an embedded field focuses
+                    // and lands its caret at the click.
+                    self.forward_to_content(
+                        event, scale_factor, modifiers, state, path, focus_target,
+                    );
+                } else {
+                    // Click outside the dialog box but inside the backdrop —
+                    // dismiss.
                     if let Some(cb) = self.on_dismiss.as_mut() {
                         cb();
-                        *handled = true;
                     }
                 }
-                // Click inside the box but outside any action button is
-                // intentionally consumed silently — modals are blocking, so
-                // we don't let the click leak to widgets behind the backdrop.
+                // Every left-press while open is consumed — modals are
+                // blocking, so a click never leaks to widgets behind the
+                // backdrop regardless of where it landed.
+                *handled = true;
+            }
+            WindowEvent::MouseInput { .. } => {
+                // Other buttons / release while open: swallow, but still
+                // forward in-box presses so e.g. a right-click context
+                // affordance in the content can react.
+                if self.rect.contains(self.last_cursor) {
+                    self.forward_to_content(
+                        event, scale_factor, modifiers, state, path, focus_target,
+                    );
+                }
+                *handled = true;
             }
             _ => {}
         }
@@ -508,16 +601,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn name(&self) -> &str { "ModalDialog" }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.open { Some(self.rect) } else { None }
+    }
 
-    /// An open dialog traps keyboard focus: the host keeps Tab/Shift+Tab and
-    /// arrow navigation inside the dialog's content while it's up, and
-    /// restores the previously-focused element when it closes.
-    fn traps_focus(&self) -> bool { self.open }
-
-    /// Expose the inner content so the accessibility tree builder can
-    /// descend into the dialog body. Additive — the default is an empty
-    /// vec, so this does not affect any other pass.
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.content]
     }
@@ -525,6 +612,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.content]
     }
+
+    fn get_rect(&self) -> Rect { self.rect }
+
+    /// An open dialog traps keyboard focus: the host keeps Tab/Shift+Tab and
+    /// arrow navigation inside the dialog's content while it's up, and
+    /// restores the previously-focused element when it closes.
+    fn traps_focus(&self) -> bool { self.open }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -605,6 +699,73 @@ mod tests {
         fn get_rect(&self) -> Rect { Rect::ZERO }
     }
 
+    /// Content leaf that counts how many events it was forwarded, so the
+    /// modal-trap forwarding contract can be asserted. Sizes itself to a
+    /// real rect so it lands inside the dialog box.
+    #[derive(Default)]
+    struct CountingContent {
+        events: std::rc::Rc<std::cell::Cell<usize>>,
+        rect: Rect,
+    }
+
+    impl Widget for CountingContent {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(200.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn measure(
+            &mut self,
+            _k: taffy::Size<Option<f32>>,
+            _a: taffy::Size<taffy::AvailableSpace>,
+            _tr: &mut TextRenderer,
+        ) -> taffy::Size<f32> {
+            taffy::Size { width: 200.0, height: 40.0 }
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
+            self.rect = Rect::new(origin.x, origin.y, origin.x + 200.0, origin.y + 40.0);
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            self.events.set(self.events.get() + 1);
+        }
+        fn name(&self) -> &str { "CountingContent" }
+        fn get_rect(&self) -> Rect { self.rect }
+    }
+
     /// SAFETY: opaque `DeviceId` whose all-zero bit pattern is tolerated
     /// by winit — same trick used in `permission_prompt::tests` and in
     /// `shell/tests/e2e_shell_flows.rs::key_press`.
@@ -650,6 +811,15 @@ mod tests {
     /// Drive `handle_event` through the dialog with default scaffolding.
     /// Mirrors `permission_prompt::tests::dispatch`.
     fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) {
+        let _ = dispatch_handled(d, event);
+    }
+
+    /// Same as [`dispatch`] but returns whether the dialog marked the event
+    /// handled — needed to assert the modal-blocking contract.
+    fn dispatch_handled<C: Widget + 'static>(
+        d: &mut ModalDialog<C>,
+        event: &WindowEvent,
+    ) -> bool {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.new_leaf(Style::default()).unwrap();
         let mut handled = false;
@@ -667,6 +837,48 @@ mod tests {
             node,
             &tree,
         );
+        handled
+    }
+
+    /// Build a winit character key event for an arbitrary key. Used to
+    /// assert that a non-Escape key while open is swallowed.
+    fn char_key_event() -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Tab);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// Lay out a `ModalDialog<CountingContent>` through the real five-pass
+    /// path so `content_taffy` / `content_node` are populated and in-box
+    /// forwarding works.
+    fn laid_out_counting(open: bool) -> (ModalDialog<CountingContent>, std::rc::Rc<std::cell::Cell<usize>>) {
+        let events = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let content = CountingContent { events: events.clone(), rect: Rect::ZERO };
+        let mut d = ModalDialog::new("Title", content).open(open);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let theme = Theme::dark();
+        let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        d.apply_layout(&taffy, node, Point::ZERO);
+        (d, events)
     }
 
     /// Dispatch one `draw` and return the count of `DrawTag::COLOR`
@@ -817,5 +1029,81 @@ mod tests {
             1,
             "the dialog body must be reachable as a child for the a11y tree",
         );
+    }
+    // === Modal focus-trap contract ==================================
+
+    /// An OPEN dialog reports its box rect via `modal_capture`; a closed
+    /// one reports `None`. This is the signal the App uses to suppress its
+    /// own focus shortcuts and swallow click-through.
+    #[test]
+    fn modal_capture_reflects_open_state() {
+        let mut d = ModalDialog::new("T", TestContent)
+            .open(true)
+            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert!(
+            Widget::modal_capture(&d).is_some(),
+            "an open dialog must report a modal-capture rect"
+        );
+        // Mutate to closed via a fresh instance (open() consumes self).
+        d = ModalDialog::new("T", TestContent)
+            .open(false)
+            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert!(
+            Widget::modal_capture(&d).is_none(),
+            "a closed dialog must NOT report modal capture"
+        );
+    }
+
+    /// Every keyboard event while open is consumed (Tab included) so it
+    /// never reaches the host's focus-cycling shortcut.
+    #[test]
+    fn open_dialog_swallows_all_keyboard_events() {
+        let (mut d, _events) = laid_out_counting(true);
+        let handled = dispatch_handled(&mut d, &char_key_event());
+        assert!(handled, "an open dialog must consume every keyboard event");
+    }
+
+    /// A press OUTSIDE the box is consumed (swallowed) AND dismisses; it
+    /// must not leak to widgets behind the backdrop.
+    #[test]
+    fn open_dialog_swallows_outside_press_and_dismisses() {
+        let dismissed = Rc::new(Cell::new(false));
+        let dc = Rc::clone(&dismissed);
+        let mut d = ModalDialog::new("T", TestContent)
+            .open(true)
+            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+            .on_dismiss(move || dc.set(true));
+        dispatch(&mut d, &cursor_at(Point::new(5.0, 5.0)));
+        let handled = dispatch_handled(&mut d, &left_press());
+        assert!(handled, "outside press must be swallowed (handled=true)");
+        assert!(dismissed.get(), "outside press must also dismiss");
+    }
+
+    /// A press INSIDE the box (not on an action button) is consumed AND
+    /// forwarded to the content so an embedded field can focus/click.
+    #[test]
+    fn open_dialog_forwards_inbox_press_to_content() {
+        let (mut d, events) = laid_out_counting(true);
+        let center = d.dialog_rect().center();
+        // Arm hover, then press inside the box.
+        dispatch(&mut d, &cursor_at(center));
+        let before = events.get();
+        let handled = dispatch_handled(&mut d, &left_press());
+        assert!(handled, "in-box press must be consumed (modal-blocking)");
+        assert!(
+            events.get() > before,
+            "in-box press must be forwarded to the content widget so its \
+             fields can focus/click (got {} forwarded events)",
+            events.get()
+        );
+    }
+
+    /// A closed dialog ignores everything (no forwarding, not handled).
+    #[test]
+    fn closed_dialog_is_inert() {
+        let (mut d, events) = laid_out_counting(false);
+        let handled = dispatch_handled(&mut d, &left_press());
+        assert!(!handled, "a closed dialog must not consume events");
+        assert_eq!(events.get(), 0, "a closed dialog must not forward events");
     }
 }
