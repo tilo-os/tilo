@@ -157,14 +157,18 @@ mod tests {
             .encode(FrameInput::Nv12 { y: &y, uv: &uv }, &mut out)
             .unwrap_err();
         matches!(err, EncoderError::EncodeFailed { .. });
-        // DMABUF refusal.
+        // DMABUF refusal — openh264 has no zero-copy import path.
         let err2 = backend
             .encode(
                 FrameInput::DmabufFd {
-                    fd: -1,
+                    plane_fds: [-1, -1, -1, -1],
+                    plane_offsets: [0, 0, 0, 0],
+                    plane_strides: [128, 0, 0, 0],
+                    num_planes: 1,
                     drm_fourcc: 0x34324152,
-                    stride: 128,
-                    offset: 0,
+                    drm_modifier: 0,
+                    width: 32,
+                    height: 32,
                 },
                 &mut out,
             )

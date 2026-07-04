@@ -128,16 +128,42 @@ pub enum FrameInput<'a> {
     /// Planar NV12 (Y plane then interleaved UV plane).
     #[allow(dead_code)]
     Nv12 { y: &'a [u8], uv: &'a [u8] },
-    /// DMABUF fd + strides. VA-API can `vaCreateSurfaceFromDrmPrime`
-    /// this directly; other backends must reject with
-    /// `EncoderError::EncodeFailed` and let the caller upload via a
-    /// GPU→CPU readback.
+    /// DMABUF fds + per-plane offsets/strides. VA-API can import via
+    /// `av_hwframe_map` on a `DRM_PRIME` source frame; other backends
+    /// must reject with `EncoderError::EncodeFailed` and let the
+    /// caller upload via a GPU→CPU readback.
+    ///
+    /// The plane arrays are fixed-size (matches libavutil's
+    /// `AV_DRM_MAX_PLANES = 4`) so the callee doesn't have to
+    /// heap-allocate on the hot path. `num_planes` is the count of
+    /// valid entries in `plane_fds` / `plane_offsets` / `plane_strides`.
+    /// Callers must zero the unused tail. A single-plane BGRA buffer
+    /// has `num_planes = 1`; NV12 has 2 (Y then interleaved UV); P010
+    /// has 2 (Y then interleaved UV, 10-bit).
+    ///
+    /// `plane_fds[i]` are borrowed for the encode call — the encoder
+    /// dupes them itself via `av_hwframe_map` if it needs to hold on
+    /// past the call. The caller keeps ownership.
     #[allow(dead_code)]
     DmabufFd {
-        fd: std::os::fd::RawFd,
+        /// Per-plane file descriptors. Same fd may appear in every
+        /// entry for a single-object multi-plane buffer.
+        plane_fds: [std::os::fd::RawFd; 4],
+        /// Per-plane byte offsets into the DMABUF.
+        plane_offsets: [u64; 4],
+        /// Per-plane strides (a.k.a. pitches / linesizes) in bytes.
+        plane_strides: [u32; 4],
+        /// Count of valid plane entries (1..=4).
+        num_planes: u8,
+        /// DRM_FORMAT_* fourcc code identifying the pixel layout.
         drm_fourcc: u32,
-        stride: u32,
-        offset: u32,
+        /// DRM format modifier (vendor tiling / compression); use
+        /// `DRM_FORMAT_MOD_LINEAR = 0` for uncompressed linear.
+        drm_modifier: u64,
+        /// Buffer width in pixels.
+        width: u32,
+        /// Buffer height in pixels.
+        height: u32,
     },
 }
 
