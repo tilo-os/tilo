@@ -1,0 +1,18 @@
+[package]
+name = "qos-install"
+version = "0.1.0"
+edition = "2024"
+description = "One-shot install / launch / list / remove for qOS packages."
+
+[[bin]]
+name = "qos-install"
+path = "src/main.rs"
+
+[dependencies]
+qos-pkg = { path = "../qos-pkg" }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
+tar = "0.4"

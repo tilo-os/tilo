@@ -34,6 +34,7 @@ members = [
     "qos-format-provider-wit",
     "qos-format-host",
     "qos-hello",
+    "qos-install",
     # excluded for demo: "apps/file-explorer",
     # excluded for demo: "apps/terminal",
     # excluded for demo: "apps/browser",
