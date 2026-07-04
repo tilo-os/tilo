@@ -31,7 +31,8 @@
 //! the spec's 35.0 dB floor.
 
 use openh264::Error as OpenH264Error;
-use openh264::encoder::{Encoder, EncoderConfig, FrameRate};
+use openh264::Timestamp;
+use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate};
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 
 /// Error variants for the encoder wrapper.
@@ -80,6 +81,14 @@ pub struct H264Encoder {
     encoder: Encoder,
     width: u32,
     height: u32,
+    /// Configured frame rate. Used by `encode` to synthesise a
+    /// monotonically-increasing timestamp for openh264's rate control.
+    fps: u32,
+    /// Monotonic frame index. Every `encode` call bumps this by one;
+    /// the derived timestamp is `frame_idx / fps` seconds. Without a
+    /// forward-moving timestamp, openh264 assumes every frame arrived
+    /// at t=0 and skips all but the first (empty-NAL output).
+    frame_idx: u64,
 }
 
 impl H264Encoder {
@@ -90,14 +99,41 @@ impl H264Encoder {
     /// the streaming task enforces the real cadence via wall-clock throttling
     /// in [`crate::network::streaming`].
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
-        // Software v1: keep the config minimal and explicit so behaviour is
-        // reproducible across test machines (no auto-threaded encoding, no
-        // QP overrides). The plan only requires correctness + the 35 dB
-        // round-trip floor — tuning lands when we replace this with a
-        // hardware encoder.
+        Self::new_with_bitrate_bps(width, height, fps, 4_000_000)
+    }
+
+    /// Construct with an explicit target bitrate (bits per second).
+    ///
+    /// The default [`Self::new`] picks a reasonable 4 Mbps for 720p-ish
+    /// content; heavier senders or bandwidth-constrained WAN uplinks
+    /// pass their own here. The `FlatpakShareConfig::max_bitrate_kbps`
+    /// knob flows into this constructor via
+    /// [`crate::collab::flatpak_share::SharedFlatpakSession::start`].
+    ///
+    /// The two other config changes vs. openh264's own default matter
+    /// for a streaming loop:
+    ///
+    /// - `enable_skip_frame = false` — openh264 defaults to `true`,
+    ///   which drops any frame whose encode would exceed the target
+    ///   bitrate. Under a low bitrate + high-fps loop that's *most*
+    ///   frames, which the sender then ships as empty NAL blobs — the
+    ///   receiver's decoder produces no output for those. Turning it
+    ///   off keeps the frame budget honest and lets the shim / receive
+    ///   path handle drops, which is where the drop policy actually
+    ///   lives.
+    /// - `max_frame_rate` at the caller's `fps` — the encoder uses it
+    ///   for rate-control bookkeeping alongside per-frame timestamps.
+    pub fn new_with_bitrate_bps(
+        width: u32,
+        height: u32,
+        fps: u32,
+        target_bitrate_bps: u32,
+    ) -> Result<Self, EncodeError> {
         let config = EncoderConfig::new()
             .max_frame_rate(FrameRate::from_hz(fps as f32))
-            .num_threads(1);
+            .num_threads(1)
+            .bitrate(BitRate::from_bps(target_bitrate_bps))
+            .skip_frames(false);
         let encoder = Encoder::with_api_config(
             openh264::OpenH264API::from_source(),
             config,
@@ -106,6 +142,8 @@ impl H264Encoder {
             encoder,
             width,
             height,
+            fps: fps.max(1),
+            frame_idx: 0,
         })
     }
 
@@ -126,10 +164,39 @@ impl H264Encoder {
     /// metadata NALs; subsequent calls return P-frames (or IDR-frames
     /// when the encoder decides to refresh the GOP).
     ///
+    /// The frame timestamp is synthesised from an internal counter at
+    /// the configured `fps`. This is a subtle but important detail:
+    /// openh264 uses the frame timestamp for rate control, and its
+    /// default `encode(...)` shim stamps `t=0` on every frame.
+    /// A caller that pumps `encode()` in a loop with the default shim
+    /// would see empty NAL output for every frame after the first,
+    /// because the encoder thinks every frame arrived at t=0 and drops
+    /// them as duplicates. Advancing the timestamp by `1/fps` per call
+    /// gives openh264 the monotonic time it needs.
+    ///
+    /// For call sites that want to stamp their own timestamp (e.g. a
+    /// paced capture pipeline that records wall-clock at frame commit),
+    /// [`Self::encode_at_ms`] takes an explicit millisecond timestamp.
+    ///
     /// Instrumented so profile passes can attribute the openh264 CPU
     /// cost — RGBA→I420 conversion + encode — to a single named span.
     #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height))]
     pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, EncodeError> {
+        let ts_ms = self.frame_idx.saturating_mul(1000) / self.fps as u64;
+        self.frame_idx = self.frame_idx.saturating_add(1);
+        self.encode_at_ms(rgba, ts_ms)
+    }
+
+    /// Encode one RGBA frame with a caller-supplied millisecond
+    /// timestamp. See [`Self::encode`] for why the timestamp matters.
+    ///
+    /// Callers who prefer a wall-clock stamp (e.g. from
+    /// `Instant::elapsed().as_millis()`) can pass it directly. The
+    /// `frame_idx` counter is *not* advanced when this method is used,
+    /// so mixing `encode` and `encode_at_ms` on the same encoder is
+    /// safe as long as the caller keeps the timestamps monotonic.
+    #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height, ts_ms))]
+    pub fn encode_at_ms(&mut self, rgba: &[u8], ts_ms: u64) -> Result<Vec<u8>, EncodeError> {
         let expected = self.width as usize * self.height as usize * 4;
         if rgba.len() != expected {
             return Err(EncodeError::BufferSize {
@@ -145,7 +212,8 @@ impl H264Encoder {
         // and writes into an owned I420 buffer; this is the 4:2:0
         // conversion path described in the plan.
         let yuv = YUVBuffer::from_rgb_source(rgba_source);
-        let stream = self.encoder.encode(&yuv)?;
+        let ts = Timestamp::from_millis(ts_ms);
+        let stream = self.encoder.encode_at(&yuv, ts)?;
         Ok(stream.to_vec())
     }
 }
