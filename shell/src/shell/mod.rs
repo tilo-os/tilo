@@ -23,6 +23,7 @@ pub mod browser_stub;
 pub mod chrome_state;
 pub mod identity_provisioning;
 pub mod collab_broker;
+pub mod collab_broker_capnp;
 pub mod desktop_backdrop;
 pub mod editor_app;
 pub mod network;
