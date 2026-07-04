@@ -89,17 +89,15 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       workflow's verify agent crashed on an API drop, so I rendered + checked the
       shots myself).
 
-## chat
-- [ ] Expanded call overlay: remote participant tiles run off the RIGHT edge at
-      every width (grid sizes each remote to the full host-tile width and starts
-      at host.x1). Fix so all tiles fit within the window at every width.
-- [ ] Camera-on remote participants get a fabricated linear-gradient "video feed"
-      presented as live, while the host honestly shows "Camera off". Make remotes
-      honest — no fabricated gradient video. (HIG §4)
-- [ ] Attachment chip leaks an internal mount path: `NN KB · shared via
-      /var/workspace`. Remove implementation detail from user-facing text.
-- [ ] Stale dead comment on `Attachment::Image` (`tint` gradient stand-in) — the
-      render path ignores it; remove the misleading comment.
+## chat — CLEAR (verified)
+- [x] Call-overlay tiles packed into a bounded region (grid picks the column count
+      that fits N; partial last row centred) — no right-edge overflow at any width
+      (verified 1280/800/560) → fixed.
+- [x] Remotes are honest — every tile shows an avatar + caption ("Camera off" /
+      "No video"), no fabricated gradient video (HIG §4) → fixed (verified).
+- [x] Attachment chip shows only "TYPE · SIZE" (e.g. "MD · 18.5 KB") — no
+      /var/workspace path (test asserts no '/', 'workspace', 'shared via') → fixed.
+- [x] Stale `tint` gradient stand-in comment removed → fixed.
 
 ## maps
 - [x] Unbounded failed-tile refetch loop → fixed.
