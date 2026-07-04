@@ -170,6 +170,11 @@ impl ChannelHandle {
     /// Fetch a page of previously-validated signed ops with
     /// `seq < before_seq`. See [`ScrollbackBatch`] for the response
     /// shape.
+    ///
+    /// LEGACY — this method does not carry an artifact id and the
+    /// broker keys the read on `ArtifactId::default()`. Prefer
+    /// [`Self::fetch_scrollback_for`] when a specific artifact is
+    /// available.
     pub async fn fetch_scrollback(
         &self,
         before_seq: u64,
@@ -178,6 +183,37 @@ impl ChannelHandle {
         let mut req = self.inner.fetch_scrollback_request();
         {
             let mut b = req.get();
+            b.set_before_seq(before_seq);
+            b.set_max(max);
+        }
+        let reply = req.send().promise.await?;
+        let batch = reply.get()?.get_batch()?;
+        let ops_reader = batch.get_ops()?;
+        let mut ops = Vec::with_capacity(ops_reader.len() as usize);
+        for i in 0..ops_reader.len() {
+            ops.push(ops_reader.get(i)?.to_vec());
+        }
+        Ok(ScrollbackBatch {
+            ops,
+            earliest_seq: batch.get_earliest_seq(),
+            latest_seq: batch.get_latest_seq(),
+            done: batch.get_done(),
+        })
+    }
+
+    /// Fetch a page of previously-validated signed ops on a specific
+    /// artifact. `artifact_id` is the 16-byte little-endian encoding
+    /// of the artifact uuid used by `collab-types`.
+    pub async fn fetch_scrollback_for(
+        &self,
+        artifact_id: &[u8],
+        before_seq: u64,
+        max: u32,
+    ) -> Result<ScrollbackBatch, NotAvailable> {
+        let mut req = self.inner.fetch_scrollback_for_request();
+        {
+            let mut b = req.get();
+            b.set_artifact_id(artifact_id);
             b.set_before_seq(before_seq);
             b.set_max(max);
         }
