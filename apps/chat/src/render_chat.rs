@@ -772,14 +772,7 @@ impl ChatApp {
                 text(scene, tr, tf, "📄", 16.0, Color::WHITE, icon.center().x - iw as f64 / 2.0, icon.center().y - ih as f64 / 2.0, TextWeight::Regular, None);
                 let fname = truncate_to(tr, name, 13.5, chip.width() - 70.0);
                 label(scene, tr, tf, &fname, 13.5, c.text_primary, chip.x0 + 56.0, chip.center().y - 14.0);
-                let ext = std::path::Path::new(name)
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_uppercase())
-                    .filter(|e| !e.is_empty());
-                let meta = match ext {
-                    Some(e) => format!("{e} · {}", human_size(*size)),
-                    None => human_size(*size),
-                };
+                let meta = file_chip_meta(name, *size);
                 label(scene, tr, tf, &meta, 11.0, c.text_dim, chip.x0 + 56.0, chip.center().y + 2.0);
             }
         }
@@ -1117,6 +1110,66 @@ fn human_size(bytes: u64) -> String {
         format!("{:.1} KB", b / K)
     } else {
         format!("{:.1} MB", b / (K * K))
+    }
+}
+
+/// The user-facing metadata line for a file-attachment chip: the file type
+/// (derived from the display name's extension) and a human-readable size.
+///
+/// This deliberately carries **no filesystem path**. Where the bytes actually
+/// live — the P2P FUSE workspace mount (`/var/workspace/...`) — is an
+/// implementation detail; surfacing it in chrome is a HIG §4 violation
+/// ("no internal / implementation labels in user-facing chrome … a leaked
+/// `/var/workspace` path"). The chip already shows the human filename above
+/// this line, which is the only path-ish thing a user cares about.
+fn file_chip_meta(name: &str, size: u64) -> String {
+    let ext = std::path::Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_uppercase())
+        .filter(|e| !e.is_empty());
+    match ext {
+        Some(e) => format!("{e} · {}", human_size(size)),
+        None => human_size(size),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_chip_meta, human_size};
+
+    /// Defect regression: the attachment chip must never leak the internal
+    /// mount path. The demo's shared note lives at
+    /// `/var/workspace/notes/moq-over-iroh.md` (see `doc.rs`), but its chip
+    /// meta must show only the file type + size — no path, no "shared via".
+    #[test]
+    fn file_chip_meta_never_leaks_a_path() {
+        let meta = file_chip_meta("moq-over-iroh.md", 18_944);
+        assert!(!meta.contains('/'), "chip meta leaked a path separator: {meta:?}");
+        assert!(!meta.contains("/var"), "chip meta leaked the mount path: {meta:?}");
+        assert!(
+            !meta.to_lowercase().contains("workspace"),
+            "chip meta leaked the workspace label: {meta:?}"
+        );
+        assert!(
+            !meta.to_lowercase().contains("shared via"),
+            "chip meta still carries stale 'shared via' copy: {meta:?}"
+        );
+        // It still tells the user the real, useful facts: type + size.
+        assert_eq!(meta, "MD · 18.5 KB", "chip meta should be type + size only");
+    }
+
+    #[test]
+    fn file_chip_meta_without_extension_is_just_the_size() {
+        let meta = file_chip_meta("Makefile", 512);
+        assert_eq!(meta, "512 B");
+        assert!(!meta.contains('/'));
+    }
+
+    #[test]
+    fn human_size_scales_bytes_kb_mb() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert!(human_size(3_000_000).ends_with(" MB"));
     }
 }
 
