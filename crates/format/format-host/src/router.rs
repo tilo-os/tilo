@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use qos_format_provider_wit::CodecError;
+use format_provider_wit::CodecError;
 use wasmtime::Engine;
 
 use crate::registry::{ProviderEntry, Registry};
@@ -108,13 +108,13 @@ impl Router {
     /// loaded provider in package-id order and take the highest-scoring
     /// result. Returns `(detected, provider_id)` so the client knows which
     /// provider to route subsequent importAs calls to.
-    pub fn detect(&self, head: &[u8], hint: &str) -> (qos_format_provider_wit::Detected, String) {
+    pub fn detect(&self, head: &[u8], hint: &str) -> (format_provider_wit::Detected, String) {
         if !hint.is_empty() {
             if let Some(p) = self.best_for_mime(hint) {
                 if let Ok(d) = p.component.detect(head) {
                     return (
-                        qos_format_provider_wit::Detected {
-                            confidence: qos_format_provider_wit::Confidence {
+                        format_provider_wit::Detected {
+                            confidence: format_provider_wit::Confidence {
                                 tier: d.confidence.tier,
                                 score: d.confidence.score,
                             },
@@ -128,13 +128,13 @@ impl Router {
         let providers = self.providers.read().clone();
         let mut keys: Vec<&String> = providers.keys().collect();
         keys.sort();
-        let mut best: Option<(qos_format_provider_wit::Detected, String, f32)> = None;
+        let mut best: Option<(format_provider_wit::Detected, String, f32)> = None;
         for k in keys {
             let p = &providers[k];
             if let Ok(d) = p.component.detect(head) {
                 let score = d.confidence.score;
-                let detected = qos_format_provider_wit::Detected {
-                    confidence: qos_format_provider_wit::Confidence {
+                let detected = format_provider_wit::Detected {
+                    confidence: format_provider_wit::Confidence {
                         tier: d.confidence.tier,
                         score: d.confidence.score,
                     },
@@ -148,8 +148,8 @@ impl Router {
         match best {
             Some((d, id, _)) => (d, id),
             None => (
-                qos_format_provider_wit::Detected {
-                    confidence: qos_format_provider_wit::Confidence { tier: 0, score: 0.0 },
+                format_provider_wit::Detected {
+                    confidence: format_provider_wit::Confidence { tier: 0, score: 0.0 },
                     mime: None,
                 },
                 String::new(),
