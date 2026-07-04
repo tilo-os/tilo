@@ -85,6 +85,7 @@
 //!   drop-oldest substream (`send_datagram`) while keeping input on
 //!   `NeighbourMsg::RemoteInput` over gossipsub for reliable ordering.
 
+use std::os::fd::AsRawFd;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -94,6 +95,8 @@ use std::time::Instant;
 use crate::collab::encoder::{
     Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, ProbeOutcome, build, probe,
 };
+use smithay::backend::allocator::Buffer as _;
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use crate::config::{EncoderChoice, FlatpakShareConfig};
 use crate::diagnostics::{CapturePath, PeerSurfaceMetrics};
 use crate::network::encoder::EncodeError;
@@ -155,13 +158,26 @@ fn is_h264_keyframe(nalus: &[u8]) -> bool {
 
 /// Frame waiting in the encoder's staging slot.
 ///
-/// Pairs the RGBA bytes with the capture-time nanoseconds so encoding
-/// preserves the original moment-of-capture on the wire. Drop-oldest:
-/// a second deposit overwrites both fields.
-#[derive(Debug)]
+/// Pairs the frame source (either CPU-side RGBA or a zero-copy DMABUF
+/// handle) with the capture-time nanoseconds so encoding preserves the
+/// original moment-of-capture on the wire. Drop-oldest: a second
+/// deposit overwrites both fields.
 struct StagedFrame {
-    rgba: Vec<u8>,
+    kind: StagedKind,
     capture_ts_ns: u64,
+}
+
+/// Either flavour of staged capture: SHM readback bytes, or a
+/// zero-copy DMABUF reference. Kept as an enum (not two `Option`s)
+/// because a single tick can only encode one; storing both would
+/// invite a "which one wins" ambiguity for the encoder.
+enum StagedKind {
+    /// Row-major RGBA bytes from the SHM readback path.
+    Rgba(Vec<u8>),
+    /// DMABUF handle handed straight to the encoder. `Dmabuf` is
+    /// Arc-backed inside smithay, so the staged value keeps every
+    /// plane fd alive without a dup.
+    Dmabuf(Dmabuf),
 }
 
 /// Public-facing frame the session emits.
@@ -516,7 +532,33 @@ impl SharedFlatpakSession {
         let capture_ts_ns = self.monotonic_ns_now();
         let mut slot = self.staged_frame.lock().expect("staged frame");
         *slot = Some(StagedFrame {
-            rgba,
+            kind: StagedKind::Rgba(rgba),
+            capture_ts_ns,
+        });
+    }
+
+    /// Deposit a DMABUF handle for the next encode tick — zero-copy
+    /// sibling of [`Self::deposit_captured_rgba`]. Drop-oldest: a
+    /// second deposit before the next tick replaces the first.
+    ///
+    /// The compositor commit hook calls this when the shared
+    /// surface's committed buffer is a DMABUF-backed `wl_buffer` and
+    /// the encoder backend supports zero-copy DMABUF import (VA-API
+    /// today). The staged `Dmabuf` is Arc-backed, so this call is
+    /// O(1) — no plane fds are dup'd here; the encoder's
+    /// `av_hwframe_map` builds its own references off the same
+    /// underlying object.
+    ///
+    /// If [`Self::encode_next_frame`] finds the encoder rejects the
+    /// zero-copy path (drivers that don't implement
+    /// `av_hwframe_map`), the DMABUF is dropped for that tick and
+    /// the compositor's fallback (the SHM readback deposit) picks up
+    /// on the following commit.
+    pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
+        let capture_ts_ns = self.monotonic_ns_now();
+        let mut slot = self.staged_frame.lock().expect("staged frame");
+        *slot = Some(StagedFrame {
+            kind: StagedKind::Dmabuf(dmabuf),
             capture_ts_ns,
         });
     }
@@ -556,10 +598,56 @@ impl SharedFlatpakSession {
 
         let mut encoder = self.encoder.lock().expect("encoder");
         let mut nalus = Vec::new();
-        let encode_result = encoder.encode(FrameInput::Rgba(&staged.rgba), &mut nalus);
+        // Build the encoder input from whichever flavour of frame was
+        // deposited. DMABUF paths lift every plane's fd + offset +
+        // stride off the `Dmabuf` handle (iterator adapters — the
+        // underlying Arc keeps the OwnedFds alive for the borrow's
+        // duration). RGBA paths just hand the byte slice through.
+        let (encode_result, path_taken) = match &staged.kind {
+            StagedKind::Rgba(rgba) => (
+                encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
+                CapturePath::ShmReadback,
+            ),
+            StagedKind::Dmabuf(dmabuf) => {
+                let mut plane_fds = [-1i32; 4];
+                let mut plane_offsets = [0u64; 4];
+                let mut plane_strides = [0u32; 4];
+                let mut num_planes: u8 = 0;
+                for (i, (fd, (offset, stride))) in dmabuf
+                    .handles()
+                    .zip(dmabuf.offsets().zip(dmabuf.strides()))
+                    .take(4)
+                    .enumerate()
+                {
+                    plane_fds[i] = fd.as_raw_fd();
+                    plane_offsets[i] = offset as u64;
+                    plane_strides[i] = stride;
+                    num_planes = num_planes.saturating_add(1);
+                }
+                let fmt = dmabuf.format();
+                let input = FrameInput::DmabufFd {
+                    plane_fds,
+                    plane_offsets,
+                    plane_strides,
+                    num_planes,
+                    drm_fourcc: fmt.code as u32,
+                    drm_modifier: u64::from(fmt.modifier),
+                    width: dmabuf.width(),
+                    height: dmabuf.height(),
+                };
+                (encoder.encode(input, &mut nalus), CapturePath::DmabufDirect)
+            }
+        };
         match encode_result {
             Ok(stats) => {
                 throttle.mark_encoded(now);
+                // Now that the encoder actually consumed the frame,
+                // record the capture path in the shared metrics + on
+                // the session state. This is the metrics roll-up rule:
+                // record "we did DMABUF direct" only after the encoder
+                // succeeds, not after the compositor merely detected
+                // a DMABUF buffer.
+                self.set_capture_path(path_taken);
                 // Push encode-side telemetry into the shared metrics.
                 if let Some(m) = &self.metrics {
                     m.record_encode_wallclock(stats.encode_wallclock.as_nanos() as u64);
@@ -588,6 +676,7 @@ impl SharedFlatpakSession {
             Err(err) => {
                 tracing::debug!(
                     surface = self.surface_id,
+                    ?path_taken,
                     error = ?err,
                     "encoder rejected frame, dropping"
                 );
