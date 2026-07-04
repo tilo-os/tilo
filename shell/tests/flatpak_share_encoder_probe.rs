@@ -133,15 +133,13 @@ fn requested_nvenc_falls_back_when_hardware_absent() {
 
 /// On a real VA-API host with a wired encoder, Auto picks VaApi.
 ///
-/// TODO(hw-encode-wiring): while the vaapi backend's `encode()` is
-/// stubbed, the probe honestly reports `available = false` and
-/// `SharedFlatpakSession` correctly falls through to openh264 so the
-/// pipeline actually delivers frames. Once the encoder is wired
-/// against `cros-libva` (or an alternative that avoids the workspace
-/// log-feature conflict), flip this test to assert `chosen_encoder()`
-/// == VaApi. For now, we assert the probe outcome includes VaApi in
-/// the walked-backends list — proof the priority order is intact
-/// even when the wired backend isn't yet ready.
+/// The vaapi backend is now wired end-to-end via ffmpeg-next's
+/// `h264_vaapi` codec, so on a host with a working render node the
+/// probe reports `available = true` and Auto lands on `VaApi`. The
+/// test still `#[ignore]`s because CI runners don't ship `/dev/dri`;
+/// run with `--include-ignored` on a workstation. It self-skips when
+/// the host itself doesn't have a functional H.264 VA-API path (e.g.
+/// the render node exists but the driver doesn't expose H.264 encode).
 #[test]
 #[ignore = "requires --features vaapi + a real /dev/dri render node; run with --include-ignored on a workstation"]
 fn auto_probe_picks_vaapi_when_hardware_present() {
@@ -154,12 +152,18 @@ fn auto_probe_picks_vaapi_when_hardware_present() {
         );
         return;
     }
-    #[allow(unreachable_code)]
+    #[cfg(feature = "vaapi")]
     {
-        if !std::path::Path::new("/dev/dri/renderD128").exists() {
+        use shell::collab::encoder::probe as encoder_probe;
+        // Self-skip if the underlying probe reports unavailable — some
+        // hosts have a render node but no H.264 encode entrypoint
+        // (older iGPUs, discrete GPUs without an encode block, etc.).
+        let (chosen_by_probe, _outcomes) = encoder_probe(Some(EncoderChoice::Vaapi));
+        if chosen_by_probe != EncoderKind::VaApi {
             eprintln!(
-                "skipping vaapi hardware assertion — no /dev/dri/renderD128 \
-                 on this host"
+                "skipping vaapi hardware assertion — probe reports \
+                 vaapi unavailable on this host (probe chose {})",
+                chosen_by_probe.as_str()
             );
             return;
         }
@@ -172,13 +176,10 @@ fn auto_probe_picks_vaapi_when_hardware_present() {
             cfg(EncoderChoice::Auto),
         )
         .expect("session should start");
-        // While the vaapi encode path is stubbed, the honest probe
-        // reports the backend unavailable and Auto lands on Openh264.
-        // Flip this assertion to `VaApi` when the encode wiring lands.
         assert_eq!(
             session.chosen_encoder(),
-            EncoderKind::Openh264,
-            "vaapi encode is stubbed; Auto correctly falls through to openh264"
+            EncoderKind::VaApi,
+            "auto probe must pick vaapi when the render node exposes a working h264_vaapi path"
         );
     }
 }
