@@ -46,6 +46,18 @@ enum Cmd {
         /// --minimal-libs implies. Escape hatch.
         #[arg(long)]
         allow_missing_runtime: bool,
+        /// Accept an unsigned runtime bundle. Default is to refuse
+        /// unsigned bundles: the OS image ships signed bundles baked
+        /// by `os/scripts/bake-runtime-bundle.sh`, and user-installed
+        /// bundles are signed on install by `qos-install`. Only
+        /// needed for local bring-up / debugging.
+        #[arg(long)]
+        allow_unsigned_runtime: bool,
+        /// Require the runtime bundle's publisher to equal this
+        /// Ed25519 pubkey (hex). By default any signed publisher is
+        /// accepted; a strict deployment pins one here.
+        #[arg(long)]
+        require_runtime_publisher: Option<String>,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -99,6 +111,8 @@ fn main() -> ExitCode {
             no_services,
             minimal_libs,
             allow_missing_runtime,
+            allow_unsigned_runtime,
+            require_runtime_publisher,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -115,6 +129,8 @@ fn main() -> ExitCode {
                 landlock_enforce: true,
                 mode: LaunchMode::Gui,
                 allow_missing_runtime,
+                allow_unsigned_runtime,
+                require_runtime_publisher,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -231,6 +247,17 @@ fn run_installed(
             passthrough_argv: rest,
         },
         allow_missing_runtime: false,
+        // CLI-shim launches happen from a user shell without extra
+        // flags; honour the same env-escape-hatch the launcher uses
+        // for landlock so shell-shim users can opt out for
+        // debugging without changing their PATH invocation.
+        allow_unsigned_runtime: matches!(
+            std::env::var("QOS_LAUNCHER_ALLOW_UNSIGNED_RUNTIME").as_deref(),
+            Ok("1") | Ok("true")
+        ),
+        require_runtime_publisher: std::env::var("QOS_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
+            .ok()
+            .filter(|s| !s.is_empty()),
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
