@@ -31,6 +31,7 @@ members = [
     "crates/runtime/runtime-collab",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
+    "crates/runtime/cli",
     "crates/format/format-provider-wit",
     "crates/format/format-host",
     "crates/packaging/hello",
