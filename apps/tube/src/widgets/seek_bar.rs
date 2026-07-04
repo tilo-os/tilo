@@ -40,6 +40,7 @@ pub struct SeekBar {
     hovered: bool,
     dragging: bool,
     dirty: bool,
+    test_id: Option<String>,
 }
 
 impl SeekBar {
@@ -54,7 +55,15 @@ impl SeekBar {
             hovered: false,
             dragging: false,
             dirty: true,
+            test_id: None,
         }
+    }
+
+    /// Stable, addressable id so headless tests can resolve the scrubber's
+    /// laid-out rect and drive a real drag-to-seek through it.
+    pub fn id(mut self, id: &str) -> Self {
+        self.test_id = Some(id.to_string());
+        self
     }
 
     fn fraction_at(&self, x: f64) -> f64 {
@@ -236,6 +245,9 @@ impl Widget for SeekBar {
     }
     fn name(&self) -> &str {
         "SeekBar"
+    }
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
     }
     fn get_rect(&self) -> Rect {
         self.rect
