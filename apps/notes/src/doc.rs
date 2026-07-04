@@ -24,6 +24,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{put_if_changed, put_text_diffed};
 
 use crate::model::{PageId, PageMeta};
 
@@ -61,25 +62,16 @@ impl NotesDoc {
     pub fn upsert_page_meta(doc: &mut AutoCommit, meta: &PageMeta) {
         let page = Self::ensure_page(doc, meta.id);
 
-        // title (Text)
-        let title_id = match doc.get(&page, "title") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc
-                .put_object(&page, "title", ObjType::Text)
-                .expect("put_object title never fails"),
-        };
-        let cur = doc.text(&title_id).unwrap_or_default();
-        if cur != meta.title {
-            let cur_chars = cur.chars().count() as isize;
-            let _ = doc.splice_text(&title_id, 0, cur_chars, &meta.title);
-        }
+        // title (Text): diff-splice only the changed span so a rename doesn't
+        // rewrite (and tombstone) the whole title every upsert.
+        put_text_diffed(doc, &page, "title", &meta.title);
 
-        // parent (string; "" == root)
+        // parent (string; "" == root) — guarded so an unchanged upsert is a no-op.
         let parent_str = meta.parent.map(|p| p.to_string()).unwrap_or_default();
-        let _ = doc.put(&page, "parent", parent_str);
+        put_if_changed(doc, &page, "parent", parent_str);
 
         // order (int)
-        let _ = doc.put(&page, "order", meta.order as i64);
+        put_if_changed(doc, &page, "order", meta.order as i64);
     }
 
     /// Read every page's metadata out of the document, sorted by
@@ -291,6 +283,52 @@ mod tests {
             NotesDoc::list_pages(&a).into_iter().map(|p| p.title).collect();
         assert!(titles.contains(&"A".to_string()), "converged doc has A: {titles:?}");
         assert!(titles.contains(&"B".to_string()), "converged doc has B: {titles:?}");
+    }
+
+    #[test]
+    fn renaming_by_one_char_is_a_bounded_splice() {
+        // A long title renamed by one char must diff-splice (grow the doc a
+        // little), not delete+reinsert the whole title (O(len) tombstones per
+        // edit — the churn that freezes the app).
+        let mut doc = AutoCommit::new();
+        let id = Uuid::new_v4();
+        let long = "A very long note title that would be expensive to rewrite each keystroke";
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta { id, title: long.into(), parent: None, order: 0 },
+        );
+        let before = doc.save().len();
+        let mut longer = long.to_string();
+        longer.push('!');
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta { id, title: longer.clone(), parent: None, order: 0 },
+        );
+        let grew = doc.save().len() - before;
+        assert_eq!(NotesDoc::list_pages(&doc)[0].title, longer);
+        assert!(
+            grew < 40,
+            "appending one char to a title grew the doc by {grew} bytes (expected a single-char splice)"
+        );
+    }
+
+    #[test]
+    fn idempotent_upsert_does_not_grow_the_doc() {
+        // Re-storing an unchanged page (title + parent + order) must be a no-op:
+        // change-guarded scalars + diff-spliced title mean zero new ops.
+        let mut doc = AutoCommit::new();
+        let id = Uuid::new_v4();
+        let meta = PageMeta { id, title: "Stable".into(), parent: None, order: 3 };
+        NotesDoc::upsert_page_meta(&mut doc, &meta);
+        let before = doc.save().len();
+        for _ in 0..25 {
+            NotesDoc::upsert_page_meta(&mut doc, &meta);
+        }
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "idempotent upsert must not grow the document"
+        );
     }
 
     #[test]
