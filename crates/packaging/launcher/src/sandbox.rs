@@ -26,6 +26,24 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/usr/lib/qos-runtime").join(version)
 }
 
+/// Canonical absolute paths we re-expose out of the runtime bundle so
+/// dynamically-linked ELFs (both the launcher-shim and the app entry
+/// binary) can find their loader + libc where their `INTERP` header
+/// points. Kept in sync with `runtime_bundle::HOST_MINIMAL_PATHS`.
+pub const CANONICAL_LOADER_PATHS: &[&str] = &[
+    "/lib64/ld-linux-x86-64.so.2",
+    "/lib/ld-linux-x86-64.so.2",
+    "/lib/ld-linux.so.2",
+    "/usr/lib64/ld-linux-x86-64.so.2",
+    "/lib64/libc.so.6",
+    "/lib64/libgcc_s.so.1",
+    "/lib64/libm.so.6",
+    "/lib64/libdl.so.2",
+    "/lib64/libpthread.so.0",
+    "/lib64/librt.so.1",
+    "/lib64/libutil.so.1",
+];
+
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs.
 ///
@@ -69,12 +87,34 @@ pub fn build_bwrap_argv(
     // Runtime bind: host runtime_root -> /usr/lib/qos-runtime/<version>/
     // and set LD_LIBRARY_PATH inside the sandbox so the entrypoint can
     // find the shared libs the runtime ships.
+    //
+    // We also bind the loader + libc at their canonical absolute paths
+    // (`/lib64/ld-linux-x86-64.so.2`, `/lib64/libc.so.6`, …) because
+    // dynamically-linked ELFs hard-code their `INTERP` in the header
+    // and the kernel refuses to exec them if that path is unreachable
+    // — even with `LD_LIBRARY_PATH` set. The bundle already carries
+    // those files at `lib/lib64/…`, so we can just re-bind them.
+    // The launcher-shim itself is one such ELF, so this makes the
+    // shim exec work.
     if let Some((rt_root, rt_version)) = runtime {
         let rt_mount = runtime_mount_for(rt_version);
         push_bind(&mut argv, "--ro-bind", rt_root, &rt_mount);
         argv.push("--setenv".to_string());
         argv.push("LD_LIBRARY_PATH".to_string());
         argv.push(rt_mount.join("lib").display().to_string());
+
+        // Re-bind each host loader/libc path from inside the bundle
+        // at its canonical absolute location. Silently skip files
+        // the bundle doesn't contain.
+        for canonical in CANONICAL_LOADER_PATHS {
+            let no_slash = canonical.trim_start_matches('/');
+            let in_bundle = rt_root.join("lib").join(no_slash);
+            if in_bundle.exists() {
+                argv.push("--ro-bind".to_string());
+                argv.push(in_bundle.display().to_string());
+                argv.push((*canonical).to_string());
+            }
+        }
     }
 
     // FS read/write rules from the manifest. Both source and dest use
@@ -157,6 +197,7 @@ mod tests {
         MinimalManifest {
             package_id: "com.example.notes".to_string(),
             version: "0.1.0".to_string(),
+            runtime: None,
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
             },
