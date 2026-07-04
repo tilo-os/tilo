@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use qos_launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use qos_launcher::run::{RunError, RunOptions, run};
+use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
+use launcher::run::{RunError, RunOptions, run};
 
 #[derive(Debug, Parser)]
 #[command(name = "qos-launcher", about = "Launch a qOS application package in a sandbox.")]
