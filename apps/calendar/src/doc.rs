@@ -89,6 +89,7 @@ impl CalDoc {
         let _ = doc.put(m, "rrule", e.recurrence.to_rrule());
         let _ = doc.put(m, "reminder", e.reminder_min.unwrap_or(-1));
         let _ = doc.put(m, "project", e.project.map(|p| p.to_string()).unwrap_or_default());
+        let _ = doc.put(m, "cal", e.calendar_id.clone().unwrap_or_default());
     }
 
     fn write_task_fields(doc: &mut AutoCommit, m: &ObjId, t: &Task) {
@@ -220,6 +221,10 @@ impl CalDoc {
                     recurrence: Recurrence::from_rrule(&get_str(doc, &m, "rrule")),
                     reminder_min: if reminder < 0 { None } else { Some(reminder) },
                     project: parse_opt_id(&get_str(doc, &m, "project")),
+                    calendar_id: {
+                        let cal = get_str(doc, &m, "cal");
+                        if cal.is_empty() { None } else { Some(cal) }
+                    },
                 });
             }
             model.events.sort_by_key(|e| e.start);

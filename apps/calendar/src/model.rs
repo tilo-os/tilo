@@ -257,9 +257,25 @@ pub struct Event {
     /// Minutes before start for a reminder, if any.
     pub reminder_min: Option<i64>,
     pub project: Option<Id>,
+    /// Which remote calendar this event was synced from, if any. Local events
+    /// (created in-app or imported) carry `None` and are always shown; a synced
+    /// event carries its source [`crate::account::RemoteCalendar`] id so the
+    /// sidebar's per-calendar visibility toggle can hide/show it on the spot,
+    /// without a re-sync. Persisted in the CRDT under the `cal` key.
+    pub calendar_id: Option<String>,
 }
 
 impl Event {
+    /// Whether this event should be shown given the set of currently-hidden
+    /// remote calendar ids. Local events (no `calendar_id`) are always visible;
+    /// a synced event is hidden exactly when its source calendar is unchecked.
+    pub fn visible_under(&self, hidden: &std::collections::HashSet<String>) -> bool {
+        match &self.calendar_id {
+            Some(id) => !hidden.contains(id),
+            None => true,
+        }
+    }
+
     /// Dates on which this event occurs within `[from, to]` (inclusive),
     /// honouring its recurrence rule. Anchored on `start.date()`.
     pub fn occurrences_in(&self, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
@@ -464,6 +480,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Indigo,
             recurrence: Recurrence::Weekdays,
             reminder_min: Some(10),
+            calendar_id: None,
             project: Some(pid_work),
         },
         Event {
@@ -476,6 +493,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Violet,
             recurrence: Recurrence::None,
             reminder_min: Some(15),
+            calendar_id: None,
             project: Some(pid_work),
         },
         Event {
@@ -488,6 +506,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Emerald,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: Some(pid_personal),
         },
         Event {
@@ -500,6 +519,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Red,
             recurrence: Recurrence::Weekly,
             reminder_min: Some(30),
+            calendar_id: None,
             project: Some(pid_health),
         },
         Event {
@@ -512,6 +532,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Indigo,
             recurrence: Recurrence::None,
             reminder_min: Some(15),
+            calendar_id: None,
             project: Some(pid_work),
         },
         Event {
@@ -524,6 +545,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Blue,
             recurrence: Recurrence::None,
             reminder_min: Some(60),
+            calendar_id: None,
             project: Some(pid_health),
         },
         Event {
@@ -536,6 +558,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Amber,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: Some(pid_work),
         },
         Event {
@@ -548,6 +571,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Emerald,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: Some(pid_personal),
         },
         Event {
@@ -560,6 +584,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Indigo,
             recurrence: Recurrence::None,
             reminder_min: Some(10),
+            calendar_id: None,
             project: Some(pid_work),
         },
         Event {
@@ -572,6 +597,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Amber,
             recurrence: Recurrence::Monthly,
             reminder_min: Some(720),
+            calendar_id: None,
             project: Some(pid_personal),
         },
     ];
@@ -747,6 +773,7 @@ mod tests {
             color: Palette::Indigo,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: None,
         }
     }
