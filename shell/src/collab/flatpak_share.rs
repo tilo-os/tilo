@@ -101,12 +101,57 @@ use crate::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
 use crate::network::streaming::{
     InputEvent, ShareRegistry, StreamingShare, StreamingThrottle,
 };
+use crate::network::surface_stream::SurfaceStreamSender;
 
 /// v1 codec label — matches [`crate::network::NeighbourMsg::SurfaceStreamStart::codec`].
 const CODEC_LABEL: &str = "h264";
 
 /// Software-encoder-imposed frame-rate ceiling. See the module doc.
 const SOFTWARE_FPS_CEILING: u32 = 30;
+
+/// Scan `nalus` for an H.264 IDR NAL unit — nal_unit_type 5.
+///
+/// Walks Annex-B start-codes (`0x00 0x00 0x01` or `0x00 0x00 0x00 0x01`)
+/// and reads the following byte's low 5 bits for the nal_unit_type. A
+/// keyframe (IDR) is `nal_unit_type == 5`; a fresh SPS/PPS pair
+/// (types 7/8) often preceeds the IDR in a GOP header, but the IDR
+/// itself is the boundary the decoder needs to seek to.
+///
+/// Returns `false` when the byte stream doesn't contain a start-code
+/// / is empty — safer to treat "unknown" as non-keyframe, so a
+/// late-joining viewer waits for the next detectable IDR.
+fn is_h264_keyframe(nalus: &[u8]) -> bool {
+    // Scan for start-codes; on match, inspect the header byte.
+    let mut i = 0usize;
+    while i + 4 <= nalus.len() {
+        // 3-byte start code `00 00 01`.
+        let three = &nalus[i..i + 3];
+        // 4-byte start code `00 00 00 01`.
+        let four_ok = i + 4 <= nalus.len()
+            && nalus[i] == 0
+            && nalus[i + 1] == 0
+            && nalus[i + 2] == 0
+            && nalus[i + 3] == 1;
+        if four_ok {
+            let header = nalus[i + 4];
+            if header & 0x1f == 5 {
+                return true;
+            }
+            i += 4;
+            continue;
+        }
+        if three == [0u8, 0, 1] {
+            let header = nalus[i + 3];
+            if header & 0x1f == 5 {
+                return true;
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// Frame waiting in the encoder's staging slot.
 ///
@@ -248,6 +293,18 @@ pub struct SharedFlatpakSession {
     /// pump short-circuits after that so an accidental double-stop
     /// (drop-on-drop) is safe.
     active: Arc<AtomicBool>,
+    /// Video substream sender — the dedicated per-share channel encoded
+    /// frames flow through. Distinct from the `NeighbourMsg::SurfaceFrame`
+    /// gossipsub path (kept for legacy peers). Every `encode_next_frame`
+    /// deposits the frame here in addition to returning it; the
+    /// transport adapter (the actor's QUIC substream binding) polls the
+    /// sender per subscriber and writes the encoded bytes on the wire.
+    ///
+    /// Per-subscriber bounded queue with drop-oldest backpressure —
+    /// exposed via [`Self::stream_drops_for`]. Sequence numbers are
+    /// monotonic per-share; a keyframe flag rides in the header so
+    /// late-joining viewers know when it's safe to start decoding.
+    stream_sender: Arc<SurfaceStreamSender>,
 }
 
 impl SharedFlatpakSession {
@@ -357,6 +414,7 @@ impl SharedFlatpakSession {
             staged_frame: Arc::new(Mutex::new(None)),
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
+            stream_sender: Arc::new(SurfaceStreamSender::new(surface_id, host_user_id)),
         })
     }
 
@@ -491,6 +549,14 @@ impl SharedFlatpakSession {
                         .saturating_mul(self.config.target_fps as u64);
                     m.record_bitrate(bytes_per_sec);
                 }
+                // Fan out to the dedicated substream first — every
+                // subscriber's bounded queue absorbs the frame with
+                // drop-oldest on overflow. `is_h264_keyframe` walks the
+                // Annex-B NALUs looking for an IDR (nal_unit_type 5) so
+                // late-joining viewers can start their decoder on a
+                // keyframe boundary.
+                let keyframe = is_h264_keyframe(&nalus);
+                self.stream_sender.publish(keyframe, nalus.clone());
                 Some(EncodedFrame {
                     surface: self.surface_id,
                     nalus,
@@ -513,16 +579,62 @@ impl SharedFlatpakSession {
     /// `read_only = true` means the peer sees frames but can't inject
     /// input; the owner can flip the flag later via
     /// [`Self::set_read_only`].
+    ///
+    /// Also subscribes the peer to the [`SurfaceStreamSender`] so
+    /// subsequently-encoded frames land in their per-subscriber
+    /// bounded queue.
     pub fn add_viewer(&self, peer: PeerId, read_only: bool) {
         let mut reg = self.share_registry.lock().expect("share registry");
         reg.insert(peer, self.surface_id, StreamingShare { read_only });
+        drop(reg);
+        self.stream_sender.subscribe(peer);
     }
 
     /// Drop a viewer. Their subsequent `RemoteInput` events fall on
-    /// the floor (registry gate returns `false`).
+    /// the floor (registry gate returns `false`), and their video
+    /// substream subscription is closed.
     pub fn drop_viewer(&self, peer: PeerId) {
         let mut reg = self.share_registry.lock().expect("share registry");
         reg.remove(peer, self.surface_id);
+        drop(reg);
+        self.stream_sender.unsubscribe(peer);
+    }
+
+    /// Cumulative drop count for a viewer's video substream. Increments
+    /// on every drop-oldest fired by the per-subscriber bounded queue.
+    /// Diagnostic — the paint side already handles the drop; this is
+    /// how the owner's UI surfaces "peer X is falling behind".
+    pub fn stream_drops_for(&self, peer: PeerId) -> u64 {
+        self.stream_sender.drops_for(peer)
+    }
+
+    /// Total drops across every subscriber. Diagnostic aggregate.
+    pub fn stream_total_drops(&self) -> u64 {
+        self.stream_sender.total_drops()
+    }
+
+    /// Pending queue depth for a viewer's video substream. Diagnostic.
+    pub fn stream_pending_for(&self, peer: PeerId) -> usize {
+        self.stream_sender.pending_for(peer)
+    }
+
+    /// Poll the next queued frame for `peer`. The QUIC substream
+    /// adapter calls this per poll cycle and writes the encoded bytes
+    /// onto the wire. Returns `None` when the peer isn't subscribed or
+    /// the queue is drained.
+    pub fn poll_stream_frame(
+        &self,
+        peer: PeerId,
+    ) -> Option<crate::network::surface_stream::SurfaceFrame> {
+        self.stream_sender.poll(peer)
+    }
+
+    /// Direct handle onto the substream sender. Exposed for the actor's
+    /// QUIC substream adapter — production wires the QUIC substream to
+    /// pump from this sender, tests inspect it to assert on drops /
+    /// sequences.
+    pub fn stream_sender(&self) -> Arc<SurfaceStreamSender> {
+        self.stream_sender.clone()
     }
 
     /// Flip the read-only flag on an existing viewer.

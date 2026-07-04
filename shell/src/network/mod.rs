@@ -8,6 +8,7 @@ pub mod p2p;
 pub mod protocol;
 pub mod replica;
 pub mod streaming;
+pub mod surface_stream;
 pub mod wayland;
 
 pub use actor::{Actor, NetCmd, NetEvent};
