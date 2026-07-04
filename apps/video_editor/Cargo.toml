@@ -1,0 +1,42 @@
+[package]
+name = "video_editor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "video_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "video_editor"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+
+# Real decode/preview/export runs through GStreamer, linked ONLY under the
+# `gst` feature so the default fleet build (and `--shots`) compiles without
+# the gstreamer-1.0 dev headers present. ffmpeg is intentionally NOT a dep.
+gstreamer = { version = "0.23", optional = true }
+
+[features]
+default = []
+# Real H.264 decode for the preview canvas, via `ui::VideoPlayer` (openh264).
+# The default fleet build (and `--shots`) leaves this off so the preview shows
+# a representative composited frame without touching a decoder — the headless
+# CI box has no real media pipeline. Turning it on lets the preview decode the
+# nearest keyframe of the clip under the playhead when its bytes are hydrated.
+decode = []
+# Real encode/decode through GStreamer (export muxing). Heavier; needs the
+# gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
+gst = ["dep:gstreamer"]

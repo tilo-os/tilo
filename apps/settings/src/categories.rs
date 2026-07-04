@@ -1,0 +1,241 @@
+//! The settings categories shown in the left sidebar.
+//!
+//! Each [`Category`] carries a glyph, a user-facing label, a stable slug
+//! (used for `test_id`s and CRDT paths), and the [`Section`] it groups
+//! under. The sidebar renders sections in [`Section::ALL`] order, and
+//! within each section the categories in [`Category::ALL`] order.
+
+/// A labelled group of categories in the sidebar. Sections give the long
+/// category list a scannable structure rather than one flat run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Section {
+    /// Network, Bluetooth — getting the device online and paired.
+    Connectivity,
+    /// Sound, Displays, Mouse & Keyboard, Printers — hardware.
+    Devices,
+    /// Time & Date, Users, Region & Formats — the per-user system setup.
+    System,
+    /// External Accounts, Permissions & Roles — the integration hubs other
+    /// apps and the collaboration model depend on.
+    Hubs,
+    /// Updates, About — maintenance and identity.
+    Maintenance,
+}
+
+impl Section {
+    /// Render order, top to bottom.
+    pub const ALL: &'static [Section] = &[
+        Section::Connectivity,
+        Section::Devices,
+        Section::System,
+        Section::Hubs,
+        Section::Maintenance,
+    ];
+
+    /// The section header label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Connectivity => "Connectivity",
+            Section::Devices => "Devices",
+            Section::System => "System",
+            Section::Hubs => "Accounts & Permissions",
+            Section::Maintenance => "Maintenance",
+        }
+    }
+}
+
+/// One entry in the settings sidebar.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Category {
+    Network,
+    Bluetooth,
+    Sound,
+    Displays,
+    MouseKeyboard,
+    TimeDate,
+    Users,
+    Printers,
+    ExternalAccounts,
+    RegionFormats,
+    Permissions,
+    Updates,
+    About,
+}
+
+impl Category {
+    /// Canonical ordering used by the sidebar, grouped by [`Section`].
+    pub const ALL: &'static [Category] = &[
+        // Connectivity
+        Category::Network,
+        Category::Bluetooth,
+        // Devices
+        Category::Sound,
+        Category::Displays,
+        Category::MouseKeyboard,
+        Category::Printers,
+        // System
+        Category::TimeDate,
+        Category::Users,
+        Category::RegionFormats,
+        // Hubs
+        Category::ExternalAccounts,
+        Category::Permissions,
+        // Maintenance
+        Category::Updates,
+        Category::About,
+    ];
+
+    /// The first (default) category shown on launch.
+    pub const DEFAULT: Category = Category::Network;
+
+    /// Which section this category groups under.
+    pub fn section(self) -> Section {
+        match self {
+            Category::Network | Category::Bluetooth => Section::Connectivity,
+            Category::Sound
+            | Category::Displays
+            | Category::MouseKeyboard
+            | Category::Printers => Section::Devices,
+            Category::TimeDate | Category::Users | Category::RegionFormats => Section::System,
+            Category::ExternalAccounts | Category::Permissions => Section::Hubs,
+            Category::Updates | Category::About => Section::Maintenance,
+        }
+    }
+
+    /// The categories belonging to a section, in sidebar order.
+    pub fn in_section(section: Section) -> impl Iterator<Item = Category> {
+        Category::ALL
+            .iter()
+            .copied()
+            .filter(move |c| c.section() == section)
+    }
+
+    /// User-facing label, rendered in the sidebar and reused as the pane
+    /// header.
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Network => "Network",
+            Category::Bluetooth => "Bluetooth",
+            Category::Sound => "Sound",
+            Category::Displays => "Displays",
+            Category::MouseKeyboard => "Mouse & Keyboard",
+            Category::TimeDate => "Time & Date",
+            Category::Users => "Users",
+            Category::Printers => "Printers",
+            Category::ExternalAccounts => "External Accounts",
+            Category::RegionFormats => "Region & Formats",
+            Category::Permissions => "Permissions & Roles",
+            Category::Updates => "Updates",
+            Category::About => "About",
+        }
+    }
+
+    /// A one-line summary shown under the label in the content header.
+    pub fn subtitle(self) -> &'static str {
+        match self {
+            Category::Network => "Wi-Fi, wired connections, and VPN",
+            Category::Bluetooth => "Pair and manage Bluetooth devices",
+            Category::Sound => "Output, input, volume, and system sounds",
+            Category::Displays => "Resolution, scale, arrangement, and brightness",
+            Category::MouseKeyboard => "Pointer speed, scrolling, and keyboard layout",
+            Category::TimeDate => "Clock, time zone, and how dates display",
+            Category::Users => "Accounts on this device and their roles",
+            Category::Printers => "Printers, queues, and recent jobs",
+            Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
+            Category::RegionFormats => "Currency, date, time, and measurement units",
+            Category::Permissions => "Roles and per-action permissions for this workspace",
+            Category::Updates => "System updates and release channel",
+            Category::About => "Device identity and transfer",
+        }
+    }
+
+    /// Nerd Font glyph rendered before the label in the sidebar.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Category::Network => "\u{f0816}",          // wifi
+            Category::Bluetooth => "\u{f00af}",        // bluetooth
+            Category::Sound => "\u{f057e}",            // volume-high
+            Category::Displays => "\u{f0379}",         // monitor
+            Category::MouseKeyboard => "\u{f037d}",    // mouse
+            Category::TimeDate => "\u{f0954}",         // clock
+            Category::Users => "\u{f0849}",            // account-group
+            Category::Printers => "\u{f042a}",         // printer
+            Category::ExternalAccounts => "\u{f16e1}", // cloud
+            Category::RegionFormats => "\u{f0ac0}",    // earth
+            Category::Permissions => "\u{f0498}",      // shield-account
+            Category::Updates => "\u{f06b0}",          // download
+            Category::About => "\u{f02fd}",            // information
+        }
+    }
+
+    /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Category::Network => "network",
+            Category::Bluetooth => "bluetooth",
+            Category::Sound => "sound",
+            Category::Displays => "displays",
+            Category::MouseKeyboard => "mouse_keyboard",
+            Category::TimeDate => "time_date",
+            Category::Users => "users",
+            Category::Printers => "printers",
+            Category::ExternalAccounts => "external_accounts",
+            Category::RegionFormats => "region_formats",
+            Category::Permissions => "permissions",
+            Category::Updates => "updates",
+            Category::About => "about",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_categories_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for c in Category::ALL {
+            assert!(seen.insert(*c), "duplicate category {:?}", c);
+        }
+        assert_eq!(seen.len(), Category::ALL.len());
+    }
+
+    #[test]
+    fn every_category_has_label_subtitle_slug_glyph() {
+        for c in Category::ALL {
+            assert!(!c.label().is_empty(), "{c:?} missing label");
+            assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
+            assert!(!c.slug().is_empty(), "{c:?} missing slug");
+            assert!(!c.glyph().is_empty(), "{c:?} missing glyph");
+        }
+    }
+
+    #[test]
+    fn slugs_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for c in Category::ALL {
+            assert!(seen.insert(c.slug()), "duplicate slug {}", c.slug());
+        }
+    }
+
+    #[test]
+    fn every_category_belongs_to_a_listed_section() {
+        for c in Category::ALL {
+            assert!(
+                Section::ALL.contains(&c.section()),
+                "{c:?} section not in Section::ALL"
+            );
+        }
+    }
+
+    #[test]
+    fn sections_partition_all_categories() {
+        // Every category appears exactly once when we walk section by section.
+        let mut count = 0;
+        for s in Section::ALL {
+            count += Category::in_section(*s).count();
+        }
+        assert_eq!(count, Category::ALL.len());
+    }
+}

@@ -1,0 +1,289 @@
+//! SQLite execution engine: opens a handle, seeds the bundled sample
+//! database, introspects the schema (tables, columns, keys, indexes) and
+//! runs arbitrary SQL returning a [`QueryResult`].
+//!
+//! Postgres/MySQL connections are described by the model but their live
+//! drivers are gated — see [`Engine`] and the connection manager. Until a
+//! sandbox grant authorises an outbound socket, only the local SQLite path
+//! executes. This keeps the app fully functional offline (the sample DB)
+//! while leaving a clean seam for the network drivers.
+
+use std::time::Instant;
+
+use rusqlite::types::ValueRef;
+use rusqlite::Connection;
+
+use crate::model::{
+    Cell, ColumnInfo, DatabaseSchema, ForeignKey, IndexInfo, QueryResult, RelationKind,
+    SchemaInfo, TableInfo, TypeClass,
+};
+use crate::sample;
+
+/// A live SQLite handle. Owns the connection for the lifetime of the
+/// session; all introspection + query execution goes through it.
+pub struct SqliteEngine {
+    conn: Connection,
+}
+
+impl SqliteEngine {
+    /// Open an in-memory database and seed it with the bundled sample
+    /// schema + data so the schema browser and query runner work with no
+    /// external file.
+    pub fn open_sample() -> Result<Self, String> {
+        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        sample::seed(&conn).map_err(|e| e.to_string())?;
+        Ok(Self { conn })
+    }
+
+    /// Open an on-disk SQLite file (read-write).
+    pub fn open_file(path: &str) -> Result<Self, String> {
+        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        Ok(Self { conn })
+    }
+
+    /// Introspect the full schema. SQLite has a single implicit namespace,
+    /// which we surface as a "main" schema so the tree shape matches the
+    /// multi-schema engines.
+    pub fn introspect(&self) -> Result<DatabaseSchema, String> {
+        let mut tables = Vec::new();
+
+        // Enumerate user tables + views, skipping SQLite's internal tables.
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT name, type FROM sqlite_master \
+                 WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY type DESC, name",
+            )
+            .map_err(|e| e.to_string())?;
+        let relations: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+
+        for (name, kind) in relations {
+            let kind = if kind == "view" {
+                RelationKind::View
+            } else {
+                RelationKind::Table
+            };
+            let columns = self.table_columns(&name)?;
+            let foreign_keys = self.table_foreign_keys(&name)?;
+            let indexes = self.table_indexes(&name)?;
+            let row_count = if kind == RelationKind::Table {
+                self.count_rows(&name).ok()
+            } else {
+                None
+            };
+            tables.push(TableInfo {
+                name,
+                kind,
+                columns,
+                foreign_keys,
+                indexes,
+                row_count,
+            });
+        }
+
+        Ok(DatabaseSchema {
+            schemas: vec![SchemaInfo {
+                name: "main".to_string(),
+                tables,
+            }],
+        })
+    }
+
+    fn table_columns(&self, table: &str) -> Result<Vec<ColumnInfo>, String> {
+        let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let cols = stmt
+            .query_map([], |r| {
+                let decl: String = r.get(2)?;
+                let not_null: i64 = r.get(3)?;
+                let default: Option<String> = r.get(4)?;
+                let pk: i64 = r.get(5)?;
+                Ok(ColumnInfo {
+                    name: r.get(1)?,
+                    class: TypeClass::classify(&decl),
+                    decl_type: decl,
+                    not_null: not_null != 0,
+                    primary_key: pk != 0,
+                    default,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(cols)
+    }
+
+    fn table_foreign_keys(&self, table: &str) -> Result<Vec<ForeignKey>, String> {
+        let sql = format!("PRAGMA foreign_key_list(\"{}\")", table.replace('"', "\"\""));
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let fks = stmt
+            .query_map([], |r| {
+                Ok(ForeignKey {
+                    ref_table: r.get(2)?,
+                    column: r.get(3)?,
+                    ref_column: r.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(fks)
+    }
+
+    fn table_indexes(&self, table: &str) -> Result<Vec<IndexInfo>, String> {
+        let sql = format!("PRAGMA index_list(\"{}\")", table.replace('"', "\"\""));
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, bool)> = stmt
+            .query_map([], |r| {
+                let name: String = r.get(1)?;
+                let unique: i64 = r.get(2)?;
+                Ok((name, unique != 0))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+
+        let mut out = Vec::new();
+        for (name, unique) in rows {
+            // Skip auto-indexes SQLite creates for UNIQUE/PK constraints.
+            if name.starts_with("sqlite_autoindex") {
+                continue;
+            }
+            let info_sql = format!("PRAGMA index_info(\"{}\")", name.replace('"', "\"\""));
+            let mut s2 = self.conn.prepare(&info_sql).map_err(|e| e.to_string())?;
+            let columns: Vec<String> = s2
+                .query_map([], |r| r.get::<_, String>(2))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            out.push(IndexInfo {
+                name,
+                unique,
+                columns,
+            });
+        }
+        Ok(out)
+    }
+
+    fn count_rows(&self, table: &str) -> Result<i64, String> {
+        let sql = format!("SELECT COUNT(*) FROM \"{}\"", table.replace('"', "\"\""));
+        self.conn
+            .query_row(&sql, [], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Run a single SQL statement and collect the result.
+    pub fn run(&self, sql: &str) -> Result<QueryResult, String> {
+        let trimmed = sql.trim();
+        if trimmed.is_empty() {
+            return Ok(QueryResult::default());
+        }
+        let start = Instant::now();
+
+        // Decide select-vs-DML by trying to prepare and asking the column
+        // count. A zero-column statement is DML/DDL.
+        let mut stmt = self.conn.prepare(trimmed).map_err(|e| e.to_string())?;
+        let col_count = stmt.column_count();
+
+        if col_count == 0 {
+            // DML/DDL — execute and report affected rows.
+            let affected = self
+                .conn
+                .execute(trimmed, [])
+                .map_err(|e| e.to_string())?;
+            return Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+                rows_affected: Some(affected as i64),
+                is_select: false,
+            });
+        }
+
+        let columns: Vec<String> = (0..col_count)
+            .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+            .collect();
+
+        let mut rows_out: Vec<Vec<Cell>> = Vec::new();
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let mut cells = Vec::with_capacity(col_count);
+            for i in 0..col_count {
+                let v = row.get_ref(i).map_err(|e| e.to_string())?;
+                cells.push(value_ref_to_cell(v));
+            }
+            rows_out.push(cells);
+        }
+
+        Ok(QueryResult {
+            columns,
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+            rows_affected: None,
+            is_select: true,
+            rows: rows_out,
+        })
+    }
+}
+
+fn value_ref_to_cell(v: ValueRef<'_>) -> Cell {
+    match v {
+        ValueRef::Null => Cell::Null,
+        ValueRef::Integer(i) => Cell::Integer(i),
+        ValueRef::Real(r) => Cell::Real(r),
+        ValueRef::Text(t) => Cell::Text(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => Cell::Blob(b.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_engine_introspects_expected_tables() {
+        let eng = SqliteEngine::open_sample().unwrap();
+        let schema = eng.introspect().unwrap();
+        assert_eq!(schema.schemas.len(), 1);
+        // The sample ships several tables.
+        assert!(schema.table_count() >= 4, "got {}", schema.table_count());
+        let artists = schema.find_table("artists").expect("artists table");
+        assert!(artists.columns.iter().any(|c| c.primary_key));
+    }
+
+    #[test]
+    fn select_returns_rows_with_columns() {
+        let eng = SqliteEngine::open_sample().unwrap();
+        let r = eng.run("SELECT name FROM artists ORDER BY name LIMIT 3").unwrap();
+        assert!(r.is_select);
+        assert_eq!(r.columns, vec!["name".to_string()]);
+        assert_eq!(r.rows.len(), 3);
+    }
+
+    #[test]
+    fn dml_reports_rows_affected() {
+        let eng = SqliteEngine::open_sample().unwrap();
+        let r = eng
+            .run("UPDATE tracks SET unit_price = unit_price WHERE 1=0")
+            .unwrap();
+        assert!(!r.is_select);
+        assert_eq!(r.rows_affected, Some(0));
+    }
+
+    #[test]
+    fn foreign_keys_are_discovered() {
+        let eng = SqliteEngine::open_sample().unwrap();
+        let schema = eng.introspect().unwrap();
+        let albums = schema.find_table("albums").unwrap();
+        assert!(
+            albums.foreign_keys.iter().any(|f| f.ref_table == "artists"),
+            "albums should reference artists"
+        );
+    }
+}

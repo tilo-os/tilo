@@ -1,0 +1,55 @@
+[package]
+name = "chat"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "chat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chat"
+path = "src/main.rs"
+
+[features]
+default = []
+# The real-time media engine: voice/screen-share over iroh QUIC, GStreamer
+# audio for join/leave cues + capture, and the xdg-desktop-portal ScreenCast
+# request over zbus. OFF by default so the standard build and the `--shots`
+# headless path never need the GStreamer/portal dev libs or a Tokio runtime;
+# the call UI runs fully against simulated/local participants without it.
+# Enable on a real qOS install with `--features live-media`. See `src/media.rs`
+# and `src/call.rs`. (ffmpeg / ALSA / Pulse / opus dev libs are deliberately
+# NOT used — only GStreamer elements, PipeWire, and the portal via zbus.)
+live-media = ["dep:gstreamer", "dep:iroh", "dep:zbus", "dep:tokio"]
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+# XDG data-dir resolution for on-disk persistence of the workspace document.
+dirs = "6.0.0"
+# Reading real image headers (true width/height) for files chosen in the
+# workspace attachment picker, plus PNG-encoding the demo thumbnails the shared
+# `ui::ImageStore` decodes on its worker threads — so the offline shot exercises
+# the real fetch → decode → cache → paint image path (no gradient stand-in).
+# Live attachments are read straight off the FUSE mount.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+# Live-media-only (feature-gated; never compiled for the default build).
+# Versions pinned to match the workspace lock so no extra copies resolve.
+gstreamer = { version = "0.23", optional = true }
+iroh = { version = "0.96", optional = true }
+zbus = { version = "4.4", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

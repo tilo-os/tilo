@@ -1,0 +1,43 @@
+[package]
+name = "osk"
+version = "0.1.0"
+edition = "2024"
+description = "qOS on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
+
+[lib]
+name = "osk"
+path = "src/lib.rs"
+
+[[bin]]
+name = "osk"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+# Real FUTO swipe decoder (ExecuTorch over FFI). Builds a stub reporting
+# "unavailable" when the FUTO libs aren't linked, so the OSK falls back to
+# its geometric decoder — see src/futo.rs.
+qos-swipe = { path = "../../qos-swipe" }
+# Same render/event crate set the other `ui` apps pull in so the `Widget`
+# impl can build a taffy node, draw into a vello `Scene`, react to winit
+# events, and (for tests/headless) carry an automerge handle.
+automerge = "0.8.0"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+# W7 — text injection into the focused surface via the Wayland
+# `virtual-keyboard-v1` protocol (wtype-style). The injector opens its own,
+# second wayland-client connection, independent of the one winit owns.
+wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# memfd_create for the synthetic XKB keymap fd handed to the compositor.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+# Compile the synthetic keymap with the *same* library a real compositor uses
+# (libxkbcommon), so the unit tests prove the generated keymap actually parses
+# and that each symbol resolves to the intended keysym.
+xkbcommon = "0.8"

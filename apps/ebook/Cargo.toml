@@ -1,0 +1,36 @@
+[package]
+name = "ebook"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "ebook"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ebook"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+# EPUB container = a ZIP of XHTML + an OPF manifest. We parse it ourselves
+# with these two pure-Rust crates (both already in the workspace cache) rather
+# than the `epub` crate, to keep the build hermetic and dodge the 2.1.x API
+# churn. `deflate` covers real-world epubs; our bundled sample is stored.
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
+# Real cover art: EPUBs embed a raster cover (usually JPEG, sometimes PNG).
+# We decode + downscale it once at load so the shelf shows the actual artwork
+# rather than a generated spine. Already in the workspace graph, so no new
+# compilation beyond feature unification.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
