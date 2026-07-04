@@ -39,6 +39,7 @@ pub mod id;
 pub mod manifest;
 pub mod pack;
 pub mod signed;
+pub mod trust;
 pub mod unpack;
 pub mod validate;
 pub mod verify;
@@ -52,6 +53,11 @@ pub use manifest::{
 };
 pub use pack::{PackError, SigningIdentity, pack, pack_with_signature};
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
+pub use trust::{
+    ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustLoadError,
+    TrustedAttestor, TrustedAttestors, attestation_preimage, default_revoked_keys_path,
+    default_trusted_attestors_path,
+};
 pub use unpack::{UnpackError, unpack};
 pub use validate::{ManifestError, validate_manifest, validate_manifest_with_payload};
-pub use verify::{Verification, verify};
+pub use verify::{Verification, verify, verify_with_trust};
