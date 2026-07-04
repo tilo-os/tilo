@@ -39,6 +39,11 @@ pub struct Manifest {
     /// `[providers]` block — only meaningful for `format-provider`.
     #[serde(default)]
     pub providers: Providers,
+    /// `[cli]` block — commands the package publishes on the user's
+    /// PATH via the launcher's shim binary. Only meaningful when the
+    /// entrypoint declares `type = "cli"` or `type = "both"`.
+    #[serde(default)]
+    pub cli: Option<Cli>,
 }
 
 /// `[package]` — the identifying metadata.
@@ -314,10 +319,38 @@ impl serde::Serialize for ServiceReq {
 /// For `app` packages this is required. For `service` packages it
 /// is optional (services typically install a systemd unit).
 /// For `runtime` packages it is never set.
+///
+/// Apps can ship both a GUI and a CLI entrypoint. The `type` field
+/// selects which flavour is meant:
+///
+/// - `gui` (default) — `bin` is a GUI app; use the whole [`Entrypoint`]
+///   as today.
+/// - `cli` — `bin` is a CLI app; the launcher inherits stdio and
+///   does not set up a Wayland surface. Publishes commands from the
+///   [`Cli`] block onto the user's PATH via installed shims.
+/// - `both` — the package ships two binaries. `gui_bin` is used
+///   when launched through the app grid / graphical launcher; `cli_bin`
+///   is what the PATH shim execvs. Both must be under the payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entrypoint {
-    /// Path inside the payload to the binary to exec.
+    /// Path inside the payload to the binary to exec. For
+    /// `type = "both"` the `gui_bin` / `cli_bin` fields take
+    /// precedence; `bin` is kept for schema back-compat and used
+    /// only when the split fields are absent.
+    #[serde(default)]
     pub bin: PathBuf,
+    /// Kind of entrypoint. Defaults to `gui` when omitted so
+    /// existing manifests stay valid.
+    #[serde(default, rename = "type")]
+    pub r#type: EntrypointType,
+    /// GUI-flavour binary path inside the payload. Only meaningful
+    /// when `type = "both"`.
+    #[serde(default, rename = "gui-bin")]
+    pub gui_bin: Option<PathBuf>,
+    /// CLI-flavour binary path inside the payload. Only meaningful
+    /// when `type = "both"`.
+    #[serde(default, rename = "cli-bin")]
+    pub cli_bin: Option<PathBuf>,
     /// Splash-segment hints: the loader prefetches these byte
     /// ranges before exec so the splash screen renders before the
     /// full binary is in cache.
@@ -328,6 +361,60 @@ pub struct Entrypoint {
     /// whether to keep the splash or fall back to a default.
     #[serde(default = "default_splash_budget", rename = "splash-budget")]
     pub splash_budget_ms: u32,
+}
+
+impl Entrypoint {
+    /// The binary path the *GUI* launcher should exec. Falls back
+    /// to `bin` when the split fields aren't in the manifest.
+    pub fn gui_bin_path(&self) -> Option<&PathBuf> {
+        match self.r#type {
+            EntrypointType::Gui => Some(&self.bin),
+            EntrypointType::Cli => None,
+            EntrypointType::Both => self.gui_bin.as_ref().or(Some(&self.bin)),
+        }
+    }
+
+    /// The binary path a CLI command should exec. Falls back to
+    /// `bin` when the split fields aren't in the manifest.
+    pub fn cli_bin_path(&self) -> Option<&PathBuf> {
+        match self.r#type {
+            EntrypointType::Gui => None,
+            EntrypointType::Cli => Some(&self.bin),
+            EntrypointType::Both => self.cli_bin.as_ref().or(Some(&self.bin)),
+        }
+    }
+}
+
+/// Which flavour of entrypoint the package exposes. Wire form is
+/// lowercase — `type = "gui"` / `"cli"` / `"both"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntrypointType {
+    /// Windowed / graphical app. The default so back-compat is silent.
+    #[default]
+    Gui,
+    /// Terminal / stdio-only app.
+    Cli,
+    /// Ships both flavours; the [`Entrypoint::gui_bin`] / `cli_bin`
+    /// paths pick the concrete binary per launch mode.
+    Both,
+}
+
+/// `[cli]` — commands the package publishes on the user's PATH.
+///
+/// Each string in `commands` becomes a shim in
+/// `~/.local/share/qos-apps/bin/<cmd>` at install time; the shim
+/// re-execs through the launcher's `run-installed` subcommand.
+///
+/// Callers writing manifests should keep the names short and
+/// namespace-clean — the shim install layer treats them as raw
+/// filesystem paths.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cli {
+    /// PATH-visible command names (e.g. `["notes", "notes-import"]`).
+    /// Empty vec == the package ships no PATH commands.
+    #[serde(default)]
+    pub commands: Vec<String>,
 }
 
 fn default_splash_budget() -> u32 {
