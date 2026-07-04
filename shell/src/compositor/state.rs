@@ -331,6 +331,28 @@ impl State {
         let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
             return false;
         };
+        // DMABUF-direct path takes priority when the compositor's
+        // commit hook stashed a Dmabuf on this tick — `take_latest_dmabuf`
+        // drains it so a re-tick without a fresh commit finds no
+        // stale entry. Failing over to SHM if no DMABUF is present
+        // covers the mixed-mode case (a client that briefly attaches
+        // a SHM buffer between DMABUF commits).
+        if let Some(dmabuf) = self.surface_tracker.take_latest_dmabuf(surface_id) {
+            session.deposit_captured_dmabuf(dmabuf);
+            let emitted = session.encode_next_frame(std::time::Instant::now());
+            if emitted.is_some() {
+                // Encoder actually consumed the DMABUF. Only *now* do
+                // we bump the tracker's `dmabuf_direct_count` — the
+                // metric reflects real zero-copy, not "the buffer was
+                // DMABUF-shaped but the encoder rejected it and we
+                // fell back to SHM on the following commit".
+                self.surface_tracker.note_capture_path(
+                    surface_id,
+                    crate::compositor::surface_readback::CapturePath::DmabufDirect,
+                );
+            }
+            return true;
+        }
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
@@ -620,33 +642,39 @@ impl CompositorHandler for State {
                     match result {
                         Ok(_) => {}
                         Err(crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported) => {
-                            // The zero-copy DMABUF-direct path is
-                            // recorded via `note_capture_path` above,
-                            // but the fd/fourcc/plane-stride tuple
-                            // isn't yet extracted into the tracker.
+                            // The tentative path is `DmabufDirect`.
+                            // Pull the Dmabuf off the wl_buffer via
+                            // smithay's dmabuf-role lookup and stash
+                            // it on the tracker — `tick_share_session_for_surface`
+                            // will drain it via
+                            // `take_latest_dmabuf` on the same tick.
                             //
-                            // TODO(dmabuf-direct-fd-extract): pull the
-                            // Dmabuf handle off `buffer` via
-                            // `smithay::wayland::dmabuf::get_dmabuf`,
-                            // stash the fd + planes on the tracker
-                            // slot, and expose them via
-                            // `SurfaceTracker::take_latest_dmabuf` so
-                            // `SharedFlatpakSession::deposit_captured_dmabuf`
-                            // can build a `FrameInput::DmabufFd` and
-                            // hand it straight to the VA-API backend's
-                            // `av_hwframe_map` import.  Blocked on
-                            // wiring `DmabufState` + `DmabufHandler`
-                            // into the compositor state — until then
-                            // clients that attach a dmabuf stall on
-                            // the encode side (the readback path
-                            // rejects them and the tracker slot stays
-                            // empty).
-                            tracing::debug!(
-                                target: "shell::compositor::state",
-                                surface_id,
-                                path = ?path,
-                                "dmabuf buffer detected; direct-import fd extraction pending"
-                            );
+                            // If `get_dmabuf` fails despite the
+                            // detection saying "not shm" (a client
+                            // that attached an unrecognised buffer
+                            // type — e.g. `wl_drm` from an obsolete
+                            // MIT-shm-less path), the tracker slot
+                            // stays empty for this tick; the frame
+                            // is dropped and no counter is bumped
+                            // (which is the correct behaviour for
+                            // "we don't know how to handle this
+                            // buffer at all").
+                            match smithay::wayland::dmabuf::get_dmabuf(buffer) {
+                                Ok(dmabuf) => {
+                                    self.surface_tracker.note_dmabuf_committed(
+                                        surface_id,
+                                        dmabuf.clone(),
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::warn!(
+                                        target: "shell::compositor::state",
+                                        surface_id,
+                                        path = ?path,
+                                        "buffer is neither shm nor dmabuf (unknown role); dropping frame"
+                                    );
+                                }
+                            }
                         }
                         Err(err) => {
                             tracing::warn!(
