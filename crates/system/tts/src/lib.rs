@@ -20,7 +20,7 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use qos_tts::{default_speaker, Speaker, Utterance, Priority};
+//! use tts::{default_speaker, Speaker, Utterance, Priority};
 //!
 //! let mut speaker = default_speaker();          // never panics
 //! speaker.set_rate(1.2);
@@ -34,7 +34,7 @@
 //! With the queue (what the reader uses):
 //!
 //! ```
-//! use qos_tts::{SpeechQueue, NullSpeaker, Utterance, Speaker};
+//! use tts::{SpeechQueue, NullSpeaker, Utterance, Speaker};
 //!
 //! let mut queue = SpeechQueue::new();
 //! let mut speaker = NullSpeaker::new();
