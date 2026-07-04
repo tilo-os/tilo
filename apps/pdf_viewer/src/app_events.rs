@@ -14,8 +14,7 @@ impl PdfApp {
     /// the zoom + scroll consistent with the new canvas size.
     fn reflow(&mut self) {
         self.recompute_regions();
-        self.recompute_zoom();
-        self.clamp_scroll();
+        self.sync_viewport_frame();
         self.dirty = true;
     }
 
@@ -96,7 +95,7 @@ impl PdfApp {
     fn page_point(&self, page: usize, p: Point) -> (f64, f64) {
         let origins = self.page_origins();
         let origin = origins.get(page.saturating_sub(1)).copied().unwrap_or(Point::ZERO);
-        ((p.x - origin.x) / self.zoom, (p.y - origin.y) / self.zoom)
+        ((p.x - origin.x) / self.zoom(), (p.y - origin.y) / self.zoom())
     }
 
     // ---- pointer hit-testing ----------------------------------------
@@ -178,7 +177,7 @@ impl PdfApp {
             }
             ToolbarHit::ToggleRail => self.toggle_rail(),
             ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
-            ToolbarHit::Open => self.open_file_dialog(Self::open_start_dir()),
+            ToolbarHit::Open => self.request_open_via_portal(),
         }
     }
 
@@ -307,7 +306,7 @@ impl PdfApp {
         // Empty state: the only affordance is the centred "Open a PDF…" button.
         if !self.has_document {
             if self.empty_open_button_rect().contains(p) {
-                self.open_file_dialog(Self::open_start_dir());
+                self.request_open_via_portal();
             }
             return true;
         }
@@ -318,8 +317,8 @@ impl PdfApp {
                 Tool::Select => {
                     self.pan = Some(PanState {
                         start: p,
-                        scroll_x0: self.scroll_x,
-                        scroll_y0: self.scroll_y,
+                        scroll_x0: self.scroll_x(),
+                        scroll_y0: self.scroll_y(),
                         moved: false,
                     });
                     self.dirty = true;
@@ -342,8 +341,8 @@ impl PdfApp {
                 if matches!(self.tool, Tool::Select) {
                     self.pan = Some(PanState {
                         start: p,
-                        scroll_x0: self.scroll_x,
-                        scroll_y0: self.scroll_y,
+                        scroll_x0: self.scroll_x(),
+                        scroll_y0: self.scroll_y(),
                         moved: false,
                     });
                 } else {
@@ -402,9 +401,7 @@ impl PdfApp {
                     let dx = p.x - pan.start.x;
                     let dy = p.y - pan.start.y;
                     if dx.hypot(dy) > PAN_SLOP {
-                        self.scroll_x = pan.scroll_x0 - dx;
-                        self.scroll_y = pan.scroll_y0 - dy;
-                        self.clamp_scroll();
+                        self.viewport.set_scroll(pan.scroll_x0 - dx, pan.scroll_y0 - dy);
                         self.current_page = self.nearest_page();
                         if let Some(pan) = self.pan.as_mut() {
                             pan.moved = true;
@@ -439,13 +436,6 @@ impl PdfApp {
                 ..
             } => {
                 let p = self.last_mouse;
-                // The file browser is modal — it intercepts the click before
-                // any chrome behind it.
-                if self.open_dialog.is_some() {
-                    self.apply_open_dialog(p, state);
-                    *handled = true;
-                    return;
-                }
                 // A click inside the active inline editor keeps focus; a click
                 // anywhere else commits the edit first, then falls through so
                 // the click still performs its normal action.
@@ -561,17 +551,6 @@ impl PdfApp {
                 let mods = modifiers.state();
                 let ctrl = mods.control_key() || mods.super_key();
 
-                // Wheel over the open file browser scrolls its list.
-                if let Some(d) = self.open_dialog.as_mut() {
-                    if d.panel_rect.contains(p) {
-                        let max = (d.content_h - d.list_rect.height()).max(0.0);
-                        d.scroll = (d.scroll - raw_y).clamp(0.0, max);
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                }
-
                 // Wheel over the sidebar scrolls its list.
                 if self.show_sidebar && self.sidebar_rect.contains(p) {
                     // (sidebar_max_scroll needs the text renderer, so just
@@ -591,14 +570,13 @@ impl PdfApp {
                 }
 
                 // Shift+wheel (or a horizontal wheel) pans horizontally;
-                // otherwise vertical. Either axis only moves if it can.
+                // otherwise vertical. Either axis only moves if it can. The
+                // clamp lives in the shared kernel's `pan_by`.
                 if mods.shift_key() && self.is_overflowing_x() {
-                    self.scroll_x -= raw_y;
+                    self.viewport.pan_by(-raw_y, 0.0);
                 } else {
-                    self.scroll_x -= raw_x;
-                    self.scroll_y -= raw_y;
+                    self.viewport.pan_by(-raw_x, -raw_y);
                 }
-                self.clamp_scroll();
                 self.current_page = self.nearest_page();
                 self.dirty = true;
                 *handled = true;
@@ -623,17 +601,6 @@ impl PdfApp {
     ) {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
-
-        // The file browser is modal: Escape dismisses it, everything else is
-        // swallowed so page navigation doesn't fire behind it.
-        if self.open_dialog.is_some() {
-            if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
-                self.open_dialog = None;
-                self.dirty = true;
-            }
-            *handled = true;
-            return;
-        }
 
         // While an inline text field is focused it owns the keyboard, so tool
         // hotkeys and page navigation don't fire mid-sentence.
@@ -700,7 +667,7 @@ impl PdfApp {
             if let Key::Character(c) = &key_event.logical_key {
                 match c.as_str() {
                     "o" | "O" => {
-                        self.open_file_dialog(Self::open_start_dir());
+                        self.request_open_via_portal();
                         *handled = true;
                         return;
                     }
@@ -811,8 +778,7 @@ impl PdfApp {
             // the viewport; otherwise they step pages.
             Key::Named(NamedKey::ArrowLeft) => {
                 if self.is_overflowing_x() {
-                    self.scroll_x = (self.scroll_x - 80.0).max(0.0);
-                    self.clamp_scroll();
+                    self.viewport.pan_by(-80.0, 0.0);
                     self.dirty = true;
                 } else {
                     self.prev_page();
@@ -821,8 +787,7 @@ impl PdfApp {
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if self.is_overflowing_x() {
-                    self.scroll_x = (self.scroll_x + 80.0).min(self.max_scroll_x());
-                    self.clamp_scroll();
+                    self.viewport.pan_by(80.0, 0.0);
                     self.dirty = true;
                 } else {
                     self.next_page();
@@ -857,8 +822,7 @@ mod event_tests {
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
-        app.recompute_zoom();
-        app.clamp_scroll();
+        app.sync_viewport_frame();
         (app, st)
     }
 
@@ -896,9 +860,9 @@ mod event_tests {
     fn wheel_scrolls_and_tracks_page() {
         let (mut app, _st) = app();
         let p0 = app.current_page;
-        app.scroll_y = 0.0;
         // Push far enough to cross into a later page.
-        app.scroll_y = app.max_scroll();
+        let (sx, m) = (app.scroll_x(), app.viewport.max_scroll_y());
+        app.viewport.set_scroll(sx, m);
         app.current_page = app.nearest_page();
         assert!(app.current_page >= p0);
         assert_eq!(app.current_page, app.doc.page_count());
@@ -1017,8 +981,7 @@ mod event_tests {
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
-        app.recompute_zoom();
-        app.clamp_scroll();
+        app.sync_viewport_frame();
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -1041,8 +1004,8 @@ mod event_tests {
 
         // Drag across page one to lay down a highlight.
         let origin = app.page_origins()[0];
-        let p0 = (origin.x + 80.0 * app.zoom, origin.y + 200.0 * app.zoom);
-        let p1 = (origin.x + 320.0 * app.zoom, origin.y + 214.0 * app.zoom);
+        let p0 = (origin.x + 80.0 * app.zoom(), origin.y + 200.0 * app.zoom());
+        let p1 = (origin.x + 320.0 * app.zoom(), origin.y + 214.0 * app.zoom());
         let before = app.annotations.len();
         feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p0.0, p0.1) });
         feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
@@ -1081,8 +1044,7 @@ mod event_tests {
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
-        app.recompute_zoom();
-        app.clamp_scroll();
+        app.sync_viewport_frame();
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -1105,7 +1067,7 @@ mod event_tests {
 
         // Click a page to drop the note; the caret should land in its thread.
         let origin = app.page_origins()[0];
-        let click = (origin.x + 200.0 * app.zoom, origin.y + 260.0 * app.zoom);
+        let click = (origin.x + 200.0 * app.zoom(), origin.y + 260.0 * app.zoom());
         let comments_before = app.comments.len();
         feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(click.0, click.1) });
         feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
@@ -1180,96 +1142,76 @@ mod event_tests {
         assert_eq!(after.replies.last().unwrap().body, "Looks good");
     }
 
+    /// The Open affordance goes to the **host portal**, never an in-app
+    /// picker. We assert the click resolves to the Open action and that the
+    /// action routes into the portal-request path — pre-arming an in-flight
+    /// request so the test never actually spawns a real host dialog (the
+    /// in-flight guard makes applying the action a no-op).
     #[test]
-    fn open_dialog_loads_a_real_pdf_through_event_path() {
-        use ui::Widget as _;
-        use winit::dpi::PhysicalPosition;
+    fn open_affordance_routes_to_the_host_portal() {
+        let (mut app, mut st) = app();
 
+        // Hit-test: the toolbar Open (folder) button resolves to Open.
+        let open = app.toolbar_layout().open;
+        let c = Point::new((open.x0 + open.x1) / 2.0, (open.y0 + open.y1) / 2.0);
+        assert!(
+            matches!(app.toolbar_hit(c), Some(ToolbarHit::Open)),
+            "the folder button hit-tests to the Open action"
+        );
+
+        // Pre-arm a portal request so applying Open can't launch a real host
+        // dialog during the test; the in-flight guard must preserve it.
+        let sentinel = crate::portal::inject_for_test(crate::portal::PortalOutcome::Cancelled);
+        app.portal_rx = Some(sentinel);
+        app.apply_toolbar(ToolbarHit::Open, &mut st.doc);
+        assert!(
+            app.portal_rx.is_some(),
+            "Open routes to the host portal request path (not an in-app dialog)"
+        );
+    }
+
+    /// A file chosen by the host portal loads through the per-frame drain in
+    /// `sync` — the portal result is injected (no real dialog) and the next
+    /// frame must load the document.
+    #[test]
+    fn portal_open_result_loads_document_via_frame_drain() {
         let mut app = PdfApp::empty();
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
+        app.sync_viewport_frame();
         assert!(!app.has_document, "empty app starts with no document");
 
-        // Open the in-app browser on the crate's fixtures directory.
-        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
-        app.open_file_dialog(dir);
-        assert!(app.open_dialog.is_some());
+        let path =
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf"));
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Opened(path),
+        ));
 
-        // One draw pass captures the row hit-rects.
-        let theme = ui::theme::Theme::dark();
-        let mut tr = ui::text_render::TextRenderer::new();
-        let mut scene = vello::Scene::new();
-        app.draw_open_dialog(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        // The per-frame sync drains the portal channel and loads the doc.
+        app.sync(&mut st.doc, &st.root);
 
-        // Locate the sample.pdf row and take its centre.
-        let row = {
-            let d = app.open_dialog.as_ref().unwrap();
-            let i = d
-                .entries
-                .iter()
-                .position(|e| e.name == "sample.pdf")
-                .expect("sample.pdf is listed in fixtures");
-            d.row_hits.iter().find(|(ri, _)| *ri == i).map(|(_, r)| *r).unwrap()
-        };
-        let p = Point::new((row.x0 + row.x1) / 2.0, (row.y0 + row.y1) / 2.0);
-
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let dev = dummy_device_id();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p.x, p.y) },
-            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
-        );
-        app.handle_event(
-            &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left },
-            1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy,
-        );
-
-        assert!(app.has_document, "clicking the PDF row loads a real document");
+        assert!(app.has_document, "a portal-chosen PDF loads through the frame drain");
         assert_eq!(app.doc_name, "sample.pdf");
-        assert!(app.open_dialog.is_none(), "the picker closes after loading");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
         assert!(app.doc.page_count() >= 1, "the loaded document has pages");
     }
 
+    /// A cancelled portal interaction is a no-op: the current view is left
+    /// intact and the channel clears.
     #[test]
-    fn open_button_opens_the_browser_and_escape_closes_it() {
-        use ui::Widget as _;
-        use winit::dpi::PhysicalPosition;
-        use winit::keyboard::{Key, NamedKey};
-
-        let mut app = PdfApp::empty();
-        let mut st = ui::State::new();
+    fn portal_cancel_leaves_current_view_intact() {
+        let (mut app, mut st) = app(); // sample document already loaded
+        let before = app.has_document;
+        let name_before = app.doc_name.clone();
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Cancelled,
+        ));
         app.sync(&mut st.doc, &st.root);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.recompute_regions();
-        app.recompute_zoom();
-
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let dev = dummy_device_id();
-        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
-        };
-
-        // Click the toolbar Open (folder) button.
-        let open = app.toolbar_layout().open;
-        let c = ((open.x0 + open.x1) / 2.0, (open.y0 + open.y1) / 2.0);
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(c.0, c.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        assert!(app.open_dialog.is_some(), "the folder button opens the file browser");
-
-        // Escape dismisses it.
-        let ev = key_event(Key::Named(NamedKey::Escape));
-        feed(&mut app, &mut st, &ev);
-        assert!(app.open_dialog.is_none(), "Escape closes the browser");
+        assert_eq!(app.has_document, before, "cancel does not change the open state");
+        assert_eq!(app.doc_name, name_before, "cancel keeps the current document");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
     }
 
     #[test]
@@ -1283,7 +1225,7 @@ mod event_tests {
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
-        app.recompute_zoom();
+        app.sync_viewport_frame();
         let theme = ui::theme::Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
         // resolve_tooltip runs inside the draw; drive it directly.

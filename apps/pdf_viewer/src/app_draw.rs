@@ -314,165 +314,15 @@ impl PdfApp {
             self.search_hits.clear();
         }
         self.draw_status(scene, base, tr, theme);
-        // Context menu + tooltip composite above everything else.
+        // Context menu + tooltip composite above everything else. File
+        // open/save is the host desktop's portal picker (HIG §5), so there is
+        // no in-app dialog to draw here.
         self.draw_context_menu(scene, base, tr, theme);
         self.draw_tooltip(scene, base, tr, theme);
-        // The modal file browser sits on top of all chrome.
-        self.draw_open_dialog(scene, base, tr, theme);
 
         self.sidebar_hits = hits;
     }
 
-    /// The modal "Open a PDF" browser: a centred panel over a dimming scrim,
-    /// listing the current folder's sub-directories and PDF files. Row rects
-    /// are stashed back onto the dialog so a click lands on the row it shows.
-    fn draw_open_dialog(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some(mut d) = self.open_dialog.take() else { return };
-        let c = &theme.tokens.colors;
-        let win = self.rect;
-
-        // Dimming scrim over the whole window.
-        scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 130), None, &win);
-
-        // Centred panel, sized to the window but capped.
-        let pw = (win.width() - 96.0).clamp(320.0, 560.0);
-        let ph = (win.height() - 120.0).clamp(280.0, 560.0);
-        let px = (win.x0 + win.x1) / 2.0 - pw / 2.0;
-        let py = (win.y0 + win.y1) / 2.0 - ph / 2.0;
-        let panel = Rect::new(px, py, px + pw, py + ph);
-        d.panel_rect = panel;
-        let shape = RoundedRect::from_rect(panel, theme.tokens.radii.lg as f64);
-        // Soft shadow.
-        let sh = RoundedRect::new(panel.x0, panel.y0 + 6.0, panel.x1, panel.y1 + 6.0, theme.tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 70), None, &sh);
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &shape);
-
-        // Header: title + close (×).
-        let head_h = 44.0;
-        tr.draw_text_weighted(
-            scene,
-            "Open a PDF",
-            15.0,
-            theme.text_primary,
-            base * Affine::translate((panel.x0 + 16.0, panel.y0 + 15.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let close = Rect::new(panel.x1 - 16.0 - 22.0, panel.y0 + 11.0, panel.x1 - 16.0, panel.y0 + 33.0);
-        let close_hot = close.contains(self.last_mouse);
-        if close_hot {
-            scene.fill(Fill::NonZero, base, c.surface_white_10, None, &RoundedRect::from_rect(close, theme.tokens.radii.sm as f64));
-        }
-        let cc = Point::new((close.x0 + close.x1) / 2.0, (close.y0 + close.y1) / 2.0);
-        let ccol = if close_hot { theme.text_primary } else { theme.text_dim };
-        scene.stroke(&Stroke::new(1.6), base, ccol, None, &Line::new((cc.x - 5.0, cc.y - 5.0), (cc.x + 5.0, cc.y + 5.0)));
-        scene.stroke(&Stroke::new(1.6), base, ccol, None, &Line::new((cc.x - 5.0, cc.y + 5.0), (cc.x + 5.0, cc.y - 5.0)));
-        d.close_rect = close;
-
-        // Path breadcrumb (truncated to fit).
-        let path_str = d.dir.to_string_lossy().to_string();
-        let path_shown = truncate_to_width(tr, &path_str, 11.0, (pw - 32.0) as f32);
-        tr.draw_text(
-            scene,
-            &path_shown,
-            11.0,
-            theme.text_dim,
-            base * Affine::translate((panel.x0 + 16.0, panel.y0 + head_h - 8.0)),
-            None,
-        );
-        let hair = Rect::new(panel.x0 + 1.0, panel.y0 + head_h + 8.0, panel.x1 - 1.0, panel.y0 + head_h + 9.0);
-        scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
-
-        // Scrollable list body.
-        let list = Rect::new(panel.x0 + 8.0, panel.y0 + head_h + 12.0, panel.x1 - 8.0, panel.y1 - 12.0);
-        d.list_rect = list;
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &list);
-
-        let row_h = 34.0;
-        let mut y = list.y0 - d.scroll;
-        d.row_hits.clear();
-
-        // "Up" row (parent directory), when there is one.
-        d.up_rect = Rect::ZERO;
-        if d.dir.parent().is_some() {
-            let row = Rect::new(list.x0, y, list.x1, y + row_h);
-            if row.contains(self.last_mouse) {
-                scene.fill(Fill::NonZero, base, c.surface_white_5, None, &RoundedRect::from_rect(row.inflate(-2.0, -1.0), theme.tokens.radii.sm as f64));
-            }
-            draw_folder_glyph(scene, base, Rect::new(row.x0 + 8.0, row.y0 + 7.0, row.x0 + 28.0, row.y1 - 7.0), theme.text_dim);
-            tr.draw_text(
-                scene,
-                "..  (parent folder)",
-                12.5,
-                theme.text_dim,
-                base * Affine::translate((row.x0 + 36.0, vcenter(row, 12.5))),
-                None,
-            );
-            d.up_rect = row;
-            y += row_h;
-        }
-
-        if let Some(err) = &d.error {
-            tr.draw_text(
-                scene,
-                err,
-                12.0,
-                c.semantic.danger,
-                base * Affine::translate((list.x0 + 10.0, y + 8.0)),
-                Some((list.width() - 20.0) as f32),
-            );
-            y += row_h;
-        } else if d.entries.is_empty() {
-            tr.draw_text(
-                scene,
-                "No PDFs or folders here.",
-                12.0,
-                theme.text_dim,
-                base * Affine::translate((list.x0 + 10.0, y + 8.0)),
-                None,
-            );
-            y += row_h;
-        }
-
-        for (i, entry) in d.entries.iter().enumerate() {
-            let row = Rect::new(list.x0, y, list.x1, y + row_h);
-            // Cull off-screen rows but keep advancing y so hit rects line up.
-            if row.y1 >= list.y0 && row.y0 <= list.y1 {
-                let hot = row.contains(self.last_mouse);
-                if hot {
-                    scene.fill(Fill::NonZero, base, c.surface_white_10, None, &RoundedRect::from_rect(row.inflate(-2.0, -1.0), theme.tokens.radii.sm as f64));
-                }
-                let gr = Rect::new(row.x0 + 8.0, row.y0 + 7.0, row.x0 + 28.0, row.y1 - 7.0);
-                if entry.is_dir {
-                    draw_folder_glyph(scene, base, gr, theme.accent_hover);
-                } else {
-                    draw_doc_glyph(scene, base, gr, theme.text_dim);
-                }
-                let name = truncate_to_width(tr, &entry.name, 12.5, (row.width() - 90.0) as f32);
-                tr.draw_text(
-                    scene,
-                    &name,
-                    12.5,
-                    theme.text_primary,
-                    base * Affine::translate((row.x0 + 36.0, vcenter(row, 12.5))),
-                    None,
-                );
-                if entry.is_dir {
-                    draw_chevron(scene, base, Rect::new(row.x1 - 22.0, row.y0, row.x1 - 6.0, row.y1), theme.text_dim, false);
-                }
-            }
-            d.row_hits.push((i, row));
-            y += row_h;
-        }
-
-        scene.pop_layer();
-        // Content height feeds wheel clamping (up-row + entries).
-        let rows = d.entries.len() as f64 + if d.dir.parent().is_some() { 1.0 } else { 0.0 };
-        d.content_h = rows * row_h;
-
-        self.open_dialog = Some(d);
-    }
 
     /// Rasterise every page (and thumbnail) currently on screen exactly once,
     /// returning bitmaps keyed by 1-based page number. Cache hits inside the
@@ -492,8 +342,8 @@ impl PdfApp {
         }
 
         let canvas = self.canvas_rect;
-        let pageh = self.ph() * self.zoom;
-        let card_w_px = (self.pw() * self.zoom).max(1.0);
+        let pageh = self.ph() * self.zoom();
+        let card_w_px = (self.pw() * self.zoom()).max(1.0);
         // Render a little above display resolution so pages stay crisp when
         // the compositor scales the surface.
         let page_bucket = ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096);
@@ -536,7 +386,7 @@ impl PdfApp {
     /// Populate `self.text_lines` for the pages currently in view. Cheap: the
     /// measurer caches per (text,size,width) so repeated frames hit the cache.
     fn refresh_text_lines(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let pageh = self.ph() * self.zoom;
+        let pageh = self.ph() * self.zoom();
         let canvas = self.canvas_rect;
         let origins = self.page_origins();
         self.text_lines.clear();
@@ -723,7 +573,7 @@ impl PdfApp {
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &canvas);
 
-        let pageh = self.ph() * self.zoom;
+        let pageh = self.ph() * self.zoom();
         let origins = self.page_origins();
         for (i, origin) in origins.iter().enumerate() {
             let page_num = i + 1;
@@ -740,7 +590,7 @@ impl PdfApp {
                 base,
                 page,
                 *origin,
-                self.zoom,
+                self.zoom(),
                 self.pw(),
                 self.ph(),
                 page_imgs.get(&page_num),
@@ -760,10 +610,10 @@ impl PdfApp {
                     Tool::Highlight => {
                         let r = PtRect::from_corners(d.start.0, d.start.1, d.cur.0, d.cur.1);
                         let scr = Rect::new(
-                            origin.x + r.x * self.zoom,
-                            origin.y + r.y * self.zoom,
-                            origin.x + (r.x + r.w) * self.zoom,
-                            origin.y + (r.y + r.h) * self.zoom,
+                            origin.x + r.x * self.zoom(),
+                            origin.y + r.y * self.zoom(),
+                            origin.x + (r.x + r.w) * self.zoom(),
+                            origin.y + (r.y + r.h) * self.zoom(),
                         );
                         scene.fill(Fill::NonZero, base, render::alpha(col, 80), None, &scr);
                         scene.stroke(&Stroke::new(1.0), base, col, None, &scr);
@@ -771,12 +621,12 @@ impl PdfApp {
                     Tool::Ink => {
                         if d.points.len() >= 2 {
                             let mut path = BezPath::new();
-                            let p0 = Point::new(origin.x + d.points[0].0 * self.zoom, origin.y + d.points[0].1 * self.zoom);
+                            let p0 = Point::new(origin.x + d.points[0].0 * self.zoom(), origin.y + d.points[0].1 * self.zoom());
                             path.move_to(p0);
                             for p in &d.points[1..] {
-                                path.line_to((origin.x + p.0 * self.zoom, origin.y + p.1 * self.zoom));
+                                path.line_to((origin.x + p.0 * self.zoom(), origin.y + p.1 * self.zoom()));
                             }
-                            scene.stroke(&Stroke::new((2.4 * self.zoom).max(1.5)), base, col, None, &path);
+                            scene.stroke(&Stroke::new((2.4 * self.zoom()).max(1.5)), base, col, None, &path);
                         }
                     }
                     _ => {}
@@ -786,30 +636,10 @@ impl PdfApp {
 
         scene.pop_layer();
 
-        // Slim vertical scrollbar.
-        let max = self.max_scroll();
-        if max > 1.0 {
-            let track_h = canvas.height();
-            let frac = (canvas.height() / self.content_height()).clamp(0.06, 1.0);
-            let thumb_h = track_h * frac;
-            let t = self.scroll_y / max;
-            let ty = canvas.y0 + t * (track_h - thumb_h);
-            let bar = RoundedRect::new(canvas.x1 - 7.0, ty + 2.0, canvas.x1 - 3.0, ty + thumb_h - 2.0, 2.0);
-            scene.fill(Fill::NonZero, base, theme.tokens.colors.surface_white_20, None, &bar);
-        }
-
-        // Horizontal scrollbar — appears only when the zoomed page is wider
-        // than the viewport, and spans the full reachable width.
-        let maxx = self.max_scroll_x();
-        if maxx > 1.0 {
-            let track_w = canvas.width();
-            let frac = (canvas.width() / self.content_width()).clamp(0.06, 1.0);
-            let thumb_w = track_w * frac;
-            let t = self.scroll_x / maxx;
-            let tx = canvas.x0 + t * (track_w - thumb_w);
-            let bar = RoundedRect::new(tx + 2.0, canvas.y1 - 7.0, tx + thumb_w - 2.0, canvas.y1 - 3.0, 2.0);
-            scene.fill(Fill::NonZero, base, theme.tokens.colors.surface_white_20, None, &bar);
-        }
+        // Vertical + horizontal scrollbars: painted by the shared viewport
+        // kernel so they match the other document apps (they appear only when
+        // the content overflows the viewport on that axis).
+        self.viewport.draw_scrollbars(scene, base, theme);
     }
 
     // ---- thumbnail rail --------------------------------------------
@@ -965,7 +795,7 @@ impl PdfApp {
         self.icon_button_bg(scene, base, theme, lay.zoom_in, false, lay.zoom_in.contains(self.last_mouse));
         draw_plus(scene, base, lay.zoom_in, theme.text_primary);
         if lay.zoom_label.area() > 1.0 {
-            let zlabel = format!("{}%", (self.zoom * 100.0).round() as i64);
+            let zlabel = format!("{}%", (self.zoom() * 100.0).round() as i64);
             let (zw, _) = tr.measure(&zlabel, 12.0, None);
             tr.draw_text(
                 scene,
@@ -1746,25 +1576,6 @@ fn draw_minus(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
     let c = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
     let l = 6.0;
     scene.stroke(&Stroke::new(2.0), base, color, None, &Line::new((c.x - l, c.y), (c.x + l, c.y)));
-}
-
-/// A small document glyph (page with a folded corner + text lines) for file
-/// rows in the open browser. `bounds` is the glyph box itself.
-fn draw_doc_glyph(scene: &mut Scene, base: Affine, bounds: Rect, color: Color) {
-    let r = bounds.inflate(-2.0, -1.0);
-    let fold = r.width() * 0.34;
-    let mut p = BezPath::new();
-    p.move_to((r.x0, r.y0));
-    p.line_to((r.x1 - fold, r.y0));
-    p.line_to((r.x1, r.y0 + fold));
-    p.line_to((r.x1, r.y1));
-    p.line_to((r.x0, r.y1));
-    p.close_path();
-    scene.stroke(&Stroke::new(1.4), base, color, None, &p);
-    for i in 0..2 {
-        let ly = r.y0 + r.height() * (0.55 + i as f64 * 0.22);
-        scene.stroke(&Stroke::new(1.2), base, color, None, &Line::new((r.x0 + 3.0, ly), (r.x1 - 3.0, ly)));
-    }
 }
 
 /// A folder glyph within the given glyph `bounds` (already sized by the
