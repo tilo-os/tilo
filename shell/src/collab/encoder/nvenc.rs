@@ -40,13 +40,17 @@ pub fn probe() -> ProbeOutcome {
         };
     }
     // Real init requires `nvidia_video_codec_sdk::CUDA_INIT` which
-    // touches the driver. For the probe we stop at the device-file
-    // check so it's cheap + doesn't spin up a CUDA context on hosts
-    // where we don't intend to encode.
+    // touches the driver. Honesty gate: `encode()` is stubbed pending
+    // the SDK integration, so we report `available = false` to keep
+    // `SharedFlatpakSession` on openh264. The probe still records the
+    // driver presence in the outcome reason so the log line surfaces
+    // the hardware that would eventually pick.
     ProbeOutcome {
         kind: EncoderKind::NvEnc,
-        available: true,
-        reason: "nvidia driver nodes present".to_string(),
+        available: false,
+        reason: "nvidia driver nodes present but nvenc encode wiring is \
+                 pending; falling through to openh264"
+            .to_string(),
     }
 }
 
