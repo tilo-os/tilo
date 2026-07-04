@@ -4,7 +4,7 @@
 - **Status:** plan (approved direction: model **B** — the FS owns the durable document CRDT)
 - **Components:** `fs/` (collaborative filesystem), `qdoc/` (canonical document model + codecs),
   `editor/` + `ui/` collaboration plane (live editing UX)
-- **Builds on:** `docs/superpowers/specs/2026-06-29-collab-fs-design.md`
+- **Builds on:** `docs/superpowers/archive/2026-06-29-collab-fs-design.md`
 
 ## Problem
 

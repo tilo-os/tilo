@@ -1740,7 +1740,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "editor"
+name = "word-processor"
 version = "0.1.0"
 dependencies = [
  "arboard",

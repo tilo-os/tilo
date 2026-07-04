@@ -1,4 +1,4 @@
-//! `qos-runtime-collab` — Cap'n Proto client for the qOS
+//! `runtime-collab` — Cap'n Proto client for the qOS
 //! collaboration broker.
 //!
 //! ## Usage shape
@@ -76,7 +76,7 @@ impl CollabClient {
 
     /// Join (or implicitly create) a channel by id, presenting the
     /// given opaque identity blob. `identity` is the postcard
-    /// encoding of a `qos-collab-types` identity record — opaque
+    /// encoding of a `collab-types` identity record — opaque
     /// from the broker's perspective.
     pub async fn join_channel(
         &self,

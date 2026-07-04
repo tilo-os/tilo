@@ -2,7 +2,7 @@
 //! socket against a hand-rolled fake `CollabService` server.
 //!
 //! What this exercises:
-//! - The `UnixCapnpClient` plumbing through `qos-runtime-portal`.
+//! - The `UnixCapnpClient` plumbing through `runtime-portal`.
 //! - The generated `CollabService` schema (params, results,
 //!   capability returns).
 //! - The idiomatic `CollabClient::join_channel`,

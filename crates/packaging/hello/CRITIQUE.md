@@ -8,7 +8,7 @@ Reviewed against the four goal pillars: **DX, security, native APIs/performance,
 | Pillar | Evidence |
 |---|---|
 | Install speed | pack 7ms / verify 7ms / unpack 8ms for a 3 MB binary. Zero-overhead once bytes are local. |
-| Native perf | Plain ELF, dynamically linked. `qos-runtime` SDK adds zero runtime indirection for a "hello" workload. |
+| Native perf | Plain ELF, dynamically linked. `runtime` SDK adds zero runtime indirection for a "hello" workload. |
 | Graceful degradation | `qos-hello` runs cleanly with all services absent. `is_qos_native()==false`, every `try_connect()==Err(ServiceFdMissing)`. The Flatpak-portability promise holds. |
 | Content addressing | BLAKE3 root hash IS the identity. `qos-pkg pack` is deterministic (same inputs → same PackageId). |
 | Signing | ed25519 sig over `(manifest_hash, payload_root_hash, version, publisher_pubkey)`. Verify roundtrips. Byte-tamper detection works. |
@@ -23,7 +23,7 @@ Reviewed against the four goal pillars: **DX, security, native APIs/performance,
 
 2. **`/usr` and `/lib64` are bind-mounted read-only into every dynamically-linked app's sandbox.** Necessary for glibc but includes all host binaries, setuid, `/etc/shadow`, `/etc/passwd`, everything under `/usr/share`. A malicious app has an enormous read surface. The demo manifest explicitly binds them because the launcher doesn't provide a minimal runtime.
    - **Fix short-term**: launcher grows a `--minimal-libs` flag that binds only `/lib64/ld-linux-x86-64.so.2` + `/lib64/libc.so.6` + `/lib64/libgcc_s.so.1` (or the equivalent /usr paths) rather than the whole tree. Explicit allowlist.
-   - **Fix long-term**: real `qos-runtime` bundle at `/usr/lib/qos-runtime/<version>/` provides ONLY what apps declare in their runtime dep. Nothing else on host FS is bind-mounted.
+   - **Fix long-term**: real `runtime` bundle at `/usr/lib/qos-runtime/<version>/` provides ONLY what apps declare in their runtime dep. Nothing else on host FS is bind-mounted.
 
 3. **Publisher trust is self-trust.** `qos-pkg verify` succeeds because the publisher's own key signs the package. Anyone can pack + sign anything. There's no "trusted-root" walk.
    - **Fix**: `qos-pkg verify --require-attestor qos-curated/<ver>` should walk the `trust.attested_by[]` list, verify each claim signature against the attestor's known pubkey, refuse if none are trusted.
