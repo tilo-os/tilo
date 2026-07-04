@@ -291,7 +291,7 @@ pub struct App {
     /// When `None`, every narration call site short-circuits, so a build
     /// with the reader off pays nothing and is byte-for-byte unaffected.
     ///
-    /// The reader owns a `qos_tts` speaker (default backend, falling back to a
+    /// The reader owns a `tts` speaker (default backend, falling back to a
     /// silent `NullSpeaker` when no TTS is installed — so enabling it never
     /// panics). Focus narration flows from [`Self::set_focused_node`]; a
     /// dedicated keyboard layer in `window_event` drives the reading-cursor
@@ -552,7 +552,7 @@ impl App {
     /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader).
     ///
     /// Enabling constructs a [`ScreenReader`](crate::screen_reader::ScreenReader)
-    /// over the default `qos_tts` speaker (never panics; falls back to a silent
+    /// over the default `tts` speaker (never panics; falls back to a silent
     /// `NullSpeaker` when no TTS stack is present) and immediately announces the
     /// currently-focused widget so the user gets oriented. Disabling stops any
     /// in-flight speech and drops the reader, returning every narration call
@@ -1505,8 +1505,8 @@ impl App {
                 let (priority, interrupt) = match politeness {
                     // Assertive cuts in; polite is queued at notification
                     // priority and never interrupts in-flight speech.
-                    crate::a11y::Politeness::Assertive => (qos_tts::Priority::Important, true),
-                    crate::a11y::Politeness::Polite => (qos_tts::Priority::Notification, false),
+                    crate::a11y::Politeness::Assertive => (tts::Priority::Important, true),
+                    crate::a11y::Politeness::Polite => (tts::Priority::Notification, false),
                 };
                 sr.announce(text, priority, interrupt);
             }
@@ -3525,7 +3525,7 @@ mod screen_reader_tests {
     use super::*;
     use crate::screen_reader::ScreenReader;
     use crate::widget::{Button, Widget};
-    use qos_tts::{NullSpeaker, Speaker, Utterance};
+    use tts::{NullSpeaker, Speaker, Utterance};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -3851,7 +3851,7 @@ mod screen_reader_tests {
         app.scan_live_regions();
         let recref = rec.0.borrow();
         let last = recref.utterances().last().expect("an utterance was recorded");
-        assert_eq!(last.priority, qos_tts::Priority::Important);
+        assert_eq!(last.priority, tts::Priority::Important);
         assert!(last.interrupt, "assertive live regions interrupt");
     }
 
@@ -3864,7 +3864,7 @@ mod screen_reader_tests {
         app.scan_live_regions();
         let recref = rec.0.borrow();
         let last = recref.utterances().last().expect("an utterance was recorded");
-        assert_eq!(last.priority, qos_tts::Priority::Notification);
+        assert_eq!(last.priority, tts::Priority::Notification);
         assert!(!last.interrupt, "polite live regions do not interrupt");
     }
 

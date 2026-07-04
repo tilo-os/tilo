@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use qos_swipe::{FutoSwipe, ModelPaths};
+use swipe::{FutoSwipe, ModelPaths};
 use vello::kurbo::{Point, Rect};
 
 use crate::layout::{KeyId, KeyboardLayout};
@@ -136,7 +136,7 @@ impl SwipeModel for FutoSwipeModel {
     }
 }
 
-// Self-skips unless the FUTO libs are linked (real `qos_swipe` backend) AND
+// Self-skips unless the FUTO libs are linked (real `swipe` backend) AND
 // the model dir is resolvable (env `QOS_SWIPE_MODELS` or an install path) —
 // i.e. `FutoSwipeModel::default_load()` returns `Some`.
 #[cfg(test)]
