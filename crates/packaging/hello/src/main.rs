@@ -19,7 +19,25 @@ fn main() {
     println!("== services ==");
     report("collab   ", collab::try_connect().map(|_| ()));
     report("fs       ", fs::try_connect().map(|_| ()));
-    report("identity ", identity::load().map(|_| ()));
+    // Identity: split from `report` because we want to surface the
+    // loaded pubkey hex on success — that's the number a maintainer
+    // greps their broker logs for when confirming "yes, that
+    // presence event came from this device". Without it, the probe
+    // told you the identity file loaded but never proved *which*
+    // identity.
+    match identity::load() {
+        Ok(id) => {
+            let hex = hex_encode(&id.group_public_key());
+            println!("  identity : connected (pubkey={hex})");
+        }
+        Err(runtime::NotAvailable::ServiceFdMissing) => {
+            println!("  identity : unavailable (env var unset — graceful)")
+        }
+        Err(runtime::NotAvailable::ConnectionFailed(e)) => {
+            println!("  identity : unavailable (load failed: {e})")
+        }
+        Err(other) => println!("  identity : unavailable ({other:?})"),
+    }
     println!();
 
     println!("== fds ==");
@@ -145,6 +163,20 @@ fn report_portal(name: &str, result: Result<(), portal_xdg::PortalError>) {
         }
         Err(other) => println!("  {name:14}: error ({other})"),
     }
+}
+
+/// Render a byte slice as lowercase hex. Used to print the loaded
+/// Ed25519 pubkey (32 bytes → 64 hex chars) — a maintainer grepping
+/// broker logs for a specific device's presence events wants the raw
+/// hex, not the base64 the wire uses.
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xF) as usize] as char);
+    }
+    out
 }
 
 fn report(name: &str, result: Result<(), runtime::NotAvailable>) {
