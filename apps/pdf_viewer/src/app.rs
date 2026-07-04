@@ -67,7 +67,60 @@ const RASTER_SS: f64 = 2.0;
 /// How close (page points) a highlight drag must come to a text line before
 /// it snaps to text instead of falling back to a free-form rectangle.
 const SNAP_NEAR: f64 = 18.0;
-const TODAY: &str = "2026-06-30";
+/// Fixed date stamped on the bundled demonstration signature. It is only
+/// ever read by [`PdfApp::seed`], which runs on the screenshot / test path,
+/// so the shots stay byte-for-byte deterministic. Signatures placed at
+/// runtime read the real system clock via [`today_ymd`] instead.
+const SEED_DATE: &str = "2026-06-30";
+
+/// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
+/// the real signing date stamped on a signature the user places at runtime.
+fn today_ymd() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    ymd_from_unix_secs(secs)
+}
+
+/// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string using
+/// the civil-from-days algorithm (Howard Hinnant, public domain). Pure and
+/// dependency-free so the date logic is unit-testable without a clock.
+fn ymd_from_unix_secs(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    // Shift onto a calendar whose era begins 0000-03-01 (day 0 == that date).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // day-of-era, [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year, [0, 365]
+    let mp = (5 * doy + 2) / 153; // month shifted so March == 0, [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", year, m, d)
+}
+
+/// Deterministically pick one of the four bundled handwriting styles for a
+/// signer by hashing their name, so each distinct signer gets a stable,
+/// distinct stroke and the signer-card preview matches the signature that
+/// will actually be placed. An empty name falls back to style 0.
+fn signature_style_for(name: &str) -> u8 {
+    let name = name.trim();
+    if name.is_empty() {
+        return 0;
+    }
+    // FNV-1a over the name bytes — stable across runs and across peers, so a
+    // collaborator sees the same style for the same signer.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (h % 4) as u8
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SidebarTab {
@@ -457,8 +510,8 @@ impl PdfApp {
             page: 1,
             rect: PtRect::new(318.0, 612.0, 218.0, 74.0),
             signer: "Alice Example".into(),
-            date: TODAY.into(),
-            style: 1,
+            date: SEED_DATE.into(),
+            style: signature_style_for("Alice Example"),
         };
 
         let note_id = note.id.clone();
@@ -965,6 +1018,42 @@ impl PdfApp {
         }
     }
 
+    /// Copy the whole field to the system clipboard. The inline editor has no
+    /// selection model, so the copyable unit is the entire buffer. Backed by
+    /// the shared `ui::clipboard_copy` (a silent no-op when the platform
+    /// clipboard is unavailable, exactly like the toolkit's own text input).
+    fn edit_clipboard_copy(&self) {
+        if let Some(e) = self.editing.as_ref() {
+            if !e.buffer.is_empty() {
+                ui::clipboard_copy(&e.buffer);
+            }
+        }
+    }
+
+    /// Cut: copy the whole field to the clipboard, then clear it.
+    fn edit_clipboard_cut(&mut self) {
+        self.edit_clipboard_copy();
+        if let Some(e) = self.editing.as_mut() {
+            if !e.buffer.is_empty() {
+                e.buffer.clear();
+                e.caret = 0;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Paste the clipboard's text at the caret. Reuses [`Self::edit_insert`],
+    /// so control characters (newlines, etc.) are stripped to keep the field
+    /// single-line, matching typed input.
+    fn edit_clipboard_paste(&mut self) {
+        if self.editing.is_none() {
+            return;
+        }
+        if let Some(text) = ui::clipboard_paste() {
+            self.edit_insert(&text);
+        }
+    }
+
     /// Write the active edit's buffer to its durable home and clear the edit.
     /// An emptied comment body (with no replies) removes the note entirely so
     /// an abandoned marker never litters the page.
@@ -1039,8 +1128,8 @@ impl PdfApp {
             page,
             rect,
             signer: self.signer_name.clone(),
-            date: TODAY.into(),
-            style: 1,
+            date: today_ymd(),
+            style: signature_style_for(&self.signer_name),
         };
         PdfDoc::add_signature(state, &s);
         self.selected_sig = Some(sig_id.clone());
@@ -1961,5 +2050,150 @@ mod tests {
         app.recompute_matches();
         let strict = app.matches.len();
         assert!(strict <= loose, "whole-word never yields more matches than substring");
+    }
+
+    #[test]
+    fn ymd_from_unix_secs_matches_known_dates() {
+        // Fixed reference points, so the pure date conversion is proven
+        // correct independently of the wall clock.
+        assert_eq!(ymd_from_unix_secs(0), "1970-01-01"); // Unix epoch
+        assert_eq!(ymd_from_unix_secs(946_684_800), "2000-01-01");
+        assert_eq!(ymd_from_unix_secs(1_582_977_600), "2020-02-29"); // a leap day
+        assert_eq!(ymd_from_unix_secs(1_798_761_599), "2026-12-31"); // year boundary
+        // `today_ymd` is well-formed `YYYY-MM-DD`.
+        let t = today_ymd();
+        assert_eq!(t.len(), 10, "today is YYYY-MM-DD: {t}");
+        assert_eq!(&t[4..5], "-");
+        assert_eq!(&t[7..8], "-");
+    }
+
+    #[test]
+    fn placed_signature_stamps_the_real_date_not_a_constant() {
+        let (mut app, mut st) = app_with_state();
+        app.signer_name = "Grace Hopper".into();
+        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+        let s = app.signatures.iter().find(|s| s.page == 2).unwrap().clone();
+        // The stamp is the live system date, not the frozen demo/seed date.
+        assert_eq!(s.date, today_ymd(), "runtime signature carries today's date");
+        assert_ne!(s.date, SEED_DATE, "runtime date is not the hardcoded demo constant");
+        // And the real date is what durably lands in the shared CRDT.
+        let stored = PdfDoc::list_signatures(&st.doc);
+        assert!(stored.iter().any(|x| x.id == s.id && x.date == today_ymd()));
+    }
+
+    #[test]
+    fn signature_style_is_per_signer_and_reaches_every_style() {
+        use std::collections::HashSet;
+        // Distinct signers must not collapse to one canned squiggle: across a
+        // spread of names all four bundled styles are reachable.
+        let mut seen = HashSet::new();
+        for i in 0..256 {
+            let s = signature_style_for(&format!("Signer {i}"));
+            assert!(s < 4, "style stays in range");
+            seen.insert(s);
+        }
+        assert_eq!(seen.len(), 4, "all four handwriting styles are reachable across signers");
+        // Stable for a given name; empty falls back to a fixed style.
+        assert_eq!(signature_style_for("Ada Lovelace"), signature_style_for("Ada Lovelace"));
+        assert_eq!(signature_style_for("   "), 0);
+    }
+
+    #[test]
+    fn placed_signature_style_follows_the_signer_and_matches_the_preview() {
+        let (mut app, mut st) = app_with_state();
+        app.signer_name = "Grace Hopper".into();
+        // The signer-card preview (drawn when not editing) uses
+        // signature_style_for(signer_name); placement stamps the same input, so
+        // the card can never preview a stroke different from what is stamped.
+        let preview_style = signature_style_for(&app.signer_name);
+        app.place_signature(&mut st.doc, 3, (200.0, 300.0));
+        let placed = app.signatures.iter().find(|s| s.page == 3).unwrap();
+        assert_eq!(placed.style, preview_style, "placed style follows the signer, matching the preview");
+    }
+
+    #[test]
+    fn ink_drag_commits_a_polyline_annotation() {
+        let (mut app, mut st) = app_with_state();
+        let a0 = app.annotations.len();
+        app.tool = Tool::Ink;
+        app.drag = Some(DragState {
+            tool: Tool::Ink,
+            page: 1,
+            start: (80.0, 300.0),
+            cur: (240.0, 360.0),
+            points: vec![(80.0, 300.0), (140.0, 330.0), (200.0, 320.0), (240.0, 360.0)],
+        });
+        app.commit_drag(&mut st.doc);
+        assert_eq!(app.annotations.len(), a0 + 1, "an ink drag adds one annotation");
+        let ink = app
+            .annotations
+            .iter()
+            .find(|a| matches!(a.kind, AnnoKind::Ink { .. }))
+            .expect("an ink stroke was created");
+        match &ink.kind {
+            AnnoKind::Ink { points } => assert!(points.len() >= 2, "the polyline retains its points"),
+            _ => unreachable!(),
+        }
+        assert!(app.commit_pending, "ink is a committed CRDT action");
+        assert!(
+            PdfDoc::list_annotations(&st.doc).iter().any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
+            "and the ink stroke landed in the shared document"
+        );
+    }
+
+    #[test]
+    fn ink_drag_with_a_single_point_is_discarded() {
+        let (mut app, mut st) = app_with_state();
+        let a0 = app.annotations.len();
+        app.tool = Tool::Ink;
+        app.drag = Some(DragState {
+            tool: Tool::Ink,
+            page: 1,
+            start: (80.0, 300.0),
+            cur: (80.0, 300.0),
+            points: vec![(80.0, 300.0)],
+        });
+        app.commit_drag(&mut st.doc);
+        assert_eq!(app.annotations.len(), a0, "a degenerate single-point ink stroke adds nothing");
+    }
+
+    #[test]
+    fn signer_name_inline_edit_commits_and_empty_falls_back_to_author() {
+        let (mut app, mut st) = app_with_state();
+        // Type a real name into the signer identity field and commit it.
+        app.begin_edit(EditTarget::Signer, app.signer_name.clone());
+        app.editing.as_mut().unwrap().buffer = "Grace Hopper".into();
+        app.commit_edit(&mut st.doc);
+        assert!(app.editing.is_none(), "committing closes the editor");
+        assert_eq!(app.signer_name, "Grace Hopper", "signer name updates from the editor");
+        // A subsequent signature signs under the new identity.
+        app.place_signature(&mut st.doc, 4, (200.0, 300.0));
+        assert_eq!(app.signatures.iter().find(|s| s.page == 4).unwrap().signer, "Grace Hopper");
+        // Committing an empty name falls back to the app author identity.
+        app.begin_edit(EditTarget::Signer, "whatever".into());
+        app.editing.as_mut().unwrap().buffer = "   ".into();
+        app.commit_edit(&mut st.doc);
+        assert_eq!(app.signer_name, app.author, "an empty signer name falls back to the author");
+    }
+
+    #[test]
+    fn loading_a_second_document_clears_the_prior_documents_markup() {
+        let (mut app, mut st) = app_with_state(); // seeded sample, has markup
+        assert!(!app.annotations.is_empty(), "sample starts with seeded markup");
+        assert!(!app.signatures.is_empty());
+        assert!(!app.comments.is_empty());
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf"));
+        app.load_path(&path, &mut st.doc);
+        assert!(app.has_document, "the second document loads");
+        assert_eq!(app.doc_name, "sample.pdf");
+        // The prior document's markup must not bleed onto the new one.
+        assert!(app.annotations.is_empty(), "prior annotations cleared");
+        assert!(app.comments.is_empty(), "prior comments cleared");
+        assert!(app.signatures.is_empty(), "prior signatures cleared");
+        assert!(PdfDoc::list_annotations(&st.doc).is_empty(), "cleared in the shared document too");
+        assert!(PdfDoc::list_signatures(&st.doc).is_empty());
+        // View state resets for the fresh document.
+        assert_eq!(app.current_page, 1);
+        assert!(app.selected_anno.is_none() && app.selected_sig.is_none());
     }
 }
