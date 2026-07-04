@@ -45,6 +45,16 @@ pub enum RunError {
     },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
+    #[error(
+        "runtime bundle at {path} is unsigned — refuse to launch. Pass \
+         --allow-unsigned-runtime for bring-up / debugging."
+    )]
+    RuntimeBundleUnsigned { path: PathBuf },
+    #[error(
+        "runtime bundle at {path} failed signature check: {reason}. Rebuild the \
+         bundle with a trusted publisher or pass --allow-unsigned-runtime."
+    )]
+    RuntimeBundleSignature { path: PathBuf, reason: String },
 }
 
 impl RunError {
@@ -107,6 +117,16 @@ pub struct RunOptions {
     /// of aborting. Escape hatch for debugging / bring-up; default:
     /// off.
     pub allow_missing_runtime: bool,
+    /// Accept an unsigned runtime bundle. Default: refuse. This is a
+    /// bring-up / debug escape hatch — signed bundles are what the
+    /// OS image ships (see `os/scripts/bake-runtime-bundle.sh`), so
+    /// production launches never need it.
+    pub allow_unsigned_runtime: bool,
+    /// If set, require the bundle's `publisher_hex` to equal this
+    /// (Ed25519 pubkey, hex). Left empty in typical launches; used
+    /// by policy-strict callers and by tests. The launcher's trust
+    /// config (a follow-up) will pin this by default.
+    pub require_runtime_publisher: Option<String>,
 }
 
 /// Resolve which runtime bundle to mount, if any.
@@ -137,12 +157,16 @@ pub fn resolve_runtime(
     manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
 ) -> Result<Option<(PathBuf, String)>, RunError> {
-    // 1. Explicit override wins.
+    // 1. Explicit override wins. Verify signature policy against the
+    //    caller-supplied path just like the manifest path — an operator
+    //    passing --runtime <path> to a debug launch is still subject to
+    //    the same "signed unless opted out" rule.
     if let Some(explicit) = &opts.runtime_root {
         let version = manifest
             .runtime_ref()
             .map(|(_, v)| v.to_string())
             .unwrap_or_else(|| "1".to_string());
+        enforce_bundle_policy(explicit, opts)?;
         return Ok(Some((explicit.clone(), version)));
     }
     // 2. Manifest declaration.
@@ -158,6 +182,7 @@ pub fn resolve_runtime(
     let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            enforce_bundle_policy(cand, opts)?;
             return Ok(Some((cand.clone(), version.to_string())));
         }
     }
@@ -173,6 +198,29 @@ pub fn resolve_runtime(
         runtime: raw.to_string(),
         paths: candidates,
     })
+}
+
+/// Verify the bundle at `path` against the run-time signature policy.
+/// Unless `allow_unsigned_runtime` is set, a bundle must be signed. If
+/// `require_runtime_publisher` is set, the bundle's publisher_hex must
+/// equal that (case-insensitively). Any hash-integrity failure inside
+/// the bundle also surfaces here so we fail-fast before spawning bwrap.
+fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError> {
+    let verify_opts = runtime_bundle::VerifyOptions {
+        require_publisher: opts.require_runtime_publisher.clone(),
+        require_signature: !opts.allow_unsigned_runtime,
+        require_arch: None,
+    };
+    match runtime_bundle::verify_bundle_with(path, &verify_opts) {
+        Ok(_manifest) => Ok(()),
+        Err(runtime_bundle::BundleError::NotSigned) => {
+            Err(RunError::RuntimeBundleUnsigned { path: path.to_path_buf() })
+        }
+        Err(e) => Err(RunError::RuntimeBundleSignature {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        }),
+    }
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.

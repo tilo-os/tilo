@@ -213,6 +213,17 @@ enum RuntimeCmd {
         /// Copy from an explicit host prefix. Wins over `--from-host`.
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Target architecture. Defaults to the host arch. Explicit
+        /// override lets you install a cross-arch bundle from a
+        /// fabricated rootfs.
+        #[arg(long)]
+        arch: Option<String>,
+        /// Path to a signing identity JSON file (see
+        /// `qos-runtime-bundle key generate`). Optional — the
+        /// launcher refuses unsigned bundles by default, so most
+        /// installs should sign.
+        #[arg(long)]
+        identity: Option<PathBuf>,
         /// Overwrite an existing bundle at the same version.
         #[arg(long)]
         force: bool,
@@ -800,6 +811,8 @@ fn runtime_install(
     version: &str,
     from_host: bool,
     from: Option<&Path>,
+    arch: Option<&str>,
+    identity: Option<&Path>,
     force: bool,
 ) -> Result<(), Error> {
     let dest = runtime_bundle::default_bundle_path(version)
@@ -818,12 +831,24 @@ fn runtime_install(
     } else {
         None
     };
-    let manifest = runtime_bundle::build_bundle(&dest, version, host_root)
-        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
+    let manifest = runtime_bundle::build_bundle_with(
+        &dest,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: host_root,
+            arch,
+            identity,
+        },
+    )
+    .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
     println!("installed runtime bundle: qos-runtime/{version}");
     println!("  path     : {}", dest.display());
+    println!("  arch     : {}", manifest.arch);
     println!("  files    : {}", manifest.files.len());
     println!("  root-hash: blake3:{}", manifest.root_hash);
+    if let Some(pk) = &manifest.publisher_hex {
+        println!("  publisher: ed25519:{pk}");
+    }
     Ok(())
 }
 
@@ -931,8 +956,17 @@ fn main() {
                 version,
                 from_host,
                 from,
+                arch,
+                identity,
                 force,
-            } => runtime_install(&version, from_host, from.as_deref(), force),
+            } => runtime_install(
+                &version,
+                from_host,
+                from.as_deref(),
+                arch.as_deref(),
+                identity.as_deref(),
+                force,
+            ),
             RuntimeCmd::List => runtime_list(),
             RuntimeCmd::Remove { version } => runtime_remove(&version),
             RuntimeCmd::Path { version } => runtime_path(&version),

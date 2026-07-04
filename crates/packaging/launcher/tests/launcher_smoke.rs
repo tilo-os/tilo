@@ -312,6 +312,58 @@ fn manifest_declared_runtime_missing_bundle_fails() {
     );
 }
 
+/// Build a valid unsigned runtime bundle under `<xdg_data_home>/qos-runtime/<version>/`
+/// from a fake host rootfs and return its resolved path.
+fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
+    let host = tempfile::tempdir().unwrap();
+    for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
+        let p = host.path().join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, format!("stub {rel}")).unwrap();
+    }
+    let dest = xdg_data_home.join("qos-runtime").join(version);
+    runtime_bundle::build_bundle_with(
+        &dest,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: None,
+        },
+    )
+    .expect("build unsigned bundle");
+    dest
+}
+
+/// Same but signed with the returned identity.
+fn install_signed_bundle(
+    xdg_data_home: &Path,
+    version: &str,
+) -> (PathBuf, runtime_bundle::Identity) {
+    let host = tempfile::tempdir().unwrap();
+    for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
+        let p = host.path().join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, format!("stub {rel}")).unwrap();
+    }
+    let identity = runtime_bundle::Identity::generate();
+    let id_path = host.path().join("id.json");
+    std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
+
+    let dest = xdg_data_home.join("qos-runtime").join(version);
+    runtime_bundle::build_bundle_with(
+        &dest,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&id_path),
+        },
+    )
+    .expect("build signed bundle");
+    (dest, identity)
+}
+
 /// When an app manifest declares a runtime bundle, the launcher's
 /// argv should:
 ///   * bind the bundle at /usr/lib/qos-runtime/<v>/
@@ -324,18 +376,14 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     use launcher::sandbox::build_bwrap_argv;
 
     let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    // Set up a fake bundle so resolve_runtime finds it.
+    // Set up a real signed bundle so resolve_runtime + its integrity
+    // check are happy.
     let user_home = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("XDG_DATA_HOME", user_home.path());
         std::env::set_var("HOME", user_home.path());
     }
-    let bundle_dir = user_home
-        .path()
-        .join("qos-runtime")
-        .join("smoke-1.0.0");
-    std::fs::create_dir_all(bundle_dir.join("lib")).unwrap();
-    std::fs::write(bundle_dir.join("bundle.toml"), "version = \"smoke-1.0.0\"\nroot_hash = \"deadbeef\"\n").unwrap();
+    let (bundle_dir, _identity) = install_signed_bundle(user_home.path(), "smoke-1.0.0");
 
     let mut m = MinimalManifest {
         package_id: "com.example.hello".to_string(),
@@ -429,3 +477,94 @@ fs = "optional@2"
     assert_eq!(m.entrypoint.bin, "bin/demo");
     assert_eq!(m.sandbox.services.get("collab").unwrap(), "required@1");
 }
+
+/// Manifest declares a runtime; a bundle at that version exists but is
+/// unsigned. Default policy refuses to launch. --allow-unsigned-runtime
+/// makes the resolve succeed.
+#[test]
+fn unsigned_bundle_is_refused_unless_opted_in() {
+    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let user_home = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", user_home.path());
+        std::env::set_var("HOME", user_home.path());
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+    }
+    let _bundle = install_unsigned_bundle(user_home.path(), "sig-refuse-1");
+
+    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    m.runtime = Some("qos-runtime/sig-refuse-1".to_string());
+
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+    let err = launcher::run::resolve_runtime_test_helper(&m, &opts).unwrap_err();
+    match &err {
+        RunError::RuntimeBundleUnsigned { .. } => {}
+        other => panic!("expected RuntimeBundleUnsigned, got {other:?}"),
+    }
+
+    let opts_ok = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        allow_unsigned_runtime: true,
+        ..Default::default()
+    };
+    let resolved =
+        launcher::run::resolve_runtime_test_helper(&m, &opts_ok).expect("opt-in accepts");
+    let (_p, v) = resolved.expect("bundle resolves");
+    assert_eq!(v, "sig-refuse-1");
+}
+
+/// A signed bundle is accepted by default. Pinning the publisher to
+/// its actual key still accepts; pinning to a different key refuses.
+#[test]
+fn signed_bundle_publisher_pin_enforced() {
+    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let user_home = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", user_home.path());
+        std::env::set_var("HOME", user_home.path());
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+    }
+    let (_bundle, identity) = install_signed_bundle(user_home.path(), "sig-pin-1");
+
+    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    m.runtime = Some("qos-runtime/sig-pin-1".to_string());
+
+    // Default: accepted.
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+    launcher::run::resolve_runtime_test_helper(&m, &opts).expect("accept signed");
+
+    // Pin to the bundle's publisher: accepted.
+    let opts_pinned = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        require_runtime_publisher: Some(identity.public_key_hex()),
+        ..Default::default()
+    };
+    launcher::run::resolve_runtime_test_helper(&m, &opts_pinned).expect("pin matches");
+
+    // Pin to a different publisher: refused.
+    let other = runtime_bundle::Identity::generate();
+    let opts_wrong = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        require_runtime_publisher: Some(other.public_key_hex()),
+        ..Default::default()
+    };
+    let err = launcher::run::resolve_runtime_test_helper(&m, &opts_wrong).unwrap_err();
+    match &err {
+        RunError::RuntimeBundleSignature { .. } => {}
+        other => panic!("expected RuntimeBundleSignature, got {other:?}"),
+    }
+}
+
