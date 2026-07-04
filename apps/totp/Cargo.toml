@@ -50,6 +50,19 @@ base32 = "0.5"
 rqrr = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+# --- Host-native file open (XDG Desktop Portal) -----------------------
+# Choosing the screenshot/photo to decode goes through
+# org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its
+# own file picker (HIG §5). On GNOME the user sees GNOME's file chooser; on
+# qOS the compositor's portal backend renders qOS's picker (and hosts the
+# per-cluster file-access prompt). The portal call runs off the UI thread on
+# its own small Tokio runtime and the chosen path comes back over a channel
+# (see `app::portal`). All three are already resolved in the shared workspace
+# lockfile, so this adds no registry fetch and keeps the fleet build green.
+ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
+url = "2"
+
 # --- Encryption-at-rest for the vault ---------------------------------
 # TOTP secrets are long-lived bearer credentials, so the vault is sealed
 # on disk with XChaCha20-Poly1305 (a 192-bit-nonce AEAD) under a 256-bit

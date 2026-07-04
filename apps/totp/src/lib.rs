@@ -33,6 +33,7 @@ pub mod app;
 pub mod doc;
 pub mod list;
 pub mod model;
+pub mod portal;
 pub mod qr;
 pub mod ring;
 pub mod storage;
@@ -80,9 +81,12 @@ pub fn app_root_add_advanced_screen() -> Box<dyn Widget> {
     Box::new(app)
 }
 
-/// Build the sample-seeded root on the Add-account screen with the QR image
-/// file chooser overlaid — the `--shots` renderer uses it to capture the
-/// import flow that the "Scan a QR image" action opens at runtime.
+/// Build the sample-seeded root on the Add-account screen — the entry point
+/// the "Scan a QR image" import flow starts from. At runtime that action hands
+/// off to the **host** file chooser via the XDG Desktop Portal (there is no
+/// app-drawn picker to capture offscreen, per HIG §5), so this shot shows the
+/// add screen with its import method cards; the host dialog itself is rendered
+/// by the compositor's portal backend.
 pub fn app_root_add_picker_screen() -> Box<dyn Widget> {
     let mut app = AuthenticatorApp::demo();
     app.seed_open_add_picker();
