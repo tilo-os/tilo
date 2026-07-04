@@ -8,4 +8,8 @@
 
 pub mod shim;
 
-pub use shim::{ShimError, ShimInstall, locate_shim_source, remove_shims, write_shims, SIDECAR_SUFFIX};
+pub use shim::{ShimError, ShimInstall, SIDECAR_SUFFIX, locate_shim_source, remove_shims, write_shims};
+
+/// The name of the binary as registered with Cargo. Exposed for
+/// integration tests that want to invoke it via `CARGO_BIN_EXE_*`.
+pub const BINARY_NAME: &str = "qos-install";
