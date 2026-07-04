@@ -382,6 +382,75 @@ mod tests {
         assert_eq!(ws, vec!["ws-1", "ws-2"]);
     }
 
+    /// The grant file the shell writes here is read by the
+    /// launcher's `sandbox::resolve_workspace_grants`. That reader
+    /// expects the wire shape:
+    ///
+    /// ```toml
+    /// [[entry]]
+    /// pkg_id = "..."
+    /// [entry.grant]
+    /// path = "..."
+    /// mode = "read" | "write"
+    /// ```
+    ///
+    /// If this test fails, the launcher will silently stop picking
+    /// up per-workspace grants — no runtime error, just silent
+    /// permission regressions. So we pin the on-disk layout here.
+    #[test]
+    fn wire_shape_matches_launcher_expected_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = GrantRegistry::open_at(tmp.path()).unwrap();
+        store
+            .add_grant(
+                "ws-1",
+                "dev.qos.notes",
+                Grant {
+                    path: PathBuf::from("/home/u/Documents"),
+                    mode: GrantMode::Read,
+                },
+            )
+            .unwrap();
+        store
+            .add_grant(
+                "ws-1",
+                "dev.qos.notes",
+                Grant {
+                    path: PathBuf::from("/home/u/Downloads"),
+                    mode: GrantMode::Write,
+                },
+            )
+            .unwrap();
+        let text =
+            std::fs::read_to_string(tmp.path().join("ws-1.toml")).unwrap();
+        // Both entries must be present …
+        assert!(
+            text.contains("pkg_id = \"dev.qos.notes\""),
+            "grant file missing pkg_id row: {text}"
+        );
+        assert!(
+            text.contains("path = \"/home/u/Documents\""),
+            "grant file missing Documents row: {text}"
+        );
+        assert!(
+            text.contains("path = \"/home/u/Downloads\""),
+            "grant file missing Downloads row: {text}"
+        );
+        // … and the mode must be lowercase (the launcher matches
+        // on == "write" verbatim).
+        assert!(text.contains("mode = \"read\""), "mode is not 'read': {text}");
+        assert!(
+            text.contains("mode = \"write\""),
+            "mode is not 'write': {text}"
+        );
+        // Both entries share the same [[entry]]/[entry.grant] nesting.
+        let entry_headers = text.matches("[[entry]]").count();
+        assert_eq!(
+            entry_headers, 2,
+            "expected 2 [[entry]] tables, got {entry_headers}: {text}"
+        );
+    }
+
     #[test]
     fn grants_by_pkg_groups() {
         let tmp = tempfile::tempdir().unwrap();
