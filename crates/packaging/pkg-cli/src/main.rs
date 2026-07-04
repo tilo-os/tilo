@@ -32,9 +32,9 @@ use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use qos_pkg::blobs::{BlobHash, BlobStore, Collection};
-use qos_pkg::signed::SignedRoot;
-use qos_pkg::{Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify};
+use pkg::blobs::{BlobHash, BlobStore, Collection};
+use pkg::signed::SignedRoot;
+use pkg::{Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify};
 
 /// The header entry inside a `.qpkg` tar. Tiny, deliberately
 /// minimal so it can be deserialised without pulling the rest

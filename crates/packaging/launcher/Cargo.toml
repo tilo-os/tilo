@@ -1,5 +1,5 @@
 [package]
-name = "qos-launcher"
+name = "launcher"
 version = "0.1.0"
 edition = "2024"
 
@@ -17,7 +17,7 @@ name = "qos-launcher"
 path = "src/main.rs"
 
 [lib]
-name = "qos_launcher"
+name = "launcher"
 path = "src/lib.rs"
 
 [dependencies]
