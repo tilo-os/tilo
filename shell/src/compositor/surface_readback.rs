@@ -370,6 +370,29 @@ impl SurfaceTracker {
         })
     }
 
+    /// Non-draining borrow of the most-recent staged RGBA.
+    ///
+    /// The compositor's per-commit share-session tick hook uses this
+    /// to feed the encoder without draining the render-side consumer.
+    /// Copies out the bytes; the tracker slot is left populated so a
+    /// subsequent [`Self::take_latest`] (from the render loop or a
+    /// parallel share session) still finds the frame.
+    ///
+    /// Returns `None` when no frame has been staged since the last
+    /// `take_latest`, or when the slot was last touched by a failed
+    /// `on_commit`.
+    pub fn peek_latest(&self, surface_id: SurfaceId) -> Option<TakenFrame> {
+        let slot = self.latest.get(&surface_id)?;
+        if slot.rgba.is_empty() {
+            return None;
+        }
+        Some(TakenFrame {
+            rgba: slot.rgba.clone(),
+            width: slot.width,
+            height: slot.height,
+        })
+    }
+
     /// Drop the tracking slot for `surface_id` entirely. Called from the
     /// compositor when the share is revoked or the surface destroyed.
     pub fn forget(&mut self, surface_id: SurfaceId) {
