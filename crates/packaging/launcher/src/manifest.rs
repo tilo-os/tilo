@@ -114,6 +114,27 @@ pub struct Sandbox {
     /// "optional@2", …). Parsed in [`ServiceReq::parse`].
     #[serde(default)]
     pub services: BTreeMap<String, String>,
+    /// XDG portal policy per portal name — `file-chooser`,
+    /// `screencast`, `notifications`, `secret-service`, `open-uri`.
+    /// When at least one portal is `ViaHost` the launcher bind-mounts
+    /// the host session D-Bus socket into the sandbox and sets
+    /// `DBUS_SESSION_BUS_ADDRESS`. Absent / empty == the bus is NOT
+    /// exposed (so apps that didn't declare a portal can't reach it).
+    #[serde(default)]
+    pub portals: BTreeMap<String, PortalPolicy>,
+}
+
+/// How the launcher should route a portal request. Kebab-case wire
+/// form: `"via-host"` / `"deny"`. Matches the enum on the pkg side
+/// verbatim — the shim carries its own copy so this crate doesn't
+/// depend on `pkg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PortalPolicy {
+    /// Route through the freedesktop portal on the host session bus.
+    ViaHost,
+    /// Portal explicitly denied.
+    Deny,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -299,6 +320,43 @@ collab = "required@1"
         assert!(ServiceReq::parse("required").is_err());
         assert!(ServiceReq::parse("maybe@1").is_err());
         assert!(ServiceReq::parse("required@abc").is_err());
+    }
+
+    #[test]
+    fn portals_table_parses_via_host_and_deny() {
+        let toml_text = r#"
+package_id = "com.example.notes"
+version = "0.1.0"
+
+[entrypoint]
+bin = "bin/notes"
+
+[sandbox.portals]
+file-chooser = "via-host"
+notifications = "deny"
+"#;
+        let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+        assert_eq!(
+            m.sandbox.portals.get("file-chooser").copied(),
+            Some(PortalPolicy::ViaHost)
+        );
+        assert_eq!(
+            m.sandbox.portals.get("notifications").copied(),
+            Some(PortalPolicy::Deny)
+        );
+    }
+
+    #[test]
+    fn portals_table_empty_by_default() {
+        let toml_text = r#"
+package_id = "com.example.notes"
+version = "0.1.0"
+
+[entrypoint]
+bin = "bin/notes"
+"#;
+        let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+        assert!(m.sandbox.portals.is_empty());
     }
 
     #[test]

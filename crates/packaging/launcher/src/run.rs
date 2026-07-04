@@ -162,6 +162,19 @@ pub fn run_with(
             argv.push("--ro".to_string());
             argv.push(expanded.display().to_string());
         }
+        // If we bound the session D-Bus socket in for portal use,
+        // Landlock must also grant the app read on that socket path
+        // — otherwise the `ashpd` connect() surfaces EACCES and the
+        // portal appears unavailable, defeating the point of the
+        // whole plumbing.
+        if let Some(bus_addr) =
+            crate::sandbox::host_dbus_bus_address_if_needed(&manifest.sandbox.portals)
+        {
+            if let Some(path) = crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
+                argv.push("--ro".to_string());
+                argv.push(path);
+            }
+        }
         for path in &manifest.sandbox.fs.write {
             let expanded = crate::manifest::expand_path(path);
             argv.push("--rw".to_string());
