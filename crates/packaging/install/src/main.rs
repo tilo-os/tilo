@@ -8,20 +8,33 @@
 //!   payloads/<pkg-id>/   (unpacked payload, manifest.toml + payload files)
 //! ```
 //!
+//! Trust config (per user, under $XDG_CONFIG_HOME or ~/.config/qos):
+//!
+//! ```text
+//! trusted-attestors.toml
+//! revoked-keys.toml
+//! ```
+//!
 //! Subcommands:
 //!
 //! ```text
-//! qos-install install  <path.qpkg> [--pinned]
+//! qos-install install  <path.qpkg> [--require-attestor <id>] [--allow-self-signed] [--pinned] [--force]
 //! qos-install list
 //! qos-install remove   <pkg-id>
-//! qos-install run      <pkg-id> [--no-services]     # forwards to qos-launcher
+//! qos-install run      <pkg-id> [--require-attestor <id>] [--allow-self-signed] [--no-services]
 //! qos-install inspect  <pkg-id>
+//! qos-install trust add    --id <id> --pubkey <hex> [--scope <spec>]
+//! qos-install trust list
+//! qos-install trust remove <id>
+//! qos-install revoke   <pubkey_hex> [--reason <text>]
+//! qos-install revoked list
 //! ```
 //!
-//! Verifies the .qpkg signature before extracting. Refuses to overwrite
-//! an existing installation unless `--force`. Every mutation persists
-//! the registry immediately so a crash doesn't leave the system in an
-//! inconsistent state.
+//! Verifies the .qpkg signature and the trust chain before
+//! extracting. Refuses to install if the publisher key is on the
+//! revocation list. Warns on self-signed unless `--allow-self-signed`
+//! is set; refuses if `--require-attestor` is set and no matching
+//! attestation is found.
 
 use std::fs;
 use std::io::Read;
@@ -29,9 +42,13 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use pkg::blobs::BlobStore;
-use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify};
+use pkg::trust::{
+    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
+    default_revoked_keys_path, default_trusted_attestors_path,
+};
+use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 use serde::{Deserialize, Serialize};
 
 /// Header block written into every .qpkg tar. Mirrors qos-pkg-cli's
@@ -51,6 +68,23 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// Trust-related flags shared by `install` and `run`.
+#[derive(Debug, Args, Clone, Default)]
+struct TrustFlags {
+    /// Refuse to proceed unless the .qpkg is signed by this
+    /// attestor id (as found in `trusted-attestors.toml`).
+    #[arg(long)]
+    require_attestor: Option<String>,
+    /// Permit self-signed packages that lack a trusted-attestor
+    /// signature. Without this flag AND without --require-attestor,
+    /// the current warn-then-proceed behaviour is preserved.
+    /// Combined with --require-attestor: the attestor match is
+    /// preferred; self-signed is the fallback when the attestor
+    /// match fails.
+    #[arg(long)]
+    allow_self_signed: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum Cmd {
     /// Install a .qpkg into the local store. Verifies signature first.
@@ -64,6 +98,8 @@ enum Cmd {
         /// Overwrite an existing installation with the same package id.
         #[arg(long)]
         force: bool,
+        #[command(flatten)]
+        trust: TrustFlags,
     },
     /// List installed packages.
     List,
@@ -86,20 +122,77 @@ enum Cmd {
         /// Turn off the Landlock enforcement. Debug only.
         #[arg(long, hide = true)]
         no_landlock: bool,
+        #[command(flatten)]
+        trust: TrustFlags,
     },
     /// Print manifest + install info for an installed package.
     Inspect {
         /// Package id.
         pkg_id: String,
     },
+    /// Manage the trusted-attestor registry.
+    Trust {
+        #[command(subcommand)]
+        cmd: TrustCmd,
+    },
+    /// Revoke a publisher key.
+    Revoke {
+        /// The publisher's Ed25519 public key, hex encoded (64 chars).
+        pubkey_hex: String,
+        /// Free-form reason recorded next to the entry.
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// List revoked keys.
+    Revoked {
+        #[command(subcommand)]
+        cmd: RevokedCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TrustCmd {
+    /// Add or replace a trusted attestor.
+    Add {
+        /// Attestor id (as it appears in `[[trust.attested_by]].attestor`).
+        #[arg(long)]
+        id: String,
+        /// The attestor's Ed25519 public key, hex encoded (64 chars).
+        #[arg(long)]
+        pubkey: String,
+        /// Scope: `all` | `mime:<a>[,<b>...]` | `prefix:<a>[,<b>...]`.
+        #[arg(long, default_value = "all")]
+        scope: String,
+    },
+    /// List trusted attestors.
+    List,
+    /// Remove a trusted attestor by id.
+    Remove {
+        /// Attestor id to remove.
+        id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RevokedCmd {
+    /// List revoked keys.
+    List,
 }
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error("data-dir resolution failed (XDG_DATA_HOME / HOME unset?)")]
     NoDataDir,
+    #[error("config-dir resolution failed (XDG_CONFIG_HOME / HOME unset?)")]
+    NoConfigDir,
     #[error("qpkg verification failed: {0}")]
     Verify(String),
+    #[error("publisher key is revoked ({reason})")]
+    Revoked { reason: String },
+    #[error("policy refused: --require-attestor {required:?} but package verified as {found}")]
+    AttestorMismatch { required: String, found: String },
+    #[error("policy refused: --require-attestor {required:?} and package is self-signed (use --allow-self-signed to override)")]
+    RequireAttestorWithoutAttestation { required: String },
     #[error("qpkg parse: {0}")]
     Parse(String),
     #[error("package {0} already installed (use --force to overwrite)")]
@@ -110,6 +203,8 @@ enum Error {
     RegistryRead(String),
     #[error("registry write: {0}")]
     RegistryWrite(String),
+    #[error("trust registry: {0}")]
+    Trust(String),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
     #[error("unpack: {0}")]
@@ -134,6 +229,10 @@ struct RegistryEntry {
     pinned: bool,
     /// Unix seconds of install.
     installed_at: u64,
+    /// Attestor id if the install was verified via an attestor
+    /// chain. Empty for self-signed installs.
+    #[serde(default)]
+    attested_by: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -153,6 +252,24 @@ fn registry_path() -> Result<PathBuf, Error> {
 
 fn payloads_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("payloads"))
+}
+
+fn trusted_attestors_path() -> Result<PathBuf, Error> {
+    default_trusted_attestors_path().ok_or(Error::NoConfigDir)
+}
+
+fn revoked_keys_path() -> Result<PathBuf, Error> {
+    default_revoked_keys_path().ok_or(Error::NoConfigDir)
+}
+
+fn load_trusted_attestors() -> Result<TrustedAttestors, Error> {
+    let path = trusted_attestors_path()?;
+    TrustedAttestors::load(&path).map_err(|e| Error::Trust(e.to_string()))
+}
+
+fn load_revocation_list() -> Result<RevocationList, Error> {
+    let path = revoked_keys_path()?;
+    RevocationList::load(&path).map_err(|e| Error::Trust(e.to_string()))
 }
 
 fn load_registry() -> Result<Registry, Error> {
@@ -178,31 +295,85 @@ fn save_registry(reg: &Registry) -> Result<(), Error> {
     Ok(())
 }
 
-fn install(qpkg: &Path, pinned: bool, force: bool) -> Result<(), Error> {
+/// Verify `pkg_id` against the on-disk trust config and apply
+/// the caller's `TrustFlags` policy. Returns the manifest and
+/// the attestor id (empty string for self-signed installs).
+fn verify_and_gate(
+    pkg_id: PackageId,
+    store: &MemoryBlobStore,
+    trust: &TrustFlags,
+) -> Result<(pkg::Manifest, String, String), Error> {
+    let attestors = load_trusted_attestors()?;
+    let revocation = load_revocation_list()?;
+    let outcome = verify_with_trust(pkg_id, store, &[], attestors.as_slice(), &revocation);
+    match outcome {
+        Verification::AttestedBy { attestor, manifest } => {
+            if let Some(required) = &trust.require_attestor {
+                if required != &attestor {
+                    return Err(Error::AttestorMismatch {
+                        required: required.clone(),
+                        found: attestor,
+                    });
+                }
+            }
+            let pub_key_hex =
+                extract_publisher_key(&pkg_id, store).map(|k| hex_of(&k)).unwrap_or_default();
+            Ok((manifest, pub_key_hex, attestor))
+        }
+        Verification::UntrustedPublisher { identity, manifest } => {
+            // --require-attestor set: refuse unless --allow-self-signed
+            // rescues us.
+            if let Some(required) = &trust.require_attestor {
+                if !trust.allow_self_signed {
+                    return Err(Error::RequireAttestorWithoutAttestation {
+                        required: required.clone(),
+                    });
+                }
+                // fallback: --allow-self-signed permits this
+                eprintln!(
+                    "qos-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
+                    hex_of(&identity)
+                );
+            } else if !trust.allow_self_signed {
+                // Default (current) behavior: warn and proceed.
+                eprintln!(
+                    "qos-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
+                    hex_of(&identity)
+                );
+            }
+            Ok((manifest, hex_of(&identity), String::new()))
+        }
+        Verification::Revoked { reason, pubkey, .. } => {
+            eprintln!(
+                "qos-install: REFUSED — publisher ed25519:{} is revoked: {reason}",
+                hex_of(&pubkey)
+            );
+            Err(Error::Revoked { reason })
+        }
+        Verification::Trusted { manifest } => {
+            let pub_key_hex =
+                extract_publisher_key(&pkg_id, store).map(|k| hex_of(&k)).unwrap_or_default();
+            if let Some(required) = &trust.require_attestor {
+                // Trusted-key path bypasses attestor chain — the
+                // user configured a trusted publisher key elsewhere.
+                // --require-attestor is strict: refuse.
+                return Err(Error::AttestorMismatch {
+                    required: required.clone(),
+                    found: "trusted-key".into(),
+                });
+            }
+            Ok((manifest, pub_key_hex, String::new()))
+        }
+        other => Err(Error::Verify(format!("{other:?}"))),
+    }
+}
+
+fn install(qpkg: &Path, pinned: bool, force: bool, trust: TrustFlags) -> Result<(), Error> {
     // 1. Read + ingest the .qpkg tar into an in-memory blob store.
     let (pkg_id, store) = read_qpkg(qpkg)?;
 
-    // 2. Verify signature. Self-signed acceptable for v0 (see CRITIQUE.md
-    // security-#3: publisher trust chain is a follow-up).
-    let (manifest, publisher_key_hex) = match verify(pkg_id, &store, &[]) {
-        Verification::Trusted { manifest } => {
-            // We asked for no trusted keys, so this branch is unreachable
-            // unless the caller wired a keyring in. Included for
-            // future-compat.
-            let pk = hex_of(&extract_publisher_key(&pkg_id, &store).unwrap_or([0u8; 32]));
-            (manifest, pk)
-        }
-        Verification::UntrustedPublisher { identity, manifest } => {
-            eprintln!(
-                "qos-install: package self-signed by ed25519:{} — installing (no trusted-attestor list yet; see CRITIQUE.md security-#3)",
-                hex_of(&identity)
-            );
-            (manifest, hex_of(&identity))
-        }
-        other => {
-            return Err(Error::Verify(format!("{other:?}")));
-        }
-    };
+    // 2. Verify + apply trust policy.
+    let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, &trust)?;
 
     // 3. Registry check.
     let id_field = manifest.package.id.clone();
@@ -244,12 +415,16 @@ fn install(qpkg: &Path, pinned: bool, force: bool) -> Result<(), Error> {
         publisher_key_hex,
         pinned,
         installed_at,
+        attested_by: attested_by.clone(),
     });
     save_registry(&reg)?;
 
     println!("installed: {id_field} {version_field}");
     println!("  payload  : {}", dest.display());
     println!("  pinned   : {pinned}");
+    if !attested_by.is_empty() {
+        println!("  attested : {attested_by}");
+    }
     println!("run with:  qos-install run {id_field}");
     Ok(())
 }
@@ -260,12 +435,24 @@ fn list() -> Result<(), Error> {
         println!("(no packages installed)");
         return Ok(());
     }
-    println!("{:<32}  {:<8}  {:<6}  {}", "id", "version", "pinned", "installed");
+    println!(
+        "{:<32}  {:<8}  {:<6}  {:<18}  {}",
+        "id", "version", "pinned", "attested-by", "installed"
+    );
     for e in &reg.entry {
         let ago = age(e.installed_at);
+        let attested = if e.attested_by.is_empty() {
+            "-"
+        } else {
+            &e.attested_by
+        };
         println!(
-            "{:<32}  {:<8}  {:<6}  {}",
-            e.id, e.version, if e.pinned { "yes" } else { "no" }, ago
+            "{:<32}  {:<8}  {:<6}  {:<18}  {}",
+            e.id,
+            e.version,
+            if e.pinned { "yes" } else { "no" },
+            attested,
+            ago
         );
     }
     Ok(())
@@ -287,13 +474,57 @@ fn remove(pkg_id: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn run(pkg_id: &str, no_services: bool, minimal_libs: bool, no_landlock: bool) -> Result<(), Error> {
+fn run(
+    pkg_id: &str,
+    no_services: bool,
+    minimal_libs: bool,
+    no_landlock: bool,
+    trust: TrustFlags,
+) -> Result<(), Error> {
     let reg = load_registry()?;
     let entry = reg
         .entry
         .iter()
         .find(|e| e.id == pkg_id)
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
+
+    // Re-check trust policy at launch: revocation may have been
+    // added after install. --require-attestor is honoured against
+    // the recorded attested-by field.
+    let attestors = load_trusted_attestors()?;
+    let revocation = load_revocation_list()?;
+    if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex) {
+        if let Some(rev) = revocation.find(&pk_bytes) {
+            eprintln!(
+                "qos-install: REFUSED — installed package's publisher is revoked: {}",
+                rev.reason
+            );
+            return Err(Error::Revoked { reason: rev.reason.clone() });
+        }
+    }
+    if let Some(required) = &trust.require_attestor {
+        // The recorded attested_by is fixed at install time; it can
+        // become stale if the registry entry was pinned before a
+        // change in `trusted-attestors.toml`. Re-check: is the
+        // recorded attestor still in the registry?
+        let still_trusted = attestors.get(&entry.attested_by).is_some();
+        if entry.attested_by != *required || !still_trusted {
+            if !trust.allow_self_signed {
+                return Err(Error::AttestorMismatch {
+                    required: required.clone(),
+                    found: if entry.attested_by.is_empty() {
+                        "self-signed".into()
+                    } else {
+                        entry.attested_by.clone()
+                    },
+                });
+            }
+            eprintln!(
+                "qos-install: --require-attestor {required:?} unmatched; --allow-self-signed permits install-time attested-by {:?}",
+                entry.attested_by
+            );
+        }
+    }
 
     // Find qos-launcher on PATH; fall back to a sibling of this binary.
     let launcher = which_launcher();
@@ -332,20 +563,114 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     println!("payload-root  : {}", entry.payload_root.display());
     println!("manifest      : {}", entry.manifest_path.display());
     println!("pinned        : {}", entry.pinned);
+    println!(
+        "attested-by   : {}",
+        if entry.attested_by.is_empty() {
+            "(self-signed)"
+        } else {
+            &entry.attested_by
+        }
+    );
     println!("installed     : {} seconds ago", now() - entry.installed_at);
+    Ok(())
+}
+
+fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
+    // Validate the scope string + pubkey hex up-front so we
+    // reject garbage before touching the file.
+    let scope_parsed =
+        AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
+    let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
+    let mut attestors = load_trusted_attestors()?;
+    attestors.attestor.retain(|a| a.id != id);
+    attestors.attestor.push(TrustedAttestor {
+        id: id.into(),
+        pubkey_hex: pubkey_hex.into(),
+        scope: scope_parsed,
+    });
+    let path = trusted_attestors_path()?;
+    attestors.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    println!("trust: added {id} (scope: {scope})");
+    println!("  file: {}", path.display());
+    Ok(())
+}
+
+fn trust_list() -> Result<(), Error> {
+    let attestors = load_trusted_attestors()?;
+    if attestors.attestor.is_empty() {
+        println!("(no trusted attestors)");
+        return Ok(());
+    }
+    println!("{:<24}  {:<12}  pubkey", "id", "scope");
+    for a in &attestors.attestor {
+        println!("{:<24}  {:<12}  {}", a.id, a.scope.render(), a.pubkey_hex);
+    }
+    Ok(())
+}
+
+fn trust_remove(id: &str) -> Result<(), Error> {
+    let mut attestors = load_trusted_attestors()?;
+    let before = attestors.attestor.len();
+    attestors.attestor.retain(|a| a.id != id);
+    if attestors.attestor.len() == before {
+        return Err(Error::Trust(format!("no trusted attestor with id {id:?}")));
+    }
+    let path = trusted_attestors_path()?;
+    attestors.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    println!("trust: removed {id}");
+    Ok(())
+}
+
+fn revoke(pubkey_hex: &str, reason: &str) -> Result<(), Error> {
+    let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
+    let mut list = load_revocation_list()?;
+    list.revoked.retain(|k| k.pubkey_hex != pubkey_hex);
+    list.revoked.push(RevokedKey {
+        pubkey_hex: pubkey_hex.into(),
+        reason: reason.into(),
+    });
+    let path = revoked_keys_path()?;
+    list.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    println!("revoked: ed25519:{pubkey_hex}");
+    if !reason.is_empty() {
+        println!("  reason: {reason}");
+    }
+    println!("  file: {}", path.display());
+    Ok(())
+}
+
+fn revoked_list() -> Result<(), Error> {
+    let list = load_revocation_list()?;
+    if list.revoked.is_empty() {
+        println!("(no revoked keys)");
+        return Ok(());
+    }
+    println!("{:<66}  reason", "pubkey");
+    for k in &list.revoked {
+        println!("{:<66}  {}", k.pubkey_hex, k.reason);
+    }
     Ok(())
 }
 
 fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
-        Cmd::Install { qpkg, pinned, force } => install(&qpkg, pinned, force),
+        Cmd::Install { qpkg, pinned, force, trust } => install(&qpkg, pinned, force, trust),
         Cmd::List => list(),
         Cmd::Remove { pkg_id } => remove(&pkg_id),
-        Cmd::Run { pkg_id, no_services, minimal_libs, no_landlock } => {
-            run(&pkg_id, no_services, minimal_libs, no_landlock)
+        Cmd::Run { pkg_id, no_services, minimal_libs, no_landlock, trust } => {
+            run(&pkg_id, no_services, minimal_libs, no_landlock, trust)
         }
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
+        Cmd::Trust { cmd } => match cmd {
+            TrustCmd::Add { id, pubkey, scope } => trust_add(&id, &pubkey, &scope),
+            TrustCmd::List => trust_list(),
+            TrustCmd::Remove { id } => trust_remove(&id),
+        },
+        Cmd::Revoke { pubkey_hex, reason } => revoke(&pubkey_hex, &reason),
+        Cmd::Revoked { cmd } => match cmd {
+            RevokedCmd::List => revoked_list(),
+        },
     };
     if let Err(e) = result {
         eprintln!("qos-install: {e}");
@@ -425,6 +750,16 @@ fn hex_of(bytes: &[u8]) -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(s).map_err(|e| e.to_string())?;
+    if bytes.len() != 32 {
+        return Err(format!("expected 32 bytes, got {}", bytes.len()));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 fn now() -> u64 {
