@@ -22,8 +22,9 @@ This is a **Cargo workspace (monorepo)**. The workspace members in `Cargo.toml` 
 - `fs/` — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/qos-fs`. 10s metadata TTL, 1MB readahead.
 - `ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
 - `apps/terminal/` (binary `terminal`) — GPU-accelerated terminal. Uses `ui`. `--shots PATH` for headless screenshot.
-- `apps/file-explorer/` — Spatial file manager. Uses `ui` (was iced; migrated). `--shots PATH` for headless screenshot.
+- `apps/file-explorer/` — Spatial file manager. Uses `ui`. `--shots PATH` for headless screenshot.
 - `apps/browser/` (binary `browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `ui`.
+- `crates/<domain>/` — supporting libraries grouped by domain (`collab`, `doc`, `runtime`, `packaging`, `session`, `system`, `text`, `format`). See `Cargo.toml` for the full member list.
 - `os/` — `Containerfile`, `Containerfile.test`, systemd units, build and VM scripts.
 - `plan/`, `docs/` — Architecture, collaboration, compositor, security design notes. Read these before non-trivial changes in those areas.
 
@@ -139,10 +140,10 @@ Key implications when writing or modifying widgets:
 
 ### Compositor (`shell`)
 
-- **2D clusters, no overlap**: windows tile within a cluster; clusters tile on an infinite 2D canvas. Reject any design that reintroduces overlapping floating windows.
-- **Per-cluster sandbox**: each cluster is a Bubblewrap sandbox with its own file-access policy. When an app requests a path not in the cluster's allowlist, the compositor prompts the user; approvals can be granted temporarily or permanently to the cluster.
-- **Collaboration**: peers can be invited to a specific cluster. Sharing is via Wayland buffer streaming + remote input injection, coordinated over `libp2p` (gossipsub + mdns). Sandboxing is the security boundary — do not weaken it for convenience.
-- The Wayland state is decoupled from the graphical Iced layer so it can run headless for integration tests.
+- **Spatial model**: `Workspace → Strip → WindowGroup → Tab`. Tabs tile within a group, groups scroll horizontally within a strip (Niri-inspired), strips stack within a workspace, and workspaces are switched via the wheel disc. No overlapping floating windows — reject any design that reintroduces them.
+- **Per-workspace sandbox**: each workspace is a Bubblewrap sandbox with its own file-access policy. When an app requests a path not in the workspace's allowlist, the compositor prompts the user; approvals can be granted temporarily or permanently to the workspace.
+- **Collaboration**: peers can be invited to a specific workspace. Sharing is via Wayland buffer streaming + remote input injection, coordinated over `libp2p` (gossipsub + mdns). Sandboxing is the security boundary — do not weaken it for convenience.
+- The Wayland state is decoupled from the graphical `vello`/`wgpu` paint layer so it can run headless for integration tests.
 
 ### `fs`
 
@@ -204,7 +205,7 @@ The header of `shell/tests/concept_parity_spec.rs` declares an explicit covenant
 - **Never** weaken an assertion (replace `==` with `>=`, comment out a checked invariant, etc.)
 - **Always** assert on the production code path, not a tautological helper
 
-This applies to **all** test files, not just `concept_parity_spec`. The "verification mantra" surfaces in the `docs/superpowers/plans/2026-04-30-nirios-logical-bugs.md` audit too — assert on the real path, prove the fix.
+This applies to **all** test files, not just `concept_parity_spec`. The "verification mantra" surfaces in the `docs/superpowers/archive/2026-04-30-nirios-logical-bugs.md` audit too — assert on the real path, prove the fix.
 
 ## Conventions
 

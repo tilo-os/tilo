@@ -1,7 +1,7 @@
-//! `docrtf` — render a [`qdoc::DocSnapshot`] to RTF (Rich Text Format).
+//! `qdoc-rtf` — render a [`qdoc::DocSnapshot`] to RTF (Rich Text Format).
 //!
 //! This is the RTF export engine, rounding out qdoc's export formats alongside
-//! `docpdf` (PDF) and `dochtml` (HTML). It takes the materialized, read-only
+//! `qdoc-pdf` (PDF) and `qdoc-html` (HTML). It takes the materialized, read-only
 //! view of a qdoc document (headings, paragraphs, quotes, lists, tables) and
 //! emits a well-formed RTF document: a `{\rtf1\ansi …}` group with a font
 //! table, a color table, and a body of paragraphs.
@@ -22,7 +22,7 @@
 //! ## Inline marks
 //!
 //! Marks split the text into runs over which the active set is constant (the
-//! same boundary-splitting approach `dochtml` uses). Each run emits its toggles:
+//! same boundary-splitting approach `qdoc-html` uses). Each run emits its toggles:
 //! `\b` (strong), `\i` (em), `\ul` (underline), `\strike`, `\cfN` (color),
 //! `\fN` (font), `\fsN` (size — RTF half-points, so `2 × pt`). A `href`/`link`
 //! mark wraps its run in an RTF `HYPERLINK` field.
@@ -302,7 +302,7 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
 fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     // Rows are child blocks; each row's children are its cells. Tolerate the
     // flat shape (cells directly under the table with a `cols` attr), matching
-    // dochtml's table-shape handling.
+    // qdoc-html's table-shape handling.
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
         block.children.iter().map(|row| row.children.iter().collect()).collect()
     } else if !block.children.is_empty() {

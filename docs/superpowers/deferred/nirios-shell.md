@@ -1,6 +1,6 @@
 # Nirios Shell — Deferred Scope & Follow-ups
 
-Tracker for work intentionally excluded from the 2026-04-18 Nirios shell design (see `docs/superpowers/specs/2026-04-18-nirios-shell-design.md`). Design decisions in the main plan must stay compatible with the items here; none of them are "never" — all are "next".
+Tracker for work intentionally excluded from the 2026-04-18 Nirios shell design (see `docs/superpowers/archive/2026-04-18-nirios-shell-design.md`). Design decisions in the main plan must stay compatible with the items here; none of them are "never" — all are "next".
 
 ## Index
 

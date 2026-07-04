@@ -1,4 +1,4 @@
-//! Error types for `qos-channel-crypto`.
+//! Error types for `channel-crypto`.
 //!
 //! OpenMLS itself defines a thicket of error enums parameterised over
 //! the storage backend's error type. Propagating those verbatim

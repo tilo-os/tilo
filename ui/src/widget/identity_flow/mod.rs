@@ -1,5 +1,5 @@
 //! Phase 8 identity ceremony — the user-facing surface that turns the
-//! `qos-threshold-identity` engine into an installable identity.
+//! `threshold-identity` engine into an installable identity.
 //!
 //! The ceremony is a six-screen state machine:
 //!
@@ -155,7 +155,7 @@ impl SerializableIdentity {
     ///
     /// **Only valid in single-device mode** for v1 — the threshold-mode
     /// extraction needs access to the `KeyPackage` internals which
-    /// `qos-threshold-identity` deliberately keeps private. Once a
+    /// `threshold-identity` deliberately keeps private. Once a
     /// future revision of the crate exposes a `to_serializable_share`
     /// helper, this method can lift the single-device restriction.
     pub fn from_identity(id: &ThresholdIdentity) -> Result<Self, IdentityFlowError> {

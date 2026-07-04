@@ -1,4 +1,4 @@
-//! `qos-runtime-fs` — Cap'n Proto client for the qOS workspace
+//! `runtime-fs` — Cap'n Proto client for the qOS workspace
 //! filesystem proxy.
 //!
 //! ## Usage shape

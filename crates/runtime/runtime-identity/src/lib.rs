@@ -1,4 +1,4 @@
-//! `qos-runtime-identity` — user-identity loader for qOS apps.
+//! `runtime-identity` — user-identity loader for qOS apps.
 //!
 //! The launcher points at the user's identity record file via the
 //! `QOS_USER_IDENTITY` env var. This crate reads and parses it,
@@ -26,7 +26,7 @@
 //! FROST round-trip that this SDK crate does NOT drive. [`SigningIdentity::sign`]
 //! returns [`NotAvailable::ConnectionFailed`] wrapping an `Unsupported`
 //! `io::Error` in that case; apps that need threshold-mode signing
-//! should reach for `qos-threshold-identity` directly and orchestrate
+//! should reach for `threshold-identity` directly and orchestrate
 //! the ceremony themselves.
 //!
 //! ## Usage
@@ -199,7 +199,7 @@ impl SigningIdentity {
     /// - **Threshold mode:** returns [`NotAvailable::ConnectionFailed`]
     ///   wrapping an `Unsupported` `io::Error`. Apps that need
     ///   threshold-mode signing must drive the multi-device FROST
-    ///   ceremony via `qos-threshold-identity` directly.
+    ///   ceremony via `threshold-identity` directly.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.signing_key {
             Some(sk) => Ok(sk.sign(message).to_bytes()),

@@ -3,7 +3,7 @@
 Post-Phase-7 (native default), post-Sandbox-4.3 (xdg-desktop-portal),
 post-Peer-sync-4 (H.264 streaming + wl_buffer readback) compositor
 audit. The predecessor logical-bugs audit
-(`docs/superpowers/plans/2026-04-30-nirios-logical-bugs.md`) landed
+(`docs/superpowers/archive/2026-04-30-nirios-logical-bugs.md`) landed
 all 12 units; this report walks the new code surfaces introduced
 since and identifies a fresh wave of bugs.
 

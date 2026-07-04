@@ -1,5 +1,5 @@
 //! Interop: encrypt-then-sign round-trips cleanly through the
-//! `qos-collab-types` envelope.
+//! `collab-types` envelope.
 //!
 //! The Phase-7 wire shape is: producer calls
 //! `ChannelGroup::encrypt`, then wraps the ciphertext +
@@ -11,7 +11,7 @@
 //! application, etc.).
 //!
 //! This file pins each of those steps. The Automerge step is out
-//! of scope — `qos-channel-crypto` does not depend on Automerge.
+//! of scope — `channel-crypto` does not depend on Automerge.
 
 use std::time::SystemTime;
 

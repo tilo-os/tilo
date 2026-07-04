@@ -1,4 +1,4 @@
-//! `qos-threshold-identity` — FROST threshold-shared Ed25519
+//! `threshold-identity` — FROST threshold-shared Ed25519
 //! identity for qOS.
 //!
 //! This crate implements **Phase 8** of the

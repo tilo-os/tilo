@@ -1,4 +1,4 @@
-//! `docepub` — export a [`qdoc::DocSnapshot`] as a valid **EPUB 3** e-book.
+//! `qdoc-epub` — export a [`qdoc::DocSnapshot`] as a valid **EPUB 3** e-book.
 //!
 //! An EPUB is an [OCF] ZIP container holding XHTML content documents plus
 //! packaging metadata. [`render_epub`] assembles one from a materialized qdoc
@@ -23,10 +23,10 @@
 //! ## XHTML well-formedness
 //!
 //! EPUB content documents must be **XML-parseable XHTML**, not HTML5. We reuse
-//! [`dochtml`] (which emits semantic HTML5 with proper escaping) for the inline
+//! [`qdoc-html`] (which emits semantic HTML5 with proper escaping) for the inline
 //! and block markup, then wrap each fragment in an XHTML scaffold and rewrite
 //! HTML5 void elements (`<br>`, `<img …>`, `<hr>`) into self-closing XML form.
-//! Images are re-pointed from `dochtml`'s inline `data:` URIs to packaged file
+//! Images are re-pointed from `qdoc-html`'s inline `data:` URIs to packaged file
 //! resources so the EPUB stays small and standards-clean.
 //!
 //! [OCF]: https://www.w3.org/publishing/epub3/epub-ocf.html
@@ -192,8 +192,8 @@ fn image_item_for(b: &BlockView, snap: &DocSnapshot, existing_count: usize) -> O
 }
 
 /// Sniff image magic numbers → `(media-type, file-extension)`. Mirrors
-/// `dochtml`'s sniff but also yields the packaged extension. Unknown bytes
-/// default to PNG (matching `dochtml`).
+/// `qdoc-html`'s sniff but also yields the packaged extension. Unknown bytes
+/// default to PNG (matching `qdoc-html`).
 fn image_media_type(bytes: &[u8]) -> (&'static str, &'static str) {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         ("image/png", "png")
@@ -301,7 +301,7 @@ fn heading_level(b: &BlockView) -> u8 {
 }
 
 /// Render one chapter as a complete XHTML document. The block markup comes from
-/// `dochtml` (fragment mode); we then anchor headings, fix void elements, and
+/// `qdoc-html` (fragment mode); we then anchor headings, fix void elements, and
 /// re-point image `data:` URIs to packaged file hrefs.
 fn render_chapter_xhtml(
     snap: &DocSnapshot,
@@ -311,8 +311,8 @@ fn render_chapter_xhtml(
 ) -> String {
     let mut body = String::new();
     for (frag, block) in anchored {
-        // Render this single block via dochtml by handing it a one-block snapshot
-        // view. dochtml's fragment renderer takes whole snapshots, so we build a
+        // Render this single block via qdoc-html by handing it a one-block snapshot
+        // view. qdoc-html's fragment renderer takes whole snapshots, so we build a
         // tiny snapshot sharing the blobs/styles for correct rendering.
         let mut sub = empty_like(snap);
         sub.blocks = vec![(*block).clone()];
@@ -342,7 +342,7 @@ fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
     DocSnapshot { schema: snap.schema.clone(), schema_version: snap.schema_version, blobs: snap.blobs.clone(), styles: snap.styles.clone(), ..Default::default() }
 }
 
-/// Replace the inline `data:` URI emitted by `dochtml` for an image block with
+/// Replace the inline `data:` URI emitted by `qdoc-html` for an image block with
 /// the packaged file href (relative to the chapter doc, which sits beside the
 /// `images/` dir under OEBPS). Non-image fragments pass through unchanged.
 fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String {
@@ -355,7 +355,7 @@ fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String
     let Some(item) = images.iter().find(|it| &it.blob_hash == hash) else {
         return frag.to_string();
     };
-    // dochtml emits `src="data:<mime>;base64,<...>"`. Replace the whole src value
+    // qdoc-html emits `src="data:<mime>;base64,<...>"`. Replace the whole src value
     // with the packaged href. We locate `src="` and replace up to the closing
     // quote.
     if let Some(start) = frag.find("src=\"") {
@@ -392,7 +392,7 @@ fn inject_id(frag: &str, id: &str) -> String {
 }
 
 /// Rewrite HTML5 void elements into XML self-closing form so the fragment is
-/// well-formed XHTML. Covers the void tags `dochtml` can emit in body markup:
+/// well-formed XHTML. Covers the void tags `qdoc-html` can emit in body markup:
 /// `<br>`, `<img …>`, and `<hr>`. Already-self-closed tags are left alone.
 fn xhtmlify(html: &str) -> String {
     let mut out = String::with_capacity(html.len() + 16);

@@ -72,7 +72,7 @@ pub enum ThresholdError {
     DkgStateMisuse(&'static str),
 
     /// Canonical-bytes serialisation failed. Re-exported from
-    /// `qos-collab-types` for symmetry with the other crates that
+    /// `collab-types` for symmetry with the other crates that
     /// produce signatures.
     #[error("canonical-bytes encoding failed: {0}")]
     Canonical(#[from] CanonicalError),

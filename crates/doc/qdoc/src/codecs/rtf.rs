@@ -1,5 +1,5 @@
 //! Built-in RTF (Rich Text Format) **import** codec. The inverse of the
-//! `docrtf` export crate: it parses an `{\rtf1 …}` document back onto the
+//! `qdoc-rtf` export crate: it parses an `{\rtf1 …}` document back onto the
 //! canonical rich-text model so the word processor can *open* `.rtf` files.
 //!
 //! RTF is a plain-text control-word format. The grammar this parser understands:
@@ -12,7 +12,7 @@
 //!   `\*` (skip-this-destination marker).
 //! - **plain text** — everything else, spliced into the current block.
 //!
-//! ### Control-word → model mapping (mirrors `docrtf`'s emit side)
+//! ### Control-word → model mapping (mirrors `qdoc-rtf`'s emit side)
 //!
 //! - `\par` / `\pard` → close the current paragraph; the next text opens a fresh
 //!   `paragraph` block. `\pard` also resets paragraph-level state (indent, list).
@@ -32,7 +32,7 @@
 //! `paragraph` block (a bulleted one to `list_item`) — heading reconstruction
 //! would require style-table heuristics that are out of scope for a best-effort
 //! importer. `export` is intentionally `Unsupported`: RTF *export* lives in the
-//! editor via the `docrtf` crate (it renders from a materialized snapshot, which
+//! editor via the `qdoc-rtf` crate (it renders from a materialized snapshot, which
 //! a `FormatProvider` does not get), so there is exactly one RTF writer.
 
 use crate::format::{CodecError, Confidence, FormatProvider};
@@ -74,7 +74,7 @@ impl FormatProvider for RtfCodec {
         // single source of truth and surface a clear error if someone routes RTF
         // export through the registry.
         Err(CodecError::Unsupported(
-            "RTF export is provided by the `docrtf` crate (editor), not the qdoc codec".to_string(),
+            "RTF export is provided by the `qdoc-rtf` crate (editor), not the qdoc codec".to_string(),
         ))
     }
 }
@@ -171,7 +171,7 @@ fn tokenize(src: &str) -> Vec<Token> {
                     if word == "u" {
                         if let Some(cu) = param {
                             out.push(Token::Unicode(cu));
-                            // Skip one fallback char (the `?` `docrtf` emits, or a
+                            // Skip one fallback char (the `?` `qdoc-rtf` emits, or a
                             // literal substitute). A control word counts as one.
                             i = skip_one_fallback(&chars, i, n);
                         }
@@ -209,7 +209,7 @@ fn tokenize(src: &str) -> Vec<Token> {
 
 /// Skip exactly one Unicode-fallback unit after a `\uN` escape: either a single
 /// literal char, or a whole `\'XX` / control-word substitute. Returns the new
-/// index. (RTF's `\ucN` defaults to 1, which is what `docrtf` and most encoders
+/// index. (RTF's `\ucN` defaults to 1, which is what `qdoc-rtf` and most encoders
 /// emit; we don't track a custom `\uc`.)
 fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
     if i >= n {
@@ -617,7 +617,7 @@ fn handle_control(
         }
         "pard" => {
             // Reset paragraph-level state. We also treat it as a soft break so a
-            // `\pard` between paragraphs starts a new block (docrtf emits one
+            // `\pard` between paragraphs starts a new block (qdoc-rtf emits one
             // `\pard … \par` per paragraph). Does not reset *character* state.
             *need_new_block = true;
             *cur = None;
@@ -645,7 +645,7 @@ fn handle_control(
         // Reset all character formatting (`\plain`).
         "plain" => *cs = CharState::default(),
         // ---- list markers ------------------------------------------------
-        // A literal bullet glyph (docrtf emits `\bullet\tab `) marks the
+        // A literal bullet glyph (qdoc-rtf emits `\bullet\tab `) marks the
         // paragraph as a list item. `\pntext`/`\pn` groups are list-marker
         // destinations we skip but still flag the bullet.
         "bullet" => *pending_bullet = true,
@@ -786,10 +786,10 @@ mod tests {
     }
 
     /// Round-trip sanity over a hand-written RTF snapshot shaped exactly like
-    /// `docrtf`'s emit side (`{\pard\fs22 …{\b run}…\par}`): the text and the
-    /// bold run must both survive import. (The full `docrtf`-driven round-trip
-    /// lives in the `editor` crate, which depends on both `docrtf` and `qdoc` —
-    /// `qdoc` cannot depend on `docrtf` without a dependency cycle.)
+    /// `qdoc-rtf`'s emit side (`{\pard\fs22 …{\b run}…\par}`): the text and the
+    /// bold run must both survive import. (The full `qdoc-rtf`-driven round-trip
+    /// lives in the `editor` crate, which depends on both `qdoc-rtf` and `qdoc` —
+    /// `qdoc` cannot depend on `qdoc-rtf` without a dependency cycle.)
     #[test]
     fn roundtrip_docrtf_shaped_rtf_preserves_text_and_bold() {
         // The exact shape `qdoc_rtf::render_rtf` produces for "Hello **world** today".
