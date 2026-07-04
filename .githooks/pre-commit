@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# qOS pre-commit: fast structural guards (no compile — that's CI's job).
+# Enable once with:  git config core.hooksPath .githooks
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+# 1. Every crate on disk must be a workspace member (stops apps silently dropping
+#    out of the build — as 37 of them once did).
+"$root/scripts/check-workspace-complete.sh"
