@@ -16,25 +16,25 @@ Treat these as deeply interrelated — a change in `ui` or `fs` can break the OS
 
 ## Repository Layout
 
-This is a **Cargo workspace with git submodules**. The workspace members in `Cargo.toml` are:
+This is a **Cargo workspace (monorepo)**. The workspace members in `Cargo.toml` are:
 
-- `shell/` (submodule, binary `shell`) — Wayland compositor. Built on `smithay` + `iced` + `libp2p` (gossipsub, mdns). Contains the 2D cluster/sandbox/collaboration logic.
-- `fs/` (submodule) — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/qos-fs`. 10s metadata TTL, 1MB readahead.
+- `shell/` (binary `shell`) — Wayland compositor. Built on `smithay` + `vello`/`wgpu` + `libp2p` (gossipsub, mdns). Contains the workspace/strip/sandbox/collaboration logic (Niri-inspired scrollable strips; wheel-disc workspace switcher).
+- `fs/` — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/qos-fs`. 10s metadata TTL, 1MB readahead.
 - `ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `apps/terminal/` (submodule, binary `terminal`) — GPU-accelerated terminal. Uses `ui`. `--shots PATH` for headless screenshot.
-- `apps/file-explorer/` (submodule) — Spatial file manager. Uses `ui` (was iced; migrated). `--shots PATH` for headless screenshot.
-- `apps/browser/` (submodule, binary `browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `ui`.
-- `os/` (submodule) — `Containerfile`, `Containerfile.test`, systemd units, build and VM scripts.
+- `apps/terminal/` (binary `terminal`) — GPU-accelerated terminal. Uses `ui`. `--shots PATH` for headless screenshot.
+- `apps/file-explorer/` — Spatial file manager. Uses `ui` (was iced; migrated). `--shots PATH` for headless screenshot.
+- `apps/browser/` (binary `browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `ui`.
+- `os/` — `Containerfile`, `Containerfile.test`, systemd units, build and VM scripts.
 - `plan/`, `docs/` — Architecture, collaboration, compositor, security design notes. Read these before non-trivial changes in those areas.
 
-Only `ui` lives in the main repo. Everything else is a submodule — see the "Submodule workflow" section before committing.
+Everything lives in this one repository — normal commits, no submodule pointer dance (see "Monorepo workflow" below).
 
 ## Build & Test
 
-### First time / after pulling
+### First time (clone)
 
 ```bash
-git submodule update --init --recursive
+git clone ssh://git@code.podesta.ai/qos/qos.git
 ```
 
 ### Building Rust components individually (fast inner loop)
@@ -156,68 +156,31 @@ Key implications when writing or modifying widgets:
 - Boot chain: UEFI/GRUB → `greetd` (tuigreet) → `quick-fs.service` mounts the FUSE → `shell` starts as the Wayland session → `shell-firstboot.service` handles first-run setup.
 - `Containerfile.test` adds a validation systemd service; use it instead of shipping test code in the production image.
 
-## Submodule workflow
+## Monorepo workflow
 
-Everything except `ui` is a submodule. Changes in those directories must be committed **inside** the submodule first, then the pointer bump is committed in the superproject:
-
-```bash
-# inside e.g. apps/browser
-git add . && git commit -m "..."
-cd ../..
-git add apps/browser            # updates the submodule pointer
-git commit -m "bump browser to <sha>"
-```
-
-Don't run `git add -A` from the root — it catches submodule pointer changes you may not have intended. Prefer explicit paths.
-
-Pull all submodules with `git submodule update --remote --merge`.
+All components (`ui`, `shell`, `fs`, `apps/*`, `os`, and the top-level crates)
+live in this **single repository** — commit normally, no submodule pointer dance.
+Prefer explicit paths over `git add -A` so you only stage what you intend.
 
 ### Cargo.lock + worktrees
 
-`Cargo.lock` is gitignored at the workspace root. `git worktree add` does NOT copy ignored files — so a fresh worktree has no `Cargo.lock` and `cargo build` will either error (offline) or churn through a fresh resolve. Worker prompts should copy it explicitly:
+`Cargo.lock` is gitignored at the workspace root. `git worktree add` does NOT copy
+ignored files — so a fresh worktree has no `Cargo.lock` and `cargo build` will
+either error (offline) or churn through a fresh resolve. Copy it explicitly:
 
 ```bash
 cp /var/home/quinten/Development/quickdesktop/Cargo.lock .claude/worktrees/<name>/Cargo.lock
 ```
 
-(Or the worker can run `cargo generate-lockfile` once. The copy is faster on a hot cache.)
-
-### Worker-driven cherry-pick (when a subagent works in a worktree)
-
-When a subagent commits inside `.claude/worktrees/<name>/shell/` (the worktree's submodule has its own gitdir under `.git/worktrees/<name>/modules/shell`), the main submodule cannot see those commits until you explicitly fetch them. Recipe:
-
-```bash
-# 1. Inside the worktree's submodule, make the new commit's SHA reachable via a branch ref.
-WORKTREE_SHA=$(git -C .claude/worktrees/<name>/shell rev-parse HEAD)
-git -C .claude/worktrees/<name>/shell branch -f <name>-shell $WORKTREE_SHA
-
-# 2. From the main submodule, fetch via path + cherry-pick.
-git -C shell fetch /var/home/quinten/Development/quickdesktop/.claude/worktrees/<name>/shell <name>-shell
-git -C shell cherry-pick FETCH_HEAD
-
-# 3. Cherry-pick will create a NEW SHA in the main submodule (different from $WORKTREE_SHA because committer date refreshes). Re-bump the superproject pointer:
-git add shell && git commit -m "chore(shell): bump for <name>"
-```
-
-For the `os/` submodule the same recipe applies with `os` substituted.
+(Or run `cargo generate-lockfile` once. The copy is faster on a hot cache.)
 
 ### NEVER `git worktree remove --force` before committing untracked files
 
-`--force` deletes the entire worktree directory — including untracked files (`??`). If a worker created `new_module.rs` but never `git add`ed it, that file is **gone**. Recovery via reflog / lost-found does NOT help because untracked files were never in the object DB.
-
-**Safe pattern before removing a worktree:**
-
-```bash
-# 1. Always commit (or at least `git add`) every file you want to keep.
-cd .claude/worktrees/<name>
-git -C shell status --short            # Check for `??` files; commit them or note them
-git -C os status --short
-git status --short                            # And the main worktree
-# 2. Then it's safe to remove.
-git worktree remove --force .claude/worktrees/<name>
-```
-
-If a worker fails partway, **inspect `git status` in every relevant gitdir before removing the worktree**, even if you're impatient.
+`--force` deletes the entire worktree directory — including untracked files (`??`).
+If a worker created `new_module.rs` but never `git add`ed it, that file is **gone**
+(untracked files were never in the object DB, so reflog / lost-found won't help).
+Always `git status --short` and commit or stage anything you want to keep **before**
+removing a worktree.
 
 ## Where state lives across nirios
 
@@ -264,5 +227,5 @@ This applies to **all** test files, not just `concept_parity_spec`. The "verific
 - `docs/architecture.md` — component overview
 - `docs/testing.md` — VM + headless-compositor testing
 - `plan/architecture.md`, `plan/collaboration.md`, `plan/compositor.md`, `plan/security.md` — design intent (read before non-trivial changes in those subsystems)
-- `DEVELOPMENT.md` — submodule & build basics
+- `DEVELOPMENT.md` — build basics
 - `docs/BRANCHBOX.md` — the feature-worktree workflow (`branchbox feature start …`) if the user is working in that model
