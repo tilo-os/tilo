@@ -101,9 +101,6 @@ pub struct Place {
     pub category: Category,
     pub address: String,
     pub pos: LatLon,
-    pub rating: Option<f32>,
-    /// User note attached to a saved place.
-    pub note: Option<String>,
     pub saved: bool,
 }
 
@@ -115,15 +112,8 @@ impl Place {
             category,
             address: address.to_string(),
             pos,
-            rating: None,
-            note: None,
             saved: false,
         }
-    }
-
-    pub fn with_rating(mut self, r: f32) -> Self {
-        self.rating = Some(r);
-        self
     }
 }
 
@@ -522,8 +512,7 @@ impl MapModel {
     pub fn upsert_place(&mut self, p: Place) {
         if let Some(existing) = self.places.iter_mut().find(|e| e.id == p.id) {
             let saved = existing.saved || p.saved;
-            let note = existing.note.clone().or(p.note.clone());
-            *existing = Place { saved, note, ..p };
+            *existing = Place { saved, ..p };
         } else {
             self.places.push(p);
         }
