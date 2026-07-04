@@ -1,4 +1,4 @@
-use qos_runtime::{collab, fs, identity, is_qos_native, portal};
+use runtime::{collab, fs, identity, is_qos_native, portal};
 
 fn main() {
     println!("qos-hello: a qOS-native app, running.");
@@ -73,12 +73,12 @@ fn main() {
     println!("qos-hello: done.");
 }
 
-fn report(name: &str, result: Result<(), qos_runtime::NotAvailable>) {
+fn report(name: &str, result: Result<(), runtime::NotAvailable>) {
     match result {
         Ok(()) => println!("  {name}: connected"),
-        Err(qos_runtime::NotAvailable::ServiceFdMissing) => println!("  {name}: unavailable (no fd — graceful)"),
-        Err(qos_runtime::NotAvailable::ConnectionFailed(e)) => println!("  {name}: unavailable (connect failed: {e})"),
-        Err(qos_runtime::NotAvailable::ProtocolMismatch { expected, got }) => {
+        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  {name}: unavailable (no fd — graceful)"),
+        Err(runtime::NotAvailable::ConnectionFailed(e)) => println!("  {name}: unavailable (connect failed: {e})"),
+        Err(runtime::NotAvailable::ProtocolMismatch { expected, got }) => {
             println!("  {name}: protocol mismatch (want v{expected}, got v{got})")
         }
         Err(other) => println!("  {name}: unavailable ({other:?})"),

@@ -6,7 +6,7 @@
 //! ```ignore
 //! let local = tokio::task::LocalSet::new();
 //! local.run_until(async {
-//!     let fs = qos_runtime_fs::try_connect()
+//!     let fs = runtime_fs::try_connect()
 //!         .map_err(|e| { eprintln!("workspace fs unavailable: {e}"); e })?;
 //!
 //!     let file = fs.open("documents/notes.md", OpenMode::Read).await?;
@@ -27,7 +27,7 @@
 
 use std::rc::Rc;
 
-use qos_runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
+use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
 // Generated schema. `include!` at the crate root under the exact
 // module name the capnp compiler emits (`fs_capnp` for schema/fs.capnp).
