@@ -1,0 +1,78 @@
+[package]
+name = "qos-user-identity"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_user_identity"
+path = "src/lib.rs"
+
+# User root identity + device certificates + revocation for qOS.
+#
+# Introduces the human-facing identity layer: a single Ed25519 root
+# keypair per user certifies per-device Ed25519 keys via signed
+# `DeviceCert`s that carry capabilities, an optional expiry, and a
+# human-readable label. A workspace is owned by a *user identity*
+# (not a device); any device presenting a valid cert chaining to the
+# owner identity has owner permissions. A revocation list published
+# in the user's identity CRDT lets a lost or stolen device be killed;
+# peers reject its changes going forward.
+#
+# The workspace directory itself lives inside this crate as a
+# bounded Automerge document (`WorkspaceDirectory`) that syncs
+# device-to-device via authenticated incremental deltas.
+#
+# Wire format is pinned via canonical postcard byte-encoding and a
+# fixed BLAKE3-hashed preimage constant per signed type; see
+# `signing_preimage.rs`. Neither the constants nor the byte layout
+# may change without a version bump.
+
+[dependencies]
+# Ed25519 signing/verification. Same version + features used across
+# the collab crates (`collab-types`, `threshold-identity`) so the
+# `SigningKey`/`VerifyingKey` types are interchangeable.
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+
+# The RNG shape ed25519-dalek 2.x consumes (`rand_core` 0.6). Kept
+# in lockstep with `collab-types` to avoid rand-version drift.
+rand = "0.8"
+
+# BLAKE3 for hashing the signing preimage (`preimage_constant ||
+# postcard(view_without_signature)`). Ed25519 signs the 32-byte
+# hash, so the on-wire signature is decoupled from payload size —
+# a property the design pins explicitly for the DeviceCert and
+# RevocationEntry ABI.
+blake3 = "1"
+
+# Canonical wire encoding for everything that gets signed. Same
+# choice as `collab-types`; postcard is little-endian +
+# varint-encoded with no field-reorder leeway, so signatures are
+# byte-for-byte reproducible across peers.
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+postcard = { version = "1", features = ["alloc"] }
+
+# Workspace-directory CRDT. Kept in-doc rather than as a separate
+# collab-types Space because directory shape (workspaces, member
+# devices, host assignments, pins, revocations) is user-scoped, not
+# workspace-scoped.
+automerge = "0.8.0"
+
+# Error plumbing (matches collab-types).
+thiserror = "1"
+
+# Best-effort zeroize for the root secret key on drop. dalek's
+# SigningKey already implements `ZeroizeOnDrop`; we add the derive
+# feature so the newtype wrappers we own participate too.
+zeroize = { version = "1", features = ["derive"] }
+
+# Base32 for the enrollment-token wire form. Crockford variant
+# (no ambiguity between 0/O or 1/l/I) so a user can read the token
+# out loud without garble. Small dep, pinned to 0.5.
+base32 = "0.5"
+
+[dev-dependencies]
+# Deterministic RNG for reproducible signing-vector fixtures.
+rand_chacha = "0.3"
+rand_core = "0.6"
+hex = "0.4"
