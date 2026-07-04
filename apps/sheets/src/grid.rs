@@ -46,11 +46,27 @@ struct EditState {
     addr: Addr,
     chars: Vec<char>,
     caret: usize,
+    /// Selection anchor. When `Some` and different from `caret`, the text
+    /// between the two is selected (highlighted, replaced on type/paste,
+    /// removed on backspace). `None` means a plain caret with no selection.
+    sel: Option<usize>,
 }
 
 impl EditState {
     fn text(&self) -> String {
         self.chars.iter().collect()
+    }
+
+    /// The ordered `(start, end)` char indices of the current selection, or
+    /// `None` when nothing is selected.
+    fn selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.sel?;
+        let (a, b) = (anchor.min(self.caret), anchor.max(self.caret));
+        if a == b {
+            None
+        } else {
+            Some((a, b.min(self.chars.len())))
+        }
     }
 }
 
@@ -88,6 +104,15 @@ impl SelRange {
 enum ResizeTarget {
     Col(u32),
     Row(u32),
+}
+
+/// A caret motion within the in-cell / formula-bar text editor.
+#[derive(Clone, Copy)]
+enum CaretMove {
+    Left,
+    Right,
+    Home,
+    End,
 }
 
 struct ResizeDrag {
@@ -665,7 +690,7 @@ impl Grid {
             None => self.raw.get(&self.active).cloned().unwrap_or_default().chars().collect(),
         };
         let caret = chars.len();
-        self.edit = Some(EditState { addr: self.active, chars, caret });
+        self.edit = Some(EditState { addr: self.active, chars, caret, sel: None });
         self.point_anchor = None;
         self.point_selecting = false;
         self.dirty = true;
@@ -698,14 +723,18 @@ impl Grid {
             .unwrap_or(false)
     }
 
-    /// The formula text whose references should be highlighted this frame:
-    /// the live edit buffer when a formula is being edited, else `None`. Only
-    /// edit mode highlights references (matching Excel/Calc), so a plain
-    /// selection of a formula cell stays uncluttered.
-    fn active_formula_body(&self) -> Option<String> {
-        let e = self.edit.as_ref()?;
-        let text = e.text();
-        text.strip_prefix('=').map(|b| b.to_string())
+    /// The formula body (text after `=`) whose references should be
+    /// highlighted this frame: the live edit buffer while a formula is being
+    /// edited, otherwise the active cell's stored formula when it is merely
+    /// selected. Returns `None` when neither is a formula, so plain cells stay
+    /// uncluttered. Exposed so the app's formula bar can tint the same refs.
+    pub fn highlight_formula_body(&self) -> Option<String> {
+        if let Some(e) = &self.edit {
+            return e.text().strip_prefix('=').map(|b| b.to_string());
+        }
+        // Not editing: a single selected formula cell still shows its trace.
+        let raw = self.raw.get(&self.active)?;
+        raw.strip_prefix('=').map(|b| b.to_string())
     }
 
     /// Whether a click can be absorbed as a reference insertion right now: a
@@ -976,7 +1005,7 @@ impl Grid {
 
         // Editing mode owns most keys.
         if self.edit.is_some() {
-            return self.key_editing(ke, out);
+            return self.key_editing(ke, out, shift);
         }
 
         match &ke.logical_key {
@@ -1043,7 +1072,12 @@ impl Grid {
         }
     }
 
-    fn key_editing(&mut self, ke: &winit::event::KeyEvent, out: &mut Vec<GridCmd>) -> bool {
+    fn key_editing(
+        &mut self,
+        ke: &winit::event::KeyEvent,
+        out: &mut Vec<GridCmd>,
+        shift: bool,
+    ) -> bool {
         match &ke.logical_key {
             Key::Named(NamedKey::Enter) => {
                 self.commit_edit(out);
@@ -1060,10 +1094,14 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::Backspace) => {
-                if let Some(e) = &mut self.edit {
-                    if e.caret > 0 {
-                        e.chars.remove(e.caret - 1);
-                        e.caret -= 1;
+                // Backspace removes the selection when there is one, else the
+                // character before the caret.
+                if !self.delete_selection() {
+                    if let Some(e) = &mut self.edit {
+                        if e.caret > 0 {
+                            e.chars.remove(e.caret - 1);
+                            e.caret -= 1;
+                        }
                     }
                 }
                 self.point_anchor = None;
@@ -1071,9 +1109,11 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::Delete) => {
-                if let Some(e) = &mut self.edit {
-                    if e.caret < e.chars.len() {
-                        e.chars.remove(e.caret);
+                if !self.delete_selection() {
+                    if let Some(e) = &mut self.edit {
+                        if e.caret < e.chars.len() {
+                            e.chars.remove(e.caret);
+                        }
                     }
                 }
                 self.point_anchor = None;
@@ -1081,37 +1121,19 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                if let Some(e) = &mut self.edit {
-                    e.caret = e.caret.saturating_sub(1);
-                }
-                self.point_anchor = None;
-                self.dirty = true;
+                self.edit_move_caret(CaretMove::Left, shift);
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if let Some(e) = &mut self.edit {
-                    if e.caret < e.chars.len() {
-                        e.caret += 1;
-                    }
-                }
-                self.point_anchor = None;
-                self.dirty = true;
+                self.edit_move_caret(CaretMove::Right, shift);
                 true
             }
             Key::Named(NamedKey::Home) => {
-                if let Some(e) = &mut self.edit {
-                    e.caret = 0;
-                }
-                self.point_anchor = None;
-                self.dirty = true;
+                self.edit_move_caret(CaretMove::Home, shift);
                 true
             }
             Key::Named(NamedKey::End) => {
-                if let Some(e) = &mut self.edit {
-                    e.caret = e.chars.len();
-                }
-                self.point_anchor = None;
-                self.dirty = true;
+                self.edit_move_caret(CaretMove::End, shift);
                 true
             }
             Key::Named(NamedKey::Space) => {
@@ -1135,13 +1157,125 @@ impl Grid {
     }
 
     fn insert_text(&mut self, s: &str) {
+        // Typing over a selection replaces it (standard text-field behaviour).
+        self.delete_selection();
         if let Some(e) = &mut self.edit {
             for ch in s.chars() {
                 e.chars.insert(e.caret, ch);
                 e.caret += 1;
             }
+            e.sel = None;
             // Typing commits any click-inserted reference into ordinary text,
             // so the next click appends a fresh reference instead of replacing.
+            self.point_anchor = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Remove the selected characters (if any), collapsing the caret to the
+    /// selection start. Returns whether anything was removed.
+    fn delete_selection(&mut self) -> bool {
+        let Some(e) = &mut self.edit else { return false };
+        let Some((start, end)) = e.selection() else { return false };
+        e.chars.drain(start..end);
+        e.caret = start;
+        e.sel = None;
+        self.point_anchor = None;
+        self.dirty = true;
+        true
+    }
+
+    /// The caret's char index within the current edit buffer, if editing.
+    pub fn edit_caret(&self) -> Option<usize> {
+        self.edit.as_ref().map(|e| e.caret.min(e.chars.len()))
+    }
+
+    /// The ordered `(start, end)` selection within the edit buffer, if any.
+    pub fn edit_selection(&self) -> Option<(usize, usize)> {
+        self.edit.as_ref().and_then(|e| e.selection())
+    }
+
+    /// Move the edit caret to char index `idx`. When `extend` is set, the
+    /// selection grows from its existing anchor (or the old caret); otherwise
+    /// the selection is cleared. Used by the formula bar for click, shift-click
+    /// and drag-select. A no-op when not editing.
+    pub fn set_edit_caret(&mut self, idx: usize, extend: bool) {
+        if let Some(e) = &mut self.edit {
+            let idx = idx.min(e.chars.len());
+            if extend {
+                if e.sel.is_none() {
+                    e.sel = Some(e.caret);
+                }
+            } else {
+                e.sel = None;
+            }
+            e.caret = idx;
+            self.point_anchor = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
+    pub fn select_all_edit(&mut self) {
+        if let Some(e) = &mut self.edit {
+            e.sel = Some(0);
+            e.caret = e.chars.len();
+            self.point_anchor = None;
+            self.dirty = true;
+        }
+    }
+
+    /// The currently selected text (for Ctrl+C in the field), or `None` when
+    /// there is no selection.
+    pub fn edit_selected_text(&self) -> Option<String> {
+        let e = self.edit.as_ref()?;
+        let (start, end) = e.selection()?;
+        Some(e.chars[start..end].iter().collect())
+    }
+
+    /// Cut: return the selected text and remove it from the buffer.
+    pub fn edit_cut_text(&mut self) -> Option<String> {
+        let text = self.edit_selected_text()?;
+        self.delete_selection();
+        Some(text)
+    }
+
+    /// Paste `s` into the field, replacing any selection. Newlines collapse to
+    /// spaces so the single-line formula bar stays on one line.
+    pub fn edit_paste_text(&mut self, s: &str) {
+        if self.edit.is_none() {
+            return;
+        }
+        let flat: String = s.replace(['\n', '\r', '\t'], " ");
+        self.insert_text(&flat);
+    }
+
+    /// Move the caret for an arrow/Home/End key while editing. `shift` extends
+    /// the selection; without it, an existing selection collapses to the edge
+    /// in the motion's direction.
+    fn edit_move_caret(&mut self, mv: CaretMove, shift: bool) {
+        if let Some(e) = &mut self.edit {
+            let len = e.chars.len();
+            let sel = e.selection();
+            let stepped = |caret: usize| match mv {
+                CaretMove::Left => caret.saturating_sub(1),
+                CaretMove::Right => (caret + 1).min(len),
+                CaretMove::Home => 0,
+                CaretMove::End => len,
+            };
+            if shift {
+                if e.sel.is_none() {
+                    e.sel = Some(e.caret);
+                }
+                e.caret = stepped(e.caret);
+            } else {
+                match (sel, mv) {
+                    (Some((start, _)), CaretMove::Left) => e.caret = start,
+                    (Some((_, end)), CaretMove::Right) => e.caret = end,
+                    _ => e.caret = stepped(e.caret),
+                }
+                e.sel = None;
+            }
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -1299,7 +1433,7 @@ impl Grid {
         // matching the tinted references in the formula text, so it's clear
         // which cells feed the result (and, in point mode, which range a click
         // just inserted).
-        if let Some(body_text) = self.active_formula_body() {
+        if let Some(body_text) = self.highlight_formula_body() {
             let spans = crate::formula::references(&body_text);
             let slots = crate::formula::ref_color_slots(&spans);
             for (span, slot) in spans.iter().zip(&slots) {
@@ -1524,6 +1658,27 @@ impl Grid {
         let ty = edit_rect.y0 + (edit_rect.height() - size as f64) / 2.0;
         let tx = edit_rect.x0 + CELL_PAD_X;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &edit_rect);
+        // Selection highlight behind the text.
+        if let Some((sel_s, sel_e)) = e.selection() {
+            let chars: Vec<char> = text.chars().collect();
+            let pre: String = chars[..sel_s.min(chars.len())].iter().collect();
+            let mid: String = chars[sel_s.min(chars.len())..sel_e.min(chars.len())].iter().collect();
+            let (x0w, _) = tr.measure(&pre, size, None);
+            let (midw, _) = tr.measure(&mid, size, None);
+            let sel_rect = Rect::new(
+                tx + x0w as f64,
+                edit_rect.y0 + 3.0,
+                tx + x0w as f64 + midw as f64,
+                edit_rect.y1 - 3.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.30),
+                None,
+                &sel_rect,
+            );
+        }
         let caret_x = draw_formula_line(
             scene,
             transform,
@@ -1904,6 +2059,67 @@ mod tests {
         );
         assert!(!g.is_editing());
         assert_eq!(g.active(), (3, 3));
+    }
+
+    // --- formula-bar text editing (caret + selection) ----------------------
+
+    #[test]
+    fn edit_selection_replace_and_paste() {
+        // The exact methods the formula bar drives: set_edit_caret (click /
+        // shift-drag), typing over a selection, select-all, and paste.
+        let mut g = grid_with(&[]);
+        g.select_only((0, 0));
+        g.begin_edit(Some("hello".into()));
+        g.set_edit_caret(1, false); // click after 'h'
+        g.set_edit_caret(4, true); // shift-drag to select "ell"
+        assert_eq!(g.edit_selection(), Some((1, 4)));
+        assert_eq!(g.edit_selected_text().as_deref(), Some("ell"));
+        // Typing replaces the selection.
+        g.insert_text_public("ELL");
+        assert_eq!(g.active_display_raw(), "hELLo");
+        // Ctrl+A then paste replaces the whole field.
+        g.select_all_edit();
+        g.edit_paste_text("=A1+B2");
+        assert_eq!(g.active_display_raw(), "=A1+B2");
+    }
+
+    #[test]
+    fn edit_cut_removes_selection() {
+        let mut g = grid_with(&[]);
+        g.select_only((0, 0));
+        g.begin_edit(Some("abcdef".into()));
+        g.set_edit_caret(2, false);
+        g.set_edit_caret(5, true); // select "cde"
+        assert_eq!(g.edit_cut_text().as_deref(), Some("cde"));
+        assert_eq!(g.active_display_raw(), "abf");
+        assert_eq!(g.edit_caret(), Some(2));
+    }
+
+    #[test]
+    fn shift_arrow_extends_then_backspace_deletes_selection() {
+        let mut g = grid_with(&[]);
+        g.select_only((0, 0));
+        g.begin_edit(Some("abcd".into())); // caret at end (4)
+        g.edit_move_caret(CaretMove::Left, true); // select "d"
+        g.edit_move_caret(CaretMove::Left, true); // select "cd"
+        assert_eq!(g.edit_selection(), Some((2, 4)));
+        // Backspace removes the whole selection, not one char.
+        assert!(g.delete_selection());
+        assert_eq!(g.active_display_raw(), "ab");
+    }
+
+    #[test]
+    fn selected_formula_cell_highlights_without_editing() {
+        let mut g = grid_with(&[]);
+        g.raw.insert((0, 0), "=A2+A3".into());
+        g.select_only((0, 0));
+        assert!(!g.is_editing());
+        // Refs are available for highlighting even when only selecting.
+        assert_eq!(g.highlight_formula_body().as_deref(), Some("A2+A3"));
+        // A plain value cell has nothing to highlight.
+        g.raw.insert((1, 0), "42".into());
+        g.select_only((1, 0));
+        assert_eq!(g.highlight_formula_body(), None);
     }
 
     #[test]

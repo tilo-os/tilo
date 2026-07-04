@@ -589,11 +589,20 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 /// Background worker: services fetch + download jobs entirely off the UI
 /// thread. Disk cache first, then network; decode happens here too.
 fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: String) {
-    let client = reqwest::blocking::Client::builder()
+    // Make sure the rustls provider is installed before the first handshake —
+    // otherwise every tile fetch fails silently (see `net::ensure_crypto_provider`).
+    crate::net::ensure_crypto_provider();
+    let client = match reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .ok();
+    {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("maps tile HTTP client failed to build: {e}");
+            None
+        }
+    };
     while let Ok(job) = rx.recv() {
         match job {
             Job::Fetch(id) => {
@@ -688,7 +697,14 @@ fn make_image(rgba: Vec<u8>, w: u32, h: u32) -> Option<PenikoImage> {
 /// Decode a PNG to RGBA8. Errors are stringly-typed; the caller only cares
 /// success vs. failure.
 fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    // OSM's standard tiles are 8-bit *palette* (indexed) PNGs. Expand palette
+    // indices — plus any sub-8-bit grayscale and `tRNS` transparency — to
+    // straight RGB(A), and reduce 16-bit channels to 8-bit, so every tile
+    // normalises to a channel layout we can hand to the GPU. Without this,
+    // indexed tiles decoded to `Err` and every OSM tile silently failed, which
+    // read on screen as "Map imagery unavailable".
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     // png 0.18: output_buffer_size returns Option<usize>.
     let buf_size = reader
@@ -890,6 +906,38 @@ mod tests {
             writer.write_image_data(&data).unwrap();
         }
         out
+    }
+
+    /// Encode a small indexed-colour (palette) PNG — the format the OSM tile
+    /// server actually serves — so the decode path can be checked hermetically.
+    fn indexed_png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Indexed);
+            enc.set_depth(png::BitDepth::Eight);
+            // Two-entry palette: index 0 = red, index 1 = green.
+            enc.set_palette(vec![255u8, 0, 0, 0, 255, 0]);
+            let mut writer = enc.write_header().unwrap();
+            let data: Vec<u8> = (0..(w * h)).map(|i| (i % 2) as u8).collect();
+            writer.write_image_data(&data).unwrap();
+        }
+        out
+    }
+
+    /// Indexed PNGs must decode to RGBA rather than erroring — the hermetic
+    /// guard for the bug where every (indexed) OSM tile silently failed to
+    /// decode and the map read as "imagery unavailable".
+    #[test]
+    fn decode_png_expands_indexed_palette() {
+        let bytes = indexed_png(2, 2);
+        let (rgba, w, h) = decode_png(&bytes).expect("indexed PNG must decode, not error");
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(rgba.len(), 2 * 2 * 4, "expanded to RGBA8");
+        // Index 0 → red, fully opaque.
+        assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+        // Index 1 → green.
+        assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
     }
 
     fn temp_cache() -> PathBuf {
@@ -1130,6 +1178,56 @@ mod tests {
         layer.insert(id, DecodedTile { image: img });
         assert!(layer.failed_delay(id).is_none(), "success clears the backoff");
         assert!(!layer.is_backing_off(id));
+    }
+
+    /// Real-network smoke test of the *production* tile path: install the
+    /// crypto provider, build the exact worker client, and fetch a real OSM
+    /// tile — the thing the unit tests (local mock) and `--shots` (sample data)
+    /// never exercised, which is why the silent-TLS-failure shipped.
+    ///
+    /// Ignored by default so hermetic CI stays offline; run it explicitly with:
+    ///   cargo test -p maps --lib -- --ignored live_tile_fetch_real_network
+    /// It uses `.expect()` on `send()` so a TLS/provider failure surfaces as the
+    /// actual error message rather than a swallowed `None`.
+    #[test]
+    #[ignore = "hits the public OSM tile server; run with --ignored"]
+    fn live_tile_fetch_real_network() {
+        crate::net::ensure_crypto_provider();
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("reqwest client builds");
+
+        let id = TileId::new(3, 4, 2);
+        let url = id.url(TILE_URL);
+
+        // Raw request first, so a handshake failure is a clear, loud error.
+        let resp = client
+            .get(&url)
+            .send()
+            .unwrap_or_else(|e| panic!("HTTPS fetch of {url} failed (TLS/provider?): {e}"));
+        assert!(
+            resp.status().is_success(),
+            "unexpected status {} for {url}",
+            resp.status()
+        );
+        let bytes = resp.bytes().expect("read tile body");
+        let (rgba, w, h) = decode_png(&bytes).expect("tile decodes as PNG");
+        assert_eq!((w, h), (256, 256), "OSM tiles are 256×256");
+        assert_eq!(rgba.len(), 256 * 256 * 4, "RGBA8 buffer size");
+
+        // Now the full production helper: it must return pixels AND persist the
+        // tile to the on-disk cache so re-views/zoom are instant.
+        let cache = temp_cache();
+        let got = load_tile(&Some(client), &cache, TILE_URL, id)
+            .expect("load_tile returns decoded pixels over the real network");
+        assert_eq!(got.0.len(), 256 * 256 * 4);
+        assert!(
+            cache.join(id.cache_rel()).exists(),
+            "a fetched tile must be written to the disk cache"
+        );
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     /// The backoff is capped so it never grows unbounded, even after many

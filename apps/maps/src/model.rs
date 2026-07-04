@@ -127,20 +127,25 @@ impl Place {
     }
 }
 
-/// Routing profile for the directions engine.
+/// Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads
+/// (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is
+/// a mode of Directions, not a separate surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TravelMode {
     Car,
+    Transit,
     Bike,
     Foot,
 }
 
 impl TravelMode {
-    pub const ALL: [TravelMode; 3] = [TravelMode::Car, TravelMode::Bike, TravelMode::Foot];
+    pub const ALL: [TravelMode; 4] =
+        [TravelMode::Car, TravelMode::Transit, TravelMode::Bike, TravelMode::Foot];
 
     pub fn label(self) -> &'static str {
         match self {
             TravelMode::Car => "Drive",
+            TravelMode::Transit => "Transit",
             TravelMode::Bike => "Cycle",
             TravelMode::Foot => "Walk",
         }
@@ -149,26 +154,38 @@ impl TravelMode {
     pub fn glyph(self) -> &'static str {
         match self {
             TravelMode::Car => "🚗",
+            TravelMode::Transit => "🚆",
             TravelMode::Bike => "🚲",
             TravelMode::Foot => "🚶",
         }
     }
 
-    /// OSRM public-server profile path component.
+    /// Whether this mode plans a public-transport journey rather than a road
+    /// route. Callers route through OSRM only for the road modes.
+    pub fn is_transit(self) -> bool {
+        matches!(self, TravelMode::Transit)
+    }
+
+    /// OSRM public-server profile path component. Only meaningful for the road
+    /// modes; `Transit` never routes via OSRM (guarded by [`is_transit`]).
     pub fn osrm_profile(self) -> &'static str {
         match self {
             TravelMode::Car => "driving",
             TravelMode::Bike => "cycling",
             TravelMode::Foot => "foot",
+            // Unused: transit journeys are planned via MOTIS, not OSRM.
+            TravelMode::Transit => "driving",
         }
     }
 
-    /// Plausible average speed (km/h) for the offline fallback estimator.
+    /// Plausible average speed (km/h) for the offline road-route fallback.
+    /// Unused for `Transit` (which has no road-route fallback).
     pub fn speed_kmh(self) -> f64 {
         match self {
             TravelMode::Car => 32.0,
             TravelMode::Bike => 15.0,
             TravelMode::Foot => 4.8,
+            TravelMode::Transit => 20.0,
         }
     }
 }
@@ -367,22 +384,23 @@ impl TransitTime {
     }
 }
 
-/// Which side panel is currently active.
+/// Which side panel is currently active. Two surfaces, modelled on Apple/Google
+/// Maps: `Explore` searches and browses places (results, saved, recents);
+/// `Directions` routes between two points, with the travel mode — including
+/// public `Transit` — chosen inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Panel {
     Explore,
     Directions,
-    Transit,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 3] = [Panel::Explore, Panel::Directions, Panel::Transit];
+    pub const ALL: [Panel; 2] = [Panel::Explore, Panel::Directions];
 
     pub fn label(self) -> &'static str {
         match self {
             Panel::Explore => "Explore",
             Panel::Directions => "Directions",
-            Panel::Transit => "Transit",
         }
     }
 }

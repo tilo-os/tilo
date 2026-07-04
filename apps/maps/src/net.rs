@@ -6,6 +6,7 @@
 //! None of this runs under `--shots` (no event loop) — the screenshot uses
 //! the bundled sample data instead.
 
+use std::sync::Once;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -16,6 +17,29 @@ use crate::model::{
 };
 
 const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
+
+/// Install the process-wide rustls [`CryptoProvider`] exactly once, before any
+/// HTTPS fetch runs.
+///
+/// In this workspace `rustls` is compiled with **both** its `ring` and
+/// `aws-lc-rs` backends (different crates pull each in), so rustls cannot pick a
+/// default on its own. reqwest consults `CryptoProvider::get_default()` when it
+/// builds a TLS client; with no default installed and two backends present the
+/// selection is ambiguous. Installing `ring` up front makes that lookup
+/// succeed, so tile / geocoding / routing requests actually complete instead of
+/// silently returning nothing (the "imagery unavailable" symptom).
+///
+/// Idempotent and safe to call from any thread or entry point (the live binary,
+/// the tile worker, tests). `install_default` only errors if a provider is
+/// already installed, which we ignore.
+///
+/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
+pub fn ensure_crypto_provider() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 /// A completed background request handed back to the app.
 pub enum NetMsg {
@@ -46,6 +70,7 @@ pub struct TransitQuery {
 }
 
 fn client() -> reqwest::blocking::Client {
+    ensure_crypto_provider();
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(12))

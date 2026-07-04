@@ -132,12 +132,24 @@ impl FlapState {
 
     /// Reconcile with the latest mode: on a breakpoint crossing, drop any
     /// stale user preference so the flap adopts the new mode's default.
+    ///
+    /// The **first** resolution (once the real allocated width is known) also
+    /// snaps the eased `reveal` straight to the resolved open/closed state
+    /// rather than animating into it. Without this a narrow first frame would
+    /// paint the docked-open default (`reveal` seeded to 1.0 for the desktop
+    /// case) and then slide it closed — a visible flash of the rail + sidebar
+    /// over the conversation on a phone-width launch. Snapping settles the
+    /// correct state on frame one; genuine later crossings still animate.
     pub fn reconcile(&mut self, mode: FlapMode) {
+        let first = self.last_mode.is_none();
         if self.last_mode != Some(mode) {
             if self.last_mode.is_some() {
                 self.user_open = None;
             }
             self.last_mode = Some(mode);
+        }
+        if first {
+            self.reveal = if self.is_open(mode) { 1.0 } else { 0.0 };
         }
     }
 
@@ -224,7 +236,9 @@ mod tests {
     #[test]
     fn tick_eases_toward_target_and_settles() {
         let mut s = FlapState::open_when_docked(); // reveal 1.0
-        s.reconcile(FlapMode::Overlay); // target closed
+        s.reconcile(FlapMode::Docked); // first resolution: settles open (1.0)
+        s.reconcile(FlapMode::Overlay); // genuine crossing: target closed, animates
+        assert!(s.reveal() > 0.5, "a real crossing animates rather than snapping");
         let mut animating = true;
         for _ in 0..600 {
             animating = s.tick_with_dt(FlapMode::Overlay, 0.016);
@@ -234,5 +248,24 @@ mod tests {
         }
         assert!(!animating, "transition settles");
         assert!(s.reveal() < 0.01, "settled near closed, got {}", s.reveal());
+    }
+
+    #[test]
+    fn narrow_first_run_starts_closed_no_flash() {
+        // A left flap seeded docked-open (reveal 1.0) whose first resolved
+        // width is narrow must settle *closed* on frame one — never paint the
+        // rail + sidebar and then slide them away.
+        let mut s = FlapState::open_when_docked();
+        s.reconcile(FlapMode::Overlay);
+        assert_eq!(s.reveal(), 0.0, "narrow first frame is fully closed, no flash");
+        assert!(!s.tick(FlapMode::Overlay), "nothing left to animate");
+    }
+
+    #[test]
+    fn wide_first_run_starts_open_without_sliding_in() {
+        let mut s = FlapState::open_when_docked();
+        s.reconcile(FlapMode::Docked);
+        assert_eq!(s.reveal(), 1.0, "desktop first frame shows the rail immediately");
+        assert!(!s.tick(FlapMode::Docked), "settled open, no slide-in");
     }
 }

@@ -10,7 +10,7 @@
 //!                            560x720 responsive layout).
 //!   * `--scenario NAME`    — snap a specific surface into view for the frame:
 //!                            `file`, `format`, `docsettings`, `editing`,
-//!                            `pointmode`, `summary`, `multiselect`.
+//!                            `pointmode`, `summary`, `multiselect`, `tabmenu`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
 //! persistence, so a screenshot shows real formulas without ever touching the
@@ -52,6 +52,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("pointmode") => Box::new(|a: &mut sheets::SheetsApp| a.shots_build_formula()),
             Some("summary") => Box::new(|a: &mut sheets::SheetsApp| a.shots_select_summary_range()),
             Some("multiselect") => Box::new(|a: &mut sheets::SheetsApp| a.shots_multi_select()),
+            Some("tabmenu") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_tab_menu()),
+            Some("fbarselect") => Box::new(|a: &mut sheets::SheetsApp| a.shots_formula_bar_select()),
             _ => Box::new(|_: &mut sheets::SheetsApp| {}),
         };
         render_shot_to_png(app, viewport, &out, setup)?;

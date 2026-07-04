@@ -5,6 +5,7 @@ use vello::peniko::BlendMode;
 use winit::event::{WindowEvent, MouseScrollDelta, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::{Widget, Element};
+use crate::widget::scrollbar::{Scrollbar, ScrollMetrics, PressOutcome};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
@@ -17,26 +18,13 @@ const BAR_THICKNESS: f64 = 8.0;
 /// Inset of the track from the viewport edge on every side.
 const BAR_MARGIN: f64 = 2.0;
 /// Minimum thumb length so a near-infinite content still leaves a
-/// grabbable target.
-const MIN_THUMB_LEN: f64 = 24.0;
+/// grabbable target. Mirrors [`scrollbar::MIN_THUMB_LEN`] and is used
+/// only for the local track-length sanity guard.
+const MIN_THUMB_LEN: f64 = crate::widget::scrollbar::MIN_THUMB_LEN;
 /// Content must exceed the viewport by more than this (logical px) on an
 /// axis before its scrollbar is shown — otherwise the content "fits" and
 /// the bar is hidden entirely.
 const FIT_EPS: f32 = 0.5;
-/// Fraction of a viewport scrolled when paging via a track click.
-const PAGE_FRACTION: f32 = 0.9;
-
-/// Live drag of a scrollbar thumb. `vertical` selects which bar; the grab
-/// anchors let us map a cursor delta to an offset delta without snapping
-/// the thumb's centre to the cursor.
-#[derive(Clone, Copy)]
-struct ThumbDrag {
-    vertical: bool,
-    /// Cursor coordinate along the drag axis when the grab began.
-    grab_cursor: f64,
-    /// `offset_*` along the drag axis when the grab began.
-    grab_offset: f32,
-}
 
 pub struct Scrollable {
     axis: ScrollAxis,
@@ -87,12 +75,11 @@ pub struct Scrollable {
     /// `CursorMoved`; used by `MouseInput::Pressed` to hit-test the
     /// thumb/track without depending on a prior hover edge.
     last_cursor: Point,
-    /// Which thumb the cursor is currently over (`Some(true)` =
-    /// vertical, `Some(false)` = horizontal, `None` = neither). Drives
-    /// the hover brightening.
-    hover: Option<bool>,
-    /// Active thumb drag, if any.
-    drag: Option<ThumbDrag>,
+    /// Shared vertical-bar interaction model (thumb drag, track paging,
+    /// hover). See [`crate::widget::scrollbar`].
+    vbar: Scrollbar,
+    /// Shared horizontal-bar interaction model.
+    hbar: Scrollbar,
 }
 
 impl Scrollable {
@@ -116,8 +103,8 @@ impl Scrollable {
             scroll_dirty: false,
             show_scrollbar: true,
             last_cursor: Point::ZERO,
-            hover: None,
-            drag: None,
+            vbar: Scrollbar::vertical(),
+            hbar: Scrollbar::horizontal(),
         }
     }
     pub fn new_vertical() -> Self { Self::new(ScrollAxis::Vertical) }
@@ -263,44 +250,23 @@ impl Scrollable {
         Some(Rect::new(x0, y0, x1, y1))
     }
 
+    /// Scroll geometry along the vertical axis, for the shared bar model.
+    fn v_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_h as f64, self.viewport_h as f64, self.offset_y as f64)
+    }
+    /// Scroll geometry along the horizontal axis.
+    fn h_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_w as f64, self.viewport_w as f64, self.offset_x as f64)
+    }
+
     fn vertical_thumb(&self) -> Option<Rect> {
         let track = self.vertical_track()?;
-        let track_len = track.height();
-        let content = self.content_h as f64;
-        let viewport = self.viewport_h as f64;
-        if content <= 0.0 {
-            return None;
-        }
-        let thumb_len = (viewport / content * track_len)
-            .clamp(MIN_THUMB_LEN.min(track_len), track_len);
-        let max_scroll = (content - viewport).max(0.0);
-        let frac = if max_scroll > 0.0 {
-            (self.offset_y as f64 / max_scroll).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let y0 = track.y0 + frac * (track_len - thumb_len);
-        Some(Rect::new(track.x0, y0, track.x1, y0 + thumb_len))
+        self.vbar.thumb_rect(track, self.v_metrics())
     }
 
     fn horizontal_thumb(&self) -> Option<Rect> {
         let track = self.horizontal_track()?;
-        let track_len = track.width();
-        let content = self.content_w as f64;
-        let viewport = self.viewport_w as f64;
-        if content <= 0.0 {
-            return None;
-        }
-        let thumb_len = (viewport / content * track_len)
-            .clamp(MIN_THUMB_LEN.min(track_len), track_len);
-        let max_scroll = (content - viewport).max(0.0);
-        let frac = if max_scroll > 0.0 {
-            (self.offset_x as f64 / max_scroll).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let x0 = track.x0 + frac * (track_len - thumb_len);
-        Some(Rect::new(x0, track.y0, x0 + thumb_len, track.y1))
+        self.hbar.thumb_rect(track, self.h_metrics())
     }
 
     /// The thumb rect for the requested bar, or `None` when that bar is
@@ -321,9 +287,9 @@ impl Scrollable {
         }
         let radius = BAR_THICKNESS / 2.0;
         let track_color = theme.tokens.colors.surface_white_5;
-        for (track, thumb, vertical) in [
-            (self.vertical_track(), self.vertical_thumb(), true),
-            (self.horizontal_track(), self.horizontal_thumb(), false),
+        for (track, thumb, active) in [
+            (self.vertical_track(), self.vertical_thumb(), self.vbar.is_active()),
+            (self.horizontal_track(), self.horizontal_thumb(), self.hbar.is_active()),
         ] {
             if let Some(track) = track {
                 scene.fill(
@@ -335,8 +301,6 @@ impl Scrollable {
                 );
             }
             if let Some(thumb) = thumb {
-                let active = self.drag.map(|d| d.vertical) == Some(vertical)
-                    || self.hover == Some(vertical);
                 // Idle thumb uses the neutral border token; hover/drag
                 // brightens it to the dim-text token for affordance.
                 let color = if active { theme.text_dim } else { theme.border_standard };
@@ -348,44 +312,6 @@ impl Scrollable {
                     &RoundedRect::from_rect(thumb, radius),
                 );
             }
-        }
-    }
-
-    fn begin_drag(&mut self, vertical: bool, cur: Point) {
-        let grab_cursor = if vertical { cur.y } else { cur.x };
-        let grab_offset = if vertical { self.offset_y } else { self.offset_x };
-        self.drag = Some(ThumbDrag { vertical, grab_cursor, grab_offset });
-        self.hover = Some(vertical);
-        self.scroll_dirty = true;
-    }
-
-    /// Map the live cursor position to an absolute offset for the active
-    /// drag and apply it via `scroll_by` (so clamp + dirty bookkeeping is
-    /// reused). The thumb travels `track_len - thumb_len` pixels across
-    /// the full `max_scroll` content range, so that ratio converts a
-    /// cursor delta into a content delta.
-    fn update_drag(&mut self, cur: Point) {
-        let Some(drag) = self.drag else { return };
-        if drag.vertical {
-            let (Some(track), Some(thumb)) = (self.vertical_track(), self.vertical_thumb())
-            else {
-                return;
-            };
-            let travel = (track.height() - thumb.height()).max(1e-3);
-            let max_scroll = (self.content_h - self.viewport_h).max(0.0);
-            let delta_px = cur.y - drag.grab_cursor;
-            let target = drag.grab_offset + (delta_px / travel) as f32 * max_scroll;
-            self.scroll_by(0.0, target - self.offset_y);
-        } else {
-            let (Some(track), Some(thumb)) = (self.horizontal_track(), self.horizontal_thumb())
-            else {
-                return;
-            };
-            let travel = (track.width() - thumb.width()).max(1e-3);
-            let max_scroll = (self.content_w - self.viewport_w).max(0.0);
-            let delta_px = cur.x - drag.grab_cursor;
-            let target = drag.grab_offset + (delta_px / travel) as f32 * max_scroll;
-            self.scroll_by(target - self.offset_x, 0.0);
         }
     }
 }
@@ -525,68 +451,79 @@ impl Widget for Scrollable {
                 self.last_cursor = cur;
                 // An active drag owns every subsequent move — map it to an
                 // offset and swallow the event (don't forward to the child).
-                if self.drag.is_some() {
-                    self.update_drag(cur);
+                if self.vbar.is_dragging() {
+                    if let Some(track) = self.vertical_track() {
+                        if let Some(target) = self.vbar.drag_to(track, self.v_metrics(), cur) {
+                            self.scroll_by(0.0, target as f32 - self.offset_y);
+                        }
+                    }
+                    *handled = true;
+                    return;
+                }
+                if self.hbar.is_dragging() {
+                    if let Some(track) = self.horizontal_track() {
+                        if let Some(target) = self.hbar.drag_to(track, self.h_metrics(), cur) {
+                            self.scroll_by(target as f32 - self.offset_x, 0.0);
+                        }
+                    }
                     *handled = true;
                     return;
                 }
                 // Otherwise track which thumb (if any) is hovered so the
                 // next draw can brighten it. Hover changes need a redraw
                 // but still fall through so the child updates its own hover.
-                let new_hover = if self.vertical_thumb().is_some_and(|t| t.contains(cur)) {
-                    Some(true)
-                } else if self.horizontal_thumb().is_some_and(|t| t.contains(cur)) {
-                    Some(false)
+                let mut changed = false;
+                if let Some(track) = self.vertical_track() {
+                    changed |= self.vbar.update_hover(track, self.v_metrics(), cur);
                 } else {
-                    None
-                };
-                if new_hover != self.hover {
-                    self.hover = new_hover;
+                    changed |= self.vbar.set_hover(false);
+                }
+                if let Some(track) = self.horizontal_track() {
+                    changed |= self.hbar.update_hover(track, self.h_metrics(), cur);
+                } else {
+                    changed |= self.hbar.set_hover(false);
+                }
+                if changed {
                     self.scroll_dirty = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let cur = self.last_cursor;
-                // Press on a thumb begins a drag.
-                if self.vertical_thumb().is_some_and(|t| t.contains(cur)) {
-                    self.begin_drag(true, cur);
-                    *handled = true;
-                    return;
-                }
-                if self.horizontal_thumb().is_some_and(|t| t.contains(cur)) {
-                    self.begin_drag(false, cur);
-                    *handled = true;
-                    return;
-                }
-                // Press on the track (outside the thumb) pages toward the
-                // click.
-                if let (Some(track), Some(thumb)) = (self.vertical_track(), self.vertical_thumb()) {
-                    if track.contains(cur) {
-                        let page = self.viewport_h * PAGE_FRACTION;
-                        if cur.y < thumb.y0 {
-                            self.scroll_by(0.0, -page);
-                        } else if cur.y > thumb.y1 {
-                            self.scroll_by(0.0, page);
+                // Vertical bar: thumb press → drag; track press → page.
+                if let Some(track) = self.vertical_track() {
+                    match self.vbar.press(track, self.v_metrics(), cur) {
+                        PressOutcome::Thumb => {
+                            self.scroll_dirty = true;
+                            *handled = true;
+                            return;
                         }
-                        *handled = true;
-                        return;
+                        PressOutcome::Page(target) => {
+                            self.scroll_by(0.0, target as f32 - self.offset_y);
+                            *handled = true;
+                            return;
+                        }
+                        PressOutcome::Miss => {}
                     }
                 }
-                if let (Some(track), Some(thumb)) = (self.horizontal_track(), self.horizontal_thumb()) {
-                    if track.contains(cur) {
-                        let page = self.viewport_w * PAGE_FRACTION;
-                        if cur.x < thumb.x0 {
-                            self.scroll_by(-page, 0.0);
-                        } else if cur.x > thumb.x1 {
-                            self.scroll_by(page, 0.0);
+                // Horizontal bar.
+                if let Some(track) = self.horizontal_track() {
+                    match self.hbar.press(track, self.h_metrics(), cur) {
+                        PressOutcome::Thumb => {
+                            self.scroll_dirty = true;
+                            *handled = true;
+                            return;
                         }
-                        *handled = true;
-                        return;
+                        PressOutcome::Page(target) => {
+                            self.scroll_by(target as f32 - self.offset_x, 0.0);
+                            *handled = true;
+                            return;
+                        }
+                        PressOutcome::Miss => {}
                     }
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.drag.take().is_some() {
+                if self.vbar.release() || self.hbar.release() {
                     self.scroll_dirty = true;
                     *handled = true;
                     return;
@@ -638,7 +575,9 @@ impl Widget for Scrollable {
     /// outer container's event-routing short-circuit honours an active
     /// drag deeper in the tree.
     fn wants_pointer_capture(&self) -> bool {
-        self.drag.is_some() || self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
+        self.vbar.is_dragging()
+            || self.hbar.is_dragging()
+            || self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
     }
 
     /// Returns true after a `scroll_by` actually moved the
@@ -819,7 +758,7 @@ mod tests {
 
         dispatch(&mut s, &cursor_moved(bar_x, mid_y));
         assert!(dispatch(&mut s, &mouse(ElementState::Pressed)), "press on thumb handled");
-        assert!(s.drag.is_some(), "press on thumb begins a drag");
+        assert!(s.vbar.is_dragging(), "press on thumb begins a drag");
         assert!(s.wants_pointer_capture(), "drag requests pointer capture");
         assert_eq!(s.offset_y(), 0.0);
 
@@ -835,7 +774,7 @@ mod tests {
 
         // Release ends the drag.
         dispatch(&mut s, &mouse(ElementState::Released));
-        assert!(s.drag.is_none(), "release ends the drag");
+        assert!(!s.vbar.is_dragging(), "release ends the drag");
     }
 
     #[test]
@@ -847,12 +786,13 @@ mod tests {
         let below_y = thumb.y1 + 5.0;
         dispatch(&mut s, &cursor_moved(bar_x, below_y));
         assert!(dispatch(&mut s, &mouse(ElementState::Pressed)), "track click handled");
-        assert!(s.drag.is_none(), "track click does not start a drag");
+        assert!(!s.vbar.is_dragging(), "track click does not start a drag");
         let paged = s.offset_y();
         assert!(paged > 0.0, "click below thumb pages down: {paged}");
+        let page_frac = crate::widget::scrollbar::PAGE_FRACTION as f32;
         assert!(
-            (paged - 300.0 * PAGE_FRACTION).abs() < 1.0,
-            "page step should be ≈viewport*{PAGE_FRACTION}, got {paged}",
+            (paged - 300.0 * page_frac).abs() < 1.0,
+            "page step should be ≈viewport*{page_frac}, got {paged}",
         );
     }
 
