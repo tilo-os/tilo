@@ -29,9 +29,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // a single offscreen frame can showcase a specific feature
         // (e.g. `compose`, `narrow`). Default renders the plain mailbox.
         let scenario = parse_scenario_arg(&args);
+        // `--shots` always renders the hermetic sample corpus (the live root
+        // has no fabricated mail and would render empty offscreen).
         let (root, viewport) = match scenario.as_deref() {
             Some(name) => (mail::app_root_scenario(name), mail::shot_viewport(name)),
-            None => (mail::app_root(), DEFAULT_SHOTS_VIEWPORT),
+            None => (mail::app_root_scenario("wide"), DEFAULT_SHOTS_VIEWPORT),
         };
         render_shot_to_png(root, viewport, &out)?;
         return Ok(());
