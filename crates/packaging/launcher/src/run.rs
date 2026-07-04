@@ -34,6 +34,17 @@ pub enum RunError {
     Spawn(#[source] std::io::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "manifest declares runtime `{runtime}` but no bundle was found at any of: {paths:?}. \
+         Install it with `qos-install runtime install --version <v> --from-host`, \
+         or pass --allow-missing-runtime to fall back to --minimal-libs / no runtime binds."
+    )]
+    RuntimeBundleMissing {
+        runtime: String,
+        paths: Vec<PathBuf>,
+    },
+    #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
+    RuntimeReferenceMalformed(String),
 }
 
 impl RunError {
@@ -50,24 +61,34 @@ impl RunError {
     }
 }
 
+impl Default for LaunchMode {
+    fn default() -> Self {
+        LaunchMode::Gui
+    }
+}
+
 /// Optional knobs for `run_with`.
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     /// Skip all service-socket resolution.
     pub no_services: bool,
-    /// Host directory holding the qos-runtime tree; mounted ro at
-    /// `/usr/lib/qos-runtime/<version>/`. Version is hard-coded to
-    /// "1" today — qos-pkg will pin this on integration.
+    /// Explicit override for the host directory holding a qos-runtime
+    /// bundle. When set, wins over the manifest's `runtime` field and
+    /// the automatic lookup under `$XDG_DATA_HOME/qos-runtime/`.
+    /// Version is hard-coded to "1" for compatibility with the older
+    /// mount path when this is the only signal; when the manifest
+    /// declares a runtime, its version is used instead.
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
     /// Bind-mount the minimum host paths a dynamically-linked ELF
     /// needs to `execve()`: ld-linux + libc + libgcc_s + friends,
-    /// plus `/etc/ld.so.cache`. Read-only. This is a stopgap until
-    /// the qos-runtime bundle path lands — apps that declare
-    /// `runtime = "qos-runtime/..."` should NOT need this. The
-    /// bind set is deliberately narrow (no full `/usr` or
-    /// `/lib64`) to keep the attack surface small.
+    /// plus `/etc/ld.so.cache`. Read-only. This is a stopgap that
+    /// preceded the runtime-bundle path — apps that declare
+    /// `runtime = "qos-runtime/..."` and have that bundle installed
+    /// don't need it (and if both are set, the runtime bundle wins
+    /// and `minimal_libs` is silently ignored). Deprecated: kept
+    /// working for backward compatibility.
     pub minimal_libs: bool,
     /// Route the exec through the `__sandbox-exec` shim so Landlock
     /// is installed *inside* bwrap's mount namespace before the
@@ -76,6 +97,82 @@ pub struct RunOptions {
     /// on. Turning it off is a debug-only escape hatch and is
     /// logged prominently.
     pub landlock_enforce: bool,
+    /// Launch mode — GUI (the default) or CLI. In CLI mode we
+    /// pick the `cli_bin()` off the entrypoint (falling back to
+    /// `bin`), forward argv from the user's shell, and inherit
+    /// stdio instead of trying to attach a Wayland surface.
+    pub mode: LaunchMode,
+    /// When the manifest declares a runtime but no bundle can be
+    /// resolved, fall back to whatever `minimal_libs` implies instead
+    /// of aborting. Escape hatch for debugging / bring-up; default:
+    /// off.
+    pub allow_missing_runtime: bool,
+}
+
+/// Resolve which runtime bundle to mount, if any.
+///
+/// Priority:
+/// 1. `opts.runtime_root` (explicit CLI / test override) — paired
+///    with the manifest's declared version when present, else "1"
+///    for backward compat with the older `--runtime <path>` shape.
+/// 2. `manifest.runtime` → look up under the default per-user path,
+///    then the system fallback.
+/// 3. Nothing: no runtime bind.
+///
+/// The `Ok(None)` branch is deliberately distinct from `Err(...)`:
+/// no runtime declaration is fine (apps might rely on --minimal-libs
+/// still), whereas a declaration that can't be resolved is an error
+/// unless `allow_missing_runtime` is set.
+/// Shim identical to [`resolve_runtime`], re-exported under a
+/// test-friendly name so integration tests don't need to duplicate
+/// the resolution logic.
+pub fn resolve_runtime_test_helper(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Option<(PathBuf, String)>, RunError> {
+    resolve_runtime(manifest, opts)
+}
+
+pub fn resolve_runtime(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Option<(PathBuf, String)>, RunError> {
+    // 1. Explicit override wins.
+    if let Some(explicit) = &opts.runtime_root {
+        let version = manifest
+            .runtime_ref()
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_else(|| "1".to_string());
+        return Ok(Some((explicit.clone(), version)));
+    }
+    // 2. Manifest declaration.
+    let Some(raw) = manifest.runtime.as_deref() else {
+        return Ok(None);
+    };
+    let (_, version) = raw
+        .split_once('/')
+        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
+    // Look up: per-user first, then system.
+    let per_user = runtime_bundle::default_bundle_path(version).ok();
+    let system = runtime_bundle::system_bundle_path(version);
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    for cand in &candidates {
+        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            return Ok(Some((cand.clone(), version.to_string())));
+        }
+    }
+    if opts.allow_missing_runtime {
+        tracing::warn!(
+            "manifest declares runtime `{raw}` but no bundle found; \
+             continuing with --minimal-libs={} (allow_missing_runtime=on)",
+            opts.minimal_libs
+        );
+        return Ok(None);
+    }
+    Err(RunError::RuntimeBundleMissing {
+        runtime: raw.to_string(),
+        paths: candidates,
+    })
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.
@@ -88,6 +185,24 @@ pub fn run(
 ) -> Result<ExitStatus, RunError> {
     let manifest = read_manifest(manifest_path)?;
     run_with(&manifest, payload_root, opts)
+}
+
+/// Launch mode — which of the entrypoint binaries we're targeting
+/// and what extra args to forward.
+#[derive(Debug, Clone)]
+pub enum LaunchMode {
+    /// The default: GUI-flavour bin. `run` / `run_with` use this
+    /// implicitly.
+    Gui,
+    /// CLI-flavour bin. `passthrough_argv` is what follows `--`
+    /// on the shim command line — forwarded verbatim to the
+    /// entrypoint. `command` names the manifest entry we resolved
+    /// against; the shim + launcher tag it into the env so the
+    /// child can distinguish (e.g. multi-subcommand packages).
+    Cli {
+        command: String,
+        passthrough_argv: Vec<String>,
+    },
 }
 
 /// `run` variant taking a pre-parsed manifest. Useful for tests that
@@ -108,15 +223,67 @@ pub fn run_with(
     const SECCOMP_CHILD_FD: i32 = 16;
 
     // 3. Argv.
-    let runtime_arg = opts.runtime_root.as_deref().map(|p| (p, "1"));
-    let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds);
+    // Runtime bundle resolution. A resolved bundle wins over
+    // --minimal-libs: when the app has a proper runtime, we mount that
+    // and skip the loader-bind stopgap entirely.
+    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let runtime_arg = resolved_runtime
+        .as_ref()
+        .map(|(p, v)| (p.as_path(), v.as_str()));
+
+    // Pick the entrypoint bin per launch mode. GUI uses the default
+    // `bin`; CLI uses `cli_bin()` if set (falling back to `bin`) and
+    // splices QOS_CLI_COMMAND / forwards passthrough argv.
+    let entry_bin_owned: String;
+    let (mut argv, extra_setenv, cli_passthrough) = match &opts.mode {
+        LaunchMode::Gui => (
+            build_bwrap_argv(manifest, payload_root, runtime_arg, &binds),
+            None,
+            Vec::new(),
+        ),
+        LaunchMode::Cli { command, passthrough_argv } => {
+            entry_bin_owned = manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string();
+            let v = crate::sandbox::build_bwrap_argv_for_entry(
+                manifest,
+                payload_root,
+                runtime_arg,
+                &binds,
+                &entry_bin_owned,
+            );
+            (
+                v,
+                Some(("QOS_CLI_COMMAND".to_string(), command.clone())),
+                passthrough_argv.clone(),
+            )
+        }
+    };
+    // Splice in the QOS_CLI_COMMAND setenv before the trailing
+    // entrypoint token so bwrap still parses it as a flag.
+    if let Some((k, v)) = extra_setenv {
+        let entry = argv.pop().expect("argv non-empty");
+        argv.push("--setenv".to_string());
+        argv.push(k);
+        argv.push(v);
+        argv.push(entry);
+    }
 
     // Optional: narrow dynamic-loader binds. Deliberately not the whole
     // /usr — just the files a plain dynamically-linked binary needs to
     // execve(). Split off in front of the entrypoint token (last argv
-    // entry) so the mounts happen before exec.
+    // entry) so the mounts happen before exec. Skipped when a runtime
+    // bundle is mounted — the bundle already carries the loader.
     let mut extra_ro_paths: Vec<String> = Vec::new();
-    if opts.minimal_libs {
+    let use_minimal_libs = opts.minimal_libs && resolved_runtime.is_none();
+    if opts.minimal_libs && resolved_runtime.is_some() {
+        tracing::info!(
+            "runtime bundle mounted; ignoring --minimal-libs (loader + libc come from the bundle)"
+        );
+    }
+    if use_minimal_libs {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         for path in minimal_loader_binds() {
             if std::path::Path::new(path).exists() {
@@ -148,10 +315,21 @@ pub fn run_with(
         let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
         argv.push("--ro".to_string());
         argv.push(payload_mount.display().to_string());
-        if let Some((_, ver)) = runtime_arg {
+        if let Some((rt_root, ver)) = runtime_arg {
             let rt = crate::sandbox::runtime_mount_for(ver);
             argv.push("--ro".to_string());
             argv.push(rt.display().to_string());
+            // Also allow the canonical loader paths we re-bound out of
+            // the bundle — otherwise the app entry ELF (which has its
+            // INTERP at `/lib64/ld-linux-...`) gets blocked by
+            // Landlock even though the bind is there.
+            for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+                let no_slash = canonical.trim_start_matches('/');
+                if rt_root.join("lib").join(no_slash).exists() {
+                    argv.push("--ro".to_string());
+                    argv.push((*canonical).to_string());
+                }
+            }
         }
         for p in &extra_ro_paths {
             argv.push("--ro".to_string());
@@ -161,6 +339,19 @@ pub fn run_with(
             let expanded = crate::manifest::expand_path(path);
             argv.push("--ro".to_string());
             argv.push(expanded.display().to_string());
+        }
+        // If we bound the session D-Bus socket in for portal use,
+        // Landlock must also grant the app read on that socket path
+        // — otherwise the `ashpd` connect() surfaces EACCES and the
+        // portal appears unavailable, defeating the point of the
+        // whole plumbing.
+        if let Some(bus_addr) =
+            crate::sandbox::host_dbus_bus_address_if_needed(&manifest.sandbox.portals)
+        {
+            if let Some(path) = crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
+                argv.push("--ro".to_string());
+                argv.push(path);
+            }
         }
         for path in &manifest.sandbox.fs.write {
             let expanded = crate::manifest::expand_path(path);
@@ -193,6 +384,11 @@ pub fn run_with(
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
+
+    // CLI passthrough: everything after the entrypoint token is
+    // opaque to bwrap and forwarded to the sandboxed program as
+    // its argv[1..]. The vec is empty for GUI launches.
+    argv.extend(cli_passthrough);
 
     // 4. Build the bwrap Command.
     let bwrap = opts
@@ -232,12 +428,18 @@ pub fn run_with(
             .collect::<Vec<_>>(),
     );
     let net_restricted = manifest.sandbox.net.mode == "off";
+    // The shim now IS wired via opts.landlock_enforce (see argv splice
+    // above). Log intent from the parent for observability; the shim's
+    // own "landlock: {fully,partially} enforced" line surfaces the real
+    // kernel-side outcome after bwrap execs the shim.
     tracing::info!(
-        "landlock plan derived ({} rules, net_restricted={net_restricted}); shim wiring is a follow-up",
-        landlock_plan.len()
+        target: "qos_launcher::landlock",
+        rules = landlock_plan.len(),
+        net_restricted,
+        enforce = opts.landlock_enforce,
+        "landlock plan derived",
     );
     let _ = landlock_plan;
-    let _ = net_restricted;
 
     // SAFETY: pre_exec runs in the child after fork, before exec. We
     // perform only async-signal-safe operations: dup2, fcntl, plus the
@@ -258,11 +460,10 @@ pub fn run_with(
                     let _ = libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                 }
             }
-            // Landlock is NOT installed here: bwrap needs broad FS
-            // access to set up the namespace. See the comment in
-            // `run_with` above — the shim wiring is a follow-up. The
-            // pure plan derivation still happens in the parent so
-            // logging shows what the policy would have been.
+            // Landlock is NOT installed here — bwrap needs broad FS
+            // access to set up the namespace. It's installed by the
+            // __sandbox-exec shim after bwrap's mount setup completes.
+            // See `qos_launcher::landlock_shim`.
             Ok(())
         });
     }
@@ -292,8 +493,13 @@ pub fn run_with_captured(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
-    // Argv.
-    let runtime_arg = opts.runtime_root.as_deref().map(|p| (p, "1"));
+    // Argv. run_with_captured is a lighter-weight sibling that skips
+    // Landlock + minimal-libs — but must still honour a manifest-declared
+    // runtime bundle so exec succeeds inside the sandbox.
+    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let runtime_arg = resolved_runtime
+        .as_ref()
+        .map(|(p, v)| (p.as_path(), v.as_str()));
     let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds);
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));

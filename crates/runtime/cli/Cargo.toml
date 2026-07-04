@@ -1,0 +1,33 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+description = "SDK helpers for qOS CLI apps — stdio, workspace paths, terminal-aware output."
+
+[lib]
+name = "cli"
+path = "src/lib.rs"
+
+# Thin wrappers over the runtime umbrella crate so CLI apps can
+# focus on their own logic rather than plumbing. Works both when
+# the launcher's environment is present (QOS_WORKSPACE_*,
+# QOS_SVC_FS_FD, ...) and when the app is running standalone —
+# in the latter case, `resolve_workspace_path` returns a
+# fallback under $XDG_DATA_HOME / ~/.local/share.
+
+[dependencies]
+runtime          = { path = "../runtime" }
+runtime-portal   = { path = "../runtime-portal" }
+runtime-fs       = { path = "../runtime-fs" }
+runtime-collab   = { path = "../runtime-collab" }
+runtime-identity = { path = "../runtime-identity" }
+
+anyhow = "1"
+clap   = { version = "4", features = ["derive"] }
+thiserror = "1"
+serde  = { version = "1", features = ["derive"] }
+tokio  = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net"] }
+
+[dev-dependencies]
+tempfile     = "3"
+serial_test  = "3"

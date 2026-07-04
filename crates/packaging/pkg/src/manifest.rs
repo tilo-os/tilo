@@ -39,6 +39,11 @@ pub struct Manifest {
     /// `[providers]` block — only meaningful for `format-provider`.
     #[serde(default)]
     pub providers: Providers,
+    /// `[cli]` block — commands the package publishes on the user's
+    /// PATH via the launcher's shim binary. Only meaningful when the
+    /// entrypoint declares `type = "cli"` or `type = "both"`.
+    #[serde(default)]
+    pub cli: Option<Cli>,
 }
 
 /// `[package]` — the identifying metadata.
@@ -144,6 +149,32 @@ pub struct TrustAttestation {
     /// over the package id).
     #[serde(rename = "claim")]
     pub claim_hex: String,
+    /// Attestor's Ed25519 signature over the canonical attestation
+    /// preimage — see [`crate::trust::attestation_preimage`]. Hex
+    /// encoded (128 chars for a 64-byte signature). Empty string
+    /// if no signature is attached (legacy claim-only rows).
+    #[serde(default, rename = "signature")]
+    pub signature_hex: String,
+}
+
+impl TrustAttestation {
+    /// Parse the signature hex into raw bytes. `Ok(None)` when
+    /// the `signature` field is empty.
+    pub fn signature_bytes(&self) -> Result<Option<[u8; 64]>, IdentityParseError> {
+        if self.signature_hex.is_empty() {
+            return Ok(None);
+        }
+        let bytes = hex::decode(&self.signature_hex).map_err(IdentityParseError::Hex)?;
+        if bytes.len() != 64 {
+            return Err(IdentityParseError::WrongLength {
+                expected: 64,
+                got: bytes.len(),
+            });
+        }
+        let mut out = [0u8; 64];
+        out.copy_from_slice(&bytes);
+        Ok(Some(out))
+    }
 }
 
 /// `[sandbox]` — the runtime confinement profile.
@@ -160,9 +191,18 @@ pub struct Sandbox {
     pub fs: SandboxFs,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
-    /// `[sandbox.portals]` table — portal mode per portal name.
+    /// `[sandbox.portals]` table — portal policy per portal name.
+    ///
+    /// The map keys are freedesktop portal names (`file-chooser`,
+    /// `screencast`, `notifications`, `secret-service`, `open-uri`).
+    /// Values are [`PortalPolicy`] — today either `via-host` (the
+    /// launcher plumbs the session D-Bus socket in and the app can
+    /// use `ashpd`) or `deny` (the portal is explicitly disabled).
+    /// An entry MUST exist for every portal the app expects to use;
+    /// absence == the launcher will NOT proxy the bus in for that
+    /// portal, so the app's `ashpd` call surfaces `NotAvailable`.
     #[serde(default)]
-    pub portals: std::collections::BTreeMap<String, String>,
+    pub portals: std::collections::BTreeMap<String, PortalPolicy>,
     /// `[sandbox.services]` table — required/optional services.
     /// Each value parses as `"required@N"` / `"optional@N"`.
     #[serde(default)]
@@ -209,6 +249,29 @@ impl SandboxNet {
             None
         }
     }
+}
+
+/// How the launcher should route a portal request.
+///
+/// Historically the manifest wrote `"via-host"` as a bare string.
+/// Callers now parse into this enum so misspellings surface at
+/// manifest-decode time instead of silently downgrading to a no-op.
+///
+/// The wire form is a plain kebab-case string; TOML round-trips
+/// via the `#[serde(rename_all = "kebab-case")]` attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PortalPolicy {
+    /// Route through the freedesktop portal on the host session bus.
+    /// The launcher bind-mounts the session D-Bus socket into the
+    /// sandbox and sets `DBUS_SESSION_BUS_ADDRESS` — the app then
+    /// uses `runtime::portal_xdg` (or `ashpd` directly).
+    ViaHost,
+    /// The portal is explicitly denied. The launcher does NOT plumb
+    /// the bus in and any `ashpd` call from the app surfaces
+    /// `PortalError::NotAvailable`. Same on-wire behaviour as
+    /// omitting the entry, but signals intent for auditors.
+    Deny,
 }
 
 /// Egress modes. The kebab-case wire form matches the TOML
@@ -314,10 +377,38 @@ impl serde::Serialize for ServiceReq {
 /// For `app` packages this is required. For `service` packages it
 /// is optional (services typically install a systemd unit).
 /// For `runtime` packages it is never set.
+///
+/// Apps can ship both a GUI and a CLI entrypoint. The `type` field
+/// selects which flavour is meant:
+///
+/// - `gui` (default) — `bin` is a GUI app; use the whole [`Entrypoint`]
+///   as today.
+/// - `cli` — `bin` is a CLI app; the launcher inherits stdio and
+///   does not set up a Wayland surface. Publishes commands from the
+///   [`Cli`] block onto the user's PATH via installed shims.
+/// - `both` — the package ships two binaries. `gui_bin` is used
+///   when launched through the app grid / graphical launcher; `cli_bin`
+///   is what the PATH shim execvs. Both must be under the payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entrypoint {
-    /// Path inside the payload to the binary to exec.
+    /// Path inside the payload to the binary to exec. For
+    /// `type = "both"` the `gui_bin` / `cli_bin` fields take
+    /// precedence; `bin` is kept for schema back-compat and used
+    /// only when the split fields are absent.
+    #[serde(default)]
     pub bin: PathBuf,
+    /// Kind of entrypoint. Defaults to `gui` when omitted so
+    /// existing manifests stay valid.
+    #[serde(default, rename = "type")]
+    pub r#type: EntrypointType,
+    /// GUI-flavour binary path inside the payload. Only meaningful
+    /// when `type = "both"`.
+    #[serde(default, rename = "gui-bin")]
+    pub gui_bin: Option<PathBuf>,
+    /// CLI-flavour binary path inside the payload. Only meaningful
+    /// when `type = "both"`.
+    #[serde(default, rename = "cli-bin")]
+    pub cli_bin: Option<PathBuf>,
     /// Splash-segment hints: the loader prefetches these byte
     /// ranges before exec so the splash screen renders before the
     /// full binary is in cache.
@@ -328,6 +419,60 @@ pub struct Entrypoint {
     /// whether to keep the splash or fall back to a default.
     #[serde(default = "default_splash_budget", rename = "splash-budget")]
     pub splash_budget_ms: u32,
+}
+
+impl Entrypoint {
+    /// The binary path the *GUI* launcher should exec. Falls back
+    /// to `bin` when the split fields aren't in the manifest.
+    pub fn gui_bin_path(&self) -> Option<&PathBuf> {
+        match self.r#type {
+            EntrypointType::Gui => Some(&self.bin),
+            EntrypointType::Cli => None,
+            EntrypointType::Both => self.gui_bin.as_ref().or(Some(&self.bin)),
+        }
+    }
+
+    /// The binary path a CLI command should exec. Falls back to
+    /// `bin` when the split fields aren't in the manifest.
+    pub fn cli_bin_path(&self) -> Option<&PathBuf> {
+        match self.r#type {
+            EntrypointType::Gui => None,
+            EntrypointType::Cli => Some(&self.bin),
+            EntrypointType::Both => self.cli_bin.as_ref().or(Some(&self.bin)),
+        }
+    }
+}
+
+/// Which flavour of entrypoint the package exposes. Wire form is
+/// lowercase — `type = "gui"` / `"cli"` / `"both"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntrypointType {
+    /// Windowed / graphical app. The default so back-compat is silent.
+    #[default]
+    Gui,
+    /// Terminal / stdio-only app.
+    Cli,
+    /// Ships both flavours; the [`Entrypoint::gui_bin`] / `cli_bin`
+    /// paths pick the concrete binary per launch mode.
+    Both,
+}
+
+/// `[cli]` — commands the package publishes on the user's PATH.
+///
+/// Each string in `commands` becomes a shim in
+/// `~/.local/share/qos-apps/bin/<cmd>` at install time; the shim
+/// re-execs through the launcher's `run-installed` subcommand.
+///
+/// Callers writing manifests should keep the names short and
+/// namespace-clean — the shim install layer treats them as raw
+/// filesystem paths.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cli {
+    /// PATH-visible command names (e.g. `["notes", "notes-import"]`).
+    /// Empty vec == the package ships no PATH commands.
+    #[serde(default)]
+    pub commands: Vec<String>,
 }
 
 fn default_splash_budget() -> u32 {
