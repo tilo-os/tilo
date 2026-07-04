@@ -13,7 +13,7 @@ use capnp::Error;
 
 use crate::app_host_capnp::{app_host, Pinning as WirePinning};
 use crate::gc;
-use crate::install::install_qpkg;
+use crate::install::{TrustPolicy, install_qpkg_with_policy};
 use crate::registry::{Pinning, RegistryEntry};
 use crate::store::Store;
 use pkg::id::PackageId;
@@ -22,16 +22,23 @@ use pkg::id::PackageId;
 pub struct AppHostServer {
     store: Arc<Store>,
     max_store_bytes: u64,
+    trust_policy: Arc<TrustPolicy>,
 }
 
 impl AppHostServer {
     /// Build a new server backed by `store`. `max_store_bytes` is the
     /// soft cap used by the post-install GC sweep; pass `0` to disable
-    /// GC.
-    pub fn new(store: Arc<Store>, max_store_bytes: u64) -> Self {
+    /// GC. `trust_policy` gates every install through the same
+    /// publisher-trust checks `qos-install` uses.
+    pub fn new(
+        store: Arc<Store>,
+        max_store_bytes: u64,
+        trust_policy: Arc<TrustPolicy>,
+    ) -> Self {
         Self {
             store,
             max_store_bytes,
+            trust_policy,
         }
     }
 }
@@ -222,6 +229,7 @@ impl app_host::Server for AppHostServer {
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
         let max_bytes = self.max_store_bytes;
+        let trust_policy = Arc::clone(&self.trust_policy);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
             let qpkg_bytes = p
@@ -232,7 +240,7 @@ impl app_host::Server for AppHostServer {
                 p.get_pinning().map_err(|e| Error::failed(e.to_string()))?,
             );
             let id = tokio::task::spawn_blocking(move || {
-                let id = install_qpkg(&store, &qpkg_bytes, pinning)
+                let id = install_qpkg_with_policy(&store, &qpkg_bytes, pinning, &trust_policy)
                     .map_err(|e| e.to_string())?;
                 // Best-effort post-install sweep. Errors here should not
                 // fail the install — we already have the bytes on disk.

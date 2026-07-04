@@ -12,6 +12,7 @@ use tokio::net::UnixListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::app_host_capnp::app_host;
+use crate::install::TrustPolicy;
 use crate::service::AppHostServer;
 use crate::store::Store;
 
@@ -32,17 +33,20 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own
-/// capnp-rpc system + service instance backed by the shared `Store`.
+/// capnp-rpc system + service instance backed by the shared `Store`
+/// and the shared publisher-trust policy.
 pub async fn serve(
     listener: UnixListener,
     store: Arc<Store>,
     max_store_bytes: u64,
+    trust_policy: Arc<TrustPolicy>,
 ) -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
+        let trust = Arc::clone(&trust_policy);
         tokio::task::spawn_local(async move {
-            if let Err(e) = handle_connection(stream, store, max_store_bytes).await {
+            if let Err(e) = handle_connection(stream, store, max_store_bytes, trust).await {
                 tracing::warn!(error = %e, "app-host connection terminated");
             }
         });
@@ -54,6 +58,7 @@ pub async fn handle_connection(
     stream: tokio::net::UnixStream,
     store: Arc<Store>,
     max_store_bytes: u64,
+    trust_policy: Arc<TrustPolicy>,
 ) -> anyhow::Result<()> {
     let (reader, writer) = stream.into_split();
     let reader = reader.compat();
@@ -64,7 +69,7 @@ pub async fn handle_connection(
         rpc_twoparty_capnp::Side::Server,
         Default::default(),
     ));
-    let service = AppHostServer::new(store, max_store_bytes);
+    let service = AppHostServer::new(store, max_store_bytes, trust_policy);
     let client: app_host::Client = capnp_rpc::new_client(service);
     let rpc_system = RpcSystem::new(network, Some(client.client));
     rpc_system.await.map_err(|e| anyhow::anyhow!("{e}"))

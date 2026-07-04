@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_host::app_host_capnp::{app_host as capnp_app_host, Pinning as WirePinning};
+use app_host::install::TrustPolicy;
 use app_host::store::Store;
 use app_host::transport;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -25,7 +26,8 @@ impl Harness {
         let socket = tmp.path().join("app-host.sock");
         let store = Arc::new(Store::open(tmp.path())?);
         let listener = transport::bind(&socket)?;
-        let _ = tokio::task::spawn_local(transport::serve(listener, store, 0));
+        let trust = Arc::new(TrustPolicy::empty());
+        let _ = tokio::task::spawn_local(transport::serve(listener, store, 0, trust));
         Ok(Self { socket, _tmp: tmp })
     }
 

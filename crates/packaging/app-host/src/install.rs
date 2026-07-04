@@ -24,6 +24,7 @@ use std::io::Read;
 
 use pkg::blobs::BlobStore;
 use pkg::id::PackageId;
+use pkg::trust::{RevocationList, TrustedAttestors};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -45,6 +46,12 @@ pub enum InstallError {
     Parse(String),
     #[error("verify signature: {0}")]
     Verify(String),
+    #[error("policy refused: --require-attestor {required:?} but package verified as {found}")]
+    AttestorMismatch { required: String, found: String },
+    #[error("policy refused: --require-attestor {required:?} and package is self-signed")]
+    RequireAttestorWithoutAttestation { required: String },
+    #[error("publisher key is revoked ({reason})")]
+    Revoked { reason: String },
     #[error("unpack payload: {0}")]
     Unpack(String),
     #[error("store: {0}")]
@@ -53,18 +60,78 @@ pub enum InstallError {
     Io(#[from] std::io::Error),
 }
 
-/// Ingest a .qpkg-shaped byte blob into `store`.
+/// Publisher-trust policy the daemon applies to every install.
 ///
-/// - Verifies the signature (best-effort: self-signed is accepted; the
-///   trust-set is currently empty pending publisher-trust integration).
-/// - Extracts the payload eagerly to `<store>/payloads/<pkg-id-hex>/`.
-/// - Inserts a `RegistryEntry` with the requested pinning.
-///
-/// Returns the resolved [`PackageId`].
+/// Loaded once at daemon startup from the same
+/// `~/.config/qos/trusted-attestors.toml` +
+/// `~/.config/qos/revoked-keys.toml` files `qos-install` uses, so a
+/// single trust config governs both entry points.
+#[derive(Debug, Default, Clone)]
+pub struct TrustPolicy {
+    pub attestors: TrustedAttestors,
+    pub revocation: RevocationList,
+    /// If set, refuse any install that doesn't verify as attested by
+    /// this attestor id. Default `None` — matches `qos-install`'s
+    /// warn-then-install behaviour on self-signed packages.
+    pub require_attestor: Option<String>,
+}
+
+impl TrustPolicy {
+    /// Load the default on-disk trust config. Missing files degrade
+    /// to an empty policy (attestors + revoked-keys empty). Failure
+    /// to parse a file surfaces as an error.
+    pub fn load_default() -> Result<Self, pkg::trust::TrustLoadError> {
+        let attestors = match pkg::trust::default_trusted_attestors_path() {
+            Some(p) => TrustedAttestors::load(&p)?,
+            None => TrustedAttestors::empty(),
+        };
+        let revocation = match pkg::trust::default_revoked_keys_path() {
+            Some(p) => RevocationList::load(&p)?,
+            None => RevocationList::empty(),
+        };
+        Ok(Self { attestors, revocation, require_attestor: None })
+    }
+
+    /// Empty policy — nothing trusted, nothing revoked, no gate.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
+/// Ingest a .qpkg-shaped byte blob into `store` with no publisher-trust
+/// policy applied. Kept for callers (tests, in-process integrations)
+/// that don't want to plumb a policy through — see
+/// [`install_qpkg_with_policy`] for the full API.
 pub fn install_qpkg(
     store: &Store,
     bytes: &[u8],
     pinning: Pinning,
+) -> Result<PackageId, InstallError> {
+    install_qpkg_with_policy(store, bytes, pinning, &TrustPolicy::empty())
+}
+
+/// Ingest a .qpkg-shaped byte blob into `store`, gating the install on
+/// `policy`.
+///
+/// - Runs [`pkg::verify_with_trust`] against the policy's attestor list
+///   + revocation list. A revoked publisher aborts the install
+///   regardless of the `require_attestor` field.
+/// - When `policy.require_attestor` is set, refuses installs that don't
+///   verify as attested by that id (or that verify as `Trusted` via a
+///   trusted-key path, which bypasses the attestor chain and is
+///   equally refused — mirrors `qos-install`'s strict-require gate).
+/// - Otherwise: an untrusted (self-signed) publisher surfaces as a
+///   `tracing::warn!` and the install proceeds, matching
+///   `qos-install`'s warn-then-install default.
+/// - Extracts the payload eagerly to `<store>/payloads/<pkg-id-hex>/`.
+/// - Inserts a `RegistryEntry` with the requested pinning.
+///
+/// Returns the resolved [`PackageId`].
+pub fn install_qpkg_with_policy(
+    store: &Store,
+    bytes: &[u8],
+    pinning: Pinning,
+    policy: &TrustPolicy,
 ) -> Result<PackageId, InstallError> {
     // Ingest every tar entry into a scratch MemoryBlobStore first,
     // so we can compute+verify the PackageId before touching the
@@ -115,10 +182,53 @@ pub fn install_qpkg(
         .parse()
         .map_err(|e| InstallError::Parse(format!("qpkg.toml package_id: {e:?}")))?;
 
-    // Verify — self-signed acceptable (empty trust set → UntrustedPublisher).
-    let manifest = match pkg::verify(id, &mem, &[]) {
-        pkg::Verification::Trusted { manifest } => manifest,
-        pkg::Verification::UntrustedPublisher { manifest, .. } => manifest,
+    // Verify + apply the trust policy.
+    let outcome = pkg::verify_with_trust(
+        id,
+        &mem,
+        &[],
+        policy.attestors.as_slice(),
+        &policy.revocation,
+    );
+    let manifest = match outcome {
+        pkg::Verification::AttestedBy { attestor, manifest } => {
+            if let Some(required) = &policy.require_attestor {
+                if required != &attestor {
+                    return Err(InstallError::AttestorMismatch {
+                        required: required.clone(),
+                        found: attestor,
+                    });
+                }
+            }
+            manifest
+        }
+        pkg::Verification::Trusted { manifest } => {
+            // Trusted-key path bypasses the attestor chain — with a
+            // strict `require_attestor` gate this counts as a mismatch,
+            // matching `qos-install`'s stricter behaviour.
+            if let Some(required) = &policy.require_attestor {
+                return Err(InstallError::AttestorMismatch {
+                    required: required.clone(),
+                    found: "trusted-key".into(),
+                });
+            }
+            manifest
+        }
+        pkg::Verification::UntrustedPublisher { identity, manifest } => {
+            if let Some(required) = &policy.require_attestor {
+                return Err(InstallError::RequireAttestorWithoutAttestation {
+                    required: required.clone(),
+                });
+            }
+            tracing::warn!(
+                publisher = %hex::encode(identity),
+                "app-host install: publisher is untrusted (self-signed) — installing anyway; use --require-attestor to gate"
+            );
+            manifest
+        }
+        pkg::Verification::Revoked { reason, .. } => {
+            return Err(InstallError::Revoked { reason });
+        }
         other => {
             return Err(InstallError::Verify(format!("{other:?}")));
         }

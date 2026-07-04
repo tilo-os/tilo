@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use clap::Parser;
 
-use app_host::{default_socket_path, default_store_root, gc, store::Store, transport};
+use app_host::{
+    default_socket_path, default_store_root, gc, install::TrustPolicy, store::Store, transport,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,6 +33,13 @@ struct Cli {
     /// Default: 4 GiB.
     #[arg(long, default_value_t = 4 * 1024 * 1024 * 1024)]
     max_store_bytes: u64,
+    /// Publisher trust: refuse any install that doesn't verify as
+    /// attested by this attestor id (as recorded in
+    /// `~/.config/qos/trusted-attestors.toml`). Without this flag the
+    /// daemon warns on self-signed installs and continues — matching
+    /// `qos-install`'s default.
+    #[arg(long)]
+    require_attestor: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,10 +48,22 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let socket = cli.socket.unwrap_or_else(default_socket_path);
     let root = cli.store.unwrap_or_else(default_store_root);
+
+    // Load the publisher-trust policy from the same on-disk files
+    // `qos-install` uses. Missing files → empty policy (warn-only).
+    let mut trust_policy = TrustPolicy::load_default().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "app-host: could not load trust policy — proceeding with an empty one");
+        TrustPolicy::empty()
+    });
+    trust_policy.require_attestor = cli.require_attestor.clone();
+
     tracing::info!(
         socket = %socket.display(),
         store  = %root.display(),
         max_store_bytes = cli.max_store_bytes,
+        require_attestor = ?trust_policy.require_attestor,
+        trusted_attestor_count = trust_policy.attestors.as_slice().len(),
+        revoked_key_count = trust_policy.revocation.revoked.len(),
         "qos-app-host starting"
     );
 
@@ -58,6 +79,7 @@ fn main() -> anyhow::Result<()> {
 
     // capnp-rpc + tokio LocalSet (one task per connection, single
     // event-loop Vat). Matches `format-host`'s shape.
+    let trust_policy = Arc::new(trust_policy);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -67,7 +89,7 @@ fn main() -> anyhow::Result<()> {
         // Best-effort sd_notify — silently no-op if NOTIFY_SOCKET
         // isn't in env (e.g. when run by hand).
         let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
-        transport::serve(listener, store, cli.max_store_bytes).await
+        transport::serve(listener, store, cli.max_store_bytes, trust_policy).await
     })
 }
 
