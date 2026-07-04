@@ -18,7 +18,7 @@
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!              shortcuts, and forward to the editor when notes are active.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -127,6 +127,8 @@ enum Action {
     BackToCalendar,
     /// Toggle whether a synced remote calendar's events are shown.
     ToggleCalendarVisible(String),
+    /// Collapse/expand one account's calendar list in the sidebar.
+    ToggleAccountCollapsed(String),
     /// Pull events from the configured CalDAV calendars.
     Sync,
 }
@@ -599,6 +601,7 @@ impl CalendarApp {
             color: self.model.next_event_order_color(),
             recurrence: Recurrence::None,
             reminder_min: Some(10),
+            calendar_id: None,
             project: None,
         };
         let id = ev.id;
@@ -871,6 +874,11 @@ impl CalendarApp {
                     }
                 }
             }
+            Action::ToggleAccountCollapsed(id) => {
+                if let Some(acc) = self.accounts.accounts.iter_mut().find(|a| a.id == id) {
+                    acc.collapsed = !acc.collapsed;
+                }
+            }
             Action::Sync => self.start_sync(doc),
             Action::Export => self.export_ics(),
             Action::Import => self.import_ics(doc),
@@ -905,6 +913,41 @@ impl CalendarApp {
         // makes this a no-op.
         self.force_persist = true;
         self.dirty = true;
+    }
+
+    // --- calendar visibility --------------------------------------------
+
+    /// Ids of every remote calendar currently unchecked in the sidebar. A synced
+    /// event whose source calendar is in this set is filtered out of every view.
+    fn hidden_calendar_ids(&self) -> HashSet<String> {
+        self.accounts
+            .accounts
+            .iter()
+            .flat_map(|a| a.calendars.iter())
+            .filter(|c| !c.visible)
+            .map(|c| c.id.clone())
+            .collect()
+    }
+
+    /// Events occurring on `date`, minus any whose source calendar is hidden.
+    /// This is the single filter every view draws through, so unchecking a
+    /// calendar hides its already-synced events immediately.
+    fn visible_events_on(&self, date: NaiveDate) -> Vec<&Event> {
+        let hidden = self.hidden_calendar_ids();
+        self.model
+            .events_on(date)
+            .into_iter()
+            .filter(|e| e.visible_under(&hidden))
+            .collect()
+    }
+
+    /// Whether `date` carries any *visible* event — drives the mini-month dots.
+    fn day_has_visible_event(&self, date: NaiveDate) -> bool {
+        let hidden = self.hidden_calendar_ids();
+        self.model
+            .events
+            .iter()
+            .any(|e| e.occurs_on(date) && e.visible_under(&hidden))
     }
 
     // ====================================================================
@@ -1166,16 +1209,32 @@ impl CalendarApp {
             y += 26.0;
 
             for acc in &self.accounts.accounts {
-                // Account header (label only — management lives in Settings).
+                // Account header — a disclosure row that collapses/expands this
+                // account's calendar list (management itself lives in Settings).
+                let header = Rect::new(r.x0 + 10.0, y - 4.0, r.x1 - 10.0, y + 18.0);
+                if header.contains(self.last_mouse) {
+                    fill_round(scene, t, c.surface_white_5, header, 6.0);
+                }
+                draw_caret(
+                    scene,
+                    t,
+                    c.neutral[6],
+                    Point::new(r.x0 + pad + 4.0, y + 7.0),
+                    !acc.collapsed,
+                );
                 tr.draw_text(
                     scene,
-                    &elide(acc.label(), 26),
+                    &elide(acc.label(), 24),
                     12.0,
                     c.neutral[7],
-                    t * Affine::translate((r.x0 + pad, y)),
+                    t * Affine::translate((r.x0 + pad + 16.0, y)),
                     None,
                 );
+                hits.push((header, Action::ToggleAccountCollapsed(acc.id.clone())));
                 y += 22.0;
+                if acc.collapsed {
+                    continue;
+                }
                 for cal in &acc.calendars {
                     let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 30.0);
                     if row.contains(self.last_mouse) {
@@ -1389,7 +1448,7 @@ impl CalendarApp {
             let in_month = day.month() == self.anchor.month();
             let is_today = *day == self.today;
             let is_anchor = *day == self.anchor;
-            let has_ev = self.model.events.iter().any(|e| e.occurs_on(*day));
+            let has_ev = self.day_has_visible_event(*day);
 
             if is_today {
                 scene.fill(Fill::NonZero, t, c.accent[5], None, &Circle::new(cell.center(), 10.0));
@@ -1672,8 +1731,7 @@ impl CalendarApp {
             // Event chips (clip to cell).
             scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &cell);
             let evs: Vec<(Id, String, Palette, bool, NaiveDateTime)> = self
-                .model
-                .events_on(*day)
+                .visible_events_on(*day)
                 .iter()
                 .map(|e| (e.id, e.title.clone(), e.color, e.all_day, e.start))
                 .collect();
@@ -1786,8 +1844,7 @@ impl CalendarApp {
 
             // all-day chips
             let allday: Vec<(Id, String, Palette)> = self
-                .model
-                .events_on(*day)
+                .visible_events_on(*day)
                 .iter()
                 .filter(|e| e.all_day)
                 .map(|e| (e.id, e.title.clone(), e.color))
@@ -1846,8 +1903,7 @@ impl CalendarApp {
         for (i, day) in days.iter().enumerate() {
             let x0 = grid_x0 + col_w * i as f64;
             let timed: Vec<(Id, String, String, Palette, NaiveDateTime, NaiveDateTime)> = self
-                .model
-                .events_on(*day)
+                .visible_events_on(*day)
                 .iter()
                 .filter(|e| !e.all_day)
                 .map(|e| (e.id, e.title.clone(), e.location.clone(), e.color, e.start, e.end))
@@ -1918,7 +1974,7 @@ impl CalendarApp {
 
         let mut day = from;
         while day <= to && y < area.y1 - 20.0 {
-            let evs = self.model.events_on(day);
+            let evs = self.visible_events_on(day);
             let tasks: Vec<_> = self
                 .model
                 .tasks
@@ -2603,6 +2659,21 @@ fn draw_chevron(scene: &mut Scene, t: Affine, color: Color, center: Point, left:
     scene.stroke(&Stroke::new(1.6), t, color, None, &p);
 }
 
+/// Disclosure caret: points down when `expanded`, right when collapsed.
+fn draw_caret(scene: &mut Scene, t: Affine, color: Color, center: Point, expanded: bool) {
+    let mut p = BezPath::new();
+    if expanded {
+        p.move_to(Point::new(center.x - 4.0, center.y - 2.0));
+        p.line_to(Point::new(center.x, center.y + 3.0));
+        p.line_to(Point::new(center.x + 4.0, center.y - 2.0));
+    } else {
+        p.move_to(Point::new(center.x - 2.0, center.y - 4.0));
+        p.line_to(Point::new(center.x + 3.0, center.y));
+        p.line_to(Point::new(center.x - 2.0, center.y + 4.0));
+    }
+    scene.stroke(&Stroke::new(1.6), t, color, None, &p);
+}
+
 fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(scene, t, color, Point::new(center.x - 5.0, center.y), Point::new(center.x + 5.0, center.y), 1.8);
     stroke_line(scene, t, color, Point::new(center.x, center.y - 5.0), Point::new(center.x, center.y + 5.0), 1.8);
@@ -2751,6 +2822,7 @@ fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn demo_app_seeds_model_and_selection() {
@@ -2900,6 +2972,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn import_reads_a_real_ics_file() {
         // Import pulls the newest `.ics` from the transfer directory through
         // the real parse path — not a bundled sample.
@@ -3206,6 +3279,7 @@ mod tests {
             color: Palette::Blue,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: None,
         };
         tx.send((
@@ -3357,6 +3431,16 @@ mod tests {
             });
         }
 
+        /// Press a single character through the real keyboard path.
+        fn type_char(&mut self, ch: &str) {
+            self.dispatch(&char_press(ch));
+        }
+
+        /// Press a named key (arrows, etc.) through the real keyboard path.
+        fn press_named(&mut self, named: winit::keyboard::NamedKey) {
+            self.dispatch(&named_press(named));
+        }
+
         /// Centre of the first hit rect carrying an action matching `pred`.
         fn hit_center<F: Fn(&Action) -> bool>(&self, pred: F) -> Option<Point> {
             self.app
@@ -3364,6 +3448,44 @@ mod tests {
                 .iter()
                 .find(|(_, a)| pred(a))
                 .map(|(r, _)| r.center())
+        }
+    }
+
+    // Synthesised winit keyboard events (the zeroed-KeyEvent trick the toolkit's
+    // own widget tests use — every field is overwritten before use).
+    fn synth_device() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+    fn char_press(ch: &str) -> winit::event::WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(ch.into());
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(ch.into());
+        winit::event::WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        winit::event::WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
         }
     }
 
@@ -3548,5 +3670,406 @@ mod tests {
         let drawn = elide_to_width(&mut tr, &long, 11.0, block_text_w);
         assert!(drawn.ends_with('…'), "narrow week title ellipsized: {drawn:?}");
         assert_ne!(drawn, long);
+    }
+
+    // --- per-calendar visibility actually filters the views ----------------
+
+    #[test]
+    fn hiding_a_synced_calendar_drops_its_events_and_rechecking_restores_them() {
+        // The standout defect: unchecking a calendar must hide its already-synced
+        // events on the spot (and re-checking must bring them back with no
+        // re-sync). Assert on the real draw path — the Day timeline's click
+        // hit-map, which is exactly what a user clicks.
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.view = View::Day;
+        app.detail_open = false;
+        app.selection = None;
+        app.narrow_screen = NarrowScreen::Calendar;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+
+        // A synced event tagged with an existing (checked) calendar, on the
+        // anchored day so the Day timeline lays it out.
+        let start = app.anchor.and_time(NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        let ev = Event {
+            id: Uuid::new_v4(),
+            title: "Remote sync marker".into(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            location: String::new(),
+            color: Palette::Blue,
+            recurrence: Recurrence::None,
+            reminder_min: None,
+            project: None,
+            calendar_id: Some("work/default".into()),
+        };
+        let eid = ev.id;
+        app.model.events.push(ev);
+        app.model.events.sort_by_key(|e| e.start);
+
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+
+        fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
+            let mut scene = Scene::new();
+            app.draw(&mut scene, Affine::IDENTITY, tr, theme, &PresenceCtx::empty());
+            app.hits
+                .iter()
+                .any(|(_, a)| matches!(a, Action::OpenEvent(id) if *id == eid))
+        }
+
+        assert!(draws(&mut app, &mut tr, &theme, eid), "shown while its calendar is checked");
+
+        app.apply_action(Action::ToggleCalendarVisible("work/default".into()), &mut state);
+        assert!(
+            !draws(&mut app, &mut tr, &theme, eid),
+            "hiding the source calendar removes the event's block from the view"
+        );
+
+        app.apply_action(Action::ToggleCalendarVisible("work/default".into()), &mut state);
+        assert!(
+            draws(&mut app, &mut tr, &theme, eid),
+            "re-checking the calendar restores the event with no re-sync"
+        );
+    }
+
+    #[test]
+    fn sync_tags_landed_events_with_their_source_calendar() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.apply_action(Action::Sync, &mut state);
+        // The demo pulls "Synced standup" from the work/default collection.
+        let standup = app
+            .model
+            .events
+            .iter()
+            .find(|e| e.title == "Synced standup")
+            .expect("sync pulled the standup");
+        assert_eq!(
+            standup.calendar_id.as_deref(),
+            Some("work/default"),
+            "a synced event remembers which calendar it came from"
+        );
+        // A locally-created event stays untagged, so it is always visible.
+        app.apply_action(Action::NewEvent, &mut state);
+        let new = app.model.events.iter().find(|e| e.title == "New event").unwrap();
+        assert!(new.calendar_id.is_none(), "local events carry no source calendar");
+    }
+
+    #[test]
+    fn source_calendar_id_survives_the_crdt_round_trip() {
+        // The tag must persist, or hiding wouldn't stick across a restart.
+        let mut doc = AutoCommit::new();
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        let ev = Event {
+            id: Uuid::new_v4(),
+            title: "Tagged".into(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            location: String::new(),
+            color: Palette::Red,
+            recurrence: Recurrence::None,
+            reminder_min: None,
+            project: None,
+            calendar_id: Some("work/oncall".into()),
+        };
+        CalDoc::update_event(&mut doc, &ev);
+        let back = CalDoc::read_model(&doc);
+        assert_eq!(back.events[0].calendar_id.as_deref(), Some("work/oncall"));
+    }
+
+    // --- per-account collapse is wired (was a dead serialized field) -------
+
+    #[test]
+    fn collapsing_an_account_hides_its_calendar_rows_in_the_sidebar() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
+        app.relayout();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+
+        fn cal_rows(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme) -> usize {
+            let mut scene = Scene::new();
+            app.draw(&mut scene, Affine::IDENTITY, tr, theme, &PresenceCtx::empty());
+            app.hits
+                .iter()
+                .filter(|(_, a)| matches!(a, Action::ToggleCalendarVisible(_)))
+                .count()
+        }
+
+        let acc_id = app.accounts.accounts[0].id.clone();
+        let acc_cals = app.accounts.accounts[0].calendars.len();
+        assert!(acc_cals > 0, "the first sample account has calendars");
+
+        let before = cal_rows(&mut app, &mut tr, &theme);
+        // The account header is a real collapse target in the hit-map.
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, a)| matches!(a, Action::ToggleAccountCollapsed(id) if *id == acc_id)),
+            "the account header carries a collapse target"
+        );
+
+        app.apply_action(Action::ToggleAccountCollapsed(acc_id.clone()), &mut state);
+        assert!(app.accounts.accounts[0].collapsed, "the account is now collapsed");
+
+        let after = cal_rows(&mut app, &mut tr, &theme);
+        assert_eq!(
+            after,
+            before - acc_cals,
+            "collapsing removes exactly that account's calendar rows"
+        );
+
+        // Header stays clickable so the list can be re-expanded.
+        app.apply_action(Action::ToggleAccountCollapsed(acc_id.clone()), &mut state);
+        assert!(!app.accounts.accounts[0].collapsed, "clicking again re-expands it");
+        assert_eq!(cal_rows(&mut app, &mut tr, &theme), before, "expanding restores the rows");
+    }
+
+    // --- detail chips: colour / recurrence / reminder ----------------------
+
+    #[test]
+    fn cycling_recurrence_updates_selected_event_and_mirrors_to_crdt() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("the demo opens with an event selected"),
+        };
+        let before = app.model.event(id).unwrap().recurrence;
+        app.apply_action(Action::CycleRecurrence, &mut state);
+        let after = app.model.event(id).unwrap().recurrence;
+        assert_eq!(after, before.cycle(), "the chip advances recurrence by one step");
+        // Reading the document back yields the new rule — it mirrored into the CRDT.
+        let reread = CalDoc::read_model(&state);
+        assert_eq!(reread.events.iter().find(|e| e.id == id).unwrap().recurrence, after);
+    }
+
+    #[test]
+    fn cycling_colour_updates_selected_event() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("event selected"),
+        };
+        let before = app.model.event(id).unwrap().color;
+        app.apply_action(Action::CycleColor, &mut state);
+        assert_ne!(app.model.event(id).unwrap().color, before, "the chip advances the colour");
+    }
+
+    #[test]
+    fn cycling_reminder_advances_and_reaches_the_exported_ics() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("event selected"),
+        };
+        // Drive the reminder from a known rung: None → 10m → 30m.
+        if let Some(e) = app.model.event_mut(id) {
+            e.reminder_min = None;
+        }
+        app.apply_action(Action::CycleReminder, &mut state);
+        assert_eq!(app.model.event(id).unwrap().reminder_min, Some(10));
+        app.apply_action(Action::CycleReminder, &mut state);
+        assert_eq!(app.model.event(id).unwrap().reminder_min, Some(30));
+        // The reminder is real, exported data: it becomes a VALARM in the .ics.
+        let ics = crate::ics::export(&app.model);
+        assert!(
+            ics.contains("TRIGGER:-PT30M"),
+            "the reminder chip's value reaches the exported alarm"
+        );
+    }
+
+    // --- Export writes a real file ----------------------------------------
+
+    #[test]
+    #[serial]
+    fn export_writes_a_real_ics_file_to_the_transfer_dir() {
+        let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: `#[serial]` keeps env-var tests off each other's toes.
+        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.apply_action(Action::Export, &mut state);
+
+        let written = crate::store::newest_ics(&dir).expect("export wrote an .ics file");
+        let body = std::fs::read_to_string(&written).unwrap();
+        assert!(body.starts_with("BEGIN:VCALENDAR"), "a real iCalendar file");
+        assert!(body.contains("BEGIN:VEVENT"), "carrying the exported events");
+        assert!(
+            app.status.as_deref().unwrap_or("").contains("Exported"),
+            "the status pill confirms the export"
+        );
+
+        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- keyboard dispatch through the real handle_event -------------------
+
+    #[test]
+    #[serial]
+    fn keyboard_shortcuts_switch_views_navigate_and_act() {
+        // Every shortcut goes through the production `Widget::handle_event` key
+        // path, not `apply_action`. 'e'/'i' touch the transfer dir, so redirect
+        // it to a temp dir first.
+        let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+
+        let mut h = Harness::new(1280, 800);
+        // Close the demo's detail so the notes editor doesn't own keystrokes.
+        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        h.relayout();
+
+        h.type_char("w");
+        assert_eq!(h.app.view, View::Week, "'w' → Week");
+        h.type_char("d");
+        assert_eq!(h.app.view, View::Day, "'d' → Day");
+        h.type_char("a");
+        assert_eq!(h.app.view, View::Agenda, "'a' → Agenda");
+        h.type_char("m");
+        assert_eq!(h.app.view, View::Month, "'m' → Month");
+
+        // 't' snaps the anchor back to today; step away first to prove it moves.
+        h.app.apply_action(Action::Next, &mut h.doc);
+        assert_ne!(h.app.anchor, h.app.today);
+        h.type_char("t");
+        assert_eq!(h.app.anchor, h.app.today, "'t' → today");
+
+        // '[' / ']' step the period; arrows move the day anchor.
+        let m0 = h.app.anchor.month();
+        h.type_char("]");
+        assert_ne!(h.app.anchor.month(), m0, "']' steps the month forward");
+        h.type_char("[");
+        assert_eq!(h.app.anchor.month(), m0, "'[' steps it back");
+        let a0 = h.app.anchor;
+        h.press_named(winit::keyboard::NamedKey::ArrowRight);
+        assert_eq!(h.app.anchor, a0 + Duration::days(1), "ArrowRight → +1 day");
+        h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        assert_eq!(h.app.anchor, a0 + Duration::days(8), "ArrowDown → +7 days");
+
+        // 'n' creates a new event through the keyboard.
+        let before = h.app.model.events.len();
+        h.type_char("n");
+        assert_eq!(h.app.model.events.len(), before + 1, "'n' created an event");
+
+        // 'e' exports through the keyboard: a real .ics lands in the transfer dir.
+        h.type_char("e");
+        assert!(
+            crate::store::newest_ics(&dir).is_some(),
+            "'e' exported an .ics through the key path"
+        );
+
+        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- sync failure path -------------------------------------------------
+
+    #[test]
+    fn poll_sync_reports_failure_when_the_worker_drops() {
+        // The Disconnected branch: a worker that panics/drops its sender without
+        // a reply must surface "Sync failed" and clear the in-flight state.
+        let mut app = CalendarApp::new_demo();
+        app.demo = false;
+        let mut state = AutoCommit::new();
+        let (tx, rx) =
+            std::sync::mpsc::channel::<(caldav::SyncResult, SyncOutcome)>();
+        app.sync_rx = Some(rx);
+        app.syncing = true;
+        drop(tx); // worker vanished without sending
+        app.poll_sync(&mut state);
+        assert!(!app.syncing, "the in-flight flag is cleared");
+        assert!(app.sync_rx.is_none(), "the dead channel is dropped");
+        assert_eq!(app.status.as_deref(), Some("Sync failed"));
+    }
+
+    // --- notes editing persists through the real editor + save path --------
+
+    #[test]
+    fn notes_edit_persists_across_restart() {
+        let dir = std::env::temp_dir().join(format!("cal-notes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calendar.automerge");
+
+        let theme = Theme::dark();
+        let mut app = CalendarApp::new_with_data_path(path.clone());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        // Create an event and open its detail (which seeds a notes block).
+        app.apply_action(Action::NewEvent, &mut doc);
+        let eid = match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("the new event is selected"),
+        };
+
+        // Lay out wide so the notes editor is active, and build the editor node
+        // so key events route into it (handle_event forwards via `editor_node`).
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        // Bind the editor to the event's notes, then focus it.
+        app.sync(&mut doc, &root);
+        app.notes_editor.set_focus(true);
+
+        // Type a distinctive marker through the real Widget::handle_event path.
+        for ch in ["Z", "Q", "9"] {
+            let ev = char_press(ch);
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                &ev,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+
+        // Persist and confirm it reached disk.
+        app.force_persist = true;
+        app.sync(&mut doc, &root);
+        assert!(path.exists(), "the calendar document was written to disk");
+
+        // Reload the on-disk document and read the note back through a fresh
+        // editor binding — the typed text must have survived the restart.
+        let mut doc2 = crate::store::load(&path).expect("document present on disk");
+        let list = CalDoc::event_notes(&mut doc2, eid).expect("event notes list present");
+        let mut ed = BlockEditor::new();
+        ed.bind_blocks(&mut doc2, list);
+        let joined: String = ed
+            .blocks()
+            .iter()
+            .map(|b| b.text().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("ZQ9"), "typed note persisted across restart: {joined:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

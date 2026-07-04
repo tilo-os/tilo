@@ -44,3 +44,9 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 # fabricating events.
 default = ["live"]
 live = ["dep:reqwest"]
+
+[dev-dependencies]
+# Serialises the handful of tests that set the process-wide
+# `QOS_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
+# so they never race each other under cargo's default parallel runner.
+serial_test = "3"
