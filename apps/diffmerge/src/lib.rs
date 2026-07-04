@@ -19,6 +19,7 @@ pub mod doc;
 pub mod highlight;
 pub mod merge_view;
 pub mod model;
+pub mod portal;
 pub mod samples;
 
 pub use app::{DiffMergeApp, Mode};

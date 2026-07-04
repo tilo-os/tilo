@@ -1,17 +1,19 @@
 //! Root widget — orchestrates the diff and merge modes, the top toolbar
-//! (mode switch, change navigation, open), and the file picker overlay.
+//! (mode switch, change navigation, open), and the host-portal file open.
 //!
 //! Data flow:
 //! * The app holds the raw input texts in memory and the two derived views
 //!   ([`DiffView`], [`MergeView`]).
 //! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
-//! * The file picker, when confirmed, reads file contents and re-seeds the
-//!   active mode (two files → diff; the merge demo stays sample-driven since a
-//!   three-way pick needs three roots).
+//! * Opening files goes through the **host** file chooser (the XDG Desktop
+//!   Portal, [`crate::portal`]) — the app never draws its own picker (HIG §5).
+//!   The chosen paths are read and re-seed the active mode (two files → diff;
+//!   the merge demo stays sample-driven since a three-way pick needs three
+//!   roots).
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -26,9 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    FilePicker, FilePickerOutcome, Widget,
-};
+use ui::widget::Widget;
 
 use crate::diff_view::DiffView;
 use crate::merge_view::MergeView;
@@ -69,9 +69,17 @@ pub struct DiffMergeApp {
     merge_node: Option<NodeId>,
     tool_hits: Vec<ToolHit>,
     cursor: Point,
-    picker: Option<FilePicker>,
+    /// An in-flight XDG-portal file-open. When the user asks to compare files
+    /// (the toolbar "Open files" button) the portal round-trip runs on a
+    /// worker thread and hands the chosen path back over this channel, drained
+    /// once per frame in [`Widget::sync`]. `None` when no picker is in flight —
+    /// the app never draws its own picker (HIG §5).
+    portal_rx: Option<crate::portal::PortalChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
+    /// A human-readable reason the last host-portal open failed, surfaced in
+    /// the status bar. `None` in the normal (success / cancel) case.
+    load_error: Option<String>,
     dirty: bool,
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
@@ -112,8 +120,9 @@ impl DiffMergeApp {
             merge_node: None,
             tool_hits: Vec::new(),
             cursor: Point::ZERO,
-            picker: None,
+            portal_rx: None,
             pending_left: None,
+            load_error: None,
             dirty: true,
             structure_dirty: false,
         }
@@ -167,7 +176,7 @@ impl DiffMergeApp {
                 self.dirty = true;
             }
             Action::Open => {
-                self.open_picker();
+                self.request_open_via_portal();
             }
             Action::LoadSample => {
                 let (l, r) = samples::diff_pair();
@@ -183,59 +192,84 @@ impl DiffMergeApp {
         }
     }
 
-    fn open_picker(&mut self) {
-        // Root the picker at the user's home (falling back to cwd) so two real
-        // files can be diffed. Accessible roots gate navigation per the
-        // sandbox model.
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
-        let title = if self.pending_left.is_none() {
-            "Open left file"
-        } else {
-            "Open right file"
-        };
-        let picker = FilePicker::new(title, &home, vec![home.clone()]);
-        self.picker = Some(picker);
+    /// Ask the host desktop's file chooser to open a file to compare. Per HIG
+    /// §5 the app never draws its own picker: the portal round-trip runs on a
+    /// worker thread ([`crate::portal::request_open`]) and the chosen path
+    /// comes back over a channel drained each frame in [`Self::drain_portal`].
+    /// A diff needs two files, so the drain re-fires this once for the right
+    /// file after the left is picked. A second request while one is in flight
+    /// is ignored, so a double-click can't stack two host dialogs.
+    fn request_open_via_portal(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
+        }
+        self.load_error = None;
+        self.portal_rx = Some(crate::portal::request_open());
         self.dirty = true;
     }
 
-    fn drain_picker(&mut self) {
-        let outcome = match &mut self.picker {
-            Some(picker) => picker.take_outcome(),
-            None => return,
-        };
-        let Some(outcome) = outcome else {
-            return;
-        };
-        match outcome {
-            FilePickerOutcome::Cancelled => {
-                self.picker = None;
-                self.pending_left = None;
-            }
-            FilePickerOutcome::Selected(paths) => {
-                self.picker = None;
-                if let Some(path) = paths.first() {
-                    let label = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.display().to_string());
-                    let content = fs::read_to_string(path).unwrap_or_else(|e| {
-                        format!("<could not read {}: {e}>", path.display())
-                    });
-                    match self.pending_left.take() {
-                        None => {
-                            // First file picked — stash and ask for the second.
-                            self.pending_left = Some((label, content));
-                            self.open_picker();
+    /// Drain a completed portal request, if any. Called once per frame from
+    /// [`Widget::sync`]. Loads the chosen file (stashing the first of the pair
+    /// and re-opening the chooser for the second), records a failure for the
+    /// status bar, and clears the in-flight channel. Never blocks — a still
+    /// pending picker leaves the channel installed for the next frame.
+    fn drain_portal(&mut self) {
+        let Some(rx) = self.portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => {
+                        // A `true` return means the left file just landed and
+                        // the right one is still needed — fire a fresh request.
+                        if self.consume_pick(&path) {
+                            self.request_open_via_portal();
                         }
-                        Some((llabel, lcontent)) => {
-                            self.diff.set_inputs(&llabel, &lcontent, &label, &content);
-                            self.mode = Mode::Diff;
-                        }
+                        self.dirty = true;
+                    }
+                    // A cancel abandons an in-progress two-file selection.
+                    crate::portal::PortalOutcome::Cancelled => {
+                        self.pending_left = None;
+                        self.dirty = true;
+                    }
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        self.pending_left = None;
+                        self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                        self.dirty = true;
                     }
                 }
-                self.dirty = true;
+            }
+            // Still waiting on the host dialog, or the worker vanished.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+            }
+        }
+    }
+
+    /// Consume one portal-chosen path. The first file of a pair is stashed and
+    /// `true` is returned so the caller re-opens the chooser for the second;
+    /// the second file completes the diff and switches to Diff mode, returning
+    /// `false`. Pure w.r.t. the portal (reads the file, mutates model state) so
+    /// the two-file flow is unit-testable without a host dialog.
+    fn consume_pick(&mut self, path: &Path) -> bool {
+        let label = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        let content = fs::read_to_string(path)
+            .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()));
+        match self.pending_left.take() {
+            None => {
+                // First file picked — stash and ask for the second.
+                self.pending_left = Some((label, content));
+                true
+            }
+            Some((llabel, lcontent)) => {
+                self.diff.set_inputs(&llabel, &lcontent, &label, &content);
+                self.mode = Mode::Diff;
+                self.structure_dirty = true;
+                false
             }
         }
     }
@@ -329,33 +363,40 @@ impl DiffMergeApp {
             &Line::new(Point::new(r.x0, r.y1 - STATUS_H), Point::new(r.x1, r.y1 - STATUS_H)),
         );
 
-        let text = match self.mode {
-            Mode::Diff => {
-                let m = self.diff.model();
-                let active = self
-                    .diff
-                    .active_block()
-                    .map(|b| format!("  ·  change {}/{}", b + 1, m.blocks.len().max(1)))
-                    .unwrap_or_default();
-                format!(
-                    "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
-                    m.added, m.removed, m.modified, m.blocks.len(), active
-                )
-            }
-            Mode::Merge => {
-                let m = self.merge.model();
-                format!(
-                    "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
-                    m.change_count(),
-                    m.resolved_count(),
-                    m.conflict_count(),
-                )
-            }
-        };
-        let tcol = match self.mode {
-            Mode::Merge if self.merge.model().conflict_count() > 0 => c.semantic.danger,
-            Mode::Merge => c.semantic.success,
-            _ => c.text_dim,
+        // A host-portal failure takes over the status line until the next
+        // successful open clears it.
+        let (text, tcol) = if let Some(err) = &self.load_error {
+            (err.clone(), c.semantic.danger)
+        } else {
+            let text = match self.mode {
+                Mode::Diff => {
+                    let m = self.diff.model();
+                    let active = self
+                        .diff
+                        .active_block()
+                        .map(|b| format!("  ·  change {}/{}", b + 1, m.blocks.len().max(1)))
+                        .unwrap_or_default();
+                    format!(
+                        "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
+                        m.added, m.removed, m.modified, m.blocks.len(), active
+                    )
+                }
+                Mode::Merge => {
+                    let m = self.merge.model();
+                    format!(
+                        "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
+                        m.change_count(),
+                        m.resolved_count(),
+                        m.conflict_count(),
+                    )
+                }
+            };
+            let tcol = match self.mode {
+                Mode::Merge if self.merge.model().conflict_count() > 0 => c.semantic.danger,
+                Mode::Merge => c.semantic.success,
+                _ => c.text_dim,
+            };
+            (text, tcol)
         };
         tr.draw_text(
             scene,
@@ -370,6 +411,10 @@ impl DiffMergeApp {
 
 impl Widget for DiffMergeApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // Pull in any file the host portal picker returned since the last
+        // frame (off-thread; never blocks the UI).
+        self.drain_portal();
+
         // Only the active mode owns the shared merged buffer; sync the merge
         // panel always so its CRDT mirror stays seeded.
         self.merge.sync(state, path);
@@ -450,15 +495,6 @@ impl Widget for DiffMergeApp {
                 }
             }
         }
-
-        // Centre the picker if open.
-        if let Some(picker) = &mut self.picker {
-            let pw = 560.0_f64.min(self.rect.width() - 80.0);
-            let ph = 460.0_f64.min(self.rect.height() - 80.0);
-            let px = self.rect.x0 + (self.rect.width() - pw) / 2.0;
-            let py = self.rect.y0 + (self.rect.height() - ph) / 2.0;
-            picker.set_rect(Rect::new(px, py, px + pw, py + ph));
-        }
     }
 
     fn draw(
@@ -479,19 +515,6 @@ impl Widget for DiffMergeApp {
 
         self.draw_toolbar(scene, transform, tr, theme);
         self.draw_status(scene, transform, tr, theme);
-
-        // File picker overlay on top.
-        if let Some(picker) = &mut self.picker {
-            // Dim scrim.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                c.surfaces.overlay,
-                None,
-                &self.rect,
-            );
-            picker.draw(scene, transform, tr, theme, presence);
-        }
         self.dirty = false;
     }
 
@@ -504,20 +527,11 @@ impl Widget for DiffMergeApp {
         path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
+        _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-        }
-
-        // Picker is modal when open.
-        if let Some(picker) = &mut self.picker {
-            picker.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
-            self.drain_picker();
-            *handled = true;
-            self.dirty = true;
-            return;
         }
 
         // Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
@@ -613,19 +627,21 @@ impl Widget for DiffMergeApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.diff.needs_redraw()
-            || self.merge.needs_redraw()
-            || self.picker.as_ref().map(|p| p.needs_redraw()).unwrap_or(false)
+        self.dirty || self.diff.needs_redraw() || self.merge.needs_redraw()
+    }
+
+    /// Keep ticking while a host-portal open is in flight so the off-thread
+    /// result is drained the moment it arrives. Idle otherwise (the `--shots`
+    /// / offscreen path never has a picker pending, so it settles to zero
+    /// frames).
+    fn needs_animation_frame(&self) -> bool {
+        self.portal_rx.is_some()
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.diff.mark_drawn();
         self.merge.mark_drawn();
-        if let Some(p) = &mut self.picker {
-            p.mark_drawn();
-        }
     }
 
     fn draw_with_presence(
@@ -643,4 +659,102 @@ impl Widget for DiffMergeApp {
 
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::portal::{inject_for_test, PortalOutcome};
+
+    fn app_with_state() -> (DiffMergeApp, ui::State) {
+        let mut app = DiffMergeApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        (app, state)
+    }
+
+    fn write_temp(name: &str, body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("diffmerge-portal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// The "Open files" toolbar action must reach the host portal, never an
+    /// in-app dialog. A sentinel channel is pre-armed so applying Open cannot
+    /// launch a real host dialog; the in-flight guard must preserve it.
+    #[test]
+    fn open_action_routes_to_the_host_portal() {
+        let (mut app, _st) = app_with_state();
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
+        app.act(Action::Open);
+        assert!(
+            app.portal_rx.is_some(),
+            "Open routes through the host-portal request path (not an in-app picker)"
+        );
+    }
+
+    /// The first file of a diff pair is stashed and a follow-up pick is
+    /// requested (`consume_pick` returns true) — no host dialog is spawned by
+    /// the consume step itself.
+    #[test]
+    fn first_pick_stashes_left_and_asks_for_the_right() {
+        let (mut app, _st) = app_with_state();
+        let left = write_temp("left.txt", "alpha\nbeta\ngamma\n");
+        let needs_right = app.consume_pick(&left);
+        assert!(needs_right, "after the left file, the right one is still needed");
+        let (label, content) = app.pending_left.clone().expect("left file is stashed");
+        assert_eq!(label, "left.txt");
+        assert_eq!(content, "alpha\nbeta\ngamma\n");
+        std::fs::remove_dir_all(left.parent().unwrap()).ok();
+    }
+
+    /// The terminal step: with a left file already pending, a portal-chosen
+    /// right file completes the two-file diff through the per-frame `sync`
+    /// drain — no real dialog, exercising the exact channel the worker feeds.
+    #[test]
+    fn portal_pick_completes_two_file_diff_via_frame_drain() {
+        let (mut app, mut st) = app_with_state();
+        app.pending_left = Some(("left.txt".into(), "alpha\nbeta\ngamma\n".into()));
+        let right = write_temp("right.txt", "alpha\nBETA\ngamma\ndelta\n");
+
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(right.clone())));
+        // The per-frame sync drains the portal channel and builds the diff.
+        app.sync(&mut st.doc, &st.root);
+
+        assert_eq!(app.mode, Mode::Diff, "a completed pair switches to Diff mode");
+        assert!(app.pending_left.is_none(), "the pending-left slot clears");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
+        let m = app.diff.model();
+        assert_eq!(m.left_lines, 3, "the stashed left file is compared");
+        assert_eq!(m.right_lines, 4, "the portal-chosen right file is compared");
+        assert!(m.added + m.modified >= 1, "the differing files yield change blocks");
+        std::fs::remove_dir_all(right.parent().unwrap()).ok();
+    }
+
+    /// A cancelled portal interaction abandons an in-progress selection and
+    /// leaves the channel cleared.
+    #[test]
+    fn portal_cancel_clears_pending_selection() {
+        let (mut app, mut st) = app_with_state();
+        app.pending_left = Some(("left.txt".into(), "x\n".into()));
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
+        app.sync(&mut st.doc, &st.root);
+        assert!(app.pending_left.is_none(), "cancel abandons the half-finished pair");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
+    }
+
+    /// A portal failure (e.g. no desktop portal running) surfaces on the
+    /// status line rather than silently dropping the request.
+    #[test]
+    fn portal_failure_surfaces_on_the_status_line() {
+        let (mut app, mut st) = app_with_state();
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Failed("no portal".into())));
+        app.sync(&mut st.doc, &st.root);
+        assert!(app.pending_left.is_none());
+        assert!(app.portal_rx.is_none());
+        let err = app.load_error.as_deref().expect("a failure is recorded");
+        assert!(err.contains("no portal"), "the reason is surfaced: {err}");
+    }
 }
