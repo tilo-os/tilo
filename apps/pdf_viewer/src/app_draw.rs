@@ -1359,9 +1359,11 @@ impl PdfApp {
         }
         hits.push((SidebarHit::EditSigner, name_hit));
 
-        // mini signature preview
+        // Mini signature preview — the same style-from-name the placement
+        // uses, so the card previews the exact stroke that will be stamped and
+        // it updates live while the name is being edited.
         let prev = Rect::new(id_card.x1 - 96.0, id_card.y0 + 8.0, id_card.x1 - 12.0, id_card.y1 - 10.0);
-        render::draw_signature_preview(scene, base, render::ink(), prev, 1);
+        render::draw_signature_preview(scene, base, render::ink(), prev, signature_style_for(name_shown));
         y += 70.0;
 
         // Add-field button.
