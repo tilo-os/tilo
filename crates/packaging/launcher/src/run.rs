@@ -15,8 +15,9 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-use crate::manifest::{MinimalManifest, read_manifest};
-use crate::sandbox::build_bwrap_argv;
+use crate::dbus_proxy::{self, DBusProxyGuard};
+use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
+use crate::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, resolve_service_binds, to_service_binds,
@@ -222,6 +223,12 @@ pub fn run_with(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
+    // 2b. D-Bus proxy / direct-bind decision. Manifest asks for
+    // portals? Try to spawn xdg-dbus-proxy; on failure fall back
+    // to a raw-path bind. `_dbus_guard` stays alive until we finish
+    // waiting on bwrap so Drop can SIGTERM the proxy.
+    let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
+
     // 3. Argv.
     // Runtime bundle resolution. A resolved bundle wins over
     // --minimal-libs: when the app has a proper runtime, we mount that
@@ -237,7 +244,7 @@ pub fn run_with(
     let entry_bin_owned: String;
     let (mut argv, extra_setenv, cli_passthrough) = match &opts.mode {
         LaunchMode::Gui => (
-            build_bwrap_argv(manifest, payload_root, runtime_arg, &binds),
+            build_bwrap_argv(manifest, payload_root, runtime_arg, &binds, dbus_plan.as_ref()),
             None,
             Vec::new(),
         ),
@@ -252,6 +259,7 @@ pub fn run_with(
                 payload_root,
                 runtime_arg,
                 &binds,
+                dbus_plan.as_ref(),
                 &entry_bin_owned,
             );
             (
@@ -340,18 +348,14 @@ pub fn run_with(
             argv.push("--ro".to_string());
             argv.push(expanded.display().to_string());
         }
-        // If we bound the session D-Bus socket in for portal use,
-        // Landlock must also grant the app read on that socket path
-        // — otherwise the `ashpd` connect() surfaces EACCES and the
-        // portal appears unavailable, defeating the point of the
-        // whole plumbing.
-        if let Some(bus_addr) =
-            crate::sandbox::host_dbus_bus_address_if_needed(&manifest.sandbox.portals)
-        {
-            if let Some(path) = crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
-                argv.push("--ro".to_string());
-                argv.push(path);
-            }
+        // If we bound a D-Bus socket in for portal use, Landlock must
+        // also grant read on the *sandbox-side* path so ashpd's
+        // connect() doesn't surface EACCES. That path is either
+        // `/run/user/<uid>/bus` (proxy) or the raw bus path (direct
+        // fallback) — [`DBusBindPlan::sandbox_path`] carries it.
+        if let Some(plan) = &dbus_plan {
+            argv.push("--ro".to_string());
+            argv.push(plan.sandbox_path.display().to_string());
         }
         for path in &manifest.sandbox.fs.write {
             let expanded = crate::manifest::expand_path(path);
@@ -500,7 +504,9 @@ pub fn run_with_captured(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
-    let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds);
+    // D-Bus plan (same decision path as `run_with`).
+    let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
+    let mut argv = build_bwrap_argv(manifest, payload_root, runtime_arg, &binds, dbus_plan.as_ref());
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
@@ -641,3 +647,107 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 /// so it can be exec'd as the Landlock shim. Kept out of `/usr` and `/tmp`
 /// to avoid colliding with the tmpfs / minimal-libs mounts.
 pub const SHIM_MOUNT_PATH: &str = "/qos-launcher";
+
+/// Decide how (or whether) to expose D-Bus into the sandbox based on the
+/// manifest's portal declaration.
+///
+/// Returns a pair:
+/// - `Option<DBusBindPlan>` — the plan to hand to `build_bwrap_argv`.
+///   `None` means no D-Bus at all (no portals declared, all `Deny`, or
+///   the host has no session bus).
+/// - `Option<DBusProxyGuard>` — RAII handle keeping the spawned proxy
+///   alive. When it drops the proxy is SIGTERMed and its socket unlinked.
+///   `None` on the direct-bind fallback (nothing to keep alive) or when
+///   no bind is happening.
+///
+/// The preferred path is: spawn `xdg-dbus-proxy` filtered to portals
+/// + notifications + MPRIS, bind ITS socket into the sandbox. That
+/// blocks the sandboxed app from reaching every other well-known name
+/// the host session bus carries.
+///
+/// The fallback fires only when `xdg-dbus-proxy` isn't installed OR
+/// couldn't be spawned. It emits a `tracing::warn!` so operators
+/// notice, then bind-mounts the raw session bus path. Abstract bus
+/// addresses can't be bind-mounted at all, so the fallback also
+/// returns `(None, None)` when the address is `unix:abstract=...` —
+/// that host really does need the proxy.
+fn resolve_dbus_bind(
+    portals: &std::collections::BTreeMap<String, PortalPolicy>,
+) -> (Option<DBusBindPlan>, Option<DBusProxyGuard>) {
+    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
+    if !wants_bus {
+        return (None, None);
+    }
+    let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
+        tracing::warn!(
+            "manifest declares a via-host portal but DBUS_SESSION_BUS_ADDRESS is unset; \
+             portals will be unavailable to the sandboxed app"
+        );
+        return (None, None);
+    };
+    if bus_addr.is_empty() {
+        return (None, None);
+    }
+    let uid = current_uid();
+
+    // Preferred path: xdg-dbus-proxy filtered to portal-adjacent names.
+    if let Some(binary) = dbus_proxy::find_proxy_binary() {
+        let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
+        match dbus_proxy::spawn_dbus_proxy(&binary, &bus_addr, &sock) {
+            Ok(guard) => {
+                let plan = DBusBindPlan {
+                    host_socket: guard.socket_path().to_path_buf(),
+                    sandbox_path: dbus_proxy::sandbox_bus_path(uid),
+                    kind: DBusBindKind::Proxy,
+                };
+                tracing::info!(
+                    proxy_binary = %binary.display(),
+                    socket = %guard.socket_path().display(),
+                    "xdg-dbus-proxy spawned for portal access"
+                );
+                return (Some(plan), Some(guard));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "xdg-dbus-proxy failed to spawn; falling back to raw bus bind"
+                );
+                // Fall through to direct-bind fallback.
+            }
+        }
+    } else {
+        tracing::warn!(
+            "xdg-dbus-proxy not found on PATH; falling back to raw bus bind. \
+             Install `flatpak-xdg-utils` to filter portal traffic."
+        );
+    }
+
+    // Fallback: raw bus path. Only works for unix:path=... — abstract
+    // sockets are unbindable and the app degrades to "portal unavailable".
+    match crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
+        Some(path) => {
+            let path_buf = PathBuf::from(&path);
+            let plan = DBusBindPlan {
+                host_socket: path_buf.clone(),
+                sandbox_path: path_buf,
+                kind: DBusBindKind::Direct,
+            };
+            (Some(plan), None)
+        }
+        None => {
+            tracing::warn!(
+                bus_addr = %bus_addr,
+                "cannot bind D-Bus into sandbox: address is not `unix:path=` and no proxy is available"
+            );
+            (None, None)
+        }
+    }
+}
+
+/// Current process UID via libc — avoids pulling `users` or `nix` in
+/// just for this. Falls back to 1000 if the syscall somehow fails,
+/// which matches the sandbox module's `for_workspace_test` default.
+fn current_uid() -> u32 {
+    // SAFETY: getuid always succeeds and returns a uid_t.
+    unsafe { libc::getuid() }
+}
