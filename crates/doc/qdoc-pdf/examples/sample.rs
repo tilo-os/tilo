@@ -68,6 +68,7 @@ fn main() {
         blocks,
         blobs: BTreeMap::new(),
         styles: BTreeMap::new(),
+        ..Default::default()
     };
 
     let bytes = qdoc_pdf::render_pdf(&snap).expect("render");
