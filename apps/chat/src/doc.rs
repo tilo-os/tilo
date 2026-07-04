@@ -10,14 +10,21 @@
 //! ├── "workspaces"   (Map<wsId,  {name,glyph,color_idx,order}>)
 //! ├── "categories"   (Map<catId, {workspace,name,order,collapsed}>)
 //! ├── "users"        (Map<userId,{name,initials,color_idx,status}>)
-//! ├── "channels"     (Map<chId,  {workspace,category,name,topic,kind,order,unread}>)
+//! ├── "channels"     (Map<chId,  {workspace,category,name,topic,kind,order}>)
 //! ├── "messages"     (Map<chId,  List<Message>>)
 //! │      Message = { id, author, ts, text(Text), edited(bool),
 //! │                  parent(Str ""), reactions(List<{emoji,user}>),
 //! │                  history(List<{ts,text}>), attachment(Map?) }
 //! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
+//! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
 //! └── "drafts"       (Map<chId, Text>)           # per-channel composer body
 //! ```
+//!
+//! A channel's **unread** count is not stored — it is derived per-peer as the
+//! number of top-level messages beyond that peer's `read` watermark (advanced
+//! whenever the channel is the one being viewed). "Have I read this" is per-peer
+//! state, not convergent truth, so the watermark is keyed by `userId`: a shared
+//! per-channel scalar would have two peers clobbering each other's badge.
 //!
 //! Structure (workspaces / categories / channels) is full CRUD: created,
 //! renamed, deleted, reordered, and moved between categories — all as plain
@@ -136,6 +143,19 @@ fn get_or_text(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     }
 }
 
+/// A up-to-two-letter uppercase monogram for a workspace glyph, taken from the
+/// initials of the first words of `name` (e.g. "Weekend Jam" → "WJ", "design" →
+/// "D"). Falls back to "WS" for an empty name.
+fn monogram(name: &str) -> String {
+    let letters: String = name
+        .split_whitespace()
+        .filter_map(|w| w.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    if letters.is_empty() { "WS".to_string() } else { letters }
+}
+
 // ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
@@ -163,8 +183,8 @@ impl ChatDoc {
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
         Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
         Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
-        Self::put_channel(doc, "c_general", "ws_home", "cat_home_text", "general", "", ChannelKind::Text, 0, 0);
-        Self::put_channel(doc, "c_lounge", "ws_home", "cat_home_voice", "Lounge", "", ChannelKind::Voice, 0, 0);
+        Self::put_channel(doc, "c_general", "ws_home", "cat_home_text", "general", "", ChannelKind::Text, 0);
+        Self::put_channel(doc, "c_lounge", "ws_home", "cat_home_voice", "Lounge", "", ChannelKind::Voice, 0);
     }
 
     /// Populate the document with a believable demo workspace if it is
@@ -211,23 +231,26 @@ impl ChatDoc {
         }
 
         // --- channels ----------------------------------------------------
-        let chans: &[(&str, &str, &str, &str, &str, ChannelKind, u32, u32)] = &[
-            ("c_general", "ws_acme", "cat_acme_main", "general", "Company-wide announcements", ChannelKind::Text, 0, 0),
-            ("c_crit", "ws_acme", "cat_acme_main", "design-crit", "Share work, get sharp feedback", ChannelKind::Text, 1, 0),
-            ("c_frontend", "ws_acme", "cat_acme_main", "frontend", "ui toolkit + app shells", ChannelKind::Text, 2, 3),
-            ("c_random", "ws_acme", "cat_acme_main", "random", "Off-topic & watercooler", ChannelKind::Text, 3, 0),
-            ("c_standup", "ws_acme", "cat_acme_voice", "Daily Standup", "", ChannelKind::Voice, 0, 0),
-            ("c_huddle", "ws_acme", "cat_acme_voice", "Design Huddle", "", ChannelKind::Voice, 1, 0),
-            ("c_kernel", "ws_qos", "cat_qos_eng", "kernel", "bootc + immutable base", ChannelKind::Text, 0, 0),
-            ("c_compositor", "ws_qos", "cat_qos_eng", "compositor", "2D clusters & sandboxing", ChannelKind::Text, 1, 7),
-            ("c_fssync", "ws_qos", "cat_qos_eng", "fs-sync", "iroh projection & hydration", ChannelKind::Text, 2, 0),
-            ("c_releases", "ws_qos", "cat_qos_eng", "releases", "ship logs", ChannelKind::Text, 3, 0),
-            ("c_warroom", "ws_qos", "cat_qos_voice", "War Room", "", ChannelKind::Voice, 0, 0),
-            ("c_ideas", "ws_jam", "cat_jam_main", "ideas", "weekend hacks", ChannelKind::Text, 0, 0),
-            ("c_music", "ws_jam", "cat_jam_main", "music", "now playing", ChannelKind::Text, 1, 2),
+        // Unread badges are not seeded — they derive from genuinely unseen
+        // messages (the `read` watermark). #general carries a welcome message
+        // the demo peer hasn't opened, so it shows a real "1" out of the box.
+        let chans: &[(&str, &str, &str, &str, &str, ChannelKind, u32)] = &[
+            ("c_general", "ws_acme", "cat_acme_main", "general", "Company-wide announcements", ChannelKind::Text, 0),
+            ("c_crit", "ws_acme", "cat_acme_main", "design-crit", "Share work, get sharp feedback", ChannelKind::Text, 1),
+            ("c_frontend", "ws_acme", "cat_acme_main", "frontend", "ui toolkit + app shells", ChannelKind::Text, 2),
+            ("c_random", "ws_acme", "cat_acme_main", "random", "Off-topic & watercooler", ChannelKind::Text, 3),
+            ("c_standup", "ws_acme", "cat_acme_voice", "Daily Standup", "", ChannelKind::Voice, 0),
+            ("c_huddle", "ws_acme", "cat_acme_voice", "Design Huddle", "", ChannelKind::Voice, 1),
+            ("c_kernel", "ws_qos", "cat_qos_eng", "kernel", "bootc + immutable base", ChannelKind::Text, 0),
+            ("c_compositor", "ws_qos", "cat_qos_eng", "compositor", "2D clusters & sandboxing", ChannelKind::Text, 1),
+            ("c_fssync", "ws_qos", "cat_qos_eng", "fs-sync", "iroh projection & hydration", ChannelKind::Text, 2),
+            ("c_releases", "ws_qos", "cat_qos_eng", "releases", "ship logs", ChannelKind::Text, 3),
+            ("c_warroom", "ws_qos", "cat_qos_voice", "War Room", "", ChannelKind::Voice, 0),
+            ("c_ideas", "ws_jam", "cat_jam_main", "ideas", "weekend hacks", ChannelKind::Text, 0),
+            ("c_music", "ws_jam", "cat_jam_main", "music", "now playing", ChannelKind::Text, 1),
         ];
-        for (id, ws, cat, name, topic, kind, order, unread) in chans {
-            Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order, *unread);
+        for (id, ws, cat, name, topic, kind, order) in chans {
+            Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
         }
 
         // --- voice membership: a lively Design Huddle ---------------------
@@ -447,7 +470,6 @@ impl ChatDoc {
         topic: &str,
         kind: ChannelKind,
         order: u32,
-        unread: u32,
     ) {
         let chans = get_or_map(doc, &ROOT, "channels");
         let c = get_or_map(doc, &chans, id);
@@ -457,7 +479,6 @@ impl ChatDoc {
         let _ = doc.put(&c, "topic", topic);
         let _ = doc.put(&c, "kind", kind.as_str());
         let _ = doc.put(&c, "order", order as i64);
-        let _ = doc.put(&c, "unread", unread as i64);
     }
 
     fn messages_list_mut(doc: &mut AutoCommit, channel: &str) -> ObjId {
@@ -635,6 +656,54 @@ impl ChatDoc {
     }
 
     // -----------------------------------------------------------------------
+    // Read state / unread badges
+    //
+    // "Have I read this channel" is per-peer, so it is NOT a shared scalar.
+    // Each peer keeps a `read` watermark per channel — the count of top-level
+    // messages it had seen the last time it viewed the channel — nested under
+    // the peer's own user id so two peers never clobber each other. Unread is
+    // then derived: (top-level count − watermark), floored at zero.
+    // -----------------------------------------------------------------------
+
+    /// Number of top-level (non-threaded) messages in `channel`.
+    pub fn top_level_count(doc: &AutoCommit, channel: &str) -> usize {
+        Self::list_messages(doc, channel).iter().filter(|m| m.is_top_level()).count()
+    }
+
+    /// The local peer's `read` watermark map (channel → count), created on
+    /// demand under its own user id.
+    fn read_map(doc: &mut AutoCommit) -> ObjId {
+        let read = get_or_map(doc, &ROOT, "read");
+        get_or_map(doc, &read, crate::model::ME)
+    }
+
+    /// The local peer's read watermark for `channel` (0 if never opened).
+    pub fn read_watermark(doc: &AutoCommit, channel: &str) -> i64 {
+        match map_at(doc, &ROOT, "read").and_then(|r| map_at(doc, &r, crate::model::ME)) {
+            Some(m) => get_i64(doc, &m, channel),
+            None => 0,
+        }
+    }
+
+    /// Unread top-level messages in `channel` for the local peer.
+    pub fn unread_count(doc: &AutoCommit, channel: &str) -> u32 {
+        let total = Self::top_level_count(doc, channel) as i64;
+        (total - Self::read_watermark(doc, channel)).max(0) as u32
+    }
+
+    /// Mark `channel` read up to the present: advance the local peer's
+    /// watermark to the current top-level count. Idempotent — only writes when
+    /// the watermark actually moves, so viewing a channel doesn't churn the
+    /// document every frame.
+    pub fn mark_read(doc: &mut AutoCommit, channel: &str) {
+        let total = Self::top_level_count(doc, channel) as i64;
+        let m = Self::read_map(doc);
+        if get_i64(doc, &m, channel) != total {
+            let _ = doc.put(&m, channel, total);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Structure CRUD — categories & channels
     //
     // Every structural edit is an idempotent set of scalar writes against a
@@ -673,6 +742,27 @@ impl ChatDoc {
         id
     }
 
+    /// Create a workspace at the end of the rail, scaffolded with a minimal
+    /// usable structure — a `Channels` category holding a `general` text
+    /// channel and a `Voice` category holding a `Lounge` voice channel — so
+    /// switching to it lands on a real channel and the header "Call" button
+    /// has somewhere to go. Returns the new workspace id.
+    pub fn create_workspace(doc: &mut AutoCommit, name: &str) -> String {
+        let id = format!("ws_{}", Uuid::new_v4().simple());
+        let order = Self::list_workspaces(doc)
+            .into_iter()
+            .map(|w| w.order)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        Self::put_workspace(doc, &id, name, &monogram(name), order as usize, order);
+        let text_cat = Self::create_category(doc, &id, "Channels");
+        Self::create_channel(doc, &id, &text_cat, "general", ChannelKind::Text);
+        let voice_cat = Self::create_category(doc, &id, "Voice");
+        Self::create_channel(doc, &id, &voice_cat, "Lounge", ChannelKind::Voice);
+        id
+    }
+
     /// Create a channel at the end of its category. Returns its fresh id.
     pub fn create_channel(
         doc: &mut AutoCommit,
@@ -683,7 +773,7 @@ impl ChatDoc {
     ) -> String {
         let id = format!("c_{}", Uuid::new_v4().simple());
         let order = Self::next_channel_order(doc, ws, category);
-        Self::put_channel(doc, &id, ws, category, name, "", kind, order, 0);
+        Self::put_channel(doc, &id, ws, category, name, "", kind, order);
         id
     }
 
@@ -941,7 +1031,9 @@ impl ChatDoc {
                     topic: get_str(doc, &c, "topic"),
                     kind: ChannelKind::from_str(&get_str(doc, &c, "kind")),
                     order: get_i64(doc, &c, "order") as u32,
-                    unread: get_i64(doc, &c, "unread") as u32,
+                    // Derived per-peer in `ChatApp::reload` from the read
+                    // watermark; not stored in the shared document.
+                    unread: 0,
                 })
             })
             .collect();
@@ -1247,6 +1339,67 @@ mod tests {
         assert!(ChatDoc::is_seeded(&reloaded), "reloaded doc keeps the seed guard");
         let msgs = ChatDoc::list_messages(&reloaded, "c_general");
         assert!(msgs.iter().any(|m| m.text == "persisted!"), "message survived reload");
+    }
+
+    #[test]
+    fn create_workspace_scaffolds_a_usable_workspace() {
+        let mut doc = seeded();
+        let before = ChatDoc::list_workspaces(&doc).len();
+        let id = ChatDoc::create_workspace(&mut doc, "Weekend Jam Two");
+        let wss = ChatDoc::list_workspaces(&doc);
+        assert_eq!(wss.len(), before + 1, "a workspace was created");
+        let ws = wss.iter().find(|w| w.id == id).unwrap();
+        assert_eq!(ws.name, "Weekend Jam Two");
+        assert_eq!(ws.glyph, "WJ", "glyph is a monogram of the name");
+        assert!(ws.order as usize >= before, "appended at the end of the rail");
+        // It comes with a usable text channel and a voice channel to call in.
+        let chans: Vec<_> =
+            ChatDoc::list_channels(&doc).into_iter().filter(|c| c.workspace == id).collect();
+        assert!(chans.iter().any(|c| c.name == "general" && c.kind == ChannelKind::Text));
+        assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
+    }
+
+    #[test]
+    fn unread_derives_from_the_read_watermark() {
+        let mut doc = seeded();
+        // #design-crit has seven top-level messages (thread replies excluded).
+        assert_eq!(ChatDoc::top_level_count(&doc, "c_crit"), 7);
+        // Never opened → every top-level message is unread.
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 7);
+        // Reading it clears the badge…
+        ChatDoc::mark_read(&mut doc, "c_crit");
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 0);
+        // …and a new message makes it unread again.
+        ChatDoc::push_message(
+            &mut doc,
+            "c_crit",
+            NewMessage { author: "u_aria".into(), ts: NOW, text: "one more".into(), ..Default::default() },
+        );
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 1);
+        // A threaded reply is not a top-level message, so it doesn't count.
+        ChatDoc::push_message(
+            &mut doc,
+            "c_crit",
+            NewMessage {
+                author: "u_aria".into(),
+                ts: NOW,
+                text: "in the thread".into(),
+                parent: Some("m_concept".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 1, "thread replies don't bump unread");
+    }
+
+    #[test]
+    fn mark_read_is_idempotent_and_does_not_churn() {
+        // Reading a channel twice with no new messages must not append a new
+        // change (the watermark write is guarded on a real value change).
+        let mut doc = seeded();
+        ChatDoc::mark_read(&mut doc, "c_crit");
+        let heads = doc.get_heads();
+        ChatDoc::mark_read(&mut doc, "c_crit");
+        assert_eq!(doc.get_heads(), heads, "a no-op mark_read writes nothing");
     }
 
     #[test]

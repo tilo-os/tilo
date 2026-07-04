@@ -227,6 +227,18 @@ impl ChatApp {
                 let id = ChatDoc::create_category(doc, &ws, "New Category");
                 self.begin_rename(MenuTarget::Category(id));
             }
+            Hit::AddWorkspace => {
+                // Create a real, usable workspace (a general text channel + a
+                // voice channel) and switch to it — the rail "+" is a live
+                // create action, not decoration.
+                let id = ChatDoc::create_workspace(doc, "New Workspace");
+                self.active_ws = id;
+                self.thread_open = None;
+                self.scroll = 0.0;
+                self.focus = Focus::Main;
+                self.caret = 0;
+                self.active_channel.clear(); // reload picks the new ws's first text channel
+            }
             Hit::RenameConfirm => self.commit_rename(doc),
             Hit::Reaction { msg, emoji } => {
                 ChatDoc::toggle_reaction(doc, &self.active_channel, &msg, &emoji, model::ME);
@@ -282,13 +294,20 @@ impl ChatApp {
                 if self.call.active {
                     self.call.expanded = !self.call.expanded;
                     self.request_relayout();
-                } else if let Some(v) = self
-                    .ws_channels()
-                    .into_iter()
-                    .find(|c| c.kind == ChannelKind::Voice)
-                    .map(|c| c.id.clone())
-                {
-                    self.join_voice(&v, doc);
+                } else {
+                    // Join this workspace's voice channel; if it has none, make
+                    // one to start the call in so the header "Call" button is
+                    // never a dead end (a text-only workspace can still huddle).
+                    let channel = self
+                        .ws_channels()
+                        .into_iter()
+                        .find(|c| c.kind == ChannelKind::Voice)
+                        .map(|c| c.id.clone())
+                        .unwrap_or_else(|| {
+                            let ws = self.active_ws.clone();
+                            ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
+                        });
+                    self.join_voice(&channel, doc);
                 }
             }
             Hit::CloseThread => {
@@ -315,7 +334,6 @@ impl ChatApp {
                     self.sync_local_voice(doc);
                 }
             }
-            Hit::CallFollow => self.call.follow_host = !self.call.follow_host,
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
@@ -340,6 +358,10 @@ impl ChatApp {
                 }
             }
         }
+        // Whatever the interaction resolved to, the channel now in view is
+        // read: advance its watermark so its unread badge stays cleared once
+        // the user navigates elsewhere.
+        self.mark_active_read(doc);
         self.reload(doc);
         self.persist(doc);
     }
@@ -1217,5 +1239,396 @@ mod tests {
             app.video.latest_frame().is_none(),
             "no frame is fabricated at construction"
         );
+    }
+
+    // --- draw + input harness -------------------------------------------
+    //
+    // The chat surface computes its regions from `self.rect` and records every
+    // clickable area into `self.hits` during `draw`, so a single draw pass at a
+    // known size fully populates the hit list a real click would resolve
+    // against — no GPU or window needed (identical to the offscreen `--shots`
+    // path). These helpers drive that and the raw winit input path.
+
+    fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
+        use ui::Widget;
+        use ui::presence::PresenceCtx;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+        use vello::Scene;
+        use vello::kurbo::Affine;
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, w, h);
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn count_hits(app: &ChatApp, pred: impl Fn(&Hit) -> bool) -> usize {
+        app.hits.iter().filter(|(_, h)| pred(h)).count()
+    }
+
+    fn cursor(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+    fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
+        WindowEvent::MouseInput { device_id: winit::event::DeviceId::dummy(), state, button }
+    }
+    fn wheel(y: f64) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, y as f32),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+    fn feed(app: &mut ChatApp, doc: &mut AutoCommit, ev: WindowEvent) {
+        let mods = Modifiers::default();
+        let mut handled = false;
+        app.dispatch_event(&ev, 1.0, &mods, doc, &mut handled);
+    }
+
+    // --- add-workspace "+" (was a dead button) --------------------------
+
+    #[test]
+    fn add_workspace_button_creates_and_switches_to_it() {
+        let (mut app, mut doc) = app_with_doc();
+        let before = app.workspaces.len();
+        app.on_hit(Hit::AddWorkspace, &mut doc);
+        assert_eq!(app.workspaces.len(), before + 1, "the rail '+' created a workspace");
+        // Switched to the new workspace and landed on a real text channel in it.
+        assert_ne!(app.active_ws, "ws_acme");
+        assert!(app.workspaces.iter().any(|w| w.id == app.active_ws));
+        let ch = app.channel(&app.active_channel).expect("landed on a real channel");
+        assert_eq!(ch.workspace, app.active_ws);
+        assert_eq!(ch.kind, ChannelKind::Text);
+    }
+
+    // --- members roster (right flap "members" half was unimplemented) ---
+
+    #[test]
+    fn roster_projects_users_and_voice_membership() {
+        let (app, _doc) = app_with_doc();
+        let rows = app.roster_rows();
+        assert_eq!(rows.len(), app.users.len(), "every workspace member is listed");
+        // In-voice members sort to the top and carry the voice channel name.
+        assert!(rows[0].1.is_some() && rows[1].1.is_some() && rows[2].1.is_some(),
+            "the three huddle members rank first");
+        let aria = rows.iter().find(|(u, _)| u.id == "u_aria").unwrap();
+        assert_eq!(aria.1.as_deref(), Some("Design Huddle"), "shows the real voice channel");
+        let devon = rows.iter().find(|(u, _)| u.id == "u_devon").unwrap();
+        assert!(devon.1.is_none(), "someone not in a call has no voice label");
+    }
+
+    #[test]
+    fn members_pill_reveals_the_roster_not_a_blank_column() {
+        let (mut app, mut doc) = app_with_doc();
+        app.thread_open = None; // no thread → the flap's other half is members
+        app.on_hit(Hit::ToggleRightFlap, &mut doc);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(app.right_flap_open(), "the members pill opened the right flap");
+        // The members panel painted its own close control (a second
+        // ToggleRightFlap hit beyond the always-present header pill), and no
+        // thread panel did — i.e. the previously-blank column now has content.
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::ToggleRightFlap)),
+            2,
+            "header pill + members-panel close = two toggle hits (roster shown)"
+        );
+        assert_eq!(count_hits(&app, |h| matches!(h, Hit::CloseThread)), 0,
+            "no thread panel is shown when no thread is open");
+    }
+
+    // --- unread badges (were seed-only fake data) -----------------------
+
+    #[test]
+    fn opening_a_channel_marks_it_read_and_clears_unread() {
+        let (mut app, mut doc) = app_with_doc();
+        // Simulate having viewed the initial channel (as each sync frame does).
+        app.mark_active_read(&mut doc);
+        app.reload(&doc);
+        let unread = |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
+        assert_eq!(unread(&app, "c_general"), 1, "an unseen welcome message shows as unread");
+        app.on_hit(Hit::Channel("c_general".into()), &mut doc);
+        assert_eq!(app.active_channel, "c_general");
+        assert_eq!(unread(&app, "c_general"), 0, "opening the channel clears its unread");
+        // Leaving it keeps it read — the watermark persisted through the mutation.
+        app.on_hit(Hit::Channel("c_crit".into()), &mut doc);
+        assert_eq!(unread(&app, "c_general"), 0, "a read channel stays read after leaving");
+    }
+
+    #[test]
+    fn a_message_in_another_channel_shows_as_unread() {
+        let (mut app, mut doc) = app_with_doc();
+        app.mark_active_read(&mut doc);
+        app.reload(&doc);
+        let unread = |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
+        assert_eq!(unread(&app, "c_random"), 0, "an empty channel has nothing unread");
+        // A peer posts to a channel we're not viewing (arrives via the CRDT).
+        ChatDoc::push_message(
+            &mut doc,
+            "c_random",
+            NewMessage { author: "u_aria".into(), ts: NOW, text: "anyone around?".into(), ..Default::default() },
+        );
+        app.reload(&doc);
+        assert_eq!(unread(&app, "c_random"), 1, "the unseen message is counted unread");
+    }
+
+    // --- sidebar mute/deafen (were dead outside a call) -----------------
+
+    #[test]
+    fn no_mute_or_deafen_controls_outside_a_call() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(!app.call.active);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert_eq!(count_hits(&app, |h| matches!(h, Hit::CallMute)), 0, "no mute control outside a call");
+        assert_eq!(count_hits(&app, |h| matches!(h, Hit::CallDeafen)), 0, "no deafen control outside a call");
+        // Join a call → the sidebar identity bar now offers real toggles.
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        assert!(app.call.active);
+        render_frame(&mut app, 1280.0, 720.0);
+        let side = app.sidebar_rect();
+        assert!(
+            app.hits.iter().any(|(r, h)| matches!(h, Hit::CallMute) && r.x1 <= side.x1 + 1.0),
+            "in a call the sidebar shows a mute toggle"
+        );
+    }
+
+    #[test]
+    fn call_mute_writes_through_to_shared_voice_membership() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc); // join
+        assert!(app.call.active);
+        let me_muted = |doc: &AutoCommit| {
+            ChatDoc::list_voice_members(doc, "c_standup")
+                .into_iter()
+                .find(|m| m.user == model::ME)
+                .map(|m| m.muted)
+                .unwrap_or(false)
+        };
+        assert!(!me_muted(&doc), "unmuted on join");
+        app.on_hit(Hit::CallMute, &mut doc);
+        assert!(app.call.muted, "local state flipped");
+        assert!(me_muted(&doc), "muting is mirrored into the shared voice membership");
+    }
+
+    // --- header Call button (was unreachable without a voice channel) ---
+
+    #[test]
+    fn start_call_creates_a_voice_channel_when_the_workspace_has_none() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Workspace("ws_jam".into()), &mut doc);
+        assert_eq!(app.active_ws, "ws_jam");
+        assert!(
+            !app.channels.iter().any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+            "the weekend-jam workspace starts text-only"
+        );
+        app.on_hit(Hit::StartCall, &mut doc);
+        assert!(app.call.active, "the Call button starts a call even with no voice channel");
+        assert!(
+            app.channels.iter().any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+            "a voice channel was created to hold the call"
+        );
+        assert!(ChatDoc::list_voice_members(&doc, &app.call.channel).iter().any(|m| m.user == model::ME));
+    }
+
+    #[test]
+    fn header_call_button_joins_an_existing_voice_channel() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(!app.call.active);
+        let voice_before =
+            app.channels.iter().filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice).count();
+        app.on_hit(Hit::StartCall, &mut doc);
+        assert!(app.call.active);
+        assert_eq!(
+            app.channel(&app.call.channel).unwrap().kind,
+            ChannelKind::Voice,
+            "joined an existing voice channel"
+        );
+        let voice_after =
+            app.channels.iter().filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice).count();
+        assert_eq!(voice_before, voice_after, "no spurious voice channel created when one exists");
+    }
+
+    // --- Follow-host control removal ------------------------------------
+
+    #[test]
+    fn follow_host_control_no_longer_exists() {
+        let (app, _doc) = app_with_doc();
+        let (_, buttons) = app.overlay_controls_layout();
+        assert!(
+            !buttons.iter().any(|(label, ..)| *label == "Follow host"),
+            "the non-functional Follow-host toggle was removed"
+        );
+        // The genuinely-wired controls remain.
+        assert!(buttons.iter().any(|(l, ..)| *l == "Mute"));
+        assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
+    }
+
+    // --- reaction round-trip through the picker (test gap) --------------
+
+    #[test]
+    fn reaction_via_the_emoji_picker_round_trips_through_the_ui() {
+        let (mut app, mut doc) = app_with_doc();
+        let reacted = |app: &ChatApp| {
+            app.message("m_me1").unwrap().reactions.iter().any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+        };
+        assert!(!reacted(&app), "m_me1 starts without my 🔥");
+        // Open the add-reaction picker on the message, then pick an emoji.
+        app.on_hit(Hit::AddReaction { msg: "m_me1".into(), anchor: Point::ZERO }, &mut doc);
+        assert!(app.emoji_open && app.emoji_target.as_deref() == Some("m_me1"));
+        app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
+        assert!(!app.emoji_open, "picking closes the picker");
+        assert!(reacted(&app), "the picked emoji became my reaction");
+        // Re-opening and picking the same emoji toggles it back off.
+        app.on_hit(Hit::AddReaction { msg: "m_me1".into(), anchor: Point::ZERO }, &mut doc);
+        app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
+        assert!(!reacted(&app), "picking it again removed the reaction");
+    }
+
+    #[test]
+    fn composer_emoji_pick_inserts_into_the_draft() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        assert!(app.draft_main.is_empty());
+        app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
+        assert!(app.emoji_open && app.emoji_target.is_none(), "the composer picker has no reaction target");
+        app.on_hit(Hit::EmojiChoice("🎉".into()), &mut doc);
+        assert_eq!(app.draft_main, "🎉", "the emoji was typed into the composer draft");
+    }
+
+    // --- swipe-to-delete gesture through the raw input path (test gap) --
+
+    #[test]
+    fn swipe_left_on_a_channel_row_deletes_it() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(app.channels.iter().any(|c| c.id == "c_random"));
+        // Draw once so the channel rows are hit-tested (as the live loop does).
+        render_frame(&mut app, 1280.0, 720.0);
+        let row = app
+            .hits
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Channel(id) if id == "c_random"))
+            .map(|(r, _)| *r)
+            .expect("the #random row was hit-tested");
+        let cy = row.center().y;
+        // Press on the row (arms the swipe), drag left past the commit
+        // threshold, release (commits the primary action = Delete).
+        feed(&mut app, &mut doc, cursor(row.center().x, cy));
+        feed(&mut app, &mut doc, mouse(ElementState::Pressed, MouseButton::Left));
+        assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
+        feed(&mut app, &mut doc, cursor(row.center().x - (SWIPE_COMMIT_DX + 20.0), cy));
+        feed(&mut app, &mut doc, mouse(ElementState::Released, MouseButton::Left));
+        assert!(
+            !app.channels.iter().any(|c| c.id == "c_random"),
+            "the committed swipe deleted the channel"
+        );
+    }
+
+    // --- category + reorder + thread + workspace via the hit path -------
+
+    #[test]
+    fn category_create_and_collapse_via_the_hit_path() {
+        let (mut app, mut doc) = app_with_doc();
+        let acme_cats = |app: &ChatApp| app.categories.iter().filter(|c| c.workspace == "ws_acme").count();
+        let before = acme_cats(&app);
+        app.on_hit(Hit::AddCategory("ws_acme".into()), &mut doc);
+        assert_eq!(acme_cats(&app), before + 1, "a category was created");
+        assert!(app.rename.is_some(), "a new category opens the inline rename editor");
+        app.rename = None;
+        app.caret = 0;
+        let collapsed_before = app.category("cat_acme_main").unwrap().collapsed;
+        app.on_hit(Hit::CategoryToggle("cat_acme_main".into()), &mut doc);
+        assert_ne!(
+            app.category("cat_acme_main").unwrap().collapsed,
+            collapsed_before,
+            "the caret toggles the category collapsed state"
+        );
+    }
+
+    #[test]
+    fn reorder_channel_via_menu_action() {
+        let (mut app, mut doc) = app_with_doc();
+        let order = |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().order;
+        assert!(order(&app, "c_crit") > order(&app, "c_general"));
+        app.on_hit(
+            Hit::MenuAction { target: MenuTarget::Channel("c_crit".into()), action: MenuAction::MoveUp },
+            &mut doc,
+        );
+        assert!(
+            order(&app, "c_crit") < order(&app, "c_general"),
+            "MoveUp swapped order with the sibling above it"
+        );
+    }
+
+    #[test]
+    fn open_thread_affordance_opens_thread_and_right_flap() {
+        let (mut app, mut doc) = app_with_doc();
+        app.thread_open = None;
+        app.right_flap.close();
+        app.on_hit(Hit::OpenThread("m_concept".into()), &mut doc);
+        assert_eq!(app.thread_open.as_deref(), Some("m_concept"));
+        assert_eq!(app.focus, Focus::Thread);
+        assert!(app.right_flap_open(), "opening a thread reveals the right flap");
+        // Re-hitting the same affordance toggles the thread closed.
+        app.on_hit(Hit::OpenThread("m_concept".into()), &mut doc);
+        assert!(app.thread_open.is_none(), "re-hitting the affordance closes the thread");
+        assert_eq!(app.focus, Focus::Main);
+    }
+
+    #[test]
+    fn workspace_switch_resets_view_state() {
+        let (mut app, mut doc) = app_with_doc();
+        app.thread_open = Some("m_concept".into());
+        app.scroll = -250.0;
+        app.focus = Focus::Thread;
+        app.on_hit(Hit::Workspace("ws_qos".into()), &mut doc);
+        assert_eq!(app.active_ws, "ws_qos");
+        assert!(app.thread_open.is_none(), "switching workspaces drops the open thread");
+        assert_eq!(app.scroll, 0.0, "scroll resets");
+        assert_eq!(app.focus, Focus::Main, "focus returns to the main composer");
+        assert_eq!(
+            app.channel(&app.active_channel).unwrap().workspace,
+            "ws_qos",
+            "landed on a channel of the new workspace"
+        );
+    }
+
+    #[test]
+    fn escape_unwinds_the_layer_stack() {
+        let (mut app, mut doc) = app_with_doc();
+        app.emoji_open = true;
+        app.thread_open = Some("m_concept".into());
+        let mods = Modifiers::default();
+        // Top layer first: the emoji picker.
+        assert!(app.on_key(&Key::Named(NamedKey::Escape), &mods, &mut doc));
+        assert!(!app.emoji_open, "Escape closes the emoji picker first");
+        assert!(app.thread_open.is_some(), "the thread underneath stays open");
+        // Next Escape peels the thread.
+        assert!(app.on_key(&Key::Named(NamedKey::Escape), &mods, &mut doc));
+        assert!(app.thread_open.is_none(), "a second Escape closes the thread");
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_timeline() {
+        let (mut app, mut doc) = app_with_doc();
+        assert_eq!(app.scroll, 0.0);
+        feed(&mut app, &mut doc, wheel(3.0));
+        assert!(app.scroll > 0.0, "scrolling moves the timeline");
+        let up = app.scroll;
+        feed(&mut app, &mut doc, wheel(-5.0));
+        assert!(app.scroll < up, "scrolling the other way moves it back");
+    }
+
+    #[test]
+    fn edit_history_popover_opens_and_dismisses() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(app.message("m_sora").unwrap().edited, "m_sora is an edited message");
+        app.on_hit(Hit::EditHistory { msg: "m_sora".into(), anchor: Point::ZERO }, &mut doc);
+        assert_eq!(app.history_open.as_deref(), Some("m_sora"), "the history popover opened");
+        app.on_hit(Hit::Dismiss, &mut doc);
+        assert!(app.history_open.is_none(), "the dismiss scrim closes it");
     }
 }
