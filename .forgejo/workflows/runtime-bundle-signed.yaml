@@ -1,0 +1,130 @@
+name: runtime-bundle-signed
+
+# Prove `qos-runtime-bundle` still produces a reproducible, signed
+# bundle from the CI runner's rootfs.
+#
+# Runs every push + PR touching the runtime-bundle crate. If the
+# `RUNTIME_BUNDLE_SIGNING_KEY` secret is set, the bundle is signed
+# with that persistent identity so per-commit signatures over the
+# same rootfs are byte-identical; without the secret we fall back to
+# an ephemeral key (matching the same policy `os/Containerfile`
+# already uses at image-build time) and skip the signature-equality
+# assertion — but still verify the bundle round-trips.
+
+on:
+  push:
+    paths:
+      - "crates/packaging/runtime-bundle/**"
+      - "os/Containerfile"
+      - ".forgejo/workflows/runtime-bundle-signed.yaml"
+  pull_request:
+    paths:
+      - "crates/packaging/runtime-bundle/**"
+      - "os/Containerfile"
+      - ".forgejo/workflows/runtime-bundle-signed.yaml"
+  workflow_dispatch:
+
+jobs:
+  build-verify-and-check-determinism:
+    runs-on: runner
+    env:
+      RUNTIME_VERSION: ci-${{ github.sha }}
+      OUT_A: bundle-a
+      OUT_B: bundle-b
+      IDENTITY_PATH: runtime-bundle-identity.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build qos-runtime-bundle (release, in distrobox)
+        run: |
+          distrobox enter my-distrobox -- bash -c \
+            'cargo build -p runtime-bundle --release'
+
+      - name: Materialise signing identity
+        # If the workflow secret is set, use it — persistent per-repo
+        # signing identity produces reproducible signatures. Otherwise
+        # generate an ephemeral one (same behavior os/Containerfile
+        # uses at image-build time). Mark whether we're ephemeral so
+        # later steps can adjust the assertion set.
+        id: identity
+        env:
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${RUNTIME_BUNDLE_SIGNING_KEY:-}" ]; then
+            printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$IDENTITY_PATH"
+            chmod 600 "$IDENTITY_PATH"
+            echo "ephemeral=false" >> "$GITHUB_OUTPUT"
+            echo "using RUNTIME_BUNDLE_SIGNING_KEY from secret."
+          else
+            echo "warning: RUNTIME_BUNDLE_SIGNING_KEY is unset — generating ephemeral identity" >&2
+            ./target/release/qos-runtime-bundle key generate --out "$IDENTITY_PATH"
+            echo "ephemeral=true" >> "$GITHUB_OUTPUT"
+          fi
+          PUB="$(./target/release/qos-runtime-bundle key pubkey --identity "$IDENTITY_PATH")"
+          echo "pubkey=$PUB" >> "$GITHUB_OUTPUT"
+          echo "publisher (ed25519 hex): $PUB"
+
+      - name: Build bundle A
+        run: |
+          set -euo pipefail
+          ./target/release/qos-runtime-bundle build \
+            --version "$RUNTIME_VERSION" \
+            --identity "$IDENTITY_PATH" \
+            --out "$OUT_A"
+
+      - name: Verify bundle A (require this publisher)
+        run: |
+          set -euo pipefail
+          ./target/release/qos-runtime-bundle verify "$OUT_A" \
+            --require-publisher "${{ steps.identity.outputs.pubkey }}" \
+            --require-signature
+
+      - name: Build bundle B (same runner, same rootfs)
+        run: |
+          set -euo pipefail
+          ./target/release/qos-runtime-bundle build \
+            --version "$RUNTIME_VERSION" \
+            --identity "$IDENTITY_PATH" \
+            --out "$OUT_B"
+
+      - name: Assert bundle root_hash is deterministic across two runs
+        # The root_hash is content-addressed over the copied files.
+        # Two builds on the same runner from the same rootfs must
+        # agree — a drift here means bundle production is picking up
+        # non-deterministic input, which would break bootc rollback
+        # / trusted-publisher checks in the wild.
+        run: |
+          set -euo pipefail
+          root_a="$(grep -E '^root_hash' "$OUT_A/bundle.toml" | head -n1)"
+          root_b="$(grep -E '^root_hash' "$OUT_B/bundle.toml" | head -n1)"
+          echo "A: $root_a"
+          echo "B: $root_b"
+          if [ "$root_a" != "$root_b" ]; then
+            echo "root_hash drifted between two consecutive builds on the same runner" >&2
+            exit 1
+          fi
+
+      - name: Assert signature is deterministic (persistent key only)
+        # Ed25519 signatures over the same preimage + same key are
+        # bit-identical, but only if the key doesn't rotate — which
+        # is the whole point of the secret path. Skip this for the
+        # ephemeral fallback.
+        if: steps.identity.outputs.ephemeral == 'false'
+        run: |
+          set -euo pipefail
+          sig_a="$(grep -E '^signature_hex' "$OUT_A/bundle.toml" | head -n1)"
+          sig_b="$(grep -E '^signature_hex' "$OUT_B/bundle.toml" | head -n1)"
+          echo "A: $sig_a"
+          echo "B: $sig_b"
+          if [ "$sig_a" != "$sig_b" ]; then
+            echo "signature drifted between two consecutive builds using the persistent key" >&2
+            exit 1
+          fi
+
+      - name: Clean up identity file
+        if: always()
+        run: rm -f "$IDENTITY_PATH"
