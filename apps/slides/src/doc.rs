@@ -186,6 +186,17 @@ impl SlidesDoc {
         Self::write_text(doc, &deck, "title", title);
     }
 
+    /// Splice into the deck title's text. `char_pos`/`del` are char counts —
+    /// the live-edit path for the inline title rename (mirrors `splice_notes`).
+    pub fn splice_title(doc: &mut AutoCommit, char_pos: usize, del: usize, ins: &str) {
+        let deck = Self::deck_ensure(doc);
+        let tid = match doc.get(&deck, "title") {
+            Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            _ => doc.put_object(&deck, "title", ObjType::Text).expect("put title"),
+        };
+        let _ = doc.splice_text(&tid, char_pos, del as isize, ins);
+    }
+
     pub fn set_palette(doc: &mut AutoCommit, p: PaletteKind) {
         let deck = Self::deck_ensure(doc);
         let _ = doc.put(&deck, "palette", p.as_str());
@@ -571,6 +582,22 @@ mod tests {
         assert_eq!(SlidesDoc::load(&doc).unwrap().slides.len(), n + 1);
         SlidesDoc::remove_slide(&mut doc, 1);
         assert_eq!(SlidesDoc::load(&doc).unwrap().slides.len(), n);
+    }
+
+    #[test]
+    fn set_title_and_splice_title_persist() {
+        let mut doc = AutoCommit::new();
+        SlidesDoc::seed(&mut doc, &seed_deck());
+        // Full replace via set_title.
+        SlidesDoc::set_title(&mut doc, "Quarterly review");
+        assert_eq!(SlidesDoc::load(&doc).unwrap().title, "Quarterly review");
+        // Char-level splice (the inline-rename path): insert " 2026" at the end.
+        let at = "Quarterly review".chars().count();
+        SlidesDoc::splice_title(&mut doc, at, 0, " 2026");
+        assert_eq!(SlidesDoc::load(&doc).unwrap().title, "Quarterly review 2026");
+        // Delete the first char.
+        SlidesDoc::splice_title(&mut doc, 0, 1, "");
+        assert_eq!(SlidesDoc::load(&doc).unwrap().title, "uarterly review 2026");
     }
 
     #[test]
