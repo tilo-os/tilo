@@ -1,0 +1,152 @@
+//! Terminal-aware output helpers.
+//!
+//! The main win here is OSC 8 hyperlinks — the escape sequence
+//! modern terminals (gnome-terminal >= 3.34, iTerm2, kitty,
+//! wezterm, foot, alacritty) render as clickable links. Pipes /
+//! files degrade to plain text so `notes | grep` still works.
+//!
+//! Scope is intentionally small: no colour theming, no
+//! progress-bar library, no columnar tables. Apps that need those
+//! reach for `owo-colors` / `indicatif` / etc. themselves.
+
+use std::fmt;
+use std::io::{self, IsTerminal, Write};
+
+/// Chainable builder returned by [`crate::output`].
+pub struct OutputBuilder {
+    hyperlinks: bool,
+    stream: Stream,
+}
+
+#[derive(Clone, Copy)]
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+impl OutputBuilder {
+    /// Force hyperlinks on. Default is auto-detect via
+    /// [`io::IsTerminal`].
+    pub fn hyperlinks(mut self, on: bool) -> Self {
+        self.hyperlinks = on;
+        self
+    }
+
+    /// Route to stderr instead of stdout.
+    pub fn stderr(mut self) -> Self {
+        self.stream = Stream::Stderr;
+        self
+    }
+
+    /// Write a bare line to the stream.
+    pub fn line<S: fmt::Display>(&self, text: S) -> io::Result<()> {
+        self.write(|w| writeln!(w, "{text}"))
+    }
+
+    /// Write text and a clickable hyperlink (OSC 8) on the same
+    /// line. Pipes and files fall back to `<label> [<url>]`.
+    ///
+    /// The label may be empty — the URL is then rendered as its
+    /// own hyperlink anchor. Callers usually pass a
+    /// human-readable label + a file:// URL.
+    pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
+        self.write(|w| {
+            if self.hyperlinks_active(w) {
+                // OSC 8 sequence: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
+                write!(
+                    w,
+                    "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
+                )?;
+                writeln!(w)
+            } else if label.is_empty() {
+                writeln!(w, "{url}")
+            } else {
+                writeln!(w, "{label} [{url}]")
+            }
+        })
+    }
+
+    /// Emit a `file://` hyperlink for the given path. Convenience
+    /// wrapper over [`OutputBuilder::hyperlink`].
+    pub fn hyperlink_path<P: AsRef<std::path::Path>>(
+        &self,
+        label: &str,
+        path: P,
+    ) -> io::Result<()> {
+        let p = path.as_ref();
+        let url = format!("file://{}", p.display());
+        self.hyperlink(label, &url)
+    }
+
+    fn write<F>(&self, f: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut dyn Write) -> io::Result<()>,
+    {
+        match self.stream {
+            Stream::Stdout => {
+                let stdout = io::stdout();
+                let mut lock = stdout.lock();
+                f(&mut lock)
+            }
+            Stream::Stderr => {
+                let stderr = io::stderr();
+                let mut lock = stderr.lock();
+                f(&mut lock)
+            }
+        }
+    }
+
+    /// Whether to actually emit hyperlink escape sequences given
+    /// the current stream's TTY status.
+    fn hyperlinks_active(&self, w: &dyn Write) -> bool {
+        let _ = w; // borrow — we can't call is_terminal on a &dyn Write
+        if !self.hyperlinks {
+            return false;
+        }
+        match self.stream {
+            Stream::Stdout => io::stdout().is_terminal(),
+            Stream::Stderr => io::stderr().is_terminal(),
+        }
+    }
+}
+
+/// Start a terminal-aware output builder. Hyperlinks default to
+/// on-if-terminal.
+pub fn output() -> OutputBuilder {
+    OutputBuilder {
+        hyperlinks: true,
+        stream: Stream::Stdout,
+    }
+}
+
+/// Render an OSC 8 hyperlink to a string (no I/O). Exposed so
+/// tests + custom formatters can compose the escape sequence
+/// without going through `write!`.
+pub fn osc8(label: &str, url: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc8_wraps_label_and_url() {
+        let s = osc8("notes.md", "file:///tmp/notes.md");
+        assert!(s.contains("file:///tmp/notes.md"));
+        assert!(s.contains("notes.md"));
+        assert!(s.starts_with("\x1b]8;;"));
+        assert!(s.ends_with("\x1b]8;;\x1b\\"));
+    }
+
+    #[test]
+    fn output_builder_defaults() {
+        let b = output();
+        assert!(b.hyperlinks);
+        // Stream default is stdout.
+        match b.stream {
+            Stream::Stdout => {}
+            Stream::Stderr => panic!("expected stdout default"),
+        }
+    }
+}
