@@ -12,26 +12,21 @@
 //!
 //! ## What the live app does (network path)
 //!
-//! The live binary (no `--shots`) drives, on a background worker thread
-//! (mirroring the notes `Saver` pattern — the `ui` event loop is synchronous and
-//! must not block), a CalDAV client built on the `reqwest` + `ical` stack:
+//! Sync is **pull-only** today. The live binary (no `--shots`) drives, on a
+//! background worker thread (mirroring the notes `Saver` pattern — the `ui`
+//! event loop is synchronous and must not block), a CalDAV read against each
+//! configured collection, built on the `reqwest` stack:
 //!
-//! * **Discovery** — `PROPFIND` against the server's well-known endpoint
-//!   (`/.well-known/caldav`) resolves the `current-user-principal`, then the
-//!   `calendar-home-set`, then a depth-1 `PROPFIND` enumerates the
-//!   [`crate::account::RemoteCalendar`] collections (each one's `displayname`
-//!   and `calendar-color`).
-//! * **Pull** — a `calendar-query` / `calendar-multiget` REPORT fetches the
-//!   `calendar-data` for each event in a time window; each returned `VCALENDAR`
+//! * **Pull** — a `calendar-query` REPORT (falling back to a plain `GET` for
+//!   servers that expose the collection as a single `.ics`) fetches the
+//!   `calendar-data` for a time window around today; each returned `VCALENDAR`
 //!   blob is fed into [`crate::ics::parse`] to produce [`Event`] / [`Task`]
-//!   values, tagged with their source [`RemoteCalendar`].
-//! * **Push** — local edits become `PUT` of a freshly [`crate::ics::export`]-ed
-//!   `VEVENT`/`VTODO` to the collection, guarded by the resource `ETag`
-//!   (`If-Match`) so a concurrent server change surfaces as a `412` conflict
-//!   rather than a silent overwrite.
-//! * **Incremental** — `sync-collection` REPORT with the stored `sync-token`
-//!   returns only what changed since the last pull, so steady-state sync is
-//!   cheap.
+//!   values, tagged with their source [`RemoteCalendar`]'s colour and id.
+//!
+//! Two-way sync — pushing local edits back with an `ETag`-guarded `PUT`, and
+//! incremental `sync-token` pulls — is not implemented here; the local calendar
+//! is the source of truth for edits, and `.ics` export is the outbound path. The
+//! `Sync` affordance therefore only pulls, and says so.
 //!
 //! That HTTP + TLS stack is deliberately kept out of the headless build so it
 //! stays small and green; the seam is this module, and the data types
@@ -45,7 +40,7 @@ use crate::ics;
 use crate::model::{Event, Palette, Task};
 
 /// What a sync pass produced: the events and tasks parsed out of a calendar's
-/// `calendar-data`, tagged with the palette of their source calendar.
+/// `calendar-data`, tagged with the colour and id of their source calendar.
 #[derive(Clone, Debug, Default)]
 pub struct SyncResult {
     pub events: Vec<Event>,
@@ -83,11 +78,13 @@ pub fn pull_calendar(
 ) -> SyncResult {
     let payload = sample_calendar_ics(calendar, today);
     let (mut events, tasks) = ics::parse(&payload);
-    // Tag each parsed event with the source calendar's colour so synced events
-    // are visually grouped, exactly as the live REPORT path would.
+    // Tag each parsed event with its source calendar's colour AND id, exactly as
+    // the live REPORT path does. The id is what lets the sidebar's visibility
+    // toggle hide a synced calendar's events without a re-sync.
     let palette = calendar.palette();
     for e in &mut events {
         e.color = palette;
+        e.calendar_id = Some(calendar.id.clone());
     }
     SyncResult { events, tasks }
 }
@@ -167,6 +164,7 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             color: Palette::Red,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: None,
         }],
         "icloud/holidays" => vec![Event {
@@ -179,6 +177,7 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             color: Palette::Amber,
             recurrence: Recurrence::None,
             reminder_min: None,
+            calendar_id: None,
             project: None,
         }],
         "icloud/personal" => vec![Event {
@@ -191,6 +190,7 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             color: Palette::Emerald,
             recurrence: Recurrence::Weekly,
             reminder_min: Some(30),
+            calendar_id: None,
             project: None,
         }],
         // "work/default" and any other collection.
@@ -204,6 +204,7 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             color: Palette::Indigo,
             recurrence: Recurrence::Weekdays,
             reminder_min: Some(10),
+            calendar_id: None,
             project: None,
         }],
     };
@@ -249,6 +250,7 @@ mod live {
                         let palette = cal.palette();
                         for e in &mut res.events {
                             e.color = palette;
+                            e.calendar_id = Some(cal.id.clone());
                         }
                         merged.events.append(&mut res.events);
                         merged.tasks.append(&mut res.tasks);
@@ -374,6 +376,23 @@ mod tests {
         assert!(!res.events.is_empty());
         // Every synced event carries the source calendar's palette.
         assert!(res.events.iter().all(|e| e.color == cal.palette()));
+    }
+
+    #[test]
+    fn pull_tags_events_with_source_calendar_id() {
+        // The visibility toggle needs synced events to remember which calendar
+        // they came from; the pull path stamps every event with `cal.id`.
+        let store = AccountStore::sample();
+        let (account, cal) = store
+            .all_calendars()
+            .find(|(_, c)| c.id == "work/default")
+            .unwrap();
+        let res = pull_calendar(&account.config, cal, today());
+        assert!(!res.events.is_empty());
+        assert!(
+            res.events.iter().all(|e| e.calendar_id.as_deref() == Some("work/default")),
+            "every synced event is tagged with its source calendar id"
+        );
     }
 
     #[test]
