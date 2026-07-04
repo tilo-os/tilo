@@ -201,18 +201,56 @@ pub fn resolve_runtime(
 }
 
 /// Verify the bundle at `path` against the run-time signature policy.
-/// Unless `allow_unsigned_runtime` is set, a bundle must be signed. If
-/// `require_runtime_publisher` is set, the bundle's publisher_hex must
-/// equal that (case-insensitively). Any hash-integrity failure inside
-/// the bundle also surfaces here so we fail-fast before spawning bwrap.
+/// Unless `allow_unsigned_runtime` is set, a bundle must be signed.
+///
+/// Publisher policy is:
+///   1. If `opts.require_runtime_publisher` is set, the bundle's
+///      publisher must equal that (case-insensitive hex).
+///   2. Else, if the system trust-list file
+///      (`/etc/qos/runtime-bundle-trusted-publishers.txt` — or the
+///      `QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE` override) exists and
+///      is non-empty, the publisher must be listed in it.
+///   3. Else, any signed publisher is accepted (the pre-trust-file
+///      default the runtime-bundle crate ships).
+///
+/// This layered check is what lets the OS image bake a fresh key at
+/// build time and pin it into the trust list, without every launcher
+/// caller having to plumb the pubkey through as a flag.
 fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError> {
+    let require_publisher = match opts.require_runtime_publisher.clone() {
+        Some(explicit) => Some(explicit),
+        None => trusted_publisher_pin_from_file(),
+    };
     let verify_opts = runtime_bundle::VerifyOptions {
-        require_publisher: opts.require_runtime_publisher.clone(),
+        require_publisher,
         require_signature: !opts.allow_unsigned_runtime,
         require_arch: None,
     };
     match runtime_bundle::verify_bundle_with(path, &verify_opts) {
-        Ok(_manifest) => Ok(()),
+        Ok(manifest) => {
+            // Multi-publisher trust list: if the file names more than
+            // one key, `require_publisher` above was `None` (since we
+            // could only pin one). Do the check by hand here.
+            if let Some(list) = load_trusted_publisher_list() {
+                if !list.is_empty() {
+                    let ok = manifest
+                        .publisher_hex
+                        .as_deref()
+                        .map(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)))
+                        .unwrap_or(false);
+                    if !ok {
+                        return Err(RunError::RuntimeBundleSignature {
+                            path: path.to_path_buf(),
+                            reason: format!(
+                                "publisher {:?} not in trust list",
+                                manifest.publisher_hex.as_deref().unwrap_or("<none>"),
+                            ),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
         Err(runtime_bundle::BundleError::NotSigned) => {
             Err(RunError::RuntimeBundleUnsigned { path: path.to_path_buf() })
         }
@@ -221,6 +259,39 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
             reason: e.to_string(),
         }),
     }
+}
+
+/// If the trust list contains exactly one entry, that's the pin we
+/// hand to `runtime_bundle::verify_bundle_with` — the crate's
+/// `require_publisher` field takes a single hex string. Multi-entry
+/// lists are handled in a second pass after verify returns.
+fn trusted_publisher_pin_from_file() -> Option<String> {
+    let list = load_trusted_publisher_list()?;
+    if list.len() == 1 {
+        Some(list.into_iter().next().unwrap())
+    } else {
+        None
+    }
+}
+
+/// Read the trusted-publisher list from disk. Ignores blank + `#`
+/// lines. Returns `None` when neither the env override nor the
+/// default file exists (so \"no policy\" is distinct from \"empty
+/// list\").
+fn load_trusted_publisher_list() -> Option<Vec<String>> {
+    let path: PathBuf = match std::env::var_os("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE") {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from("/etc/qos/runtime-bundle-trusted-publishers.txt"),
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let list: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect();
+    Some(list)
 }
 
 /// Top-level entry. Reads the manifest, builds the sandbox, execs.
