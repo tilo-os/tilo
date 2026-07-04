@@ -37,9 +37,52 @@ pub enum NeighbourMsg {
     /// Peer's presence cursor disappeared from `key`'s coordinate space.
     PresenceCleared { peer: PeerId, key: PresenceKey },
     /// Encoded H.264 frame for a shared surface.
+    ///
+    /// `ts` is the owner-side capture timestamp in **monotonic nanoseconds**
+    /// (as read from `Instant::now()` translated to `u64` at session
+    /// start). Receivers subtract their own monotonic-now to compute
+    /// motion-to-photon latency; a wall-clock (`SystemTime`) offset would
+    /// suffer NTP drift on the WAN case.
     SurfaceFrame {
         surface: SurfaceId,
         encoded_h264: Vec<u8>,
+        ts: u64,
+    },
+    /// Explicit start-of-stream announcement for a shared surface.
+    ///
+    /// Distinct from `SurfaceFrame` so late-joining peers can build a
+    /// decoder / [`crate::shell::peer_view::PeerView`] with the correct
+    /// dimensions *before* the first NALU arrives — the previous "peel
+    /// dimensions off the first decode" path meant one dropped frame per
+    /// share. Codec is negotiated up-front: `"h264"` in v1, but the field
+    /// leaves room for `"av1"` / `"h265"` when hardware paths land.
+    SurfaceStreamStart {
+        surface: SurfaceId,
+        /// Hashed libp2p PeerId of the owner (the machine running the
+        /// Flatpak app). Distinguishes multiple concurrent shares in
+        /// the same workspace.
+        source_peer: PeerId,
+        /// Natural width in pixels the encoder produces.
+        width: u32,
+        /// Natural height in pixels the encoder produces.
+        height: u32,
+        /// Codec label; v1 always `"h264"`. Receivers that don't
+        /// recognise the codec ignore the stream + log.
+        codec: String,
+        /// Owner-side timestamp (monotonic nanoseconds).
+        ts: u64,
+    },
+    /// Explicit end-of-stream — the owner tore down the share, or the
+    /// captured surface unmapped.
+    ///
+    /// Receivers drop their PeerView + decoder on receipt. Implicit
+    /// end-of-stream (owner disappears from gossipsub) still works via
+    /// the heartbeat eviction path; this variant makes the graceful
+    /// close explicit so we don't have to wait 15 s for eviction.
+    SurfaceStreamEnd {
+        surface: SurfaceId,
+        source_peer: PeerId,
+        /// Owner-side timestamp (monotonic nanoseconds).
         ts: u64,
     },
     /// Serialized input event from `peer` targeting `surface`.
@@ -211,6 +254,44 @@ mod tests {
             encoded_h264: vec![0x00, 0x00, 0x00, 0x01, 0x67],
             ts: 1_700_000_001,
         });
+    }
+
+    #[test]
+    fn surface_stream_start_round_trips() {
+        round_trip(NeighbourMsg::SurfaceStreamStart {
+            surface: 7,
+            source_peer: 0xABCD,
+            width: 1280,
+            height: 720,
+            codec: "h264".to_string(),
+            ts: 1_700_000_002,
+        });
+    }
+
+    #[test]
+    fn surface_stream_end_round_trips() {
+        round_trip(NeighbourMsg::SurfaceStreamEnd {
+            surface: 7,
+            source_peer: 0xABCD,
+            ts: 1_700_000_003,
+        });
+    }
+
+    #[test]
+    fn surface_stream_start_round_trips_postcard() {
+        // Same rationale as `app_crdt_incremental_signed_round_trips_postcard`:
+        // guard against a wire-format switch dropping the new variant.
+        let msg = NeighbourMsg::SurfaceStreamStart {
+            surface: 42,
+            source_peer: 0x1234,
+            width: 1920,
+            height: 1080,
+            codec: "h264".to_string(),
+            ts: 1_700_000_004,
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
+        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
+        assert_eq!(msg, back);
     }
 
     #[test]

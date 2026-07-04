@@ -38,9 +38,40 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
+use crate::diagnostics::PeerSurfaceMetrics;
 use crate::network::decoder::{DecodedFrame, H264Decoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
+
+/// Ceiling on the receive-side decode queue depth. `push_encoded_with_latency`
+/// enforces this via `frames_pending`; once the caller has more than
+/// [`PENDING_CEILING`] undrawn frames buffered, further pushes drop the
+/// oldest and bump the metrics counter.
+///
+/// Two is the minimum useful ceiling — one paint-in-flight and one
+/// staged for the next frame. Raising it lets the peer burn through a
+/// bandwidth burst but at the cost of latency (each pending frame adds
+/// one frame-time of delay). The compositor's existing "encode or drop"
+/// contract on the owner side means the peer should almost never
+/// backlog under steady state.
+pub(crate) const PENDING_CEILING: u32 = 2;
+
+/// Outcome of a `push_encoded_with_latency` call. Returned so the
+/// caller (the actor's `NeighbourMsg::SurfaceFrame` handler) can log
+/// or surface drops in structured tracing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushOutcome {
+    /// The frame decoded and became the new latest. Its motion-to-photon
+    /// latency was recorded on the shared [`PeerSurfaceMetrics`].
+    Decoded,
+    /// The frame decoded but the pending-queue ceiling was hit; the
+    /// oldest was dropped. `frames_dropped` on the shared metrics
+    /// incremented.
+    DroppedOldest,
+    /// The decoder rejected the payload (typically a corrupt NALU or a
+    /// mid-stream keyframe that hasn't arrived yet). Nothing recorded.
+    DecodeFailed,
+}
 
 /// Peer-side widget rendering one shared surface.
 ///
@@ -84,12 +115,42 @@ pub struct PeerView {
     /// Starts `true` so the very first frame paints the "Awaiting peer
     /// surface…" placeholder.
     dirty: bool,
+    /// Shared observability counters. Cheap `Arc` clone; every push /
+    /// drop updates the same inner state so the OSD overlay + the e2e
+    /// test can read the counters without touching the widget.
+    ///
+    /// Constructed lazily with `PeerSurfaceMetrics::default()` when the
+    /// widget is built via `PeerView::new`; callers that want to share
+    /// the handle up-front use `PeerView::new_with_metrics`.
+    metrics: PeerSurfaceMetrics,
+    /// Number of decoded frames the shell has *not yet* pulled through
+    /// the paint loop. Bumped on every accepted decode; cleared to zero
+    /// on `mark_drawn` (which the App calls after the composition pass
+    /// consumes the frame). Once this exceeds
+    /// [`PENDING_CEILING`], the next `push_encoded_with_latency` drops
+    /// the oldest — the widget effectively skips the previous decode
+    /// and picks up the new one, keeping motion-to-photon bounded even
+    /// when the peer is CPU-starved.
+    frames_pending: u32,
 }
 
 impl PeerView {
     /// Construct a new peer view for `surface_id` owned by the remote
-    /// peer; the viewer's own peer id is `local_peer`.
+    /// peer; the viewer's own peer id is `local_peer`. A fresh metrics
+    /// handle is created — callers who want to share metrics with the
+    /// OSD overlay should use [`Self::new_with_metrics`].
     pub fn new(surface_id: SurfaceId, local_peer: PeerId) -> Self {
+        Self::new_with_metrics(surface_id, local_peer, PeerSurfaceMetrics::default())
+    }
+
+    /// Same as [`Self::new`] but with a caller-supplied metrics handle.
+    /// The OSD overlay + the flatpak-share e2e test both use this to
+    /// observe drop/latency counters without touching the widget.
+    pub fn new_with_metrics(
+        surface_id: SurfaceId,
+        local_peer: PeerId,
+        metrics: PeerSurfaceMetrics,
+    ) -> Self {
         Self {
             title: format!("Peer surface #{surface_id}"),
             surface_id,
@@ -100,7 +161,15 @@ impl PeerView {
             pending_inputs: Vec::new(),
             rect: Rect::ZERO,
             dirty: true,
+            metrics,
+            frames_pending: 0,
         }
+    }
+
+    /// Borrow the metrics handle. Clone it to hand to an OSD overlay
+    /// or a diagnostics readout.
+    pub fn metrics(&self) -> &PeerSurfaceMetrics {
+        &self.metrics
     }
 
     /// Surface id this view renders.
@@ -120,18 +189,68 @@ impl PeerView {
     ///
     /// Returns `true` if a new frame was decoded.
     pub fn push_encoded(&mut self, nalus: &[u8]) -> bool {
-        match self.decoder.decode(nalus) {
-            Some(frame) => {
-                self.latest = Some(frame);
-                self.cached_image = None;
-                // New decoded frame → needs repaint. Flag is cleared by
-                // `Widget::mark_drawn` after the App composes the frame
-                // that draws this view.
-                self.dirty = true;
-                true
-            }
-            None => false,
+        matches!(
+            self.push_encoded_with_latency(nalus, None),
+            PushOutcome::Decoded | PushOutcome::DroppedOldest,
+        )
+    }
+
+    /// Push a NALU payload + record backpressure / latency in the
+    /// shared metrics.
+    ///
+    /// `latency_ns` is the caller-computed motion-to-photon delta —
+    /// `receiver_now_ns - NeighbourMsg::SurfaceFrame::ts` in the
+    /// session's monotonic clock domain. On a two-host WAN link the
+    /// clock domains differ; the session's start handshake carries the
+    /// offset (a follow-up variant of `SurfaceStreamStart`) and the
+    /// actor's receive loop is the natural place to apply it. Pass
+    /// `None` when latency isn't being tracked — the metrics ring
+    /// records a zero-latency sample for that frame so the counter
+    /// still ticks.
+    ///
+    /// Drop-oldest semantics: if the receive-side pending-queue depth
+    /// is already at [`PENDING_CEILING`] when a new frame lands, the
+    /// previous latest is dropped and `frames_dropped` increments. The
+    /// new frame still becomes `latest` — the "drop" is on the paint
+    /// side, not the decoder side.
+    pub fn push_encoded_with_latency(
+        &mut self,
+        nalus: &[u8],
+        latency_ns: Option<u64>,
+    ) -> PushOutcome {
+        let frame = match self.decoder.decode(nalus) {
+            Some(f) => f,
+            None => return PushOutcome::DecodeFailed,
+        };
+
+        let dropped = self.frames_pending >= PENDING_CEILING && self.latest.is_some();
+        if dropped {
+            self.metrics.record_dropped();
+        } else {
+            self.frames_pending = self.frames_pending.saturating_add(1);
         }
+
+        self.latest = Some(frame);
+        self.cached_image = None;
+        self.dirty = true;
+
+        // Record latency (or a zero placeholder) so the frames_received
+        // counter always advances when a payload decodes.
+        self.metrics.record_received(latency_ns.unwrap_or(0));
+
+        if dropped {
+            PushOutcome::DroppedOldest
+        } else {
+            PushOutcome::Decoded
+        }
+    }
+
+    /// Number of pending (undrawn) decoded frames. Exposed for
+    /// diagnostics / tests; production callers don't need to read this
+    /// because `mark_drawn` clears it as a side-effect.
+    #[cfg(test)]
+    pub(crate) fn frames_pending(&self) -> u32 {
+        self.frames_pending
     }
 
     /// Borrow the most recent decoded frame, if any.
@@ -317,6 +436,9 @@ impl Widget for PeerView {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        // Drawing a frame clears the pending-queue depth — the paint
+        // pass has caught up with every accepted decode.
+        self.frames_pending = 0;
     }
 
     /// PeerView's taffy node is a `percent(1.0)` leaf — its intrinsic
@@ -450,5 +572,76 @@ mod tests {
         let mut view = PeerView::new(0, 0);
         assert!(!view.push_encoded(&[]));
         assert!(view.latest_frame().is_none());
+    }
+
+    /// Drop-oldest under backpressure — the third push (with two
+    /// undrawn frames buffered) marks the older frame as dropped.
+    #[test]
+    fn push_encoded_with_latency_drops_oldest_after_ceiling() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
+
+        let metrics = PeerSurfaceMetrics::default();
+        let mut view = PeerView::new_with_metrics(42, 7, metrics.clone());
+
+        // First push — decoded, nothing dropped.
+        assert_eq!(
+            view.push_encoded_with_latency(&nalus, Some(1_000)),
+            PushOutcome::Decoded,
+        );
+        assert_eq!(view.frames_pending(), 1);
+
+        // Second push — still within the ceiling.
+        assert_eq!(
+            view.push_encoded_with_latency(&nalus, Some(1_500)),
+            PushOutcome::Decoded,
+        );
+        assert_eq!(view.frames_pending(), 2);
+
+        // Third push — ceiling is 2; the older frame drops. Metrics
+        // increments `frames_dropped`.
+        assert_eq!(
+            view.push_encoded_with_latency(&nalus, Some(2_000)),
+            PushOutcome::DroppedOldest,
+        );
+        let snap = metrics.snapshot();
+        assert_eq!(snap.frames_dropped, 1);
+        assert_eq!(snap.frames_received, 3, "every accepted decode counts");
+
+        // `mark_drawn` clears the pending counter — the paint pass
+        // caught up with the buffered decodes.
+        view.mark_drawn();
+        assert_eq!(view.frames_pending(), 0);
+
+        // Next push after mark_drawn — no drop.
+        assert_eq!(
+            view.push_encoded_with_latency(&nalus, Some(2_500)),
+            PushOutcome::Decoded,
+        );
+        let snap = metrics.snapshot();
+        assert_eq!(snap.frames_dropped, 1, "no additional drops after mark_drawn");
+    }
+
+    /// The metrics handle is [`Clone`]-shared — an OSD overlay can
+    /// hold a copy and see counters advance without touching the widget.
+    #[test]
+    fn metrics_handle_is_shared_via_clone() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
+
+        let metrics = PeerSurfaceMetrics::default();
+        let external = metrics.clone();
+        let mut view = PeerView::new_with_metrics(1, 1, metrics);
+
+        assert_eq!(external.snapshot().frames_received, 0);
+        view.push_encoded_with_latency(&nalus, Some(500));
+        assert_eq!(external.snapshot().frames_received, 1);
+        assert_eq!(external.snapshot().latency_ns_mean, 500);
     }
 }
