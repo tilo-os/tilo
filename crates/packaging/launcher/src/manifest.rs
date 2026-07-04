@@ -51,8 +51,24 @@ use serde::Deserialize;
 pub struct MinimalManifest {
     pub package_id: String,
     pub version: String,
+    /// Optional `[package].runtime` reference from the manifest, of
+    /// the form `qos-runtime/<version>`. When present, the launcher
+    /// looks up the corresponding bundle and mounts it (see
+    /// [`crate::run::RunOptions::runtime_root`]) — apps declaring
+    /// a runtime don't need `--minimal-libs`.
+    pub runtime: Option<String>,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
+}
+
+impl MinimalManifest {
+    /// Split `runtime = "qos-runtime/<v>"` into `(name, version)`.
+    /// Returns `None` if `runtime` is unset or doesn't have the
+    /// `<name>/<version>` shape.
+    pub fn runtime_ref(&self) -> Option<(&str, &str)> {
+        let raw = self.runtime.as_deref()?;
+        raw.split_once('/')
+    }
 }
 
 /// Wire-level manifest — accepts both shapes.
@@ -75,6 +91,8 @@ struct PackageBlock {
     id: Option<String>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    runtime: Option<String>,
 }
 
 impl From<RawManifest> for MinimalManifest {
@@ -85,11 +103,13 @@ impl From<RawManifest> for MinimalManifest {
             .unwrap_or_default();
         let version = raw
             .version
-            .or_else(|| raw.package.and_then(|p| p.version))
+            .or_else(|| raw.package.as_ref().and_then(|p| p.version.clone()))
             .unwrap_or_default();
+        let runtime = raw.package.and_then(|p| p.runtime);
         MinimalManifest {
             package_id,
             version,
+            runtime,
             entrypoint: raw.entrypoint,
             sandbox: raw.sandbox,
         }
@@ -277,9 +297,32 @@ collab = "required@1"
             m.sandbox.fs.read,
             vec!["/usr/share/fonts".to_string()]
         );
+        assert!(m.runtime.is_none());
         let req = ServiceReq::parse(m.sandbox.services.get("collab").unwrap()).unwrap();
         assert!(req.is_required());
         assert_eq!(req.version(), 1);
+    }
+
+    #[test]
+    fn parses_runtime_field_from_package_block() {
+        let toml_text = r#"
+[package]
+id       = "dev.qos.hello"
+version  = "0.1.0"
+runtime  = "qos-runtime/2026.07"
+
+[entrypoint]
+bin = "bin/qos-hello"
+
+[sandbox.net]
+mode = "off"
+"#;
+        let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+        assert_eq!(m.package_id, "dev.qos.hello");
+        assert_eq!(m.runtime.as_deref(), Some("qos-runtime/2026.07"));
+        let (name, ver) = m.runtime_ref().expect("runtime ref");
+        assert_eq!(name, "qos-runtime");
+        assert_eq!(ver, "2026.07");
     }
 
     #[test]
