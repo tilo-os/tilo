@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use editor::{open_document, save_document, WordProcessorWidget, WpFormat};
+use word_processor::{open_document, save_document, WordProcessorWidget, WpFormat};
 use qdoc::AttrVal;
 use ui::Widget;
 

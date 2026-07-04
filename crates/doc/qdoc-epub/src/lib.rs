@@ -316,8 +316,8 @@ fn render_chapter_xhtml(
         // tiny snapshot sharing the blobs/styles for correct rendering.
         let mut sub = empty_like(snap);
         sub.blocks = vec![(*block).clone()];
-        let opts = dochtml::HtmlOptions { fragment: true, title: None, indent: "  ".to_string() };
-        let mut frag_html = dochtml::render_html(&sub, opts);
+        let opts = qdoc_html::HtmlOptions { fragment: true, title: None, indent: "  ".to_string() };
+        let mut frag_html = qdoc_html::render_html(&sub, opts);
 
         // Re-point image data: URIs to packaged file resources.
         frag_html = repoint_images(&frag_html, block, images);

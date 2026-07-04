@@ -74,7 +74,7 @@ impl FormatProvider for HtmlCodec {
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        // Export deliberately lives in the editor via `dochtml::render_html`, which
+        // Export deliberately lives in the editor via `qdoc_html::render_html`, which
         // renders from a materialized `DocSnapshot`. A `FormatProvider::export`
         // only gets a `DocRef`; reusing the `dochtml` writer here is impossible
         // anyway because `dochtml` depends on `qdoc` (a `qdoc → dochtml` dep would
