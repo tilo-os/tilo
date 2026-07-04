@@ -272,9 +272,25 @@ impl PeerView {
     }
 
     /// Record a key press / release.
-    pub fn record_key(&mut self, keysym: u32, pressed: bool) {
+    ///
+    /// `modifiers` is the xkbcommon-style bitfield (Shift=1, Ctrl=4,
+    /// Alt=8, Logo=64). Callers that don't need modifier bookkeeping can
+    /// pass `0`; the owner's `KeyboardHandle::input` picks up modifier
+    /// state from the running keycode stream, so an explicit `0` here
+    /// still delivers the key correctly as long as the peer sends the
+    /// modifier-key press/release events in order.
+    pub fn record_key(&mut self, keysym: u32, pressed: bool, modifiers: u32) {
         self.pending_inputs
-            .push(InputEvent::Key { keysym, pressed });
+            .push(InputEvent::Key { keysym, pressed, modifiers });
+    }
+
+    /// Compat shim: record a key without modifier metadata (defaults to
+    /// `modifiers = 0`). Kept so existing call sites that pre-date the
+    /// modifier field on `InputEvent::Key` don't need a mechanical
+    /// rewrite; new call sites should prefer [`Self::record_key`]
+    /// directly.
+    pub fn record_key_no_mods(&mut self, keysym: u32, pressed: bool) {
+        self.record_key(keysym, pressed, 0);
     }
 
     /// Drain the pending-input queue. The shell's per-frame tick calls
@@ -557,7 +573,7 @@ mod tests {
         let mut view = PeerView::new(1, 9);
         view.record_pointer_motion(10.0, 20.0);
         view.record_pointer_button(272, true);
-        view.record_key(0xFF0D, true);
+        view.record_key(0xFF0D, true, 0);
         let drained = view.take_pending_inputs();
         assert_eq!(drained.len(), 3);
         assert!(matches!(drained[0], InputEvent::PointerMotion { .. }));

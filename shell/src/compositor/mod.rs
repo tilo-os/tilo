@@ -27,6 +27,7 @@ pub mod hosted;
 pub mod idle;
 pub mod lock_screen;
 pub mod native;
+pub mod remote_seat;
 pub mod state;
 pub mod surface_readback;
 pub mod test_control;
