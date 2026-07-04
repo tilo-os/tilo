@@ -1,0 +1,66 @@
+# Example qOS user-identity boot configuration.
+#
+# Copy this file to `/etc/qos/user-identity.toml` on a machine you
+# want to pre-configure with a specific user identity (typically as
+# part of a provisioning ISO — see the design's §6 "custom ISO"
+# section). Baking a `[user]` block into the image means the machine
+# auto-enrols as a certified device of the named user on first boot,
+# without needing to scan a QR / paste an enrollment token.
+#
+# The compositor's firstboot service reads these keys and:
+#
+#  1. Writes the `[user]` block's `public_key_hex` into
+#     `/var/lib/qos/user-identity/pubkey.bin`.
+#  2. Generates a fresh device Ed25519 keypair and stores it at
+#     `/var/lib/qos/device/keypair.bin` (secret half is 0600, mode
+#     is enforced).
+#  3. If `[enrollment].token` is present, decodes the base32-Crockford
+#     enrollment token, verifies it under the pre-baked
+#     `public_key_hex`, and posts the fresh device pubkey +
+#     enrollment nonce back over LAN mdns / stdin to a trusted
+#     device holding the root private key. That device returns a
+#     signed DeviceCert, which firstboot stores at
+#     `/var/lib/qos/device/cert.bin`.
+#  4. If `[enrollment]` is absent, firstboot waits for an operator
+#     to invoke `qos-enroll <token>` interactively.
+#
+# The root private key does NOT live in this file. It only exists
+# on user-primary devices (laptops the user consciously trusts);
+# for a server/kiosk provisioned via ISO, only the *public* key
+# is baked in.
+
+[user]
+# The user identity that owns this device. 32-byte Ed25519 public
+# key, hex-encoded. Get it from any of the user's already-trusted
+# devices via `qos-identity show`.
+public_key_hex = "3c33c0000000000000000000000000000000000000000000000000000000dead"
+
+# Human-readable label — shown in the login screen banner and in
+# every other device's peer list.
+label = "Alice Example"
+
+[device]
+# Human-readable label for THIS device. Shows up in the user's
+# workspace-directory UI: "Kitchen tablet", "Studio phone",
+# "Rack-mounted host". If omitted, the shell defaults to the
+# hostname on first boot.
+label = "Kitchen tablet"
+
+[enrollment]
+# OPTIONAL: pre-baked enrollment token minted by an already-trusted
+# device (base32-Crockford). Expires per the token; typical
+# provisioning ISOs use a 24-hour expiry.
+#
+# If present, firstboot uses it to auto-request a DeviceCert from
+# a peer holding the root private key. If absent, an operator must
+# hand the token to the device manually via `qos-enroll <token>`.
+token = "01234567ABCDEFGHJKMNPQRSTVWXYZ..."
+
+# Capabilities the resulting device cert should carry. Only used
+# if the trusted device signing the cert honours the requested
+# set — the actual capability set is decided by that device, not
+# by the requesting device. `member` is the sensible default for
+# secondary devices.
+#
+# Valid values: "primary", "member", "host".
+requested_capabilities = "member"

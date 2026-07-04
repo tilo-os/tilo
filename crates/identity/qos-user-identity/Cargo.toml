@@ -76,3 +76,6 @@ base32 = "0.5"
 rand_chacha = "0.3"
 rand_core = "0.6"
 hex = "0.4"
+# Isolated on-disk fixtures for the persistence-round-trip tests
+# so we do not touch /var/lib/qos on the developer's machine.
+tempfile = "3"
