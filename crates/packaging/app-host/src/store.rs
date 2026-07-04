@@ -63,6 +63,23 @@ impl FsBlobStore {
         }
         Ok(total)
     }
+
+    /// Remove a blob from disk. Returns `Ok(bytes_freed)` — `0` when
+    /// the blob is absent (idempotent). Used by the post-remove GC to
+    /// reclaim disk from blobs no longer referenced by any package.
+    pub fn delete(&mut self, hash: &BlobHash) -> io::Result<u64> {
+        let path = self.blob_path(hash);
+        match fs::metadata(&path) {
+            Ok(md) if md.is_file() => {
+                let len = md.len();
+                fs::remove_file(&path)?;
+                Ok(len)
+            }
+            Ok(_) => Ok(0),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 impl BlobStore for FsBlobStore {
@@ -287,22 +304,101 @@ impl Inner {
     }
 
     /// Remove the payload tree, then sweep blobs that are no longer
-    /// referenced by any remaining entry. We re-derive the live
-    /// blob set from the remaining entries' manifest+collection
-    /// hashes; for v0 a simpler strategy works: drop the payload
-    /// tree only, and rely on a later full sweep for the blob layer.
-    /// Returns the bytes freed from the payload tree.
+    /// referenced by any remaining entry. Returns the bytes freed
+    /// from the payload tree PLUS the reclaimed content-addressed
+    /// blobs.
+    ///
+    /// Blob-reclamation logic: build the removed entry's blob set
+    /// (its signed-root, manifest, collection, and every file in the
+    /// collection) and subtract the union of every remaining entry's
+    /// blob set. Blobs left over are unreferenced and get deleted from
+    /// the content-addressed store. Errors during blob discovery for
+    /// remaining entries are logged and cause that entry's contribution
+    /// to be treated as "everything still live" — we bias toward
+    /// keeping data over aggressive collection.
     fn gc_after_remove(&mut self, id: &PackageId, _entry: &RegistryEntry) -> Result<u64, StoreError> {
         let payload_dir = self.root.join("payloads").join(id.to_hex());
-        let freed = dir_size(&payload_dir).unwrap_or(0);
+        let payload_freed = dir_size(&payload_dir).unwrap_or(0);
         if payload_dir.exists() {
             fs::remove_dir_all(&payload_dir)?;
         }
-        // NOTE: we deliberately keep blobs in the content-addressed
-        // store; another package may reference the same content.
-        // A `garbage-collect` sweep is left to a follow-up.
-        Ok(freed)
+
+        // Content-addressed blob layer: figure out which blobs the
+        // removed entry pulled in, then subtract every blob still
+        // referenced by a surviving entry.
+        let removed_set = blob_set_for(&self.blobs, id).unwrap_or_default();
+        let mut still_live: std::collections::BTreeSet<BlobHash> =
+            std::collections::BTreeSet::new();
+        for entry in self.registry.entries() {
+            match blob_set_for(&self.blobs, &entry.id) {
+                Ok(set) => still_live.extend(set),
+                Err(e) => {
+                    // Refuse to over-collect: without a full picture of
+                    // this entry's blobs, we can't safely reclaim
+                    // anything they might reference. Log and mark
+                    // every hash the removed set contains as still
+                    // live so the sweep is a no-op for this call.
+                    tracing::warn!(
+                        entry_id = %entry.id,
+                        error = ?e,
+                        "gc: could not enumerate blob set for surviving entry; skipping blob reclamation to avoid over-collection"
+                    );
+                    still_live.extend(removed_set.iter().copied());
+                    break;
+                }
+            }
+        }
+
+        let mut blob_freed = 0u64;
+        for hash in &removed_set {
+            if still_live.contains(hash) {
+                continue;
+            }
+            match self.blobs.delete(hash) {
+                Ok(bytes) => blob_freed = blob_freed.saturating_add(bytes),
+                Err(e) => {
+                    tracing::warn!(
+                        blob = %hash,
+                        error = %e,
+                        "gc: failed to delete unreferenced blob"
+                    );
+                }
+            }
+        }
+
+        Ok(payload_freed.saturating_add(blob_freed))
     }
+}
+
+/// Reconstruct the set of blobs a package references: its signed-root
+/// (== the PackageId), the manifest blob, the collection blob, and
+/// every payload-file blob listed in the collection. Reads the store
+/// directly rather than the payload tree so a corrupted payload tree
+/// doesn't sabotage GC accounting.
+fn blob_set_for(
+    blobs: &FsBlobStore,
+    id: &PackageId,
+) -> Result<std::collections::BTreeSet<BlobHash>, StoreError> {
+    let mut set = std::collections::BTreeSet::new();
+    let root_hash = BlobHash(*id.as_bytes());
+    set.insert(root_hash);
+    let Some(signed_bytes) = blobs.get(&root_hash)? else {
+        return Ok(set);
+    };
+    let signed = pkg::signed::SignedRoot::decode(&signed_bytes).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("signed-root decode: {e}"))
+    })?;
+    set.insert(signed.manifest_hash);
+    set.insert(signed.payload_root_hash);
+    if let Some(collection_bytes) = blobs.get(&signed.payload_root_hash)? {
+        let collection = pkg::blobs::Collection::decode(&collection_bytes).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("collection decode: {e}"))
+        })?;
+        for hash in collection.entries.values() {
+            set.insert(*hash);
+        }
+    }
+    Ok(set)
 }
 
 /// Recursive byte sum of every regular file under `path`. Returns
