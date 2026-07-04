@@ -538,6 +538,37 @@ fn install(qpkg: &Path, pinned: bool, force: bool, trust: TrustFlags) -> Result<
         }
     }
 
+    // Materialise the sandbox's declared write paths on the host so
+    // the app doesn't hit ENOENT / EACCES on first launch. `expand_path`
+    // matches the launcher's expansion of `~/`, `$XDG_*`, and
+    // `<scope=current>`; only ~/… and $XDG_* forms can be created up
+    // front (a scope=current path is CWD-dependent and set per launch).
+    for pattern in &manifest.sandbox.fs.write {
+        let raw = pattern.as_str();
+        let expanded = expand_write_path(raw);
+        // Refuse to touch /dev and anything under it — the launcher
+        // manages /dev via bwrap tmpfs, not the host.
+        if expanded.starts_with("/dev") {
+            continue;
+        }
+        // Skip anything unresolved (bare `<scope=current>` etc.) — the
+        // sandbox owns that at launch.
+        if expanded.to_string_lossy().contains("<scope=") {
+            continue;
+        }
+        // Idempotent: if the tree exists, do nothing. Otherwise create it.
+        if !expanded.exists() {
+            if let Err(e) = fs::create_dir_all(&expanded) {
+                eprintln!(
+                    "qos-install: WARN — could not create sandbox write path {}: {e}",
+                    expanded.display(),
+                );
+            } else {
+                println!("  fs.write : created {}", expanded.display());
+            }
+        }
+    }
+
     reg.entry.push(RegistryEntry {
         id: id_field.clone(),
         version: version_field.clone(),
@@ -1096,6 +1127,44 @@ fn age(installed_at: u64) -> String {
         3600..=86399 => format!("{}h ago", elapsed / 3600),
         _ => format!("{}d ago", elapsed / 86400),
     }
+}
+
+/// Expand `~/` and `$XDG_*` placeholders against the current process's
+/// environment. Mirrors [`launcher::manifest::expand_path`] so a path
+/// materialised at install time lands at the same host location the
+/// launcher later binds into the sandbox. `<scope=current>` is left
+/// unresolved — that value is CWD-dependent and belongs to the launcher.
+fn expand_write_path(raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut buf = PathBuf::from(home);
+            buf.push(rest);
+            return buf;
+        }
+    }
+    for (var, prefix) in [
+        ("XDG_RUNTIME_DIR", "$XDG_RUNTIME_DIR"),
+        ("XDG_CONFIG_HOME", "$XDG_CONFIG_HOME"),
+        ("XDG_DATA_HOME", "$XDG_DATA_HOME"),
+        ("XDG_CACHE_HOME", "$XDG_CACHE_HOME"),
+    ] {
+        if let Some(rest) = raw.strip_prefix(prefix) {
+            if let Some(value) = std::env::var_os(var) {
+                let mut buf = PathBuf::from(value);
+                let rel = rest.trim_start_matches('/');
+                if !rel.is_empty() {
+                    buf.push(rel);
+                }
+                return buf;
+            }
+        }
+    }
+    if raw == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from(raw)
 }
 
 fn which_launcher() -> PathBuf {
