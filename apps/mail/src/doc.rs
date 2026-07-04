@@ -166,9 +166,9 @@ impl MailDoc {
         let flags = Self::flags_map(doc);
         let key = msg.id.to_string();
         let entry = Self::map(doc, &flags, &key);
-        let _ = doc.put(&entry, "read", msg.read);
-        let _ = doc.put(&entry, "starred", msg.starred);
-        let _ = doc.put(&entry, "folder", folder_key(msg.folder));
+        ui::doc::put_if_changed(doc, &entry, "read", msg.read);
+        ui::doc::put_if_changed(doc, &entry, "starred", msg.starred);
+        ui::doc::put_if_changed(doc, &entry, "folder", folder_key(msg.folder));
     }
 
     /// Overlay any persisted flags from the CRDT onto an in-memory mailbox.
@@ -204,15 +204,15 @@ impl MailDoc {
 
     pub fn store_account(doc: &mut AutoCommit, cfg: &AccountConfig) {
         let acc = Self::map(doc, &ROOT, "account");
-        let _ = doc.put(&acc, "display_name", cfg.display_name.as_str());
-        let _ = doc.put(&acc, "email", cfg.email.as_str());
-        let _ = doc.put(&acc, "imap_host", cfg.imap_host.as_str());
-        let _ = doc.put(&acc, "imap_port", cfg.imap_port as i64);
-        let _ = doc.put(&acc, "imap_tls", cfg.imap_tls);
-        let _ = doc.put(&acc, "smtp_host", cfg.smtp_host.as_str());
-        let _ = doc.put(&acc, "smtp_port", cfg.smtp_port as i64);
-        let _ = doc.put(&acc, "smtp_tls", cfg.smtp_tls);
-        let _ = doc.put(&acc, "username", cfg.username.as_str());
+        ui::doc::put_if_changed(doc, &acc, "display_name", cfg.display_name.as_str());
+        ui::doc::put_if_changed(doc, &acc, "email", cfg.email.as_str());
+        ui::doc::put_if_changed(doc, &acc, "imap_host", cfg.imap_host.as_str());
+        ui::doc::put_if_changed(doc, &acc, "imap_port", cfg.imap_port as i64);
+        ui::doc::put_if_changed(doc, &acc, "imap_tls", cfg.imap_tls);
+        ui::doc::put_if_changed(doc, &acc, "smtp_host", cfg.smtp_host.as_str());
+        ui::doc::put_if_changed(doc, &acc, "smtp_port", cfg.smtp_port as i64);
+        ui::doc::put_if_changed(doc, &acc, "smtp_tls", cfg.smtp_tls);
+        ui::doc::put_if_changed(doc, &acc, "username", cfg.username.as_str());
     }
 
     pub fn load_account(doc: &AutoCommit) -> Option<AccountConfig> {
@@ -238,13 +238,13 @@ impl MailDoc {
 
     pub fn store_draft(doc: &mut AutoCommit, draft: &Draft) {
         let d = Self::map(doc, &ROOT, "draft");
-        let _ = doc.put(&d, "to", draft.to.as_str());
-        let _ = doc.put(&d, "cc", draft.cc.as_str());
-        let _ = doc.put(&d, "bcc", draft.bcc.as_str());
-        let _ = doc.put(&d, "subject", draft.subject.as_str());
-        let _ = doc.put(&d, "body", draft.body.as_str());
+        ui::doc::put_if_changed(doc, &d, "to", draft.to.as_str());
+        ui::doc::put_if_changed(doc, &d, "cc", draft.cc.as_str());
+        ui::doc::put_if_changed(doc, &d, "bcc", draft.bcc.as_str());
+        ui::doc::put_if_changed(doc, &d, "subject", draft.subject.as_str());
+        ui::doc::put_if_changed(doc, &d, "body", draft.body.as_str());
         if let Some(html) = &draft.html_body {
-            let _ = doc.put(&d, "html_body", html.as_str());
+            ui::doc::put_if_changed(doc, &d, "html_body", html.as_str());
         }
     }
 
@@ -372,5 +372,46 @@ mod tests {
         let loaded = MailDoc::load_draft(&doc);
         assert_eq!(loaded.to, "x@y.example");
         assert_eq!(loaded.subject, "Hi");
+    }
+
+    #[test]
+    fn repeated_store_account_keeps_doc_bounded() {
+        // The account form is mirrored into the CRDT every frame; with the
+        // change-guarded writes, re-storing an unchanged account is a no-op.
+        let mut doc = AutoCommit::new();
+        let cfg = AccountConfig {
+            email: "a@b.example".into(),
+            imap_host: "imap.b.example".into(),
+            imap_port: 993,
+            smtp_host: "smtp.b.example".into(),
+            smtp_port: 587,
+            username: "a@b.example".into(),
+            ..Default::default()
+        };
+        MailDoc::store_account(&mut doc, &cfg);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            MailDoc::store_account(&mut doc, &cfg);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing an unchanged account grew the document {a} -> {b}");
+    }
+
+    #[test]
+    fn repeated_store_draft_keeps_doc_bounded() {
+        let mut doc = AutoCommit::new();
+        let draft = Draft {
+            to: "x@y.example".into(),
+            subject: "Hi".into(),
+            body: "Body".repeat(50),
+            ..Default::default()
+        };
+        MailDoc::store_draft(&mut doc, &draft);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            MailDoc::store_draft(&mut doc, &draft);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing an unchanged draft grew the document {a} -> {b}");
     }
 }

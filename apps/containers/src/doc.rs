@@ -190,11 +190,7 @@ impl ViewDoc {
 
     pub fn set_search(doc: &mut AutoCommit, value: &str) {
         let t = Self::search_obj(doc);
-        let cur = doc.text(&t).unwrap_or_default();
-        if cur != value {
-            let cur_chars = cur.chars().count() as isize;
-            let _ = doc.splice_text(&t, 0, cur_chars, value);
-        }
+        ui::doc::splice_text_diffed(doc, &t, value);
     }
 
     // --- create-container draft ---
@@ -223,11 +219,7 @@ impl ViewDoc {
 
     pub fn set_create_field(doc: &mut AutoCommit, field: CreateField, value: &str) {
         let obj = Self::create_field_obj(doc, field);
-        let cur = doc.text(&obj).unwrap_or_default();
-        if cur != value {
-            let cur_chars = cur.chars().count() as isize;
-            let _ = doc.splice_text(&obj, 0, cur_chars, value);
-        }
+        ui::doc::splice_text_diffed(doc, &obj, value);
     }
 
     /// Reset every create-form field to empty.
@@ -435,5 +427,34 @@ mod tests {
         ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx");
         ViewDoc::clear_create(&mut doc);
         assert_eq!(ViewDoc::create_field(&mut doc, CreateField::Image), "");
+    }
+
+    #[test]
+    fn appending_one_char_to_search_is_bounded() {
+        // Anti-churn: growing a long search field by one char must splice only
+        // the new char, not rewrite the whole value.
+        let mut doc = AutoCommit::new();
+        let long = "n".repeat(300);
+        ViewDoc::set_search(&mut doc, &long);
+        let before = doc.save().len();
+        let mut longer = long.clone();
+        longer.push('!');
+        ViewDoc::set_search(&mut doc, &longer);
+        let grew = doc.save().len() - before;
+        assert_eq!(ViewDoc::search(&mut doc), longer, "value round-trips");
+        assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
+    }
+
+    #[test]
+    fn repeated_set_search_keeps_doc_bounded() {
+        let mut doc = AutoCommit::new();
+        let long = "r".repeat(300);
+        ViewDoc::set_search(&mut doc, &long);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            ViewDoc::set_search(&mut doc, &long);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-storing the same search grew the document {a} -> {b}");
     }
 }

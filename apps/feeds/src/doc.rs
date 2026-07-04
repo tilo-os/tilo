@@ -106,9 +106,9 @@ impl FeedsDoc {
                 .put_object(&folders, key.as_str(), ObjType::Map)
                 .expect("folder map"),
         };
-        let _ = doc.put(&obj, "name", f.name.as_str());
-        let _ = doc.put(&obj, "order", f.order as i64);
-        let _ = doc.put(&obj, "collapsed", f.collapsed);
+        ui::doc::put_if_changed(doc, &obj, "name", f.name.as_str());
+        ui::doc::put_if_changed(doc, &obj, "order", f.order as i64);
+        ui::doc::put_if_changed(doc, &obj, "collapsed", f.collapsed);
     }
 
     pub fn upsert_feed(doc: &mut AutoCommit, f: &Feed) {
@@ -120,16 +120,17 @@ impl FeedsDoc {
                 .put_object(&feeds, key.as_str(), ObjType::Map)
                 .expect("feed map"),
         };
-        let _ = doc.put(&obj, "title", f.title.as_str());
-        let _ = doc.put(&obj, "url", f.url.as_str());
-        let _ = doc.put(&obj, "site_url", f.site_url.as_str());
-        let _ = doc.put(
+        ui::doc::put_if_changed(doc, &obj, "title", f.title.as_str());
+        ui::doc::put_if_changed(doc, &obj, "url", f.url.as_str());
+        ui::doc::put_if_changed(doc, &obj, "site_url", f.site_url.as_str());
+        ui::doc::put_if_changed(
+            doc,
             &obj,
             "folder",
             f.folder.map(|x| x.to_string()).unwrap_or_default(),
         );
-        let _ = doc.put(&obj, "order", f.order as i64);
-        let _ = doc.put(&obj, "kind", Self::kind_str(f.kind));
+        ui::doc::put_if_changed(doc, &obj, "order", f.order as i64);
+        ui::doc::put_if_changed(doc, &obj, "kind", Self::kind_str(f.kind));
     }
 
     pub fn upsert_article(doc: &mut AutoCommit, a: &Article) {
@@ -141,16 +142,16 @@ impl FeedsDoc {
                 .put_object(&articles, key.as_str(), ObjType::Map)
                 .expect("article map"),
         };
-        let _ = doc.put(&obj, "feed", a.feed_id.to_string());
-        let _ = doc.put(&obj, "title", a.title.as_str());
-        let _ = doc.put(&obj, "author", a.author.as_str());
-        let _ = doc.put(&obj, "url", a.url.as_str());
-        let _ = doc.put(&obj, "published", a.published);
-        let _ = doc.put(&obj, "summary", a.summary.as_str());
-        let _ = doc.put(&obj, "read", a.read);
-        let _ = doc.put(&obj, "starred", a.starred);
+        ui::doc::put_if_changed(doc, &obj, "feed", a.feed_id.to_string());
+        ui::doc::put_if_changed(doc, &obj, "title", a.title.as_str());
+        ui::doc::put_if_changed(doc, &obj, "author", a.author.as_str());
+        ui::doc::put_if_changed(doc, &obj, "url", a.url.as_str());
+        ui::doc::put_if_changed(doc, &obj, "published", a.published);
+        ui::doc::put_if_changed(doc, &obj, "summary", a.summary.as_str());
+        ui::doc::put_if_changed(doc, &obj, "read", a.read);
+        ui::doc::put_if_changed(doc, &obj, "starred", a.starred);
         let content = serde_json::to_string(&a.blocks).unwrap_or_default();
-        let _ = doc.put(&obj, "content", content.as_str());
+        ui::doc::put_if_changed(doc, &obj, "content", content.as_str());
     }
 
     fn article_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
@@ -216,9 +217,14 @@ impl FeedsDoc {
 
     pub fn write_settings(doc: &mut AutoCommit, s: &ReadSettings) {
         let obj = Self::map_field(doc, "settings");
-        let _ = doc.put(&obj, "font_scale", s.font_scale as f64);
-        let _ = doc.put(&obj, "font", s.font.as_str());
-        let _ = doc.put(&obj, "theme", s.theme.as_str());
+        // font_scale is an f64 — guard with a bit-exact compare rather than the
+        // generic put_if_changed, so a NaN would not defeat the equality check.
+        let fs = s.font_scale as f64;
+        if Self::get_f64(doc, &obj, "font_scale", f64::NAN).to_bits() != fs.to_bits() {
+            let _ = doc.put(&obj, "font_scale", fs);
+        }
+        ui::doc::put_if_changed(doc, &obj, "font", s.font.as_str());
+        ui::doc::put_if_changed(doc, &obj, "theme", s.theme.as_str());
     }
 
     pub fn read_settings(doc: &AutoCommit) -> ReadSettings {
@@ -440,6 +446,35 @@ mod tests {
         a.merge(&mut b_loaded).unwrap();
         let loaded = FeedsDoc::load(&a);
         assert!(loaded.articles[0].read, "A's read flag survived merge");
+    }
+
+    #[test]
+    fn repeated_seed_keeps_doc_bounded() {
+        // The store is mirrored into the CRDT via the upsert_* writers; with the
+        // change-guarded scalar puts, re-seeding an unchanged store is a no-op.
+        let mut doc = AutoCommit::new();
+        let store = sample_store();
+        FeedsDoc::seed(&mut doc, &store);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            FeedsDoc::seed(&mut doc, &store);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-seeding the same store grew the document {a} -> {b}");
+    }
+
+    #[test]
+    fn repeated_write_settings_keeps_doc_bounded() {
+        use crate::model::{ReadFont, ReadTheme};
+        let mut doc = AutoCommit::new();
+        let s = ReadSettings { font_scale: 1.3, font: ReadFont::Serif, theme: ReadTheme::Sepia };
+        FeedsDoc::write_settings(&mut doc, &s);
+        let a = doc.save().len();
+        for _ in 0..50 {
+            FeedsDoc::write_settings(&mut doc, &s);
+        }
+        let b = doc.save().len();
+        assert_eq!(a, b, "re-writing unchanged settings grew the document {a} -> {b}");
     }
 }
 
