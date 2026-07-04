@@ -731,6 +731,42 @@ fn ctrl_x_cuts_the_selected_span_through_handle_key() {
     assert_eq!(f.linear(), "x+", "Ctrl+X removes exactly the selected span");
 }
 
+/// A remote collaborator's cursor (a `RemoteCursorMoved` scene-space point)
+/// must map onto the field's 2D glyph layout and produce a drawn caret bar,
+/// snapped to the nearest insertion gap in the peer's colour — this is what
+/// renders multi-cursor presence *inside* the structured formula.
+#[test]
+fn remote_cursor_maps_to_a_drawn_caret_bar() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::{Point, Rect};
+    use vello::peniko::Color;
+
+    let mut tr = TextRenderer::new();
+    let mut f = MathField::new("x+12").with_size(20.0);
+    let rect = Rect::new(10.0, 5.0, 260.0, 45.0);
+    f.set_rect(rect, &mut tr);
+
+    let peer = Color::from_rgba8(0xec, 0x48, 0x99, 0xff); // pink "alice"
+    // A cursor near the middle of the formula.
+    let mid = Point::new(rect.center().x, rect.center().y);
+    let bars = f.remote_caret_bars(&[(mid, peer)]);
+    assert_eq!(bars.len(), 1, "a remote cursor over the field must map to one caret bar");
+    let (bar, col) = bars[0];
+    assert_eq!(col, peer, "the caret must render in the peer's colour");
+    assert!(bar.height() > 4.0, "the caret bar must have a visible height, got {}", bar.height());
+    assert!(
+        bar.center().x >= rect.x0 && bar.center().x <= rect.x1
+            && bar.center().y >= rect.y0 - 0.5 && bar.center().y <= rect.y1 + 0.5,
+        "the mapped caret must sit inside the field rect: {bar:?} vs {rect:?}"
+    );
+
+    // A cursor OUTSIDE the field maps to nothing (a peer editing elsewhere must
+    // not paint a phantom caret here).
+    let outside = Point::new(rect.x1 + 200.0, rect.center().y);
+    assert!(f.remote_caret_bars(&[(outside, peer)]).is_empty());
+}
+
 /// Copy → paste round-trips through the shared editor core the field's Ctrl+C /
 /// Ctrl+V call (`selected_linear` / `paste_linear`) — deterministic and
 /// independent of the (headless-unavailable) system clipboard.

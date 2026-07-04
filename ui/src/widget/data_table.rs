@@ -24,13 +24,21 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+
+/// Visual thickness of the built-in scrollbar track/thumb, in logical px.
+/// Matches [`crate::widget::Scrollable`] so a `DataTable` bar and a
+/// wrapping `Scrollable` bar read identically.
+const BAR_THICKNESS: f64 = 8.0;
+/// Inset of the track from the body edge.
+const BAR_MARGIN: f64 = 2.0;
 
 /// How a column contributes to the header/body horizontal layout.
 ///
@@ -180,6 +188,13 @@ pub struct DataTable<Row> {
     /// Last body-row press for internal double-click detection (used only
     /// when `on_activate` is set and the table is long-lived).
     last_click_row: Option<(usize, std::time::Instant)>,
+    /// Built-in vertical scrollbar interaction model. Active only in
+    /// internal-virtualization mode (host called [`set_viewport`] and the
+    /// rows overflow that viewport); dormant when the table is wrapped in
+    /// an outer [`crate::widget::Scrollable`], so no double bar appears.
+    /// Shares the toolkit's scrollbar drag/track logic via
+    /// [`crate::widget::scrollbar`].
+    vbar: Scrollbar,
 }
 
 impl<Row> DataTable<Row> {
@@ -214,6 +229,7 @@ impl<Row> DataTable<Row> {
             on_activate: None,
             on_header_click: None,
             last_click_row: None,
+            vbar: Scrollbar::vertical(),
         }
     }
 
@@ -422,6 +438,93 @@ impl<Row> DataTable<Row> {
         let visible = (self.viewport_h / self.row_height).ceil() as usize;
         let end = (start + visible + 4).min(len);
         (start, end)
+    }
+
+    // === Built-in vertical scrollbar =================================
+    //
+    // Active only in internal-virtualization mode: the host installed a
+    // viewport via `set_viewport` *and* the rows overflow it. Otherwise
+    // the table draws at full height and an outer `Scrollable` (or the
+    // host) owns scrolling — so no bar is drawn and nothing is captured,
+    // keeping the change additive.
+
+    /// Height (logical px) of the body band that rows scroll within.
+    fn body_viewport_h(&self) -> f64 {
+        if self.viewport_h > 0.0 {
+            self.viewport_h as f64
+        } else {
+            (self.rect.height() - HEADER_HEIGHT).max(0.0)
+        }
+    }
+
+    /// Total height (logical px) of all rows — the scrollable content.
+    fn content_body_h(&self) -> f64 {
+        self.row_height as f64 * self.view.len() as f64
+    }
+
+    /// Furthest the body can scroll (`content - viewport`, floored at 0).
+    pub fn max_scroll_y(&self) -> f32 {
+        (self.content_body_h() - self.body_viewport_h()).max(0.0) as f32
+    }
+
+    /// Scroll geometry along the body's vertical axis, for the shared bar.
+    fn v_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_body_h(), self.body_viewport_h(), self.scroll_y as f64)
+    }
+
+    /// Whether the built-in bar is live: an explicit viewport was set and
+    /// the rows overflow it.
+    fn internal_scroll(&self) -> bool {
+        self.viewport_h > 0.0 && self.v_metrics().overflows()
+    }
+
+    /// Track rect (right edge of the body band) for the built-in bar, or
+    /// `None` when it isn't shown.
+    fn v_track(&self) -> Option<Rect> {
+        if !self.internal_scroll() {
+            return None;
+        }
+        let x1 = self.rect.x1 - BAR_MARGIN;
+        let x0 = x1 - BAR_THICKNESS;
+        let y0 = self.rect.y0 + HEADER_HEIGHT + BAR_MARGIN;
+        let y1 = self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h() - BAR_MARGIN;
+        if y1 - y0 <= crate::widget::scrollbar::MIN_THUMB_LEN.min(1.0) {
+            return None;
+        }
+        Some(Rect::new(x0, y0, x1, y1))
+    }
+
+    /// The built-in scrollbar thumb rect (screen space), or `None` when the
+    /// bar is inactive (no viewport set, or rows fit). Exposed so hosts and
+    /// tests can confirm the thumb reflects the current `scroll_y`.
+    pub fn scrollbar_thumb(&self) -> Option<Rect> {
+        let track = self.v_track()?;
+        self.vbar.thumb_rect(track, self.v_metrics())
+    }
+
+    /// Paint the built-in scrollbar (track + thumb) when active. Reads bar
+    /// colours from the theme so it matches OS chrome and the wrapping
+    /// `Scrollable`'s bar.
+    fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let Some(track) = self.v_track() else { return };
+        let radius = BAR_THICKNESS / 2.0;
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surface_white_5,
+            None,
+            &RoundedRect::from_rect(track, radius),
+        );
+        if let Some(thumb) = self.vbar.thumb_rect(track, self.v_metrics()) {
+            let color = if self.vbar.is_active() { theme.text_dim } else { theme.border_standard };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                color,
+                None,
+                &RoundedRect::from_rect(thumb, radius),
+            );
+        }
     }
 
     fn resize_handle_rect_for(&self, index: usize) -> Option<Rect> {
@@ -649,6 +752,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 &self.rect,
             );
         }
+
+        // Built-in scrollbar composites on top of the body (only in
+        // internal-virtualization mode; otherwise a no-op).
+        self.draw_scrollbar(scene, transform, theme);
     }
 
     fn handle_event(
@@ -670,6 +777,24 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 if self.resize.is_some() {
                     self.drag_resize(pt.x as f32);
                     *handled = true;
+                    return;
+                }
+                // An active scrollbar drag owns the move — map it to a new
+                // scroll offset and swallow the event.
+                if self.vbar.is_dragging() {
+                    if let Some(track) = self.v_track() {
+                        if let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt) {
+                            self.set_scroll_y(target as f32);
+                        }
+                    }
+                    *handled = true;
+                    return;
+                }
+                // Otherwise update the thumb hover brightening.
+                if let Some(track) = self.v_track() {
+                    self.vbar.update_hover(track, self.v_metrics(), pt);
+                } else {
+                    self.vbar.set_hover(false);
                 }
             }
             WindowEvent::MouseInput {
@@ -678,6 +803,22 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 ..
             } => {
                 let Some(pt) = self.last_cursor else { return };
+                // 0. The built-in scrollbar wins over the body beneath it:
+                //    thumb press → drag; track press → page toward the click.
+                if let Some(track) = self.v_track() {
+                    match self.vbar.press(track, self.v_metrics(), pt) {
+                        PressOutcome::Thumb => {
+                            *handled = true;
+                            return;
+                        }
+                        PressOutcome::Page(target) => {
+                            self.set_scroll_y(target as f32);
+                            *handled = true;
+                            return;
+                        }
+                        PressOutcome::Miss => {}
+                    }
+                }
                 // 1. Column resize handles win over everything.
                 for i in 0..self.columns.len() {
                     if let Some(handle) = self.resize_handle_rect_for(i) {
@@ -740,9 +881,36 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } if self.resize.is_some() => {
-                self.end_resize();
-                *handled = true;
+            } => {
+                let mut did = false;
+                if self.resize.is_some() {
+                    self.end_resize();
+                    did = true;
+                }
+                if self.vbar.release() {
+                    did = true;
+                }
+                if did {
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Internal-virtualization mode scrolls the body on the
+                // wheel. When the table is wrapped in a `Scrollable`, the
+                // wheel is consumed by the parent before it reaches here,
+                // so this only fires for a self-scrolling table.
+                if self.internal_scroll() {
+                    const LINE_PX: f32 = 60.0;
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
+                        MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
+                    };
+                    let next = (self.scroll_y + dy).clamp(0.0, self.max_scroll_y());
+                    if next != self.scroll_y {
+                        self.set_scroll_y(next);
+                    }
+                    *handled = true;
+                }
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
@@ -784,7 +952,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
     }
 
-    fn wants_pointer_capture(&self) -> bool { self.resize.is_some() }
+    fn wants_pointer_capture(&self) -> bool { self.resize.is_some() || self.vbar.is_dragging() }
 
     fn name(&self) -> &str { "DataTable" }
     fn test_id(&self) -> Option<&str> { Some("data_table") }
@@ -1185,6 +1353,137 @@ mod tests {
         // visible window also starts around row 10 (minus overscan).
         let (start, _end) = t.visible_row_range();
         assert!(start <= 10 && start >= 8, "window starts near the scroll position: {start}");
+    }
+
+    // --- Built-in scrollbar tests -------------------------------------
+
+    /// A 100-row table laid out at 300×400 then put into internal-scroll
+    /// mode with a 5-row viewport (body viewport 120 px over 2400 px of
+    /// rows → the bar is live). X of the bar centre is 294.
+    fn scrolling_table() -> (DataTable<R>, TaffyTree<()>, NodeId) {
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows((0..100).map(|i| R { name: format!("r{i}") }).collect());
+        let (tree, node) = lay_out(&mut t);
+        t.set_viewport(5.0 * ROW_HEIGHT as f32, ROW_HEIGHT as f32);
+        (t, tree, node)
+    }
+
+    fn bar_x(t: &DataTable<R>) -> f64 {
+        t.get_rect().x1 - BAR_MARGIN - BAR_THICKNESS / 2.0
+    }
+
+    #[test]
+    fn scrollbar_hidden_without_viewport() {
+        // No `set_viewport` → the table draws full-height and defers to an
+        // outer Scrollable; no built-in bar (avoids a double bar).
+        let mut t = DataTable::<R>::new(sample_cols());
+        t.set_rows((0..100).map(|i| R { name: format!("r{i}") }).collect());
+        let _ = lay_out(&mut t);
+        assert!(t.scrollbar_thumb().is_none(), "no bar without an explicit viewport");
+    }
+
+    #[test]
+    fn scrollbar_hidden_when_rows_fit() {
+        let mut t = DataTable::<R>::new(sample_cols());
+        t.set_rows(rows4());
+        let _ = lay_out(&mut t);
+        // Viewport taller than the 4 rows → content fits → no bar.
+        t.set_viewport(50.0 * ROW_HEIGHT as f32, ROW_HEIGHT as f32);
+        assert!(t.scrollbar_thumb().is_none(), "no bar when rows fit the viewport");
+    }
+
+    #[test]
+    fn scrollbar_thumb_tracks_scroll_y() {
+        let (mut t, _tree, _node) = scrolling_table();
+        let track = t.v_track().expect("bar live");
+        let top = t.scrollbar_thumb().expect("thumb at top");
+        assert!((top.y0 - track.y0).abs() < 1e-6, "thumb starts at track top");
+
+        t.set_scroll_y(t.max_scroll_y());
+        let bottom = t.scrollbar_thumb().expect("thumb at bottom");
+        assert!(bottom.y0 > top.y0, "thumb moves down as scroll_y grows");
+        assert!(
+            (bottom.y1 - track.y1).abs() < 1e-3,
+            "fully scrolled thumb reaches track bottom: {} vs {}",
+            bottom.y1,
+            track.y1,
+        );
+    }
+
+    #[test]
+    fn dragging_scrollbar_updates_scroll_y() {
+        let (mut t, tree, node) = scrolling_table();
+        let thumb = t.scrollbar_thumb().unwrap();
+        let x = bar_x(&t);
+        let mid_y = (thumb.y0 + thumb.y1) / 2.0;
+        let mods = winit::event::Modifiers::default();
+
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, mid_y).into() }, &mods);
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left }, &mods);
+        assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
+        assert!(t.wants_pointer_capture(), "drag captures the pointer");
+        assert_eq!(t.scroll_y, 0.0);
+
+        // Drag down 50 px → scroll_y increases, staying clamped to max.
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, mid_y + 50.0).into() }, &mods);
+        assert!(t.scroll_y > 0.0, "drag down increases scroll_y: {}", t.scroll_y);
+        assert!(t.scroll_y <= t.max_scroll_y(), "clamped to max");
+        let after = t.scroll_y;
+
+        // Drag back up past the start → scroll_y returns toward 0.
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, mid_y - 50.0).into() }, &mods);
+        assert!(t.scroll_y < after, "drag up decreases scroll_y");
+
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Released, button: MouseButton::Left }, &mods);
+        assert!(!t.vbar.is_dragging(), "release ends the drag");
+    }
+
+    #[test]
+    fn track_click_pages_scroll_y() {
+        let (mut t, tree, node) = scrolling_table();
+        let thumb = t.scrollbar_thumb().unwrap();
+        let x = bar_x(&t);
+        let below_y = thumb.y1 + 5.0;
+        let mods = winit::event::Modifiers::default();
+
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, below_y).into() }, &mods);
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left }, &mods);
+        assert!(!t.vbar.is_dragging(), "track click is not a drag");
+        // Paged by ≈ one viewport (120 px) × PAGE_FRACTION.
+        let expected = 120.0 * crate::widget::scrollbar::PAGE_FRACTION as f32;
+        assert!(
+            (t.scroll_y - expected).abs() < 1.0,
+            "page step ≈ viewport*frac ({expected}), got {}",
+            t.scroll_y,
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_in_internal_mode() {
+        let (mut t, tree, node) = scrolling_table();
+        let mods = winit::event::Modifiers::default();
+        assert_eq!(t.scroll_y, 0.0);
+        let wheel = WindowEvent::MouseWheel {
+            device_id: device(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        dispatch(&mut t, &tree, node, wheel, &mods);
+        assert!(t.scroll_y > 0.0, "wheel down increases scroll_y: {}", t.scroll_y);
+        assert!(t.scroll_y <= t.max_scroll_y(), "clamped to max");
+    }
+
+    #[test]
+    fn scrollbar_press_does_not_select_a_row() {
+        // A press on the bar must be swallowed before body-row selection.
+        let (mut t, tree, node) = scrolling_table();
+        let thumb = t.scrollbar_thumb().unwrap();
+        let x = bar_x(&t);
+        let mid_y = (thumb.y0 + thumb.y1) / 2.0;
+        let mods = winit::event::Modifiers::default();
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, mid_y).into() }, &mods);
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left }, &mods);
+        assert!(t.selection().is_empty(), "scrollbar press must not select a row");
     }
 
     fn table_color_fills(t: &mut DataTable<R>) -> usize {

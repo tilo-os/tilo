@@ -22,7 +22,15 @@ pub use app::CalculatorApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app's root widget tree: boots EMPTY in Calculator mode.
+/// Any persisted state is adopted from the CRDT on the first sync.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(CalculatorApp::new())
+}
+
+/// Build a lived-in root for the headless `--shots` renderer and demos: a
+/// populated calculator + graphs. This is the ONLY path that seeds sample
+/// content; the live [`app_root`] never does.
+pub fn app_root_offline() -> Box<dyn Widget> {
+    Box::new(CalculatorApp::seeded())
 }

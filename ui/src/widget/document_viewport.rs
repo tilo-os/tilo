@@ -70,6 +70,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{Element, Widget};
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 
 /// Default lower zoom bound (25 %).
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;
@@ -139,6 +140,12 @@ pub struct ViewportState {
     /// available to hosts that layer their own motion on top. Optional so
     /// the first frame doesn't see a huge delta.
     last_tick: Option<Instant>,
+    /// Shared vertical-bar interaction model (thumb drag + track paging +
+    /// hover). See [`crate::widget::scrollbar`]. Pressing the thumb drags
+    /// it directly rather than pan-grabbing the content beneath it.
+    vbar: Scrollbar,
+    /// Shared horizontal-bar interaction model.
+    hbar: Scrollbar,
 }
 
 /// Snapshot captured at pan-press so cursor motion maps 1:1 to scroll.
@@ -179,6 +186,8 @@ impl ViewportState {
             align_y: SmallContentAlign::Start,
             pan: None,
             last_tick: None,
+            vbar: Scrollbar::vertical(),
+            hbar: Scrollbar::horizontal(),
         }
     }
 
@@ -616,89 +625,168 @@ impl ViewportState {
 
     // ---- scrollbar geometry -----------------------------------------
 
+    /// The horizontal scrollbar track rect (screen space), or `None` when
+    /// the content fits horizontally. Leaves room for the vertical bar so
+    /// the two don't overlap in the corner.
+    fn h_track(&self) -> Option<Rect> {
+        if !self.overflows_x() {
+            return None;
+        }
+        let x0 = self.rect.x0 + SCROLLBAR_INSET;
+        let mut x1 = self.rect.x1 - SCROLLBAR_INSET;
+        if self.overflows_y() {
+            x1 -= SCROLLBAR_THICKNESS + SCROLLBAR_INSET;
+        }
+        let y1 = self.rect.y1 - SCROLLBAR_INSET;
+        let y0 = y1 - SCROLLBAR_THICKNESS;
+        Some(Rect::new(x0, y0, x1, y1))
+    }
+
+    /// The vertical scrollbar track rect (screen space), or `None` when the
+    /// content fits vertically.
+    fn v_track(&self) -> Option<Rect> {
+        if !self.overflows_y() {
+            return None;
+        }
+        let x1 = self.rect.x1 - SCROLLBAR_INSET;
+        let x0 = x1 - SCROLLBAR_THICKNESS;
+        let y0 = self.rect.y0 + SCROLLBAR_INSET;
+        let mut y1 = self.rect.y1 - SCROLLBAR_INSET;
+        if self.overflows_x() {
+            y1 -= SCROLLBAR_THICKNESS + SCROLLBAR_INSET;
+        }
+        Some(Rect::new(x0, y0, x1, y1))
+    }
+
+    fn h_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.scaled_content_width(), self.rect.width(), self.scroll_x)
+    }
+    fn v_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.scaled_content_height(), self.rect.height(), self.scroll_y)
+    }
+
     /// The horizontal scrollbar thumb rect (screen space), or `None` when
     /// the content fits horizontally. A host can paint it itself, or rely on
     /// [`DocumentViewport`] to do so.
     pub fn h_scrollbar_thumb(&self) -> Option<Rect> {
-        if !self.overflows_x() {
-            return None;
-        }
-        let track_x0 = self.rect.x0 + SCROLLBAR_INSET;
-        let track_x1 = self.rect.x1 - SCROLLBAR_INSET;
-        // Leave room for the vertical bar so the two don't overlap in the
-        // corner.
-        let track_x1 = if self.overflows_y() {
-            track_x1 - SCROLLBAR_THICKNESS - SCROLLBAR_INSET
-        } else {
-            track_x1
-        };
-        let track_w = (track_x1 - track_x0).max(1.0);
-        let content_w = self.scaled_content_width();
-        let frac = (self.rect.width() / content_w).clamp(0.0, 1.0);
-        let thumb_w = (track_w * frac).max(24.0).min(track_w);
-        let prog = if self.max_scroll_x() > 0.0 {
-            self.scroll_x / self.max_scroll_x()
-        } else {
-            0.0
-        };
-        let x0 = track_x0 + (track_w - thumb_w) * prog;
-        let y1 = self.rect.y1 - SCROLLBAR_INSET;
-        let y0 = y1 - SCROLLBAR_THICKNESS;
-        Some(Rect::new(x0, y0, x0 + thumb_w, y1))
+        let track = self.h_track()?;
+        self.hbar.thumb_rect(track, self.h_metrics())
     }
 
     /// The vertical scrollbar thumb rect (screen space), or `None` when the
     /// content fits vertically.
     pub fn v_scrollbar_thumb(&self) -> Option<Rect> {
-        if !self.overflows_y() {
-            return None;
+        let track = self.v_track()?;
+        self.vbar.thumb_rect(track, self.v_metrics())
+    }
+
+    // ---- scrollbar interaction --------------------------------------
+
+    /// Hit-test a left-press against either scrollbar. A press on a thumb
+    /// begins a direct thumb drag; a press on the track pages the view
+    /// toward the click. Returns `true` when the press landed on a bar, so
+    /// the caller suppresses drag-to-pan / child routing beneath it.
+    pub fn press_scrollbar(&mut self, cursor: Point) -> bool {
+        if let Some(track) = self.v_track() {
+            let m = self.v_metrics();
+            match self.vbar.press(track, m, cursor) {
+                PressOutcome::Thumb => return true,
+                PressOutcome::Page(target) => {
+                    self.scroll_y = target;
+                    self.clamp_scroll();
+                    return true;
+                }
+                PressOutcome::Miss => {}
+            }
         }
-        let track_y0 = self.rect.y0 + SCROLLBAR_INSET;
-        let track_y1 = self.rect.y1 - SCROLLBAR_INSET;
-        let track_y1 = if self.overflows_x() {
-            track_y1 - SCROLLBAR_THICKNESS - SCROLLBAR_INSET
+        if let Some(track) = self.h_track() {
+            let m = self.h_metrics();
+            match self.hbar.press(track, m, cursor) {
+                PressOutcome::Thumb => return true,
+                PressOutcome::Page(target) => {
+                    self.scroll_x = target;
+                    self.clamp_scroll();
+                    return true;
+                }
+                PressOutcome::Miss => {}
+            }
+        }
+        false
+    }
+
+    /// Continue an active scrollbar thumb drag, mapping the cursor to a new
+    /// scroll offset. Returns `true` while a bar is being dragged.
+    pub fn drag_scrollbar(&mut self, cursor: Point) -> bool {
+        if self.vbar.is_dragging() {
+            if let Some(track) = self.v_track() {
+                let m = self.v_metrics();
+                if let Some(target) = self.vbar.drag_to(track, m, cursor) {
+                    self.scroll_y = target;
+                    self.clamp_scroll();
+                }
+            }
+            return true;
+        }
+        if self.hbar.is_dragging() {
+            if let Some(track) = self.h_track() {
+                let m = self.h_metrics();
+                if let Some(target) = self.hbar.drag_to(track, m, cursor) {
+                    self.scroll_x = target;
+                    self.clamp_scroll();
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Whether a scrollbar thumb drag is in progress.
+    pub fn scrollbar_dragging(&self) -> bool {
+        self.vbar.is_dragging() || self.hbar.is_dragging()
+    }
+
+    /// End any active scrollbar drag. Returns `true` when one was in
+    /// progress.
+    pub fn release_scrollbar(&mut self) -> bool {
+        let v = self.vbar.release();
+        let h = self.hbar.release();
+        v || h
+    }
+
+    /// Recompute thumb hover from the cursor; returns `true` when a hover
+    /// edge changed (so the caller can schedule a redraw).
+    pub fn update_scrollbar_hover(&mut self, cursor: Point) -> bool {
+        let mut changed = false;
+        if let Some(track) = self.v_track() {
+            let m = self.v_metrics();
+            changed |= self.vbar.update_hover(track, m, cursor);
         } else {
-            track_y1
-        };
-        let track_h = (track_y1 - track_y0).max(1.0);
-        let content_h = self.scaled_content_height();
-        let frac = (self.rect.height() / content_h).clamp(0.0, 1.0);
-        let thumb_h = (track_h * frac).max(24.0).min(track_h);
-        let prog = if self.max_scroll_y() > 0.0 {
-            self.scroll_y / self.max_scroll_y()
+            changed |= self.vbar.set_hover(false);
+        }
+        if let Some(track) = self.h_track() {
+            let m = self.h_metrics();
+            changed |= self.hbar.update_hover(track, m, cursor);
         } else {
-            0.0
-        };
-        let y0 = track_y0 + (track_h - thumb_h) * prog;
-        let x1 = self.rect.x1 - SCROLLBAR_INSET;
-        let x0 = x1 - SCROLLBAR_THICKNESS;
-        Some(Rect::new(x0, y0, x1, y0 + thumb_h))
+            changed |= self.hbar.set_hover(false);
+        }
+        changed
     }
 
     /// Paint the scrollbars (when present) into `scene`. Reads the
     /// scrollbar/thumb color from the theme so it matches OS chrome. Both
     /// [`DocumentViewport`] and a canvas-root host call this after drawing
-    /// content.
+    /// content. The thumb brightens while hovered or dragged.
     pub fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let thumb = theme.tokens.colors.text_dim.with_alpha_factor(0.55);
         let radius = SCROLLBAR_THICKNESS / 2.0;
+        let idle = theme.tokens.colors.text_dim.with_alpha_factor(0.55);
+        let active = theme.tokens.colors.text_dim.with_alpha_factor(0.85);
         if let Some(r) = self.h_scrollbar_thumb() {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                thumb,
-                None,
-                &RoundedRect::from_rect(r, radius),
-            );
+            let c = if self.hbar.is_active() { active } else { idle };
+            scene.fill(Fill::NonZero, transform, c, None, &RoundedRect::from_rect(r, radius));
         }
         if let Some(r) = self.v_scrollbar_thumb() {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                thumb,
-                None,
-                &RoundedRect::from_rect(r, radius),
-            );
+            let c = if self.vbar.is_active() { active } else { idle };
+            scene.fill(Fill::NonZero, transform, c, None, &RoundedRect::from_rect(r, radius));
         }
     }
 }
@@ -914,10 +1002,20 @@ impl Widget for DocumentViewport {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // An active scrollbar thumb drag owns the move.
+                if self.state.drag_scrollbar(self.last_cursor) {
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.state.update_pan(self.last_cursor) {
                     self.dirty = true;
                     *handled = true;
                     return;
+                }
+                // Otherwise brighten the hovered thumb.
+                if self.state.update_scrollbar_hover(self.last_cursor) {
+                    self.dirty = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -926,7 +1024,14 @@ impl Widget for DocumentViewport {
                 ..
             } => {
                 if self.rect.contains(self.last_cursor) {
-                    // Let the wrapped child take the press first (e.g. a
+                    // A press on a scrollbar (thumb or track) wins over both
+                    // the child and drag-to-pan beneath it.
+                    if self.state.press_scrollbar(self.last_cursor) {
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                    // Let the wrapped child take the press next (e.g. a
                     // button on the canvas); only start a pan if it didn't.
                     if let Content::Widget(_) = &self.content {
                         self.route_to_child(event, scale_factor, modifiers, state, path, handled, focus_target);
@@ -945,6 +1050,11 @@ impl Widget for DocumentViewport {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.state.release_scrollbar() {
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.state.is_panning() {
                     self.state.end_pan();
                     self.dirty = true;
@@ -1000,7 +1110,13 @@ impl Widget for DocumentViewport {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.state.is_panning()
+        self.dirty || self.state.is_panning() || self.state.scrollbar_dragging()
+    }
+
+    /// Hold the pointer while panning or dragging a scrollbar thumb so the
+    /// gesture keeps receiving moves even if the cursor leaves the rect.
+    fn wants_pointer_capture(&self) -> bool {
+        self.state.is_panning() || self.state.scrollbar_dragging()
     }
 }
 
@@ -1242,6 +1358,64 @@ mod tests {
         v.set_scroll(0.0, v.max_scroll_y());
         let bottom = v.v_scrollbar_thumb().unwrap();
         assert!(bottom.y0 > top.y0, "v-thumb moves down as content scrolls down");
+    }
+
+    #[test]
+    fn press_thumb_begins_drag_then_move_scrolls() {
+        let mut v = kernel();
+        v.set_zoom(3.0);
+        // set_zoom anchors on the viewport centre, so scroll is non-zero
+        // after it — normalise to the top so the thumb sits at the track
+        // start (same reset the geometry test above relies on).
+        v.set_scroll(0.0, 0.0);
+        let thumb = v.v_scrollbar_thumb().unwrap();
+        let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
+        assert!(v.press_scrollbar(mid), "press on the v-thumb is consumed");
+        assert!(v.scrollbar_dragging(), "thumb press begins a drag");
+        assert_eq!(v.scroll_y(), 0.0, "press alone does not scroll");
+        // Drag the thumb down 100 px → content scrolls down proportionally.
+        assert!(v.drag_scrollbar(Point::new(mid.x, mid.y + 100.0)));
+        assert!(v.scroll_y() > 0.0, "thumb drag scrolls: {}", v.scroll_y());
+        assert!(v.scroll_y() <= v.max_scroll_y(), "stays clamped");
+        // A huge drag clamps at the bottom.
+        v.drag_scrollbar(Point::new(mid.x, mid.y + 100_000.0));
+        assert!((v.scroll_y() - v.max_scroll_y()).abs() < 1.0, "clamped to bottom");
+        assert!(v.release_scrollbar(), "release ends the drag");
+        assert!(!v.scrollbar_dragging());
+    }
+
+    #[test]
+    fn press_track_pages_toward_click() {
+        let mut v = kernel();
+        v.set_zoom(3.0);
+        v.set_scroll(0.0, 0.0); // normalise to the top (see above)
+        let thumb = v.v_scrollbar_thumb().unwrap();
+        let below = Point::new((thumb.x0 + thumb.x1) / 2.0, thumb.y1 + 5.0);
+        assert!(v.press_scrollbar(below), "track click consumed");
+        assert!(!v.scrollbar_dragging(), "track click is not a drag");
+        assert!(v.scroll_y() > 0.0, "paged down toward the click: {}", v.scroll_y());
+    }
+
+    #[test]
+    fn press_in_content_area_is_not_a_bar() {
+        let mut v = kernel();
+        v.set_zoom(3.0);
+        // Middle of the viewport, far from either edge bar → pan is free.
+        assert!(!v.press_scrollbar(Point::new(400.0, 300.0)), "content press leaves pan free");
+        assert!(!v.scrollbar_dragging());
+    }
+
+    #[test]
+    fn horizontal_thumb_drag_scrolls_x() {
+        let mut v = kernel();
+        v.set_zoom(3.0);
+        v.set_scroll(0.0, 0.0); // normalise to the left
+        let thumb = v.h_scrollbar_thumb().unwrap();
+        let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
+        assert!(v.press_scrollbar(mid), "press on the h-thumb is consumed");
+        v.drag_scrollbar(Point::new(mid.x + 80.0, mid.y));
+        assert!(v.scroll_x() > 0.0, "h-thumb drag scrolls x: {}", v.scroll_x());
+        assert!(v.release_scrollbar());
     }
 
     #[test]

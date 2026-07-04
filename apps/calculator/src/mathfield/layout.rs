@@ -222,15 +222,6 @@ fn layout_node(
         Node::Func { name, arg } => {
             let name_w = measure_name(tr, name, size);
             let (ascent, descent) = metrics(size);
-            let mut boxes = vec![Box2d {
-                x: 0.0,
-                y: 0.0,
-                w: name_w,
-                h: ascent + descent,
-                baseline: ascent,
-                kind: BoxKind::Name { text: name.clone(), size },
-            }];
-            let mut gaps = Vec::new();
             let arg_steps = child_steps(steps, idx, Slot::Arg);
             let inner = layout_row(arg, &arg_steps, tr, size);
             let body_h = inner.height();
@@ -240,6 +231,20 @@ fn layout_node(
             let row_ascent = ascent.max(inner.ascent);
             let row_descent = descent.max(inner.descent);
             let total_ascent = row_ascent;
+            // The function name is the SAME font size as its argument; sit its
+            // box so its baseline lands on the row baseline (`total_ascent`),
+            // not the frag top — otherwise a tall argument (a √ with
+            // superscripts, e.g. `sin(√(x²+y²))`) would leave the name floating
+            // above and reading as an oversized, misaligned glyph.
+            let mut boxes = vec![Box2d {
+                x: 0.0,
+                y: total_ascent - ascent,
+                w: name_w,
+                h: ascent + descent,
+                baseline: ascent,
+                kind: BoxKind::Name { text: name.clone(), size },
+            }];
+            let mut gaps = Vec::new();
             let mut pen = name_w;
             boxes.push(Box2d {
                 x: pen,
@@ -470,6 +475,57 @@ fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, S
     let mut s = steps.to_vec();
     s.push((idx, slot));
     s
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::mathfield::model::parse;
+
+    fn box_size(kind: &BoxKind) -> Option<f32> {
+        match kind {
+            BoxKind::Name { size, .. }
+            | BoxKind::Glyph { size, .. }
+            | BoxKind::Paren { size, .. }
+            | BoxKind::SqrtSign { size, .. } => Some(*size),
+            BoxKind::FracBar => None,
+        }
+    }
+
+    /// The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
+    /// frag top — floating above the argument and reading as an oversized,
+    /// misaligned glyph. The name and its parenthesised argument must be the
+    /// same font size AND share the row baseline.
+    #[test]
+    fn func_name_and_argument_share_size_and_baseline() {
+        let mut tr = TextRenderer::new();
+        let expr = parse("sin(sqrt(x^2+y^2))");
+        let lay = layout(&expr.root, &mut tr, 20.0);
+
+        let name = lay
+            .boxes
+            .iter()
+            .find(|b| matches!(b.kind, BoxKind::Name { .. }))
+            .expect("a function-name box");
+        let paren = lay
+            .boxes
+            .iter()
+            .find(|b| matches!(b.kind, BoxKind::Paren { .. }))
+            .expect("the call's opening paren box");
+
+        assert_eq!(
+            box_size(&name.kind),
+            box_size(&paren.kind),
+            "the function name must be the SAME type size as its argument's parens"
+        );
+        let name_baseline = name.y + name.baseline;
+        let paren_baseline = paren.y + paren.baseline;
+        assert!(
+            (name_baseline - paren_baseline).abs() < 0.6,
+            "the function name must sit on the row baseline, not float above it \
+             (name {name_baseline:.2} vs paren {paren_baseline:.2})"
+        );
+    }
 }
 
 /// Find the gap nearest a click point `(px, py)` (content-local). Picks the

@@ -14,7 +14,7 @@ use vello::peniko::Color;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::app::{frac_rect, ChatApp, Hit, OVERLAY_VIDEO};
+use crate::app::{ChatApp, Hit};
 use crate::emoji;
 use crate::model::{self, Presence, VoiceMember};
 use crate::paint::*;
@@ -248,27 +248,21 @@ impl ChatApp {
         let (sw, _) = tr.measure(&sub, 12.0, None);
         label(scene, tr, tf, &sub, 12.0, c.text_dim, self.rect.center().x - sw as f64 / 2.0, self.rect.y0 + 56.0);
 
-        // Host tile (the VideoPlayer is drawn by the app on top); ring it if
-        // this peer is the active speaker.
-        let host = frac_rect(self.rect, OVERLAY_VIDEO);
-        if !self.call.muted {
-            stroke_round(scene, tf, host, 14.0, c.semantic.success, 2.5);
-        } else {
-            stroke_round(scene, tf, host, 14.0, c.border_white_20, 1.5);
+        // Host + remotes share one responsive grid that fills the whole band
+        // between the header and the controls bar, so there is never dead
+        // space beneath or beside the host at any width — the host is simply
+        // the first cell. The VideoPlayer surface is drawn by the app on top
+        // of the host cell.
+        let tiles = self.overlay_tiles();
+        if let Some(&host) = tiles.first() {
+            if !self.call.muted {
+                stroke_round(scene, tf, host, 14.0, c.semantic.success, 2.5);
+            } else {
+                stroke_round(scene, tf, host, 14.0, c.border_white_20, 1.5);
+            }
         }
-
-        // Remote tiles fill the region to the right of the host, packed into a
-        // grid that always stays inside the window at every width. The region
-        // stops above the controls bar so a wrapped (narrow) bar never collides
-        // with the tiles.
-        let others: Vec<&Participant> = parts.iter().skip(1).collect();
-        let inset = host.x0 - self.rect.x0; // mirror the host's left inset
-        let gap = (self.rect.width() * 0.02).clamp(10.0, 22.0);
-        let (bar, _) = self.call_overlay_controls(tr);
-        let region = Rect::new(host.x1 + gap, host.y0, self.rect.x1 - inset, bar.y0 - 14.0);
-        let rects = grid_rects(region, others.len());
-        for (p, rect) in others.iter().zip(rects) {
-            self.draw_member_tile(scene, tf, tr, theme, rect, p);
+        for (p, rect) in parts.iter().skip(1).zip(tiles.iter().skip(1)) {
+            self.draw_member_tile(scene, tf, tr, theme, *rect, p);
         }
         let _ = hits;
     }
@@ -282,13 +276,13 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let host = frac_rect(self.rect, OVERLAY_VIDEO);
+        let host = self.overlay_host_rect();
         self.name_plate(scene, tf, tr, theme, host, "You (host)", self.call.muted, self.call.follow_host);
 
         // Controls bar: auto-sized to its buttons and wrapped onto extra rows
         // when the window is too narrow to hold them all in one line, so it
         // never runs off either edge.
-        let (bar, buttons) = self.call_overlay_controls(tr);
+        let (bar, buttons) = self.overlay_controls_layout();
         fill_round(scene, tf, bar, 16.0, c.neutral[1]);
         stroke_round(scene, tf, bar, 16.0, c.border_white_10, 1.0);
         for (label_txt, on, danger, hit, r) in buttons {
@@ -297,12 +291,47 @@ impl ChatApp {
         }
     }
 
+    /// The band the expanded call fills with participant tiles: everything
+    /// between the title/subtitle header and the controls bar, inset from the
+    /// window edges. Deterministic (no text measurement) so the tile grid, the
+    /// host [`VideoPlayer`](ui::widget::VideoPlayer) node built in
+    /// `build_layout`, and `call_video_rect` all resolve to exactly the same
+    /// geometry on a single frame.
+    pub(crate) fn overlay_content_region(&self) -> Rect {
+        let r = self.rect;
+        let inset = (r.width() * 0.05).clamp(16.0, 40.0);
+        let top = r.y0 + 72.0; // below the title (y0+28) + subtitle (y0+56)
+        let (bar, _) = self.overlay_controls_layout();
+        let bottom = (bar.y0 - 14.0).max(top + 1.0);
+        Rect::new(r.x0 + inset, top, r.x1 - inset, bottom)
+    }
+
+    /// Host-first participant tiles for the expanded call, packed to fill the
+    /// whole content region at every width — the host is simply the first
+    /// cell, so nothing is left empty beneath or beside it. A solo call yields
+    /// a single tile spanning the full region.
+    pub(crate) fn overlay_tiles(&self) -> Vec<Rect> {
+        let n = self.call_participants().len().max(1);
+        grid_rects(self.overlay_content_region(), n)
+    }
+
+    /// The host tile rect in the expanded overlay (the first grid cell).
+    pub(crate) fn overlay_host_rect(&self) -> Rect {
+        self.overlay_tiles()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.overlay_content_region())
+    }
+
     /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
     /// to fit the current window width. Returns the bar background rect and
     /// each button's `(label, active, danger, hit, rect)`. Shared by the
-    /// background pass (which bounds the tile region above the bar) and the
-    /// foreground pass (which draws it), so the two can never disagree.
-    fn call_overlay_controls(&self, tr: &mut TextRenderer) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
+    /// background pass (which bounds the tile region above the bar), the
+    /// foreground pass (which draws it), and the layout pass (which sizes the
+    /// tile band) — so all three agree without a `TextRenderer`. Button widths
+    /// are derived from the fixed label lengths rather than measured, which
+    /// keeps the whole call layout resolvable on a single headless frame.
+    pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
         let specs: [(&'static str, bool, bool, Hit); 6] = [
             (if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false, Hit::CallMute),
             (if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false, Hit::CallDeafen),
@@ -317,8 +346,7 @@ impl ChatApp {
         let side_pad = 24.0;
         let inner_pad = 12.0;
         let max_row_w = (self.rect.width() - 2.0 * side_pad).max(120.0);
-        let widths: Vec<f64> =
-            specs.iter().map(|s| tr.measure(s.0, 13.0, None).0 as f64 + 24.0).collect();
+        let widths: Vec<f64> = specs.iter().map(|s| overlay_button_width(s.0)).collect();
 
         // Greedy pack into rows that each fit `max_row_w`.
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
@@ -604,7 +632,16 @@ fn member_tile_caption(p: &Participant) -> &'static str {
     }
 }
 
-/// Pack `n` remote tiles into `region`, choosing the column count that yields
+/// A measurement-free width for an expanded-overlay control button: the fixed
+/// label length at the 13px control font plus horizontal padding. Deterministic
+/// so the controls bar (and the tile band bounded above it) lays out
+/// identically without a [`TextRenderer`], while the label still renders
+/// centred within the button via the real measured width at draw time.
+fn overlay_button_width(label: &str) -> f64 {
+    label.chars().count() as f64 * 8.0 + 26.0
+}
+
+/// Pack `n` tiles into `region`, choosing the column count that yields
 /// the largest, most camera-shaped uniform tiles. Every returned rect is
 /// contained within `region`, so the grid can never spill past the window at
 /// any width or headcount. A partly-filled last row is centred.
@@ -685,17 +722,15 @@ mod tests {
         }
     }
 
-    /// The expanded-overlay regression: every remote tile must stay inside the
-    /// window at every headcount and width. The old layout sized each tile to
-    /// the full host width and started at the host's right edge, so a second
-    /// column ran off the right edge; this asserts the fixed packer keeps all
-    /// tiles within the region the overlay actually hands it.
+    /// The packer must keep every tile inside the region it is handed, at any
+    /// headcount and width, with no degenerate tiles — the invariant the whole
+    /// expanded overlay leans on to stay within the window.
     #[test]
     fn grid_tiles_stay_inside_region_at_every_count_and_width() {
         for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
-            // The band the overlay uses: right of the host (host.x1 ≈ 0.49·w),
-            // mirrored inset on the right, down to just above the controls bar.
-            let region = Rect::new(0.49 * w, 0.18 * h, w - 0.075 * w, h - 124.0);
+            // A full-surface content band with symmetric side insets, matching
+            // what the overlay now hands the packer (host + remotes together).
+            let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
             for n in 1..=9 {
                 let rects = grid_rects(region, n);
                 assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
@@ -719,5 +754,48 @@ mod tests {
     #[test]
     fn grid_is_empty_for_no_remotes() {
         assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
+    }
+
+    /// The narrow-width void regression: with the host as the first cell of a
+    /// unified grid, the packed tiles must *cover* the content region — their
+    /// bounding box spans it in both axes (within one inter-tile gap) — so no
+    /// large dead band is left beneath or beside the host at any width. This is
+    /// the geometry that replaced the old "host pinned left, remotes to the
+    /// right" layout which left the whole bottom-left corner empty on a
+    /// portrait window.
+    #[test]
+    fn grid_fills_the_region_leaving_no_void() {
+        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+            let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
+            // A host + three remotes: the demo huddle, the exact case that
+            // exposed the void.
+            let tiles = grid_rects(region, 4);
+            let bbox = tiles.iter().fold(
+                Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
+                |b, r| Rect::new(b.x0.min(r.x0), b.y0.min(r.y0), b.x1.max(r.x1), b.y1.max(r.y1)),
+            );
+            // One inter-tile gap is the largest legitimate slack (a centred row
+            // or column can sit a gap in from an edge).
+            let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
+            let slack = gap + 1.0;
+            assert!(
+                bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,
+                "w={w}: tiles leave a horizontal void (bbox x [{:.1},{:.1}] vs region [{:.1},{:.1}])",
+                bbox.x0, bbox.x1, region.x0, region.x1
+            );
+            assert!(
+                bbox.y0 - region.y0 <= slack && region.y1 - bbox.y1 <= slack,
+                "w={w}: tiles leave a vertical void (bbox y [{:.1},{:.1}] vs region [{:.1},{:.1}])",
+                bbox.y0, bbox.y1, region.y0, region.y1
+            );
+            // And a tile actually occupies the lower-left quadrant — the exact
+            // corner the old layout left black.
+            let midx = region.x0 + region.width() * 0.5;
+            let midy = region.y0 + region.height() * 0.5;
+            assert!(
+                tiles.iter().any(|r| r.center().x < midx && r.center().y > midy),
+                "w={w}: nothing fills the lower-left of the call surface"
+            );
+        }
     }
 }

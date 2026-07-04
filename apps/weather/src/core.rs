@@ -54,6 +54,14 @@ const SECTION_GAP: f64 = 12.0;
 const BACK_RESERVE: f64 = 30.0;
 /// How long a recently-typed query stays "fresh" before we fire a geocode.
 const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
+/// Below this allocated width the overview renders as a collapsed **rail**
+/// (glanceable icon column) instead of the full city list. The rail width
+/// (see [`crate::app`]) and the side-by-side overview width sit either side
+/// of this threshold, so the render mode follows the allocation with no
+/// separate cached flag.
+const RAIL_MAX_WIDTH: f64 = 120.0;
+/// Height of one city slot in the collapsed rail.
+const RAIL_SLOT_H: f64 = 62.0;
 
 /// An intent the overview raises for the shell to act on (push the detail
 /// in). Consumed by the root widget after routing an event.
@@ -76,6 +84,19 @@ enum OverAction {
     MenuItem(usize, EntryAction),
     /// Begin a potential press on a chip (click / reorder / swipe).
     PressChip(usize),
+    /// Collapse the full city list to a rail, or expand the rail back.
+    ToggleCollapse,
+}
+
+/// What the search dropdown shows this frame, derived from the query +
+/// in-flight/result state.
+enum SearchView {
+    /// A geocode is being fetched (or is about to be).
+    Loading,
+    /// The geocode returned nothing for a non-empty query.
+    Empty,
+    /// One or more matches to pick from.
+    Results,
 }
 
 /// All mutable weather state shared by the two panes and the root widget.
@@ -118,6 +139,14 @@ pub struct Core {
     inflight: usize,
     pub status: String,
 
+    // --- overview: collapse-to-rail (wide layout only) ---
+    /// Whether the app currently offers the collapse affordance (set each
+    /// frame by the root widget; true only in the side-by-side layout).
+    overview_collapsible: bool,
+    /// Raised when the collapse / expand chip is clicked; the root widget
+    /// consumes it and rebuilds the shell at the new overview width.
+    collapse_toggle: bool,
+
     // --- shell intent (consumed by the root widget) ---
     nav_request: Option<NavIntent>,
 
@@ -153,6 +182,8 @@ impl Core {
             outbox: Vec::new(),
             inflight: 0,
             status: String::new(),
+            overview_collapsible: false,
+            collapse_toggle: false,
             nav_request: None,
             pending_doc_write: false,
         }
@@ -170,9 +201,28 @@ impl Core {
         self.nav_request.take()
     }
 
+    /// Set whether the collapse affordance is offered (side-by-side only).
+    /// Called once per frame by the root widget, which alone knows the layout.
+    pub fn set_overview_collapsible(&mut self, v: bool) {
+        self.overview_collapsible = v;
+    }
+
+    /// Take a pending collapse/expand toggle raised by the chip. The root
+    /// widget rebuilds the shell at the new overview width when this is set.
+    pub fn take_collapse_toggle(&mut self) -> bool {
+        std::mem::take(&mut self.collapse_toggle)
+    }
+
     /// Whether a fetch is currently in flight (drives frame pumping).
     pub fn is_fetching(&self) -> bool {
         self.inflight > 0
+    }
+
+    /// Whether a geocode is armed or in flight. The app keeps pumping frames
+    /// while this holds so the result is drained and shown promptly (rather
+    /// than the loop parking on "Searching…" until the next input event).
+    pub fn search_pending(&self) -> bool {
+        self.geocode_inflight || self.pending_query_at.is_some()
     }
 
     /// Whether a geocode debounce is armed (so the app keeps pumping frames
@@ -243,12 +293,9 @@ impl Core {
                     if !key.is_empty() {
                         self.geocode_cache.insert(key, results.clone());
                     }
+                    // The dropdown surfaces match/no-match state; the forecast
+                    // status line is reserved for the forecast itself.
                     self.search_results = results;
-                    self.status = if self.search_results.is_empty() {
-                        "No matches".to_string()
-                    } else {
-                        format!("{} matches", self.search_results.len())
-                    };
                 }
             }
             Response::Error(e) => {
@@ -266,14 +313,14 @@ impl Core {
         if key.is_empty() {
             self.search_results.clear();
             self.pending_query_at = None;
-            self.status.clear();
             return;
         }
+        // Show cached matches instantly; otherwise the dropdown shows its
+        // loading state until the debounced geocode lands.
         if let Some(hit) = self.geocode_cache.get(&key) {
             self.search_results = hit.clone();
-            self.status = format!("{} matches", hit.len());
         } else {
-            self.status = "Typing…".to_string();
+            self.search_results.clear();
         }
         self.pending_query_at = Some(Instant::now());
     }
@@ -299,7 +346,6 @@ impl Core {
         self.search_seq += 1;
         self.geocode_inflight = true;
         self.outbox.push(Request::Geocode { seq: self.search_seq, query: q });
-        self.status = "Searching…".to_string();
     }
 
     // ---- per-entry actions (swipe ⇔ menu parity) --------------------
@@ -359,6 +405,14 @@ impl Core {
         theme: &Theme,
     ) {
         self.over_rect = rect;
+        // Below the rail threshold the overview collapses to a glanceable
+        // icon column. The mode is re-derived from the allocated width every
+        // frame, so a resize between side-by-side and rail reflows on its own.
+        if rect.width() < RAIL_MAX_WIDTH {
+            self.draw_overview_rail(rect, scene, t, tr, theme);
+            return;
+        }
+
         let c = &theme.tokens.colors;
         let mut hot: Vec<Hotspot> = Vec::new();
 
@@ -370,6 +424,19 @@ impl Core {
 
         // Title.
         text_left(scene, tr, "Weather", x, rect.y0 + 20.0, 22.0, TextWeight::Bold, c.text_primary);
+
+        // Collapse chip (side-by-side only) — tucks the list into a rail so
+        // the forecast can use the full width.
+        if self.overview_collapsible {
+            let cb = 30.0;
+            let chip = Rect::new(x + w - cb, rect.y0 + 13.0, x + w, rect.y0 + 13.0 + cb);
+            let hovered = chip.contains(self.last_mouse);
+            let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+            scene.fill(Fill::NonZero, t, if hovered { c.neutral[2] } else { c.surfaces.raised }, None, &shape);
+            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            Icon::ChevronLeft.draw(scene, t, chip.inset(-8.0), c.text_primary);
+            hot.push(Hotspot { rect: chip, action: OverAction::ToggleCollapse });
+        }
 
         // Search field.
         let sy = rect.y0 + 56.0;
@@ -412,26 +479,10 @@ impl Core {
         }
         hot.push(Hotspot { rect: field.rect(), action: OverAction::FocusSearch });
 
-        let mut y = sy + sh + 12.0;
-
-        // Search results (live or cached).
-        if self.search_focused && !self.search_results.is_empty() {
-            for (i, r) in self.search_results.iter().take(6).enumerate() {
-                let rh = 34.0;
-                let row = Rect::new(x, y, x + w, y + rh);
-                if row.contains(self.last_mouse) {
-                    scene.fill(Fill::NonZero, t, c.neutral[2], None, &RoundedRect::from_rect(row, 6.0));
-                }
-                text_left(scene, tr, &r.name, x + 10.0, y + 7.0, 13.0, TextWeight::Medium, c.text_primary);
-                text_right(scene, tr, &r.country, x + w - 10.0, y + 9.0, 11.0, TextWeight::Regular, c.text_dim);
-                hot.push(Hotspot { rect: row, action: OverAction::PickResult(i) });
-                y += rh + 2.0;
-            }
-            y += 6.0;
-        } else if self.search_focused && self.geocode_inflight {
-            text_left(scene, tr, "Searching…", x + 4.0, y, 12.0, TextWeight::Regular, c.text_dim);
-            y += 24.0;
-        }
+        // The saved-place list keeps a fixed position — the live search
+        // matches render as a floating dropdown over it (drawn last), so the
+        // list never jumps around while typing.
+        let mut y = sy + sh + 16.0;
 
         text_left(scene, tr, "SAVED PLACES", x, y, 10.0, TextWeight::Semibold, c.text_dim);
         y += 22.0;
@@ -482,7 +533,171 @@ impl Core {
             self.draw_context_menu(scene, t, tr, theme, &mut hot);
         }
 
+        // Live-search dropdown floats over the list, topmost.
+        if self.search_focused && !self.search_query.trim().is_empty() {
+            self.draw_search_dropdown(scene, t, tr, theme, x, w, sy + sh + 6.0, &mut hot);
+        }
+
         self.over_hotspots = hot;
+    }
+
+    /// The collapsed **rail**: a slim, glanceable column of the saved cities
+    /// (condition icon + temperature) plus an expand chip at the top. Clicking
+    /// a city selects it; clicking the chip restores the full list. Rendered
+    /// whenever the overview is allocated less than [`RAIL_MAX_WIDTH`].
+    fn draw_overview_rail(
+        &mut self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let mut hot: Vec<Hotspot> = Vec::new();
+        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
+        let cx = (rect.x0 + rect.x1) / 2.0;
+
+        // Expand chip.
+        let cs = 36.0;
+        let chip = Rect::new(cx - cs / 2.0, rect.y0 + 12.0, cx + cs / 2.0, rect.y0 + 12.0 + cs);
+        let hovered = chip.contains(self.last_mouse);
+        let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, t, if hovered { c.neutral[2] } else { c.surfaces.raised }, None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+        Icon::ChevronRight.draw(scene, t, chip.inset(-8.0), c.text_primary);
+        hot.push(Hotspot { rect: chip, action: OverAction::ToggleCollapse });
+
+        // Separator under the chip.
+        let sep_y = chip.y1 + 12.0;
+        scene.fill(Fill::NonZero, t, c.border_standard.with_alpha_factor(0.6), None, &Rect::new(rect.x0 + 10.0, sep_y, rect.x1 - 10.0, sep_y + 1.0));
+
+        // Scrolling city column.
+        let list_top = sep_y + 12.0;
+        let list_bottom = rect.y1 - 10.0;
+        let view_h = (list_bottom - list_top).max(0.0);
+        let n = self.model.locations.len();
+        let content_h = n as f64 * RAIL_SLOT_H;
+        self.over_max_scroll = (content_h - view_h).max(0.0);
+        self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
+        let top = list_top - self.over_scroll;
+        self.over_list_top = top;
+
+        let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        for (i, loc) in self.model.locations.iter().enumerate() {
+            let sy = top + i as f64 * RAIL_SLOT_H;
+            let slot = Rect::new(rect.x0 + 6.0, sy + 4.0, rect.x1 - 6.0, sy + RAIL_SLOT_H - 6.0);
+            let selected = i == self.model.selected;
+            let hov = slot.contains(self.last_mouse);
+            if selected {
+                let bg = lerp_color(c.surfaces.base, self.accent(theme), 0.18);
+                scene.fill(Fill::NonZero, t, bg, None, &RoundedRect::from_rect(slot, 8.0));
+                scene.fill(Fill::NonZero, t, self.accent(theme), None, &RoundedRect::new(slot.x0, slot.y0 + 6.0, slot.x0 + 3.0, slot.y1 - 6.0, 1.5));
+            } else if hov {
+                scene.fill(Fill::NonZero, t, c.neutral[2], None, &RoundedRect::from_rect(slot, 8.0));
+            }
+            if let Some(snap) = self.model.snapshot_for(loc.id) {
+                let sky = Sky::from_code(snap.current.weather_code);
+                icon::draw_icon(scene, t, sky, snap.current.is_day, Rect::new(cx - 15.0, slot.y0 + 4.0, cx + 15.0, slot.y0 + 34.0), theme);
+                let temp = snap.temp_in(snap.current.temperature, self.units).round() as i64;
+                text_center(scene, tr, &format!("{temp}°"), cx, slot.y1 - 18.0, 14.0, TextWeight::Bold, c.text_primary);
+            } else {
+                text_center(scene, tr, "—", cx, slot.y0 + 14.0, 15.0, TextWeight::Regular, c.text_dim);
+            }
+            hot.push(Hotspot { rect: slot, action: OverAction::SelectLocation(i) });
+        }
+        scene.pop_layer();
+
+        if self.over_max_scroll > 1.0 {
+            let tx = rect.x1 - 4.0;
+            let track_h = list_bottom - list_top;
+            let thumb_h = (track_h * (view_h / content_h)).clamp(20.0, track_h);
+            let thumb_y = list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);
+            scene.fill(Fill::NonZero, t, c.text_dim.with_alpha_factor(0.6), None, &RoundedRect::new(tx, thumb_y, tx + 2.5, thumb_y + thumb_h, 1.25));
+        }
+
+        self.over_hotspots = hot;
+    }
+
+    /// The floating live-search results panel, anchored under the search
+    /// field. Three states: a loading indicator while a geocode is armed or
+    /// in flight, a "no matches" message, or the pickable result rows.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_search_dropdown(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        w: f64,
+        top_y: f64,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let c = &theme.tokens.colors;
+        let view = if !self.search_results.is_empty() {
+            SearchView::Results
+        } else if self.search_pending() {
+            SearchView::Loading
+        } else {
+            SearchView::Empty
+        };
+
+        let row_h = 46.0;
+        let pad = 6.0;
+        let shown = self.search_results.len().min(6);
+        let content_h = match view {
+            SearchView::Results => shown as f64 * row_h,
+            SearchView::Loading => 46.0,
+            SearchView::Empty => 60.0,
+        };
+        let panel = Rect::new(x, top_y, x + w, top_y + pad * 2.0 + content_h);
+        let radius = theme.tokens.radii.md as f64;
+
+        // Drop shadow + raised panel so it reads as floating above the list.
+        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 90), None, &RoundedRect::from_rect(panel.inset(-4.0), radius + 4.0));
+        let shape = RoundedRect::from_rect(panel, radius);
+        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+
+        // Absorb clicks anywhere on the panel (keeps focus) so a press in a
+        // gap or on the loading/empty message never falls through to a chip
+        // behind the dropdown. Result rows pushed after this win the hit-test.
+        hot.push(Hotspot { rect: panel, action: OverAction::FocusSearch });
+
+        match view {
+            SearchView::Results => {
+                for (i, r) in self.search_results.iter().take(6).enumerate() {
+                    let ry = top_y + pad + i as f64 * row_h;
+                    let row = Rect::new(x + pad, ry, x + w - pad, ry + row_h);
+                    let hovered = row.contains(self.last_mouse);
+                    if hovered {
+                        scene.fill(Fill::NonZero, t, c.neutral[2], None, &RoundedRect::from_rect(row, 8.0));
+                    }
+                    text_left(scene, tr, &r.name, row.x0 + 12.0, ry + 8.0, 14.0, TextWeight::Medium, c.text_primary);
+                    text_left(scene, tr, &r.subtitle(), row.x0 + 12.0, ry + 27.0, 11.5, TextWeight::Regular, c.text_dim);
+                    // Trailing "add" affordance.
+                    let ad = 22.0;
+                    let addc = Point::new(row.x1 - 8.0 - ad / 2.0, ry + row_h / 2.0);
+                    let add_rect = Rect::new(addc.x - ad / 2.0, addc.y - ad / 2.0, addc.x + ad / 2.0, addc.y + ad / 2.0);
+                    let tint = if hovered { self.accent(theme) } else { c.text_dim };
+                    scene.stroke(&Stroke::new(1.2), t, tint.with_alpha_factor(0.7), None, &Circle::new(addc, ad / 2.0));
+                    Icon::Plus.draw(scene, t, add_rect.inset(-5.0), tint);
+                    hot.push(Hotspot { rect: row, action: OverAction::PickResult(i) });
+                }
+            }
+            SearchView::Loading => {
+                let sc = Point::new(x + pad + 18.0, top_y + pad + 23.0);
+                draw_spinner(scene, t, sc, 8.0, self.accent(theme), c.border_standard);
+                text_left(scene, tr, "Searching…", x + pad + 38.0, top_y + pad + 15.0, 13.0, TextWeight::Regular, c.text_dim);
+            }
+            SearchView::Empty => {
+                let q = self.search_query.trim();
+                text_left(scene, tr, &format!("No matches for “{q}”"), x + pad + 12.0, top_y + pad + 12.0, 13.5, TextWeight::Medium, c.text_primary);
+                text_left(scene, tr, "Check the spelling or try a nearby city", x + pad + 12.0, top_y + pad + 34.0, 11.5, TextWeight::Regular, c.text_dim);
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -750,6 +965,12 @@ impl Core {
                 self.menu = None;
                 self.apply_entry_action(index, action)
             }
+            OverAction::ToggleCollapse => {
+                // Raise the intent; the root widget rebuilds the shell at the
+                // new overview width. Not a document mutation.
+                self.collapse_toggle = true;
+                false
+            }
             OverAction::PressChip(_) => false,
         }
     }
@@ -974,8 +1195,9 @@ impl Core {
 
         // ---- Measure the scrollable body ----
         let gap = 12.0;
-        let cols = tile_columns(mw);
-        let tile_rows = 5usize.div_ceil(cols);
+        let n_tiles = 5usize;
+        let cols = balanced_tile_columns(mw, n_tiles);
+        let tile_rows = n_tiles.div_ceil(cols);
         let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
         let n_days = snap.daily.len().max(1);
         let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
@@ -1021,7 +1243,6 @@ impl Core {
         y += HERO_H + SECTION_GAP;
 
         // ---- Metric tiles ----
-        let tw = (mw - (cols as f64 - 1.0) * gap) / cols as f64;
         let wind = snap.wind_in(cur.wind_speed, units).round() as i64;
         let tiles: [(&str, String, String); 5] = [
             ("WIND", format!("{wind}"), format!("{} {}", units::compass(cur.wind_direction), units.wind_suffix())),
@@ -1030,9 +1251,15 @@ impl Core {
             ("PRESSURE", format!("{}", cur.pressure.round() as i64), "hPa".to_string()),
             ("UV INDEX", format!("{}", cur.uv_index.round() as i64), uv_word(cur.uv_index).to_string()),
         ];
+        // Full rows use even columns; a partial last row stretches its tiles to
+        // fill the width, so there's never an orphaned tile with a dead gap.
+        let full_rows = tiles.len() / cols;
+        let rem = tiles.len() % cols;
         for (i, (label, value, sub)) in tiles.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
+            let row_count = if row < full_rows { cols } else { rem };
+            let tw = (mw - (row_count as f64 - 1.0) * gap) / row_count as f64;
             let tx = mx + col as f64 * (tw + gap);
             let ty = y + row as f64 * (TILE_H + gap);
             let tile = Rect::new(tx, ty, tx + tw, ty + TILE_H);
@@ -1258,6 +1485,34 @@ impl Core {
         self.scroll = f64::MAX;
     }
 
+    /// Stage the search dropdown with a query + a set of geocoded matches
+    /// (headless shot / test — the offscreen path can't await a live geocode).
+    pub fn seed_search(&mut self, query: &str, results: Vec<SavedLocation>) {
+        self.search_focused = true;
+        self.search_query = query.to_string();
+        self.search_results = results;
+        self.geocode_inflight = false;
+        self.pending_query_at = None;
+    }
+
+    /// Stage the search dropdown's loading state (a geocode in flight).
+    pub fn seed_search_loading(&mut self, query: &str) {
+        self.search_focused = true;
+        self.search_query = query.to_string();
+        self.search_results.clear();
+        self.geocode_inflight = true;
+        self.pending_query_at = None;
+    }
+
+    /// Stage the search dropdown's "no matches" state.
+    pub fn seed_search_empty(&mut self, query: &str) {
+        self.search_focused = true;
+        self.search_query = query.to_string();
+        self.search_results.clear();
+        self.geocode_inflight = false;
+        self.pending_query_at = None;
+    }
+
     #[cfg(test)]
     pub fn over_list_top(&self) -> f64 {
         self.over_list_top
@@ -1283,6 +1538,33 @@ impl Core {
 fn tile_columns(mw: f64) -> usize {
     let gap = 12.0;
     (((mw + gap) / (TILE_MIN_W + gap)).floor() as usize).clamp(2, 5)
+}
+
+/// Column count for `n` metric tiles at the given content width, adjusted to
+/// avoid a single orphaned tile on the last row. For the five weather tiles a
+/// raw fit of four columns (4 + 1) is dropped to three (a balanced 3 + 2).
+fn balanced_tile_columns(mw: f64, n: usize) -> usize {
+    let cols = tile_columns(mw);
+    if cols > 2 && n % cols == 1 { cols - 1 } else { cols }
+}
+
+/// A small loading indicator: a faint full ring with a brighter leading arc,
+/// drawn as a short polyline so it renders identically headless (no clock).
+fn draw_spinner(scene: &mut Scene, t: Affine, center: Point, r: f64, accent: Color, track: Color) {
+    scene.stroke(&Stroke::new(2.2), t, track.with_alpha_factor(0.6), None, &Circle::new(center, r));
+    let mut arc = BezPath::new();
+    let steps = 16;
+    let sweep = std::f64::consts::PI * 1.5; // 270°
+    for i in 0..=steps {
+        let a = -std::f64::consts::FRAC_PI_2 + sweep * (i as f64 / steps as f64);
+        let p = Point::new(center.x + r * a.cos(), center.y + r * a.sin());
+        if i == 0 {
+            arc.move_to(p);
+        } else {
+            arc.line_to(p);
+        }
+    }
+    scene.stroke(&Stroke::new(2.2).with_caps(vello::kurbo::Cap::Round), t, accent, None, &arc);
 }
 
 fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
@@ -1343,5 +1625,24 @@ fn uv_word(uv: f64) -> &'static str {
         6..=7 => "High",
         8..=10 => "Very high",
         _ => "Extreme",
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::balanced_tile_columns;
+
+    #[test]
+    fn five_tiles_never_orphan_a_single_on_the_last_row() {
+        // Across representative content widths the column count never leaves a
+        // lonely single tile (rem == 1) when more than two columns fit.
+        for mw in [404.0_f64, 504.0, 604.0, 884.0, 1200.0] {
+            let cols = balanced_tile_columns(mw, 5);
+            if cols > 2 {
+                assert_ne!(5 % cols, 1, "mw {mw}: {cols} columns orphans one tile");
+            }
+        }
+        // The specific awkward case: a raw 4-wide fit becomes a balanced 3 + 2.
+        assert_eq!(balanced_tile_columns(604.0, 5), 3);
     }
 }

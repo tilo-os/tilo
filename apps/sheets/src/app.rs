@@ -106,6 +106,55 @@ enum SettingKind {
     DocTime(Option<TimeStyle>),
 }
 
+/// An action offered by a sheet tab's right-click context menu.
+#[derive(Clone, Copy, PartialEq)]
+enum TabAction {
+    Rename,
+    Duplicate,
+    InsertRight,
+    MoveLeft,
+    MoveRight,
+    Delete,
+    /// Set (or clear, with `None`) the tab's colour to a palette index.
+    SetColor(Option<u32>),
+}
+
+/// An in-progress inline rename of a sheet tab.
+struct TabRename {
+    idx: usize,
+    chars: Vec<char>,
+    caret: usize,
+    rect: Rect,
+}
+
+/// Palette of tab colours. Stored per sheet as an index into this list.
+const TAB_PALETTE: [(u8, u8, u8); 6] = [
+    (0xe2, 0x5b, 0x5b), // red
+    (0xe0, 0x8a, 0x2a), // orange
+    (0x3f, 0xbb, 0x53), // green
+    (0x54, 0x9b, 0xf5), // blue
+    (0xb1, 0x6c, 0xf0), // purple
+    (0xe2, 0x63, 0xb0), // pink
+];
+
+/// The concrete colour for a stored tab-colour palette index.
+fn tab_palette_color(idx: u32) -> Color {
+    let (r, g, b) = TAB_PALETTE[(idx as usize) % TAB_PALETTE.len()];
+    Color::from_rgb8(r, g, b)
+}
+
+fn tab_action_label(act: TabAction) -> &'static str {
+    match act {
+        TabAction::Rename => "Rename",
+        TabAction::Duplicate => "Duplicate",
+        TabAction::InsertRight => "Insert sheet",
+        TabAction::MoveLeft => "Move left",
+        TabAction::MoveRight => "Move right",
+        TabAction::Delete => "Delete",
+        TabAction::SetColor(_) => "Colour",
+    }
+}
+
 pub struct SheetsApp {
     grid: Grid,
     rect: Rect,
@@ -123,7 +172,24 @@ pub struct SheetsApp {
     settings_section_y: [f64; 3],
     tab_rects: Vec<(Rect, usize)>,
     add_tab_rect: Rect,
+    /// Per-sheet tab colours (palette indices), refreshed on each reload.
+    sheet_colors: Vec<Option<u32>>,
+    /// Right-click context menu on a sheet tab: the target sheet plus the
+    /// laid-out action rows and colour swatches.
+    tab_menu_target: Option<usize>,
+    tab_menu_rect: Rect,
+    tab_menu_rows: Vec<(Rect, TabAction)>,
+    tab_menu_swatches: Vec<(Rect, Option<u32>)>,
+    /// An inline sheet-tab rename editor, when active.
+    tab_rename: Option<TabRename>,
     formula_field_rect: Rect,
+    /// Cumulative x (layout space) of each character boundary in the formula
+    /// bar's current text, rebuilt each draw. Drives click-to-position-caret,
+    /// drag-select, and the bar's caret/selection rendering. `formula_char_x[i]`
+    /// is the x of the boundary before char `i`; the last entry is the end.
+    formula_char_x: Vec<f64>,
+    /// Whether a drag that began in the formula bar is selecting text.
+    formula_bar_selecting: bool,
     sheet_names: Vec<String>,
     active_sheet: usize,
     status: String,
@@ -202,7 +268,15 @@ impl SheetsApp {
             settings_section_y: [0.0; 3],
             tab_rects: Vec::new(),
             add_tab_rect: Rect::ZERO,
+            sheet_colors: Vec::new(),
+            tab_menu_target: None,
+            tab_menu_rect: Rect::ZERO,
+            tab_menu_rows: Vec::new(),
+            tab_menu_swatches: Vec::new(),
+            tab_rename: None,
             formula_field_rect: Rect::ZERO,
+            formula_char_x: Vec::new(),
+            formula_bar_selecting: false,
             sheet_names: Vec::new(),
             active_sheet: 0,
             status: "Ready".into(),
@@ -277,6 +351,22 @@ impl SheetsApp {
     pub fn shots_multi_select(&mut self) {
         self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
         self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
+    }
+
+    /// Shots hook: open the right-click context menu on the first sheet tab so
+    /// the captured frame shows the rename/duplicate/move/colour actions.
+    pub fn shots_open_tab_menu(&mut self) {
+        self.open_tab_menu(0);
+    }
+
+    /// Shots hook: edit the active formula cell and select the range reference
+    /// inside it, so the captured frame shows the formula bar's text selection
+    /// and caret (the editable formula bar).
+    pub fn shots_formula_bar_select(&mut self) {
+        self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
+        self.grid.begin_edit_in_place();
+        self.grid.set_edit_caret(5, false); // just before "B2:D2"
+        self.grid.set_edit_caret(10, true); // select "B2:D2"
     }
 
     /// The document's effective locale (per-doc overrides over global).
@@ -373,6 +463,7 @@ impl SheetsApp {
 
         self.active_sheet = sheet;
         self.sheet_names = SheetsDoc::sheet_names(doc);
+        self.sheet_colors = SheetsDoc::sheet_colors(doc);
         self.doc_settings = SheetsDoc::doc_settings(doc);
         let cur = self.default_currency();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
@@ -1014,6 +1105,67 @@ impl SheetsApp {
         if self.settings_panel != SettingsPanel::None {
             self.layout_settings_panel();
         }
+        if self.tab_menu_target.is_some() {
+            self.layout_tab_menu();
+        }
+    }
+
+    /// Lay out the sheet-tab context menu above its target tab: a stack of
+    /// action rows plus a colour-swatch strip. Re-derived from the current tab
+    /// rects each pass, so it tracks the tab under a resize.
+    fn layout_tab_menu(&mut self) {
+        self.tab_menu_rows.clear();
+        self.tab_menu_swatches.clear();
+        let Some(idx) = self.tab_menu_target else {
+            return;
+        };
+        let anchor = self
+            .tab_rects
+            .iter()
+            .find(|(_, i)| *i == idx)
+            .map(|(r, _)| *r)
+            .unwrap_or(self.add_tab_rect);
+
+        let actions = [
+            TabAction::Rename,
+            TabAction::Duplicate,
+            TabAction::InsertRight,
+            TabAction::MoveLeft,
+            TabAction::MoveRight,
+            TabAction::Delete,
+        ];
+        let width = 188.0_f64;
+        let row_h = 30.0;
+        let pad = 6.0;
+        let swatch = 20.0;
+        let color_block = 18.0 + swatch + 8.0; // "Colour" label + swatch row
+        let h = pad * 2.0 + actions.len() as f64 * row_h + color_block;
+
+        let x0 = anchor
+            .x0
+            .min(self.rect.x1 - width - 8.0)
+            .max(self.rect.x0 + 4.0);
+        let y1 = anchor.y0 - 6.0;
+        let y0 = (y1 - h).max(self.rect.y0 + 4.0);
+        self.tab_menu_rect = Rect::new(x0, y0, x0 + width, y1);
+
+        let mut y = y0 + pad;
+        for act in actions {
+            self.tab_menu_rows
+                .push((Rect::new(x0 + pad, y, x0 + width - pad, y + row_h - 2.0), act));
+            y += row_h;
+        }
+        // Colour swatch strip, below a "Colour" label.
+        let cy = y + 20.0;
+        let mut cx = x0 + pad;
+        self.tab_menu_swatches
+            .push((Rect::new(cx, cy, cx + swatch, cy + swatch), None));
+        cx += swatch + 6.0;
+        for i in 0..TAB_PALETTE.len() as u32 {
+            self.tab_menu_swatches
+                .push((Rect::new(cx, cy, cx + swatch, cy + swatch), Some(i)));
+            cx += swatch + 6.0;
+        }
     }
 
     fn layout_dropdown(&mut self, anchor: Rect, items: &[(&str, MenuItem)], width: f64) {
@@ -1247,31 +1399,79 @@ impl SheetsApp {
             &ff_shape,
         );
         let content = self.grid.active_display_raw();
-        if !content.is_empty() {
-            let base = theme.tokens.typography.scale.base;
-            let origin = Point::new(
-                self.formula_field_rect.x0 + 8.0,
-                self.formula_field_rect.y0 + (self.formula_field_rect.height() - base as f64) / 2.0,
-            );
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &ff_shape);
-            // While editing a formula, tint each reference to match the grid
-            // outlines; otherwise show the raw input in the body colour.
-            if self.grid.is_editing() && self.grid.editing_formula() {
-                crate::grid::draw_formula_line(
-                    scene,
-                    transform,
-                    tr,
-                    &content,
-                    base,
-                    colors.text_primary,
-                    origin,
-                    None,
+        let base = theme.tokens.typography.scale.base;
+        let text_x0 = self.formula_field_rect.x0 + 8.0;
+        // Rebuild the per-character x boundaries for click/caret mapping. This
+        // is derived from exactly the text being drawn, so a click maps to the
+        // same glyph the user sees (whether it's the live edit buffer or the
+        // active cell's stored input).
+        self.formula_char_x = char_boundaries(tr, &content, base, text_x0);
+        let origin = Point::new(
+            text_x0,
+            self.formula_field_rect.y0 + (self.formula_field_rect.height() - base as f64) / 2.0,
+        );
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &ff_shape);
+        // Selection highlight behind the text (drawn whenever editing).
+        if editing {
+            if let Some((s, e)) = self.grid.edit_selection() {
+                let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
+                let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
+                let sel_rect = Rect::new(
+                    x0,
+                    self.formula_field_rect.y0 + 5.0,
+                    x1,
+                    self.formula_field_rect.y1 - 5.0,
                 );
-            } else {
-                tr.draw_text(scene, &content, base, colors.text_primary, transform * Affine::translate((origin.x, origin.y)), None);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5].with_alpha_factor(0.30),
+                    None,
+                    &sel_rect,
+                );
             }
-            scene.pop_layer();
         }
+        // Formulas (whether being edited OR merely selected) tint each cell
+        // reference to match the coloured outlines on the grid; plain values
+        // draw in the body colour.
+        if content.starts_with('=') {
+            crate::grid::draw_formula_line(
+                scene,
+                transform,
+                tr,
+                &content,
+                base,
+                colors.text_primary,
+                origin,
+                None,
+            );
+        } else if !content.is_empty() {
+            tr.draw_text(
+                scene,
+                &content,
+                base,
+                colors.text_primary,
+                transform * Affine::translate((origin.x, origin.y)),
+                None,
+            );
+        }
+        // Caret in the formula bar while editing.
+        if editing {
+            if let Some(caret) = self.grid.edit_caret() {
+                let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &Line::new(
+                        (cx, self.formula_field_rect.y0 + 5.0),
+                        (cx, self.formula_field_rect.y1 - 5.0),
+                    ),
+                );
+            }
+        }
+        scene.pop_layer();
 
         // Bottom strip: sheet tabs + status.
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &self.tabs_rect);
@@ -1290,11 +1490,20 @@ impl SheetsApp {
             let shape = RoundedRect::from_rect(*rect, theme.tokens.radii.sm as f64);
             let bg = if active { colors.surfaces.base } else { colors.surfaces.raised };
             scene.fill(Fill::NonZero, transform, bg, None, &shape);
-            if active {
+            // The tab's colour underline: its assigned palette colour when it
+            // has one, otherwise the accent bar for the active tab.
+            let tab_color = self
+                .sheet_colors
+                .get(*idx)
+                .copied()
+                .flatten()
+                .map(tab_palette_color);
+            let bar = tab_color.or(if active { Some(colors.accent[5]) } else { None });
+            if let Some(bar_color) = bar {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    bar_color,
                     None,
                     &Rect::new(rect.x0 + 4.0, rect.y1 - 3.0, rect.x1 - 4.0, rect.y1),
                 );
@@ -1518,6 +1727,138 @@ impl SheetsApp {
             transform * Affine::translate((self.panel_rect.x0 + 20.0, self.panel_rect.y1 - 28.0)),
             None,
         );
+    }
+
+    fn draw_tab_menu(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.tab_menu_target.is_none() || self.tab_menu_rows.is_empty() {
+            return;
+        }
+        let colors = &theme.tokens.colors;
+        let shape = RoundedRect::from_rect(self.tab_menu_rect, theme.tokens.radii.md as f64);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(0, 0, 0, 70),
+            None,
+            &RoundedRect::from_rect(
+                self.tab_menu_rect + vello::kurbo::Vec2::new(0.0, 3.0),
+                theme.tokens.radii.md as f64,
+            ),
+        );
+        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &shape);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.overlay, None, &shape);
+        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &shape);
+
+        let sm = theme.tokens.typography.scale.sm;
+        for (rect, act) in &self.tab_menu_rows {
+            if rect.contains(self.last_mouse) {
+                let rs = RoundedRect::from_rect(*rect, theme.tokens.radii.sm as f64);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5].with_alpha_factor(0.22),
+                    None,
+                    &rs,
+                );
+            }
+            let color = if matches!(act, TabAction::Delete) {
+                colors.semantic.danger
+            } else {
+                colors.text_primary
+            };
+            tr.draw_text(
+                scene,
+                tab_action_label(*act),
+                sm,
+                color,
+                transform
+                    * Affine::translate((rect.x0 + 10.0, rect.y0 + (rect.height() - sm as f64) / 2.0)),
+                None,
+            );
+        }
+
+        // Colour label + swatches.
+        if let Some((first, _)) = self.tab_menu_swatches.first() {
+            tr.draw_text(
+                scene,
+                "Colour",
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((self.tab_menu_rect.x0 + 10.0, first.y0 - 16.0)),
+                None,
+            );
+        }
+        let current = self
+            .tab_menu_target
+            .and_then(|t| self.sheet_colors.get(t).copied().flatten());
+        for (rect, color_opt) in &self.tab_menu_swatches {
+            let shape = RoundedRect::from_rect(*rect, theme.tokens.radii.sm as f64);
+            match color_opt {
+                None => {
+                    scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
+                    scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &shape);
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        colors.text_dim,
+                        None,
+                        &Line::new((rect.x0 + 3.0, rect.y1 - 3.0), (rect.x1 - 3.0, rect.y0 + 3.0)),
+                    );
+                }
+                Some(i) => {
+                    scene.fill(Fill::NonZero, transform, tab_palette_color(*i), None, &shape);
+                }
+            }
+            let selected = current == *color_opt && color_opt.is_some();
+            if selected || rect.contains(self.last_mouse) {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    if selected { Color::WHITE } else { colors.accent[5] },
+                    None,
+                    &shape,
+                );
+            }
+        }
+    }
+
+    fn draw_tab_rename(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(rn) = &self.tab_rename else {
+            return;
+        };
+        let colors = &theme.tokens.colors;
+        let shape = RoundedRect::from_rect(rn.rect, theme.tokens.radii.sm as f64);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
+        scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &shape);
+        let sm = theme.tokens.typography.scale.sm;
+        let text: String = rn.chars.iter().collect();
+        let tx = rn.rect.x0 + 8.0;
+        let ty = rn.rect.y0 + (rn.rect.height() - sm as f64) / 2.0;
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
+        tr.draw_text(scene, &text, sm, colors.text_primary, transform * Affine::translate((tx, ty)), None);
+        let prefix: String = rn.chars[..rn.caret.min(rn.chars.len())].iter().collect();
+        let (pw, _) = tr.measure(&prefix, sm, None);
+        let cx = tx + pw as f64;
+        scene.stroke(
+            &Stroke::new(1.5),
+            transform,
+            colors.accent[5],
+            None,
+            &Line::new((cx, rn.rect.y0 + 4.0), (cx, rn.rect.y1 - 4.0)),
+        );
+        scene.pop_layer();
     }
 
     fn chip_label_and_state(&self, kind: SettingKind) -> (String, bool) {
@@ -1815,6 +2156,23 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "Imported".to_string())
 }
 
+/// Cumulative x positions (layout space) of every character boundary in
+/// `text` when laid out at `size` starting at `x0`. The returned vector has
+/// `text.chars().count() + 1` entries: `[0]` is `x0` and the last is the text's
+/// right edge. Used to map a click x to a caret index and to place the caret.
+fn char_boundaries(tr: &mut TextRenderer, text: &str, size: f32, x0: f64) -> Vec<f64> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut xs = Vec::with_capacity(chars.len() + 1);
+    xs.push(x0);
+    let mut prefix = String::new();
+    for ch in &chars {
+        prefix.push(*ch);
+        let (w, _) = tr.measure(&prefix, size, None);
+        xs.push(x0 + w as f64);
+    }
+    xs
+}
+
 /// A short, user-facing label for a path (its file name) for status messages.
 fn file_label(path: &std::path::Path) -> String {
     path.file_name()
@@ -1879,6 +2237,8 @@ impl Widget for SheetsApp {
         // Overlays paint last so they sit above the grid.
         self.draw_dropdown(scene, transform, text_renderer, theme);
         self.draw_settings_panel(scene, transform, text_renderer, theme);
+        self.draw_tab_menu(scene, transform, text_renderer, theme);
+        self.draw_tab_rename(scene, transform, text_renderer, theme);
     }
 
     fn draw_with_presence(
@@ -1912,6 +2272,51 @@ impl Widget for SheetsApp {
                 ..
             } => {
                 let p = self.last_mouse;
+
+                // An active inline rename is modal: a click outside its field
+                // commits it (Excel behaviour).
+                if self.tab_rename.is_some() {
+                    let inside = self
+                        .tab_rename
+                        .as_ref()
+                        .map(|r| r.rect.contains(p))
+                        .unwrap_or(false);
+                    if !inside {
+                        self.commit_tab_rename(state);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+
+                // Open tab context menu: route clicks to its rows / swatches or
+                // dismiss it.
+                if let Some(target) = self.tab_menu_target {
+                    if let Some(act) =
+                        self.tab_menu_rows.iter().find(|(r, _)| r.contains(p)).map(|(_, a)| *a)
+                    {
+                        self.tab_menu_target = None;
+                        self.run_tab_action(state, target, act);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                    if let Some(color) =
+                        self.tab_menu_swatches.iter().find(|(r, _)| r.contains(p)).map(|(_, c)| *c)
+                    {
+                        self.tab_menu_target = None;
+                        self.run_tab_action(state, target, TabAction::SetColor(color));
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                    if !self.tab_menu_rect.contains(p) {
+                        self.tab_menu_target = None;
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
 
                 // Settings panel is modal: clicks go to it (or dismiss it).
                 if self.settings_panel != SettingsPanel::None {
@@ -1962,9 +2367,16 @@ impl Widget for SheetsApp {
                     return;
                 }
 
-                // Formula field click → begin edit of active cell.
+                // Formula field click → edit the active cell, positioning the
+                // caret where the user clicked (shift-click extends a selection).
                 if self.formula_field_rect.contains(p) {
-                    self.grid.begin_edit_in_place();
+                    let shift = modifiers.state().shift_key();
+                    if !self.grid.is_editing() {
+                        self.grid.begin_edit_in_place();
+                    }
+                    let idx = self.formula_caret_at_x(p.x);
+                    self.grid.set_edit_caret(idx, shift);
+                    self.formula_bar_selecting = true;
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -2018,10 +2430,37 @@ impl Widget for SheetsApp {
                 ..
             } => {
                 self.grid.pointer_up();
+                self.formula_bar_selecting = false;
                 *handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let p = self.last_mouse;
+                // Right-click on a sheet tab opens its context menu.
+                if self.tabs_rect.contains(p) {
+                    if let Some(idx) =
+                        self.tab_rects.iter().find(|(r, _)| r.contains(p)).map(|(_, i)| *i)
+                    {
+                        self.open_tab_menu(idx);
+                        self.dirty = true;
+                        *handled = true;
+                    }
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // A drag that began in the formula bar extends the text
+                // selection there, not the grid selection.
+                if self.formula_bar_selecting {
+                    let idx = self.formula_caret_at_x(self.last_mouse.x);
+                    self.grid.set_edit_caret(idx, true);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.open_menu != OpenMenu::None || self.settings_panel != SettingsPanel::None {
                     self.dirty = true;
                 }
@@ -2042,6 +2481,18 @@ impl Widget for SheetsApp {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
+                // An inline rename owns the keyboard while it is open.
+                if self.tab_rename.is_some() {
+                    if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                        if ke.state.is_pressed() {
+                            self.tab_rename_key(state, ke, modifiers);
+                        }
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+
                 // Escape closes any open overlay.
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     if ke.state.is_pressed()
@@ -2050,10 +2501,12 @@ impl Widget for SheetsApp {
                             winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
                         )
                         && (self.open_menu != OpenMenu::None
-                            || self.settings_panel != SettingsPanel::None)
+                            || self.settings_panel != SettingsPanel::None
+                            || self.tab_menu_target.is_some())
                     {
                         self.open_menu = OpenMenu::None;
                         self.settings_panel = SettingsPanel::None;
+                        self.tab_menu_target = None;
                         self.dirty = true;
                         *handled = true;
                         return;
@@ -2098,6 +2551,50 @@ impl Widget for SheetsApp {
                                 }
                                 "r" | "R" => {
                                     self.fill_right(state);
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                // Clipboard + select-all chords while a cell/formula-bar edit
+                // owns the keyboard operate on the edit buffer's text selection
+                // (so Ctrl+V pastes text instead of inserting the letter 'v').
+                if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                    let ctrl =
+                        modifiers.state().control_key() || modifiers.state().super_key();
+                    if ke.state.is_pressed() && ctrl && self.grid.is_editing() {
+                        if let winit::keyboard::Key::Character(c) = &ke.logical_key {
+                            match c.as_str() {
+                                "a" | "A" => {
+                                    self.grid.select_all_edit();
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                "c" | "C" => {
+                                    if let Some(t) = self.grid.edit_selected_text() {
+                                        ui::clipboard_copy(&t);
+                                    }
+                                    *handled = true;
+                                    return;
+                                }
+                                "x" | "X" => {
+                                    if let Some(t) = self.grid.edit_cut_text() {
+                                        ui::clipboard_copy(&t);
+                                    }
+                                    *handled = true;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                "v" | "V" => {
+                                    if let Some(t) = ui::clipboard_paste() {
+                                        self.grid.edit_paste_text(&t);
+                                    }
                                     *handled = true;
                                     self.dirty = true;
                                     return;
@@ -2154,6 +2651,22 @@ impl SheetsApp {
         }
     }
 
+    /// Map a layout-space x within the formula bar to the nearest character
+    /// boundary (caret index), using the per-character offsets cached on the
+    /// last draw. Falls back to `0` before the first frame.
+    fn formula_caret_at_x(&self, x: f64) -> usize {
+        let mut best = 0usize;
+        let mut best_d = f64::INFINITY;
+        for (i, &bx) in self.formula_char_x.iter().enumerate() {
+            let d = (bx - x).abs();
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        best
+    }
+
     fn dropdown_item_at(&self, p: Point) -> Option<MenuItem> {
         self.dropdown_rows
             .iter()
@@ -2185,6 +2698,204 @@ impl SheetsApp {
                 self.relayout_overlays();
             }
             MenuItem::AutoSum => self.auto_sum(doc),
+        }
+        self.dirty = true;
+    }
+
+    /// Open the right-click context menu for sheet tab `idx`, closing any other
+    /// overlay first.
+    fn open_tab_menu(&mut self, idx: usize) {
+        self.open_menu = OpenMenu::None;
+        self.settings_panel = SettingsPanel::None;
+        self.tab_rename = None;
+        self.tab_menu_target = Some(idx);
+        self.layout_tab_menu();
+        self.dirty = true;
+    }
+
+    /// Begin an inline rename of sheet tab `idx`, seeding the field with its
+    /// current name.
+    fn begin_tab_rename(&mut self, idx: usize) {
+        let name = self.sheet_names.get(idx).cloned().unwrap_or_default();
+        let tab = self
+            .tab_rects
+            .iter()
+            .find(|(_, i)| *i == idx)
+            .map(|(r, _)| *r)
+            .unwrap_or(self.add_tab_rect);
+        // Give the editor a little more room than the tab so a longer name fits.
+        let right = (tab.x0 + 150.0).min(self.rect.x1 - 8.0).max(tab.x1);
+        let rect = Rect::new(tab.x0, tab.y0, right, tab.y1);
+        let chars: Vec<char> = name.chars().collect();
+        let caret = chars.len();
+        self.tab_menu_target = None;
+        self.tab_rename = Some(TabRename { idx, chars, caret, rect });
+        self.dirty = true;
+    }
+
+    fn tab_rename_insert(&mut self, s: &str) {
+        if let Some(r) = &mut self.tab_rename {
+            for ch in s.chars() {
+                if ch == '\n' || ch == '\r' || ch == '\t' {
+                    continue;
+                }
+                r.chars.insert(r.caret, ch);
+                r.caret += 1;
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn tab_rename_key(
+        &mut self,
+        doc: &mut AutoCommit,
+        ke: &winit::event::KeyEvent,
+        mods: &Modifiers,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+        match &ke.logical_key {
+            Key::Named(NamedKey::Enter) => self.commit_tab_rename(doc),
+            Key::Named(NamedKey::Escape) => {
+                self.tab_rename = None;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(r) = &mut self.tab_rename {
+                    if r.caret > 0 {
+                        r.chars.remove(r.caret - 1);
+                        r.caret -= 1;
+                    }
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                if let Some(r) = &mut self.tab_rename {
+                    if r.caret < r.chars.len() {
+                        r.chars.remove(r.caret);
+                    }
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if let Some(r) = &mut self.tab_rename {
+                    r.caret = r.caret.saturating_sub(1);
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if let Some(r) = &mut self.tab_rename {
+                    if r.caret < r.chars.len() {
+                        r.caret += 1;
+                    }
+                }
+            }
+            Key::Named(NamedKey::Home) => {
+                if let Some(r) = &mut self.tab_rename {
+                    r.caret = 0;
+                }
+            }
+            Key::Named(NamedKey::End) => {
+                if let Some(r) = &mut self.tab_rename {
+                    r.caret = r.chars.len();
+                }
+            }
+            Key::Named(NamedKey::Space) => self.tab_rename_insert(" "),
+            Key::Character(s) => {
+                let ctrl = mods.state().control_key() || mods.state().super_key();
+                if !ctrl {
+                    self.tab_rename_insert(s);
+                }
+            }
+            _ => {
+                if let Some(t) = &ke.text {
+                    self.tab_rename_insert(t);
+                }
+            }
+        }
+    }
+
+    fn commit_tab_rename(&mut self, doc: &mut AutoCommit) {
+        if let Some(r) = self.tab_rename.take() {
+            let name: String = r.chars.iter().collect();
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                SheetsDoc::rename_sheet(doc, r.idx, trimmed);
+                self.needs_commit = true;
+                self.reload(doc);
+                self.status = format!("Renamed sheet to {trimmed}");
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// Execute a tab context-menu action against sheet `idx`.
+    fn run_tab_action(&mut self, doc: &mut AutoCommit, idx: usize, act: TabAction) {
+        match act {
+            TabAction::Rename => self.begin_tab_rename(idx),
+            TabAction::Duplicate => {
+                if let Some(new_idx) = SheetsDoc::duplicate_sheet(doc, idx) {
+                    SheetsDoc::set_active_index(doc, new_idx);
+                    self.grid.select_only((0, 0));
+                    self.needs_commit = true;
+                    self.reload(doc);
+                    self.status = "Duplicated sheet".into();
+                }
+            }
+            TabAction::InsertRight => {
+                let n = SheetsDoc::sheet_count(doc);
+                let new_idx = SheetsDoc::insert_sheet(doc, (idx + 1).min(n), &format!("Sheet{}", n + 1));
+                SheetsDoc::set_active_index(doc, new_idx);
+                self.grid.select_only((0, 0));
+                self.needs_commit = true;
+                self.reload(doc);
+                self.status = "Inserted sheet".into();
+            }
+            TabAction::MoveLeft => {
+                if idx > 0 {
+                    SheetsDoc::move_sheet(doc, idx, idx - 1);
+                    SheetsDoc::set_active_index(doc, idx - 1);
+                    self.needs_commit = true;
+                    self.reload(doc);
+                    self.status = "Moved sheet left".into();
+                }
+            }
+            TabAction::MoveRight => {
+                if idx + 1 < SheetsDoc::sheet_count(doc) {
+                    SheetsDoc::move_sheet(doc, idx, idx + 1);
+                    SheetsDoc::set_active_index(doc, idx + 1);
+                    self.needs_commit = true;
+                    self.reload(doc);
+                    self.status = "Moved sheet right".into();
+                }
+            }
+            TabAction::Delete => {
+                if SheetsDoc::sheet_count(doc) <= 1 {
+                    self.status = "A workbook keeps at least one sheet".into();
+                } else {
+                    let old_active = SheetsDoc::active_index(doc);
+                    if SheetsDoc::delete_sheet(doc, idx) {
+                        let count = SheetsDoc::sheet_count(doc);
+                        let new_active = if idx < old_active {
+                            old_active - 1
+                        } else if idx == old_active {
+                            old_active.min(count - 1)
+                        } else {
+                            old_active
+                        };
+                        SheetsDoc::set_active_index(doc, new_active.min(count - 1));
+                        self.grid.select_only((0, 0));
+                        self.needs_commit = true;
+                        self.reload(doc);
+                        self.status = "Deleted sheet".into();
+                    }
+                }
+            }
+            TabAction::SetColor(color) => {
+                SheetsDoc::set_sheet_color(doc, idx, color);
+                self.needs_commit = true;
+                self.reload(doc);
+                self.status = if color.is_some() {
+                    "Set tab colour".into()
+                } else {
+                    "Cleared tab colour".into()
+                };
+            }
         }
         self.dirty = true;
     }
@@ -2340,6 +3051,20 @@ mod tests {
 
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
         app.cache.as_ref().and_then(|c| c.values.get(&addr).cloned())
+    }
+
+    #[test]
+    fn selected_formula_bar_shows_colored_body() {
+        let (app, _doc) = seeded_app();
+        // After seeding, E2 (a SUM formula) is the active cell and NOT editing.
+        assert_eq!(app.grid.active(), (4, 1));
+        assert!(!app.grid.is_editing());
+        assert_eq!(app.grid.active_display_raw(), "=SUM(B2:D2)");
+        // The selected-formula highlight must be available without editing.
+        assert_eq!(
+            app.grid.highlight_formula_body().as_deref(),
+            Some("SUM(B2:D2)")
+        );
     }
 
     #[test]
@@ -2537,6 +3262,62 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.relayout();
         assert!((app.grid_rect.width() - wide_grid_w).abs() < 0.5, "reflows back to wide");
+    }
+
+    // --- sheet tab context-menu actions ------------------------------------
+
+    #[test]
+    fn tab_rename_updates_sheet_name() {
+        let (mut app, mut doc) = seeded_app();
+        app.begin_tab_rename(0);
+        if let Some(r) = &mut app.tab_rename {
+            r.chars.clear();
+            r.caret = 0;
+        }
+        app.tab_rename_insert("Ledger");
+        app.commit_tab_rename(&mut doc);
+        assert_eq!(SheetsDoc::sheet_names(&mut doc)[0], "Ledger");
+    }
+
+    #[test]
+    fn tab_duplicate_creates_a_copy() {
+        let (mut app, mut doc) = seeded_app();
+        let before = SheetsDoc::sheet_count(&mut doc);
+        app.run_tab_action(&mut doc, 0, TabAction::Duplicate);
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
+        // Inserted right after the source and named "<name> copy".
+        assert_eq!(SheetsDoc::sheet_names(&mut doc)[1], "Budget copy");
+        // The copy carries the source's formulas.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (4, 1)), "=SUM(B2:D2)");
+    }
+
+    #[test]
+    fn tab_delete_removes_and_keeps_one_sheet() {
+        let (mut app, mut doc) = seeded_app();
+        // Seed: Budget, Sales. Remove Sales.
+        app.run_tab_action(&mut doc, 1, TabAction::Delete);
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
+        // The last remaining sheet cannot be deleted away.
+        app.run_tab_action(&mut doc, 0, TabAction::Delete);
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), 1);
+    }
+
+    #[test]
+    fn tab_move_right_reorders_sheets() {
+        let (mut app, mut doc) = seeded_app();
+        app.run_tab_action(&mut doc, 0, TabAction::MoveRight);
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Sales", "Budget"]);
+        // The moved sheet keeps its data (Budget's E2 formula).
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (4, 1)), "=SUM(B2:D2)");
+    }
+
+    #[test]
+    fn tab_set_and_clear_colour() {
+        let (mut app, mut doc) = seeded_app();
+        app.run_tab_action(&mut doc, 0, TabAction::SetColor(Some(2)));
+        assert_eq!(SheetsDoc::sheet_color(&mut doc, 0), Some(2));
+        app.run_tab_action(&mut doc, 0, TabAction::SetColor(None));
+        assert_eq!(SheetsDoc::sheet_color(&mut doc, 0), None);
     }
 
     #[test]
