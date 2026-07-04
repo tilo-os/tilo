@@ -1982,6 +1982,7 @@ fn draw_reader(
         family,
         vec![],
         vec![],
+    1.0,
     );
     let th = title_layout.height();
     tr.draw_rich(scene, &title_layout, t * Affine::translate((content_x, y)), palette.ink);
@@ -2060,6 +2061,7 @@ fn draw_block(
             fam,
             vec![],
             vec![],
+            1.0,
         )
     };
 
@@ -2103,6 +2105,7 @@ fn draw_block(
                 family,
                 vec![],
                 vec![],
+            1.0,
             );
             let h = layout.height();
             let bar = Rect::new(x, y, x + 3.0, y + h as f64 + 4.0);
