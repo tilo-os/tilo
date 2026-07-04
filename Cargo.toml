@@ -5,8 +5,8 @@
 # `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
 exclude = ["qdoc-codec-markdown-wasm"]
 members = [
-    "qos-swipe",
-    "qos-tts",
+    "crates/system/swipe",
+    "crates/system/tts",
     "qdoc",
     "spellcheck",
     "docpdf",
@@ -17,7 +17,7 @@ members = [
     "fs",
     "shell",
     "ui",
-    "os-actions",
+    "crates/system/os-actions",
     "qos-collab-types",
     "qos-threshold-identity",
     "qos-channel-crypto",

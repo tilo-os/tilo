@@ -60,7 +60,7 @@ file-explorer = { path = "../apps/file-explorer" }
 # powerprofilesctl). Lifted out of `shell::shell::qs_actions` so the
 # Settings app can call the same bindings without depending on the
 # compositor. The module at the old path now re-exports from this crate.
-os-actions = { path = "../os-actions" }
+os-actions = { path = "../crates/system/os-actions" }
 winit = "0.30.13"
 # Compositor Phase 4 follow-up: the native winit backend bypasses smithay's
 # glow renderer in favor of vello-on-wgpu directly (`backend/winit.rs`).
