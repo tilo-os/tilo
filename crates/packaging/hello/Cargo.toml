@@ -1,5 +1,5 @@
 [package]
-name = "qos-hello"
+name = "hello"
 version = "0.1.0"
 edition = "2024"
 description = "Minimal qOS-native app for demonstrating the app install pipeline."
@@ -9,4 +9,4 @@ name = "qos-hello"
 path = "src/main.rs"
 
 [dependencies]
-runtime = { path = "../crates/runtime/runtime" }
+runtime = { path = "../../runtime/runtime" }

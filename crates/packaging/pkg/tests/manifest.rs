@@ -3,8 +3,8 @@
 
 mod fixtures;
 
-use qos_pkg::manifest::{Manifest, Requirement, ServiceReq, ServiceReqParseError};
-use qos_pkg::validate::{ManifestError, validate_manifest};
+use pkg::manifest::{Manifest, Requirement, ServiceReq, ServiceReqParseError};
+use pkg::validate::{ManifestError, validate_manifest};
 
 fn render_with_dummy_key() -> String {
     fixtures::render_template(
@@ -54,7 +54,7 @@ fn app_without_entrypoint_fails_validation() {
 #[test]
 fn format_provider_without_mime_fails_validation() {
     let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
-    m.package.kind = qos_pkg::Kind::FormatProvider;
+    m.package.kind = pkg::Kind::FormatProvider;
     m.providers.mime.clear();
     // entrypoint is irrelevant for FormatProvider, but the
     // manifest still has one from the sample template; that's
