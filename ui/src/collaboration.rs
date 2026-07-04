@@ -436,11 +436,23 @@ pub struct CollaborationManager {
     /// - Parsing failed. See `runtime_identity::load`'s
     ///   [`runtime_portal::NotAvailable`] variants for the split.
     ///
-    /// Kept alive on the manager so future signed-op paths that
-    /// prefer this identity over the widget-bound [`SigningIdentity`]
-    /// can reach for it without re-reading disk.
-    #[allow(dead_code)]
+    /// Kept alive on the manager so [`Self::send_signed_op`] can fall
+    /// back to it when no widget-bound [`SigningIdentity`] has been
+    /// set — the pubkey rides through as the op's `author` and the
+    /// runtime identity's `.sign(msg)` produces the envelope
+    /// signature. Explicit `set_identity` / `with_identity` still
+    /// win (needed for tests + threshold-mode signing).
     runtime_identity: Option<runtime_identity::SigningIdentity>,
+    /// Monotonic per-author seq counter for the runtime-identity
+    /// fallback path. Widget-bound [`SigningIdentity`] carries its own
+    /// counter; the auto-loaded path needs a dedicated one so replays
+    /// through the validator's `seq > last_seen` check pass.
+    runtime_identity_seq: u64,
+    /// Attestation id used when signing via the runtime identity. Set
+    /// on first use to a fresh UUID and reused for the rest of the
+    /// manager's life so validator paths that gate on
+    /// `(author, attestation_id)` see a consistent pair.
+    runtime_identity_attestation: collab_types::AttestationId,
 }
 
 impl CollaborationManager {
@@ -500,6 +512,8 @@ impl CollaborationManager {
                     }),
                     identity: None,
                     runtime_identity,
+                    runtime_identity_seq: 0,
+                    runtime_identity_attestation: collab_types::AttestationId::new(),
                 };
                 let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello { app_id, cluster_id });
@@ -513,6 +527,8 @@ impl CollaborationManager {
                     backend: Backend::Sdk(sdk),
                     identity: None,
                     runtime_identity,
+                    runtime_identity_seq: 0,
+                    runtime_identity_attestation: collab_types::AttestationId::new(),
                 };
                 let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello { app_id, cluster_id });
@@ -522,6 +538,8 @@ impl CollaborationManager {
                 backend: Backend::Disabled,
                 identity: None,
                 runtime_identity,
+                runtime_identity_seq: 0,
+                runtime_identity_attestation: collab_types::AttestationId::new(),
             },
         }
     }
@@ -555,6 +573,37 @@ impl CollaborationManager {
             backend: Backend::Sdk(sdk),
             identity: None,
             runtime_identity: None,
+            runtime_identity_seq: 0,
+            runtime_identity_attestation: collab_types::AttestationId::new(),
+        };
+        manager.send(CollabRequest::Hello {
+            app_id: app_id.to_owned(),
+            cluster_id,
+        });
+        manager
+    }
+
+    /// Test-only: identical to [`Self::from_sdk_fd_for_test_with_identity`]
+    /// but also seeds the manager with a runtime identity so tests can
+    /// exercise the auto-loaded fallback path in
+    /// [`Self::send_signed_op`] without going through disk I/O + the
+    /// `QOS_USER_IDENTITY` env var.
+    #[cfg(test)]
+    fn from_sdk_fd_for_test_with_runtime_identity(
+        fd: RawFd,
+        app_id: &str,
+        cluster_id: Uuid,
+        runtime_identity: runtime_identity::SigningIdentity,
+    ) -> Self {
+        let identity_bytes = runtime_identity.group_public_key().to_vec();
+        let sdk = Self::spawn_sdk(SdkConnectSource::Fd(fd), identity_bytes)
+            .expect("spawn_sdk from Fd source must succeed in tests");
+        let mut manager = Self {
+            backend: Backend::Sdk(sdk),
+            identity: None,
+            runtime_identity: Some(runtime_identity),
+            runtime_identity_seq: 0,
+            runtime_identity_attestation: collab_types::AttestationId::new(),
         };
         manager.send(CollabRequest::Hello {
             app_id: app_id.to_owned(),
@@ -663,17 +712,60 @@ impl CollaborationManager {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<(), SignedSendError> {
-        let identity = self
-            .identity
-            .as_mut()
-            .ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity
-            .sign_op(payload, artifact, op_class)
-            .map_err(SignedSendError::Canonical)?;
-        self.send(CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(envelope),
-        });
-        Ok(())
+        // Explicit widget-bound identity wins.
+        if let Some(identity) = self.identity.as_mut() {
+            let envelope = identity
+                .sign_op(payload, artifact, op_class)
+                .map_err(SignedSendError::Canonical)?;
+            self.send(CollabRequest::SignedSyncIncremental {
+                envelope: Box::new(envelope),
+            });
+            return Ok(());
+        }
+        // Fallback: sign via the auto-loaded runtime identity. Its
+        // pubkey rides through as `SignedOp.author` so remote consumers
+        // can attribute the op even without a widget-side attestation
+        // ceremony. Threshold-mode identities aren't supported on this
+        // path (the runtime `.sign()` returns an unsupported error);
+        // apps that need threshold signing still bind their own
+        // [`SigningIdentity`] via `set_identity`.
+        if let Some(rt) = self.runtime_identity.as_ref() {
+            let author = collab_types::Ed25519PublicKey::from_bytes(rt.group_public_key());
+            self.runtime_identity_seq = self.runtime_identity_seq.wrapping_add(1);
+            let mut envelope = collab_types::SignedOp::new_unsigned(
+                payload,
+                artifact,
+                author,
+                self.runtime_identity_attestation,
+                op_class,
+                std::time::SystemTime::now(),
+                self.runtime_identity_seq,
+            );
+            let signing_bytes = envelope
+                .signing_bytes()
+                .map_err(SignedSendError::Canonical)?;
+            match rt.sign(&signing_bytes) {
+                Ok(sig) => {
+                    envelope.signature = collab_types::Signature::from_bytes(sig);
+                    self.send(CollabRequest::SignedSyncIncremental {
+                        envelope: Box::new(envelope),
+                    });
+                    Ok(())
+                }
+                Err(_) => {
+                    // Threshold-mode signing isn't supported here — the
+                    // caller must bind a widget SigningIdentity that
+                    // routes through the multi-device ceremony.
+                    tracing::debug!(
+                        "runtime-identity sign failed (likely threshold-mode); \
+                         send_signed_op returns NoIdentity"
+                    );
+                    Err(SignedSendError::NoIdentity)
+                }
+            }
+        } else {
+            Err(SignedSendError::NoIdentity)
+        }
     }
 
     /// Fire-and-forget send. Non-blocking on every backend:
@@ -1991,6 +2083,164 @@ mod tests {
         );
         let seen = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(seen, vec![expected_bytes]);
+    }
+
+    #[test]
+    fn send_signed_op_falls_back_to_auto_loaded_runtime_identity() {
+        // No widget-bound SigningIdentity, but a runtime identity is
+        // loaded — send_signed_op must sign the envelope with the
+        // runtime identity's key so `author` on the wire equals the
+        // loaded pubkey. This is the property that makes signed-op
+        // provenance meaningful without every widget having to bind an
+        // explicit SigningIdentity.
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+
+        // Build a runtime identity in-memory (same JSON shape the
+        // launcher writes at first-boot). Reused sk seed so the
+        // expected pubkey is stable across test runs.
+        let secret = [7u8; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let expected_pubkey = sk.verifying_key().to_bytes();
+        let record = serde_json::json!({
+            "display_name": "runtime-user",
+            "avatar_color": [3, 3, 3],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": expected_pubkey,
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": secret.to_vec(),
+            },
+            "created_at": "2026-07-04T00:00:00Z",
+            "schema_version": 1,
+        });
+        let runtime_ident =
+            runtime_identity::load_from_bytes(&serde_json::to_vec(&record).unwrap())
+                .expect("load identity");
+
+        let cluster = Uuid::new_v4();
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test_with_runtime_identity(
+            fd,
+            "alice",
+            cluster,
+            runtime_ident,
+        );
+
+        // Auto-Hello landed.
+        assert!(
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
+            "join_channel must be observed"
+        );
+
+        // No widget-bound identity.
+        assert!(!mgr.has_identity());
+
+        // send_signed_op must succeed even without with_identity().
+        let artifact = collab_types::ArtifactId::new();
+        mgr.send_signed_op(b"hello".to_vec(), artifact, collab_types::OpClass::Splice)
+            .expect("send_signed_op should fall back to runtime identity");
+
+        assert!(
+            wait_until(
+                || !captures.lock().unwrap().signed_ops.is_empty(),
+                Duration::from_secs(2),
+            ),
+            "signed op must reach the broker via the fallback path"
+        );
+        let seen = captures.lock().unwrap().signed_ops.clone();
+        assert_eq!(seen.len(), 1);
+        let decoded: SignedOp = postcard::from_bytes(&seen[0]).expect("op is postcard");
+        assert_eq!(
+            *decoded.author.as_bytes(),
+            expected_pubkey,
+            "op.author must equal the auto-loaded runtime identity's pubkey"
+        );
+        assert_eq!(decoded.artifact, artifact);
+        assert_eq!(decoded.seq, 1, "first fallback op should carry seq=1");
+    }
+
+    #[test]
+    fn explicit_identity_wins_over_runtime_identity_fallback() {
+        // When the widget binds a SigningIdentity explicitly, that one
+        // wins even if a runtime identity is also loaded — preserving
+        // the ability to override for tests + threshold-mode signing.
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let secret = [11u8; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let runtime_pubkey = sk.verifying_key().to_bytes();
+        let record = serde_json::json!({
+            "display_name": "runtime-user",
+            "avatar_color": [0, 0, 0],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": runtime_pubkey,
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": secret.to_vec(),
+            },
+            "created_at": "2026-07-04T00:00:00Z",
+            "schema_version": 1,
+        });
+        let runtime_ident =
+            runtime_identity::load_from_bytes(&serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test_with_runtime_identity(
+            fd,
+            "alice",
+            Uuid::new_v4(),
+            runtime_ident,
+        );
+        assert!(wait_until(
+            || !captures.lock().unwrap().joined.is_empty(),
+            Duration::from_secs(2)
+        ));
+
+        // Bind a distinct explicit widget identity.
+        let widget_sk =
+            ed25519_dalek::SigningKey::from_bytes(&[22u8; 32]);
+        let widget_pubkey = widget_sk.verifying_key().to_bytes();
+        assert_ne!(widget_pubkey, runtime_pubkey);
+        let widget_id =
+            SigningIdentity::new(widget_sk, collab_types::AttestationId::new());
+        mgr.set_identity(widget_id);
+        assert!(mgr.has_identity());
+
+        mgr.send_signed_op(
+            b"payload".to_vec(),
+            collab_types::ArtifactId::new(),
+            collab_types::OpClass::Splice,
+        )
+        .expect("send_signed_op with explicit id");
+        assert!(wait_until(
+            || !captures.lock().unwrap().signed_ops.is_empty(),
+            Duration::from_secs(2)
+        ));
+        let seen = captures.lock().unwrap().signed_ops.clone();
+        let decoded: SignedOp = postcard::from_bytes(&seen[0]).unwrap();
+        assert_eq!(
+            *decoded.author.as_bytes(),
+            widget_pubkey,
+            "explicit widget identity must win over auto-loaded runtime identity"
+        );
     }
 
     #[test]
