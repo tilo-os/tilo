@@ -596,9 +596,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             let before_seq = p.get_before_seq();
             let max = p.get_max();
             let artifact = ArtifactId(uuid::Uuid::nil());
-            let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
+            let (ops, exhausted, earliest_seq, latest_seq) =
+                read_scrollback(&broker_channels, artifact, before_seq, max);
             let batch = results.get().init_batch();
-            fill_scrollback_batch(batch, ops, exhausted);
+            fill_scrollback_batch(batch, ops, exhausted, earliest_seq, latest_seq);
             Ok(())
         })
     }
@@ -620,9 +621,10 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ))
             })?;
             let artifact = ArtifactId(uuid);
-            let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
+            let (ops, exhausted, earliest_seq, latest_seq) =
+                read_scrollback(&broker_channels, artifact, before_seq, max);
             let batch = results.get().init_batch();
-            fill_scrollback_batch(batch, ops, exhausted);
+            fill_scrollback_batch(batch, ops, exhausted, earliest_seq, latest_seq);
             Ok(())
         })
     }
@@ -713,39 +715,51 @@ fn handle_signed_op_send(state: &Arc<CapnpBrokerState>, peer_id: u64, envelope: 
 /// Read a page of scrollback ops for `artifact` from the broker's
 /// in-memory op log. Encodes each op as postcard bytes because the
 /// capnp `ScrollbackBatch.ops` is `List(Data)`.
+///
+/// Returns `(encoded ops, exhausted, earliest_seq, latest_seq)`.
+/// `ChannelState::scrollback_for` returns ops sorted ascending by seq,
+/// so `earliest = ops.first().seq` and `latest = ops.last().seq`. Both
+/// bracket values are `0` when the batch is empty.
 fn read_scrollback(
     broker_channels: &Arc<Mutex<BrokerChannels>>,
     artifact: ArtifactId,
     before_seq: u64,
     max: u32,
-) -> (Vec<Vec<u8>>, bool) {
+) -> (Vec<Vec<u8>>, bool, u64, u64) {
     let Ok(mut ch) = broker_channels.lock() else {
-        return (Vec::new(), true);
+        return (Vec::new(), true, 0, 0);
     };
     let ch_state = ch.state_for(artifact);
     // The channel-state's `scrollback_for` returns `Vec<SignedOp>` +
     // `exhausted: bool`; encode inline so callers don't need to
     // re-borrow the mutex.
     let (ops, exhausted) = ch_state.scrollback_for(artifact, before_seq, max as u16);
+    let earliest_seq = ops.first().map(|op| op.seq).unwrap_or(0);
+    let latest_seq = ops.last().map(|op| op.seq).unwrap_or(0);
     let encoded: Vec<Vec<u8>> = ops
         .into_iter()
         .filter_map(|op| postcard::to_stdvec(&op).ok())
         .collect();
-    (encoded, exhausted)
+    (encoded, exhausted, earliest_seq, latest_seq)
 }
 
-fn fill_scrollback_batch(mut b: scrollback_batch::Builder<'_>, ops: Vec<Vec<u8>>, exhausted: bool) {
+fn fill_scrollback_batch(
+    mut b: scrollback_batch::Builder<'_>,
+    ops: Vec<Vec<u8>>,
+    exhausted: bool,
+    earliest_seq: u64,
+    latest_seq: u64,
+) {
     let n = ops.len() as u32;
     let mut list = b.reborrow().init_ops(n);
     for (i, op) in ops.iter().enumerate() {
         list.set(i as u32, op);
     }
-    // Bracket seq is not tracked on the internal op log; report
-    // 0 for both. Consumers that need explicit bounds decode the
-    // ops. Documented drift from the collab-bridge's approximation
-    // (which pulled seqs from the postcard envelopes).
-    b.set_earliest_seq(0);
-    b.set_latest_seq(0);
+    // Bracket seqs come straight from the returned batch — the ops are
+    // already sorted ascending by seq (see `ChannelState::scrollback_for`),
+    // so first/last give the true bounds without a second decode.
+    b.set_earliest_seq(earliest_seq);
+    b.set_latest_seq(latest_seq);
     b.set_done(exhausted);
 }
 
@@ -1739,6 +1753,17 @@ mod tests {
             assert_eq!(decoded.artifact, artifact);
             assert_eq!(decoded.seq, (i + 1) as u64);
         }
+        // Bracket seqs must reflect the ops in the batch — earliest is
+        // the first op's seq, latest the last. Both were `0` before the
+        // op-log wired them in.
+        assert_eq!(
+            batch.earliest_seq, 1,
+            "earliest_seq should match the first op returned"
+        );
+        assert_eq!(
+            batch.latest_seq, 3,
+            "latest_seq should match the last op returned"
+        );
 
         drop(legacy);
         drop(handle);
