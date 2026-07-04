@@ -10,7 +10,7 @@
 //!                            560x720 responsive layout).
 //!   * `--scenario NAME`    — snap a specific surface into view for the frame:
 //!                            `file`, `format`, `docsettings`, `editing`,
-//!                            `summary`, `multiselect`.
+//!                            `pointmode`, `summary`, `multiselect`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
 //! persistence, so a screenshot shows real formulas without ever touching the
@@ -49,6 +49,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("format") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_format_menu()),
             Some("docsettings") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_doc_settings()),
             Some("editing") => Box::new(|a: &mut sheets::SheetsApp| a.shots_begin_edit()),
+            Some("pointmode") => Box::new(|a: &mut sheets::SheetsApp| a.shots_build_formula()),
             Some("summary") => Box::new(|a: &mut sheets::SheetsApp| a.shots_select_summary_range()),
             Some("multiselect") => Box::new(|a: &mut sheets::SheetsApp| a.shots_multi_select()),
             _ => Box::new(|_: &mut sheets::SheetsApp| {}),

@@ -7,10 +7,11 @@
 //!
 //! Optional flags for `--shots` (used to capture interaction states that the
 //! single-frame headless renderer can't reach through live input):
-//!   * `--scenario NAME` — seed a staged state (`drag`, `overlay`); see
-//!                          [`weather::app_root_for_shot`].
-//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 720x900`
-//!                          to exercise the narrow-window overlay flap).
+//!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`);
+//!                          see [`weather::app_root_for_shot`].
+//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 560x720`
+//!                          for the narrow full-screen city list, or pair with
+//!                          `--scenario detail` for the pushed forecast).
 
 use std::collections::HashMap;
 

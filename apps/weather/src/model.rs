@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::units::{TempUnit, Units, WindUnit};
+use crate::units::Units;
 
 /// Stable id for a saved location.
 pub type LocationId = Uuid;
@@ -246,22 +246,8 @@ impl WeatherModel {
         }
     }
 
-    /// Toggle temperature unit, keeping wind paired sensibly.
-    pub fn toggle_temp_unit(&mut self) {
-        self.units.temp = match self.units.temp {
-            TempUnit::Celsius => TempUnit::Fahrenheit,
-            TempUnit::Fahrenheit => TempUnit::Celsius,
-        };
-    }
-
-    pub fn toggle_wind_unit(&mut self) {
-        self.units.wind = match self.units.wind {
-            WindUnit::Kmh => WindUnit::Mph,
-            WindUnit::Mph => WindUnit::Kmh,
-        };
-    }
-
-    /// Apply a whole-system preset (metric / imperial) in one shot.
+    /// Apply a whole-system preset (metric / imperial). Units are a system
+    /// preference read from Settings — this app never hosts a toggle for them.
     pub fn set_units(&mut self, units: Units) {
         self.units = units;
     }

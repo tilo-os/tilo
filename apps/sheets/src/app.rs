@@ -253,6 +253,17 @@ impl SheetsApp {
         self.grid.begin_edit_in_place();
     }
 
+    /// Shots hook: build a formula purely by clicking cells (point mode),
+    /// so the captured frame shows the coloured references it inserted and
+    /// the matching outlines on the referenced cells (B2 and C2).
+    pub fn shots_build_formula(&mut self) {
+        self.grid.select_only((2, 9)); // C10, an empty cell
+        self.grid.begin_edit(Some("=".into()));
+        self.grid.point_click_addr((1, 1)); // click B2 → =B2
+        self.grid.insert_text_public("+"); // type + → =B2+
+        self.grid.point_click_addr((2, 1)); // click C2 → =B2+C2
+    }
+
     /// Shots hook: select a multi-cell numeric range so the live status-bar
     /// summary (Sum / Avg / Count) is captured.
     pub fn shots_select_summary_range(&mut self) {
@@ -1238,20 +1249,27 @@ impl SheetsApp {
         let content = self.grid.active_display_raw();
         if !content.is_empty() {
             let base = theme.tokens.typography.scale.base;
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &ff_shape);
-            tr.draw_text(
-                scene,
-                &content,
-                base,
-                colors.text_primary,
-                transform
-                    * Affine::translate((
-                        self.formula_field_rect.x0 + 8.0,
-                        self.formula_field_rect.y0
-                            + (self.formula_field_rect.height() - base as f64) / 2.0,
-                    )),
-                None,
+            let origin = Point::new(
+                self.formula_field_rect.x0 + 8.0,
+                self.formula_field_rect.y0 + (self.formula_field_rect.height() - base as f64) / 2.0,
             );
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &ff_shape);
+            // While editing a formula, tint each reference to match the grid
+            // outlines; otherwise show the raw input in the body colour.
+            if self.grid.is_editing() && self.grid.editing_formula() {
+                crate::grid::draw_formula_line(
+                    scene,
+                    transform,
+                    tr,
+                    &content,
+                    base,
+                    colors.text_primary,
+                    origin,
+                    None,
+                );
+            } else {
+                tr.draw_text(scene, &content, base, colors.text_primary, transform * Affine::translate((origin.x, origin.y)), None);
+            }
             scene.pop_layer();
         }
 
@@ -1967,13 +1985,16 @@ impl Widget for SheetsApp {
                     }
                     return;
                 }
-                // Grid: detect double-click.
+                // Grid: detect double-click. While a formula is being edited,
+                // grid clicks are reference insertions (point mode), never
+                // double-click-to-edit, so suppress the double detection.
                 let now = Instant::now();
                 let cell = self.cell_under(p);
-                let double = matches!(
-                    (self.last_press, cell),
-                    (Some((t, a)), Some(c)) if a == c && now.duration_since(t).as_millis() < 350
-                );
+                let double = !self.grid.editing_formula()
+                    && matches!(
+                        (self.last_press, cell),
+                        (Some((t, a)), Some(c)) if a == c && now.duration_since(t).as_millis() < 350
+                    );
                 let mut out = Vec::new();
                 if double {
                     self.grid.double_click(p, &mut out);
