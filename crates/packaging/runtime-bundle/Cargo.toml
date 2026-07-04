@@ -1,0 +1,33 @@
+[package]
+name = "runtime-bundle"
+version = "0.1.0"
+edition = "2024"
+description = "Produce and verify qOS runtime bundles (content-addressed loader + libc set for sandboxed apps)."
+
+# A "runtime bundle" is a directory containing the minimal set of host
+# files a dynamically-linked qOS app needs to `execve()` inside the
+# sandbox: the loader, libc, libgcc_s + friends, and (optionally)
+# /etc/ld.so.cache. Bundles are content-addressed via a BLAKE3 root
+# hash written into `bundle.toml` alongside the payload. The launcher
+# mounts a bundle at `/usr/lib/qos-runtime/<v>/` inside bwrap and sets
+# `LD_LIBRARY_PATH` accordingly, replacing the older `--minimal-libs`
+# stopgap.
+
+[[bin]]
+name = "qos-runtime-bundle"
+path = "src/main.rs"
+
+[lib]
+name = "runtime_bundle"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
+blake3 = "1.8"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
