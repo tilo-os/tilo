@@ -13,6 +13,7 @@
 //! piece that needs to change; the rest are consumers of plain data
 //! types and continue working unmodified.
 
+pub mod dbus_proxy;
 pub mod landlock;
 pub mod landlock_shim;
 pub mod manifest;
