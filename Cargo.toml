@@ -35,6 +35,7 @@ members = [
     "crates/format/format-host",
     "crates/packaging/hello",
     "crates/packaging/install",
+    "crates/packaging/cli-shim",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
