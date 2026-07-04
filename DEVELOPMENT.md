@@ -99,3 +99,16 @@ Full guide: [`docs/headless-testing.md`](docs/headless-testing.md). Example scri
 -   **QEMU**: For running the test VM.
 -   **FUSE3**: Required for local testing of `fs`.
 -   **Wayland**: Required for local testing of `shell`.
+
+## Pre-commit hook
+
+Enable the repo's git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`pre-commit` runs `scripts/check-workspace-complete.sh` — it fails if any crate
+under `apps/` or `crates/` is missing from `[workspace].members` (which once let
+37 apps drop out of the build). Compilation + tests run in CI (`.forgejo/workflows/check.yml`),
+not the hook, to keep commits fast.
