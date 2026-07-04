@@ -1,0 +1,25 @@
+# qOS app host — first-login staging.
+#
+# Ensures `$HOME/.local/share/qos-apps/{payloads,bin}` exist before
+# `qos-app-host.service` starts (it stores content-addressed
+# packages under `--store`). Otherwise a fresh account hits ENOENT
+# on the first `qos-install install` because neither the store dir
+# nor the CLI shim dir has been materialised by anything.
+#
+# Idempotent — `install -d` is a no-op when the dirs already exist.
+# Ordered before qos-app-host.service so the daemon finds the dirs
+# on its first read.
+
+[Unit]
+Description=qOS app host — first-login store/bin materialisation
+Documentation=man:qos-install(1)
+Before=qos-app-host.service
+PartOf=qos-app-host.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'install -d -m 0755 "$HOME/.local/share/qos-apps/payloads" "$HOME/.local/share/qos-apps/bin"'
+
+[Install]
+WantedBy=default.target

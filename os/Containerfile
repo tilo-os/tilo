@@ -96,6 +96,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher \
+        -p install -p app-host -p collab-bridge \
     && mkdir -p /out \
     && cp target/release/shell \
           target/release/fs \
@@ -105,6 +106,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
           target/release/qos-launcher \
+          target/release/qos-install \
+          target/release/qos-app-host \
+          target/release/qos-collab-bridge \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
@@ -266,9 +270,20 @@ COPY --from=builder /out/qos-installer /usr/bin/qos-installer
 # `verify` or extend the bundle from a running system.
 COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
 COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
+# App-model binaries. `qos-install` lands at /usr/bin (Rust CLI —
+# the OS bash `qos-install` shipped by Containerfile.installer sits
+# under /usr/libexec, so their names don't collide on the main image
+# because the bash one is installer-image-only). `qos-app-host` and
+# `qos-collab-bridge` are user daemons owned by the systemd user
+# instance and reachable via a socket under $XDG_RUNTIME_DIR/qos/services/.
+COPY --from=builder /out/qos-install /usr/bin/qos-install
+COPY --from=builder /out/qos-app-host /usr/libexec/qos-app-host
+COPY --from=builder /out/qos-collab-bridge /usr/libexec/qos-collab-bridge
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter /usr/bin/qos-installer \
-              /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle
+              /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
+              /usr/bin/qos-install /usr/libexec/qos-app-host \
+              /usr/libexec/qos-collab-bridge
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
@@ -358,6 +373,30 @@ COPY os/usr/lib/systemd/user/shell-portal.service /usr/lib/systemd/user/shell-po
 # prompt. See /usr/share/doc/qos/peer-sync.md for the
 # privacy / discovery trade-off.
 COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
+
+# ---------------------------------------------------------------------------
+# App-model user daemons + PATH shim
+# ---------------------------------------------------------------------------
+# `qos-app-host` — content-addressed package store, reachable at
+# $XDG_RUNTIME_DIR/qos/services/app-host.sock. `qos-collab-bridge`
+# translates the SDK's Cap'n Proto surface into the compositor's
+# native serde-JSON broker. Both are enabled globally so every user
+# session starts them without a per-user `systemctl --user enable`.
+# The `qos-app-host-fresh.service` sibling makes the per-user store
+# dirs exist on first login, ordered Before the host so the host
+# doesn't race with `install -d`.
+COPY crates/packaging/app-host/systemd/qos-app-host.service /usr/lib/systemd/user/qos-app-host.service
+COPY crates/collab/collab-bridge/systemd/qos-collab-bridge.service /usr/lib/systemd/user/qos-collab-bridge.service
+COPY os/usr/lib/systemd/user/qos-app-host-fresh.service /usr/lib/systemd/user/qos-app-host-fresh.service
+RUN systemctl --global enable qos-app-host-fresh.service qos-app-host.service qos-collab-bridge.service
+
+# PATH shim: surface CLI shims that `qos-install install` writes
+# into $HOME/.local/share/qos-apps/bin. Two drop-ins — one for
+# login shells (profile.d) and one for interactive non-login shells
+# (bashrc.d) — so a fresh terminal window Just Works either way.
+COPY os/etc/profile.d/qos-apps-path.sh /etc/profile.d/qos-apps-path.sh
+COPY os/etc/bashrc.d/qos-apps-path.sh /etc/bashrc.d/qos-apps-path.sh
+RUN chmod 0644 /etc/profile.d/qos-apps-path.sh /etc/bashrc.d/qos-apps-path.sh
 
 # OS infra config (C3 zram swap, C4 locale).
 COPY os/etc/systemd/zram-generator.conf /etc/systemd/zram-generator.conf
