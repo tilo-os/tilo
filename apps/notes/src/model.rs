@@ -153,6 +153,49 @@ impl Workspace {
         to_remove
     }
 
+    /// Move `id` up (`delta < 0`) or down (`delta > 0`) among its
+    /// siblings by swapping `order` with the adjacent sibling in that
+    /// direction, then re-densifying. Returns `true` if the page moved
+    /// (i.e. it existed and wasn't already at the requested edge).
+    ///
+    /// Only reorders within a single sibling group — re-parenting is a
+    /// separate concern. Backs the sidebar's Alt-↑ / Alt-↓ reorder.
+    pub fn move_sibling(&mut self, id: PageId, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let parent = match self.get(id) {
+            Some(p) => p.parent,
+            None => return false,
+        };
+        // Siblings sorted by order; find where `id` sits.
+        let siblings: Vec<PageId> =
+            self.children_of(parent).iter().map(|p| p.id).collect();
+        let pos = match siblings.iter().position(|s| *s == id) {
+            Some(p) => p as i32,
+            None => return false,
+        };
+        let target = pos + delta.signum();
+        if target < 0 || target as usize >= siblings.len() {
+            return false;
+        }
+        let other = siblings[target as usize];
+        // Swap the two pages' order values, then re-densify to keep the
+        // "contiguous from 0" invariant even if orders were sparse.
+        let (id_order, other_order) = match (self.get(id), self.get(other)) {
+            (Some(a), Some(b)) => (a.order, b.order),
+            _ => return false,
+        };
+        if let Some(p) = self.get_mut(id) {
+            p.order = other_order;
+        }
+        if let Some(p) = self.get_mut(other) {
+            p.order = id_order;
+        }
+        self.renumber_siblings(parent);
+        true
+    }
+
     /// Re-densify `order` on the children of `parent`. Stable: keeps
     /// the existing relative order, just rewrites the values as 0, 1,
     /// 2, ... so the contract "siblings have contiguous order from 0"
@@ -290,6 +333,56 @@ mod tests {
             order: 0,
         });
         assert!(w.check_invariants().is_err());
+    }
+
+    #[test]
+    fn move_sibling_swaps_order_and_stays_contiguous() {
+        let mut w = Workspace::new();
+        let a = w.create_page(None); // order 0
+        let b = w.create_page(None); // order 1
+        let c = w.create_page(None); // order 2
+
+        // Move `c` up one slot → [a, c, b].
+        assert!(w.move_sibling(c, -1));
+        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![a, c, b]);
+        w.check_invariants().unwrap();
+
+        // Move `a` down one slot → [c, a, b].
+        assert!(w.move_sibling(a, 1));
+        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![c, a, b]);
+        w.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn move_sibling_at_edge_is_noop() {
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        let b = w.create_page(None);
+        // `a` is already first — moving up does nothing.
+        assert!(!w.move_sibling(a, -1));
+        // `b` is already last — moving down does nothing.
+        assert!(!w.move_sibling(b, 1));
+        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![a, b]);
+    }
+
+    #[test]
+    fn move_sibling_only_reorders_within_parent() {
+        let mut w = Workspace::new();
+        let root = w.create_page(None);
+        let x = w.create_page(Some(root)); // child order 0
+        let y = w.create_page(Some(root)); // child order 1
+        let sib = w.create_page(None); // a root sibling of `root`
+
+        // Moving the child down swaps x/y but never touches root-level.
+        assert!(w.move_sibling(x, 1));
+        let kids: Vec<_> = w.children_of(Some(root)).iter().map(|p| p.id).collect();
+        assert_eq!(kids, vec![y, x]);
+        let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(roots, vec![root, sib]);
+        w.check_invariants().unwrap();
     }
 
     #[test]

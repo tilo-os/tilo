@@ -1,16 +1,23 @@
 //! `NoteTreeView` — left-pane page-tree widget.
 //!
 //! Renders the workspace tree (one row per page, indented by depth),
+//! a header strip with a "+" button that creates a new root page,
 //! handles selection / expansion clicks, double-click to enter inline
 //! rename mode (a local-mode `TextInput` overlaid on the row), and
 //! issues commands to the parent `NotesApp` via an [`OutEvent`] queue
 //! the parent drains every tick.
 //!
-//! Keyboard: pre-rename the user can press
-//!   - Enter to commit, Escape to cancel,
-//!   - Delete to ask the parent to delete the selected page,
-//!   - Cmd-N (or Ctrl-N) to ask the parent to create a child of the
-//!     selected page.
+//! Keyboard (only while the panel itself holds focus, since these keys
+//! otherwise belong to the editor):
+//!   - Delete / Backspace to delete the selected page,
+//!   - F2 to rename the selected page,
+//!   - ↑ / ↓ to move the selection between rows,
+//!   - Alt-↑ / Alt-↓ to reorder the selected page among its siblings,
+//!   - while renaming: Enter to commit, Escape to cancel.
+//!
+//! Creating a child of the selection (Cmd-N / Ctrl-N) is handled one
+//! level up in `NotesApp`, so it works regardless of which pane has
+//! focus — the editor holds focus on load.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,6 +40,13 @@ use crate::model::{PageId, Workspace};
 /// Per-row height; matches `TreeView::ROW_HEIGHT` so the visual cadence
 /// reads as part of the same widget family.
 const ROW_HEIGHT: f64 = 24.0;
+/// Height of the sidebar header strip that hosts the "Pages" label and
+/// the "+" new-page button. Rows start below it.
+const HEADER_HEIGHT: f64 = 32.0;
+/// Side length of the square "+" new-page button in the header.
+const NEW_BTN_SIZE: f64 = 22.0;
+/// Right/vertical inset of the "+" button inside the header strip.
+const NEW_BTN_MARGIN: f64 = 6.0;
 /// Horizontal indent per tree depth level.
 const INDENT_PX: f64 = 16.0;
 /// Glyph hit-area width — the expand/collapse triangle on the left of
@@ -57,6 +71,9 @@ pub enum OutEvent {
     Delete(PageId),
     /// Create a child of `parent` (None = root-level).
     CreateChild { parent: Option<PageId> },
+    /// Reorder `id` among its siblings: `delta < 0` moves it earlier,
+    /// `delta > 0` later. Backs the Alt-↑ / Alt-↓ reorder shortcut.
+    Move { id: PageId, delta: i32 },
 }
 
 /// What the sidebar is doing this frame: idle, or actively renaming
@@ -85,11 +102,21 @@ pub struct NoteTreeView {
     /// Per-row hit rect, recomputed in `apply_layout` from the flat
     /// row vector. Indexed identically.
     row_rects: Vec<Rect>,
+    /// Hit rect of the header "+" new-page button, from `apply_layout`.
+    new_page_btn_rect: Rect,
+    /// True while the pointer hovers the "+" button, so it can light up.
+    new_page_btn_hover: bool,
     /// Currently active double-click detection state.
     last_click: Option<ClickRecord>,
     rename: Option<RenameState>,
     /// Outbound commands the parent should drain via [`take_events`].
     pending_events: Vec<OutEvent>,
+    /// Set when the visible-row set needs rebuilding but no [`OutEvent`]
+    /// was produced — e.g. after an expand/collapse toggle, which
+    /// changes `expanded` locally but can't re-flatten the tree without
+    /// the parent's [`Workspace`]. The parent drains it via
+    /// [`take_rows_dirty`] and re-runs `sync_from_workspace`.
+    rows_dirty: bool,
     /// True until the next `mark_drawn`. Coarse: every state mutation
     /// flips this on. Worth optimising later when we have profiler
     /// evidence that the sidebar is a hotspot.
@@ -120,9 +147,12 @@ impl NoteTreeView {
             last_cursor: None,
             last_modifiers: ModifiersState::empty(),
             row_rects: Vec::new(),
+            new_page_btn_rect: Rect::ZERO,
+            new_page_btn_hover: false,
             last_click: None,
             rename: None,
             pending_events: Vec::new(),
+            rows_dirty: false,
             dirty: true,
         }
     }
@@ -131,6 +161,14 @@ impl NoteTreeView {
     /// Called by `NotesApp` once per tick after `handle_event`.
     pub fn take_events(&mut self) -> Vec<OutEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    /// Drain the "visible rows need rebuilding" flag. The parent calls
+    /// this after routing events and re-runs [`sync_from_workspace`] when
+    /// it comes back true, so an expand/collapse toggle actually shows /
+    /// hides the affected children.
+    pub fn take_rows_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.rows_dirty)
     }
 
     /// Rebuild the flat row vector from the [`Workspace`]. Called by
@@ -226,7 +264,7 @@ impl Widget for NoteTreeView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let rows = self.flat_rows.len().max(1);
-        let height = (rows as f64) * ROW_HEIGHT + 8.0;
+        let height = HEADER_HEIGHT + (rows as f64) * ROW_HEIGHT + 8.0;
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -255,10 +293,18 @@ impl Widget for NoteTreeView {
         let resized = new_rect.width() != self.rect.width()
             || new_rect.height() != self.rect.height();
         self.rect = new_rect;
-        // Position each row.
+        // Header "+" new-page button — square, pinned to the top-right
+        // of the header strip.
+        self.new_page_btn_rect = Rect::new(
+            self.rect.x1 - NEW_BTN_MARGIN - NEW_BTN_SIZE,
+            self.rect.y0 + (HEADER_HEIGHT - NEW_BTN_SIZE) / 2.0,
+            self.rect.x1 - NEW_BTN_MARGIN,
+            self.rect.y0 + (HEADER_HEIGHT + NEW_BTN_SIZE) / 2.0,
+        );
+        // Position each row, offset below the header strip.
         self.row_rects.clear();
         for i in 0..self.flat_rows.len() {
-            let y0 = self.rect.y0 + 4.0 + (i as f64) * ROW_HEIGHT;
+            let y0 = self.rect.y0 + HEADER_HEIGHT + (i as f64) * ROW_HEIGHT;
             let y1 = y0 + ROW_HEIGHT;
             self.row_rects
                 .push(Rect::new(self.rect.x0, y0, self.rect.x1, y1));
@@ -304,6 +350,46 @@ impl Widget for NoteTreeView {
             tokens.colors.surfaces.raised,
             None,
             &self.rect,
+        );
+
+        // Header strip: a small "PAGES" label on the left and a "+"
+        // new-page button on the right. The button is the visible
+        // affordance the welcome copy ("add a page from the left")
+        // points at.
+        let header_text_y =
+            self.rect.y0 + (HEADER_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
+        text_renderer.draw_text(
+            scene,
+            "PAGES",
+            ROW_TEXT_SIZE - 2.0,
+            tokens.colors.text_dim,
+            transform * Affine::translate((self.rect.x0 + 8.0, header_text_y)),
+            Some((self.new_page_btn_rect.x0 - self.rect.x0 - 12.0).max(0.0) as f32),
+        );
+        // Button chip — brighter when hovered so it reads as clickable.
+        let btn_bg = if self.new_page_btn_hover {
+            theme.accent_primary.with_alpha_factor(0.28)
+        } else {
+            tokens.colors.surface_white_10
+        };
+        let btn = vello::kurbo::RoundedRect::from_rect(
+            self.new_page_btn_rect,
+            tokens.radii.sm as f64,
+        );
+        scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
+        // "+" glyph, centred in the button.
+        let plus_size = ROW_TEXT_SIZE + 2.0;
+        let (plus_w, _) = text_renderer.measure("+", plus_size, None);
+        let plus_x = self.new_page_btn_rect.center().x - plus_w as f64 / 2.0;
+        let plus_y =
+            self.new_page_btn_rect.center().y - plus_size as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            "+",
+            plus_size,
+            tokens.colors.text_primary,
+            transform * Affine::translate((plus_x, plus_y)),
+            None,
         );
 
         for (i, row) in self.flat_rows.iter().enumerate() {
@@ -456,10 +542,16 @@ impl Widget for NoteTreeView {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Some(Point::new(
+                let pt = Point::new(
                     position.x / scale_factor,
                     position.y / scale_factor,
-                ));
+                );
+                self.last_cursor = Some(pt);
+                let hover = self.new_page_btn_rect.contains(pt);
+                if hover != self.new_page_btn_hover {
+                    self.new_page_btn_hover = hover;
+                    self.dirty = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -468,6 +560,17 @@ impl Widget for NoteTreeView {
             } => {
                 let Some(pt) = self.last_cursor else { return };
                 if !self.rect.contains(pt) {
+                    return;
+                }
+                // Header "+" button — create a new root-level page. This
+                // is the affordance the welcome copy refers to.
+                if self.new_page_btn_rect.contains(pt) {
+                    self.pending_events
+                        .push(OutEvent::CreateChild { parent: None });
+                    self.is_focused = true;
+                    *focus_target = Some(node_id);
+                    self.dirty = true;
+                    *handled = true;
                     return;
                 }
                 for i in 0..self.flat_rows.len() {
@@ -486,6 +589,10 @@ impl Widget for NoteTreeView {
                         if !self.expanded.insert(row_id) {
                             self.expanded.remove(&row_id);
                         }
+                        // The visible-row set changed but we have no
+                        // Workspace here to re-flatten — signal the parent
+                        // to re-sync so the children show / hide.
+                        self.rows_dirty = true;
                         self.dirty = true;
                         *handled = true;
                         return;
@@ -539,16 +646,27 @@ impl Widget for NoteTreeView {
                     return;
                 }
                 let mods = modifiers.state();
-                // Cmd-N / Ctrl-N — create child of current selection.
-                if matches!(logical_key, Key::Character(c) if c.eq_ignore_ascii_case("n"))
-                    && (mods.contains(ModifiersState::SUPER)
-                        || mods.contains(ModifiersState::CONTROL))
-                {
-                    self.pending_events.push(OutEvent::CreateChild {
-                        parent: self.selected,
-                    });
-                    *handled = true;
-                    return;
+                // Alt-↑ / Alt-↓ — reorder the selected page among its
+                // siblings. Checked before the plain arrow navigation
+                // below so the modifier picks reorder over move-selection.
+                if mods.contains(ModifiersState::ALT) {
+                    if let Some(sel) = self.selected {
+                        match logical_key {
+                            Key::Named(NamedKey::ArrowUp) => {
+                                self.pending_events
+                                    .push(OutEvent::Move { id: sel, delta: -1 });
+                                *handled = true;
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                self.pending_events
+                                    .push(OutEvent::Move { id: sel, delta: 1 });
+                                *handled = true;
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 match logical_key {
                     Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
@@ -659,6 +777,13 @@ impl NoteTreeView {
     #[doc(hidden)]
     pub fn row_center_for_test(&self, idx: usize) -> Option<Point> {
         self.row_rects.get(idx).map(|r| r.center())
+    }
+
+    /// Test hook: the centre of the header "+" new-page button, for
+    /// click targeting through the real event path.
+    #[doc(hidden)]
+    pub fn new_page_btn_center_for_test(&self) -> Point {
+        self.new_page_btn_rect.center()
     }
 }
 

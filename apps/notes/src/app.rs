@@ -259,11 +259,7 @@ impl NotesApp {
             .as_ref()
             .map(|s| s.status())
             .unwrap_or(SaveStatus::Saved);
-        let save_status = match (workspace_status, page_status) {
-            (SaveStatus::Failed, _) | (_, SaveStatus::Failed) => SaveStatus::Failed,
-            (SaveStatus::Saving, _) | (_, SaveStatus::Saving) => SaveStatus::Saving,
-            _ => SaveStatus::Saved,
-        };
+        let save_status = combine_save_status(workspace_status, page_status);
         self.status.set_state(StatusBarState {
             save_status,
             page_path: path,
@@ -656,6 +652,12 @@ impl NotesApp {
                 }
                 self.main.load_page(id, "Untitled".to_string(), String::new());
             }
+            OutEvent::Move { id, delta } => {
+                // Reorder among siblings. The new `order` propagates to
+                // the shared doc on the next `sync` (which upserts every
+                // local page's meta) and to disk via `persist()` below.
+                self.workspace.move_sibling(id, delta);
+            }
         }
         // After every event refresh the link pages so the popovers
         // see fresh titles.
@@ -735,7 +737,14 @@ impl NotesApp {
     /// Called after every `handle_event` call.
     fn drain_sidebar_events(&mut self) {
         let events = self.sidebar.take_events();
+        // An expand/collapse toggle mutates the sidebar's `expanded` set
+        // without emitting an event; it still needs a re-flatten so the
+        // affected children appear / disappear.
+        let rows_dirty = self.sidebar.take_rows_dirty();
         if events.is_empty() {
+            if rows_dirty {
+                self.sidebar.sync_from_workspace(&self.workspace);
+            }
             return;
         }
         for ev in events {
@@ -794,6 +803,14 @@ impl NotesApp {
         &self.status
     }
 
+    /// Test hook: re-run the real `refresh_status` merge WITHOUT
+    /// draining editor edits (so polling for an async saver result
+    /// doesn't re-queue the save and starve its debounce).
+    #[doc(hidden)]
+    pub fn refresh_status_for_test(&mut self) {
+        self.refresh_status();
+    }
+
     /// Test hook: apply one [`OutEvent`] through the same code path
     /// the sidebar would drive it. Lets integration tests simulate
     /// "user clicked Create Child in the sidebar" without forging
@@ -825,6 +842,34 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_row_center_for_test(&self, idx: usize) -> Option<Point> {
         self.sidebar.row_center_for_test(idx)
+    }
+
+    /// Test hook: centre of the sidebar's "+" new-page button, for
+    /// click targeting through the real event path.
+    #[doc(hidden)]
+    pub fn sidebar_new_page_btn_center_for_test(&self) -> Point {
+        self.sidebar.new_page_btn_center_for_test()
+    }
+
+    /// Test hook: drop the editor's keyboard focus so global single-key
+    /// shortcuts (like `?`) fire instead of typing into a note. Mirrors
+    /// the state when the page tree — not the editor — is focused.
+    #[doc(hidden)]
+    pub fn blur_editor_for_test(&mut self) {
+        self.main.editor_mut().set_focus(false);
+    }
+
+    /// Test hook: whether the shortcuts overlay is currently visible.
+    #[doc(hidden)]
+    pub fn shortcuts_visible_for_test(&self) -> bool {
+        self.shortcuts.is_visible()
+    }
+
+    /// Test hook: whether the sidebar currently has an inline rename
+    /// editor open (e.g. after F2 / double-click).
+    #[doc(hidden)]
+    pub fn sidebar_is_renaming_for_test(&self) -> bool {
+        self.sidebar.is_renaming()
     }
 
     /// Test hook: mirror the workspace into the sidebar's row list, the
@@ -894,6 +939,20 @@ Three dashes make a divider:
 
 Double-click a title in the sidebar to rename it.
 ";
+
+/// Combine the workspace saver's status with the page-body saver's into
+/// the single indicator the status bar renders. Worst-of wins so the
+/// most actionable signal surfaces: any `Failed` shows "Save failed";
+/// otherwise any `Saving` shows "Saving…"; only when both are clean do
+/// we report `Saved`. Free function so the merge is unit-testable
+/// without spinning up the background saver threads.
+fn combine_save_status(workspace: SaveStatus, page: SaveStatus) -> SaveStatus {
+    match (workspace, page) {
+        (SaveStatus::Failed, _) | (_, SaveStatus::Failed) => SaveStatus::Failed,
+        (SaveStatus::Saving, _) | (_, SaveStatus::Saving) => SaveStatus::Saving,
+        _ => SaveStatus::Saved,
+    }
+}
 
 fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
     let id = workspace.create_page(None);
@@ -1277,19 +1336,27 @@ impl Widget for NotesApp {
             return;
         }
 
-        // `?` (Shift+/) opens the shortcuts overlay. Two flavours:
-        // a literal `?` character commit (most layouts) and the named
-        // key Slash with shift held (some IME / mobile-keyboard paths).
-        if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
-            ..
-        } = event
-        {
-            if c.as_str() == "?" {
-                self.shortcuts.set_visible(true);
-                *handled = true;
-                self.refresh_status();
-                return;
+        // `?` opens the shortcuts overlay — but ONLY when a note isn't
+        // being typed into. A notes app is a text editor; if `?` were a
+        // global shortcut the character could never be typed into a
+        // note. So we gate it on the editor NOT holding focus (and the
+        // palette being closed, so `?` still filters there). When the
+        // editor is focused the key falls through to the block editor
+        // and types a literal `?`; when the page tree / nothing is
+        // focused, `?` opens help. This is the standard "help key only
+        // outside inputs" behaviour.
+        if !self.palette.is_visible() && !self.main.editor().is_focused() {
+            if let WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+                ..
+            } = event
+            {
+                if c.as_str() == "?" {
+                    self.shortcuts.set_visible(true);
+                    *handled = true;
+                    self.refresh_status();
+                    return;
+                }
             }
         }
 
@@ -1309,6 +1376,30 @@ impl Widget for NotesApp {
                     let anchor_y = self.rect.y0 + 80.0;
                     self.palette.set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
                     self.palette.set_visible(true);
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // Cmd-N / Ctrl-N creates a child of the selected page. Handled
+        // at the app level — not just in the sidebar — so it works no
+        // matter which pane holds focus. The editor takes focus on load,
+        // so a sidebar-only handler (gated on the tree being focused)
+        // would silently no-op, making the welcome copy "Cmd-N adds a
+        // page under the selection" a lie. `N` is modifier-qualified, so
+        // it never conflicts with typing into a note.
+        if !self.palette.is_visible() {
+            if let WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+                ..
+            } = event
+            {
+                let mods = modifiers.state();
+                if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
+                    let parent = self.workspace.selected();
+                    self.apply_event(OutEvent::CreateChild { parent });
+                    self.sidebar.sync_from_workspace(&self.workspace);
                     *handled = true;
                     return;
                 }
@@ -1541,6 +1632,23 @@ mod tests {
         assert!(!child_path.exists());
         // Selection falls back to a remaining root page.
         assert_eq!(app.workspace.selected(), Some(root));
+    }
+
+    #[test]
+    fn combine_save_status_is_worst_of() {
+        use SaveStatus::*;
+        // Failed dominates every combination.
+        assert_eq!(combine_save_status(Failed, Saved), Failed);
+        assert_eq!(combine_save_status(Saved, Failed), Failed);
+        assert_eq!(combine_save_status(Failed, Saving), Failed);
+        assert_eq!(combine_save_status(Saving, Failed), Failed);
+        assert_eq!(combine_save_status(Failed, Failed), Failed);
+        // Saving wins over Saved when nothing failed.
+        assert_eq!(combine_save_status(Saving, Saved), Saving);
+        assert_eq!(combine_save_status(Saved, Saving), Saving);
+        assert_eq!(combine_save_status(Saving, Saving), Saving);
+        // Only both-clean reports Saved.
+        assert_eq!(combine_save_status(Saved, Saved), Saved);
     }
 
     #[test]
