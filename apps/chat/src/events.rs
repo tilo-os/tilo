@@ -15,13 +15,18 @@ use crate::app::{
 };
 use crate::call::{CallAction, OverlayDrag};
 use crate::doc::{ChatDoc, NewMessage, NOW};
-use crate::model::{self, ChannelKind};
+use crate::model::{self, ChannelKind, Id};
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(NOW)
+}
+
+/// Byte offset of character index `ci` in `s` (clamped to the end).
+fn char_byte(s: &str, ci: usize) -> usize {
+    s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
 }
 
 impl ChatApp {
@@ -144,6 +149,12 @@ impl ChatApp {
                 anchor: self.last_mouse,
                 items: MenuAction::for_category().to_vec(),
             }),
+            // One of your own messages — offer the message actions (Edit).
+            Hit::MessageMenu { msg } => Some(ContextMenu {
+                target: MenuTarget::Message(msg),
+                anchor: self.last_mouse,
+                items: MenuAction::for_message().to_vec(),
+            }),
             _ => Some(ContextMenu {
                 target: MenuTarget::Workspace(self.active_ws.clone()),
                 anchor: self.last_mouse,
@@ -199,14 +210,11 @@ impl ChatApp {
             Hit::CategoryToggle(id) => {
                 ChatDoc::toggle_category_collapsed(doc, &id);
             }
-            Hit::ContextMenu { target, anchor } => {
-                let items = match &target {
-                    MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
-                    MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
-                    MenuTarget::Workspace(_) => vec![MenuAction::NewCategory],
-                };
-                self.menu = Some(ContextMenu { target, anchor, items });
-            }
+            // Left-click on your own message body is a no-op — the edit menu
+            // is a right-click affordance (see `on_right_click`).
+            Hit::MessageMenu { .. } => {}
+            Hit::EditSave => self.commit_edit(doc),
+            Hit::EditCancel => self.cancel_edit(),
             Hit::MenuAction { target, action } => {
                 self.menu = None;
                 self.apply_menu_action(target, action, doc);
@@ -396,6 +404,11 @@ impl ChatApp {
         match target {
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
+            MenuTarget::Message(id) => {
+                if action == MenuAction::EditMessage {
+                    self.begin_edit(id);
+                }
+            }
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
                     let id = ChatDoc::create_category(doc, &ws, "New Category");
@@ -450,7 +463,7 @@ impl ChatApp {
         let current = match &target {
             MenuTarget::Channel(id) => self.channel(id).map(|c| c.name.clone()),
             MenuTarget::Category(id) => self.category(id).map(|c| c.name.clone()),
-            MenuTarget::Workspace(_) => None,
+            MenuTarget::Message(_) | MenuTarget::Workspace(_) => None,
         }
         .unwrap_or_default();
         self.caret = current.chars().count();
@@ -465,7 +478,7 @@ impl ChatApp {
                 match target {
                     MenuTarget::Channel(id) => ChatDoc::rename_channel(doc, &id, text),
                     MenuTarget::Category(id) => ChatDoc::rename_category(doc, &id, text),
-                    MenuTarget::Workspace(_) => {}
+                    MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
             }
             self.caret = 0;
@@ -478,6 +491,23 @@ impl ChatApp {
         // The inline rename editor captures all keys while open.
         if self.rename.is_some() {
             return self.rename_key(key, doc);
+        }
+
+        // The inline message editor captures keys while open: Enter saves,
+        // Escape cancels; every other key edits its working text through the
+        // shared handlers below (which target `self.editing` when it's set).
+        if self.editing.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.cancel_edit();
+                    return true;
+                }
+                Key::Named(NamedKey::Enter) if !modifiers.state().shift_key() => {
+                    self.commit_edit(doc);
+                    return true;
+                }
+                _ => {}
+            }
         }
 
         // Escape unwinds the top-most layer.
@@ -530,7 +560,18 @@ impl ChatApp {
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.caret = (self.caret + 1).min(self.focused_draft().chars().count());
+                self.caret = (self.caret + 1).min(self.editable_char_len());
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                // From an empty composer, ArrowUp loads your last message into
+                // the inline editor (Slack/Discord convention). Ignored once an
+                // edit is already in progress or a draft is being composed.
+                if self.editing.is_none() && self.focused_draft().is_empty() {
+                    if let Some(id) = self.last_own_message_id() {
+                        self.begin_edit(id);
+                    }
+                }
                 true
             }
             Key::Named(NamedKey::Home) => {
@@ -538,7 +579,7 @@ impl ChatApp {
                 true
             }
             Key::Named(NamedKey::End) => {
-                self.caret = self.focused_draft().chars().count();
+                self.caret = self.editable_char_len();
                 true
             }
             Key::Character(s) => {
@@ -600,6 +641,14 @@ impl ChatApp {
     }
 
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
+        // The inline message editor keeps its working text in memory (like the
+        // rename editor) so an in-progress edit isn't published until saved.
+        if let Some((_, text)) = &mut self.editing {
+            let at = char_byte(text, self.caret);
+            text.insert_str(at, s);
+            self.caret += s.chars().count();
+            return;
+        }
         let key = self.draft_key();
         let obj = ChatDoc::draft_obj(doc, &key);
         let _ = doc.splice_text(&obj, self.caret, 0, s);
@@ -611,11 +660,82 @@ impl ChatApp {
         if self.caret == 0 {
             return;
         }
+        if let Some((_, text)) = &mut self.editing {
+            let end = char_byte(text, self.caret);
+            let start = char_byte(text, self.caret - 1);
+            text.replace_range(start..end, "");
+            self.caret -= 1;
+            return;
+        }
         let key = self.draft_key();
         let obj = ChatDoc::draft_obj(doc, &key);
         let _ = doc.splice_text(&obj, self.caret - 1, 1, "");
         self.caret -= 1;
         self.reload(doc);
+    }
+
+    /// Character count of whatever text the caret currently indexes: the
+    /// inline message editor when one is open, otherwise the focused draft.
+    fn editable_char_len(&self) -> usize {
+        match &self.editing {
+            Some((_, text)) => text.chars().count(),
+            None => self.focused_draft().chars().count(),
+        }
+    }
+
+    /// Enter edit mode on one of your own messages: load its current body into
+    /// the inline editor with the caret at the end. Only your own messages are
+    /// editable; a foreign id is ignored. Closes any open popover.
+    pub(crate) fn begin_edit(&mut self, id: Id) {
+        let Some(m) = self.message(&id) else { return };
+        if m.author != model::ME {
+            return;
+        }
+        let text = m.text.clone();
+        self.caret = text.chars().count();
+        self.editing = Some((id, text));
+        self.focus = Focus::Main;
+        self.menu = None;
+        self.emoji_open = false;
+        self.emoji_target = None;
+        self.history_open = None;
+    }
+
+    /// The id of your most recent message in the surface the composer is
+    /// focused on (the main timeline, or the open thread) — the target of
+    /// ArrowUp-to-edit from an empty composer.
+    fn last_own_message_id(&self) -> Option<Id> {
+        let in_thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some();
+        let parent = self.thread_open.clone();
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| {
+                m.author == model::ME
+                    && if in_thread { m.parent == parent } else { m.parent.is_none() }
+            })
+            .map(|m| m.id.clone())
+    }
+
+    /// Commit the inline message editor: write the new body through
+    /// [`ChatDoc::edit_message`] (which archives the prior text into the
+    /// message's history and flags it edited), then close the editor. An
+    /// edit that empties the message is discarded rather than blanking it.
+    fn commit_edit(&mut self, doc: &mut AutoCommit) {
+        let Some((id, text)) = self.editing.take() else { return };
+        self.caret = 0;
+        if text.trim().is_empty() {
+            return;
+        }
+        ChatDoc::edit_message(doc, &self.active_channel, &id, &text, now_secs());
+        self.reload(doc);
+        self.persist(doc);
+    }
+
+    /// Discard the inline message editor without writing.
+    fn cancel_edit(&mut self) {
+        self.editing = None;
+        self.caret = 0;
     }
 
     fn send_focused(&mut self, doc: &mut AutoCommit) {
@@ -801,6 +921,57 @@ mod tests {
     }
 
     #[test]
+    fn expanded_overlay_fills_the_surface_at_every_width() {
+        // The narrow/portrait void regression, exercised through the real app:
+        // join the demo huddle, expand, and at each target width the host +
+        // remote tiles must cover the whole content band — no large empty
+        // region beneath or beside the host.
+        use vello::kurbo::Rect;
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        assert!(app.call.active && app.call.expanded);
+
+        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+            app.rect = Rect::new(0.0, 0.0, w, h);
+            let region = app.overlay_content_region();
+            let tiles = app.overlay_tiles();
+            assert_eq!(tiles.len(), 4, "w={w}: host + three remotes → four tiles");
+            // Every tile inside the region.
+            for t in &tiles {
+                assert!(
+                    t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5
+                        && t.y0 >= region.y0 - 0.5 && t.y1 <= region.y1 + 0.5,
+                    "w={w}: a tile escaped the content region"
+                );
+            }
+            // Bounding box covers the region (within one gap) in both axes.
+            let bbox = tiles.iter().fold(
+                Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
+                |b, r| Rect::new(b.x0.min(r.x0), b.y0.min(r.y0), b.x1.max(r.x1), b.y1.max(r.y1)),
+            );
+            let slack = region.width().min(region.height()) * 0.05 + 17.0;
+            assert!(
+                region.x1 - bbox.x1 <= slack && bbox.x0 - region.x0 <= slack,
+                "w={w}: horizontal void — bbox x {:?} vs region x [{:.0},{:.0}]",
+                (bbox.x0, bbox.x1), region.x0, region.x1
+            );
+            assert!(
+                region.y1 - bbox.y1 <= slack && bbox.y0 - region.y0 <= slack,
+                "w={w}: vertical void below the tiles — bbox y1 {:.0} vs region y1 {:.0}",
+                bbox.y1, region.y1
+            );
+            // The host is a genuine cell, not a pinned sliver.
+            let host = app.overlay_host_rect();
+            assert_eq!(host, tiles[0], "host is the first grid cell");
+            assert!(
+                host.width() > region.width() * 0.25 && host.height() > region.height() * 0.25,
+                "w={w}: host tile is a real share of the surface, not a corner sliver"
+            );
+        }
+    }
+
+    #[test]
     fn leaving_a_call_removes_local_member() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
@@ -941,6 +1112,100 @@ mod tests {
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.reconcile_flaps();
         assert_eq!(app.left_mode, FlapMode::Docked, "widening reflows back to docked");
+    }
+
+    /// Drive an edit end to end through the real handlers: the message action
+    /// menu's Edit loads the body into the inline editor, keystrokes revise it,
+    /// and Enter writes it through `ChatDoc::edit_message` — flagging the
+    /// message edited and archiving the prior body into its history.
+    #[test]
+    fn edit_via_menu_writes_through_edit_message() {
+        let (mut app, mut doc) = app_with_doc();
+        let original = app.message("m_me1").unwrap().text.clone();
+        let history_before = app.message("m_me1").unwrap().history.len();
+        assert!(!app.message("m_me1").unwrap().edited);
+
+        // The right-click menu resolves to this action; invoke it directly.
+        app.on_hit(
+            Hit::MenuAction {
+                target: MenuTarget::Message("m_me1".into()),
+                action: MenuAction::EditMessage,
+            },
+            &mut doc,
+        );
+        assert!(app.editing.is_some(), "Edit loads the message into the inline editor");
+        assert_eq!(app.editing.as_ref().unwrap().1, original, "editor seeded with the current body");
+
+        let mods = Modifiers::default();
+        // Clear the working text, then type a new body — all via the key path.
+        while app.editing.as_ref().is_some_and(|(_, t)| !t.is_empty()) {
+            app.on_key(&Key::Named(NamedKey::Backspace), &mods, &mut doc);
+        }
+        for ch in "Revised: host tile carries the follow control.".chars() {
+            let k = if ch == ' ' {
+                Key::Named(NamedKey::Space)
+            } else {
+                Key::Character(ch.to_string().into())
+            };
+            app.on_key(&k, &mods, &mut doc);
+        }
+        // Enter commits.
+        app.on_key(&Key::Named(NamedKey::Enter), &mods, &mut doc);
+
+        assert!(app.editing.is_none(), "saving closes the editor");
+        let m = app.message("m_me1").unwrap();
+        assert_eq!(m.text, "Revised: host tile carries the follow control.");
+        assert!(m.edited, "the message is flagged edited");
+        assert_eq!(m.history.len(), history_before + 1, "history grew by one revision");
+        assert_eq!(m.history.last().unwrap().text, original, "history holds the original body");
+    }
+
+    /// ArrowUp in an empty composer loads your most recent message into the
+    /// inline editor (Slack/Discord convention).
+    #[test]
+    fn arrow_up_in_empty_composer_edits_last_own_message() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        assert!(app.draft_main.is_empty(), "composer starts empty");
+        app.on_key(&Key::Named(NamedKey::ArrowUp), &Modifiers::default(), &mut doc);
+        let (id, text) = app.editing.clone().expect("ArrowUp opened the editor");
+        assert_eq!(id, "m_me2", "loaded the last own top-level message");
+        assert_eq!(text, app.message("m_me2").unwrap().text, "seeded with its current body");
+    }
+
+    /// ArrowUp does nothing once a draft is being composed — it must not
+    /// clobber in-progress text with an edit.
+    #[test]
+    fn arrow_up_with_a_draft_does_not_start_editing() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.insert_text(&mut doc, "half a thought");
+        app.on_key(&Key::Named(NamedKey::ArrowUp), &Modifiers::default(), &mut doc);
+        assert!(app.editing.is_none(), "a non-empty composer suppresses ArrowUp-to-edit");
+    }
+
+    /// Escape cancels an in-progress edit and writes nothing.
+    #[test]
+    fn edit_escape_discards_without_writing() {
+        let (mut app, mut doc) = app_with_doc();
+        let original = app.message("m_me1").unwrap().text.clone();
+        app.begin_edit("m_me1".into());
+        app.on_key(&Key::Character("Z".into()), &Modifiers::default(), &mut doc);
+        app.on_key(&Key::Named(NamedKey::Escape), &Modifiers::default(), &mut doc);
+        assert!(app.editing.is_none(), "Escape closes the editor");
+        let m = app.message("m_me1").unwrap();
+        assert_eq!(m.text, original, "cancel leaves the message untouched");
+        assert!(!m.edited, "cancel does not flag the message edited");
+    }
+
+    /// Only your own messages are editable — loading a foreign message is a
+    /// no-op, so there is no way to rewrite someone else's words.
+    #[test]
+    fn cannot_edit_another_authors_message() {
+        let (mut app, _doc) = app_with_doc();
+        assert_eq!(app.message("m_open").unwrap().author, "u_aria");
+        app.begin_edit("m_open".into());
+        assert!(app.editing.is_none(), "a foreign message never enters the editor");
     }
 
     #[test]

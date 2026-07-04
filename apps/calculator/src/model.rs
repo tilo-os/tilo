@@ -20,6 +20,14 @@ impl Mode {
             Mode::Graph3d => "Graph 3D",
         }
     }
+    /// Condensed label for a narrow topbar where the full [`label`] won't fit.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Mode::Calc => "Calc",
+            Mode::Graph2d => "2D",
+            Mode::Graph3d => "3D",
+        }
+    }
     pub fn all() -> [Mode; 3] {
         [Mode::Calc, Mode::Graph2d, Mode::Graph3d]
     }
@@ -100,6 +108,10 @@ pub struct CalcModel {
 }
 
 impl Default for CalcModel {
+    /// The live launch state: an empty calculator in Calc mode. Nothing is
+    /// pre-plotted, no history, no memory — the app boots to a blank slate the
+    /// user fills in. (A lived-in demo state lives behind [`CalcModel::seeded`],
+    /// used only by the headless screenshot + tests.)
     fn default() -> Self {
         Self {
             mode: Mode::Calc,
@@ -111,18 +123,24 @@ impl Default for CalcModel {
             history: Vec::new(),
             funcs: Vec::new(),
             active_fn: 0,
-            surface: "sin(sqrt(x^2+y^2))".to_string(),
+            surface: String::new(),
             view2d: View2d::default(),
             view3d: View3d::default(),
         }
     }
 }
 
+/// The default `z = f(x, y)` surface a user gets when they first open Graph 3D
+/// (a starter example to explore + edit, not restored user state).
+pub const DEFAULT_SURFACE: &str = "sin(sqrt(x^2+y^2))";
+
 impl CalcModel {
-    /// Rich starting content so a fresh launch (and the `--shots` frame)
-    /// shows a populated, lived-in calculator + graphs.
+    /// Rich starting content for the headless `--shots` frame and tests — a
+    /// populated, lived-in calculator + graphs. NEVER used by the live event
+    /// loop (which boots empty via [`CalcModel::default`]).
     pub fn seeded() -> Self {
         let mut m = CalcModel::default();
+        m.surface = DEFAULT_SURFACE.to_string();
         m.mode = Mode::Graph2d;
         // The headless screenshot picks which tab it captures via this hook;
         // unset (the live default) keeps the lived-in Graph 2D launch view.

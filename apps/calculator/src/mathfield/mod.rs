@@ -257,6 +257,47 @@ impl MathField {
         scene.pop_layer();
     }
 
+    /// Map remote collaborators' scene-space cursor positions onto this field's
+    /// 2D glyph layout, returning a caret-bar rect + colour for each cursor that
+    /// lands within the field. This is what turns a peer's `RemoteCursorMoved`
+    /// event into a caret drawn *inside* the structured formula (snapped to the
+    /// nearest insertion gap), rather than only a floating pointer over the
+    /// window.
+    pub fn remote_caret_bars(&self, cursors: &[(Point, Color)]) -> Vec<(Rect, Color)> {
+        let Some(layout) = self.layout.as_ref() else {
+            return Vec::new();
+        };
+        let origin = self.content_origin();
+        let mut out = Vec::new();
+        for (p, col) in cursors {
+            if !self.rect.contains(*p) {
+                continue;
+            }
+            let lx = p.x - origin.x;
+            let ly = p.y - origin.y;
+            if let Some(g) = layout::nearest_gap(&layout.gaps, lx, ly) {
+                let x = origin.x + g.x;
+                let bar = Rect::new(x - 1.0, origin.y + g.top, x + 1.0, origin.y + g.bottom);
+                out.push((bar, *col));
+            }
+        }
+        out
+    }
+
+    /// Draw remote collaborators' carets into this field (clipped to its rect),
+    /// each in the peer's colour. Call after [`MathField::draw`].
+    pub fn draw_remote_carets(&self, scene: &mut Scene, t: Affine, cursors: &[(Point, Color)]) {
+        let bars = self.remote_caret_bars(cursors);
+        if bars.is_empty() {
+            return;
+        }
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
+        for (bar, col) in bars {
+            scene.fill(Fill::NonZero, t, col, None, &bar);
+        }
+        scene.pop_layer();
+    }
+
     /// The engine-ready linear form after an edit, recording it as the new
     /// source so a subsequent [`set_source`] with the same value is a no-op.
     pub fn current_linear(&mut self) -> String {

@@ -256,14 +256,30 @@ impl MapsApp {
         self.origin_results = self.local_matches("hauptbahnhof");
     }
 
-    /// Screenshot-only hook: anchor the Transit picker to an "Arrive by" time an
-    /// hour out, so the stepped time label and the "Now" reset chip render.
+    /// Screenshot-only hook: open Directions in Transit mode anchored to an
+    /// "Arrive by" time an hour out, so the departures list, the stepped time
+    /// label and the "Now" reset chip all render.
     pub fn set_demo_transit_arrive(&mut self) {
-        self.model.panel = Panel::Transit;
+        self.model.panel = Panel::Directions;
+        self.model.mode = TravelMode::Transit;
+        self.model.route = None;
         self.model.transit_time = crate::model::TransitTime {
             mode: TransitTimeMode::Arrive,
             offset_min: 60,
         };
+    }
+
+    /// Screenshot-only hook: select a travel mode in the Directions panel so
+    /// each mode (including public Transit) can be captured headlessly. Offline
+    /// sample data already populates the route/departures, so nothing fetches.
+    pub fn set_travel_mode(&mut self, mode: TravelMode) {
+        self.model.mode = mode;
+        self.model.panel = Panel::Directions;
+        // A transit journey draws no road polyline; drop the sample road route
+        // so the map under the departures stays clean.
+        if mode.is_transit() {
+            self.model.route = None;
+        }
     }
 
     /// Screenshot/test helper: an offline (no-worker, no-network) app that
@@ -271,6 +287,51 @@ impl MapsApp {
     /// basemap — so the empty Explore hint can be captured hermetically.
     pub fn offline_empty() -> Self {
         Self::build(MapModel::default(), Basemap::default(), TileLayer::offline(), true, false)
+    }
+
+    /// Live-verify helper: a fully live app (real tile worker, real network,
+    /// `online == true`) whose on-disk tile cache is rooted at `cache_dir`
+    /// instead of the shared default. Identical production path to [`new`] —
+    /// the only difference is a redirectable cache — so a live integration
+    /// test can start from a clean cache and inspect exactly the PNGs the
+    /// worker writes. Not used by the live app or `--shots`.
+    pub fn new_with_cache_dir(cache_dir: std::path::PathBuf) -> Self {
+        Self::build(
+            MapModel::default(),
+            Basemap::default(),
+            TileLayer::with_cache_dir(cache_dir),
+            false,
+            true,
+        )
+    }
+
+    // --- live-verify accessors ---------------------------------------------
+    // Read-only windows onto the tile layer for the live-render harness and
+    // the full-plumbing integration test. They assert on the *production*
+    // request→worker→fetch→decode→drain path, not a mock.
+
+    /// Decoded OSM raster tiles resident in memory. `> 0` proves the live path
+    /// fetched AND decoded real imagery (the thing the mock/sample tests never
+    /// exercised).
+    pub fn tiles_mem_len(&self) -> usize {
+        self.tiles.mem_len()
+    }
+
+    /// Whether any tile fetch failed and is in the negative-cache backoff —
+    /// i.e. imagery is unreachable (egress blocked / offline).
+    pub fn tiles_has_failures(&self) -> bool {
+        self.tiles.has_failures()
+    }
+
+    /// Whether any tile request is still awaiting the background worker.
+    pub fn tiles_has_inflight(&self) -> bool {
+        self.tiles.has_inflight()
+    }
+
+    /// On-disk tile cache root (`z/x/y.png` beneath it) — so a test can prove
+    /// real PNGs were persisted.
+    pub fn tiles_cache_dir(&self) -> &std::path::Path {
+        self.tiles.cache_dir()
     }
 
     // --- geometry helpers --------------------------------------------------
@@ -409,22 +470,19 @@ impl MapsApp {
         // Leaving/entering a tab drops any in-progress endpoint editing so
         // keystrokes never land in a field that isn't on screen.
         self.edit_field = None;
-        // Switching to a routing tab actually performs the lookup for the
-        // current place — the tab is not a passive view. Without this the
-        // Transit tab would render its empty state as if a lookup had run and
-        // come back empty, when in fact nothing was ever requested.
-        match panel {
-            Panel::Directions if self.model.route.is_none() => {
+        // Entering Directions actually performs the lookup for the current
+        // place + travel mode — the tab is not a passive view. Transit is a
+        // mode of Directions, so which lookup runs depends on the active mode.
+        if panel == Panel::Directions {
+            if self.model.mode.is_transit() {
+                let has_target =
+                    self.model.dest.is_some() || self.model.selected_place().is_some();
+                if self.model.transit.is_empty() && self.pending == 0 && has_target {
+                    self.recompute_transit();
+                }
+            } else if self.model.route.is_none() {
                 self.recompute_route();
             }
-            Panel::Transit
-                if self.model.transit.is_empty()
-                    && self.pending == 0
-                    && self.model.selected_place().is_some() =>
-            {
-                self.recompute_transit();
-            }
-            _ => {}
         }
         self.mark_dirty();
     }
@@ -605,7 +663,7 @@ impl MapsApp {
         }
         self.edit_field = None;
         self.model.center = p.pos;
-        if self.model.panel == Panel::Transit {
+        if self.model.mode.is_transit() {
             self.recompute_transit();
         } else {
             self.recompute_route();
@@ -645,19 +703,26 @@ impl MapsApp {
         }
     }
 
-    /// Start (or restart) routing to the selected place, forcing the
-    /// destination to the current selection. Tapping "Directions" on a place
-    /// card or pressing `d` re-targets the route at whatever is selected now.
+    /// Open Directions to the selected place, forcing the destination to the
+    /// current selection. Tapping "Directions" on a place card or pressing `d`
+    /// re-targets the route at whatever is selected now, honouring the active
+    /// travel mode (a road route, or a transit journey if Transit is selected).
     fn enter_directions(&mut self) {
         self.set_dest_to_selection();
         self.model.panel = Panel::Directions;
-        self.recompute_route();
+        if self.model.mode.is_transit() {
+            self.recompute_transit();
+        } else {
+            self.recompute_route();
+        }
     }
 
-    /// Start (or restart) a transit lookup to the selected place, forcing the
-    /// destination to the current selection.
+    /// Open Directions in Transit mode to the selected place, forcing the
+    /// destination to the current selection. The place-card "Transit" shortcut
+    /// and the `t` key land here.
     fn enter_transit(&mut self) {
         self.set_dest_to_selection();
+        self.model.mode = TravelMode::Transit;
         self.recompute_transit();
     }
 
@@ -704,14 +769,21 @@ impl MapsApp {
         };
         let origin = self.resolve_origin();
         self.model.origin = Some(origin);
-        self.model.panel = Panel::Transit;
+        // Transit is a mode of Directions, not a separate surface.
+        self.model.panel = Panel::Directions;
+        self.model.mode = TravelMode::Transit;
         self.model.transit_choice = 0;
+        // A transit journey has no road polyline — drop any road route so the
+        // map doesn't draw a car line beneath the departures.
+        self.model.route = None;
         self.nav_open = true;
         // Real departures only: clear any stale itineraries and show a loading
         // state until the planner responds — we never fabricate departures.
         self.model.transit.clear();
         self.pending += 1;
         self.model.status = "Finding departures…".to_string();
+        // No route geometry to fit; frame the map on the endpoints instead.
+        self.fit_points(&[origin, dest]);
         if self.online {
             let tx = self.net_tx.clone();
             let query = self.transit_query();
@@ -726,7 +798,13 @@ impl MapsApp {
     fn set_mode(&mut self, mode: TravelMode) {
         if self.model.mode != mode {
             self.model.mode = mode;
-            self.recompute_route();
+            self.model.panel = Panel::Directions;
+            // Transit plans a public-transport journey; the road modes route.
+            if mode.is_transit() {
+                self.recompute_transit();
+            } else {
+                self.recompute_route();
+            }
         }
     }
 
@@ -758,19 +836,26 @@ impl MapsApp {
     }
 
     fn fit_route(&mut self) {
-        if let Some(route) = &self.model.route {
-            // In the docked layout the map shares the width with the panel; in
-            // the overlay layout the drawer floats over a full-width map.
-            let w = if self.overlay_mode() {
-                self.rect.width() - MARGIN * 2.0
-            } else {
-                self.rect.width() - (self.panel_w() + MARGIN * 2.0 + GAP)
-            };
-            let h = self.rect.height();
-            if let Some((c, z)) = geo::fit_bounds(&route.geometry, w.max(200.0), h, 70.0) {
-                self.model.center = c;
-                self.model.zoom = z.min(16.5);
-            }
+        if let Some(route) = self.model.route.clone() {
+            self.fit_points(&route.geometry);
+        }
+    }
+
+    /// Frame the map so `pts` fit the visible map area (the part not covered by
+    /// the docked panel). Used to fit a road route's geometry and, for transit
+    /// where there is no road polyline, the origin/destination pair.
+    fn fit_points(&mut self, pts: &[LatLon]) {
+        // In the docked layout the map shares the width with the panel; in the
+        // overlay layout the drawer floats over a full-width map.
+        let w = if self.overlay_mode() {
+            self.rect.width() - MARGIN * 2.0
+        } else {
+            self.rect.width() - (self.panel_w() + MARGIN * 2.0 + GAP)
+        };
+        let h = self.rect.height();
+        if let Some((c, z)) = geo::fit_bounds(pts, w.max(200.0), h, 70.0) {
+            self.model.center = c;
+            self.model.zoom = z.min(16.5);
         }
     }
 
@@ -919,7 +1004,7 @@ impl MapsApp {
                 }
                 // If a destination is known, re-plan from the real location.
                 if self.model.dest.is_some() {
-                    if self.model.panel == Panel::Transit {
+                    if self.model.mode.is_transit() {
                         self.recompute_transit();
                     } else {
                         self.recompute_route();
@@ -1422,7 +1507,7 @@ impl MapsApp {
         let inset = 10.0;
         let tabs_rect = Rect::new(pr.x0 + inset, pr.y0 + inset, pr.x1 - inset, pr.y0 + inset + TAB_H);
         draw::fill_rrect(scene, t, tabs_rect, 9.0, c.surfaces.base);
-        let seg_w = tabs_rect.width() / 3.0;
+        let seg_w = tabs_rect.width() / Panel::ALL.len() as f64;
         for (i, p) in Panel::ALL.iter().enumerate() {
             let x0 = tabs_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(x0, tabs_rect.y0, x0 + seg_w, tabs_rect.y1);
@@ -1443,7 +1528,6 @@ impl MapsApp {
         let drawn = match self.model.panel {
             Panel::Explore => self.draw_explore(scene, t, tr, theme, content, cy),
             Panel::Directions => self.draw_directions(scene, t, tr, theme, content, cy),
-            Panel::Transit => self.draw_transit(scene, t, tr, theme, content, cy),
         };
         scene.pop_layer();
         self.content_h = drawn - content.y0 + self.scroll;
@@ -1740,10 +1824,12 @@ impl MapsApp {
             y += 8.0;
         }
 
-        // Mode segmented control.
+        // Mode segmented control — Drive / Transit / Cycle / Walk. Transit is
+        // a mode here, not a separate tab: selecting it swaps the route summary
+        // below for the public-transport departures.
         let mode_rect = Rect::new(x, y, right, y + 40.0);
         draw::fill_rrect(scene, t, mode_rect, 9.0, c.surfaces.base);
-        let seg_w = mode_rect.width() / 3.0;
+        let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
         for (i, m) in TravelMode::ALL.iter().enumerate() {
             let sx = mode_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
@@ -1752,12 +1838,19 @@ impl MapsApp {
                 draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
             }
             let fg = if active { Color::WHITE } else { theme.text_dim };
-            draw::text_center(scene, tr, t, m.label(), seg.x0, seg.x1, vmid(seg.y0, seg.height(), 13.0), 13.0, fg);
+            draw::text_center(scene, tr, t, m.label(), seg.x0, seg.x1, vmid(seg.y0, seg.height(), 12.0), 12.0, fg);
             self.click_targets.push((seg, Hit::Mode(*m)));
         }
         y += 52.0;
 
-        // Route summary + steps.
+        // Transit mode plans a public-transport journey (time picker +
+        // departures) instead of a road route.
+        if self.model.mode.is_transit() {
+            y = self.draw_transit_time_picker(scene, t, tr, theme, content, y);
+            return self.draw_departures(scene, t, tr, theme, content, y);
+        }
+
+        // Route summary + steps for the road modes.
         if let Some(route) = self.model.route.clone() {
             let big = geo::fmt_duration(route.duration_s);
             draw::text_w(scene, tr, t, &big, x, y, 26.0, theme.accent_primary, TextWeight::Bold);
@@ -1865,7 +1958,10 @@ impl MapsApp {
         y + 12.0
     }
 
-    fn draw_transit(
+    /// The public-transport departures list for Transit mode. The depart/arrive
+    /// time picker is drawn by [`draw_directions`] just above this; here we
+    /// render the destination header and the itinerary cards.
+    fn draw_departures(
         &mut self,
         scene: &mut Scene,
         t: Affine,
@@ -1877,9 +1973,6 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
-        // Time picker first so the depart/arrive anchor is set before reading
-        // the departures below it.
-        y = self.draw_transit_time_picker(scene, t, tr, theme, content, y);
         let to = if !self.model.dest_name.is_empty() {
             self.model.dest_name.clone()
         } else {
@@ -1892,10 +1985,12 @@ impl MapsApp {
         y += 26.0;
 
         if self.model.transit.is_empty() {
+            let has_target =
+                self.model.dest.is_some() || self.model.selected_place().is_some();
             let msg = if self.pending > 0 {
                 "Finding departures…"
-            } else if self.model.selected_place().is_none() {
-                "Pick a destination to see departures."
+            } else if !has_target {
+                "Choose a destination to see departures."
             } else {
                 "No public-transport itineraries found."
             };
@@ -2318,10 +2413,6 @@ impl MapsApp {
                     self.set_panel(Panel::Directions);
                     true
                 }
-                Key::Character(s) if s.as_str() == "3" => {
-                    self.set_panel(Panel::Transit);
-                    true
-                }
                 Key::Named(NamedKey::ArrowLeft) => {
                     self.pan_by(-80.0, 0.0);
                     true
@@ -2587,21 +2678,25 @@ mod tests {
         assert!(ba.distance_m > 1.0, "swapped route must not be a degenerate 0 m");
     }
 
-    /// Switching to the Transit tab for a selected place must actually start
-    /// the departures lookup, not merely flip the view — otherwise the panel
-    /// renders a false "no itineraries found" for a lookup that never ran.
+    /// Selecting the Transit travel mode for a place must actually start the
+    /// departures lookup, land in the Directions panel (Transit is a mode of
+    /// Directions, not a separate tab), and drop any stale road route — not
+    /// merely flip a view and render a false "no itineraries found".
     #[test]
-    fn transit_tab_triggers_fetch_for_selected_place() {
+    fn transit_mode_triggers_fetch_and_opens_directions() {
         let mut a = app_at(1280.0, 800.0);
         // Select a place other than the sample's default so the stale sample
         // departures are dropped (destination-specific).
         a.select_place("hofgarten");
         assert!(a.model.transit.is_empty(), "selecting a new place drops stale departures");
         a.model.panel = Panel::Explore;
+        a.model.mode = TravelMode::Car;
 
-        a.set_panel(Panel::Transit);
-        assert_eq!(a.model.panel, Panel::Transit);
-        assert!(a.pending > 0, "transit tab must kick off a departures lookup");
+        a.set_mode(TravelMode::Transit);
+        assert_eq!(a.model.panel, Panel::Directions, "transit is a mode of Directions");
+        assert!(a.model.mode.is_transit());
+        assert!(a.model.route.is_none(), "a transit journey draws no road route");
+        assert!(a.pending > 0, "transit mode must kick off a departures lookup");
         assert!(
             a.model.status.contains("departures") || a.model.status.contains('…'),
             "a lookup should surface a loading status, got {:?}",
@@ -2864,6 +2959,36 @@ mod tests {
         let handled = press_left(&mut a);
         assert!(handled, "tab click must be handled");
         assert_eq!(a.model.panel, Panel::Directions, "panel switched to Directions");
+    }
+
+    /// Clicking the Transit segment of the Directions mode row (through the real
+    /// draw → hit-test → dispatch path) switches to Transit mode, stays in the
+    /// Directions panel, drops the road route, and kicks off a departures
+    /// lookup — proving Transit is wired as a travel mode, not a dead label.
+    #[test]
+    fn transit_mode_segment_click_via_handle_event() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.panel = Panel::Directions;
+        a.model.mode = TravelMode::Car;
+        // Draw once so the mode-segment hot-regions are recorded.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let seg = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Mode(TravelMode::Transit)))
+            .map(|(r, _)| r.center())
+            .expect("Transit mode segment hot-region recorded");
+
+        move_to(&mut a, seg.x, seg.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "mode-segment click must be handled");
+        assert!(a.model.mode.is_transit(), "clicking Transit selects transit mode");
+        assert_eq!(a.model.panel, Panel::Directions, "stays in Directions");
+        assert!(a.model.route.is_none(), "transit clears the road route");
+        assert!(a.pending > 0, "transit mode starts a departures lookup");
     }
 
     /// A press-then-drag over the map pans the view via the real cursor/mouse
