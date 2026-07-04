@@ -1,0 +1,63 @@
+name: Check + test the whole workspace
+
+# Fast feedback that EVERY crate compiles + its tests pass — the image build only
+# compiles the 6 OS binaries, so without this the ~45 apps could (and did) rot
+# undetected. Runs on push/PR to main; the heavier image build stays separate.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: runner
+    container:
+      image: quay.io/fedora/fedora:42
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Install build deps (mirror os/Containerfile builder + a headless Vulkan driver for GPU tests)
+        run: |
+          dnf install -y \
+            rust cargo sccache \
+            gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+            clang clang-devel pkgconf-pkg-config \
+            libxkbcommon-devel wayland-devel \
+            libseat-devel libinput-devel systemd-devel libdrm-devel \
+            mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
+            pipewire-devel \
+            openssl-devel sqlite-devel zlib-ng-compat-devel \
+            fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
+            nasm \
+            vulkan-loader mesa-vulkan-drivers \
+          && dnf clean all
+
+      - name: Workspace membership guard (no crate silently dropped)
+        run: ./scripts/check-workspace-complete.sh
+
+      - name: cargo check --workspace (every app + crate must compile)
+        env:
+          RUSTC_WRAPPER: sccache
+        run: |
+          # Servo's libservo can't resolve in a clean CI checkout; the image build
+          # drops it the same way. Committed Cargo.toml is untouched.
+          sed -i '/"apps\/browser",/d' Cargo.toml
+          cp os/Cargo.lock.pinned Cargo.lock
+          cargo check --workspace
+
+      - name: cargo test --workspace
+        env:
+          RUSTC_WRAPPER: sccache
+          # Headless GPU via llvmpipe; live network tests self-skip unless opted in.
+          WGPU_BACKEND: vulkan
+        run: cargo test --workspace --no-fail-fast

@@ -29,6 +29,11 @@ jobs:
           # Private repo checkout: reuse the REGISTRY_TOKEN PAT.
           token: ${{ secrets.REGISTRY_TOKEN }}
 
+      # Cheap fail-fast before the expensive podman build: no crate silently
+      # dropped from the workspace (that once orphaned 37 apps).
+      - name: Workspace membership guard
+        run: ./scripts/check-workspace-complete.sh
+
       # Only log in when we actually push (not on PRs — keep creds out of
       # untrusted PR contexts; PRs build-only to catch Containerfile breakage).
       - name: Log in to the code.podesta.ai registry
