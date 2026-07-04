@@ -1,0 +1,203 @@
+//! Owner-controlled publisher allowlist — the `publishers.toml`
+//! file the registry owner edits (via `qos-registry-server
+//! add-publisher` or by hand) to decide who can post entries.
+//!
+//! ```toml
+//! [[publisher]]
+//! pubkey_hex = "aabbcc..."   # 32-byte ed25519 pubkey, hex
+//! can_add_new = true         # if false, publisher can only edit
+//!                            # / delete entries whose stored
+//!                            # publisher_pubkey_hex matches theirs
+//! note = "acme software"     # free-form; not signed
+//! ```
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// One publisher row in `publishers.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublisherRow {
+    /// Ed25519 pubkey, hex encoded.
+    pub pubkey_hex: String,
+    /// Whether this publisher is allowed to POST new entries. If
+    /// `false`, they can still update or delete entries whose
+    /// stored `publisher_pubkey_hex` matches theirs.
+    #[serde(default)]
+    pub can_add_new: bool,
+    /// Free-form comment for the operator's own bookkeeping. Not
+    /// covered by any signature.
+    #[serde(default)]
+    pub note: String,
+}
+
+impl PublisherRow {
+    /// Parse the hex pubkey into raw bytes.
+    pub fn pubkey_bytes(&self) -> Result<[u8; 32], AllowlistError> {
+        parse_pubkey_hex(&self.pubkey_hex)
+    }
+}
+
+/// The full `publishers.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublisherAllowlist {
+    #[serde(default, rename = "publisher")]
+    pub publishers: Vec<PublisherRow>,
+}
+
+impl PublisherAllowlist {
+    /// Empty allowlist — nobody can post.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Parse from TOML source.
+    pub fn from_toml(s: &str) -> Result<Self, AllowlistError> {
+        toml::from_str(s).map_err(|e| AllowlistError::Parse(e.to_string()))
+    }
+
+    /// Encode to pretty TOML for `atomic_write`.
+    pub fn to_toml(&self) -> Result<String, AllowlistError> {
+        toml::to_string_pretty(self).map_err(|e| AllowlistError::Encode(e.to_string()))
+    }
+
+    /// Look up a publisher by raw pubkey bytes.
+    pub fn get(&self, pubkey: &[u8; 32]) -> Option<&PublisherRow> {
+        self.publishers
+            .iter()
+            .find(|p| p.pubkey_bytes().map(|b| &b == pubkey).unwrap_or(false))
+    }
+
+    /// The set of pubkeys allowed to authenticate any change
+    /// request — used to filter [`registry_types::verify_change_request`].
+    pub fn all_pubkey_bytes(&self) -> Vec<[u8; 32]> {
+        self.publishers
+            .iter()
+            .filter_map(|p| p.pubkey_bytes().ok())
+            .collect()
+    }
+
+    /// Insert a publisher, replacing any existing row with the
+    /// same pubkey. Returns `true` if a row was replaced.
+    pub fn upsert(&mut self, row: PublisherRow) -> bool {
+        if let Some(existing) = self
+            .publishers
+            .iter_mut()
+            .find(|p| p.pubkey_hex.eq_ignore_ascii_case(&row.pubkey_hex))
+        {
+            *existing = row;
+            return true;
+        }
+        self.publishers.push(row);
+        false
+    }
+
+    /// Remove a publisher by pubkey. Returns `true` if a row was
+    /// removed.
+    pub fn remove(&mut self, pubkey_hex: &str) -> bool {
+        let before = self.publishers.len();
+        self.publishers
+            .retain(|p| !p.pubkey_hex.eq_ignore_ascii_case(pubkey_hex));
+        self.publishers.len() != before
+    }
+}
+
+fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], AllowlistError> {
+    let bytes = hex::decode(s).map_err(|e| AllowlistError::BadHex(e.to_string()))?;
+    if bytes.len() != 32 {
+        return Err(AllowlistError::BadLength { got: bytes.len() });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+#[derive(Debug, Error)]
+pub enum AllowlistError {
+    #[error("TOML parse: {0}")]
+    Parse(String),
+    #[error("TOML encode: {0}")]
+    Encode(String),
+    #[error("hex decode: {0}")]
+    BadHex(String),
+    #[error("pubkey length {got}, expected 32")]
+    BadLength { got: usize },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_toml_roundtrip() {
+        let empty = PublisherAllowlist::empty();
+        let s = empty.to_toml().unwrap();
+        let back = PublisherAllowlist::from_toml(&s).unwrap();
+        assert_eq!(back, empty);
+    }
+
+    #[test]
+    fn single_publisher_roundtrip() {
+        let mut al = PublisherAllowlist::empty();
+        al.upsert(PublisherRow {
+            pubkey_hex: "aa".repeat(32),
+            can_add_new: true,
+            note: "acme".into(),
+        });
+        let s = al.to_toml().unwrap();
+        let back = PublisherAllowlist::from_toml(&s).unwrap();
+        assert_eq!(back, al);
+    }
+
+    #[test]
+    fn upsert_replaces_existing() {
+        let mut al = PublisherAllowlist::empty();
+        assert!(!al.upsert(PublisherRow {
+            pubkey_hex: "aa".repeat(32),
+            can_add_new: false,
+            note: "".into(),
+        }));
+        assert!(al.upsert(PublisherRow {
+            pubkey_hex: "aa".repeat(32),
+            can_add_new: true,
+            note: "later".into(),
+        }));
+        assert_eq!(al.publishers.len(), 1);
+        assert!(al.publishers[0].can_add_new);
+        assert_eq!(al.publishers[0].note, "later");
+    }
+
+    #[test]
+    fn get_finds_by_raw_bytes() {
+        let mut al = PublisherAllowlist::empty();
+        al.upsert(PublisherRow {
+            pubkey_hex: "de".repeat(32),
+            can_add_new: true,
+            note: "".into(),
+        });
+        assert!(al.get(&[0xde; 32]).is_some());
+        assert!(al.get(&[0x00; 32]).is_none());
+    }
+
+    #[test]
+    fn all_pubkey_bytes_skips_bad_hex() {
+        // If a hand-edited toml has junk in one row, the good rows
+        // still surface — matches the "prefer availability" bias
+        // for a public registry.
+        let al = PublisherAllowlist {
+            publishers: vec![
+                PublisherRow {
+                    pubkey_hex: "zzzz".into(),
+                    can_add_new: false,
+                    note: "".into(),
+                },
+                PublisherRow {
+                    pubkey_hex: "11".repeat(32),
+                    can_add_new: true,
+                    note: "".into(),
+                },
+            ],
+        };
+        let keys = al.all_pubkey_bytes();
+        assert_eq!(keys, vec![[0x11; 32]]);
+    }
+}
