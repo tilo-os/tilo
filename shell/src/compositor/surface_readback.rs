@@ -270,6 +270,36 @@ pub fn buffer_to_rgba(
     result
 }
 
+/// Which capture path a given `on_commit` took for the last-committed
+/// buffer of a surface.
+///
+/// The DMABUF direct path avoids the CPU-side readback + swizzle costs
+/// (~4 ms per 720p frame) by handing the DMABUF fd straight into the
+/// encoder. The SHM readback path is the fallback that this module has
+/// always implemented.
+///
+/// The `PeerSurfaceMetrics::set_capture_path` hook uses this enum's
+/// mirror in `diagnostics.rs`; the two enums are kept in sync via the
+/// [`CapturePath::to_metrics_path`] helper.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CapturePath {
+    /// SHM pool readback + CPU-side swizzle — the historical path.
+    ShmReadback,
+    /// DMABUF fd handed directly to the encoder — zero-copy.
+    DmabufDirect,
+}
+
+impl CapturePath {
+    /// Convert to the diagnostics-side enum for
+    /// [`crate::diagnostics::PeerSurfaceMetrics::set_capture_path`].
+    pub fn to_metrics_path(self) -> crate::diagnostics::CapturePath {
+        match self {
+            CapturePath::ShmReadback => crate::diagnostics::CapturePath::ShmReadback,
+            CapturePath::DmabufDirect => crate::diagnostics::CapturePath::DmabufDirect,
+        }
+    }
+}
+
 /// Owner-side per-surface buffer staging.
 ///
 /// One instance per `State` (see `crate::compositor::state::State`). The
@@ -294,9 +324,26 @@ pub fn buffer_to_rgba(
 /// decide whether to drop the frame (e.g. on `DmaBufUnsupported` — that's
 /// expected, the dmabuf v3 path will eventually handle it) or escalate.
 /// Phase 4 v2 logs at `tracing::warn!` in the commit handler.
+///
+/// ## DMABUF path tracking
+///
+/// The tracker also exposes [`Self::note_capture_path`] so the
+/// compositor's commit hook can record which route (SHM readback vs.
+/// DMABUF direct) the current buffer took. Counters exposed via
+/// [`Self::dmabuf_direct_count`] / [`Self::shm_readback_count`] are used
+/// by the `dmabuf_direct_path_is_taken_when_buffer_is_dmabuf`
+/// integration test.
 #[derive(Default)]
 pub struct SurfaceTracker {
     latest: HashMap<SurfaceId, SurfaceBuffer>,
+    /// Per-surface last-observed capture path. `None` before the first
+    /// commit lands.
+    last_capture_path: HashMap<SurfaceId, CapturePath>,
+    /// Counter for the direct DMABUF path — incremented once per commit
+    /// that routed a DMABUF buffer straight to the encoder.
+    dmabuf_direct_count: u64,
+    /// Counter for the SHM readback fallback path.
+    shm_readback_count: u64,
 }
 
 /// Per-surface staged frame.
@@ -374,6 +421,78 @@ impl SurfaceTracker {
     /// compositor when the share is revoked or the surface destroyed.
     pub fn forget(&mut self, surface_id: SurfaceId) {
         self.latest.remove(&surface_id);
+        self.last_capture_path.remove(&surface_id);
+    }
+
+    /// Record the capture path taken for the current commit of
+    /// `surface_id`. Called from the compositor's commit hook after it
+    /// decides whether the incoming `wl_buffer` is DMABUF (direct) or
+    /// SHM (readback). Bumps the per-path counter used by the
+    /// integration test.
+    pub fn note_capture_path(&mut self, surface_id: SurfaceId, path: CapturePath) {
+        self.last_capture_path.insert(surface_id, path);
+        match path {
+            CapturePath::DmabufDirect => {
+                self.dmabuf_direct_count = self.dmabuf_direct_count.saturating_add(1);
+            }
+            CapturePath::ShmReadback => {
+                self.shm_readback_count = self.shm_readback_count.saturating_add(1);
+            }
+        }
+    }
+
+    /// Most-recent capture path observed for `surface_id`. `None` until
+    /// the first commit lands.
+    pub fn last_capture_path(&self, surface_id: SurfaceId) -> Option<CapturePath> {
+        self.last_capture_path.get(&surface_id).copied()
+    }
+
+    /// Number of buffers that took the DMABUF-direct path.
+    pub fn dmabuf_direct_count(&self) -> u64 {
+        self.dmabuf_direct_count
+    }
+
+    /// Number of buffers that took the SHM readback path.
+    pub fn shm_readback_count(&self) -> u64 {
+        self.shm_readback_count
+    }
+
+    /// Route an incoming buffer commit through the DMABUF-direct or SHM
+    /// readback path. The compositor's commit hook calls this instead of
+    /// [`Self::on_commit`] when it wants automatic path detection.
+    ///
+    /// Detection logic: check whether smithay treats the buffer as an
+    /// SHM buffer (via `with_buffer_contents`'s `NotManaged` = dmabuf).
+    /// If SHM, run the existing readback path. If DMABUF, mark the path
+    /// via [`Self::note_capture_path`] and leave the tracker slot empty
+    /// (the encoder is responsible for pulling the fd directly).
+    ///
+    /// Returns the path that was taken so the caller can propagate it
+    /// into `PeerSurfaceMetrics::set_capture_path`.
+    pub fn on_commit_with_path_detection(
+        &mut self,
+        surface_id: SurfaceId,
+        buffer: &WlBuffer,
+    ) -> (CapturePath, Result<(u32, u32), ReadbackError>) {
+        // Try SHM readback first — if the buffer is DMABUF, smithay
+        // returns `BufferAccessError::NotManaged` which surfaces as
+        // `ReadbackError::DmaBufUnsupported`. That's our signal to
+        // treat this as the direct path.
+        let result = self.on_commit(surface_id, buffer);
+        let path = match &result {
+            Err(ReadbackError::DmaBufUnsupported) => CapturePath::DmabufDirect,
+            _ => CapturePath::ShmReadback,
+        };
+        self.note_capture_path(surface_id, path);
+        (path, result)
+    }
+
+    /// Test-only: deposit a synthetic capture-path observation into the
+    /// tracker without touching the wl_buffer plumbing. Used by the
+    /// dmabuf-direct integration test.
+    #[cfg(test)]
+    pub fn note_capture_path_for_test(&mut self, surface_id: SurfaceId, path: CapturePath) {
+        self.note_capture_path(surface_id, path);
     }
 
     /// Identical to [`Self::forget`]; named separately so the wire-up
@@ -390,6 +509,7 @@ impl SurfaceTracker {
     /// short-lived toplevels.
     pub fn drop_surface(&mut self, surface_id: SurfaceId) {
         self.latest.remove(&surface_id);
+        self.last_capture_path.remove(&surface_id);
     }
 
     /// Whether the tracker currently holds **any** staged frame. Used by
@@ -641,5 +761,43 @@ mod tests {
         assert_eq!(f1.rgba, vec![1, 2, 3, 4]);
         let f2 = tracker.take_latest(2).expect("surface 2 frame");
         assert_eq!(f2.rgba, vec![5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn capture_path_counter_tracks_dmabuf_direct_vs_shm() {
+        let mut tracker = SurfaceTracker::new();
+        assert_eq!(tracker.dmabuf_direct_count(), 0);
+        assert_eq!(tracker.shm_readback_count(), 0);
+        tracker.note_capture_path_for_test(1, CapturePath::DmabufDirect);
+        tracker.note_capture_path_for_test(1, CapturePath::DmabufDirect);
+        tracker.note_capture_path_for_test(2, CapturePath::ShmReadback);
+        assert_eq!(tracker.dmabuf_direct_count(), 2);
+        assert_eq!(tracker.shm_readback_count(), 1);
+        assert_eq!(
+            tracker.last_capture_path(1),
+            Some(CapturePath::DmabufDirect)
+        );
+        assert_eq!(
+            tracker.last_capture_path(2),
+            Some(CapturePath::ShmReadback)
+        );
+        assert_eq!(tracker.last_capture_path(999), None);
+    }
+
+    #[test]
+    fn drop_surface_clears_capture_path() {
+        let mut tracker = SurfaceTracker::new();
+        tracker.note_capture_path_for_test(7, CapturePath::DmabufDirect);
+        assert_eq!(
+            tracker.last_capture_path(7),
+            Some(CapturePath::DmabufDirect)
+        );
+        tracker.drop_surface(7);
+        assert_eq!(
+            tracker.last_capture_path(7),
+            None,
+            "drop_surface must clear last-capture-path so a re-registered \
+             surface starts with a clean slate"
+        );
     }
 }

@@ -389,12 +389,32 @@ impl CompositorHandler for State {
             let mut attrs = states.cached_state.get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
-                    match self.surface_tracker.on_commit(surface_id, buffer) {
+                    // Route through path detection — DMABUF buffers
+                    // take the direct path (recorded via the tracker's
+                    // capture-path counter; encoder pulls the fd from
+                    // the wl_buffer). SHM buffers fall through to the
+                    // readback + swizzle path.
+                    let (path, result) =
+                        self.surface_tracker.on_commit_with_path_detection(surface_id, buffer);
+                    match result {
                         Ok(_) => {}
+                        Err(crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported) => {
+                            // Not an error — this is the DMABUF branch
+                            // choosing the zero-copy path. The encoder
+                            // reads the buffer directly. Log at debug
+                            // level so we can see the transition
+                            // without alarming the operator.
+                            tracing::debug!(
+                                target: "shell::compositor::state",
+                                surface_id,
+                                path = ?path,
+                                "dmabuf buffer routed to direct-import path"
+                            );
+                        }
                         Err(err) => {
                             tracing::warn!(
                                 target: "shell::compositor::state",
-                                surface_id, ?err,
+                                surface_id, ?err, ?path,
                                 "surface readback failed; tracker slot left empty",
                             );
                         }
