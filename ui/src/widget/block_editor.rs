@@ -270,6 +270,12 @@ pub struct BlockEditor {
     /// The local user's id, threaded into the focused block's line so its
     /// edits stamp authorship marks. `None` = no authorship attribution.
     local_author: Option<String>,
+    /// Fixed end of a keyboard-driven cross-block selection: `(block,
+    /// byte)`. Set on the first `Ctrl+Shift+Arrow` (from the live caret)
+    /// and held across consecutive extends so the selection grows/shrinks
+    /// from a stable anchor. Cleared by any non-extend key or a mouse
+    /// press so the next extend starts fresh.
+    kbd_sel_anchor: Option<(usize, usize)>,
 }
 
 impl BlockEditor {
@@ -296,6 +302,7 @@ impl BlockEditor {
             blocks_list: None,
             doc_structure_dirty: false,
             local_author: None,
+            kbd_sel_anchor: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -332,6 +339,7 @@ impl BlockEditor {
             blocks_list: None,
             doc_structure_dirty: false,
             local_author: None,
+            kbd_sel_anchor: None,
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -1500,6 +1508,44 @@ impl BlockEditor {
         }
     }
 
+    /// Extend a keyboard-driven cross-block selection by one block in
+    /// `dir` (`-1` up, `+1` down). The anchor (fixed end) is latched from
+    /// the live caret on the first extend and held across subsequent
+    /// ones; the active end walks one block per press, landing at the end
+    /// of the block above (moving up) or the start of the block below
+    /// (moving down) — exactly the caret the plain arrow would jump to,
+    /// so the growing selection covers precisely the "jumped" text.
+    ///
+    /// Reuses the same band-painting the mouse cross-block drag uses so a
+    /// retreating extend (down then back up) clears the blocks it left.
+    fn extend_block_selection(&mut self, from_block: usize, caret: usize, dir: i32) {
+        // Latch the anchor at the caret the very first time we extend.
+        let anchor = *self.kbd_sel_anchor.get_or_insert((from_block, caret));
+        let target_block = if dir < 0 {
+            if from_block == 0 {
+                return; // already at the top — nothing to extend into
+            }
+            from_block - 1
+        } else {
+            if from_block + 1 >= self.blocks.len() {
+                return; // already at the bottom
+            }
+            from_block + 1
+        };
+        // Active end: end of the block above (up) or start of the block
+        // below (down).
+        let active_byte = if dir < 0 {
+            self.blocks[target_block].line.value().len()
+        } else {
+            0
+        };
+        // Move focus/caret to the active end, then paint the band from the
+        // fixed anchor to it across every block in between.
+        self.focus_block(target_block, CursorPlacement::Byte(active_byte));
+        self.paint_cross_block_selection(anchor.0, anchor.1, target_block, active_byte);
+        self.dirty = true;
+    }
+
     /// Clear every block's cross-block selection contribution. Called
     /// on the next fresh click (so the new selection doesn't OR with
     /// the old one).
@@ -1960,6 +2006,39 @@ impl Widget for BlockEditor {
             }
         }
 
+        // Reset the keyboard cross-block selection anchor on any event
+        // that isn't a Ctrl+Shift+Arrow extend, so the next extend latches
+        // a fresh anchor at the live caret rather than a stale one.
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let m = modifiers.state();
+                let is_extend = m.control_key()
+                    && m.shift_key()
+                    && matches!(
+                        logical_key,
+                        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown)
+                    );
+                if !is_extend {
+                    self.kbd_sel_anchor = None;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => {
+                self.kbd_sel_anchor = None;
+            }
+            _ => {}
+        }
+
         // Mouse: checkbox-click hit-test on Checklist rows. Runs BEFORE
         // event routing so the click doesn't fall through to TextInput
         // (which would just place the caret at byte 0).
@@ -2330,14 +2409,22 @@ impl BlockEditor {
                 }
             }
             LineSignal::ArrowUp => {
+                self.kbd_sel_anchor = None;
                 if idx > 0 {
                     self.focus_block(idx - 1, CursorPlacement::End);
                 }
             }
             LineSignal::ArrowDown => {
+                self.kbd_sel_anchor = None;
                 if idx + 1 < self.blocks.len() {
                     self.focus_block(idx + 1, CursorPlacement::Start);
                 }
+            }
+            LineSignal::SelectBlockUp { caret } => {
+                self.extend_block_selection(idx, caret, -1);
+            }
+            LineSignal::SelectBlockDown { caret } => {
+                self.extend_block_selection(idx, caret, 1);
             }
             LineSignal::LinkOpen { open_at } => {
                 // Anchor the popover under the line's bottom-left
@@ -2537,6 +2624,92 @@ mod tests {
             Some(1),
             "clicking inside block 1 must move focus (and the caret) there"
         );
+    }
+
+    #[test]
+    fn ctrl_shift_arrow_extends_selection_across_blocks() {
+        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+        use winit::keyboard::{
+            Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
+        };
+
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![
+            Block::paragraph("hello"),
+            Block::paragraph("world"),
+            Block::paragraph("foo"),
+        ]);
+        e.focus_block(0, CursorPlacement::Byte(2)); // caret after "he"
+
+        let ctrl_shift = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+        fn arrow(named: NamedKey) -> WindowEvent {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Named(named);
+            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+            ev.location = KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = None;
+            WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            }
+        }
+
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let mut send = |e: &mut BlockEditor, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut ft = None;
+            e.handle_event(
+                ev, 1.0, &ctrl_shift, &mut state, &root, &mut handled, &mut ft,
+                NodeId::new(0), &taffy,
+            );
+        };
+
+        // Down once: selects the tail of block 0 ("llo"), caret into block 1.
+        send(&mut e, &arrow(NamedKey::ArrowDown));
+        assert_eq!(e.focused_index(), Some(1), "active end walked into block 1");
+        assert_eq!(
+            e.blocks()[0].line.selection_range(),
+            Some((2, 5)),
+            "the jumped tail of block 0 is now selected (real key path)"
+        );
+
+        // Down again: block 1 fully selected too.
+        send(&mut e, &arrow(NamedKey::ArrowDown));
+        assert_eq!(e.focused_index(), Some(2));
+        assert_eq!(e.blocks()[0].line.selection_range(), Some((2, 5)));
+        assert_eq!(
+            e.blocks()[1].line.selection_range(),
+            Some((0, 5)),
+            "extending over block 1 selects it whole"
+        );
+
+        // Retreat up: block 2 cleared, block 1 selected to its end.
+        send(&mut e, &arrow(NamedKey::ArrowUp));
+        assert_eq!(e.focused_index(), Some(1));
+        assert_eq!(
+            e.blocks()[2].line.selection_range(),
+            None,
+            "retreating clears the block we left"
+        );
+        assert_eq!(e.blocks()[1].line.selection_range(), Some((0, 5)));
+    }
+
+    #[test]
+    fn plain_arrow_does_not_start_a_selection() {
+        // A bare ArrowDown moves the caret between blocks with no selection.
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::paragraph("hello"), Block::paragraph("world")]);
+        e.focus_block(0, CursorPlacement::Byte(2));
+        // Drive apply_signal directly with the plain-arrow signal.
+        e.apply_signal(0, LineSignal::ArrowDown);
+        assert_eq!(e.focused_index(), Some(1));
+        assert_eq!(e.blocks()[0].line.selection_range(), None);
+        assert_eq!(e.blocks()[1].line.selection_range(), None);
     }
 
     #[test]
