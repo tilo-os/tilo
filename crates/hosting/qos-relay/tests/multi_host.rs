@@ -1,10 +1,10 @@
 //! Multi-host: two relays are bound to the same workspace.
 //!
-//! Per the design (§5): "Multiple hosts are just more replicas of
-//! the same automerge doc (they merge)." The relays here don't
-//! implement inter-relay CRDT federation (that's SP3's directory
-//! sync + iroh-blobs); this test targets the routing choice a
-//! peer makes: **prefer the nearest reachable host**.
+//! Multiple hosts are just more replicas of the same automerge doc
+//! and merge like any other peers. The relays here don't implement
+//! inter-relay CRDT federation (that lives in the federation module,
+//! tested separately); this test targets the routing choice a peer
+//! makes: **prefer the nearest reachable host**.
 //!
 //! The concrete assertion is a peer's failover:
 //!
