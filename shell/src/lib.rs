@@ -26,3 +26,8 @@ pub mod diagnostics;
 // `compositor::surface_readback` behind a single public entry point.
 // See `src/collab/flatpak_share.rs`.
 pub mod collab;
+// Hand-rolled Wayland dispatch for extension protocols smithay 0.7
+// doesn't wrap — currently `color-management-v1` + a small EDID
+// parser used by the DRM output-side reporting. See
+// `src/wayland/color_management.rs`.
+pub mod wayland;

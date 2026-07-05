@@ -92,9 +92,11 @@ use std::sync::{
 };
 use std::time::Instant;
 
+use crate::collab::colorimetry::Colorimetry;
 use crate::collab::encoder::{
     Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, ProbeOutcome, build, probe,
 };
+use crate::collab::hdr_metadata::Hdr10Metadata;
 use smithay::backend::allocator::Buffer as _;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use crate::config::{EncoderChoice, FlatpakShareConfig};
@@ -324,6 +326,17 @@ pub struct SharedFlatpakSession {
     /// monotonic per-share; a keyframe flag rides in the header so
     /// late-joining viewers know when it's safe to start decoding.
     stream_sender: Arc<SurfaceStreamSender>,
+    /// Client-supplied colorimetry override. When the compositor
+    /// observes a `wp_color_management_surface_v1.set_image_description`
+    /// on the shared surface, it calls [`Self::set_color_override`] to
+    /// stash the description here. [`Self::stream_start_msg`] then
+    /// prefers this value over the config-driven default — meaning the
+    /// encoded stream travels the wire tagged with the client's
+    /// declared BT.2020/PQ (or HLG) colorimetry even when the config
+    /// says SDR.
+    ///
+    /// `None` (the default) means "no override" and the config wins.
+    color_override: Arc<Mutex<Option<(Colorimetry, Option<Hdr10Metadata>)>>>,
 }
 
 impl SharedFlatpakSession {
@@ -453,7 +466,46 @@ impl SharedFlatpakSession {
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
             stream_sender: Arc::new(SurfaceStreamSender::new(surface_id, host_user_id)),
+            color_override: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Attach a client-declared colorimetry that overrides the
+    /// config-driven default on the wire. Called by the compositor's
+    /// `wp_color_management_surface_v1` dispatch when the client
+    /// commits a `set_image_description`. The next
+    /// [`Self::stream_start_msg`] carries the override.
+    ///
+    /// The override is Arc-shared so a background clone (e.g. the
+    /// compositor's per-frame hook) can update it without racing the
+    /// session's read path.
+    pub fn set_color_override(
+        &self,
+        colorimetry: Colorimetry,
+        hdr: Option<Hdr10Metadata>,
+    ) {
+        if let Ok(mut slot) = self.color_override.lock() {
+            *slot = Some((colorimetry, hdr));
+        }
+    }
+
+    /// Drop any prior colorimetry override — call from the compositor
+    /// when the client sends `unset_image_description` or destroys
+    /// the color-management surface. The next
+    /// [`Self::stream_start_msg`] falls back to the config-driven
+    /// default.
+    pub fn clear_color_override(&self) {
+        if let Ok(mut slot) = self.color_override.lock() {
+            *slot = None;
+        }
+    }
+
+    /// Currently-active override (a diagnostic hook used by the
+    /// override tests).
+    pub fn current_color_override(
+        &self,
+    ) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
+        self.color_override.lock().ok().and_then(|g| g.clone())
     }
 
     /// Which encoder the runtime probe picked. Distinct from
@@ -502,19 +554,50 @@ impl SharedFlatpakSession {
         // the two values by a couple of hundred nanoseconds and yield a
         // handshake that's off by the same amount — small, but avoidable.
         let now_ns = self.monotonic_ns_now();
-        let (codec_label, colorimetry, hdr_static, bit_depth) = match self.config.hdr {
-            None => (
-                super::encoder::Codec::H264.wire_label().to_string(),
-                Some(crate::collab::colorimetry::Colorimetry::sdr_bt709()),
-                None,
-                8u8,
-            ),
-            Some(hdr_cfg) => (
-                super::encoder::Codec::HevcMain10.wire_label().to_string(),
-                Some(hdr_cfg.colorimetry()),
-                Some(hdr_cfg.metadata),
-                10u8,
-            ),
+        // Precedence:
+        // 1. Client-declared image description (via
+        //    `wp_color_management_surface_v1.set_image_description`)
+        //    — the sender's intent takes priority so late-joining
+        //    peers decode against the client's actual colorimetry.
+        // 2. HDR config (workspace opt-in).
+        // 3. SDR BT.709 default.
+        //
+        // Bit depth is derived from the transfer function — HDR
+        // transfers (PQ / HLG) imply 10-bit, everything else 8-bit.
+        // The codec label follows: HEVC Main10 for HDR, H.264 for SDR.
+        let override_val = self.current_color_override();
+        let (codec_label, colorimetry, hdr_static, bit_depth) = if let Some((
+            client_color,
+            client_hdr,
+        )) = override_val
+        {
+            let is_hdr = client_color.is_hdr();
+            let codec = if is_hdr {
+                super::encoder::Codec::HevcMain10
+            } else {
+                super::encoder::Codec::H264
+            };
+            (
+                codec.wire_label().to_string(),
+                Some(client_color),
+                client_hdr.or(self.config.hdr.map(|c| c.metadata)),
+                if is_hdr { 10u8 } else { 8u8 },
+            )
+        } else {
+            match self.config.hdr {
+                None => (
+                    super::encoder::Codec::H264.wire_label().to_string(),
+                    Some(crate::collab::colorimetry::Colorimetry::sdr_bt709()),
+                    None,
+                    8u8,
+                ),
+                Some(hdr_cfg) => (
+                    super::encoder::Codec::HevcMain10.wire_label().to_string(),
+                    Some(hdr_cfg.colorimetry()),
+                    Some(hdr_cfg.metadata),
+                    10u8,
+                ),
+            }
         };
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,

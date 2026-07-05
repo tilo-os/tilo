@@ -62,6 +62,7 @@ use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
+use crate::wayland::color_management::ColorManagerState;
 use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
@@ -197,6 +198,13 @@ pub struct State {
     /// `encode_next_frame` takes `&self`; the `Arc` also lets the
     /// share manager keep an independent handle for the stop path.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
+    /// `wp_color_manager_v1` state — advertised primaries / transfers /
+    /// features, plus the registered global id. HDR clients bind the
+    /// global, query supported capabilities, and attach parametric
+    /// image descriptions to their surfaces; the flatpak-share
+    /// encoder reads the current per-surface description through
+    /// [`crate::wayland::color_management::surface_current_colorimetry`].
+    pub color_manager: ColorManagerState,
 }
 
 impl State {
@@ -271,6 +279,10 @@ impl State {
         // inject text. Keys flow through the seat keyboard above to the
         // focused surface; the global self-registers in the display.
         VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |_client| true);
+        // Advertise the `wp_color_manager_v1` global. Constructing
+        // before the state literal below because `display_handle` is
+        // moved into the struct.
+        let color_manager = ColorManagerState::new::<Self>(&display_handle);
 
         Self {
             loop_handle,
@@ -292,6 +304,7 @@ impl State {
             remote_seats: RemoteSeats::new(),
             surface_resolver: None,
             active_sessions: HashMap::new(),
+            color_manager,
         }
     }
 
@@ -697,6 +710,18 @@ impl CompositorHandler for State {
             }
         });
 
+        // Colorimetry passthrough: whatever the client committed with
+        // `wp_color_management_surface_v1.set_image_description`
+        // becomes the wire-tagged colorimetry the share session
+        // reports on stream_start. Unset clears the override so the
+        // config-driven default wins again.
+        if let Some(session) = self.active_sessions.get(&surface_id).cloned() {
+            match crate::wayland::color_management::surface_current_colorimetry(surface) {
+                Some((color, hdr)) => session.set_color_override(color, hdr),
+                None => session.clear_color_override(),
+            }
+        }
+
         // Share-session tick hook: if this surface has an active
         // Flatpak share session, deposit the freshly-captured RGBA
         // and pump the encoder in the same tick. Without this hook
@@ -885,6 +910,21 @@ delegate_dmabuf!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_output!(State);
+
+// `AsRef<ColorManagerState>` lets the color-management `GlobalDispatch`
+// impl reach the advertised-capability list without adding a public
+// getter on `State`.
+impl AsRef<ColorManagerState> for State {
+    fn as_ref(&self) -> &ColorManagerState {
+        &self.color_manager
+    }
+}
+
+// `wp_color_manager_v1` + friends live outside smithay's delegate
+// wrappers — we hand-roll them in `wayland::color_management`. The
+// macro invocation below expands to the `Dispatch` /
+// `GlobalDispatch` route-through for every interface in the protocol.
+crate::delegate_color_management!(State);
 
 #[cfg(test)]
 mod tick_hook_tests {
