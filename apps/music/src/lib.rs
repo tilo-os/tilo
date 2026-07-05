@@ -52,7 +52,9 @@ pub mod doc;
 pub mod icon;
 pub mod lyrics;
 pub mod model;
+pub mod mpris;
 pub mod net;
+pub mod portal;
 pub mod relay;
 pub mod seed;
 pub mod source;
@@ -65,8 +67,15 @@ pub use app::{MusicApp, View};
 use ui::widget::Widget;
 
 /// Build and return the app's root widget tree.
+///
+/// This is the live-binary entry (not `--shots`/tests), so it also brings up
+/// the MPRIS D-Bus service (media keys + the desktop media controls). MPRIS
+/// degrades to a no-op stub without the `audio` feature or a session bus, so
+/// this never fails.
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(MusicApp::new())
+    let mut app = MusicApp::new();
+    app.enable_mpris();
+    Box::new(app)
 }
 
 /// Like [`app_root`] but staged for a named `--shots` scenario. `--shots`
