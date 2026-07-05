@@ -50,6 +50,12 @@ impl DiagnosticsPanel {
         }
     }
 
+    /// Borrow the current diagnostics so the source editor can render inline
+    /// squiggles + hover tooltips from the same list the panel shows.
+    pub fn diags(&self) -> &[Diagnostic] {
+        &self.diags
+    }
+
     pub fn error_count(&self) -> usize {
         self.diags.iter().filter(|d| d.kind == DiagKind::Error).count()
     }
