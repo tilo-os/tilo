@@ -15,7 +15,19 @@ echo "=== Building qOS Image ==="
 # can see the whole cargo workspace; .containerignore trims target/, os/output
 # and .git. The first build is a long cold Rust compile (cached on rebuilds).
 echo "--- Step 1: Building container image (in-image cargo compile) ---"
-podman build -f "$SCRIPT_DIR/Containerfile" -t localhost/qos:latest "$PROJECT_DIR"
+# Load the pinned frozen-repo + qos-kernel refs (both required — the
+# Containerfile has no default for them, so a build without either fails
+# loudly at the FROM instead of silently pulling from stale mirrors).
+# shellcheck disable=SC1091
+[ -f "$SCRIPT_DIR/rpms-snapshot.env" ] && . "$SCRIPT_DIR/rpms-snapshot.env"
+# shellcheck disable=SC1091
+[ -f "$SCRIPT_DIR/kernel-snapshot.env" ] && . "$SCRIPT_DIR/kernel-snapshot.env"
+: "${RPMS_REF:?no RPMS_REF — run the snapshot-rpms workflow first}"
+: "${KERNEL_RPMS_REF:?no KERNEL_RPMS_REF — run the build-kernel workflow first}"
+podman build -f "$SCRIPT_DIR/Containerfile" -t localhost/qos:latest \
+    --build-arg "RPMS_REF=$RPMS_REF" \
+    --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
+    "$PROJECT_DIR"
 echo "Container image built: localhost/qos:latest"
 
 # Step 2: Transfer image to root storage (bootc-image-builder runs as root)
