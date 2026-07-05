@@ -150,6 +150,16 @@ impl FlapState {
         self.reveal = if open { 1.0 } else { 0.0 };
     }
 
+    /// Snap `reveal` to whatever the current (resolved) openness is, WITHOUT
+    /// recording a user preference. Unlike [`Self::snap`] this keeps the flap
+    /// following the layout default — it just removes the eased transient. Use
+    /// it on the first frame (or a structural breakpoint cross) so a flap that
+    /// starts `open_when_docked` doesn't briefly paint its reveal at a width
+    /// where the resolved default is closed.
+    pub fn settle(&mut self, layout: SplitLayout) {
+        self.reveal = if self.is_open(layout) { 1.0 } else { 0.0 };
+    }
+
     /// Drop a stale user preference when the layout crosses the breakpoint,
     /// so a window resize returns to the auto behaviour. Call once per frame
     /// before reading [`Self::reveal`]. The first reconcile (no prior

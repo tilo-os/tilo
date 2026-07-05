@@ -17,6 +17,7 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod zoom;
 
 pub use app::CalculatorApp;
 
