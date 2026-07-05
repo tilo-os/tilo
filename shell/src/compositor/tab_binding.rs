@@ -19,7 +19,7 @@
 //! `compositor::state::State::new_toplevel`).
 
 use crate::shell::state::{
-    Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, WorkspaceTree,
+    GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, WorkspaceTree,
     next_id,
 };
 
@@ -147,6 +147,29 @@ pub fn rename_tab_for_app_id(
     false
 }
 
+/// Resolve the window group that owns the `TileContent::Foreign` tab bound to
+/// `surface_id`, returning its [`GroupId`]. Used by the compositor's
+/// `xdg_toplevel.set_fullscreen` path to find which group a fullscreen request
+/// should promote. Returns `None` when the surface was never adopted (e.g. a
+/// fullscreen request that races surface teardown).
+pub fn group_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<GroupId> {
+    for ws in tree.workspaces.iter() {
+        for strip in ws.strips.iter() {
+            for group in strip.window_groups.iter() {
+                if group.tabs.iter().any(|t| {
+                    matches!(
+                        &t.tile,
+                        TileContent::Foreign { surface_id: s, .. } if *s == surface_id
+                    )
+                }) {
+                    return Some(group.id);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Walk the persisted tree looking for a `TileContent::Foreign` tab whose
 /// `surface_id` matches `destroyed_surface_id`; remove it from its group
 /// when found and return `true`. Phase 6 (Task 6.2) of the compositor
@@ -231,6 +254,21 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn group_id_for_surface_resolves_the_owning_group() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let _ = adopt_toplevel(&mut tree, 4242, Some("org.example.app".into()));
+        let expected = tree.workspaces[0].strips[0].window_groups[0].id;
+        assert_eq!(
+            group_id_for_surface(&tree, 4242),
+            Some(expected),
+            "a fullscreen request for surface 4242 resolves to its owning group",
+        );
+        // An unknown surface resolves to nothing — a fullscreen request that
+        // raced surface teardown is a safe no-op.
+        assert_eq!(group_id_for_surface(&tree, 9999), None);
     }
 
     #[test]

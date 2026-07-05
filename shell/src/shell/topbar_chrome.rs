@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use chrono::Local;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Brush, ColorStop, ColorStops, Extend, Fill, Gradient, GradientKind};
@@ -531,11 +531,24 @@ impl Widget for TopBarChrome {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // A fullscreen surface covers the whole output, top bar included — so
+        // while any group holds the output fullscreen the top bar collapses to
+        // zero height and stops painting. Clearing the fullscreen state
+        // restores its normal 40 px band exactly.
+        let fullscreen = self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().is_fullscreen());
         let node = taffy
             .new_leaf(Style {
+                display: if fullscreen { Display::None } else { Display::Flex },
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(TOPBAR_HEIGHT_PX),
+                    height: if fullscreen {
+                        Dimension::length(0.0)
+                    } else {
+                        Dimension::length(TOPBAR_HEIGHT_PX)
+                    },
                 },
                 flex_shrink: 0.0,
                 ..Default::default()

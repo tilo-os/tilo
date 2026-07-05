@@ -757,6 +757,9 @@ pub fn run() -> ! {
         size => size,
     };
     let mut frame_builder = FrameBuilder::new(initial_size);
+    // Seed the size used for fullscreen configures so an early
+    // `set_fullscreen` request fills the output even before the first resize.
+    state.output_size = (initial_size.0 as i32, initial_size.1 as i32);
 
     // `new_auto` walks `wayland-1..wayland-32` and binds the first free name.
     // The smoke test in the plan asserts on the line below ("nirios compositor
@@ -906,6 +909,9 @@ pub fn run() -> ! {
                 BackendEvent::OutputResized { id: _, size, scale: _ } => {
                     if size.0 > 0 && size.1 > 0 {
                         frame_builder.set_viewport(size);
+                        // Keep the size used for fullscreen configures in sync
+                        // so a fullscreened client fills the current output.
+                        state.output_size = (size.0 as i32, size.1 as i32);
                     }
                 }
                 BackendEvent::Input(wev) => {
@@ -972,6 +978,15 @@ pub fn run() -> ! {
             st.set_session_locked(session.is_locked());
             st.pump_dbus_notifications();
         });
+
+        // Mirror the compositor's live fullscreen state (set by the
+        // `XdgShellHandler` fullscreen/unfullscreen path) into the rendered
+        // scene, so the promoted group takes over the whole output and a later
+        // exit restores the exact prior tiling. The overlay host guards against
+        // a group id it doesn't host — the live client tree and the rendered
+        // tree are not yet unified (Phase 4), so an unknown id is a safe no-op
+        // rather than blanking the shell.
+        frame_builder.set_fullscreen(state.fullscreen_group);
 
         frame_builder.relayout();
         // When locked, paint the compositor-owned lock overlay instead

@@ -3,7 +3,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
 /// Synthetic input events that can be injected into a running `App` via
@@ -184,6 +184,23 @@ pub(crate) fn pointer_broadcast_allowed(
     }
 }
 
+/// Pure decision for the fullscreen reconcile loop: given what the App last
+/// *requested* from the window and what the root widget now *wants*
+/// ([`crate::widget::Widget::fullscreen_intent`]), return `Some(new_state)`
+/// to push to the window via `set_fullscreen`, or `None` to leave it as-is.
+///
+/// Kept as a free function so the reconcile decision is unit-testable without
+/// a live winit window (real OS fullscreen can't be exercised headlessly).
+pub(crate) fn fullscreen_request_decision(
+    requested: bool,
+    want: Option<bool>,
+) -> Option<bool> {
+    match want {
+        Some(w) if w != requested => Some(w),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
 
@@ -336,6 +353,18 @@ pub struct App {
     /// theme so every widget that reads its font size from the theme scales
     /// together; layout grows to fit so nothing clips.
     text_scale: f32,
+
+    /// The fullscreen state the App last *requested* from the window (its
+    /// intent). Compared against the root's
+    /// [`crate::widget::Widget::fullscreen_intent`] each frame so a steady
+    /// desired state only issues a single `set_fullscreen` call — see
+    /// [`fullscreen_request_decision`].
+    fullscreen_requested: bool,
+    /// The last *actual* fullscreen state observed from the window and pushed
+    /// to the root via [`crate::widget::Widget::on_fullscreen_changed`].
+    /// Distinguishes app-driven from compositor-driven transitions (a global
+    /// un-fullscreen keybind flips this without the app asking).
+    fullscreen_active: bool,
 }
 
 impl App {
@@ -388,6 +417,8 @@ impl App {
             base_theme: Theme::dark(),
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
+            fullscreen_requested: false,
+            fullscreen_active: false,
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -732,6 +763,67 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Reconcile the root widget's desired OS-fullscreen state with the live
+    /// window, and notify the root of the *actual* state.
+    ///
+    /// Two directions, both idempotent:
+    ///   1. **App-driven** — if the root's
+    ///      [`crate::widget::Widget::fullscreen_intent`] differs from what we
+    ///      last requested, push it to the window via `set_fullscreen`. On
+    ///      Wayland this sends `xdg_toplevel.set_fullscreen` to the compositor;
+    ///      on every other winit backend it goes to the host WM. Either way the
+    ///      app becomes a true borderless full-output surface.
+    ///   2. **Compositor-driven** — read back the window's actual fullscreen
+    ///      state and, on a transition, call the root's
+    ///      [`crate::widget::Widget::on_fullscreen_changed`]. This is how a
+    ///      global un-fullscreen keybind (or a denied request) reaches the app.
+    ///
+    /// Returns `true` when anything changed and a redraw/re-sync is warranted.
+    /// Called once per event-loop wakeup from `about_to_wait`.
+    fn reconcile_fullscreen(&mut self, window: &Window) -> bool {
+        let mut changed = false;
+
+        // (1) App-driven: honor the root's desired state.
+        let want = self.root_widget.fullscreen_intent();
+        if let Some(new_state) = fullscreen_request_decision(self.fullscreen_requested, want) {
+            window.set_fullscreen(if new_state {
+                // `Borderless(None)` = "fill whatever output the compositor
+                // decides"; the compositor owns output selection.
+                Some(Fullscreen::Borderless(None))
+            } else {
+                None
+            });
+            self.fullscreen_requested = new_state;
+            changed = true;
+        }
+
+        // (2) Compositor-driven: observe the actual state and notify the root
+        // on a transition. `window.fullscreen()` reflects the compositor's
+        // most recent configure on Wayland (and the WM state elsewhere), so it
+        // catches a fullscreen we never asked for as well as a grant of one we
+        // did.
+        let actual = window.fullscreen().is_some();
+        changed |= self.note_actual_fullscreen(actual);
+
+        changed
+    }
+
+    /// Record the actual OS-fullscreen state and, on a transition, notify the
+    /// root widget via [`crate::widget::Widget::on_fullscreen_changed`].
+    /// Returns `true` iff the state changed. Split out from
+    /// [`Self::reconcile_fullscreen`] so the App→root notification wiring is
+    /// unit-testable without a live winit window.
+    fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
+        if actual == self.fullscreen_active {
+            return false;
+        }
+        self.fullscreen_active = actual;
+        self.root_widget.on_fullscreen_changed(actual);
+        self.needs_sync = true;
+        self.layout_dirty = true;
+        true
     }
 
     /// Hit-test the widget tree at `point` (logical coords) and return the
@@ -3008,6 +3100,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        // Reconcile the root's desired OS-fullscreen state with the window
+        // (and observe compositor-driven fullscreen changes). Level-triggered
+        // and idempotent — a no-op on the common frame where nothing changed.
+        if app.reconcile_fullscreen(&window) {
+            window.request_redraw();
+        }
+
         // Re-broadcast location presence here too: the active page can
         // change during `sync` (e.g. the initial auto-select), which the
         // post-event broadcast above wouldn't catch. Diffed, so it only
@@ -4326,5 +4425,131 @@ mod low_vision_tests {
         assert_eq!(a.text_scale(), 1.25);
         // High contrast still wins over the freshly-set light base.
         assert_eq!(a.theme.name, "High Contrast");
+    }
+}
+
+#[cfg(test)]
+mod fullscreen_tests {
+    use super::*;
+    use automerge::{AutoCommit, ObjId};
+    use vello::kurbo::Rect;
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A minimal root widget that exposes a settable fullscreen *intent* and
+    /// records the actual-state notifications it receives (into a shared cell
+    /// the test can inspect), so the App's fullscreen reconcile wiring can be
+    /// exercised without a live window.
+    struct FsRoot {
+        want: Option<bool>,
+        rect: Rect,
+        changes: Rc<RefCell<Vec<bool>>>,
+    }
+
+    impl FsRoot {
+        fn new(want: Option<bool>) -> (Self, Rc<RefCell<Vec<bool>>>) {
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self { want, rect: Rect::ZERO, changes: changes.clone() },
+                changes,
+            )
+        }
+    }
+
+    impl Widget for FsRoot {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _r: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "FsRoot"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+        fn fullscreen_intent(&self) -> Option<bool> {
+            self.want
+        }
+        fn on_fullscreen_changed(&mut self, active: bool) {
+            self.changes.borrow_mut().push(active);
+        }
+    }
+
+    /// The pure decision only fires `set_fullscreen` on an actual change of
+    /// the requested state — a steady desire is idempotent.
+    #[test]
+    fn decision_truth_table() {
+        // No opinion → never touch the window.
+        assert_eq!(fullscreen_request_decision(false, None), None);
+        assert_eq!(fullscreen_request_decision(true, None), None);
+        // Want matches what we already requested → no-op (idempotent).
+        assert_eq!(fullscreen_request_decision(false, Some(false)), None);
+        assert_eq!(fullscreen_request_decision(true, Some(true)), None);
+        // Want differs → issue the new state exactly once.
+        assert_eq!(fullscreen_request_decision(false, Some(true)), Some(true));
+        assert_eq!(fullscreen_request_decision(true, Some(false)), Some(false));
+    }
+
+    /// A compositor-driven transition (fullscreen granted, then exited) reaches
+    /// the root via `on_fullscreen_changed`, exactly once per edge; a repeated
+    /// same-state observation is swallowed.
+    #[test]
+    fn actual_state_transitions_notify_root_once_per_edge() {
+        let (root, changes) = FsRoot::new(None);
+        let mut app = App::new(State::new(), Box::new(root));
+
+        // Rising edge.
+        assert!(app.note_actual_fullscreen(true));
+        // Same state again → no notification.
+        assert!(!app.note_actual_fullscreen(true));
+        // Falling edge.
+        assert!(app.note_actual_fullscreen(false));
+
+        assert_eq!(*changes.borrow(), vec![true, false]);
+        assert!(!app.fullscreen_active);
+    }
+
+    /// `note_actual_fullscreen` marks the app for a re-sync + relayout so the
+    /// widget tree can switch to its presentation layout on the next frame.
+    #[test]
+    fn entering_fullscreen_marks_resync_and_relayout() {
+        let (root, _changes) = FsRoot::new(Some(true));
+        let mut app = App::new(State::new(), Box::new(root));
+        app.needs_sync = false;
+        app.layout_dirty = false;
+        assert!(app.note_actual_fullscreen(true));
+        assert!(app.needs_sync);
+        assert!(app.layout_dirty);
     }
 }

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style, TaffyTree};
+use taffy::{Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::kurbo::RoundedRect;
@@ -692,6 +692,57 @@ impl ShellOverlayHost {
         drop(st);
         self.last_chrome_revision = current_rev;
         any_change
+    }
+
+    /// Push the compositor's transient fullscreen state (`ChromeState::
+    /// fullscreen_group`) down onto every strip's [`GroupRow`], so the strip
+    /// that owns the fullscreen surface promotes it to the whole output while
+    /// the other strips collapse away. Idempotent — each `GroupRow::
+    /// set_fullscreen` is a no-op when its flags are unchanged, so this is
+    /// cheap to run every frame. A real change flags the owning row structurally
+    /// dirty, which drives the taffy rebuild that applies the collapse/restore.
+    ///
+    /// Called both from [`Widget::update`] (the update-driven path) and from
+    /// [`Widget::build_layout`] (so the compositor's `relayout`-only frame loop
+    /// still applies it even if `update` isn't pumped that tick), and directly
+    /// from [`crate::compositor::frame::FrameBuilder::relayout`] *before* the
+    /// structure-dirty check so a promotion/restore triggers the rebuild that
+    /// applies it.
+    pub fn sync_fullscreen_from_chrome(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let fs_group = chrome.borrow().fullscreen_group();
+        // Only apply the scene override when the fullscreen group actually
+        // exists in the *rendered* tree. The live client tree (which the xdg
+        // handler mutates) and this rendered tree are not yet unified (Phase
+        // 4), so a fullscreen id we don't host must be treated as "no
+        // fullscreen" — otherwise every strip would hide around a group that
+        // isn't here and blank the shell.
+        let owned = fs_group.is_some_and(|gid| {
+            self.group_row_ptrs
+                .values()
+                // SAFETY: see the per-row note below — same `group_row_ptrs`
+                // contract; here we only read `group_ids()`.
+                .any(|&p| unsafe { (*p).group_ids().contains(&gid) })
+        });
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs` accessor —
+            // the pointer comes from a `Box<GroupRow>` owned by the content
+            // tree, the host outlives the content, and `&mut self` gives us
+            // unaliased access for the duration of this call.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            match fs_group {
+                Some(gid) if owned && row.group_ids().contains(&gid) => {
+                    row.set_fullscreen(Some(gid), false);
+                }
+                Some(_) if owned => row.set_fullscreen(None, true),
+                _ => row.set_fullscreen(None, false),
+            }
+        }
     }
 
     fn reconcile_active_group_off_closing(&mut self) {
@@ -1772,6 +1823,10 @@ impl Widget for ShellOverlayHost {
         // children's own `update` calls so the freshly-spliced
         // groups participate in the same frame's sync pass.
         let chrome_dirty = self.resync_strips_from_tree();
+        // Mirror the compositor's live fullscreen state onto the strip rows
+        // before the children update, so a promotion/restore is reflected in
+        // the same frame it changes.
+        self.sync_fullscreen_from_chrome();
         let a = self.content.update(s, p);
         let b = self.palette.update(s, p);
         let c = self
@@ -1827,6 +1882,14 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Push the compositor's live fullscreen state down to the strip rows
+        // (which group is promoted / which strips are hidden) BEFORE the
+        // content tree is built, so the collapse takes effect this pass.
+        self.sync_fullscreen_from_chrome();
+        let fullscreen = self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().is_fullscreen());
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Overlay the palette above content: absolute positioning with
@@ -1895,6 +1958,12 @@ impl Widget for ShellOverlayHost {
                 };
                 style.flex_grow = 0.0;
                 style.flex_shrink = 0.0;
+                // A fullscreen surface covers the whole output: the sidebar
+                // wheel is suppressed alongside the top bar so nothing paints
+                // over the promoted group. Clearing fullscreen restores it.
+                if fullscreen {
+                    style.display = Display::None;
+                }
                 taffy.set_style(node, style).unwrap();
                 node
             });
