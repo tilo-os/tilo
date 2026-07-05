@@ -276,7 +276,18 @@ pub struct BlockEditor {
     /// from a stable anchor. Cleared by any non-extend key or a mouse
     /// press so the next extend starts fresh.
     kbd_sel_anchor: Option<(usize, usize)>,
+    /// Empty-state hint shown (dim) when the editor is a single empty
+    /// paragraph, so a brand-new document reads as a real placeholder rather
+    /// than a void. Host-customisable via [`Self::with_empty_hint`] so apps
+    /// other than Notes (e.g. the calendar's event notes) show a fitting
+    /// prompt; defaults to the Notes-style hint.
+    empty_hint: String,
 }
+
+/// Default empty-state placeholder — the Notes-app prompt. Kept as a const so
+/// callers can compare against it and the two `new`/`from_markdown`
+/// constructors stay in sync.
+const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link a page";
 
 impl BlockEditor {
     /// New editor with a single empty paragraph. Mirrors what every
@@ -303,9 +314,28 @@ impl BlockEditor {
             doc_structure_dirty: false,
             local_author: None,
             kbd_sel_anchor: None,
+            empty_hint: DEFAULT_EMPTY_HINT.to_string(),
         };
         s.blocks.push(Block::paragraph(""));
         s
+    }
+
+    /// Builder: override the dim empty-state placeholder shown when the editor
+    /// holds a single empty paragraph. Lets a host (e.g. the calendar's event
+    /// notes) show a fitting prompt instead of the Notes-style default.
+    pub fn with_empty_hint(mut self, hint: &str) -> Self {
+        self.empty_hint = hint.to_string();
+        self
+    }
+
+    /// Mutate the empty-state placeholder after construction.
+    pub fn set_empty_hint(&mut self, hint: &str) {
+        self.empty_hint = hint.to_string();
+    }
+
+    /// The empty-state placeholder currently in effect.
+    pub fn empty_hint(&self) -> &str {
+        &self.empty_hint
     }
 
     /// Parse a markdown string into a fresh editor. Uses the
@@ -340,6 +370,7 @@ impl BlockEditor {
             doc_structure_dirty: false,
             local_author: None,
             kbd_sel_anchor: None,
+            empty_hint: DEFAULT_EMPTY_HINT.to_string(),
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -1730,7 +1761,7 @@ impl Widget for BlockEditor {
             let x = line_rect.x0 + caret_w + 4.0;
             text_renderer.draw_text(
                 scene,
-                "Start typing — / for blocks, [[ to link a page",
+                &self.empty_hint,
                 size,
                 tokens.colors.text_dim,
                 transform * Affine::translate((x, text_y)),
