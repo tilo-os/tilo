@@ -34,6 +34,20 @@ use crate::widgets::{Btn, BtnVariant};
 const PAD: f32 = 16.0;
 const GRID_H: f32 = 152.0;
 const GAP: f32 = 22.0;
+/// Child-control heights, mirrored from the `ui` widgets, so the panel's
+/// intrinsic height can be computed for the narrow stacked/scrolling layout
+/// (where the panel can't claim `percent(1.0)`).
+const PICKER_H: f32 = 220.0;
+const SLIDER_H: f32 = 30.0;
+const DROPDOWN_H: f32 = 40.0;
+const ACTIONS_H: f32 = 34.0;
+
+/// Intrinsic content height of the customizer column (grid + picker + two
+/// sliders + font dropdown + actions, plus padding and inter-row gaps).
+/// Used to stack it under the preview inside the narrow vertical scroll.
+pub fn intrinsic_height() -> f32 {
+    PAD * 2.0 + GRID_H + GAP * 5.0 + PICKER_H + SLIDER_H * 2.0 + DROPDOWN_H + ACTIONS_H
+}
 
 pub struct Customizer {
     color_picker: ColorPicker,

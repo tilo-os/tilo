@@ -2,7 +2,7 @@
 //! Keeps the per-widget `draw` code declarative instead of repeating the
 //! `Fill::NonZero` / `Affine` boilerplate everywhere.
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, PathEl, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -62,6 +62,25 @@ pub fn text_w(
     weight: TextWeight,
 ) {
     tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), None, weight);
+}
+
+/// Left-aligned text shaped in an explicit [`FontChoice`] family, so the
+/// preview can render its specimen in the theme's chosen typeface. Baseline-
+/// ish top sits at (x, y).
+#[allow(clippy::too_many_arguments)]
+pub fn text_font(
+    tr: &mut TextRenderer,
+    scene: &mut Scene,
+    t: Affine,
+    s: &str,
+    size: f32,
+    color: Color,
+    x: f64,
+    y: f64,
+    weight: TextWeight,
+    family: &FontChoice,
+) {
+    tr.draw_text_font(scene, s, size, color, t * Affine::translate((x, y)), None, weight, false, family);
 }
 
 /// Text vertically centred in `[y0, y1]` at left edge `x`.

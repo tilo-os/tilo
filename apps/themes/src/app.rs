@@ -22,27 +22,34 @@ use std::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::peniko::{BlendMode, Fill};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::customizer::Customizer;
+use crate::customizer::{self, Customizer};
 use crate::doc;
 use crate::draw;
 use crate::gallery::Gallery;
 use crate::model::{self, default_catalog, presets, ThemeSpec, TokenId, FONTS};
 use crate::preview::PreviewPane;
+use crate::store;
 use crate::widgets::{Btn, BtnVariant};
 
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
 const CUSTOMIZER_W: f32 = 344.0;
+/// Fixed height the preview takes when the layout collapses to a narrow
+/// vertical stack (preview above customizer inside a scroll region). Sized
+/// to fit the preview's full specimen (window card through the two charts)
+/// so it doesn't overrun the customizer stacked beneath it.
+const NARROW_PREVIEW_H: f32 = 560.0;
 
 /// Allocated-width breakpoint (logical px). At or above this the gallery is a
 /// docked sidebar beside the preview + customizer; below it the gallery
@@ -93,6 +100,24 @@ pub struct ThemesApp {
     bound_key: Option<(String, TokenId)>,
     status: String,
     structure_dirty: bool,
+
+    /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
+    scroll: f64,
+    /// Total stacked content height + its viewport, cached in `apply_layout`
+    /// so the wheel handler and scrollbar can clamp / size against them.
+    scroll_content_h: f64,
+    scroll_viewport_h: f64,
+    /// Scene-space viewport rect of the scrolling content region (below the
+    /// top bar), in the narrow layout.
+    content_rect: Rect,
+
+    // --- `--shots` scenario seeds (headless single-frame capture) ---
+    /// Force a selection (e.g. a preset with a distinctive font) for a shot.
+    shot_select: Option<String>,
+    /// Open the sidebar actions menu on the selected row for a shot.
+    shot_menu: bool,
+    /// Scroll the narrow stack partway so the shot proves it scrolls.
+    shot_scroll: bool,
 }
 
 impl ThemesApp {
@@ -102,7 +127,7 @@ impl ThemesApp {
             topbar_buttons: vec![
                 Btn::new("new", "New", BtnVariant::Ghost),
                 Btn::new("export", "Export JSON", BtnVariant::Ghost),
-                Btn::new("save", "Save", BtnVariant::Primary),
+                Btn::new("apply", "Apply theme", BtnVariant::Primary),
             ],
             gallery: Gallery::new(),
             preview: PreviewPane::new(),
@@ -128,6 +153,13 @@ impl ThemesApp {
             bound_key: None,
             status: String::new(),
             structure_dirty: false,
+            scroll: 0.0,
+            scroll_content_h: 0.0,
+            scroll_viewport_h: 0.0,
+            content_rect: Rect::ZERO,
+            shot_select: None,
+            shot_menu: false,
+            shot_scroll: false,
         }
     }
 
@@ -141,13 +173,39 @@ impl ThemesApp {
     /// * width `<  BREAKPOINT` → overlay gallery, snapped **open** so the shot
     ///   captures the collapsed sidebar floating over the scrim.
     pub fn seed_shot_viewport(&mut self, width: f64) {
+        self.seed_shot(width, "");
+    }
+
+    /// Configure a deterministic headless screenshot for one of the named
+    /// scenarios (empty = default). The single-frame renderer has no live
+    /// first frame, so the layout class + flap endpoint + any scenario state
+    /// are seeded here.
+    ///
+    /// * `""`      — default: docked (wide) or the revealed overlay flap (narrow).
+    /// * `"menu"`  — open the sidebar actions menu on the selected custom row.
+    /// * `"scroll"`— narrow, flap closed, scrolled partway to prove the stack scrolls.
+    /// * `"font"`  — select a preset with a distinctive (monospace) font so the
+    ///               preview specimen visibly renders in it.
+    pub fn seed_shot(&mut self, width: f64, scenario: &str) {
         self.build_width = width;
         let layout = SplitLayout::from_width(width, BREAKPOINT);
         self.last_layout = Some(layout);
-        // Snap the gallery open at its endpoint: docked shows it beside the
-        // content (the natural wide default); overlay floats it over the scrim
-        // so the narrow shot captures the revealed flap.
-        self.gallery_flap.snap(true);
+        match scenario {
+            "scroll" => {
+                self.gallery_flap.snap(false);
+                self.shot_scroll = true;
+            }
+            "menu" => {
+                self.gallery_flap.snap(true);
+                self.shot_menu = true;
+                self.shot_select = Some("sunset".to_string());
+            }
+            "font" => {
+                self.gallery_flap.snap(true);
+                self.shot_select = Some("dracula".to_string());
+            }
+            _ => self.gallery_flap.snap(true),
+        }
     }
 
     /// Resolve the current layout class purely from allocated width.
@@ -198,6 +256,26 @@ impl ThemesApp {
         }
     }
 
+    /// Draw the vertical scroll indicator for the collapsed content stack,
+    /// on the right edge of the content viewport. No-op when content fits.
+    fn draw_scroll_indicator(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
+        if self.scroll_content_h <= self.scroll_viewport_h + 1.0 {
+            return;
+        }
+        let vp = self.content_rect;
+        let x1 = vp.x1 - 3.0;
+        let x0 = x1 - 6.0;
+        let track = Rect::new(x0, vp.y0 + 4.0, x1, vp.y1 - 4.0);
+        draw::fill_rrect(scene, t, track, 3.0, theme.border_standard.multiply_alpha(0.35));
+        let ratio = (self.scroll_viewport_h / self.scroll_content_h).clamp(0.08, 1.0);
+        let thumb_h = (track.height() * ratio).max(28.0);
+        let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(1.0);
+        let frac = (self.scroll / max_scroll).clamp(0.0, 1.0);
+        let thumb_y = track.y0 + (track.height() - thumb_h) * frac;
+        let thumb = Rect::new(x0, thumb_y, x1, thumb_y + thumb_h);
+        draw::fill_rrect(scene, t, thumb, 3.0, theme.text_dim.multiply_alpha(0.85));
+    }
+
     fn new_id() -> String {
         uuid::Uuid::new_v4().to_string()
     }
@@ -216,6 +294,23 @@ impl ThemesApp {
             doc::put_str(state, path, doc::KEY_EDIT_TOKEN, key);
             return;
         }
+        // Context-menu commands carry the target theme id explicitly (the row
+        // right-clicked need not be the selected one).
+        if let Some(id) = cmd.strip_prefix("duplicate:") {
+            self.duplicate_theme(id, catalog, state, path);
+            return;
+        }
+        if let Some(id) = cmd.strip_prefix("delete:") {
+            self.delete_theme(id, catalog, state, path);
+            return;
+        }
+        if let Some(id) = cmd.strip_prefix("rename:") {
+            // Select the theme, then hand focus to the sidebar's inline editor.
+            doc::put_str(state, path, doc::KEY_SELECTED, id);
+            self.gallery.request_name_focus();
+            self.status.clear();
+            return;
+        }
         let selected = doc::get_str(state, path, doc::KEY_SELECTED).unwrap_or_default();
         match cmd {
             "new" => {
@@ -230,22 +325,24 @@ impl ThemesApp {
                 self.status = "Created a new theme".to_string();
                 self.structure_dirty = true;
             }
-            "duplicate" => {
+            "duplicate" => self.duplicate_theme(&selected, catalog, state, path),
+            "delete" => self.delete_theme(&selected, catalog, state, path),
+            "apply" => {
                 if let Some(src) = catalog.iter().find(|s| s.id == selected).cloned() {
-                    let mut s = src.clone();
-                    s.id = Self::new_id();
-                    s.name = format!("{} copy", src.name);
-                    s.builtin = false;
-                    s.order = Self::max_order(catalog) + 1;
-                    let id = s.id.clone();
-                    catalog.push(s);
-                    doc::put_str(state, path, doc::KEY_SELECTED, &id);
-                    self.status = format!("Duplicated “{}”", src.name);
-                    self.structure_dirty = true;
+                    // Persist the selected theme as the active OS theme in the
+                    // shared settings store the compositor + apps read. Live
+                    // in-session propagation to already-running apps still needs
+                    // a compositor broadcast (see `store` docs); this makes it
+                    // the look on next launch and updates the in-app "Active"
+                    // badge immediately.
+                    match store::save(&src) {
+                        Ok(_) => {
+                            doc::put_str(state, path, doc::KEY_ACTIVE, &src.id);
+                            self.status = format!("Applied “{}” as the system theme", src.name);
+                        }
+                        Err(e) => self.status = format!("Couldn't apply theme: {e}"),
+                    }
                 }
-            }
-            "save" => {
-                self.status = "All changes saved".to_string();
             }
             "export" => {
                 if let Some(src) = catalog.iter().find(|s| s.id == selected) {
@@ -272,18 +369,38 @@ impl ThemesApp {
                     }
                 }
             }
-            "delete" => {
-                if let Some(idx) = catalog.iter().position(|s| s.id == selected) {
-                    if !catalog[idx].builtin && catalog.len() > 1 {
-                        catalog.remove(idx);
-                        let next = catalog.get(idx.min(catalog.len() - 1)).map(|s| s.id.clone()).unwrap_or_default();
-                        doc::put_str(state, path, doc::KEY_SELECTED, &next);
-                        self.status = "Deleted theme".to_string();
-                        self.structure_dirty = true;
-                    }
-                }
-            }
             _ => {}
+        }
+    }
+
+    /// Duplicate the theme `id` into a new editable custom theme and select it.
+    fn duplicate_theme(&mut self, id: &str, catalog: &mut Vec<ThemeSpec>, state: &mut AutoCommit, path: &ObjId) {
+        if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
+            let mut s = src.clone();
+            s.id = Self::new_id();
+            s.name = format!("{} copy", src.name);
+            s.builtin = false;
+            s.order = Self::max_order(catalog) + 1;
+            let new_id = s.id.clone();
+            catalog.push(s);
+            doc::put_str(state, path, doc::KEY_SELECTED, &new_id);
+            self.status = format!("Duplicated “{}”", src.name);
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Delete the custom theme `id` (presets are protected; never empties the
+    /// catalog) and move the selection to a surviving theme.
+    fn delete_theme(&mut self, id: &str, catalog: &mut Vec<ThemeSpec>, state: &mut AutoCommit, path: &ObjId) {
+        if let Some(idx) = catalog.iter().position(|s| s.id == id) {
+            if !catalog[idx].builtin && catalog.len() > 1 {
+                let name = catalog[idx].name.clone();
+                catalog.remove(idx);
+                let next = catalog.get(idx.min(catalog.len() - 1)).map(|s| s.id.clone()).unwrap_or_default();
+                doc::put_str(state, path, doc::KEY_SELECTED, &next);
+                self.status = format!("Deleted “{name}”");
+                self.structure_dirty = true;
+            }
         }
     }
 }
@@ -301,8 +418,18 @@ impl Widget for ThemesApp {
                 doc::put_f64(state, path, doc::KEY_ED_RADIUS, s.radius_norm as f64);
                 doc::put_f64(state, path, doc::KEY_ED_SPACING, s.spacing_norm as f64);
                 doc::put_str(state, path, doc::KEY_ED_FONT, &s.font);
+                doc::put_str(state, path, doc::KEY_ED_NAME, &s.name);
             }
+            // The applied OS theme: adopt whatever is already persisted in the
+            // shared store, else default to the seeded selection.
+            let active = store::load_active_id().unwrap_or_else(|| sel.clone());
+            doc::put_str(state, path, doc::KEY_ACTIVE, &active);
             doc::put_str(state, path, doc::KEY_COMMAND, "");
+        }
+
+        // `--shots` scenario: force a specific selection for the capture.
+        if let Some(id) = self.shot_select.take() {
+            doc::put_str(state, path, doc::KEY_SELECTED, &id);
         }
 
         // 2. Load the persisted catalog.
@@ -335,6 +462,7 @@ impl Widget for ThemesApp {
             doc::put_f64(state, path, doc::KEY_ED_RADIUS, spec.radius_norm as f64);
             doc::put_f64(state, path, doc::KEY_ED_SPACING, spec.spacing_norm as f64);
             doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
+            doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
             self.customizer.load_picker(spec.token(edit_token));
             self.bound_key = Some(bound_key);
         } else if editable {
@@ -350,6 +478,14 @@ impl Widget for ThemesApp {
                     catalog[idx].font = f;
                 }
             }
+            // Inline sidebar rename: a non-empty edited name replaces the
+            // theme's name (empty is ignored so a mid-edit clear can't wipe it).
+            if let Some(n) = doc::get_str(state, path, doc::KEY_ED_NAME) {
+                let n = n.trim();
+                if !n.is_empty() {
+                    catalog[idx].name = n.to_string();
+                }
+            }
             let pc = self.customizer.picker_color();
             catalog[idx].set_token(edit_token, pc);
         } else {
@@ -358,6 +494,7 @@ impl Widget for ThemesApp {
             doc::put_f64(state, path, doc::KEY_ED_RADIUS, spec.radius_norm as f64);
             doc::put_f64(state, path, doc::KEY_ED_SPACING, spec.spacing_norm as f64);
             doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
+            doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
         }
 
         // 6. Persist + cache.
@@ -366,7 +503,8 @@ impl Widget for ThemesApp {
 
         // 7. Push view state into the panels.
         let sel_spec = self.catalog[idx].clone();
-        self.gallery.set_catalog(&self.catalog, &selected);
+        let active_id = doc::get_str(state, path, doc::KEY_ACTIVE).unwrap_or_default();
+        self.gallery.set_view(&self.catalog, &selected, &active_id, editable);
         self.preview.set_spec(&sel_spec);
         self.customizer.set_view(sel_spec, edit_token, editable);
 
@@ -429,40 +567,77 @@ impl Widget for ThemesApp {
         self.gallery_node = Some(gallery);
 
         let preview = self.preview.build_layout(taffy, theme, node_map);
+        if overlay {
+            // Collapsed: the preview takes the full width at a fixed height so
+            // it stacks above the customizer inside the vertical scroll.
+            // `flex_basis: auto` is required — the docked style pins it to 0
+            // (grow-from-zero), which would collapse the fixed height here.
+            let _ = taffy.set_style(
+                preview,
+                Style {
+                    size: Size { width: Dimension::percent(1.0), height: Dimension::length(NARROW_PREVIEW_H) },
+                    flex_grow: 0.0,
+                    flex_shrink: 0.0,
+                    flex_basis: Dimension::auto(),
+                    ..taffy.style(preview).cloned().unwrap_or_default()
+                },
+            );
+        }
         self.preview_node = Some(preview);
 
         let customizer = self.customizer.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(
-            customizer,
+        let cust_style = if overlay {
+            // Collapsed: full width, intrinsic height, no shrink — a scrolling
+            // stack member rather than a fixed side column.
+            Style {
+                size: Size { width: Dimension::percent(1.0), height: Dimension::length(customizer::intrinsic_height()) },
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                ..taffy.style(customizer).cloned().unwrap_or_default()
+            }
+        } else {
             Style {
                 size: Size { width: Dimension::length(CUSTOMIZER_W), height: Dimension::percent(1.0) },
                 flex_shrink: 0.0,
                 ..taffy.style(customizer).cloned().unwrap_or_default()
-            },
-        );
+            }
+        };
+        let _ = taffy.set_style(customizer, cust_style);
         self.customizer_node = Some(customizer);
 
-        // Docked: [gallery | preview | customizer]. Overlay: [preview |
-        // customizer], with the gallery laid out as a sibling that floats over
-        // the content (positioned in `apply_layout` from the eased reveal).
-        let content_children: Vec<NodeId> = if overlay {
-            vec![preview, customizer]
+        // Docked: [gallery | preview | customizer] in a row. Collapsed
+        // (overlay): [preview / customizer] stacked in a column that the app
+        // scrolls vertically, with the gallery pulled out as an overlay flap.
+        let content = if overlay {
+            taffy
+                .new_with_children(
+                    Style {
+                        display: taffy::Display::Flex,
+                        flex_direction: taffy::FlexDirection::Column,
+                        size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                        flex_grow: 1.0,
+                        flex_basis: length(0.0),
+                        overflow: taffy::Point { x: taffy::Overflow::Hidden, y: taffy::Overflow::Hidden },
+                        ..Default::default()
+                    },
+                    &[preview, customizer],
+                )
+                .unwrap()
         } else {
-            vec![gallery, preview, customizer]
+            taffy
+                .new_with_children(
+                    Style {
+                        display: taffy::Display::Flex,
+                        flex_direction: taffy::FlexDirection::Row,
+                        size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                        flex_grow: 1.0,
+                        flex_basis: length(0.0),
+                        ..Default::default()
+                    },
+                    &[gallery, preview, customizer],
+                )
+                .unwrap()
         };
-        let content = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
-                    flex_grow: 1.0,
-                    flex_basis: length(0.0),
-                    ..Default::default()
-                },
-                &content_children,
-            )
-            .unwrap();
         self.content_node = Some(content);
 
         let root_children: Vec<NodeId> = if overlay {
@@ -539,16 +714,39 @@ impl Widget for ThemesApp {
         if let Some(content) = self.content_node {
             let cl = taffy.layout(content).unwrap();
             let c_o = Point::new(o.x + cl.location.x as f64, o.y + cl.location.y as f64);
-            if layout == SplitLayout::Docked {
+            if layout == SplitLayout::Overlay {
+                // Collapsed: preview stacked above customizer, both offset up
+                // by the scroll so the taller-than-viewport content is fully
+                // reachable. `content_rect` is the clip/viewport the wheel and
+                // scrollbar work against.
+                let vp = Rect::new(c_o.x, c_o.y, c_o.x + cl.size.width as f64, c_o.y + cl.size.height as f64);
+                self.content_rect = vp;
+                self.scroll_viewport_h = vp.height();
+                let ph = self.preview_node.map(|n| taffy.layout(n).unwrap().size.height as f64).unwrap_or(0.0);
+                let ch = self.customizer_node.map(|n| taffy.layout(n).unwrap().size.height as f64).unwrap_or(0.0);
+                self.scroll_content_h = ph + ch;
+                if self.shot_scroll {
+                    self.scroll = 260.0;
+                }
+                let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
+                self.scroll = self.scroll.clamp(0.0, max_scroll);
+                let scrolled = Point::new(c_o.x, c_o.y - self.scroll);
+                if let Some(n) = self.preview_node {
+                    self.preview.apply_layout(taffy, n, scrolled);
+                }
+                if let Some(n) = self.customizer_node {
+                    self.customizer.apply_layout(taffy, n, scrolled);
+                }
+            } else {
                 if let Some(n) = self.gallery_node {
                     self.gallery.apply_layout(taffy, n, c_o);
                 }
-            }
-            if let Some(n) = self.preview_node {
-                self.preview.apply_layout(taffy, n, c_o);
-            }
-            if let Some(n) = self.customizer_node {
-                self.customizer.apply_layout(taffy, n, c_o);
+                if let Some(n) = self.preview_node {
+                    self.preview.apply_layout(taffy, n, c_o);
+                }
+                if let Some(n) = self.customizer_node {
+                    self.customizer.apply_layout(taffy, n, c_o);
+                }
             }
         }
 
@@ -568,6 +766,13 @@ impl Widget for ThemesApp {
         } else {
             self.gallery_overlay_rect = Rect::ZERO;
         }
+
+        // `--shots` menu scenario: open the sidebar actions menu now that the
+        // rows have real rects to anchor it to.
+        if self.shot_menu {
+            self.shot_menu = false;
+            self.gallery.open_menu_for_shot();
+        }
     }
 
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, p: &PresenceCtx) {
@@ -583,9 +788,18 @@ impl Widget for ThemesApp {
 
         // Content panes. In overlay mode the gallery floats above the scrim, so
         // it's drawn after the scrim below.
-        self.preview.draw(scene, t, tr, theme, p);
-        self.customizer.draw(scene, t, tr, theme, p);
-        if layout == SplitLayout::Docked {
+        if layout == SplitLayout::Overlay {
+            // Clip the scrolling preview+customizer stack to its viewport so
+            // scrolled-out content can't bleed over the top bar; then draw the
+            // scroll indicator over the clipped content.
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.content_rect);
+            self.preview.draw(scene, t, tr, theme, p);
+            self.customizer.draw(scene, t, tr, theme, p);
+            scene.pop_layer();
+            self.draw_scroll_indicator(scene, t, theme);
+        } else {
+            self.preview.draw(scene, t, tr, theme, p);
+            self.customizer.draw(scene, t, tr, theme, p);
             self.gallery.draw(scene, t, tr, theme, p);
         }
 
@@ -594,7 +808,6 @@ impl Widget for ThemesApp {
         if layout == SplitLayout::Overlay {
             let reveal = self.gallery_flap.reveal();
             if reveal > 0.001 {
-                use ui::color_compat::ColorCompat;
                 let scrim_rect = Rect::new(
                     self.rect.x0,
                     self.rect.y0 + TOPBAR_H as f64,
@@ -659,6 +872,21 @@ impl Widget for ThemesApp {
 
         let overlay = self.layout_class() == SplitLayout::Overlay;
         let gallery_open = overlay && self.gallery_flap.is_open(SplitLayout::Overlay);
+
+        // Collapsed layout: the wheel scrolls the preview+customizer stack
+        // (unless the overlay gallery is open, which owns input while up).
+        if overlay && !gallery_open {
+            if let WindowEvent::MouseWheel { delta, .. } = event {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
+                    MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
+                };
+                let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
+                self.scroll = (self.scroll + dy as f64).clamp(0.0, max);
+                *handled = true;
+                return;
+            }
+        }
 
         // Esc dismisses an open overlay gallery before anything else sees it.
         if overlay && gallery_open {
@@ -773,7 +1001,115 @@ impl Widget for ThemesApp {
 
 /// Legible on-accent colour for the OS theme (used by the top-bar logo).
 fn ui_on_accent(theme: &Theme) -> vello::peniko::Color {
-    use ui::color_compat::ColorCompat;
     let a = [theme.accent_primary.r(), theme.accent_primary.g(), theme.accent_primary.b()];
     model::color(model::on_color(a))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Point the shared theme store at a throwaway config dir once for the
+    /// whole test binary, so Apply never writes the developer's real
+    /// `~/.config/qos/settings.json`. `Once` serialises the single env write
+    /// before any concurrent test reads it.
+    fn isolate_config() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("qos-themes-test-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            // SAFETY: performed exactly once, guarded by `Once`, before the
+            // seed path (the only env reader) runs in any test.
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        });
+    }
+
+    /// A freshly-seeded app + its CRDT state (first-run seed done).
+    fn seeded() -> (ThemesApp, ui::State) {
+        isolate_config();
+        let mut app = ThemesApp::new();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        (app, st)
+    }
+
+    fn catalog(st: &ui::State) -> Vec<ThemeSpec> {
+        doc::load_catalog(&st.doc, &st.root).unwrap()
+    }
+    fn selected(st: &ui::State) -> String {
+        doc::get_str(&st.doc, &st.root, doc::KEY_SELECTED).unwrap_or_default()
+    }
+    fn run(app: &mut ThemesApp, st: &mut ui::State, cmd: &str) {
+        doc::put_str(&mut st.doc, &st.root, doc::KEY_COMMAND, cmd);
+        app.sync(&mut st.doc, &st.root);
+    }
+
+    #[test]
+    fn duplicate_command_adds_editable_copy_and_selects_it() {
+        let (mut app, mut st) = seeded();
+        let before = catalog(&st).len();
+        run(&mut app, &mut st, "duplicate:midnight");
+        let cat = catalog(&st);
+        assert_eq!(cat.len(), before + 1, "one theme added");
+        let copy = cat.iter().find(|s| s.name == "Midnight copy").expect("named copy exists");
+        assert!(!copy.builtin, "the copy is editable");
+        assert_eq!(selected(&st), copy.id, "the copy becomes the selection");
+    }
+
+    #[test]
+    fn delete_command_removes_a_custom_theme_and_reselects() {
+        let (mut app, mut st) = seeded();
+        assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "seeded custom present");
+        run(&mut app, &mut st, "delete:sunset");
+        assert!(!catalog(&st).iter().any(|s| s.id == "sunset"), "custom theme removed");
+        assert!(catalog(&st).iter().any(|s| s.id == selected(&st)), "selection stays valid");
+    }
+
+    #[test]
+    fn delete_command_refuses_builtin_presets() {
+        let (mut app, mut st) = seeded();
+        let before = catalog(&st).len();
+        run(&mut app, &mut st, "delete:midnight");
+        assert_eq!(catalog(&st).len(), before, "a builtin preset is protected");
+        assert!(catalog(&st).iter().any(|s| s.id == "midnight"));
+    }
+
+    #[test]
+    fn inline_name_edit_persists_into_the_selected_custom_theme() {
+        let (mut app, mut st) = seeded();
+        // The seeded custom "sunset" is selected out of the box.
+        assert_eq!(selected(&st), "sunset");
+        // The sidebar's inline TextInput writes the edited name to KEY_ED_NAME;
+        // the next sync reconciles it into the catalog (persisted in the CRDT).
+        doc::put_str(&mut st.doc, &st.root, doc::KEY_ED_NAME, "My Theme");
+        app.sync(&mut st.doc, &st.root);
+        assert_eq!(catalog(&st).iter().find(|s| s.id == "sunset").unwrap().name, "My Theme");
+    }
+
+    #[test]
+    fn rename_command_selects_its_target() {
+        let (mut app, mut st) = seeded();
+        run(&mut app, &mut st, "duplicate:nord");
+        let copy_id = catalog(&st).iter().find(|s| s.name == "Nord copy").unwrap().id.clone();
+        run(&mut app, &mut st, "select:midnight");
+        run(&mut app, &mut st, &format!("rename:{copy_id}"));
+        assert_eq!(selected(&st), copy_id, "rename selects the target so its name is editable");
+    }
+
+    #[test]
+    fn apply_command_writes_the_active_theme_to_the_shared_store() {
+        let (mut app, mut st) = seeded();
+        run(&mut app, &mut st, "select:dracula");
+        run(&mut app, &mut st, "apply");
+        // The in-app "Active" badge id updates immediately…
+        assert_eq!(doc::get_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(), Some("dracula"));
+        // …and the shared settings store on disk now names it the OS theme.
+        assert_eq!(store::load_active_id().as_deref(), Some("dracula"));
+        let back = store::active_spec(
+            &std::fs::read_to_string(store::store_path().unwrap()).unwrap(),
+        )
+        .expect("the full applied spec round-trips out of the store");
+        assert_eq!(back.id, "dracula");
+    }
 }
