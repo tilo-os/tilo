@@ -90,6 +90,15 @@ enum Slot {
     AddrCountry(usize),
 }
 
+/// Direction of an arrow-key move between edit-form fields.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FieldDir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 /// The focus-search chord: `true` for Ctrl/Cmd + K (or Ctrl/Cmd + `/`). Both
 /// are the conventional "jump to search" shortcut, wired here to focus this
 /// app's own list search field (bare `/` does the same). Kept as a standalone
@@ -219,6 +228,46 @@ fn set_addr(c: &mut Contact, i: usize, pick: impl Fn(&mut Address) -> &mut Strin
     if let Some(a) = c.addresses.get_mut(i) {
         *pick(a) = v;
     }
+}
+
+/// Pick the input (by index into the form's `inputs`) whose laid-out rect is
+/// the nearest neighbour of `from` in `dir`. Candidates must lie strictly in
+/// that direction; ties break toward the best axis alignment (primary-axis
+/// distance plus a perpendicular penalty), so Up/Down prefer a vertically
+/// aligned field and Left/Right the field beside it on the same row. Returns
+/// `None` when nothing lies that way (already at the edge).
+fn best_field_in_direction(
+    from: Rect,
+    dir: FieldDir,
+    rects: &[(usize, Rect)],
+    cur_idx: usize,
+) -> Option<usize> {
+    let fc = from.center();
+    let mut best: Option<(f64, usize)> = None;
+    for &(idx, r) in rects {
+        if idx == cur_idx {
+            continue;
+        }
+        let c = r.center();
+        let in_dir = match dir {
+            FieldDir::Up => c.y < fc.y - 1.0,
+            FieldDir::Down => c.y > fc.y + 1.0,
+            FieldDir::Left => c.x < fc.x - 1.0,
+            FieldDir::Right => c.x > fc.x + 1.0,
+        };
+        if !in_dir {
+            continue;
+        }
+        let (primary, perp) = match dir {
+            FieldDir::Up | FieldDir::Down => ((c.y - fc.y).abs(), (c.x - fc.x).abs()),
+            FieldDir::Left | FieldDir::Right => ((c.x - fc.x).abs(), (c.y - fc.y).abs()),
+        };
+        let score = primary + perp * 2.0;
+        if best.map_or(true, |(bs, _)| score < bs) {
+            best = Some((score, idx));
+        }
+    }
+    best.map(|(_, i)| i)
 }
 
 /// Build a single form field input seeded with `value`.
@@ -592,6 +641,11 @@ impl ContactsApp {
         if self.narrow {
             self.push.show_detail();
         }
+        // Land the keyboard on the first field so the form is typeable the
+        // instant it opens (no click required) and Tab/arrows have a starting
+        // point. Callers that want a specific field (double-click-to-edit)
+        // override this with `focus_form_slot` right after.
+        self.focus_adjacent_field(1);
         self.relayout = true;
         self.dirty = true;
     }
@@ -1045,16 +1099,20 @@ impl ContactsApp {
         let w = x1 - x0;
         // The (non-scrolled) header band is two stacked rows so nothing
         // collides: row 1 is the "Edit/New Contact" title, row 2 holds the
-        // Favorite pill (left) and Save/Cancel (right). The scrollable body
+        // Favorite pill (left) and Cancel/Save (right). The scrollable body
         // begins below both. Keep these constants in sync with `draw_form`
         // (the title baseline and the body clip both derive from them).
+        //
+        // Action order matches this app's dialogs (delete-confirm, unsaved
+        // guard, export): the primary action sits at the far right and the
+        // secondary just left of it — one convention everywhere.
         let title_y = area.y0 + FORM_TITLE_TOP + off;
         let by = title_y + FORM_TITLE_H + FORM_ROW_GAP; // controls row top
         let top = by + 32.0 + FORM_ROW_GAP; // first field row top
         let mut y = top - self.detail_scroll;
 
-        self.hit.cancel = Rect::new(x1 - 88.0, by, x1, by + 32.0);
-        self.hit.save = Rect::new(x1 - 88.0 - 96.0, by, x1 - 88.0 - 8.0, by + 32.0);
+        self.hit.save = Rect::new(x1 - 96.0, by, x1, by + 32.0);
+        self.hit.cancel = Rect::new(self.hit.save.x0 - 8.0 - 88.0, by, self.hit.save.x0 - 8.0, by + 32.0);
         self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + 32.0);
 
         let label_h = 18.0;
@@ -3204,6 +3262,74 @@ impl ContactsApp {
         true
     }
 
+    /// Focus the field nearest the currently-focused one in `dir`, using the
+    /// laid-out input rectangles (2D directional navigation, the same spatial
+    /// model the OS uses between top-level widgets). Arrow keys drive this so
+    /// the form is navigable without Tab. With no field focused, enters at the
+    /// first (Down/Right) or last (Up/Left) field. Caret lands at the end of
+    /// the newly-focused field. Returns whether focus moved onto a field.
+    fn focus_field_directional(&mut self, dir: FieldDir) -> bool {
+        self.search.set_focus(false);
+        let Some(form) = &mut self.form else {
+            return false;
+        };
+        // Only laid-out inputs (non-zero width) are navigable targets.
+        let rects: Vec<(usize, Rect)> = form
+            .inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.ti.get_rect().width() > 0.0)
+            .map(|(i, f)| (i, f.ti.get_rect()))
+            .collect();
+        if rects.is_empty() {
+            return false;
+        }
+        let cur = form.inputs.iter().position(|f| f.ti.is_focused());
+        let target = match cur {
+            Some(ci) => best_field_in_direction(form.inputs[ci].ti.get_rect(), dir, &rects, ci),
+            None => match dir {
+                FieldDir::Down | FieldDir::Right => Some(rects.first().unwrap().0),
+                FieldDir::Up | FieldDir::Left => Some(rects.last().unwrap().0),
+            },
+        };
+        let Some(ti_idx) = target else {
+            return false;
+        };
+        for (i, f) in form.inputs.iter_mut().enumerate() {
+            let focus = i == ti_idx;
+            f.ti.set_focus(focus);
+            if focus {
+                let end = f.ti.value().len();
+                f.ti.set_selection(end, end);
+            }
+        }
+        self.dirty = true;
+        self.relayout = true;
+        true
+    }
+
+    /// Whether the focused edit-form field has its caret at the very start with
+    /// nothing selected — the point at which a left-arrow should hop to the
+    /// previous field instead of nudging the caret.
+    fn form_caret_at_start(&self) -> bool {
+        self.form
+            .as_ref()
+            .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
+            .map(|i| i.ti.cursor_pos() == 0 && i.ti.selection_range_public().is_none())
+            .unwrap_or(false)
+    }
+
+    /// Whether the focused edit-form field has its caret at the very end with
+    /// nothing selected — the point at which a right-arrow should hop to the
+    /// next field.
+    fn form_caret_at_end(&self) -> bool {
+        self.form
+            .as_ref()
+            .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
+            .map(|i| i.ti.cursor_pos() == i.ti.value().len() && i.ti.selection_range_public().is_none())
+            .unwrap_or(false)
+    }
+
     /// Idiomatic Enter inside the edit form: advance to the next field, or —
     /// when the last field is already focused — submit the form (save). With
     /// no field focused, focuses the first. Returns whether it was handled.
@@ -3642,10 +3768,15 @@ impl ContactsApp {
         }
 
         // Edit-form keyboard navigation. Tab / Shift+Tab move across the form
-        // fields (wrapping); Enter advances to the next field and submits on
-        // the last. Handled *before* the "route typing to the focused input"
-        // branch below so the embedded TextInput never swallows Tab / Enter
-        // (which it otherwise drops as control characters).
+        // fields (wrapping); the arrow keys move directionally between fields
+        // (Up/Down between rows; Left/Right hop to the neighbouring field only
+        // when the caret is already at the field edge, so mid-field arrows
+        // still nudge the caret); Enter advances and submits on the last.
+        // Handled *before* the "route typing to the focused input" branch below
+        // so the embedded TextInput never swallows Tab / Enter / the boundary
+        // arrows (which it otherwise drops as control characters or caret
+        // no-ops). Left/Right that are NOT at an edge fall through untouched so
+        // the focused input moves its caret as usual.
         if self.mode == Mode::Edit && self.form.is_some() {
             match &ke.logical_key {
                 Key::Named(NamedKey::Tab) => {
@@ -3657,6 +3788,30 @@ impl ContactsApp {
                 }
                 Key::Named(NamedKey::Enter) => {
                     self.form_enter(state);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.focus_field_directional(FieldDir::Up);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.focus_field_directional(FieldDir::Down);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowLeft) if self.form_caret_at_start() => {
+                    self.focus_field_directional(FieldDir::Left);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowRight) if self.form_caret_at_end() => {
+                    self.focus_field_directional(FieldDir::Right);
                     *handled = true;
                     self.dirty = true;
                     return;
