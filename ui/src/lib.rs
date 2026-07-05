@@ -80,8 +80,8 @@ pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use text_selection::{
     Selection, clipboard_copy, clipboard_paste, line_boundaries,
-    next_char_boundary, next_word_boundary, prev_char_boundary,
-    prev_word_boundary, word_boundaries,
+    next_char_boundary, next_word_boundary, next_word_boundary_chars, prev_char_boundary,
+    prev_word_boundary, prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
 };
 
 // Unified animation primitives (foundation #17).
