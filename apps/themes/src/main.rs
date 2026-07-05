@@ -135,6 +135,9 @@ fn render_shot_to_png(
         &presence,
         &permission,
     );
+    // Mirror the live `App` frame: overlays (dropdown lists, the sidebar's
+    // right-click actions menu) paint in a second pass on top of the scene.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
