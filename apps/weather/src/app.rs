@@ -927,6 +927,88 @@ mod interaction_tests {
     }
 
     #[test]
+    fn drag_reflows_the_list_live_and_commits_only_on_drop() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let order_before: Vec<_> =
+            h.app.core.borrow().model.locations.iter().map(|l| l.id).collect();
+        let first = order_before[0];
+
+        // Press the first chip and drag it down about two slots — mid-drag.
+        let y0 = h.chip_center_y(0);
+        h.press(200.0, y0);
+        h.move_to(200.0, h.chip_center_y(2));
+
+        {
+            let core = h.app.core.borrow();
+            // The toolkit controller is dragging item 0 and tracking a live
+            // insertion index further down the list (the gap follows the
+            // cursor, not the release).
+            assert_eq!(core.reorder_from_for_test(), Some(0));
+            let ins = core
+                .reorder_insertion_for_test()
+                .expect("a live insertion index is tracked while dragging");
+            assert!(ins >= 2, "the gap opened down the list under the cursor, got {ins}");
+            // A non-dragged chip has physically reflowed to open that gap —
+            // proving the list rearranges in real time.
+            assert!(
+                core.reorder_item_shift_for_test(1).abs() > 0.0,
+                "the list reflows live during the drag"
+            );
+            // ...yet the model is untouched: the reorder only commits on drop.
+            assert_eq!(
+                core.model.locations.iter().map(|l| l.id).collect::<Vec<_>>(),
+                order_before,
+                "no premature mutation — the drag is purely visual until release"
+            );
+        }
+
+        // Releasing commits the tracked insertion into the model.
+        h.release();
+        let model = &h.app.core.borrow().model;
+        assert_ne!(model.locations[0].id, first, "the drop reordered the model");
+        assert_eq!(model.locations.len(), order_before.len());
+    }
+
+    #[test]
+    fn escape_cancels_an_in_flight_reorder_and_restores_order() {
+        let mut h = Harness::new(560.0, 900.0);
+        h.redraw();
+        let order_before: Vec<_> =
+            h.app.core.borrow().model.locations.iter().map(|l| l.id).collect();
+
+        // Start a vertical reorder of the first chip.
+        let y0 = h.chip_center_y(0);
+        h.press(200.0, y0);
+        h.move_to(200.0, h.chip_center_y(2));
+        assert!(
+            h.app.core.borrow().reorder_from_for_test().is_some(),
+            "a reorder is in flight before Escape"
+        );
+
+        // Escape abandons the drag and snaps the list back.
+        h.key(Key::Named(NamedKey::Escape), None);
+        {
+            let core = h.app.core.borrow();
+            assert_eq!(core.reorder_from_for_test(), None, "escape cleared the drag");
+            assert_eq!(core.reorder_insertion_for_test(), None);
+            assert_eq!(
+                core.model.locations.iter().map(|l| l.id).collect::<Vec<_>>(),
+                order_before,
+                "the original order is restored — the model was never mutated"
+            );
+        }
+
+        // A release after the cancel is a no-op; nothing commits.
+        h.release();
+        assert_eq!(
+            h.app.core.borrow().model.locations.iter().map(|l| l.id).collect::<Vec<_>>(),
+            order_before,
+            "no stale drag commits after Escape"
+        );
+    }
+
+    #[test]
     fn dragging_onto_the_delete_zone_deletes() {
         let mut h = Harness::new(560.0, 900.0);
         h.redraw();
