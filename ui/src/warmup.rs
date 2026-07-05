@@ -10,13 +10,30 @@
 //!    live wgpu device. Whichever thread does this stalls until the
 //!    driver is done.
 //!
-//! Neither cost is avoidable — but both can be *moved off the critical
-//! path* by running them on a background thread as soon as the process
-//! is alive. When the compositor thread later builds its own
-//! `FontSystem` and `Renderer`, the OS page cache (font files),
-//! fontconfig's shared cache, and — for backends that share the
-//! process-wide `RenderContext` via [`crate::offscreen`] — wgpu's
-//! device-level pipeline cache are already hot.
+//! Only the fonts side of the warmup ships enabled by default —
+//! measurement below.
+//!
+//! # Measured impact (release build, shots harness, `desktop` scene)
+//!
+//! | Configuration                | median first-paint | notes                 |
+//! |------------------------------|--------------------|-----------------------|
+//! | no warmup                    | 406 ms             | reference              |
+//! | fonts + vello warmup         | 483 ms             | slower than no warmup |
+//! | fonts warmup only            | **316 ms**         | **-90 ms / -22 %**    |
+//!
+//! The Vello warmup regresses because it holds the process-wide
+//! `SHARED_RENDER_CONTEXT` mutex through its scratch render, blocking
+//! the main thread's own `OffscreenRenderer::new` for the same lock.
+//! Fixing that would take a separate wgpu Device — but a separate
+//! Device has its own pipeline cache, so the compositor's real Renderer
+//! wouldn't benefit anyway. Left as opt-in behind `QOS_STARTUP_WARM_VELLO`
+//! for when someone lands a shared-cache strategy.
+//!
+//! The FontSystem warmup wins because it doesn't touch the GPU: it
+//! shapes strings on a background thread, warming the OS page cache
+//! for every mmap'd .ttf/.otf. The compositor's own `FontSystem::new`
+//! later hits those already-resident pages instead of paying the
+//! disk-read cost.
 //!
 //! # Behaviour
 //! Warmup is enabled by default. Set `QOS_STARTUP_WARM=off` (also
