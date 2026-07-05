@@ -912,7 +912,11 @@ fn main() -> Result<(), String> {
             let span = span!(Level::TRACE, "recv.decoder.decode", nal_bytes = nal_blob.len());
             let _entered = span.enter();
             if let Some(frame) = recv_decoder.decode(&nal_blob) {
-                last_decoded = Some(frame.rgba);
+                // Post-HDR decoder now returns typed DecodedPixels; the
+                // demo only handles SDR RGBA, so extract those bytes.
+                if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
+                    last_decoded = Some(rgba);
+                }
                 decoded_frames += 1;
             }
         }
@@ -961,7 +965,9 @@ fn main() -> Result<(), String> {
             // for the summary line, not to display them (the composite
             // has already been written).
             let _ = &last_decoded;
-            last_decoded = Some(frame.rgba);
+            if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
+                last_decoded = Some(rgba);
+            }
             decoded_frames += 1;
         }
     }
