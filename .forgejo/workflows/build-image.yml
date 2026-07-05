@@ -46,8 +46,10 @@ jobs:
           password: ${{ secrets.REGISTRY_TOKEN }}
 
       # Pin the frozen RPM repo the build installs from (cross-time reproducible).
+      # Only the RPMS_REF= line — $GITHUB_ENV has no comment syntax, so the file's
+      # leading `#` lines would corrupt the env (RPMS_REF ended up empty).
       - name: Load RPMS_REF (frozen package snapshot)
-        run: cat os/rpms-snapshot.env >> "$GITHUB_ENV"
+        run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
 
       # Deterministic timestamp for reproducible builds: the HEAD commit time.
       # buildkit rewrites layer/image timestamps to SOURCE_DATE_EPOCH, and the
