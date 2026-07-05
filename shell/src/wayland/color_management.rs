@@ -44,7 +44,6 @@ use std::sync::{Arc, Mutex};
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
     backend::{ClientId, GlobalId},
-    delegate_dispatch, delegate_global_dispatch,
     protocol::{wl_output::WlOutput, wl_surface::WlSurface},
 };
 
@@ -57,10 +56,8 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_color_manager_v1::{
         self, Feature, Primaries, RenderIntent, TransferFunction, WpColorManagerV1,
     },
-    wp_image_description_creator_params_v1::{
-        self, WpImageDescriptionCreatorParamsV1,
-    },
-    wp_image_description_info_v1::{self, WpImageDescriptionInfoV1},
+    wp_image_description_creator_params_v1::{self, WpImageDescriptionCreatorParamsV1},
+    wp_image_description_info_v1::WpImageDescriptionInfoV1,
     wp_image_description_v1::{self, Cause as ImageCause, WpImageDescriptionV1},
 };
 
@@ -312,6 +309,7 @@ impl ParametricBuilder {
         }
     }
 
+    #[allow(dead_code)]
     fn is_consumed(&self) -> bool {
         self.inner
             .lock()
@@ -887,7 +885,7 @@ where
         request: <WpImageDescriptionV1 as Resource>::Request,
         data: &ImageDescriptionData,
         _dh: &DisplayHandle,
-        data_init: &mut DataInit<'_, D>,
+        _data_init: &mut DataInit<'_, D>,
     ) {
         match request {
             wp_image_description_v1::Request::Destroy => {}
