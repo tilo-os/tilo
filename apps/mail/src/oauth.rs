@@ -170,8 +170,8 @@ impl AuthRequest {
 
 /// The tokens returned by a successful code exchange. The access token is used
 /// as the IMAP/SMTP `XOAUTH2` bearer; the refresh token renews it. Never
-/// written to the shared settings JSON — a real deployment keeps these in the
-/// OS secret store.
+/// written to the shared settings JSON — sealed in the [`accounts::SecretVault`]
+/// instead (see [`tokens_to_secret`] / [`tokens_from_secret`]).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthTokens {
     pub access_token: String,
@@ -180,10 +180,42 @@ pub struct OAuthTokens {
     /// Lifetime of the access token in seconds, as reported by the provider.
     #[serde(default)]
     pub expires_in: u64,
+    /// Unix seconds at which the access token was obtained. Combined with
+    /// `expires_in` this yields the absolute expiry, so a reload can tell
+    /// whether the cached access token is still usable or must be refreshed.
+    #[serde(default)]
+    pub obtained_at: u64,
 }
 
-/// Parse a provider token-endpoint JSON response into [`OAuthTokens`]. Returns
-/// `None` when the payload is an error (no `access_token`).
+impl OAuthTokens {
+    /// Stamp `obtained_at` with the current wall clock (call right after an
+    /// exchange/refresh so the expiry can be computed on later reloads).
+    pub fn stamp_now(mut self) -> Self {
+        self.obtained_at = unix_now();
+        self
+    }
+
+    /// Whether the access token is expired (or within `skew` seconds of it, so
+    /// a request that takes a moment doesn't race the boundary). A token with
+    /// no reported lifetime is treated as already-expired so it is always
+    /// refreshed before use.
+    pub fn is_expired_with_skew(&self, skew: u64, now: u64) -> bool {
+        if self.expires_in == 0 {
+            return true;
+        }
+        now + skew >= self.obtained_at.saturating_add(self.expires_in)
+    }
+
+    /// Whether the access token needs refreshing right now (60s skew).
+    pub fn needs_refresh(&self) -> bool {
+        self.is_expired_with_skew(60, unix_now())
+    }
+}
+
+/// Parse a provider token-endpoint JSON response into [`OAuthTokens`], stamped
+/// with the current time. Returns `None` when the payload is an error (no
+/// `access_token`). A refresh response omits `refresh_token` (the old one stays
+/// valid), so an empty refresh token here is not an error.
 pub fn parse_token_response(json: &str) -> Option<OAuthTokens> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let access_token = v.get("access_token")?.as_str()?.to_string();
@@ -196,7 +228,60 @@ pub fn parse_token_response(json: &str) -> Option<OAuthTokens> {
         .unwrap_or_default()
         .to_string();
     let expires_in = v.get("expires_in").and_then(|t| t.as_u64()).unwrap_or(0);
-    Some(OAuthTokens { access_token, refresh_token, expires_in })
+    Some(OAuthTokens { access_token, refresh_token, expires_in, obtained_at: unix_now() })
+}
+
+/// Serialise a token bundle into a vault [`accounts::Secret`] (the credential
+/// store keeps it sealed at rest, never in the plaintext account JSON).
+pub fn tokens_to_secret(tokens: &OAuthTokens) -> accounts::Secret {
+    accounts::Secret {
+        password: String::new(),
+        token: serde_json::to_string(tokens).ok(),
+    }
+}
+
+/// Recover a token bundle from a vault [`accounts::Secret`], if it holds one.
+pub fn tokens_from_secret(secret: &accounts::Secret) -> Option<OAuthTokens> {
+    let raw = secret.token.as_ref()?;
+    serde_json::from_str(raw).ok()
+}
+
+/// The `XOAUTH2` SASL initial-response string IMAP `AUTHENTICATE` and SMTP
+/// `AUTH` expect (RFC 7628 / Google + Microsoft mail): the base64 of
+/// `user=<email>^Aauth=Bearer <token>^A^A` where `^A` is the `\x01` control
+/// byte. Pure + dependency-free so it is unit-tested in every build.
+pub fn xoauth2_sasl(user: &str, access_token: &str) -> String {
+    let raw = format!("user={user}\x01auth=Bearer {access_token}\x01\x01");
+    base64_standard(raw.as_bytes())
+}
+
+/// Standard base64 (RFC 4648 §4, `+`/`/` alphabet, `=` padding) — the encoding
+/// SASL/XOAUTH2 mandates (distinct from the URL-safe [`base64url_nopad`] PKCE
+/// uses). Inline + dependency-free so it stays in the default build and is
+/// tested there.
+pub fn base64_standard(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 { ALPHABET[((n >> 6) & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPHABET[(n & 0x3f) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// Wall-clock unix seconds (0 if the clock is before the epoch).
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Exchange an authorization `code` for tokens at the provider's token
@@ -228,6 +313,249 @@ pub fn exchange_code(
         .map_err(|e| e.to_string())?;
     let body = resp.text().map_err(|e| e.to_string())?;
     parse_token_response(&body).ok_or_else(|| format!("token endpoint rejected exchange: {body}"))
+}
+
+/// A one-shot loopback HTTP listener for the OAuth authorization-code redirect.
+///
+/// The installed-app OAuth flow (RFC 8252) redirects the browser to
+/// `http://127.0.0.1:<port>/…?code=…` after the user consents. We bind an
+/// **ephemeral** port up front (so no privilege and no fixed port collision),
+/// hand its `redirect_uri` to the provider, then block on a single inbound
+/// connection to read the `code`. Pure `std::net` — no TLS, no async, no extra
+/// dependency — so it is compiled and unit-tested in every build.
+pub struct LoopbackServer {
+    listener: std::net::TcpListener,
+    port: u16,
+}
+
+impl LoopbackServer {
+    /// Bind `127.0.0.1:0` (an OS-chosen free port). `Err` only if the loopback
+    /// interface can't be bound at all.
+    pub fn bind() -> std::io::Result<Self> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        Ok(Self { listener, port })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The redirect URI to register in the authorization request — must match
+    /// exactly what the provider echoes back.
+    pub fn redirect_uri(&self) -> String {
+        format!("http://127.0.0.1:{}/oauth", self.port)
+    }
+
+    /// Block until the browser hits the redirect, then return the `code`,
+    /// verifying `expected_state` (CSRF guard) before accepting it. Serves the
+    /// browser a small "you can close this tab" page either way. Fails on a
+    /// provider-reported `error=`, a state mismatch, a missing code, or the
+    /// `timeout` elapsing with no callback.
+    pub fn wait_for_code(
+        &self,
+        expected_state: &str,
+        timeout: std::time::Duration,
+    ) -> Result<String, String> {
+        use std::io::Read;
+        self.listener
+            .set_nonblocking(false)
+            .map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now() + timeout;
+        // Accept connections until we get the real callback (browsers often
+        // fire a favicon/preflight request first); ignore anything without a
+        // recognisable auth response until the deadline.
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err("timed out waiting for the sign-in redirect".into());
+            }
+            self.listener
+                .set_nonblocking(true)
+                .map_err(|e| e.to_string())?;
+            let mut stream = match self.listener.accept() {
+                Ok((s, _)) => s,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let line = request.lines().next().unwrap_or("");
+            match parse_redirect_line(line) {
+                Some(RedirectResult::Code { code, state }) => {
+                    let ok = state == expected_state;
+                    let body = if ok {
+                        "Signed in. You can close this tab and return to Mail."
+                    } else {
+                        "Sign-in state mismatch. Please try again from Mail."
+                    };
+                    let _ = write_http_response(&mut stream, body);
+                    if !ok {
+                        return Err("authorization state mismatch (possible CSRF)".into());
+                    }
+                    return Ok(code);
+                }
+                Some(RedirectResult::Error(err)) => {
+                    let _ = write_http_response(&mut stream, "Sign-in failed. You can close this tab.");
+                    return Err(format!("authorization denied: {err}"));
+                }
+                None => {
+                    // Not the callback (e.g. /favicon.ico) — answer and keep
+                    // waiting for the real one.
+                    let _ = write_http_response(&mut stream, "Waiting for sign-in…");
+                }
+            }
+        }
+    }
+}
+
+fn write_http_response(stream: &mut std::net::TcpStream, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let page = format!(
+        "<!doctype html><html><head><meta charset=utf-8><title>qOS Mail</title></head>\
+         <body style=\"font-family:system-ui;padding:3rem;text-align:center\">{body}</body></html>"
+    );
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        page.len(),
+        page
+    );
+    stream.write_all(resp.as_bytes())?;
+    stream.flush()
+}
+
+/// The meaningful outcomes of an OAuth redirect GET line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RedirectResult {
+    Code { code: String, state: String },
+    Error(String),
+}
+
+/// Parse the first request line of the loopback callback
+/// (`GET /oauth?code=…&state=… HTTP/1.1`) into its `code`+`state`, or the
+/// provider-reported `error`. `None` for a request that carries neither (a
+/// favicon fetch, a bare `/`). Pure + testable.
+pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
+    let path = line.split_whitespace().nth(1)?;
+    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut code = None;
+    let mut state = String::new();
+    let mut error = None;
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = percent_decode(v);
+        match k {
+            "code" => code = Some(v),
+            "state" => state = v,
+            "error" => error = Some(v),
+            _ => {}
+        }
+    }
+    if let Some(e) = error {
+        return Some(RedirectResult::Error(e));
+    }
+    code.map(|code| RedirectResult::Code { code, state })
+}
+
+/// Minimal percent-decode for query values (`%XX` + `+`→space). Enough for the
+/// OAuth `code`/`state`/`error` values a provider round-trips.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                    continue;
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Refresh an expired access token using its refresh token. Network path —
+/// compiled only under `live`. The provider may omit a new refresh token in
+/// the response (the old one stays valid), so the caller should carry it
+/// forward when the field comes back empty.
+#[cfg(feature = "live")]
+pub fn refresh_tokens(
+    provider: OAuthProvider,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<OAuthTokens, String> {
+    let e = provider.endpoints();
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", refresh_token),
+    ];
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(e.token_url)
+        .form(&params)
+        .send()
+        .map_err(|e| e.to_string())?;
+    let body = resp.text().map_err(|e| e.to_string())?;
+    let mut tokens = parse_token_response(&body)
+        .ok_or_else(|| format!("token refresh rejected: {body}"))?;
+    // Carry the existing refresh token forward when the provider didn't send a
+    // fresh one (Google typically doesn't on refresh).
+    if tokens.refresh_token.is_empty() {
+        tokens.refresh_token = refresh_token.to_string();
+    }
+    Ok(tokens)
+}
+
+/// Run the full installed-app authorization-code + PKCE flow: bind the loopback
+/// redirect, open the browser to the provider consent screen, capture the code,
+/// and exchange it for tokens. Blocks (on the worker thread) until the user
+/// consents or `timeout` elapses. Network path — compiled only under `live`.
+#[cfg(feature = "live")]
+pub fn run_loopback_authorization(
+    provider: OAuthProvider,
+    client_id: &str,
+    login_hint: &str,
+    open_browser: impl FnOnce(&str),
+    timeout: std::time::Duration,
+) -> Result<OAuthTokens, String> {
+    let server = LoopbackServer::bind().map_err(|e| format!("could not bind loopback: {e}"))?;
+    let redirect_uri = server.redirect_uri();
+    let pkce = Pkce::generate();
+    let state = base64url_nopad(uuid::Uuid::new_v4().as_bytes());
+    let req = AuthRequest {
+        provider,
+        client_id: client_id.to_string(),
+        redirect_uri: redirect_uri.clone(),
+        pkce: pkce.clone(),
+        state: state.clone(),
+        login_hint: login_hint.to_string(),
+    };
+    open_browser(&req.authorization_url());
+    let code = server.wait_for_code(&state, timeout)?;
+    exchange_code(provider, client_id, &redirect_uri, &code, &pkce.verifier).map(OAuthTokens::stamp_now)
 }
 
 // ---- base64url + SHA-256 (RFC 4648 / FIPS 180-4), inline & dependency-free --
@@ -468,5 +796,132 @@ mod tests {
     fn token_response_rejects_error_payload() {
         let json = r#"{"error":"invalid_grant","error_description":"Bad Request"}"#;
         assert!(parse_token_response(json).is_none(), "error payload must not parse as tokens");
+    }
+
+    #[test]
+    fn base64_standard_matches_rfc4648_vectors() {
+        // RFC 4648 §10 vectors — the padded, +/ alphabet SASL requires.
+        assert_eq!(base64_standard(b""), "");
+        assert_eq!(base64_standard(b"f"), "Zg==");
+        assert_eq!(base64_standard(b"fo"), "Zm8=");
+        assert_eq!(base64_standard(b"foo"), "Zm9v");
+        assert_eq!(base64_standard(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_standard(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_standard(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn xoauth2_sasl_has_exact_wire_shape() {
+        // The decoded SASL string must be user=<u>^Aauth=Bearer <t>^A^A, and
+        // the base64 must be the standard (padded) alphabet.
+        let s = xoauth2_sasl("user@example.com", "ya29.tok");
+        // The base64 must encode exactly `user=<u>^Aauth=Bearer <t>^A^A`.
+        let expected_raw = "user=user@example.com\x01auth=Bearer ya29.tok\x01\x01";
+        assert_eq!(s, base64_standard(expected_raw.as_bytes()));
+        // Standard alphabet only (SASL mandates +/ and `=` padding, never the
+        // URL-safe -_ variant).
+        assert!(s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '='));
+        assert!(!s.contains('-') && !s.contains('_'), "must be standard, not URL-safe base64: {s}");
+    }
+
+    #[test]
+    fn parse_redirect_line_extracts_code_and_state() {
+        let line = "GET /oauth?state=xyz&code=4%2F0Afoo&scope=mail HTTP/1.1";
+        match parse_redirect_line(line) {
+            Some(RedirectResult::Code { code, state }) => {
+                assert_eq!(code, "4/0Afoo", "percent-decoded code");
+                assert_eq!(state, "xyz");
+            }
+            other => panic!("expected a code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_redirect_line_surfaces_provider_error() {
+        let line = "GET /oauth?error=access_denied&state=xyz HTTP/1.1";
+        assert_eq!(
+            parse_redirect_line(line),
+            Some(RedirectResult::Error("access_denied".into()))
+        );
+    }
+
+    #[test]
+    fn parse_redirect_line_ignores_non_callback_requests() {
+        assert!(parse_redirect_line("GET /favicon.ico HTTP/1.1").is_none());
+        assert!(parse_redirect_line("GET / HTTP/1.1").is_none());
+    }
+
+    #[test]
+    fn loopback_server_captures_code_from_a_real_local_client() {
+        use std::io::Write;
+        // Bind the real ephemeral loopback listener, connect a local client to
+        // its redirect_uri, and prove wait_for_code returns the captured code.
+        // Exercises the production socket path — no network egress.
+        let server = LoopbackServer::bind().expect("bind loopback");
+        let uri = server.redirect_uri();
+        let port = server.port();
+        assert!(uri.starts_with(&format!("http://127.0.0.1:{port}/")));
+        let client = std::thread::spawn(move || {
+            // Give the acceptor a moment to enter its loop.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            s.write_all(b"GET /oauth?code=THECODE&state=STATE123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .expect("write request");
+            let mut resp = Vec::new();
+            use std::io::Read;
+            let _ = s.read_to_end(&mut resp);
+            // The browser gets a human-readable close-tab page.
+            assert!(String::from_utf8_lossy(&resp).contains("close this tab"));
+        });
+        let code = server
+            .wait_for_code("STATE123", std::time::Duration::from_secs(5))
+            .expect("capture code");
+        assert_eq!(code, "THECODE");
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_server_rejects_state_mismatch() {
+        use std::io::Write;
+        let server = LoopbackServer::bind().expect("bind");
+        let port = server.port();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                let _ = s.write_all(b"GET /oauth?code=X&state=WRONG HTTP/1.1\r\n\r\n");
+            }
+        });
+        let err = server
+            .wait_for_code("EXPECTED", std::time::Duration::from_secs(5))
+            .unwrap_err();
+        assert!(err.contains("state mismatch"), "{err}");
+    }
+
+    #[test]
+    fn tokens_round_trip_through_a_vault_secret() {
+        let tokens = OAuthTokens {
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+            expires_in: 3600,
+            obtained_at: 1000,
+        };
+        let secret = tokens_to_secret(&tokens);
+        assert!(secret.password.is_empty(), "OAuth secret carries no password");
+        assert_eq!(tokens_from_secret(&secret), Some(tokens));
+    }
+
+    #[test]
+    fn token_expiry_accounts_for_lifetime_and_skew() {
+        let t = OAuthTokens { access_token: "a".into(), refresh_token: "r".into(), expires_in: 3600, obtained_at: 1_000_000 };
+        // Well within lifetime: not expired.
+        assert!(!t.is_expired_with_skew(60, 1_000_100));
+        // Past expiry: expired.
+        assert!(t.is_expired_with_skew(60, 1_004_601));
+        // Within the skew window before expiry: treated as expired so it's
+        // refreshed proactively.
+        assert!(t.is_expired_with_skew(60, 1_003_550));
+        // A token with no reported lifetime is always considered expired.
+        let no_life = OAuthTokens { expires_in: 0, obtained_at: 1_000_000, ..t };
+        assert!(no_life.is_expired_with_skew(60, 1_000_000));
     }
 }

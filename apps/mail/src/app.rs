@@ -60,6 +60,10 @@ use crate::util::format_absolute;
 const BREAKPOINT: f64 = 860.0;
 const SIDEBAR_W: f64 = 260.0;
 const OVERVIEW_W: f64 = 340.0;
+/// How often the app auto-refreshes the current folder from the server while in
+/// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
+/// one immediately regardless.
+const AUTO_REFRESH_MIN: i64 = 5;
 
 /// An open row context menu.
 struct ContextMenu {
@@ -77,6 +81,8 @@ enum OverlayHit {
     ToggleSmtpTls,
     SetupSave,
     CancelSetup,
+    /// Remove the account being edited (only shown when editing an existing one).
+    RemoveAccount,
     CtxItem(usize),
     /// Pick the account's sign-in method (password vs OAuth).
     AuthPassword,
@@ -123,6 +129,9 @@ pub struct MailApp {
     /// app only keeps polling the worker while a reply is outstanding (it fully
     /// idles otherwise instead of busy-looping).
     awaiting_engine: bool,
+    /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
+    /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
+    last_auto_refresh_min: i64,
 
     overlay_hits: Vec<(Rect, OverlayHit)>,
     rect: Rect,
@@ -186,6 +195,7 @@ impl MailApp {
             engine,
             connect_requested: false,
             awaiting_engine: false,
+            last_auto_refresh_min: 0,
             overlay_hits: Vec::new(),
             rect: Rect::ZERO,
             first_layout: true,
@@ -619,7 +629,10 @@ impl MailApp {
             display_name: g(0),
             email: g(1),
             username: g(2),
-            password: g(3),
+            // An OAuth account authenticates with a vault-sealed token, never a
+            // password — keep the field empty so persist doesn't overwrite the
+            // sealed token with a password secret.
+            password: if self.setup_auth == crate::model::AuthMethod::OAuth { String::new() } else { g(3) },
             imap_host: g(4),
             imap_port: g(5).trim().parse().unwrap_or(993),
             smtp_host: g(6),
@@ -726,21 +739,53 @@ impl MailApp {
             st.accounts.upsert(account);
             MailDoc::store_account(doc, &cfg);
             MailDoc::set_active_account(doc, st.accounts.active);
-            st.status = Some("Account saved".into());
+            // Persist to the shared on-disk store + vault so the account (and
+            // its password) survive a restart.
+            match st.accounts.persist() {
+                Ok(()) => st.status = Some("Account saved".into()),
+                Err(e) => st.status = Some(format!("Saved, but could not write to disk: {e}")),
+            }
         }
         // Connect + fetch the freshly-saved account through the engine.
         if let Some(h) = &self.engine {
             let _ = h.tx.send(EngineRequest::Connect { account: cfg.clone() });
-            let _ = h.tx.send(EngineRequest::Fetch { account_id: cfg.email.clone(), folder: Folder::Inbox });
+            let _ = h.tx.send(EngineRequest::Fetch { account: cfg.clone(), folder: Folder::Inbox });
             self.awaiting_engine = true;
         }
         self.close_setup();
     }
 
+    /// Remove the account currently being edited, persist the removal to disk
+    /// (dropping it from the shared store + purging its vault secret), and close
+    /// the sheet. A no-op on the add flow (no editing target).
+    fn remove_editing_account(&mut self, doc: &mut AutoCommit) {
+        let Some(idx) = self.setup_editing else { return };
+        {
+            let mut st = self.shared.borrow_mut();
+            let Some(id) = st.accounts.accounts.get(idx).map(|a| a.id.clone()) else { return };
+            st.accounts.remove(&id);
+            MailDoc::set_active_account(doc, st.accounts.active);
+            match st.accounts.persist() {
+                Ok(()) => st.status = Some("Account removed".into()),
+                Err(e) => st.status = Some(format!("Removed, but could not write to disk: {e}")),
+            }
+            // The removed account's mailbox is no longer relevant; clear it so a
+            // stale inbox doesn't linger. A fresh connect repopulates from the
+            // new active account.
+            st.mailbox = crate::model::Mailbox::new(st.accounts.active_config());
+            st.selected = None;
+        }
+        self.connect_requested = false;
+        self.close_setup();
+        self.dirty = true;
+    }
+
     /// Begin the OAuth authorization-code + PKCE flow for the detected
-    /// provider. Constructs the (real) authorization URL and opens the browser;
-    /// surfaces a clear note when a registered client id has not been
-    /// provisioned (the flow can't complete without one).
+    /// provider. The engine worker runs the real flow (bind the loopback
+    /// redirect, open the browser, capture the code, exchange it, seal the
+    /// tokens in the vault); this posts the request and shows progress. Surfaces
+    /// a clear note when a registered client id has not been provisioned (the
+    /// flow can't complete without one).
     fn start_oauth(&mut self) {
         let email = self.setup_inputs[1].value().trim().to_string();
         let Some(provider) = self.setup_provider else {
@@ -749,26 +794,33 @@ impl MailApp {
             self.dirty = true;
             return;
         };
-        match provider.client_id() {
-            Some(client_id) => {
-                let req = crate::oauth::AuthRequest {
+        if email.is_empty() {
+            self.shared.borrow_mut().status = Some("Enter your email address first".into());
+            self.dirty = true;
+            return;
+        }
+        if provider.client_id().is_none() {
+            let env = provider.client_id_env();
+            self.shared.borrow_mut().status =
+                Some(format!("Set {env} to complete {} sign-in", provider.label()));
+            self.dirty = true;
+            return;
+        }
+        match &self.engine {
+            Some(h) => {
+                let _ = h.tx.send(EngineRequest::OAuthAuthorize {
+                    account_id: email.clone(),
                     provider,
-                    client_id,
-                    redirect_uri: "http://127.0.0.1:8017/oauth".into(),
-                    pkce: crate::oauth::Pkce::generate(),
-                    state: uuid::Uuid::new_v4().to_string(),
                     login_hint: email,
-                };
-                let url = req.authorization_url();
-                open_oauth_url(&url);
+                });
+                self.awaiting_engine = true;
                 self.setup_error = None;
                 self.shared.borrow_mut().status =
                     Some(format!("Opening {} sign-in in your browser…", provider.label()));
             }
             None => {
-                let env = provider.client_id_env();
                 self.shared.borrow_mut().status =
-                    Some(format!("Set {env} to complete {} sign-in", provider.label()));
+                    Some("Sign-in isn't available in this mode".into());
             }
         }
         self.dirty = true;
@@ -857,6 +909,11 @@ impl MailApp {
             let by = p.y1 - 54.0;
             self.overlay_hits.push((Rect::new(lx, by, lx + 168.0, by + 38.0), OverlayHit::SetupSave));
             self.overlay_hits.push((Rect::new(rx - 92.0, by, rx, by + 38.0), OverlayHit::CancelSetup));
+            // A destructive "Remove" affordance, only when editing an existing
+            // account (never on the add flow).
+            if self.setup_editing.is_some() {
+                self.overlay_hits.push((Rect::new(lx + 180.0, by, lx + 300.0, by + 38.0), OverlayHit::RemoveAccount));
+            }
         }
         if let Some(menu) = &self.context_menu {
             let mr = context_menu_rect(menu, self.rect);
@@ -865,6 +922,54 @@ impl MailApp {
                 self.overlay_hits.push((Rect::new(mr.x0, y, mr.x1, y + 28.0), OverlayHit::CtxItem(i)));
                 y += 28.0;
             }
+        }
+    }
+
+    // ---- sync / refresh ---------------------------------------------------
+
+    /// Post a fetch of the currently-viewed folder for the active account, and
+    /// show a syncing indicator. Used by the manual-refresh shortcut and the
+    /// periodic auto-refresh. A no-op with no account or no engine.
+    fn refresh_active_folder(&mut self) {
+        let (account, folder) = {
+            let st = self.shared.borrow();
+            (st.accounts.active_config(), st.folder)
+        };
+        if account.email.is_empty() {
+            return;
+        }
+        if let Some(h) = &self.engine {
+            let _ = h.tx.send(EngineRequest::Fetch { account, folder });
+            self.awaiting_engine = true;
+            self.last_auto_refresh_min = self.shared.borrow().now_min;
+            self.shared.borrow_mut().status = Some("Syncing…".into());
+            self.dirty = true;
+        }
+    }
+
+    /// Fire a periodic refresh if enough wall-clock time has elapsed since the
+    /// last one and no request is already outstanding. Checked once per active
+    /// frame in `sync` (so it fires during use); a fully-idle session refreshes
+    /// on the next interaction rather than waking the CPU on a timer.
+    fn maybe_auto_refresh(&mut self) {
+        if self.awaiting_engine || self.engine.is_none() {
+            return;
+        }
+        let (now, has_account) = {
+            let st = self.shared.borrow();
+            (st.now_min, !st.accounts.is_empty())
+        };
+        if !has_account {
+            return;
+        }
+        if self.last_auto_refresh_min == 0 {
+            // Seed the clock on the first frame so the initial connect fetch
+            // isn't immediately followed by a redundant refresh.
+            self.last_auto_refresh_min = now;
+            return;
+        }
+        if now - self.last_auto_refresh_min >= AUTO_REFRESH_MIN {
+            self.refresh_active_folder();
         }
     }
 
@@ -887,7 +992,13 @@ impl MailApp {
                     EngineEvent::Connected { account_id } => {
                         st.status = Some(format!("Connected {account_id}"));
                     }
+                    EngineEvent::Folders { folders, .. } => {
+                        // The fixed system-folder set drives the sidebar; log the
+                        // server's advertised set for visibility.
+                        tracing::info!(count = folders.len(), "mail: server folders listed");
+                    }
                     EngineEvent::Fetched { folder, messages, .. } => {
+                        let count = messages.len();
                         for m in messages {
                             let id = m.id;
                             st.mailbox.insert(m);
@@ -899,12 +1010,26 @@ impl MailApp {
                                 .first()
                                 .and_then(|t| t.message_ids.last().copied());
                         }
+                        st.status = Some(if count == 0 {
+                            format!("{} up to date", folder.title())
+                        } else {
+                            format!("Synced {count} messages")
+                        });
                         settled = true;
                     }
                     EngineEvent::Sent { wire_bytes } => {
                         st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
                     }
+                    EngineEvent::Authorized { account_id } => {
+                        // Tokens are sealed in the vault under the email; the
+                        // account (saved with that email as its id) reads them
+                        // at connect time.
+                        st.status = Some(format!("Signed in as {account_id}"));
+                        settled = true;
+                    }
                     EngineEvent::Error { context, message } => {
+                        // Surface the specific failure so a fetch never fails
+                        // silently into an empty inbox.
                         st.status = Some(format!("{context}: {message}"));
                         settled = true;
                     }
@@ -1141,6 +1266,13 @@ impl MailApp {
                     let (w, _) = tr.measure("Cancel", 13.0, None);
                     tr.draw_text(scene, "Cancel", 13.0, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 11.0)), None);
                 }
+                OverlayHit::RemoveAccount => {
+                    let hov = rect.contains(last_mouse);
+                    fill_round(scene, t, *rect, 9.0, if hov { c.semantic.danger.with_alpha_factor(0.22) } else { c.surface_white_5 });
+                    stroke_round(scene, t, *rect, 9.0, 1.0, c.semantic.danger.with_alpha_factor(0.5));
+                    let (w, _) = tr.measure("Remove", 13.0, None);
+                    tr.draw_text(scene, "Remove", 13.0, c.semantic.danger, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 11.0)), None);
+                }
                 _ => {}
             }
         }
@@ -1330,15 +1462,6 @@ fn autoconfig_lookup(_email: &str) -> Option<crate::autoconfig::Autoconfig> {
     None
 }
 
-/// Open an OAuth authorization URL in the user's browser. Live builds only —
-/// the offline build (and `--shots`) never launches a browser.
-#[cfg(feature = "live")]
-fn open_oauth_url(url: &str) {
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-}
-#[cfg(not(feature = "live"))]
-fn open_oauth_url(_url: &str) {}
-
 // =============================== Widget impl ===============================
 
 impl Widget for MailApp {
@@ -1364,8 +1487,9 @@ impl Widget for MailApp {
                 let cfg = self.shared.borrow().accounts.active_config();
                 if let Some(h) = &self.engine {
                     let _ = h.tx.send(EngineRequest::Connect { account: cfg.clone() });
-                    let _ = h.tx.send(EngineRequest::Fetch { account_id: cfg.email.clone(), folder: Folder::Inbox });
+                    let _ = h.tx.send(EngineRequest::Fetch { account: cfg.clone(), folder: Folder::Inbox });
                     self.awaiting_engine = true;
+                    self.shared.borrow_mut().status = Some("Syncing…".into());
                 }
                 self.connect_requested = true;
             }
@@ -1373,6 +1497,13 @@ impl Widget for MailApp {
         } else {
             let mut st = self.shared.borrow_mut();
             MailDoc::apply_flags(state, &mut st.mailbox);
+        }
+        // Live app: advance the wall clock (relative timestamps + the periodic
+        // refresh cadence read it) and fire a periodic refresh when due. The
+        // sample/`--shots` path pins `now_min`, so this only runs live.
+        if self.engine.is_some() {
+            self.shared.borrow_mut().now_min = crate::state::now_minutes();
+            self.maybe_auto_refresh();
         }
         self.nav.sync(state, path);
     }
@@ -1558,7 +1689,11 @@ impl Widget for MailApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.nav.needs_animation_frame()
+        // Keep the event loop pumping frames while a worker request is in
+        // flight so its result (a fetched batch, a send ack, an error) drains
+        // and surfaces promptly instead of waiting for unrelated input. Drops
+        // back to idle the moment the reply settles.
+        self.awaiting_engine || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1665,6 +1800,10 @@ impl MailApp {
                     self.save_setup(state);
                     *handled = true;
                 }
+                Some(OverlayHit::RemoveAccount) => {
+                    self.remove_editing_account(state);
+                    *handled = true;
+                }
                 Some(OverlayHit::CancelSetup) => {
                     self.close_setup();
                     *handled = true;
@@ -1697,6 +1836,15 @@ impl MailApp {
             Key::Character(ch) if ch == "/" => {
                 self.shared.borrow_mut().focus_search_request = true;
                 self.dirty = true;
+                *handled = true;
+            }
+            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => {
+                // Manual refresh: fetch the current folder from the server now.
+                self.refresh_active_folder();
+                *handled = true;
+            }
+            Key::Named(NamedKey::F5) => {
+                self.refresh_active_folder();
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {

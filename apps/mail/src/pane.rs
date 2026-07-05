@@ -711,12 +711,14 @@ impl Pane {
                     match hit {
                         Hit::Refresh => {
                             // Manually re-fetch the current folder from the server.
-                            let (account_id, folder) = {
+                            let (account, folder) = {
                                 let st = self.shared.borrow();
-                                (st.accounts.active_config().email, st.folder)
+                                (st.accounts.active_config(), st.folder)
                             };
                             let mut st = self.shared.borrow_mut();
-                            st.push_intent(Intent::Engine(crate::engine::EngineRequest::Fetch { account_id, folder }));
+                            if !account.email.is_empty() {
+                                st.push_intent(Intent::Engine(crate::engine::EngineRequest::Fetch { account, folder }));
+                            }
                             st.status = Some(format!("Syncing {}…", folder.title()));
                             st.dirty = true;
                             *handled = true;
