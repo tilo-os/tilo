@@ -207,6 +207,21 @@ enum Action {
     JumpTo(Uuid),
     Delete(Uuid),
     EditNote(Uuid),
+
+    // --- highlight comment overlay ---------------------------------------
+    /// Open the floating comment overlay for a highlight group (clicking the
+    /// highlighted text on the page).
+    OpenComments(Uuid),
+    /// Dismiss the comment overlay.
+    CloseComments,
+    /// Delete an entire highlight (its per-block pieces + every comment on it).
+    DeleteHighlight(Uuid),
+    /// Add a new comment to a highlight group and begin typing it.
+    AddComment(Uuid),
+    /// Re-open one comment (a note row) for editing.
+    EditComment(Uuid),
+    /// Delete one comment from a highlight.
+    DeleteComment(Uuid),
     /// Re-scan the on-disk library directories (the empty-shelf affordance —
     /// picks up `.epub` files added to the Books folder without a restart).
     ReloadLibrary,
@@ -410,6 +425,18 @@ pub struct BooksApp {
     page_top_block: usize,
     /// The note currently being typed into (a CRDT annotation id).
     composing: Option<Uuid>,
+    /// The highlight *group* whose floating comment overlay is open, if any.
+    /// Set by clicking a highlighted range; the overlay lists that highlight's
+    /// comments and lets the reader add / edit / delete them or the highlight.
+    comment_group: Option<Uuid>,
+    /// On-page bounds `(x0, y0, x1, y1)` of the open comment overlay's highlight
+    /// on the current page, recomputed each `draw` so the popover tracks the
+    /// range as pages turn / the window resizes.
+    comment_anchor: Option<(f64, f64, f64, f64)>,
+    /// The highlight group under the current press (when it landed inside a
+    /// highlighted range), consumed on release to open the comment overlay — but
+    /// only when the press stayed a plain click rather than becoming a drag.
+    press_hl_group: Option<Uuid>,
     /// Deferred page resolution: jump to last page after a backward chapter
     /// turn, or to the page containing a block after a sidebar jump.
     pending_last_page: bool,
@@ -477,6 +504,10 @@ pub struct BooksApp {
     /// A `--shots` scenario that wants the on-page note composer open: seed a
     /// note anchored to the staged selection on the next sync. Shot-only.
     shot_compose: bool,
+    /// A `--shots` scenario that wants a highlight-with-comments and its floating
+    /// comment overlay open: seed a ranged highlight + two comments on the next
+    /// sync. Shot-only.
+    shot_comments: bool,
     /// Last resolved layout mode per rail, so a breakpoint crossing (or the
     /// first real width) settles the flap instantly instead of animating a
     /// gratuitous slide on launch/resize.
@@ -539,6 +570,9 @@ impl BooksApp {
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
+            comment_group: None,
+            comment_anchor: None,
+            press_hl_group: None,
             pending_last_page: false,
             pending_jump_block: None,
             swipe_accum: 0.0,
@@ -574,6 +608,7 @@ impl BooksApp {
             shot_fonts: None,
             shot_schemes: None,
             shot_compose: false,
+            shot_comments: false,
             settled_toc: None,
             settled_notes: None,
             layout: None,
@@ -786,6 +821,17 @@ impl BooksApp {
                 self.selected_block = Some(1);
                 self.shot_compose = true;
             }
+            "comments" => {
+                // A committed highlight over a partial range, its floating comment
+                // overlay open with two comments — the click-a-highlight flow.
+                // Anchored to the Tideglass sample's long opening paragraph.
+                self.demo = false;
+                self.view = View::Reader;
+                self.book_idx = 2;
+                self.chapter = 0;
+                self.page = 0;
+                self.shot_comments = true;
+            }
             "library-scrolled" => {
                 // Scrolled to the bottom of an overflowing shelf so the shot
                 // exercises the scroll offset, the clip under the top bar, and
@@ -957,15 +1003,18 @@ impl BooksApp {
                 BooksDoc::write_progress(doc, &id, &p);
                 self.clear_selection();
                 self.composing = None;
+                self.comment_group = None;
                 self.layout = None;
                 self.last_persisted = None;
             }
             Action::Back => {
                 self.view = View::Library;
                 self.composing = None;
+                self.comment_group = None;
                 self.type_popover = false;
             }
             Action::NextPage => {
+                self.comment_group = None;
                 let pc = self.cur_page_count.max(1);
                 if self.page + 1 < pc {
                     self.page += 1;
@@ -977,6 +1026,7 @@ impl BooksApp {
                 }
             }
             Action::PrevPage => {
+                self.comment_group = None;
                 if self.page > 0 {
                     self.page -= 1;
                 } else if self.chapter > 0 {
@@ -990,6 +1040,7 @@ impl BooksApp {
                 self.chapter = c.min(self.num_chapters().saturating_sub(1));
                 self.page = 0;
                 self.selected_block = None;
+                self.comment_group = None;
                 self.layout = None;
             }
             Action::ToggleToc => {
@@ -1095,10 +1146,68 @@ impl BooksApp {
                     self.chapter = a.chapter.min(self.num_chapters().saturating_sub(1));
                     self.pending_jump_block = Some(a.block);
                     self.clear_selection();
+                    self.comment_group = None;
                     self.layout = None;
                 }
             }
             Action::Delete(id) => {
+                if self.composing == Some(id) {
+                    self.composing = None;
+                }
+                BooksDoc::remove_annotation(doc, id);
+            }
+            Action::OpenComments(group) => {
+                // The overlay owns interaction while it is up: drop any live
+                // selection so its toolbar doesn't fight the popover.
+                self.clear_selection();
+                self.composing = None;
+                self.comment_group = Some(group);
+            }
+            Action::CloseComments => {
+                // Finish any comment mid-composition so its text is saved.
+                if self.composing.is_some() {
+                    self.edit_note_text(doc, NoteEdit::Done);
+                }
+                self.comment_group = None;
+            }
+            Action::DeleteHighlight(group) => {
+                BooksDoc::remove_group(doc, group);
+                if self.comment_group == Some(group) {
+                    self.comment_group = None;
+                }
+                self.composing = None;
+            }
+            Action::AddComment(group) => {
+                // Anchor the new comment to the highlight's first piece so it
+                // sorts with the range, and share the group so it lists as one of
+                // that highlight's comments.
+                if self.composing.is_some() {
+                    self.edit_note_text(doc, NoteEdit::Done);
+                }
+                let anchor = self
+                    .annotations
+                    .iter()
+                    .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
+                    .min_by_key(|a| (a.block, a.start))
+                    .map(|a| (a.block, a.start, a.end, a.color, a.excerpt.clone()));
+                if let Some((block, start, end, color, excerpt)) = anchor {
+                    let id = self.book_id();
+                    let mut a = Annotation::new(&id, AnnoKind::Note, self.chapter, block)
+                        .with_color(color)
+                        .with_excerpt(excerpt)
+                        .with_group(group);
+                    a.start = start;
+                    a.end = end;
+                    let aid = a.id;
+                    BooksDoc::upsert_annotation(doc, &a);
+                    self.comment_group = Some(group);
+                    self.composing = Some(aid);
+                }
+            }
+            Action::EditComment(id) => {
+                self.composing = Some(id);
+            }
+            Action::DeleteComment(id) => {
                 if self.composing == Some(id) {
                     self.composing = None;
                 }
@@ -1554,32 +1663,91 @@ impl BooksApp {
             Some(l) => l.blocks.iter().map(|b| (b.index, b.char_len)).collect(),
             None => return,
         };
-        let overlapping: Vec<(Uuid, HiColor)> = self
-            .annotations
+        // Distinct highlight *groups* the selection overlaps (a group is one
+        // logical highlight, possibly several per-block rows). Toggling works on
+        // whole highlights, never half of a multi-paragraph one.
+        let mut overlapping: Vec<(Uuid, HiColor)> = Vec::new();
+        for a in &self.annotations {
+            if a.kind != AnnoKind::Highlight
+                || a.chapter != self.chapter
+                || a.start >= a.end
+                || a.block < start.block
+                || a.block > end.block
+            {
+                continue;
+            }
+            let clen = *clens.get(&a.block).unwrap_or(&0);
+            let lo = (if a.block == start.block { start.ch } else { 0 }).min(clen);
+            let hi = (if a.block == end.block { end.ch } else { clen }).min(clen);
+            if a.start < hi && a.end > lo && !overlapping.iter().any(|(g, _)| *g == a.group) {
+                overlapping.push((a.group, a.color));
+            }
+        }
+        // Same colour over exactly what's already there ⇒ toggle it off.
+        let toggling_off = !overlapping.is_empty() && overlapping.iter().all(|(_, c)| *c == color);
+        // Remove the whole overlapping highlight(s) — every piece and its
+        // comments — so a colour never layers and a re-colour never leaves a
+        // stray band behind.
+        for (group, _) in &overlapping {
+            BooksDoc::remove_group(doc, *group);
+        }
+        if !toggling_off {
+            self.add_highlight_range(doc, sel, color);
+        }
+    }
+
+    /// The highlight group covering a document position, if the point lands
+    /// inside a highlighted range on the current chapter. Drives the "click a
+    /// highlight to open its comments" gesture.
+    fn highlight_group_at(&self, p: DocPos) -> Option<Uuid> {
+        self.annotations
             .iter()
-            .filter_map(|a| {
+            .find(|a| {
+                a.kind == AnnoKind::Highlight
+                    && a.chapter == self.chapter
+                    && a.block == p.block
+                    && a.start <= p.ch
+                    && p.ch < a.end
+            })
+            .map(|a| a.group)
+    }
+
+    /// A highlight group the current text selection overlaps, if any — powers
+    /// the selection toolbar's trash button (delete the highlight under the
+    /// selection).
+    fn selection_highlight_group(&self) -> Option<Uuid> {
+        let sel = self.sel.filter(|s| !s.is_empty())?;
+        let (start, end) = sel.ordered();
+        let clen = |block: usize| self.block_char_len(block);
+        self.annotations
+            .iter()
+            .find(|a| {
                 if a.kind != AnnoKind::Highlight
                     || a.chapter != self.chapter
                     || a.start >= a.end
                     || a.block < start.block
                     || a.block > end.block
                 {
-                    return None;
+                    return false;
                 }
-                let clen = *clens.get(&a.block).unwrap_or(&0);
-                let lo = (if a.block == start.block { start.ch } else { 0 }).min(clen);
-                let hi = (if a.block == end.block { end.ch } else { clen }).min(clen);
-                (a.start < hi && a.end > lo).then_some((a.id, a.color))
+                let cl = clen(a.block);
+                let lo = (if a.block == start.block { start.ch } else { 0 }).min(cl);
+                let hi = (if a.block == end.block { end.ch } else { cl }).min(cl);
+                a.start < hi && a.end > lo
             })
+            .map(|a| a.group)
+    }
+
+    /// Every comment (note row) attached to a highlight group, oldest first.
+    fn comments_in_group(&self, group: Uuid) -> Vec<Annotation> {
+        let mut v: Vec<Annotation> = self
+            .annotations
+            .iter()
+            .filter(|a| a.kind == AnnoKind::Note && a.group == group)
+            .cloned()
             .collect();
-        // Same colour over exactly what's already there ⇒ toggle it off.
-        let toggling_off = !overlapping.is_empty() && overlapping.iter().all(|(_, c)| *c == color);
-        for (id, _) in &overlapping {
-            BooksDoc::remove_annotation(doc, *id);
-        }
-        if !toggling_off {
-            self.add_highlight_range(doc, sel, color);
-        }
+        v.sort_by_key(|a| a.created);
+        v
     }
 
     /// Highlight an arbitrary text selection: one ranged highlight per block the
@@ -1588,6 +1756,10 @@ impl BooksApp {
     fn add_highlight_range(&mut self, doc: &mut AutoCommit, sel: TextSel, color: HiColor) {
         let (start, end) = sel.ordered();
         let id = self.book_id();
+        // One group id for the whole logical highlight, so its per-block pieces
+        // are treated as a single mark (one click opens it, one delete removes
+        // it) and comments can attach to the range.
+        let group = Uuid::new_v4();
         let Some(layout) = self.layout.as_ref() else { return };
         for b in &layout.blocks {
             if b.index < start.block || b.index > end.block {
@@ -1603,7 +1775,8 @@ impl BooksApp {
             let excerpt: String = b.text.chars().skip(lo).take((hi - lo).min(120)).collect();
             let mut a = Annotation::new(&id, AnnoKind::Highlight, self.chapter, b.index)
                 .with_color(color)
-                .with_excerpt(excerpt);
+                .with_excerpt(excerpt)
+                .with_group(group);
             a.start = lo;
             a.end = hi;
             BooksDoc::upsert_annotation(doc, &a);
@@ -1920,6 +2093,42 @@ impl Widget for BooksApp {
                 self.composing = Some(aid);
             }
         }
+        if self.shot_comments && self.comment_group.is_none() {
+            self.shot_comments = false;
+            let bid = self.book_id();
+            let group = Uuid::new_v4();
+            // A partial-paragraph highlight (starts mid-paragraph, ends mid) so
+            // the shot proves the range is character-level, not whole-block. The
+            // block is Tideglass's long opening paragraph; the range lands on the
+            // "tide-glass" clause. Offsets clamp to the block in draw.
+            let excerpt = "the trick of pouring colour into a pane";
+            let block = 2usize;
+            let mut hl = Annotation::new(&bid, AnnoKind::Highlight, self.chapter, block)
+                .with_color(HiColor::Yellow)
+                .with_excerpt(excerpt)
+                .with_group(group);
+            hl.start = 200;
+            hl.end = 200 + excerpt.chars().count();
+            BooksDoc::upsert_annotation(doc, &hl);
+            for (i, text) in [
+                "Love this image — colour that keeps the time of day.",
+                "Compare with the amber/ebb line later in the letter.",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut cm = Annotation::new(&bid, AnnoKind::Note, self.chapter, block)
+                    .with_color(HiColor::Yellow)
+                    .with_excerpt(excerpt)
+                    .with_group(group);
+                cm.start = hl.start;
+                cm.end = hl.end;
+                cm.note = text.to_string();
+                cm.created = now_ms() + i as u64;
+                BooksDoc::upsert_annotation(doc, &cm);
+            }
+            self.comment_group = Some(group);
+        }
         // On the very first sync, adopt any persisted position for the open book.
         if self.last_persisted.is_none() && self.view == View::Reader {
             let id = self.book_id();
@@ -2094,6 +2303,7 @@ impl Widget for BooksApp {
                         .map_or(false, |t| now.duration_since(t).as_millis() < 450)
                     && (self.cursor - self.last_click_pos).hypot() < 6.0;
                 self.press_doc = if on_page { self.hit_doc_pos(self.cursor) } else { None };
+                self.press_hl_group = None;
                 if on_page {
                     if is_dbl {
                         if let Some(dp) = self.press_doc {
@@ -2102,6 +2312,11 @@ impl Widget for BooksApp {
                     } else {
                         self.sel = None; // fresh press clears any prior selection
                         self.selected_block = None;
+                        // Remember whether the press landed inside a highlight so
+                        // a plain click (no drag) can open its comment overlay on
+                        // release. A drag from here still selects text instead.
+                        self.press_hl_group =
+                            self.press_doc.and_then(|dp| self.highlight_group_at(dp));
                     }
                 }
                 self.last_click = Some(now);
@@ -2123,6 +2338,7 @@ impl Widget for BooksApp {
                 ..
             } => {
                 self.mouse_down = false;
+                let was_drag = self.dragging_sel;
                 if self.pick_drag.take().is_some() {
                     self.dirty = true;
                     *handled = true;
@@ -2138,6 +2354,17 @@ impl Widget for BooksApp {
                     self.dirty = true;
                     *handled = true;
                 }
+                // A plain click (no drag) that started on a highlighted range
+                // opens that highlight's floating comment overlay.
+                if !was_drag {
+                    if let Some(group) = self.press_hl_group.take() {
+                        self.dispatch(Action::OpenComments(group), doc);
+                        self.refresh_from_doc(doc);
+                        self.dirty = true;
+                        *handled = true;
+                    }
+                }
+                self.press_hl_group = None;
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if ke.state == ElementState::Pressed =>
@@ -2152,13 +2379,17 @@ impl Widget for BooksApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 // A line notch is one page/row; a trackpad's pixel deltas are
                 // summed so a flick is a controlled turn, not a stampede. A
-                // dominantly *horizontal* gesture (two-finger trackpad swipe or
-                // a touch swipe surfaced as scroll) turns pages left/right.
+                // dominantly *horizontal* gesture (a tilt wheel or two-finger
+                // trackpad scroll) turns pages: scroll-right advances, scroll-left
+                // goes back — the same "forward is toward the end" mapping as the
+                // vertical wheel. winit reports a scroll-right as a *negative* x
+                // (positive x = content moves right = reveal content on the left),
+                // so both axes negate winit's value to get "forward is positive".
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
-                        (*x as f64 * WHEEL_LINE_PX, (-*y as f64) * WHEEL_LINE_PX)
+                        ((-*x as f64) * WHEEL_LINE_PX, (-*y as f64) * WHEEL_LINE_PX)
                     }
-                    MouseScrollDelta::PixelDelta(p) => (p.x, -p.y),
+                    MouseScrollDelta::PixelDelta(p) => (-p.x, -p.y),
                 };
                 let acted = if dx.abs() > dy.abs() {
                     self.handle_swipe(dx, doc)
@@ -2444,7 +2675,9 @@ impl BooksApp {
                 let toc_overlay = self.toc_layout() == SplitLayout::Overlay && self.toc_open();
                 let notes_overlay =
                     self.notes_layout() == SplitLayout::Overlay && self.notes_open();
-                if self.type_popover {
+                if self.comment_group.is_some() {
+                    self.dispatch(Action::CloseComments, doc);
+                } else if self.type_popover {
                     self.type_popover = false;
                 } else if toc_overlay || notes_overlay {
                     self.dispatch(Action::DismissOverlay, doc);
@@ -2484,8 +2717,10 @@ impl BooksApp {
         }
     }
 
-    /// Horizontal swipe handling. A swipe left (positive travel) turns to the
-    /// next page; a swipe right turns back — the natural page-flip mapping.
+    /// Horizontal scroll handling. `dx > 0` means "scroll right" (the caller has
+    /// already flipped winit's sign) and advances to the next page; `dx < 0`
+    /// scrolls left and turns back — a scroll wheel tilted right moves forward
+    /// through the book, matching the vertical wheel's "down is forward".
     /// Accumulated so a trackpad's many small deltas coalesce into whole turns.
     /// Suppressed on the shelf and while a modal surface owns input. Returns
     /// `true` when a page actually turned.
@@ -3414,6 +3649,10 @@ impl BooksApp {
         self.hi_bands.clear();
         self.page_first_doc = None;
         self.page_last_doc = None;
+        // Accumulate the on-page bounds of the highlight whose comment overlay is
+        // open, so the popover can anchor to the exact glyphs of the range.
+        let comment_group = self.comment_group;
+        let mut comment_box: Option<(f64, f64, f64, f64)> = None;
         let sel_ord = self.sel.filter(|s| !s.is_empty()).map(|s| s.ordered());
         let ranged: Vec<&Annotation> = annos
             .iter()
@@ -3486,6 +3725,17 @@ impl BooksApp {
                         let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                         paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
                         self.hi_bands.push(band);
+                        if comment_group == Some(a.group) {
+                            comment_box = Some(match comment_box {
+                                Some((x0, y0, x1, y1)) => (
+                                    x0.min(band.x0),
+                                    y0.min(band.y0),
+                                    x1.max(band.x1),
+                                    y1.max(band.y1),
+                                ),
+                                None => (band.x0, band.y0, band.x1, band.y1),
+                            });
+                        }
                     }
                 }
                 // Live selection band drawn on top of any committed highlight.
@@ -3495,6 +3745,7 @@ impl BooksApp {
                 }
             }
         }
+        self.comment_anchor = comment_box;
         // A drag that auto-advanced a page extends the head to this page's edge.
         if let Some(to_end) = self.pending_sel_edge.take() {
             if let Some(mut sel) = self.sel {
@@ -3615,6 +3866,9 @@ impl BooksApp {
         // The on-page note composer (anchored near the passage) floats over the
         // page instead of shunting note-writing off to a separate screen.
         self.draw_note_composer(scene, t, tr, theme, &c, sel_anchor);
+        // The floating comment overlay for a clicked highlight (its own composer
+        // lives inside it, so the standalone note composer above stands down).
+        self.draw_comment_overlay(scene, t, tr, theme, &c);
         // Reading-settings popover floats above everything.
         self.draw_type_popover(scene, t, tr, theme, &c);
 
@@ -3655,7 +3909,12 @@ impl BooksApp {
         let (nw, _) = tr.measure_weighted("Note", 13.0, None, TextWeight::Medium);
         let note_w = nw as f64 + 24.0;
         let sep_w = 13.0;
-        let hud_w = pad * 2.0 + dots_w + sep_w + note_w;
+        // A trash button appears when the selection covers an existing highlight,
+        // so the same range that colours text can also clear it.
+        let del_group = self.selection_highlight_group();
+        let trash_s = 24.0;
+        let trash_extra = if del_group.is_some() { trash_s + 8.0 } else { 0.0 };
+        let hud_w = pad * 2.0 + dots_w + sep_w + note_w + trash_extra;
 
         let cx = paper_x + paper_w / 2.0;
         let hud_x = (cx - hud_w / 2.0).clamp(r.x0 + 8.0, r.x1 - 8.0 - hud_w);
@@ -3709,6 +3968,19 @@ impl BooksApp {
             TextWeight::Medium,
         );
         self.push_hit(note_rect, Action::AddNote);
+
+        // Trash — delete the highlight under the selection (only shown when the
+        // selection actually overlaps one).
+        if let Some(group) = del_group {
+            let tx = note_x + note_w + 8.0;
+            let trash = Rect::new(tx, cyc - trash_s / 2.0, tx + trash_s, cyc + trash_s / 2.0);
+            let thov = self.is_hover(trash);
+            if thov {
+                paint::fill_round(scene, t, trash, 6.0, theme.bg_hover);
+            }
+            paint::trash(scene, t, trash, if thov { c.semantic.danger } else { c.text_primary }, 1.5);
+            self.push_hit(trash, Action::DeleteHighlight(group));
+        }
     }
 
     /// The on-page note composer: a small card anchored near the selected
@@ -3727,6 +3999,11 @@ impl BooksApp {
     ) {
         let Some(id) = self.composing else { return };
         if self.view != View::Reader {
+            return;
+        }
+        // When a highlight's comment overlay is open it hosts its own composer,
+        // so the standalone note composer stands down to avoid two cards.
+        if self.comment_group.is_some() {
             return;
         }
         let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
@@ -3792,6 +4069,173 @@ impl BooksApp {
         paint::fill_round(scene, t, save, 16.0, theme.accent_primary);
         tr.draw_text_weighted(scene, "Save", 13.0, Color::from_rgb8(248, 248, 252), t * Affine::translate((save.x0 + 20.0, y + 8.0)), None, TextWeight::Semibold);
         self.push_hit(save, Action::FinishNote);
+    }
+
+    /// The floating comment overlay for a highlight the reader clicked. It is a
+    /// popover anchored to the highlighted glyphs (never a side panel) showing
+    /// the passage, a trash button that deletes the whole highlight, and each
+    /// comment on the range with an inline edit + delete — plus an "add comment"
+    /// row, since a range may carry several comments.
+    fn draw_comment_overlay(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+    ) {
+        let Some(group) = self.comment_group else { return };
+        if self.view != View::Reader {
+            return;
+        }
+        let r = self.rect;
+
+        // Tap-away closes (and saves any comment mid-edit). Behind the panel.
+        self.push_hit(r, Action::CloseComments);
+
+        // Gather the highlight's colour + passage as owned values, so no borrow
+        // of `self.annotations` lingers into the hit-pushing below.
+        let (color, excerpt) = {
+            let mut hl_rows: Vec<&Annotation> = self
+                .annotations
+                .iter()
+                .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
+                .collect();
+            hl_rows.sort_by_key(|a| (a.block, a.start));
+            let color = hl_rows.first().map(|a| a.color).unwrap_or(self.hi_color);
+            let mut excerpt = String::new();
+            for a in &hl_rows {
+                if a.excerpt.trim().is_empty() {
+                    continue;
+                }
+                if !excerpt.is_empty() {
+                    excerpt.push(' ');
+                }
+                excerpt.push_str(a.excerpt.trim());
+            }
+            (color, excerpt)
+        };
+        let excerpt_disp = if excerpt.is_empty() {
+            "Highlighted passage".to_string()
+        } else {
+            format!("\u{201C}{}\u{201D}", excerpt)
+        };
+        let comments = self.comments_in_group(group);
+
+        let cw = 360.0_f64.min(r.width() - 24.0);
+        let pad = 16.0;
+        let inner_w = (cw - pad * 2.0) as f32;
+        let text_w = inner_w - 52.0; // room for the per-comment edit/delete icons
+
+        let (_, eh) = tr.measure(&excerpt_disp, 12.0, Some(inner_w));
+
+        // Measure each comment row (its text with a caret while composing).
+        let disp_of = |a: &Annotation, composing: bool| -> String {
+            if composing {
+                format!("{}\u{2502}", a.note)
+            } else if a.note.trim().is_empty() {
+                "Empty comment".to_string()
+            } else {
+                a.note.clone()
+            }
+        };
+        let mut rows_h: Vec<f64> = Vec::with_capacity(comments.len());
+        for a in &comments {
+            let d = disp_of(a, self.composing == Some(a.id));
+            let (_, h) = tr.measure(&d, 13.0, Some(text_w));
+            rows_h.push((h as f64).max(18.0) + 16.0);
+        }
+
+        let header_h = 28.0;
+        let comments_gap = 8.0;
+        let comments_total: f64 =
+            rows_h.iter().sum::<f64>() + comments_gap * comments.len().max(1) as f64;
+        let add_h = 34.0;
+        let ch = pad + header_h + 8.0 + eh as f64 + 12.0 + comments_total + add_h + pad;
+
+        // Anchor to the highlight's on-page bounds; fall back to the page centre.
+        let (ax, atop, abot) = match self.comment_anchor {
+            Some((x0, y0, x1, y1)) => ((x0 + x1) / 2.0, y0, y1),
+            None => ((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0, (r.y0 + r.y1) / 2.0),
+        };
+        let x0 = (ax - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
+        let top_lim = r.y0 + TOP_BAR + 8.0;
+        let bot_lim = r.y1 - BOTTOM_BAR - 8.0;
+        let y0 = if abot + 12.0 + ch <= bot_lim {
+            abot + 12.0
+        } else if atop - 12.0 - ch >= top_lim {
+            atop - 12.0 - ch
+        } else {
+            (bot_lim - ch).max(top_lim)
+        };
+        let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
+        let shadow = Rect::new(card.x0 - 1.0, card.y0 + 4.0, card.x1 + 1.0, card.y1 + 7.0);
+        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
+        paint::fill_round(scene, t, card, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        paint::stroke_round(scene, t, card, theme.tokens.radii.lg as f64, theme.border_focus, 1.4);
+        self.push_hit(card, Action::Swallow);
+
+        let ix0 = x0 + pad;
+        let ix1 = x0 + cw - pad;
+        let mut y = y0 + pad;
+
+        // Header: colour dot + "Highlight" + trash (delete the whole highlight).
+        paint::circle(scene, t, Point::new(ix0 + 6.0, y + 8.0), 6.0, ReaderPalette::highlight_swatch(color));
+        tr.draw_text_weighted(scene, "Highlight", 13.5, c.text_primary, t * Affine::translate((ix0 + 20.0, y + 1.0)), None, TextWeight::Semibold);
+        let trash_s = 24.0;
+        let trash = Rect::new(ix1 - trash_s, y - 2.0, ix1, y - 2.0 + trash_s);
+        let thov = self.is_hover(trash);
+        if thov {
+            paint::fill_round(scene, t, trash, 6.0, theme.bg_hover);
+        }
+        paint::trash(scene, t, trash, if thov { c.semantic.danger } else { c.text_dim }, 1.5);
+        self.push_hit(trash, Action::DeleteHighlight(group));
+        y += header_h;
+
+        // Passage.
+        tr.draw_text(scene, &excerpt_disp, 12.0, c.text_dim, t * Affine::translate((ix0, y)), Some(inner_w));
+        y += eh as f64 + 12.0;
+
+        // Comments — each with inline edit (pencil) + delete (×).
+        for (a, rh) in comments.iter().zip(rows_h.iter()) {
+            let rh = *rh;
+            let composing = self.composing == Some(a.id);
+            let row = Rect::new(ix0, y, ix1, y + rh);
+            paint::fill_round(scene, t, row, 8.0, c.surfaces.overlay);
+            if composing {
+                paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
+            }
+            let d = disp_of(a, composing);
+            let empty = a.note.trim().is_empty() && !composing;
+            tr.draw_text(
+                scene,
+                &d,
+                13.0,
+                if empty { c.text_dim } else { c.text_primary },
+                t * Affine::translate((ix0 + 10.0, y + 8.0)),
+                Some(text_w),
+            );
+            // Edit (pencil) + Delete (×) icons at the row's top-right.
+            let del = Rect::new(ix1 - 24.0, y + 4.0, ix1 - 2.0, y + 26.0);
+            let dhov = self.is_hover(del);
+            paint::close(scene, t, del, if dhov { c.semantic.danger } else { c.text_dim.with_alpha_factor(0.7) }, 1.4);
+            self.push_hit(del, Action::DeleteComment(a.id));
+            let edit = Rect::new(ix1 - 48.0, y + 4.0, ix1 - 26.0, y + 26.0);
+            let ehov = self.is_hover(edit);
+            paint::pencil(scene, t, edit, if ehov { c.text_primary } else { c.text_dim.with_alpha_factor(0.7) }, 1.4);
+            if !composing {
+                self.push_hit(edit, Action::EditComment(a.id));
+            }
+            y += rh + comments_gap;
+        }
+
+        // Add-comment row.
+        let add = Rect::new(ix0, y, ix1, y + add_h - 4.0);
+        let ahov = self.is_hover(add);
+        paint::fill_round(scene, t, add, 8.0, if ahov { theme.accent_primary } else { theme.accent_primary.with_alpha_factor(0.14) });
+        let acol = if ahov { Color::from_rgb8(248, 248, 252) } else { theme.accent_primary };
+        tr.draw_text_weighted(scene, "＋  Add comment", 12.5, acol, t * Affine::translate((ix0 + 12.0, y + 8.0)), None, TextWeight::Semibold);
+        self.push_hit(add, Action::AddComment(group));
     }
 
     /// Paint the contents + annotations rails. Each rail is either docked
@@ -5250,8 +5694,10 @@ mod interaction_tests {
         handled
     }
 
-    /// Route a *horizontal* wheel/swipe (`lines` positive == swipe left) through
-    /// `handle_event`. This is how a trackpad/touch page-turn swipe arrives.
+    /// Route a *horizontal* wheel/scroll through `handle_event`. `lines` is
+    /// winit's `LineDelta` x: positive means the content moves right (revealing
+    /// content on the left) — i.e. a **scroll-left** gesture — and negative is a
+    /// **scroll-right**. This is how a tilt wheel / two-finger scroll arrives.
     fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
         let mods = Modifiers::default();
         let taffy: TaffyTree<()> = TaffyTree::new();
@@ -5396,20 +5842,33 @@ mod interaction_tests {
     }
 
     #[test]
-    fn horizontal_swipe_turns_pages() {
+    fn horizontal_scroll_right_turns_forward() {
+        // The secondary/tilt wheel: scrolling RIGHT must advance (next page) and
+        // scrolling LEFT must go back — the inverse of the old mapping. winit
+        // reports a scroll-right as a *negative* LineDelta x.
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.view, View::Reader);
         let start = (app.chapter, app.page);
-        // A leftward swipe (positive horizontal travel) turns forward.
-        assert!(hwheel(&mut app, &mut doc, 3.0), "swipe left turned a page");
-        assert!((app.chapter, app.page) != start, "advanced by swipe");
-        // A rightward swipe turns back.
+        // Scroll right (negative x) advances forward.
+        assert!(hwheel(&mut app, &mut doc, -3.0), "scroll-right turned a page");
+        let after_right = (app.chapter, app.page);
+        assert!(after_right != start, "scroll-right advanced (forward)");
+        // Position strictly moved forward (page or chapter increased).
+        assert!(
+            after_right.0 > start.0 || (after_right.0 == start.0 && after_right.1 > start.1),
+            "scroll-right moved forward, not back: {start:?} -> {after_right:?}",
+        );
+        // Scroll left (positive x) turns back.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let mid = (app.chapter, app.page);
-        hwheel(&mut app, &mut doc, -3.0);
-        assert!((app.chapter, app.page) != mid, "swipe right turned back");
+        hwheel(&mut app, &mut doc, 3.0);
+        let after_left = (app.chapter, app.page);
+        assert!(after_left != after_right, "scroll-left turned back");
+        assert!(
+            after_left.0 < after_right.0 || (after_left.0 == after_right.0 && after_left.1 < after_right.1),
+            "scroll-left moved backward: {after_right:?} -> {after_left:?}",
+        );
     }
 
     #[test]
@@ -6273,5 +6732,214 @@ mod interaction_tests {
         assert!(sort.is_some(), "a sort control is present");
         let hide = find_hit(&app, |a| matches!(a, Action::ToggleHideRead));
         assert!(hide.is_some(), "a hide-read toggle is present");
+    }
+
+    /// Drive a real drag that starts *inside* a paragraph and ends in a later
+    /// one, then apply a colour, and assert the stored annotation carries a
+    /// character range (partial, not the whole block) and spans the boundary as
+    /// one grouped highlight — proving the mark is text-range, not paragraph.
+    #[test]
+    fn drag_across_paragraph_stores_partial_char_range_not_the_whole_block() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(app.sel_runs.len() > 3, "the page laid out real run geometry");
+
+        // Start on the SECOND run of the first block (so the range begins
+        // mid-paragraph, start > 0), drag into a run of a later block.
+        let r0 = app.sel_runs[0];
+        let start_run = app
+            .sel_runs
+            .iter()
+            .find(|r| r.block == r0.block && r.cs > 0)
+            .cloned()
+            .expect("a non-first run in the first block");
+        let later = app
+            .sel_runs
+            .iter()
+            .find(|r| r.block > start_run.block)
+            .cloned()
+            .expect("a run in a later paragraph");
+        let start = Point::new((start_run.x0 + start_run.x1) / 2.0, (start_run.y0 + start_run.y1) / 2.0);
+        let end = Point::new((later.x0 + later.x1) / 2.0, (later.y0 + later.y1) / 2.0);
+        ptr_move(&mut app, &mut doc, start);
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, end);
+        ptr_up(&mut app, &mut doc);
+        let sel = app.sel.expect("a drag produced a selection");
+        assert!(sel.ordered().1.block > sel.ordered().0.block, "selection crosses a paragraph");
+
+        app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
+        app.refresh_from_doc(&doc);
+
+        let hls: Vec<_> = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .filter(|a| a.kind == AnnoKind::Highlight)
+            .collect();
+        assert!(hls.len() >= 2, "one ranged highlight per spanned paragraph");
+        // Every piece carries a real char range, and shares ONE group.
+        assert!(hls.iter().all(|a| a.start < a.end), "each piece has a char range");
+        let g0 = hls[0].group;
+        assert!(hls.iter().all(|a| a.group == g0), "the spanned pieces are one grouped highlight");
+        // The first block's piece begins mid-paragraph (start > 0) → this is a
+        // character range, NOT a whole-paragraph highlight.
+        let first = hls.iter().min_by_key(|a| a.block).unwrap();
+        assert!(first.start > 0, "the highlight begins mid-paragraph (char-level, start={})", first.start);
+    }
+
+    /// A plain click on highlighted text opens that highlight's floating comment
+    /// overlay (hit-testing the real char range, not "the paragraph").
+    #[test]
+    fn clicking_a_highlight_opens_the_comment_overlay() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+
+        // Highlight a run-spanning range in the first block via a drag.
+        let r0 = app.sel_runs[0];
+        let end_run = app
+            .sel_runs
+            .iter()
+            .filter(|r| r.block == r0.block)
+            .last()
+            .cloned()
+            .unwrap();
+        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let end = Point::new((end_run.x0 + end_run.x1) / 2.0, (end_run.y0 + end_run.y1) / 2.0);
+        ptr_move(&mut app, &mut doc, start);
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, end);
+        ptr_up(&mut app, &mut doc);
+        app.dispatch(Action::SetColor(HiColor::Green), &mut doc);
+        app.refresh_from_doc(&doc);
+        let hl = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("a highlight now exists");
+        assert!(app.comment_group.is_none(), "no overlay yet");
+
+        // Re-lay the page, then plain-click a run strictly inside the range.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let inside = app
+            .sel_runs
+            .iter()
+            .find(|r| r.block == hl.block && r.cs >= hl.start && r.cs + r.cl <= hl.end)
+            .cloned()
+            .expect("a run inside the highlighted range");
+        let p = Point::new((inside.x0 + inside.x1) / 2.0, (inside.y0 + inside.y1) / 2.0);
+        ptr_move(&mut app, &mut doc, p);
+        ptr_down(&mut app, &mut doc);
+        ptr_up(&mut app, &mut doc);
+        assert_eq!(app.comment_group, Some(hl.group), "clicking the highlight opened its overlay");
+
+        // The overlay's affordances are drawn: add-comment + a trash for the
+        // whole highlight + a dismiss target.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(find_hit(&app, |a| matches!(a, Action::AddComment(_))).is_some(), "add-comment present");
+        assert!(find_hit(&app, |a| matches!(a, Action::DeleteHighlight(_))).is_some(), "trash present");
+        assert!(find_hit(&app, |a| matches!(a, Action::CloseComments)).is_some(), "dismiss present");
+    }
+
+    /// The comment overlay supports MANY comments per range: add two, edit one,
+    /// delete one, then trash the whole highlight — all through the real hits.
+    #[test]
+    fn comment_overlay_adds_edits_and_deletes_multiple_comments() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Make a single-word highlight, then open its overlay directly.
+        let p = page_point(&app);
+        dbl_click(&mut app, &mut doc, p);
+        app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
+        app.refresh_from_doc(&doc);
+        let group = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("a highlight")
+            .group;
+        app.comment_group = Some(group);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+
+        let notes_in_group = |d: &AutoCommit| {
+            BooksDoc::list_annotations(d)
+                .into_iter()
+                .filter(|a| a.kind == AnnoKind::Note && a.group == group)
+                .count()
+        };
+
+        // Add the first comment and type it.
+        let add = find_hit(&app, |a| matches!(a, Action::AddComment(_))).expect("add-comment");
+        assert!(click(&mut app, &mut doc, add), "add handled");
+        assert!(app.composing.is_some(), "the new comment is being composed");
+        for ch in ["H", "i"] {
+            key_char(&mut app, &mut doc, ch);
+        }
+        key_named(&mut app, &mut doc, NamedKey::Enter);
+        assert_eq!(notes_in_group(&doc), 1, "one comment saved");
+        assert!(app.comment_group == Some(group), "overlay stays open after saving");
+
+        // Add a SECOND comment on the same range.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let add2 = find_hit(&app, |a| matches!(a, Action::AddComment(_))).expect("add-comment #2");
+        assert!(click(&mut app, &mut doc, add2), "add #2 handled");
+        for ch in ["Y", "o"] {
+            key_char(&mut app, &mut doc, ch);
+        }
+        key_named(&mut app, &mut doc, NamedKey::Enter);
+        assert_eq!(notes_in_group(&doc), 2, "a range holds multiple comments");
+
+        // Edit the first comment (reopen it for composing).
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let edit = find_hit(&app, |a| matches!(a, Action::EditComment(_))).expect("an edit affordance");
+        assert!(click(&mut app, &mut doc, edit), "edit handled");
+        assert!(app.composing.is_some(), "a comment reopened for editing");
+        key_named(&mut app, &mut doc, NamedKey::Enter);
+
+        // Delete one comment.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let del = find_hit(&app, |a| matches!(a, Action::DeleteComment(_))).expect("a delete affordance");
+        assert!(click(&mut app, &mut doc, del), "delete handled");
+        assert_eq!(notes_in_group(&doc), 1, "one comment removed, one remains");
+
+        // Trash the whole highlight → its pieces AND remaining comments go.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let trash = find_hit(&app, |a| matches!(a, Action::DeleteHighlight(_))).expect("the trash");
+        assert!(click(&mut app, &mut doc, trash), "trash handled");
+        let left: Vec<_> = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .filter(|a| a.group == group)
+            .collect();
+        assert!(left.is_empty(), "deleting the highlight removed every row in its group");
+        assert!(app.comment_group.is_none(), "the overlay closed");
+    }
+
+    /// The selection toolbar grows a trash button when the selection covers an
+    /// existing highlight, and it deletes that highlight (item: explicit delete).
+    #[test]
+    fn selection_toolbar_trash_deletes_the_covered_highlight() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Highlight a word.
+        let p = page_point(&app);
+        dbl_click(&mut app, &mut doc, p);
+        app.dispatch(Action::SetColor(HiColor::Blue), &mut doc);
+        app.refresh_from_doc(&doc);
+        assert_eq!(
+            BooksDoc::list_annotations(&doc).iter().filter(|a| a.kind == AnnoKind::Highlight).count(),
+            1,
+            "one highlight",
+        );
+        // Re-select the same word: the toolbar now offers a trash.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        dbl_click(&mut app, &mut doc, p);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let trash = find_hit(&app, |a| matches!(a, Action::DeleteHighlight(_)))
+            .expect("selection toolbar shows a trash over an existing highlight");
+        assert!(click(&mut app, &mut doc, trash), "trash handled");
+        assert!(
+            BooksDoc::list_annotations(&doc).iter().all(|a| a.kind != AnnoKind::Highlight),
+            "the highlight under the selection was deleted",
+        );
     }
 }
