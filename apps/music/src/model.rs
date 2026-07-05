@@ -73,6 +73,10 @@ pub struct Playlist {
     pub name: String,
     pub description: String,
     pub track_ids: Vec<TrackId>,
+    /// Optional cover image the user set via the file portal, as a `file://`
+    /// URL (or any http(s) URL). Empty ⇒ the procedural placeholder tile.
+    #[serde(default)]
+    pub cover: String,
 }
 
 /// Per-track offline/cache state. Models the "downloads / caching" layer:
