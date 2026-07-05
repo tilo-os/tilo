@@ -65,22 +65,6 @@ fn format_path_substitutes_home_prefix() {
     assert_eq!(format_path(&PathBuf::from("/etc"), None), "/etc");
 }
 
-use file_explorer::icons::icon_for;
-
-fn mk(mime: &str, is_dir: bool) -> Entry {
-    Entry { name: "x".into(), path: "x".into(), is_dir, size: 0, modified: None, mime: mime.into() }
-}
-
-#[test]
-fn mime_icon_mapping_matches_current() {
-    assert_eq!(icon_for(&mk("", true)),                  "󰉋");
-    assert_eq!(icon_for(&mk("image/png", false)),         "󰋩");
-    assert_eq!(icon_for(&mk("video/mp4", false)),         "󰿎");
-    assert_eq!(icon_for(&mk("audio/ogg", false)),         "󰝚");
-    assert_eq!(icon_for(&mk("application/pdf", false)),   "󰈦");
-    assert_eq!(icon_for(&mk("text/plain", false)),        "󰈔");
-}
-
 use file_explorer::breadcrumbs::breadcrumb_components;
 
 #[test]
@@ -89,14 +73,16 @@ fn breadcrumb_component_click_navigates_to_that_component() {
     let cwd  = PathBuf::from("/home/user/Documents/Projects");
     let comps = breadcrumb_components(&cwd, Some(&home));
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
-    assert_eq!(labels, vec!["󰋜 ~", "Documents", "Projects"]);
+    // Clean text labels — the leading root is drawn as a themed vector icon
+    // by the breadcrumb bar, not a font glyph.
+    assert_eq!(labels, vec!["Home", "Documents", "Projects"]);
     // The last component path equals the cwd itself.
     assert_eq!(comps.last().unwrap().1, cwd);
 
     // Non-home path falls through to root-based components.
     let comps2 = breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home));
     let labels2: Vec<&str> = comps2.iter().map(|(l, _)| l.as_str()).collect();
-    assert_eq!(labels2, vec!["󰋜", "etc", "hosts"]);
+    assert_eq!(labels2, vec!["/", "etc", "hosts"]);
 }
 
 use file_explorer::FileExplorerWidget;
@@ -125,17 +111,21 @@ fn file_explorer_widget_constructs_with_sensible_default_path() {
 #[test]
 fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
     use file_explorer::sidebar::build_shortcuts;
+    use ui::icons::Icon;
     let home = Some(PathBuf::from("/home/test"));
     let shortcuts = build_shortcuts(home.as_deref());
     assert_eq!(shortcuts.len(), 7);
-    assert_eq!(shortcuts[0].0, "󰋜 Home");
-    // System Root uses the HardDrive glyph per
+    assert_eq!(shortcuts[0].0, Icon::Home);
+    assert_eq!(shortcuts[0].1, "Home");
+    // System Root uses the hard-drive vector glyph per
     // `nirios-concept/src/components/apps/FilesApp.tsx` (line 129).
-    assert_eq!(shortcuts[6].0, "󰋊 Root");
+    assert_eq!(shortcuts[6].0, Icon::HardDrive);
+    assert_eq!(shortcuts[6].1, "Root");
 
     let none = build_shortcuts(None);
     assert_eq!(none.len(), 1);
-    assert_eq!(none[0].0, "󰋊 Root");
+    assert_eq!(none[0].0, Icon::HardDrive);
+    assert_eq!(none[0].1, "Root");
 }
 
 #[test]
