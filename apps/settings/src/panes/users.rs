@@ -1,21 +1,23 @@
 //! Users pane — the accounts that exist on this device and their roles.
 //!
 //! User rows are sampled from `/etc/passwd` (regular login users only:
-//! UID in the human range), so on a real device the panel reflects the
-//! actual accounts. When that read yields nothing useful (minimal CI
-//! containers under `--shots`) a realistic sample is shown.
+//! UID in the human range), and each user's administrator status is read
+//! from `/etc/group` (membership of `wheel` or `sudo`) — so on a real
+//! device the panel reflects the actual accounts and who can administer the
+//! system. When those reads yield nothing useful (a minimal CI container
+//! under `--shots`) a realistic sample is shown.
 //!
-//! The role shown per user ties into the OS permission model — the
-//! Permissions & Roles pane is where roles are authored; here each user's
-//! current role is summarised with a shortcut into that editor.
+//! Creating and editing accounts needs privileged `useradd`/`usermod` and a
+//! credential flow that lives outside this app, so the panel is a truthful
+//! read-only roster rather than offering buttons that can't act. The role a
+//! user has is authored in Permissions & Roles.
 
+use std::collections::HashSet;
 use std::fs;
 
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use ui::widget::{Column, Text, Widget};
 
-use crate::widgets::{card, card_with_action, caption, rows, El};
-
-pub const ADD_USER_KEY: &str = "users.add";
+use crate::widgets::{card, caption, rows, El};
 
 /// A login account on this device.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,9 +30,37 @@ pub struct DeviceUser {
     pub current: bool,
 }
 
+/// Collect the usernames that are members of an admin group (`wheel` or
+/// `sudo`) from `/etc/group` contents. Each line is
+/// `name:passwd:gid:member,member,…`.
+pub fn admins_from_group(contents: &str) -> HashSet<String> {
+    let mut admins = HashSet::new();
+    for line in contents.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        if fields[0] != "wheel" && fields[0] != "sudo" {
+            continue;
+        }
+        for member in fields[3].split(',') {
+            let m = member.trim();
+            if !m.is_empty() {
+                admins.insert(m.to_string());
+            }
+        }
+    }
+    admins
+}
+
 /// Parse regular login users from `/etc/passwd` — UID 1000..60000 and a
-/// real shell. Returns an empty vec on read failure.
-fn read_passwd_users(contents: &str, current_user: Option<&str>) -> Vec<DeviceUser> {
+/// real shell. `admins` marks which usernames are administrators. Returns
+/// an empty vec on read failure.
+fn read_passwd_users(
+    contents: &str,
+    current_user: Option<&str>,
+    admins: &HashSet<String>,
+) -> Vec<DeviceUser> {
     let mut out = Vec::new();
     for line in contents.lines() {
         let fields: Vec<&str> = line.split(':').collect();
@@ -55,7 +85,7 @@ fn read_passwd_users(contents: &str, current_user: Option<&str>) -> Vec<DeviceUs
             } else {
                 full_name.to_string()
             },
-            admin: false, // group membership isn't in passwd; left false here.
+            admin: admins.contains(name),
             current: current_user == Some(name),
         });
     }
@@ -64,8 +94,11 @@ fn read_passwd_users(contents: &str, current_user: Option<&str>) -> Vec<DeviceUs
 
 fn users_for_display() -> Vec<DeviceUser> {
     let current = std::env::var("USER").ok();
+    let admins = fs::read_to_string("/etc/group")
+        .map(|c| admins_from_group(&c))
+        .unwrap_or_default();
     let parsed = fs::read_to_string("/etc/passwd")
-        .map(|c| read_passwd_users(&c, current.as_deref()))
+        .map(|c| read_passwd_users(&c, current.as_deref(), &admins))
         .unwrap_or_default();
     if parsed.is_empty() {
         sample_users()
@@ -102,18 +135,12 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 pub fn build_with(users: &[DeviceUser]) -> Box<dyn Widget> {
-    let add_btn: El = Box::new(Button::new(
-        "settings.users.add",
-        "\u{f0415}  Add user",
-        Some(ADD_USER_KEY),
-    ));
-
     let mut user_rows: Vec<El> = Vec::new();
     for u in users {
         user_rows.push(user_row(u));
     }
 
-    let list = card_with_action("People", add_btn, rows(user_rows));
+    let list = card("People", rows(user_rows));
 
     let note = card(
         "Roles",
@@ -131,26 +158,18 @@ fn user_row(u: &DeviceUser) -> El {
     let role = if u.admin { "Administrator" } else { "Standard" };
     let suffix = if u.current { "  (you)" } else { "" };
 
-    let block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(
-            Text::new(&format!("{}{}", u.full_name, suffix)).with_size(13.0),
-        ))
-        .push(Box::new(
-            Text::new(&format!("{} · {}", u.username, role))
-                .with_size(11.0)
-                .with_color(ui::Theme::dark().text_dim),
-        ));
-
-    let edit_id = format!("settings.users.edit.{}", u.username);
-    let edit_key = format!("settings.users.edit.{}", u.username);
-
     Box::new(
-        Row::new()
-            .push(Box::new(block))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Button::new(&edit_id, "Manage", Some(&edit_key)))),
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new(&format!("{}{}", u.full_name, suffix)).with_size(13.0),
+            ))
+            .push(Box::new(
+                Text::new(&format!("{} · {}", u.username, role))
+                    .with_size(11.0)
+                    .with_color(ui::Theme::dark().text_dim),
+            )),
     )
 }
 
@@ -163,11 +182,12 @@ mod tests {
 
     #[test]
     fn parses_login_users_and_skips_system_accounts() {
+        let admins = HashSet::new();
         let passwd = "root:x:0:0:root:/root:/bin/bash\n\
                       bin:x:1:1:bin:/bin:/usr/sbin/nologin\n\
                       ada:x:1000:1000:Ada Lovelace,,,:/home/ada:/bin/bash\n\
                       svc:x:980:980:service:/var/svc:/usr/sbin/nologin\n";
-        let users = read_passwd_users(passwd, Some("ada"));
+        let users = read_passwd_users(passwd, Some("ada"), &admins);
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].username, "ada");
         assert_eq!(users[0].full_name, "Ada Lovelace");
@@ -175,10 +195,31 @@ mod tests {
     }
 
     #[test]
+    fn admin_membership_is_read_from_group_file() {
+        let group = "root:x:0:\n\
+                     wheel:x:10:ada,charles\n\
+                     sudo:x:27:ada\n\
+                     users:x:100:\n";
+        let admins = admins_from_group(group);
+        assert!(admins.contains("ada"));
+        assert!(admins.contains("charles"));
+        assert!(!admins.contains("guest"));
+
+        // The role column reflects real group membership, not a constant.
+        let passwd = "ada:x:1000:1000:Ada,,,:/home/ada:/bin/bash\n\
+                      guest:x:1001:1001:Guest,,,:/home/guest:/bin/bash\n";
+        let users = read_passwd_users(passwd, Some("ada"), &admins);
+        let ada = users.iter().find(|u| u.username == "ada").unwrap();
+        let guest = users.iter().find(|u| u.username == "guest").unwrap();
+        assert!(ada.admin, "ada is in wheel → Administrator");
+        assert!(!guest.admin, "guest is in no admin group → Standard");
+    }
+
+    #[test]
     fn empty_passwd_falls_back_to_sample() {
-        let users = read_passwd_users("", None);
+        let admins = HashSet::new();
+        let users = read_passwd_users("", None, &admins);
         assert!(users.is_empty());
-        // The display path substitutes the sample.
         assert!(!sample_users().is_empty());
     }
 
