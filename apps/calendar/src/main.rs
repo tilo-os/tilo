@@ -57,6 +57,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--empty` renders the real live app (persisted document + configured
         // accounts, i.e. empty on a fresh machine) rather than the sample seed.
         let empty = args.iter().any(|a| a == "--empty");
+        // Event-form screenshots: `--new-event` opens the New-Event edit form;
+        // `--date-popover` / `--calendar-popover` additionally float the date
+        // grid / calendar selector over it.
+        let new_event = args.iter().any(|a| a == "--new-event")
+            || screen.as_deref() == Some("new-event");
+        let date_popover = args.iter().any(|a| a == "--date-popover");
+        let calendar_popover = args.iter().any(|a| a == "--calendar-popover");
         let build = || {
             if empty {
                 let mut app = CalendarApp::new();
@@ -77,6 +84,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if collapse {
                 app.shots_collapse_sidebar();
+            }
+            if date_popover {
+                app.shots_open_date_popover();
+            } else if calendar_popover {
+                app.shots_open_calendar_popover();
+            } else if new_event {
+                app.shots_new_event();
             }
             Box::new(app) as Box<dyn Widget>
         };
