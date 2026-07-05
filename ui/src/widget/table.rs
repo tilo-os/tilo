@@ -1,0 +1,1471 @@
+//! `Table` — a CRDT-native **editable grid**.
+//!
+//! Unlike [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
+//! sortable list view), this widget is a structural editor: the user types
+//! into cells and adds / removes rows and columns *anywhere* in the grid via
+//! hover affordances in the gutters. Every mutation writes straight through to
+//! the Automerge document, so two collaborators editing the same table
+//! converge.
+//!
+//! # Data model (under the widget's `path`, a Map)
+//!
+//! * `rows`   — `List<Str>`: the stable row ids, in display order.
+//! * `cols`   — `List<Str>`: the stable column ids, in display order.
+//! * `cells`  — `Map<Str, Text>`: cell content, keyed `"{row_id}|{col_id}"`.
+//! * `widths` — `Map<Str, F64>`: per-column pixel width, keyed by column id.
+//! * `header` — `Bool`: render the first row as a header band.
+//! * `seq`    — `Int`: monotonic id counter (combined with the actor id).
+//!
+//! Row and column ids are stable and are never renumbered on insert/delete —
+//! only the `rows`/`cols` *order lists* change. Inserting a column in the
+//! middle is therefore a single list insert plus one empty `Text` per row, and
+//! it merges cleanly with a concurrent edit to any other cell. This flat
+//! `(row, col) -> text` shape maps directly onto the `qdoc` table
+//! representation (a `cell` block tagged `table`/`row`/`col`), so a table
+//! authored here can be lowered into a document later.
+//!
+//! # Rendering
+//!
+//! Each cell is a real [`crate::widget::TextInput`] in plain-chrome mode, so
+//! caret placement, selection, word navigation and clipboard all come for
+//! free. The cells are laid out with a CSS-grid Taffy node (one track per
+//! column, fixed row height); the widget itself paints the grid lines, the
+//! header band, row banding, and the insert / delete / resize affordances in
+//! the gutters on top. All colours and spacing come from the [`Theme`].
+
+use std::collections::HashMap;
+
+use automerge::{
+    transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value,
+};
+use taffy::style_helpers::length;
+use taffy::{Display, NodeId, Rect as TaffyRect, Size, Style, TaffyTree};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use vello::Scene;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::color_compat::ColorCompat;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::{TextInput, Widget};
+
+// ---------------------------------------------------------------------------
+// Geometry constants (logical px)
+// ---------------------------------------------------------------------------
+
+/// Left rail: row-insert boundaries + per-row delete handles live here.
+const LEFT_GUTTER: f64 = 24.0;
+/// Top rail: column-insert boundaries + per-column delete handles live here.
+const TOP_GUTTER: f64 = 24.0;
+/// Trailing padding so the far-edge insert pill isn't clipped.
+const RIGHT_PAD: f64 = 12.0;
+const BOTTOM_PAD: f64 = 12.0;
+/// Default width of a freshly created column.
+const DEFAULT_COL_W: f64 = 152.0;
+/// Columns never shrink below this when dragged.
+const MIN_COL_W: f64 = 56.0;
+/// Row height. Must match [`TextInput`]'s intrinsic cell height so the editor
+/// fills its grid track exactly.
+const ROW_H: f64 = 40.0;
+/// How close (px) the pointer must be to a boundary to hit its insert pill.
+const BOUNDARY_HIT: f64 = 11.0;
+/// Half-width of the drag zone around an interior column boundary (resize).
+const RESIZE_HIT: f64 = 4.0;
+/// Radius of the round insert "+" pill.
+const PILL_R: f64 = 8.0;
+/// Side of the square delete "×" handle.
+const DELETE_SIDE: f64 = 15.0;
+/// Cell body font size.
+const CELL_FONT: f32 = 15.0;
+
+// ---------------------------------------------------------------------------
+// CRDT keys
+// ---------------------------------------------------------------------------
+
+const K_ROWS: &str = "rows";
+const K_COLS: &str = "cols";
+const K_CELLS: &str = "cells";
+const K_WIDTHS: &str = "widths";
+const K_HEADER: &str = "header";
+const K_SEQ: &str = "seq";
+
+// ===========================================================================
+// Model operations — the production path. These are pure functions over the
+// document, so tests exercise exactly what the widget's event handler runs.
+// ===========================================================================
+
+/// Cell key for `(row_id, col_id)`. Row/col ids are `"{actor}.{n}"`, which
+/// never contain `|`, so this concatenation is unambiguous.
+fn cell_key(rid: &str, cid: &str) -> String {
+    format!("{rid}|{cid}")
+}
+
+fn child_obj(doc: &AutoCommit, parent: &ObjId, key: &str, ty: ObjType) -> Option<ObjId> {
+    match doc.get(parent, key) {
+        Ok(Some((Value::Object(t), id))) if t == ty => Some(id),
+        _ => None,
+    }
+}
+
+fn rows_list(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
+    child_obj(doc, t, K_ROWS, ObjType::List)
+}
+fn cols_list(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
+    child_obj(doc, t, K_COLS, ObjType::List)
+}
+fn cells_map(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
+    child_obj(doc, t, K_CELLS, ObjType::Map)
+}
+fn widths_map(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
+    child_obj(doc, t, K_WIDTHS, ObjType::Map)
+}
+
+/// Create the `rows` / `cols` / `cells` / `widths` containers if the table has
+/// never been initialised. Idempotent — safe to call every `sync`.
+pub fn ensure(doc: &mut AutoCommit, t: &ObjId) {
+    if rows_list(doc, t).is_none() {
+        let _ = doc.put_object(t, K_ROWS, ObjType::List);
+    }
+    if cols_list(doc, t).is_none() {
+        let _ = doc.put_object(t, K_COLS, ObjType::List);
+    }
+    if cells_map(doc, t).is_none() {
+        let _ = doc.put_object(t, K_CELLS, ObjType::Map);
+    }
+    if widths_map(doc, t).is_none() {
+        let _ = doc.put_object(t, K_WIDTHS, ObjType::Map);
+    }
+}
+
+fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
+    let n = doc.length(list);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(list, i) {
+            if let ScalarValue::Str(v) = s.as_ref() {
+                out.push(v.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Row ids in display order.
+pub fn row_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
+    rows_list(doc, t).map(|l| list_ids(doc, &l)).unwrap_or_default()
+}
+
+/// Column ids in display order.
+pub fn col_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
+    cols_list(doc, t).map(|l| list_ids(doc, &l)).unwrap_or_default()
+}
+
+/// `(rows, cols)` dimensions.
+pub fn dims(doc: &AutoCommit, t: &ObjId) -> (usize, usize) {
+    (
+        rows_list(doc, t).map(|l| doc.length(&l)).unwrap_or(0),
+        cols_list(doc, t).map(|l| doc.length(&l)).unwrap_or(0),
+    )
+}
+
+/// Mint a globally-unique, stable id: `"{actor_hex}.{seq}"`. The actor prefix
+/// keeps ids distinct across replicas; the counter keeps them distinct within
+/// one.
+fn next_id(doc: &mut AutoCommit, t: &ObjId) -> String {
+    let seq = match doc.get(t, K_SEQ) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Int(n) => *n,
+            ScalarValue::Uint(n) => *n as i64,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    let _ = doc.put(t, K_SEQ, seq + 1);
+    let actor = doc.get_actor().to_hex_string();
+    format!("{actor}.{seq}")
+}
+
+/// Resolve the `Text` object backing cell `(r, c)` in display coordinates.
+pub fn cell_obj(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> Option<ObjId> {
+    let rid = row_ids(doc, t).into_iter().nth(r)?;
+    let cid = col_ids(doc, t).into_iter().nth(c)?;
+    child_obj(doc, &cells_map(doc, t)?, &cell_key(&rid, &cid), ObjType::Text)
+}
+
+/// Current text of cell `(r, c)`; empty string when the cell has no content.
+pub fn cell_text(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> String {
+    match cell_obj(doc, t, r, c) {
+        Some(obj) => doc.text(&obj).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// Replace the whole content of cell `(r, c)`. Creates the backing `Text` if
+/// it does not exist yet.
+pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, r: usize, c: usize, s: &str) {
+    ensure(doc, t);
+    let (Some(rid), Some(cid)) = (
+        row_ids(doc, t).into_iter().nth(r),
+        col_ids(doc, t).into_iter().nth(c),
+    ) else {
+        return;
+    };
+    let Some(cells) = cells_map(doc, t) else { return };
+    let key = cell_key(&rid, &cid);
+    let obj = match child_obj(doc, &cells, &key, ObjType::Text) {
+        Some(o) => o,
+        None => match doc.put_object(&cells, key.as_str(), ObjType::Text) {
+            Ok(o) => o,
+            Err(_) => return,
+        },
+    };
+    let cur = doc.text(&obj).unwrap_or_default();
+    let _ = doc.splice_text(&obj, 0, cur.chars().count() as isize, s);
+}
+
+/// Insert a fresh empty row at display index `at` (clamped to `0..=rows`).
+/// Every current column gets an empty backing cell.
+pub fn insert_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
+    ensure(doc, t);
+    let rid = next_id(doc, t);
+    let cols = col_ids(doc, t);
+    let (Some(rows), Some(cells)) = (rows_list(doc, t), cells_map(doc, t)) else {
+        return;
+    };
+    let at = at.min(doc.length(&rows));
+    let _ = doc.insert(&rows, at, rid.as_str());
+    for cid in &cols {
+        let _ = doc.put_object(&cells, cell_key(&rid, cid).as_str(), ObjType::Text);
+    }
+}
+
+/// Insert a fresh empty column at display index `at` (clamped to `0..=cols`).
+pub fn insert_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
+    ensure(doc, t);
+    let cid = next_id(doc, t);
+    let rows = row_ids(doc, t);
+    let (Some(cols), Some(cells)) = (cols_list(doc, t), cells_map(doc, t)) else {
+        return;
+    };
+    let at = at.min(doc.length(&cols));
+    let _ = doc.insert(&cols, at, cid.as_str());
+    for rid in &rows {
+        let _ = doc.put_object(&cells, cell_key(rid, &cid).as_str(), ObjType::Text);
+    }
+    if let Some(w) = widths_map(doc, t) {
+        let _ = doc.put(&w, cid.as_str(), DEFAULT_COL_W);
+    }
+}
+
+/// Remove the row at display index `at`, deleting its cells.
+pub fn remove_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
+    let rows_v = row_ids(doc, t);
+    let Some(rid) = rows_v.get(at).cloned() else { return };
+    let cols = col_ids(doc, t);
+    if let Some(rows) = rows_list(doc, t) {
+        let _ = doc.delete(&rows, at);
+    }
+    if let Some(cells) = cells_map(doc, t) {
+        for cid in &cols {
+            let _ = doc.delete(&cells, cell_key(&rid, cid).as_str());
+        }
+    }
+}
+
+/// Remove the column at display index `at`, deleting its cells + width.
+pub fn remove_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
+    let cols_v = col_ids(doc, t);
+    let Some(cid) = cols_v.get(at).cloned() else { return };
+    let rows = row_ids(doc, t);
+    if let Some(cols) = cols_list(doc, t) {
+        let _ = doc.delete(&cols, at);
+    }
+    if let Some(cells) = cells_map(doc, t) {
+        for rid in &rows {
+            let _ = doc.delete(&cells, cell_key(rid, &cid).as_str());
+        }
+    }
+    if let Some(w) = widths_map(doc, t) {
+        let _ = doc.delete(&w, cid.as_str());
+    }
+}
+
+/// Whether the first row renders as a header band.
+pub fn header(doc: &AutoCommit, t: &ObjId) -> bool {
+    matches!(
+        doc.get(t, K_HEADER),
+        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), ScalarValue::Boolean(true))
+    )
+}
+
+/// Set the header-band flag.
+pub fn set_header(doc: &mut AutoCommit, t: &ObjId, on: bool) {
+    ensure(doc, t);
+    let _ = doc.put(t, K_HEADER, on);
+}
+
+fn col_width(doc: &AutoCommit, t: &ObjId, cid: &str) -> f64 {
+    match widths_map(doc, t).and_then(|w| doc.get(&w, cid).ok().flatten()) {
+        Some((Value::Scalar(s), _)) => match s.as_ref() {
+            ScalarValue::F64(v) => *v,
+            ScalarValue::Int(v) => *v as f64,
+            _ => DEFAULT_COL_W,
+        },
+        _ => DEFAULT_COL_W,
+    }
+}
+
+fn set_col_width(doc: &mut AutoCommit, t: &ObjId, cid: &str, w: f64) {
+    if let Some(m) = widths_map(doc, t) {
+        let _ = doc.put(&m, cid, w.max(MIN_COL_W));
+    }
+}
+
+// ===========================================================================
+// Interaction state
+// ===========================================================================
+
+/// What the pointer is currently over — recomputed on every `CursorMoved`.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+enum Hover {
+    #[default]
+    None,
+    /// Insert-column pill at boundary index `0..=cols`.
+    InsertCol(usize),
+    /// Insert-row pill at boundary index `0..=rows`.
+    InsertRow(usize),
+    /// Delete-column handle over column `c`.
+    DeleteCol(usize),
+    /// Delete-row handle over row `r`.
+    DeleteRow(usize),
+    /// Interior column boundary `1..cols` (drag to resize the column to its
+    /// left, `boundary - 1`).
+    ResizeCol(usize),
+    /// The empty-state "add first cell" affordance.
+    EmptyAdd,
+}
+
+/// Active column-resize drag.
+struct Resize {
+    col: usize,
+    start_x: f64,
+    orig_w: f64,
+}
+
+// ===========================================================================
+// Widget
+// ===========================================================================
+
+pub struct Table {
+    id: String,
+    /// Optional seed applied once when the model is first initialised.
+    seed: Option<(usize, usize)>,
+    seed_header: bool,
+
+    // --- model mirror (refreshed each `sync`) ---
+    row_ids: Vec<String>,
+    col_ids: Vec<String>,
+    col_widths: Vec<f64>,
+    header: bool,
+
+    /// Cell editors in row-major order (`len == rows * cols`). Rebuilt only
+    /// when the set of `(row, col)` ids changes.
+    cells: Vec<Box<TextInput>>,
+    /// Resolved `cells` map, so children are rooted correctly.
+    cells_obj: Option<ObjId>,
+
+    // --- layout ---
+    rect: Rect,
+
+    // --- interaction ---
+    last_cursor: Option<Point>,
+    hover: Hover,
+    resize: Option<Resize>,
+    dirty: bool,
+    structure_dirty: bool,
+    pending_commit: bool,
+}
+
+impl Table {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            seed: None,
+            seed_header: false,
+            row_ids: Vec::new(),
+            col_ids: Vec::new(),
+            col_widths: Vec::new(),
+            header: false,
+            cells: Vec::new(),
+            cells_obj: None,
+            rect: Rect::ZERO,
+            last_cursor: None,
+            hover: Hover::None,
+            resize: None,
+            dirty: true,
+            structure_dirty: false,
+            pending_commit: false,
+        }
+    }
+
+    /// Seed the table with `rows`×`cols` empty cells the first time it is
+    /// synced against a fresh (uninitialised) document.
+    pub fn seeded(mut self, rows: usize, cols: usize) -> Self {
+        self.seed = Some((rows, cols));
+        self
+    }
+
+    /// Render the first row as a header band (also applied on first seed).
+    pub fn with_header(mut self) -> Self {
+        self.seed_header = true;
+        self
+    }
+
+    fn n_rows(&self) -> usize {
+        self.row_ids.len()
+    }
+    fn n_cols(&self) -> usize {
+        self.col_ids.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.n_rows() == 0 || self.n_cols() == 0
+    }
+
+    /// Build a fresh, plain-chrome cell editor bound to `(rid, cid)`.
+    fn make_cell(rid: &str, cid: &str) -> Box<TextInput> {
+        Box::new(
+            TextInput::new(vec![])
+                .with_id(&format!("cell_{rid}_{cid}"))
+                .with_on_change_path(&cell_key(rid, cid))
+                .with_plain_chrome()
+                .with_font_size(CELL_FONT),
+        )
+    }
+
+    /// Analytic grid geometry from the widget rect + stored widths — matches
+    /// the Taffy layout exactly (deterministic; independent of cell rects).
+    /// Returns `(xs, ys)`: the `cols+1` vertical and `rows+1` horizontal edges.
+    fn grid_edges(&self) -> (Vec<f64>, Vec<f64>) {
+        let left = self.rect.x0 + LEFT_GUTTER;
+        let top = self.rect.y0 + TOP_GUTTER;
+        let mut xs = Vec::with_capacity(self.n_cols() + 1);
+        let mut x = left;
+        xs.push(x);
+        for w in &self.col_widths {
+            x += *w;
+            xs.push(x);
+        }
+        let mut ys = Vec::with_capacity(self.n_rows() + 1);
+        let mut y = top;
+        ys.push(y);
+        for _ in 0..self.n_rows() {
+            y += ROW_H;
+            ys.push(y);
+        }
+        (xs, ys)
+    }
+
+    fn grid_right(&self) -> f64 {
+        self.rect.x0 + LEFT_GUTTER + self.col_widths.iter().sum::<f64>()
+    }
+    fn grid_bottom(&self) -> f64 {
+        self.rect.y0 + TOP_GUTTER + self.n_rows() as f64 * ROW_H
+    }
+
+    /// Rect of the delete handle for column `c` (centred in the top gutter).
+    fn delete_col_rect(&self, xs: &[f64], c: usize) -> Rect {
+        let cx = (xs[c] + xs[c + 1]) / 2.0;
+        let cy = self.rect.y0 + TOP_GUTTER / 2.0;
+        Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
+    }
+    /// Rect of the delete handle for row `r` (centred in the left gutter).
+    fn delete_row_rect(&self, ys: &[f64], r: usize) -> Rect {
+        let cx = self.rect.x0 + LEFT_GUTTER / 2.0;
+        let cy = (ys[r] + ys[r + 1]) / 2.0;
+        Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
+    }
+
+    /// Hit-test the pointer against every affordance, in priority order.
+    fn hit(&self, p: Point) -> Hover {
+        if !self.rect.contains(p) {
+            return Hover::None;
+        }
+        if self.is_empty() {
+            return if self.empty_add_rect().contains(p) {
+                Hover::EmptyAdd
+            } else {
+                Hover::None
+            };
+        }
+        let (xs, ys) = self.grid_edges();
+        let in_top = p.y < self.rect.y0 + TOP_GUTTER;
+        let in_left = p.x < self.rect.x0 + LEFT_GUTTER;
+
+        // Top gutter → column insert boundaries + column delete handles.
+        if in_top && p.x >= self.rect.x0 + LEFT_GUTTER - BOUNDARY_HIT {
+            for (i, &bx) in xs.iter().enumerate() {
+                if (p.x - bx).abs() <= BOUNDARY_HIT {
+                    return Hover::InsertCol(i);
+                }
+            }
+            for c in 0..self.n_cols() {
+                if self.delete_col_rect(&xs, c).contains(p) {
+                    return Hover::DeleteCol(c);
+                }
+            }
+            return Hover::None;
+        }
+        // Left gutter → row insert boundaries + row delete handles.
+        if in_left && p.y >= self.rect.y0 + TOP_GUTTER - BOUNDARY_HIT {
+            for (i, &by) in ys.iter().enumerate() {
+                if (p.y - by).abs() <= BOUNDARY_HIT {
+                    return Hover::InsertRow(i);
+                }
+            }
+            for r in 0..self.n_rows() {
+                if self.delete_row_rect(&ys, r).contains(p) {
+                    return Hover::DeleteRow(r);
+                }
+            }
+            return Hover::None;
+        }
+        // Grid body → interior column boundaries resize the column to the left.
+        if p.x >= self.rect.x0 + LEFT_GUTTER && p.y >= self.rect.y0 + TOP_GUTTER {
+            for i in 1..xs.len() {
+                if (p.x - xs[i]).abs() <= RESIZE_HIT {
+                    return Hover::ResizeCol(i);
+                }
+            }
+        }
+        Hover::None
+    }
+
+    /// The empty-state affordance box.
+    fn empty_add_rect(&self) -> Rect {
+        let cx = self.rect.x0 + LEFT_GUTTER + DEFAULT_COL_W / 2.0;
+        let cy = self.rect.y0 + TOP_GUTTER + ROW_H / 2.0;
+        Rect::from_center_size((cx, cy), (DEFAULT_COL_W, ROW_H))
+    }
+
+    /// Total widget size for the current model.
+    fn total_size(&self) -> (f64, f64) {
+        if self.is_empty() {
+            return (
+                LEFT_GUTTER + DEFAULT_COL_W + RIGHT_PAD,
+                TOP_GUTTER + ROW_H + BOTTOM_PAD,
+            );
+        }
+        (
+            LEFT_GUTTER + self.col_widths.iter().sum::<f64>() + RIGHT_PAD,
+            TOP_GUTTER + self.n_rows() as f64 * ROW_H + BOTTOM_PAD,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Small draw helpers
+// ---------------------------------------------------------------------------
+
+fn plus(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
+    let s = Stroke::new(w);
+    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y), (c.x + r, c.y)));
+    scene.stroke(&s, transform, color, None, &Line::new((c.x, c.y - r), (c.x, c.y + r)));
+}
+
+fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
+    let s = Stroke::new(w);
+    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y - r), (c.x + r, c.y + r)));
+    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y + r), (c.x + r, c.y - r)));
+}
+
+impl Widget for Table {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        ensure(state, path);
+        // First-run seed.
+        if let Some((r, c)) = self.seed.take() {
+            let (er, ec) = dims(state, path);
+            if er == 0 && ec == 0 {
+                for _ in 0..c {
+                    insert_column(state, path, usize::MAX);
+                }
+                for _ in 0..r {
+                    insert_row(state, path, usize::MAX);
+                }
+                if self.seed_header {
+                    set_header(state, path, true);
+                }
+            }
+        }
+
+        let new_rows = row_ids(state, path);
+        let new_cols = col_ids(state, path);
+        self.header = header(state, path);
+        self.col_widths = new_cols.iter().map(|cid| col_width(state, path, cid)).collect();
+        self.cells_obj = cells_map(state, path);
+
+        // Rebuild the cell editors only when the id set actually changed.
+        if new_rows != self.row_ids || new_cols != self.col_ids {
+            let mut cells = Vec::with_capacity(new_rows.len() * new_cols.len());
+            for rid in &new_rows {
+                for cid in &new_cols {
+                    cells.push(Self::make_cell(rid, cid));
+                }
+            }
+            self.cells = cells;
+            self.row_ids = new_rows;
+            self.col_ids = new_cols;
+            self.structure_dirty = true;
+            self.dirty = true;
+        }
+
+        // Pull each cell's text from the `cells` map.
+        if let Some(cells_obj) = self.cells_obj.clone() {
+            for cell in &mut self.cells {
+                cell.sync(state, &cells_obj);
+            }
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let (total_w, total_h) = self.total_size();
+
+        let node = if self.is_empty() {
+            taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: length(total_w as f32),
+                        height: length(total_h as f32),
+                    },
+                    ..Default::default()
+                })
+                .unwrap()
+        } else {
+            let child_nodes: Vec<NodeId> = self
+                .cells
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            let cols: Vec<_> = self.col_widths.iter().map(|w| length(*w as f32)).collect();
+            taffy
+                .new_with_children(
+                    Style {
+                        display: Display::Grid,
+                        size: Size {
+                            width: length(total_w as f32),
+                            height: length(total_h as f32),
+                        },
+                        padding: TaffyRect {
+                            left: length(LEFT_GUTTER as f32),
+                            right: length(RIGHT_PAD as f32),
+                            top: length(TOP_GUTTER as f32),
+                            bottom: length(BOTTOM_PAD as f32),
+                        },
+                        grid_template_columns: cols,
+                        grid_auto_rows: vec![length(ROW_H as f32)],
+                        ..Default::default()
+                    },
+                    &child_nodes,
+                )
+                .unwrap()
+        };
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+        let cell_origin = Point::new(self.rect.x0, self.rect.y0);
+        if let Ok(child_nodes) = taffy.children(node) {
+            for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
+                cell.apply_layout(taffy, cn, cell_origin);
+            }
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let tk = &theme.tokens;
+        let radius = tk.radii.md as f64;
+
+        // Outer frame (spans the gutters too).
+        let frame = RoundedRect::from_rect(self.rect, radius);
+        scene.fill(Fill::NonZero, transform, tk.colors.surfaces.base, None, &frame);
+
+        if self.is_empty() {
+            let r = self.empty_add_rect();
+            let hovered = self.hover == Hover::EmptyAdd;
+            let box_color = if hovered { theme.bg_active } else { tk.colors.surfaces.raised };
+            let rr = RoundedRect::from_rect(r, radius);
+            scene.fill(Fill::NonZero, transform, box_color, None, &rr);
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                if hovered { theme.accent_primary } else { theme.border_standard },
+                None,
+                &rr,
+            );
+            let c = r.center();
+            plus(scene, transform, Point::new(c.x - 34.0, c.y), 6.0, theme.accent_primary, 2.0);
+            text_renderer.draw_text(
+                scene,
+                "Add cell",
+                14.0,
+                theme.text_primary,
+                transform * Affine::translate((c.x - 20.0, c.y - 9.0)),
+                None,
+            );
+            return;
+        }
+
+        let (xs, ys) = self.grid_edges();
+        let gl = xs[0];
+        let gr = self.grid_right();
+        let gt = ys[0];
+        let gb = self.grid_bottom();
+        let body = Rect::new(gl, gt, gr, gb);
+
+        // Grid body surface + header band + zebra rows.
+        scene.fill(Fill::NonZero, transform, tk.colors.surfaces.raised, None, &body);
+        for r in 0..self.n_rows() {
+            let row_rect = Rect::new(gl, ys[r], gr, ys[r + 1]);
+            let is_header = self.header && r == 0;
+            let fill = if is_header {
+                tk.colors.surface_white_10
+            } else if r % 2 == 1 {
+                tk.colors.surface_white_5
+            } else {
+                continue;
+            };
+            scene.fill(Fill::NonZero, transform, fill, None, &row_rect);
+        }
+
+        // Cells (real TextInputs paint their own text + caret).
+        for cell in &mut self.cells {
+            cell.draw(scene, transform, text_renderer, theme, presence);
+        }
+
+        // Grid lines.
+        let line = Stroke::new(1.0);
+        let line_color = tk.colors.border_white_10;
+        for &x in &xs {
+            scene.stroke(&line, transform, line_color, None, &Line::new((x, gt), (x, gb)));
+        }
+        for &y in &ys {
+            scene.stroke(&line, transform, line_color, None, &Line::new((gl, y), (gr, y)));
+        }
+        // Heavier separator under the header.
+        if self.header && self.n_rows() >= 1 {
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                theme.border_standard,
+                None,
+                &Line::new((gl, ys[1]), (gr, ys[1])),
+            );
+        }
+
+        // --- Affordances ------------------------------------------------
+        let faint = theme.text_dim.with_alpha_factor(0.35);
+        let accent = theme.accent_primary;
+        let danger = tk.colors.semantic.danger;
+
+        // Always-on, discoverable insert ticks at every boundary.
+        for &x in &xs {
+            let c = Point::new(x, self.rect.y0 + TOP_GUTTER / 2.0);
+            plus(scene, transform, c, 3.5, faint, 1.25);
+        }
+        for &y in &ys {
+            let c = Point::new(self.rect.x0 + LEFT_GUTTER / 2.0, y);
+            plus(scene, transform, c, 3.5, faint, 1.25);
+        }
+
+        // Hover emphasis.
+        match self.hover {
+            Hover::InsertCol(i) => {
+                let x = xs[i];
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    accent,
+                    None,
+                    &Line::new((x, gt), (x, gb)),
+                );
+                let c = Point::new(x, self.rect.y0 + TOP_GUTTER / 2.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    accent,
+                    None,
+                    &vello::kurbo::Circle::new(c, PILL_R),
+                );
+                plus(scene, transform, c, 4.0, Color::WHITE, 1.75);
+            }
+            Hover::InsertRow(i) => {
+                let y = ys[i];
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    accent,
+                    None,
+                    &Line::new((gl, y), (gr, y)),
+                );
+                let c = Point::new(self.rect.x0 + LEFT_GUTTER / 2.0, y);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    accent,
+                    None,
+                    &vello::kurbo::Circle::new(c, PILL_R),
+                );
+                plus(scene, transform, c, 4.0, Color::WHITE, 1.75);
+            }
+            Hover::DeleteCol(c) => {
+                let col = Rect::new(xs[c], gt, xs[c + 1], gb);
+                scene.fill(Fill::NonZero, transform, danger.with_alpha_factor(0.16), None, &col);
+                let hr = self.delete_col_rect(&xs, c);
+                let rr = RoundedRect::from_rect(hr, 4.0);
+                scene.fill(Fill::NonZero, transform, danger, None, &rr);
+                cross(scene, transform, hr.center(), 3.5, Color::WHITE, 1.75);
+            }
+            Hover::DeleteRow(r) => {
+                let row = Rect::new(gl, ys[r], gr, ys[r + 1]);
+                scene.fill(Fill::NonZero, transform, danger.with_alpha_factor(0.16), None, &row);
+                let hr = self.delete_row_rect(&ys, r);
+                let rr = RoundedRect::from_rect(hr, 4.0);
+                scene.fill(Fill::NonZero, transform, danger, None, &rr);
+                cross(scene, transform, hr.center(), 3.5, Color::WHITE, 1.75);
+            }
+            Hover::ResizeCol(i) => {
+                let x = xs[i];
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    accent,
+                    None,
+                    &Line::new((x, gt), (x, gb)),
+                );
+            }
+            Hover::None | Hover::EmptyAdd => {}
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
+
+        // ---- active column resize captures the pointer ----
+        if let Some(rz) = self.resize.as_ref() {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
+                    if let Some(cid) = self.col_ids.get(rz.col).cloned() {
+                        set_col_width(state, path, &cid, new_w);
+                    }
+                    self.structure_dirty = true; // re-run build_layout with new tracks
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+                    self.resize = None;
+                    self.pending_commit = true;
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Some(p);
+                let h = self.hit(p);
+                if h != self.hover {
+                    self.hover = h;
+                    self.dirty = true;
+                }
+                // fall through so cells update their own hover/drag state
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(p) = self.last_cursor {
+                    match self.hit(p) {
+                        Hover::EmptyAdd => {
+                            if self.n_cols() == 0 {
+                                insert_column(state, path, 0);
+                            }
+                            if self.n_rows() == 0 {
+                                insert_row(state, path, 0);
+                            }
+                            self.structure_dirty = true;
+                            self.pending_commit = true;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Hover::InsertCol(i) => {
+                            insert_column(state, path, i);
+                            self.structure_dirty = true;
+                            self.pending_commit = true;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Hover::InsertRow(i) => {
+                            insert_row(state, path, i);
+                            self.structure_dirty = true;
+                            self.pending_commit = true;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Hover::DeleteCol(c) => {
+                            remove_column(state, path, c);
+                            self.structure_dirty = true;
+                            self.pending_commit = true;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Hover::DeleteRow(r) => {
+                            remove_row(state, path, r);
+                            self.structure_dirty = true;
+                            self.pending_commit = true;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Hover::ResizeCol(i) => {
+                            let col = i - 1;
+                            if let Some(cid) = self.col_ids.get(col) {
+                                self.resize = Some(Resize {
+                                    col,
+                                    start_x: p.x,
+                                    orig_w: col_width(state, path, cid),
+                                });
+                                *handled = true;
+                                return;
+                            }
+                        }
+                        Hover::None => {}
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event: key_event, .. }
+                if key_event.state == ElementState::Pressed =>
+            {
+                // Enter moves the caret down one row (Shift+Enter → up).
+                if matches!(key_event.logical_key, Key::Named(NamedKey::Enter)) {
+                    if let Some(focused) = self.cells.iter().position(|c| c.is_focused()) {
+                        let cols = self.n_cols().max(1);
+                        let up = modifiers.state().shift_key();
+                        let target = if up {
+                            focused.checked_sub(cols)
+                        } else {
+                            let t = focused + cols;
+                            (t < self.cells.len()).then_some(t)
+                        };
+                        if let Some(t) = target {
+                            if let Some(&tn) = child_nodes.get(t) {
+                                *focus_target = Some(tn);
+                                *handled = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // ---- forward to cell editors ----
+        if let Some(cells_obj) = self.cells_obj.clone() {
+            // Pointer-capture short-circuit (a cell dragging a selection).
+            if let Some(idx) = self.cells.iter().position(|c| c.wants_pointer_capture()) {
+                if let Some(&cn) = child_nodes.get(idx) {
+                    self.cells[idx].handle_event(
+                        event, scale_factor, modifiers, state, &cells_obj, handled,
+                        focus_target, cn, taffy,
+                    );
+                    return;
+                }
+            }
+            for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
+                cell.handle_event(
+                    event, scale_factor, modifiers, state, &cells_obj, handled, focus_target,
+                    cn, taffy,
+                );
+                if *handled {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.cells.iter().map(|c| c.as_ref() as &dyn Widget).collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.cells.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+    }
+
+    fn name(&self) -> &str {
+        "Table"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some(&self.id)
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        match self.hit(point) {
+            Hover::ResizeCol(_) => Some(winit::window::CursorIcon::EwResize),
+            Hover::InsertCol(_)
+            | Hover::InsertRow(_)
+            | Hover::DeleteCol(_)
+            | Hover::DeleteRow(_)
+            | Hover::EmptyAdd => Some(winit::window::CursorIcon::Pointer),
+            Hover::None => None,
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.resize.is_some() || self.cells.iter().any(|c| c.wants_pointer_capture())
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut d = self.structure_dirty;
+        self.structure_dirty = false;
+        d |= self.cells.iter_mut().any(|c| c.take_structure_dirty());
+        d
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.cells.iter().any(|c| c.needs_redraw())
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        for c in self.cells.iter_mut() {
+            c.mark_drawn();
+        }
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.structure_dirty || self.cells.iter().any(|c| c.is_layout_dirty())
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.pending_commit || self.cells.iter().any(|c| c.needs_commit())
+    }
+    fn on_commit(&mut self) {
+        self.pending_commit = false;
+        for c in self.cells.iter_mut() {
+            c.on_commit();
+        }
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Table))
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::ROOT;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Size as TSize};
+    use winit::dpi::PhysicalPosition;
+    use winit::event::Modifiers;
+
+    /// Fresh document with an empty table map object at `root["t"]`.
+    fn doc_with_table() -> (AutoCommit, ObjId) {
+        let mut doc = AutoCommit::new();
+        let t = doc.put_object(&ROOT, "t", ObjType::Map).unwrap();
+        ensure(&mut doc, &t);
+        (doc, t)
+    }
+
+    /// Seed a `rows`×`cols` grid and fill each cell with `"r{c}"`.
+    fn seed(doc: &mut AutoCommit, t: &ObjId, rows: usize, cols: usize) {
+        for _ in 0..cols {
+            insert_column(doc, t, usize::MAX);
+        }
+        for _ in 0..rows {
+            insert_row(doc, t, usize::MAX);
+        }
+        for r in 0..rows {
+            for c in 0..cols {
+                set_cell_text(doc, t, r, c, &format!("{r}{c}"));
+            }
+        }
+    }
+
+    // ---- pure model-op tests (the production path) --------------------
+
+    #[test]
+    fn insert_and_read_roundtrip() {
+        let (mut doc, t) = doc_with_table();
+        seed(&mut doc, &t, 2, 2);
+        assert_eq!(dims(&doc, &t), (2, 2));
+        assert_eq!(cell_text(&doc, &t, 0, 0), "00");
+        assert_eq!(cell_text(&doc, &t, 1, 1), "11");
+    }
+
+    #[test]
+    fn insert_column_in_the_middle_preserves_and_shifts_content() {
+        let (mut doc, t) = doc_with_table();
+        // one row, three columns: A B C
+        insert_row(&mut doc, &t, 0);
+        for _ in 0..3 {
+            insert_column(&mut doc, &t, usize::MAX);
+        }
+        set_cell_text(&mut doc, &t, 0, 0, "A");
+        set_cell_text(&mut doc, &t, 0, 1, "B");
+        set_cell_text(&mut doc, &t, 0, 2, "C");
+
+        insert_column(&mut doc, &t, 1); // middle, between A and B
+
+        assert_eq!(dims(&doc, &t), (1, 4));
+        let texts: Vec<String> = (0..4).map(|c| cell_text(&doc, &t, 0, c)).collect();
+        assert_eq!(texts, vec!["A", "", "B", "C"], "new empty column lands in the middle");
+    }
+
+    #[test]
+    fn insert_row_in_the_middle_preserves_and_shifts_content() {
+        let (mut doc, t) = doc_with_table();
+        insert_column(&mut doc, &t, 0);
+        for _ in 0..3 {
+            insert_row(&mut doc, &t, usize::MAX);
+        }
+        set_cell_text(&mut doc, &t, 0, 0, "R0");
+        set_cell_text(&mut doc, &t, 1, 0, "R1");
+        set_cell_text(&mut doc, &t, 2, 0, "R2");
+
+        insert_row(&mut doc, &t, 1);
+
+        assert_eq!(dims(&doc, &t), (4, 1));
+        let texts: Vec<String> = (0..4).map(|r| cell_text(&doc, &t, r, 0)).collect();
+        assert_eq!(texts, vec!["R0", "", "R1", "R2"]);
+    }
+
+    #[test]
+    fn remove_row_in_the_middle() {
+        let (mut doc, t) = doc_with_table();
+        insert_column(&mut doc, &t, 0);
+        for i in 0..3 {
+            insert_row(&mut doc, &t, usize::MAX);
+            set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+        }
+        remove_row(&mut doc, &t, 1);
+        assert_eq!(dims(&doc, &t), (2, 1));
+        let texts: Vec<String> = (0..2).map(|r| cell_text(&doc, &t, r, 0)).collect();
+        assert_eq!(texts, vec!["R0", "R2"], "the middle row is the one removed");
+    }
+
+    #[test]
+    fn remove_column_in_the_middle() {
+        let (mut doc, t) = doc_with_table();
+        insert_row(&mut doc, &t, 0);
+        for i in 0..3 {
+            insert_column(&mut doc, &t, usize::MAX);
+            set_cell_text(&mut doc, &t, 0, i, &format!("C{i}"));
+        }
+        remove_column(&mut doc, &t, 1);
+        assert_eq!(dims(&doc, &t), (1, 2));
+        let texts: Vec<String> = (0..2).map(|c| cell_text(&doc, &t, 0, c)).collect();
+        assert_eq!(texts, vec!["C0", "C2"]);
+    }
+
+    #[test]
+    fn set_cell_text_overwrites() {
+        let (mut doc, t) = doc_with_table();
+        seed(&mut doc, &t, 1, 1);
+        set_cell_text(&mut doc, &t, 0, 0, "first");
+        set_cell_text(&mut doc, &t, 0, 0, "second");
+        assert_eq!(cell_text(&doc, &t, 0, 0), "second");
+    }
+
+    #[test]
+    fn stable_ids_survive_a_middle_delete() {
+        // Deleting a middle column must not disturb the identity/content of
+        // the surviving columns (proves the order-list + stable-id design).
+        let (mut doc, t) = doc_with_table();
+        insert_row(&mut doc, &t, 0);
+        for i in 0..4 {
+            insert_column(&mut doc, &t, usize::MAX);
+            set_cell_text(&mut doc, &t, 0, i, &format!("c{i}"));
+        }
+        let ids_before = col_ids(&doc, &t);
+        remove_column(&mut doc, &t, 2);
+        let ids_after = col_ids(&doc, &t);
+        assert_eq!(ids_after, vec![ids_before[0].clone(), ids_before[1].clone(), ids_before[3].clone()]);
+        let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
+        assert_eq!(texts, vec!["c0", "c1", "c3"]);
+    }
+
+    // ---- widget-integration tests (through the real event path) -------
+
+    /// Run sync → build_layout → compute_layout → apply_layout at the table's
+    /// natural size, returning the taffy tree + root node for event routing.
+    fn layout(table: &mut Table, doc: &mut AutoCommit, root: &ObjId) -> (TaffyTree<()>, NodeId) {
+        table.sync(doc, root);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = table.build_layout(&mut taffy, &theme, &mut nm);
+        let (w, h) = table.total_size();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                TSize {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    nm.get(&node_id)
+                        .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                        .unwrap_or(TSize::ZERO)
+                },
+            )
+            .unwrap();
+        table.apply_layout(&taffy, node, Point::ZERO);
+        (taffy, node)
+    }
+
+    fn cursor(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(x, y),
+        }
+    }
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn char_key(s: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(winit::keyboard::SmolStr::new(s));
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn enter() -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Enter);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch(
+        table: &mut Table,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        ev: &WindowEvent,
+        mods: &Modifiers,
+    ) -> (bool, Option<NodeId>) {
+        let mut handled = false;
+        let mut focus_target = None;
+        table.handle_event(
+            ev, 1.0, mods, doc, root, &mut handled, &mut focus_target, node, taffy,
+        );
+        (handled, focus_target)
+    }
+
+    #[test]
+    fn clicking_a_middle_boundary_inserts_a_column_there() {
+        let (mut doc, t) = doc_with_table();
+        // 1 row, 2 columns "A","B".
+        insert_row(&mut doc, &t, 0);
+        insert_column(&mut doc, &t, 0);
+        insert_column(&mut doc, &t, 1);
+        set_cell_text(&mut doc, &t, 0, 0, "A");
+        set_cell_text(&mut doc, &t, 0, 1, "B");
+
+        let mut table = Table::new("t");
+        let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+        // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
+        let bx = LEFT_GUTTER + DEFAULT_COL_W;
+        let mods = Modifiers::default();
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, TOP_GUTTER / 2.0), &mods);
+        assert_eq!(table.hover, Hover::InsertCol(1), "hover resolves to the middle insert pill");
+        let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
+
+        assert!(handled, "the insert click is consumed");
+        assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
+        let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
+        assert_eq!(texts, vec!["A", "", "B"], "the new column landed between A and B");
+    }
+
+    #[test]
+    fn clicking_a_row_delete_handle_removes_that_row() {
+        let (mut doc, t) = doc_with_table();
+        insert_column(&mut doc, &t, 0);
+        for i in 0..3 {
+            insert_row(&mut doc, &t, usize::MAX);
+            set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+        }
+        let mut table = Table::new("t");
+        let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+        // Delete handle for row 1 sits in the left gutter at that row's centre.
+        let cy = TOP_GUTTER + 1.5 * ROW_H;
+        let mods = Modifiers::default();
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(LEFT_GUTTER / 2.0, cy), &mods);
+        assert_eq!(table.hover, Hover::DeleteRow(1));
+        let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
+
+        assert!(handled);
+        assert_eq!(dims(&doc, &t), (2, 1));
+        let texts: Vec<String> = (0..2).map(|r| cell_text(&doc, &t, r, 0)).collect();
+        assert_eq!(texts, vec!["R0", "R2"]);
+    }
+
+    #[test]
+    fn typing_into_a_focused_cell_writes_through_to_the_doc() {
+        let (mut doc, t) = doc_with_table();
+        seed(&mut doc, &t, 1, 1);
+        // Clear the seeded content so we assert on exactly what we type.
+        set_cell_text(&mut doc, &t, 0, 0, "");
+
+        let mut table = Table::new("t");
+        let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+        // Focus the only cell (emulating the App's focus dispatch).
+        table.cells[0].set_focus(true);
+
+        let mods = Modifiers::default();
+        for ch in ["h", "i"] {
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &char_key(ch), &mods);
+        }
+        assert_eq!(cell_text(&doc, &t, 0, 0), "hi", "keystrokes splice into the cell's Text");
+    }
+
+    #[test]
+    fn enter_moves_focus_to_the_cell_below() {
+        let (mut doc, t) = doc_with_table();
+        seed(&mut doc, &t, 2, 2);
+        let mut table = Table::new("t");
+        let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+        // Focus the top-left cell (index 0). Cell below is index n_cols == 2.
+        table.cells[0].set_focus(true);
+        let mods = Modifiers::default();
+        let (handled, focus_target) =
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &enter(), &mods);
+
+        assert!(handled, "Enter is consumed for cell navigation");
+        let want = taffy.children(node).unwrap()[2]; // row 1, col 0
+        assert_eq!(focus_target, Some(want), "focus moves straight down one row");
+    }
+
+    #[test]
+    fn dragging_an_interior_boundary_resizes_the_left_column() {
+        let (mut doc, t) = doc_with_table();
+        seed(&mut doc, &t, 1, 2);
+        let mut table = Table::new("t");
+        let (taffy, node) = layout(&mut table, &mut doc, &t);
+
+        let cid0 = col_ids(&doc, &t)[0].clone();
+        let before = col_width(&doc, &t, &cid0);
+
+        // Interior boundary between col 0 and col 1 is at xs[1]; the body row
+        // sits below the top gutter.
+        let bx = LEFT_GUTTER + DEFAULT_COL_W;
+        let by = TOP_GUTTER + ROW_H / 2.0;
+        let mods = Modifiers::default();
+
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by), &mods);
+        assert_eq!(table.hover, Hover::ResizeCol(1), "interior boundary hover is a resize");
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
+        assert!(table.resize.is_some(), "press on the boundary starts a resize drag");
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx + 40.0, by), &mods);
+
+        let after = col_width(&doc, &t, &cid0);
+        assert!(
+            (after - (before + 40.0)).abs() < 0.5,
+            "column widened by the drag delta: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn empty_table_add_affordance_creates_a_cell() {
+        let (mut doc, t) = doc_with_table();
+        let mut table = Table::new("t"); // no seed → empty
+        let (taffy, node) = layout(&mut table, &mut doc, &t);
+        assert!(table.is_empty());
+
+        let mods = Modifiers::default();
+        let r = table.empty_add_rect();
+        let c = r.center();
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(c.x, c.y), &mods);
+        assert_eq!(table.hover, Hover::EmptyAdd);
+        dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
+
+        assert_eq!(dims(&doc, &t), (1, 1), "empty-add seeds a single cell");
+    }
+}
