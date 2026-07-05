@@ -8,11 +8,12 @@
 //!
 //! ```text
 //! root
-//! ├── "topology"  (Str)   # serde_json of model::Topology
-//! ├── "selected"  (Int)   # index into topology.drives
-//! ├── "tab"       (Str)   # overview | smart | partitions | tools
-//! ├── "pending"   (Str)   # "" or "<action>:<drive>" awaiting confirm
-//! └── "status"    (Str)   # last action / status-line message
+//! ├── "topology"      (Str)   # serde_json of model::Topology
+//! ├── "selected"      (Int)   # index into topology.drives
+//! ├── "selected_part" (Int)   # index into the drive's partitions, -1 = whole disk
+//! ├── "tab"           (Str)   # overview | smart | partitions
+//! ├── "pending"       (Str)   # "" or "<action>:<drive>:<part>" awaiting confirm
+//! └── "status"        (Str)   # last action / status-line message
 //! ```
 
 use automerge::transaction::Transactable;
@@ -37,6 +38,9 @@ impl DisksDoc {
         }
         if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
             let _ = doc.put(&ROOT, "selected", 0i64);
+        }
+        if !matches!(doc.get(&ROOT, "selected_part"), Ok(Some((Value::Scalar(_), _)))) {
+            let _ = doc.put(&ROOT, "selected_part", -1i64);
         }
         if Self::get_str(doc, "pending").is_none() {
             let _ = doc.put(&ROOT, "pending", "");
@@ -65,6 +69,23 @@ impl DisksDoc {
 
     pub fn set_selected(doc: &mut AutoCommit, idx: usize) {
         let _ = doc.put(&ROOT, "selected", idx as i64);
+    }
+
+    /// Selected partition within the current drive, or `None` for the whole
+    /// disk (`selected_part` scalar of `-1`).
+    pub fn selected_part(doc: &AutoCommit) -> Option<usize> {
+        match doc.get(&ROOT, "selected_part") {
+            Ok(Some((Value::Scalar(v), _))) => {
+                let n = v.to_i64().unwrap_or(-1);
+                if n < 0 { None } else { Some(n as usize) }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn set_selected_part(doc: &mut AutoCommit, part: Option<usize>) {
+        let v = part.map(|p| p as i64).unwrap_or(-1);
+        let _ = doc.put(&ROOT, "selected_part", v);
     }
 
     pub fn tab(doc: &AutoCommit) -> String {
