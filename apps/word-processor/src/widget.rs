@@ -26,12 +26,15 @@ use ui::theme::Theme;
 // Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
 // theme-tinted translucent chrome tones).
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::ColorPicker;
 use ui::widget::Widget;
 use ui::permissions::UserId;
 use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::i18n::{arg, t, t_args};
+use crate::portal;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
 
@@ -293,6 +296,10 @@ const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
+/// Colour-picker popover size (a compact instance of the shared `ColorPicker`).
+const CP_W: f64 = 236.0;
+const CP_H: f64 = 176.0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAction {
     Bold,
@@ -320,13 +327,10 @@ enum ToolAction {
     Sub,
     /// Cycle the focused paragraph's line spacing (1.0 → 1.15 → 1.5 → 2.0 → 1.0).
     LineSpacing,
-    SizeUp,
-    SizeDown,
-    /// The size stepper's read-only value chip (between − and +). Display-only.
-    SizeShow,
-    /// Insert an image at the caret. Under the compositor an OS file-picker
-    /// portal supplies the path; standalone there is no portal, so the button is
-    /// a best-effort no-op (drag-and-drop is the primary insert path).
+    // NB: font size is intentionally NOT a toolbar action — it lives solely in
+    // the side inspector's "Size" field (single home; see `draw_num_row`).
+    /// Insert an image at the caret via the host file-chooser portal (an OS
+    /// picker; drag-and-drop is the secondary insert path).
     InsertImage,
     InsertTable,
     TableRowAdd,
@@ -565,7 +569,7 @@ impl NumField {
 }
 
 /// A clickable target inside the styles panel, resolved on press.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum PanelHit {
     /// Apply this style id to the selection / caret block.
     Pick(String),
@@ -574,12 +578,32 @@ enum PanelHit {
     ToggleItalic,
     SetAlign(&'static str),
     SetColor([u8; 3]),
+    /// Open the shared [`ColorPicker`] popover to choose an arbitrary colour for
+    /// the focused style (beyond the quick-preset swatches).
+    OpenColorPicker,
     /// The value box of a numeric field — click to type, drag to scrub.
     Num(NumField),
     /// A +/- stepper on a numeric field.
     NumDelta(NumField, f32),
     /// Duplicate the current style under a fresh id and apply it.
     NewStyle,
+    /// Scale the selected image by a factor (a resize stepper: `0.9` shrinks,
+    /// `1.1` grows). Keeps the aspect ratio.
+    ImageScale(f64),
+    /// Mirror the selected image horizontally (left↔right).
+    ImageFlipH,
+    /// Mirror the selected image vertically (top↔bottom).
+    ImageFlipV,
+}
+
+/// A row in the paragraph-style context menu (right-click a style chip). Custom
+/// styles offer Delete + Duplicate; built-in styles offer Duplicate only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StyleMenuAction {
+    /// Delete this custom style (built-ins are never offered this row).
+    Delete(String),
+    /// Duplicate this style under a fresh id.
+    Duplicate(String),
 }
 
 /// An in-progress drag-to-scrub on a numeric field.
@@ -1698,6 +1722,28 @@ pub struct WordProcessorWidget {
     new_menu: ContextMenu,
     /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
     new_menu_templates: Vec<crate::Template>,
+    // ---- image insert via the host file-chooser portal --------------------
+    /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
+    /// chooser is open (or the pick is being processed) on a worker thread; the
+    /// chosen path arrives over this channel, drained each frame in
+    /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
+    portal_rx: Option<portal::PortalChannel>,
+    // ---- paragraph-style context menu -------------------------------------
+    /// Right-click-a-style menu (Delete / Duplicate). Reuses the shared
+    /// [`ContextMenu`] primitive; painted in the overlay pass.
+    style_menu: ContextMenu,
+    /// Per-row action parallel to `style_menu`'s items (selection dispatch).
+    style_menu_actions: Vec<StyleMenuAction>,
+    // ---- transient status toast -------------------------------------------
+    /// A transient confirmation message (e.g. "Table of contents updated"),
+    /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
+    toast: Option<String>,
+    // ---- colour picker popover --------------------------------------------
+    /// The shared [`ColorPicker`] primitive, opened as an overlay popover from the
+    /// style inspector's "Custom…" colour affordance. `Some` while it is open; a
+    /// committed colour is applied to the focused style. Mouse-driven (SV square /
+    /// hue strip / RGB sliders); replaces hand-rolling a bespoke colour control.
+    color_picker: Option<ColorPicker>,
 }
 
 /// A crash-recovery offer: a recovery copy exists on disk for the open document
@@ -1826,6 +1872,11 @@ impl WordProcessorWidget {
             recovery_base: None,
             new_menu: ContextMenu::new(),
             new_menu_templates: Vec::new(),
+            portal_rx: None,
+            style_menu: ContextMenu::new(),
+            style_menu_actions: Vec::new(),
+            toast: None,
+            color_picker: None,
         }
     }
 
@@ -1916,17 +1967,37 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Toolbar "Insert image" affordance. Under the compositor an OS file-picker
-    /// portal would supply a path here; standalone there is no portal, so this is
-    /// a best-effort no-op (it logs a hint). Drag-and-drop a file onto the window
-    /// is the primary, portal-free insert path.
+    /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
+    /// portal** (per the qOS HIG the app never draws its own picker): the D-Bus
+    /// round-trip + host dialog run on a worker thread ([`portal::request_open`]);
+    /// the chosen path comes back over a channel drained each frame in
+    /// [`Self::drain_portal`], which inserts the image at the caret. A second
+    /// request while one is already in flight is ignored.
     fn request_image_insert(&mut self, _state: &mut AutoCommit) {
-        // No file-picker portal is wired in the standalone binary. Rather than
-        // block on one, point the user at the working path.
-        eprintln!(
-            "word-processor: Insert image — no file-picker portal available; \
-             drag and drop an image file onto the window instead."
-        );
+        if self.portal_rx.is_some() {
+            return;
+        }
+        self.portal_rx = Some(portal::request_open());
+    }
+
+    /// Drain a completed portal request, if any: on a chosen file, insert it as
+    /// an image at the caret; a cancel or portal failure leaves the document
+    /// untouched. Called once per frame from `sync`. Draining clears the
+    /// in-flight channel so the button can be pressed again.
+    fn drain_portal(&mut self, state: &mut AutoCommit) {
+        let Some(rx) = self.portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                if let portal::PortalOutcome::Opened(path) = outcome {
+                    self.insert_image_from_path(state, &path);
+                }
+            }
+            // Still open (Empty) — leave the channel in place; a hangup
+            // (worker gone without sending) clears it so we don't leak.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.portal_rx = None,
+        }
     }
 
     fn save(&mut self, state: &AutoCommit) {
@@ -2633,6 +2704,23 @@ impl WordProcessorWidget {
         self.blocks.iter().find(|b| b.id == self.inner.caret.block).map(block_style_key)
     }
 
+    /// The caret block's id when it is an `image` block (an image is "selected"),
+    /// read from the cached block set so it works mid-`draw` without the doc.
+    /// Drives the panel image inspector + on-page selection handles.
+    fn selected_image_id(&self) -> Option<String> {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block && b.kind == "image")
+            .map(|b| b.id.clone())
+    }
+
+    /// The current on-page display size `(w, h)` of the selected image, read from
+    /// this frame's laid geometry (post fit-to-column), or `None` when unknown.
+    fn selected_image_dims(&self) -> Option<(f64, f64)> {
+        let id = self.selected_image_id()?;
+        self.laid.iter().find(|l| l.id == id && l.kind == "image").map(|l| (l.width, l.height))
+    }
+
     /// The `space_after` of the focused block's style.
     fn focused_space_after(&self) -> f64 {
         self.focused_style_key().map(|k| self.sheet.get(&k).space_after as f64).unwrap_or(8.0)
@@ -3239,6 +3327,14 @@ impl WordProcessorWidget {
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
 
+        // When an image is selected, the panel becomes an image inspector
+        // (resize + flip) instead of the paragraph-style editor.
+        if self.selected_image_id().is_some() {
+            self.draw_image_inspector(scene, transform, tr, x0, right, y);
+            scene.pop_layer();
+            return;
+        }
+
         tr.draw_text(scene, &t("panel-style"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
 
@@ -3308,7 +3404,8 @@ impl WordProcessorWidget {
             y += 30.0;
         }
 
-        // Colour: a palette of swatches.
+        // Colour: quick-preset swatches + a "Custom…" affordance that opens the
+        // shared `ColorPicker` popover for an arbitrary colour.
         {
             tr.draw_text(scene, &t("panel-colour"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let n = STYLE_PALETTE.len();
@@ -3327,6 +3424,16 @@ impl WordProcessorWidget {
                 }
                 self.panel_hits.push((r, PanelHit::SetColor(*c)));
             }
+            y += 30.0;
+            // "Custom…" — shows the current colour chip and opens the full picker.
+            let chip = Rect::new(x0, y, x0 + 22.0, y + 22.0);
+            let cur = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
+            scene.fill(Fill::NonZero, transform, cur, None, &vello::kurbo::RoundedRect::from_rect(chip, 4.0));
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, cc.border, None, &vello::kurbo::RoundedRect::from_rect(chip, 4.0));
+            let btn = Rect::new(chip.x1 + 8.0, y, right, y + 22.0);
+            draw_btn(scene, transform, tr, &cc, btn, &t("panel-colour-custom"), self.color_picker.is_some(), true);
+            self.panel_hits.push((btn, PanelHit::OpenColorPicker));
+            self.panel_hits.push((chip, PanelHit::OpenColorPicker));
             y += 30.0;
         }
 
@@ -3361,6 +3468,60 @@ impl WordProcessorWidget {
         }
 
         scene.pop_layer();
+    }
+
+    /// The image inspector shown in the styles panel when an image is selected:
+    /// the current display size, a Size stepper (Smaller / Larger, aspect-locked)
+    /// and Flip toggles (Horizontal / Vertical). Registers its controls as
+    /// `panel_hits` so the panel's existing left-click routing dispatches them.
+    fn draw_image_inspector(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, x0: f64, right: f64, y0: f64) {
+        let cc = self.chrome;
+        let inner_w = right - x0;
+        let mut y = y0;
+
+        tr.draw_text(scene, &t("panel-image"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        y += 22.0;
+
+        // Current display dimensions (from this frame's laid geometry).
+        let (dw, dh) = self.selected_image_dims().unwrap_or((0.0, 0.0));
+        let dims = format!("{} × {} px", dw.round() as i64, dh.round() as i64);
+        tr.draw_text(scene, &dims, 15.0, cc.text, transform * Affine::translate((x0, y)), None);
+        y += 26.0;
+        panel_divider(scene, transform, &cc, x0, right, y);
+        y += 12.0;
+
+        // ---- Size (aspect-locked scale steppers) --------------------------
+        // Leave a label column on the left; the two buttons share the right side.
+        tr.draw_text(scene, &t("panel-image-size"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+        let bw = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
+        let rs = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
+        let rl = Rect::new(right - bw, y, right, y + 26.0);
+        draw_btn(scene, transform, tr, &cc, rs, &t("panel-image-smaller"), false, true);
+        draw_btn(scene, transform, tr, &cc, rl, &t("panel-image-larger"), false, true);
+        self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
+        self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
+        y += 34.0;
+
+        // ---- Flip (horizontal / vertical mirror toggles) ------------------
+        let img_id = self.selected_image_id();
+        let (fh, fv) = self
+            .blocks
+            .iter()
+            .find(|b| Some(&b.id) == img_id.as_ref())
+            .map(|b| {
+                (
+                    matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
+                    matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+                )
+            })
+            .unwrap_or((false, false));
+        tr.draw_text(scene, &t("panel-image-flip"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+        let rh = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
+        let rv = Rect::new(right - bw, y, right, y + 26.0);
+        draw_btn(scene, transform, tr, &cc, rh, &t("panel-image-flip-h"), fh, true);
+        draw_btn(scene, transform, tr, &cc, rv, &t("panel-image-flip-v"), fv, true);
+        self.panel_hits.push((rh, PanelHit::ImageFlipH));
+        self.panel_hits.push((rv, PanelHit::ImageFlipV));
     }
 
     /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
@@ -3509,12 +3670,41 @@ impl WordProcessorWidget {
             })
             .collect();
         if entries.is_empty() {
-            return; // nothing to build a TOC from
+            // Nothing to build a TOC from — tell the user *why* nothing happened
+            // (previously the button was silent whether or not it did anything).
+            self.toast = Some(t("toast-toc-empty"));
+            self.dirty = true;
+            return;
         }
+        let n = entries.len();
         self.inner.generate_toc(state, &entries);
         self.refresh_blocks(state);
         self.needs_commit = true;
         self.dirty = true;
+        // Scroll the freshly-inserted TOC (always at the document top) into view
+        // and surface a confirmation toast, so the action has a visible result.
+        self.scroll_y = 0.0;
+        self.toast = Some(t_args("toast-toc-updated", &[arg("n", n as i64)]));
+    }
+
+    /// Draw the transient status toast (a rounded pill just above the status bar)
+    /// when one is staged. Purely a confirmation cue — dismissed on the next
+    /// interaction. Kept in the overlay pass so it floats over the page content.
+    fn draw_toast(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer) {
+        let Some(msg) = self.toast.clone() else { return };
+        let cc = self.chrome;
+        let approx = msg.chars().count() as f64 * 7.4 + 32.0;
+        let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
+        let h = 34.0;
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let y1 = self.rect.y1 - STATUS_H - 14.0;
+        let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
+        let shape = vello::kurbo::RoundedRect::from_rect(r, 8.0);
+        // A soft drop shadow so the pill reads above the page.
+        scene.fill(Fill::NonZero, transform, with_alpha(Color::BLACK, 0x33), None, &vello::kurbo::RoundedRect::from_rect(Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 + 2.0), 8.0));
+        scene.fill(Fill::NonZero, transform, cc.accent, None, &shape);
+        let tw = msg.chars().count() as f64 * 7.0;
+        tr.draw_text(scene, &msg, 13.0, cc.on_accent, transform * Affine::translate((cx - tw / 2.0, (r.y0 + r.y1) / 2.0 - 8.0)), None);
     }
 }
 
@@ -3581,9 +3771,6 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::AlignJustify => "a11y-justify",
         ToolAction::LineSpacing => "a11y-line-spacing",
         ToolAction::FontCycle => "a11y-font",
-        ToolAction::SizeUp => "a11y-size-up",
-        ToolAction::SizeDown => "a11y-size-down",
-        ToolAction::SizeShow => "a11y-font-size",
         ToolAction::InsertImage => "a11y-insert-image",
         ToolAction::InsertTable => "a11y-insert-table",
         ToolAction::TableRowAdd => "a11y-table-row-add",
@@ -3677,12 +3864,8 @@ impl WordProcessorWidget {
             .toolbar
             .iter()
             .map(|(action, _rect)| {
-                // The size-value chip is display-only; everything else is a button.
-                let role = if matches!(action, ToolAction::SizeShow) {
-                    Role::StaticText
-                } else {
-                    Role::Button
-                };
+                let _ = action;
+                let role = Role::Button;
                 let node = AccessNode::new(role)
                     .with_name(tool_action_a11y_label(*action))
                     .with_state(AccessState { focusable: matches!(role, Role::Button), ..Default::default() });
@@ -3757,6 +3940,8 @@ impl WordProcessorWidget {
 impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
+        // Fold in a completed host image-open, if the portal worker finished.
+        self.drain_portal(state);
         self.refresh_blocks(state);
         // Reload the stylesheet from the doc unless a live, not-yet-persisted
         // local edit is in progress (a guide drag, a numeric scrub, or typing
@@ -4510,17 +4695,58 @@ impl Widget for WordProcessorWidget {
         for l in &laid {
             if l.kind == "image" {
                 let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
+                // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
+                // scale-about-centre on the paint transform, so the image draws
+                // mirrored in place without moving its slot.
+                let (fh, fv) = self
+                    .blocks
+                    .iter()
+                    .find(|b| b.id == l.id)
+                    .map(|b| {
+                        (
+                            matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
+                            matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+                        )
+                    })
+                    .unwrap_or((false, false));
+                let itf = if fh || fv {
+                    let cx = (rect.x0 + rect.x1) / 2.0;
+                    let cy = (rect.y0 + rect.y1) / 2.0;
+                    ctf * Affine::translate((cx, cy))
+                        * Affine::scale_non_uniform(if fh { -1.0 } else { 1.0 }, if fv { -1.0 } else { 1.0 })
+                        * Affine::translate((-cx, -cy))
+                } else {
+                    ctf
+                };
                 if let Some(hash) = &l.image_hash {
                     if let Some(slot) = self.image_cache.get_mut(hash) {
                         if let Some(img) = slot {
-                            img.paint_at(scene, ctf, rect);
+                            img.paint_at(scene, itf, rect);
                         }
                     }
                 } else {
                     // Missing or undecodable (e.g. non-PNG) image — placeholder.
                     scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
                     scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, "🖼  image", 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                    text_renderer.draw_text(scene, "image", 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                }
+                // Selection chrome: when this image is the caret's block, ring it
+                // with an accent border + corner resize handles so it reads as
+                // "selected" (the panel then shows the resize / flip controls).
+                if l.id == self.inner.caret.block {
+                    let accent = self.chrome.accent;
+                    scene.stroke(&vello::kurbo::Stroke::new(2.0), ctf, accent, None, &rect);
+                    let hs = 5.0;
+                    for (hx, hy) in [
+                        (rect.x0, rect.y0),
+                        (rect.x1, rect.y0),
+                        (rect.x0, rect.y1),
+                        (rect.x1, rect.y1),
+                    ] {
+                        let hr = Rect::new(hx - hs, hy - hs, hx + hs, hy + hs);
+                        scene.fill(Fill::NonZero, ctf, Color::WHITE, None, &hr);
+                        scene.stroke(&vello::kurbo::Stroke::new(1.5), ctf, accent, None, &hr);
+                    }
                 }
                 continue;
             }
@@ -4983,13 +5209,37 @@ impl Widget for WordProcessorWidget {
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
+        // While the colour-picker popover is open it captures input (modal-ish):
+        // route drags to it, apply committed colours, and let an outside-click /
+        // Escape dismiss it before any page/panel hit-testing.
+        if self.color_picker.is_some()
+            && self.pump_color_picker(event, scale_factor, modifiers, state, _path, handled)
+        {
+            return;
+        }
         // The toolbar may have wrapped to several rows; hit-test against its
         // actual bottom (`tb_h`), matching `draw`.
         let tb_h = self.toolbar_height(self.rect.width());
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
-            // caret. This is the primary (portal-free) image-insert path.
+            // **drop point**: seat the caret under the last pointer position (where
+            // the file was released) before inserting, so the image lands where the
+            // user dropped it rather than wherever the caret happened to be. winit's
+            // `DroppedFile` carries no coordinates, so the tracked pointer (updated
+            // on every `CursorMoved`, including during the drag-hover) is the drop
+            // location. A drop over the page body relocates the caret; a drop over
+            // chrome falls back to the existing caret.
             WindowEvent::DroppedFile(path) => {
+                if self.rect.contains(self.pointer) {
+                    let tb_h = self.toolbar_height(self.rect.width());
+                    let over_body = self.pointer.y >= self.rect.y0 + tb_h
+                        && self.pointer.y <= self.rect.y1 - STATUS_H
+                        && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
+                        && !(self.outline_open && self.outline_rect.contains(self.pointer));
+                    if over_body {
+                        self.caret_from_pointer(self.pointer_to_content(self.pointer), false);
+                    }
+                }
                 if self.insert_image_from_path(state, path) {
                     *handled = true;
                 }
@@ -5075,6 +5325,17 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 self.focused = true;
+                // A right-click on a style chip in the styles panel opens the
+                // style-management menu (Delete / Duplicate) before the generic
+                // "panel is chrome, ignore" rule kicks in.
+                if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
+                    if let Some(id) = self.style_chip_at(self.pointer) {
+                        let pos = [self.pointer.x as f32, self.pointer.y as f32];
+                        self.open_style_menu(&id, pos);
+                        *handled = true;
+                    }
+                    return;
+                }
                 let in_chrome = self.pointer.y < self.rect.y0 + tb_h
                     || self.pointer.y > self.rect.y1 - STATUS_H
                     || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
@@ -5114,6 +5375,23 @@ impl Widget for WordProcessorWidget {
                     self.dirty = true;
                     *handled = true;
                     return;
+                }
+                // The paragraph-style menu (Delete / Duplicate) captures the press
+                // the same way: a row runs its action, an outside click dismisses.
+                if self.style_menu.is_open() {
+                    let point = [self.pointer.x, self.pointer.y];
+                    if let Some(idx) = self.style_menu.item_at(point) {
+                        self.dispatch_style_menu(idx, state);
+                    } else {
+                        self.style_menu.close();
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                // Any left press dismisses a staged toast (a transient cue).
+                if self.toast.take().is_some() {
+                    self.dirty = true;
                 }
                 if !self.rect.contains(self.pointer) {
                     return;
@@ -5346,11 +5624,13 @@ impl Widget for WordProcessorWidget {
                 if !self.focused {
                     return;
                 }
-                // Escape dismisses an open context menu before anything else.
-                if self.context_menu.is_open()
-                    && matches!(logical_key, Key::Named(NamedKey::Escape))
+                // Escape dismisses an open context / style menu before anything else.
+                if matches!(logical_key, Key::Named(NamedKey::Escape))
+                    && (self.context_menu.is_open() || self.style_menu.is_open() || self.new_menu.is_open())
                 {
                     self.context_menu.close();
+                    self.style_menu.close();
+                    self.new_menu.close();
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -5618,12 +5898,18 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Toast first, so an open menu stacks above it.
+        self.draw_toast(scene, transform, text_renderer);
         if self.context_menu.is_open() {
             Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
         }
         if self.new_menu.is_open() {
             Widget::draw(&mut self.new_menu, scene, transform, text_renderer, theme, presence);
         }
+        if self.style_menu.is_open() {
+            Widget::draw(&mut self.style_menu, scene, transform, text_renderer, theme, presence);
+        }
+        self.draw_color_picker(scene, transform, text_renderer, theme, presence);
     }
 
     /// Outbound collaboration presence: while focused, broadcast the local
@@ -5958,15 +6244,6 @@ impl WordProcessorWidget {
                 };
                 self.inner.set_font_family(state, name);
             }
-            ToolAction::SizeUp => {
-                let s = ((self.current_size() + 2.0).round() as i64).min(200);
-                self.inner.set_font_size(state, s);
-            }
-            ToolAction::SizeDown => {
-                let s = ((self.current_size() - 2.0).round() as i64).max(6);
-                self.inner.set_font_size(state, s);
-            }
-            ToolAction::SizeShow => {} // display-only value chip
             ToolAction::InsertImage => self.request_image_insert(state),
             ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
             ToolAction::TableRowAdd => self.inner.table_add_row(state),
@@ -6051,6 +6328,7 @@ impl WordProcessorWidget {
             PanelHit::ToggleItalic => self.edit_focused_style(state, true, |st| st.italic = !st.italic),
             PanelHit::SetAlign(a) => self.edit_focused_style(state, true, |st| st.align = a.into()),
             PanelHit::SetColor(c) => self.edit_focused_style(state, true, |st| st.color = c),
+            PanelHit::OpenColorPicker => self.open_color_picker(),
             PanelHit::NumDelta(field, d) => {
                 self.edit_focused_style(state, true, |st| {
                     let nv = field.clamp(field.get(st) + d);
@@ -6070,14 +6348,7 @@ impl WordProcessorWidget {
                     return;
                 };
                 let base = self.sheet.get(&key);
-                let mut n = 1;
-                let new_id = loop {
-                    let cand = format!("custom{n}");
-                    if !self.sheet.styles.contains_key(&cand) {
-                        break cand;
-                    }
-                    n += 1;
-                };
+                let new_id = self.sheet.fresh_custom_id();
                 let mut props = base.clone();
                 props.name = format!("{} copy", base.name);
                 self.sheet.styles.insert(new_id.clone(), props);
@@ -6088,6 +6359,166 @@ impl WordProcessorWidget {
                 self.needs_commit = true;
                 self.dirty = true;
             }
+            PanelHit::ImageScale(factor) => {
+                if let Some(id) = self.selected_image_id() {
+                    // Scale the *current on-screen* size (aspect locked) so repeated
+                    // presses compound predictably, seeding from the live doc size
+                    // when set, else the laid display size.
+                    let (cw, ch) = self
+                        .inner
+                        .image_size(state, &id)
+                        .or_else(|| self.selected_image_dims())
+                        .unwrap_or((240.0, 160.0));
+                    self.inner.set_image_size(state, &id, cw * factor, ch * factor);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.dirty = true;
+                }
+            }
+            PanelHit::ImageFlipH => {
+                if let Some(id) = self.selected_image_id() {
+                    self.inner.flip_image(state, &id, true);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.dirty = true;
+                }
+            }
+            PanelHit::ImageFlipV => {
+                if let Some(id) = self.selected_image_id() {
+                    self.inner.flip_image(state, &id, false);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    // ---- colour picker popover --------------------------------------------
+
+    /// Open the shared [`ColorPicker`] seeded with the focused style's colour.
+    fn open_color_picker(&mut self) {
+        let seed = self
+            .focused_style_key()
+            .map(|k| self.sheet.get(&k).color)
+            .unwrap_or([0x1c, 0x1c, 0x20]);
+        self.color_picker = Some(ColorPicker::new(Color::from_rgb8(seed[0], seed[1], seed[2])));
+        self.dirty = true;
+    }
+
+    /// Top-left anchor of the colour-picker popover: floated just left of the
+    /// styles panel so it overlays the page, never the panel controls.
+    fn color_picker_anchor(&self) -> Point {
+        let x = (self.panel_rect.x0 - CP_W - 12.0).max(self.rect.x0 + 12.0);
+        let y = (self.panel_rect.y0 + 150.0).min((self.rect.y1 - CP_H - 48.0).max(self.rect.y0 + 60.0));
+        Point::new(x, y)
+    }
+
+    /// Lay the picker out at its anchor (a throwaway taffy pass), so its internal
+    /// SV / hue / slider / hex rects are current for both draw and hit-testing.
+    fn layout_color_picker(&mut self) {
+        if self.color_picker.is_none() {
+            return;
+        }
+        let anchor = self.color_picker_anchor();
+        let cp = self.color_picker.as_mut().unwrap();
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = cp.build_layout(&mut taffy, &theme, &mut nm);
+        let _ = taffy.set_style(
+            node,
+            Style { size: Size { width: Dimension::length(CP_W as f32), height: Dimension::length(CP_H as f32) }, ..Default::default() },
+        );
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size { width: taffy::AvailableSpace::Definite(CP_W as f32), height: taffy::AvailableSpace::Definite(CP_H as f32) },
+            )
+            .unwrap();
+        cp.apply_layout(&taffy, node, anchor);
+    }
+
+    /// Draw the colour-picker popover (a bordered card behind the shared widget).
+    fn draw_color_picker(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        if self.color_picker.is_none() {
+            return;
+        }
+        self.layout_color_picker();
+        let cc = self.chrome;
+        let cp = self.color_picker.as_mut().unwrap();
+        let r = cp.get_rect();
+        let pad = 10.0;
+        let card = Rect::new(r.x0 - pad, r.y0 - pad, r.x1 + pad, r.y1 + pad);
+        let shape = vello::kurbo::RoundedRect::from_rect(card, 8.0);
+        scene.fill(Fill::NonZero, transform, with_alpha(Color::BLACK, 0x30), None, &vello::kurbo::RoundedRect::from_rect(Rect::new(card.x0, card.y0 + 3.0, card.x1, card.y1 + 3.0), 8.0));
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &shape);
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, cc.border, None, &shape);
+        cp.draw(scene, transform, tr, theme, presence);
+    }
+
+    /// While the colour picker is open, route input to it (drag the SV square /
+    /// hue strip / RGB sliders); an outside press or Escape closes it. A committed
+    /// colour is applied live to the focused style. Returns whether the event was
+    /// consumed (so the caller stops further dispatch).
+    fn pump_color_picker(&mut self, event: &WindowEvent, scale: f64, mods: &Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool) -> bool {
+        if self.color_picker.is_none() {
+            return false;
+        }
+        self.layout_color_picker();
+        let rect = self.color_picker.as_ref().map(|c| c.get_rect()).unwrap_or(Rect::ZERO);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Point::new(position.x / scale, position.y / scale);
+                self.forward_to_color_picker(event, scale, mods, state, root, handled);
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                if rect.contains(self.pointer) {
+                    self.forward_to_color_picker(event, scale, mods, state, root, handled);
+                } else {
+                    // A click anywhere outside dismisses the popover.
+                    self.color_picker = None;
+                }
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                self.forward_to_color_picker(event, scale, mods, state, root, handled);
+                *handled = true;
+                true
+            }
+            WindowEvent::KeyboardInput { event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. }, .. } => {
+                self.color_picker = None;
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            // Modal-ish: swallow other events while the popover is up.
+            _ => true,
+        }
+    }
+
+    /// Forward one event to the open picker and apply any committed colour to the
+    /// focused style (a live preview on every drag).
+    fn forward_to_color_picker(&mut self, event: &WindowEvent, scale: f64, mods: &Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mut ft: Option<NodeId> = None;
+        if let Some(cp) = self.color_picker.as_mut() {
+            cp.handle_event(event, scale, mods, state, root, handled, &mut ft, node, &taffy);
+        }
+        let changed = self.color_picker.as_mut().and_then(|c| c.take_changed());
+        if let Some(col) = changed {
+            let rgb = [col.r(), col.g(), col.b()];
+            self.edit_focused_style(state, true, |st| st.color = rgb);
+            self.dirty = true;
         }
     }
 
@@ -6104,13 +6535,6 @@ impl WordProcessorWidget {
         self.font_probe()
             .and_then(|(b, pos)| char_font_family(pos, &b.marks))
             .unwrap_or_default()
-    }
-
-    fn current_size(&self) -> f32 {
-        match self.font_probe() {
-            Some((b, pos)) => char_font_size(pos, &b.marks).unwrap_or_else(|| self.sheet.get(&block_style_key(b)).size),
-            None => 16.5,
-        }
     }
 
     fn current_align(&self) -> String {
@@ -6388,6 +6812,68 @@ impl WordProcessorWidget {
         self.context_menu.close();
         self.dirty = true;
         true
+    }
+
+    // ---- paragraph-style management menu ----------------------------------
+
+    /// The style id of the picker chip under `p` in the styles panel, if any.
+    /// Reads the current frame's `panel_hits` (rebuilt every draw), so the chip
+    /// rects are live at right-click time.
+    fn style_chip_at(&self, p: Point) -> Option<String> {
+        self.panel_hits.iter().find_map(|(r, h)| match h {
+            PanelHit::Pick(id) if r.contains(p) => Some(id.clone()),
+            _ => None,
+        })
+    }
+
+    /// Open the style-management context menu for `style_id`. Custom styles get
+    /// **Delete** + **Duplicate**; built-in styles get **Duplicate** only (they
+    /// are the document's permanent baseline component set and can't be removed).
+    fn open_style_menu(&mut self, style_id: &str, pos: [f32; 2]) {
+        let mut menu = ContextMenu::new();
+        let mut actions: Vec<StyleMenuAction> = Vec::new();
+        if !crate::styles::StyleSheet::is_builtin(style_id) {
+            menu.push(MenuItem::action(t("style-menu-delete"), || {}));
+            actions.push(StyleMenuAction::Delete(style_id.to_string()));
+        }
+        menu.push(MenuItem::action(t("style-menu-duplicate"), || {}));
+        actions.push(StyleMenuAction::Duplicate(style_id.to_string()));
+        menu.open_at(pos);
+        self.style_menu = menu;
+        self.style_menu_actions = actions;
+        self.dirty = true;
+    }
+
+    /// Dispatch the style-menu row at `idx`: delete a custom style (reassigning
+    /// its blocks to the default) or duplicate any style under a fresh id. Then
+    /// close the menu.
+    fn dispatch_style_menu(&mut self, idx: usize, state: &mut AutoCommit) {
+        if let Some(action) = self.style_menu_actions.get(idx).cloned() {
+            match action {
+                StyleMenuAction::Delete(id) => {
+                    if self.inner.delete_style(state, &id) {
+                        self.sheet = self.inner.stylesheet(state);
+                        self.refresh_blocks(state);
+                        self.needs_commit = true;
+                        self.modified = true;
+                        self.toast = Some(t("toast-style-deleted"));
+                    }
+                }
+                StyleMenuAction::Duplicate(id) => {
+                    if let Some(new_id) = self.inner.duplicate_style(state, &id) {
+                        // Apply the copy to the caret block so the panel focuses it.
+                        self.inner.set_block_style(state, &new_id);
+                        self.sheet = self.inner.stylesheet(state);
+                        self.refresh_blocks(state);
+                        self.needs_commit = true;
+                        self.modified = true;
+                        self.toast = Some(t("toast-style-duplicated"));
+                    }
+                }
+            }
+        }
+        self.style_menu.close();
+        self.dirty = true;
     }
 
     // ---- new-from-template picker -----------------------------------------
@@ -6745,10 +7231,10 @@ impl WordProcessorWidget {
         add(ToolAction::AlignJustify, "J", 30.0, align == "justify");
         add(ToolAction::LineSpacing, &line_label, 54.0, false);
         add(ToolAction::FontCycle, font_label, 58.0, false);
-        // Size stepper: − / current-value / +. The value chip is display-only.
-        add(ToolAction::SizeDown, "A−", 34.0, false);
-        add(ToolAction::SizeShow, &fmt_num(self.current_size()), 40.0, false);
-        add(ToolAction::SizeUp, "A+", 34.0, false);
+        // NB: font *size* deliberately lives in exactly ONE place — the side
+        // inspector's "Size" field (a click-to-type number) — not here. It used to
+        // be duplicated as a toolbar A−/value/A+ stepper; that duplicate was
+        // removed so there is a single, unambiguous home for the control.
         // Contextual table section: editing controls inside a cell, else insert.
         if kind == "cell" {
             add(ToolAction::TableRowAdd, &t("toolbar-row-add"), 54.0, false);
@@ -6759,7 +7245,11 @@ impl WordProcessorWidget {
         } else {
             add(ToolAction::InsertTable, &t("toolbar-table"), 78.0, false);
         }
-        add(ToolAction::InsertImage, &t("toolbar-image"), 80.0, false);
+        // The Image button is drawn as a vector glyph (a lucide `Image` icon,
+        // overlaid below after the chrome lays the toolbar out) with no text
+        // label — replacing the old emoji-prefixed "🖼 Image" caption. The empty
+        // label keeps the chrome button blank so only the icon shows.
+        add(ToolAction::InsertImage, "", 40.0, false);
         add(ToolAction::ToggleStyles, &t("toolbar-styles"), 64.0, panel_open);
         add(ToolAction::ToggleRuler, &t("toolbar-ruler"), 60.0, self.ruler_on);
         // Navigation: outline pane toggle + table-of-contents generator.
@@ -6792,6 +7282,18 @@ impl WordProcessorWidget {
             all_rects.extend(rects);
         }
         self.toolbar = specs.into_iter().map(|(a, _)| a).zip(all_rects).collect();
+
+        // Paint the vector "Insert image" glyph (a lucide `Image` icon) centred in
+        // its blank toolbar button — the button carries no text label, so the
+        // glyph *is* its face. Drawn here (not by the chrome toolbar, which only
+        // renders text) so the emoji-free icon reads at the OS chrome ink.
+        if let Some((_, r)) = self.toolbar.iter().find(|(a, _)| matches!(a, ToolAction::InsertImage)) {
+            let s = 18.0;
+            let cx = (r.x0 + r.x1) / 2.0;
+            let cy = (r.y0 + r.y1) / 2.0;
+            let glyph = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
+            Icon::Image.draw(scene, transform, glyph, self.chrome.text);
+        }
 
         // Per-run text-colour swatch row, appended at the right of the LAST
         // toolbar row. The chrome toolbar only draws text buttons, so the coloured
@@ -6838,14 +7340,13 @@ impl WordProcessorWidget {
             30.0, 30.0, 30.0, 30.0, // L C R J
             54.0, // line spacing
             58.0, // font
-            34.0, 40.0, 34.0, // A− value A+
         ];
         if kind == "cell" {
             w.extend([54.0, 54.0, 52.0, 52.0, 30.0]); // +Row −Row +Col −Col ✕
         } else {
             w.push(78.0); // ⊞ Table
         }
-        w.push(80.0); // 🖼 Image
+        w.push(40.0); // Image (vector icon, no label)
         w.push(64.0); // Styles
         w.push(60.0); // Ruler
         w.push(72.0); // Outline
@@ -6865,14 +7366,13 @@ impl WordProcessorWidget {
             true, false, false, false, // L(group) C R J
             true, // line spacing(group)
             true, // font(group)
-            false, false, false, // size stepper
         ];
         if kind == "cell" {
             g.extend([true, false, false, false, false]); // +Row starts a group
         } else {
             g.push(true); // ⊞ Table starts a group
         }
-        g.push(true); // 🖼 Image starts a group
+        g.push(true); // Image starts a group
         g.push(true); // Styles starts a group
         g.push(false); // Ruler (same group as Styles)
         g.push(true); // Outline starts a group (navigation)
@@ -9764,5 +10264,504 @@ mod tests {
         pipeline_draw(&mut wp, &mut state, 1100, 760);
         wp.set_focus(false);
         assert!(wp.presence_payload().is_none(), "no presence while unfocused");
+    }
+
+    // ---- image insert via the host file-chooser portal --------------------
+
+    /// A minimal, real 2×3 PNG used by the image tests (decodes cleanly so the
+    /// insert path records intrinsic dimensions).
+    const IMG_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
+        66, 96, 130,
+    ];
+
+    /// Write `IMG_PNG` to a unique temp file and return its path.
+    fn temp_png(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("wp-img-{tag}-{}.png", std::process::id()));
+        std::fs::write(&p, IMG_PNG).expect("write temp png");
+        p
+    }
+
+    fn image_block_count(wp: &WordProcessorWidget, state: &ui::State) -> usize {
+        let c = wp.model().containers.clone().unwrap();
+        qdoc::model::materialize(&state.doc, &c).blocks.iter().filter(|b| b.kind == "image").count()
+    }
+
+    /// Pressing the toolbar Image button asks the **host portal** for a file (it
+    /// does NOT fabricate a path); nothing is inserted until the pick resolves.
+    #[test]
+    fn image_button_opens_the_host_portal() {
+        let (mut state, mut wp) = bound();
+        assert!(wp.portal_rx.is_none(), "no portal request before the button is pressed");
+        wp.apply_tool(&mut state.doc, ToolAction::InsertImage);
+        assert!(wp.portal_rx.is_some(), "the Image button opens the host portal chooser");
+        assert_eq!(image_block_count(&wp, &state), 0, "no image inserted until the portal returns a file");
+    }
+
+    /// A resolved portal pick (a chosen file) is folded in on the next frame's
+    /// `sync` drain and inserts a real image block referencing the file's bytes.
+    #[test]
+    fn a_resolved_portal_pick_inserts_an_image() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "before");
+        let path = temp_png("pick");
+        // Feed the exact per-frame drain path a chosen-file outcome.
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(path.clone())));
+        wp.sync(&mut state.doc, &state.root);
+        let _ = std::fs::remove_file(&path);
+        assert!(wp.portal_rx.is_none(), "a resolved portal request clears the channel");
+        assert_eq!(image_block_count(&wp, &state), 1, "the picked file inserts one image block");
+    }
+
+    /// A cancelled portal pick inserts nothing and clears the in-flight channel.
+    #[test]
+    fn a_cancelled_portal_pick_inserts_nothing() {
+        let (mut state, mut wp) = bound();
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Cancelled));
+        wp.sync(&mut state.doc, &state.root);
+        assert!(wp.portal_rx.is_none(), "a cancel clears the in-flight channel");
+        assert_eq!(image_block_count(&wp, &state), 0, "a cancel inserts nothing");
+    }
+
+    /// Dropping an image file onto the page inserts it at the **drop point**: the
+    /// caret is first seated under the pointer, so the image lands next to the
+    /// paragraph the file was dropped on — not wherever the caret happened to be.
+    #[test]
+    fn dropped_image_inserts_at_the_drop_point() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Pick a body paragraph well down the page to drop onto.
+        let target = wp
+            .laid
+            .iter()
+            .find(|l| l.kind == "paragraph" && l.y_top > wp.rect.y0 + 200.0)
+            .expect("a body paragraph to drop onto")
+            .clone();
+        let drop_pt = Point::new(target.text_x + 20.0, target.y_top + target.height / 2.0);
+
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // Move the pointer over the drop target (as a real drag-hover would), then
+        // drop the file there.
+        wp.handle_event(
+            &WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: (drop_pt.x, drop_pt.y).into() },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+        let path = temp_png("drop");
+        wp.handle_event(
+            &WindowEvent::DroppedFile(path.clone()),
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(image_block_count(&wp, &state), 1, "the dropped file inserts one image");
+
+        // The image landed adjacent to the drop-target paragraph — its document
+        // index is right after the paragraph the pointer was over.
+        let c = wp.model().containers.clone().unwrap();
+        let order: Vec<String> = qdoc::model::blocks_in_order(&state.doc, &c);
+        let img_idx = qdoc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .position(|b| b.kind == "image")
+            .map(|i| order.get(i).cloned())
+            .flatten();
+        let target_idx = order.iter().position(|id| id == &target.id).expect("drop target in order");
+        let img_pos = order.iter().position(|id| Some(id) == img_idx.as_ref()).expect("image in order");
+        assert!(
+            img_pos == target_idx + 1 || img_pos == target_idx,
+            "image inserted at the drop point (target idx {target_idx}, image idx {img_pos})"
+        );
+    }
+
+    // ---- image resize / flip inspector ------------------------------------
+
+    /// Insert an image (via the model), select it (caret on the image block), draw
+    /// so the panel builds its controls, then return the widget + state ready for
+    /// the resize / flip tests.
+    fn doc_with_selected_image() -> (WordProcessorWidget, ui::State, String) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "caption");
+        wp.model_mut().insert_image_bytes(&mut state.doc, IMG_PNG);
+        wp.sync(&mut state.doc, &state.root);
+        let c = wp.model().containers.clone().unwrap();
+        let img_id = qdoc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image inserted")
+            .id
+            .clone();
+        // Select the image: seat the caret on its block.
+        wp.model_mut().set_caret(crate::word_processor::Caret { block: img_id.clone(), offset: 0 });
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        (wp, state, img_id)
+    }
+
+    /// A selected image exposes resize + flip controls in the panel.
+    #[test]
+    fn selected_image_shows_resize_and_flip_controls() {
+        let (wp, _state, _id) = doc_with_selected_image();
+        assert!(wp.selected_image_id().is_some(), "the image is selected");
+        let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
+        assert!(wp.panel_hits.iter().any(|(_, h)| matches!(h, PanelHit::ImageScale(_))), "resize steppers present");
+        assert!(has(&PanelHit::ImageFlipH), "flip-horizontal control present");
+        assert!(has(&PanelHit::ImageFlipV), "flip-vertical control present");
+    }
+
+    /// Clicking the panel's "Larger" control resizes the selected image (its
+    /// explicit width grows), driven through the production panel-hit path.
+    #[test]
+    fn selected_image_resizes_from_the_panel() {
+        let (mut wp, mut state, id) = doc_with_selected_image();
+        let (larger_rect, _) = wp
+            .panel_hits
+            .iter()
+            .find(|(_, h)| matches!(h, PanelHit::ImageScale(f) if *f > 1.0))
+            .expect("a 'Larger' resize control")
+            .clone();
+        let pt = Point::new((larger_rect.x0 + larger_rect.x1) / 2.0, (larger_rect.y0 + larger_rect.y1) / 2.0);
+        left_click_state(&mut wp, &mut state, pt);
+        let (w, _h) = wp.model().image_size(&state.doc, &id).expect("image now has an explicit size");
+        assert!(w > 2.0, "the image grew beyond its 2px intrinsic width (w={w})");
+    }
+
+    /// Clicking the panel's "Flip Horizontal" control mirrors the selected image
+    /// (sets its `flip_h` attr) through the production path.
+    #[test]
+    fn selected_image_flips_from_the_panel() {
+        let (mut wp, mut state, id) = doc_with_selected_image();
+        let (flip_rect, _) = wp
+            .panel_hits
+            .iter()
+            .find(|(_, h)| *h == PanelHit::ImageFlipH)
+            .expect("a flip-horizontal control")
+            .clone();
+        let pt = Point::new((flip_rect.x0 + flip_rect.x1) / 2.0, (flip_rect.y0 + flip_rect.y1) / 2.0);
+        left_click_state(&mut wp, &mut state, pt);
+        let c = wp.model().containers.clone().unwrap();
+        let flipped = qdoc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .map(|b| matches!(b.attrs.get("flip_h"), Some(qdoc::AttrVal::Bool(true))))
+            .unwrap_or(false);
+        assert!(flipped, "the image's flip_h attr is set after clicking Flip Horizontal");
+    }
+
+    /// A left click at `pt` through the production `handle_event`, taking `ui::State`.
+    fn left_click_state(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        left_click(wp, state, pt);
+    }
+
+    // ---- paragraph-style delete / duplicate context menu ------------------
+
+    /// A doc with one custom paragraph style applied to its (only) paragraph.
+    fn doc_with_custom_style() -> (WordProcessorWidget, ui::State, String) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "styled paragraph");
+        // Duplicate Body into a fresh custom style and apply it to the caret block.
+        let new_id = wp.model_mut().duplicate_style(&mut state.doc, "body").expect("duplicate body");
+        wp.model_mut().set_block_style(&mut state.doc, &new_id);
+        wp.sync(&mut state.doc, &state.root);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        (wp, state, new_id)
+    }
+
+    /// The style menu offers Delete + Duplicate for a custom style, but Duplicate
+    /// only for a built-in.
+    #[test]
+    fn style_menu_offers_delete_only_for_custom_styles() {
+        let (mut wp, _state, custom_id) = doc_with_custom_style();
+
+        wp.open_style_menu(&custom_id, [10.0, 10.0]);
+        assert!(
+            wp.style_menu_actions.iter().any(|a| matches!(a, StyleMenuAction::Delete(_))),
+            "a custom style offers Delete"
+        );
+        assert!(
+            wp.style_menu_actions.iter().any(|a| matches!(a, StyleMenuAction::Duplicate(_))),
+            "a custom style offers Duplicate"
+        );
+
+        wp.open_style_menu("body", [10.0, 10.0]);
+        assert!(
+            !wp.style_menu_actions.iter().any(|a| matches!(a, StyleMenuAction::Delete(_))),
+            "a built-in style offers NO Delete"
+        );
+        assert!(
+            wp.style_menu_actions.iter().any(|a| matches!(a, StyleMenuAction::Duplicate(_))),
+            "a built-in style still offers Duplicate"
+        );
+    }
+
+    /// Deleting a custom style removes it from the document's sheet and reassigns
+    /// the block that used it (so no dangling style ref remains).
+    #[test]
+    fn deleting_a_custom_style_removes_it() {
+        let (mut wp, mut state, custom_id) = doc_with_custom_style();
+        assert!(wp.sheet.styles.contains_key(&custom_id), "custom style present before delete");
+
+        // Open the style menu on the custom chip and click its Delete row.
+        wp.open_style_menu(&custom_id, [10.0, 10.0]);
+        let del_idx = wp
+            .style_menu_actions
+            .iter()
+            .position(|a| matches!(a, StyleMenuAction::Delete(_)))
+            .expect("Delete row present for a custom style");
+        wp.dispatch_style_menu(del_idx, &mut state.doc);
+        wp.sync(&mut state.doc, &state.root);
+
+        assert!(!wp.sheet.styles.contains_key(&custom_id), "custom style removed from the sheet");
+        assert!(
+            !qdoc::model::style_ids(&state.doc, &wp.model().containers.clone().unwrap()).iter().any(|s| s == &custom_id),
+            "custom style removed from the document"
+        );
+        // The block no longer references the deleted style.
+        let c = wp.model().containers.clone().unwrap();
+        let dangling = qdoc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .any(|b| matches!(b.attrs.get("style"), Some(qdoc::AttrVal::Str(s)) if s == &custom_id));
+        assert!(!dangling, "no block still references the deleted style");
+    }
+
+    /// A built-in style cannot be deleted through the model even if asked.
+    #[test]
+    fn builtin_style_is_never_deleted() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "x");
+        assert!(!wp.model_mut().delete_style(&mut state.doc, "body"), "built-in delete is refused");
+        wp.sync(&mut state.doc, &state.root);
+        assert!(wp.sheet.styles.contains_key("body"), "Body survives a delete attempt");
+    }
+
+    // ---- font size lives in exactly one place -----------------------------
+
+    /// Font size has a single home: the side inspector's "Size" field. The
+    /// toolbar carries no size control (its old A−/value/A+ stepper was removed).
+    #[test]
+    fn font_size_lives_in_exactly_one_place() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "Body text");
+        wp.styles_panel_open = true;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let panel_size_fields = wp
+            .panel_hits
+            .iter()
+            .filter(|(_, h)| matches!(h, PanelHit::Num(NumField::Size)))
+            .count();
+        assert_eq!(panel_size_fields, 1, "the inspector is the single home for font size");
+
+        // The toolbar is a flat action list; none of its entries is a size control.
+        assert!(
+            wp.toolbar.iter().any(|(a, _)| matches!(a, ToolAction::InsertImage)),
+            "the toolbar was drawn (has the Image button)"
+        );
+        // (Size variants were removed from ToolAction entirely, so the toolbar
+        // *cannot* carry a font-size control — this is the structural guarantee.)
+    }
+
+    // ---- table-of-contents feedback ---------------------------------------
+
+    /// Generating a TOC leaves a visible confirmation toast (the button used to
+    /// give no feedback at all).
+    #[test]
+    fn toc_action_sets_a_confirmation_toast() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        assert!(wp.toast.is_none(), "no toast before the action");
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+        assert!(wp.toast.is_some(), "generating a TOC surfaces a confirmation toast");
+        // And it actually produced TOC lines.
+        let c = wp.model().containers.clone().unwrap();
+        let toc = qdoc::model::materialize(&state.doc, &c).blocks.iter().filter(|b| crate::word_processor::block_is_toc(b)).count();
+        assert!(toc > 0, "the TOC action inserts visible TOC lines");
+    }
+
+    // ---- shared ColorPicker adoption --------------------------------------
+
+    /// The style inspector's "Custom…" affordance opens the shared `ColorPicker`
+    /// popover, and dragging within it applies a colour to the focused style —
+    /// proving the toolkit widget is adopted (not a bespoke re-implementation).
+    #[test]
+    fn color_picker_popover_applies_a_colour_to_the_focused_style() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "colour me");
+        wp.styles_panel_open = true;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // Click the "Custom…" affordance to open the picker.
+        let (open_rect, _) = wp
+            .panel_hits
+            .iter()
+            .find(|(_, h)| *h == PanelHit::OpenColorPicker)
+            .expect("a 'Custom…' colour affordance in the inspector")
+            .clone();
+        left_click(&mut wp, &mut state, Point::new((open_rect.x0 + open_rect.x1) / 2.0, (open_rect.y0 + open_rect.y1) / 2.0));
+        assert!(wp.color_picker.is_some(), "the shared ColorPicker popover opened");
+
+        // Lay the picker out and drive a press into the top-left of its SV square
+        // (high value, some saturation) so it commits a fresh colour.
+        wp.layout_color_picker();
+        let pr = wp.color_picker.as_ref().unwrap().get_rect();
+        let sv_pt = Point::new(pr.x0 + 20.0, pr.y0 + 20.0);
+        let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+        // CursorMoved (to set the picker's internal cursor) then press.
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        wp.handle_event(
+            &WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: (sv_pt.x, sv_pt.y).into() },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+        wp.handle_event(
+            &WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+        let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+        assert_ne!(style_before, style_after, "dragging in the ColorPicker changed the focused style's colour");
+    }
+
+    /// A click outside the open picker dismisses it.
+    #[test]
+    fn color_picker_popover_dismisses_on_outside_click() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "x");
+        wp.styles_panel_open = true;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.open_color_picker();
+        assert!(wp.color_picker.is_some());
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Click far away from the popover (top-left corner of the canvas).
+        left_click(&mut wp, &mut state, Point::new(80.0, 400.0));
+        assert!(wp.color_picker.is_none(), "an outside click closes the colour picker");
+    }
+
+    // ---- visual review shots ----------------------------------------------
+    // A guarded renderer that writes PNGs of the fixed surfaces for eyeballing.
+    // Set `QOS_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
+    // leaves it a no-op (no GPU work, no files).
+
+    /// Run the full five-pass + overlay draw and write a PNG to `dir/name.png`.
+    fn render_review_png(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32, dir: &std::path::Path, name: &str) {
+        use ui::offscreen::OffscreenRenderer;
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        wp.sync(&mut state.doc, &state.root);
+        let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        wp.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        std::fs::create_dir_all(dir).ok();
+        OffscreenRenderer::new(w, h).render_png(&scene, Color::from_rgb8(0x20, 0x22, 0x28), dir.join(format!("{name}.png")));
+    }
+
+    #[test]
+    fn render_review_shots() {
+        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else { return };
+        let dir = std::path::PathBuf::from(dir);
+        let (w, h) = (1200u32, 800u32);
+
+        // 1. Fixed toolbar: vector Image icon, no duplicated font-size stepper.
+        {
+            let (mut state, mut wp) = bound();
+            wp.model_mut().insert_str(&mut state.doc, "The quick brown fox");
+            wp.model_mut().enter(&mut state.doc);
+            wp.model_mut().insert_str(&mut state.doc, "Body paragraph with some words to fill the line nicely.");
+            render_review_png(&mut wp, &mut state, w, h, &dir, "toolbar");
+        }
+
+        // 2a. Style context menu on a CUSTOM style: Delete + Duplicate.
+        {
+            let (mut wp, mut state, custom_id) = doc_with_custom_style();
+            // Anchor the menu over the custom chip in the panel.
+            let anchor = wp
+                .panel_hits
+                .iter()
+                .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == &custom_id))
+                .map(|(r, _)| [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0])
+                .unwrap_or([950.0, 240.0]);
+            wp.open_style_menu(&custom_id, anchor);
+            render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-custom");
+        }
+
+        // 2b. Style context menu on a BUILT-IN style: Duplicate only.
+        {
+            let (mut wp, mut state, _id) = doc_with_custom_style();
+            let anchor = wp
+                .panel_hits
+                .iter()
+                .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == "body"))
+                .map(|(r, _)| [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0])
+                .unwrap_or([950.0, 240.0]);
+            wp.open_style_menu("body", anchor);
+            render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-builtin");
+        }
+
+        // 3. Selected image with resize + flip controls in the panel. Give it a
+        //    visible display size (the fixture PNG is 2×3) so the selection box +
+        //    handles read in the shot.
+        {
+            let (mut wp, mut state, id) = doc_with_selected_image();
+            wp.model_mut().set_image_size(&mut state.doc, &id, 300.0, 200.0);
+            wp.model_mut().flip_image(&mut state.doc, &id, true);
+            render_review_png(&mut wp, &mut state, w, h, &dir, "image-selected");
+        }
+
+        // 4. Generated table of contents (+ its confirmation toast).
+        {
+            let (mut wp, mut state) = doc_with_headings(w, h);
+            wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+            render_review_png(&mut wp, &mut state, w, h, &dir, "toc");
+        }
+
+        // 5. The shared ColorPicker popover, opened from the style inspector.
+        {
+            let (mut state, mut wp) = bound();
+            wp.model_mut().insert_str(&mut state.doc, "colour this paragraph");
+            wp.styles_panel_open = true;
+            pipeline_draw(&mut wp, &mut state, w, h);
+            wp.open_color_picker();
+            render_review_png(&mut wp, &mut state, w, h, &dir, "color-picker");
+        }
     }
 }
