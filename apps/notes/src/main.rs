@@ -25,10 +25,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_flag(&args, "--viewport")
             .and_then(|v| shots::parse_viewport(&v))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // `--scenario drawer` opens the narrow-mode page drawer so the
-        // overlay can be reviewed in the snapshot.
-        let open_drawer = parse_flag(&args, "--scenario").as_deref() == Some("drawer");
-        shots::render_to_path(viewport, std::path::Path::new(&out), open_drawer)?;
+        // `--scenario <name>` drives the app into an interaction state
+        // before the snapshot: `drawer` (narrow page drawer), `drag`
+        // (mid-drag ghost + reflow), `menu` (row context menu), `slash`
+        // (editor block menu).
+        let scenario = parse_flag(&args, "--scenario");
+        shots::render_to_path(
+            viewport,
+            std::path::Path::new(&out),
+            scenario.as_deref(),
+        )?;
         return Ok(());
     }
 
