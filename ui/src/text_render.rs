@@ -51,6 +51,54 @@ impl Default for TextWeight {
     }
 }
 
+/// A font family to shape with. The three generic classes resolve to the
+/// system's default face for that class (via cosmic-text / fontconfig); `Named`
+/// targets a specific installed family by name (e.g. a serif book face the user
+/// picked from the font list). This is what lets apps render body text in a
+/// chosen serif or custom font rather than only sans/mono.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FontChoice {
+    SansSerif,
+    Serif,
+    Monospace,
+    Named(String),
+}
+
+impl Default for FontChoice {
+    fn default() -> Self {
+        FontChoice::SansSerif
+    }
+}
+
+impl FontChoice {
+    fn to_cosmic(&self) -> Family<'_> {
+        match self {
+            FontChoice::SansSerif => Family::SansSerif,
+            FontChoice::Serif => Family::Serif,
+            FontChoice::Monospace => Family::Monospace,
+            FontChoice::Named(n) => Family::Name(n),
+        }
+    }
+
+    /// A stable hash of the choice, used as part of the shape-cache key so two
+    /// families of the same text/size/weight are cached separately.
+    fn cache_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        match self {
+            FontChoice::SansSerif => 0u8.hash(&mut h),
+            FontChoice::Serif => 1u8.hash(&mut h),
+            FontChoice::Monospace => 2u8.hash(&mut h),
+            FontChoice::Named(n) => {
+                3u8.hash(&mut h);
+                n.hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+}
+
 /// Hashable cache key for measured-text results. `max_width` is
 /// encoded as a `u32` bit-pattern so `f32` (which isn't `Hash`)
 /// participates in the key without surprise NaN collisions —
@@ -85,7 +133,7 @@ struct ShapeKey {
     max_width_bits: u32,
     weight: u16,
     italic: bool,
-    monospace: bool,
+    family: u64,
     generation: u64,
 }
 
@@ -440,8 +488,84 @@ impl TextRenderer {
         monospace: bool,
     ) {
         if text.is_empty() { return; }
-        let runs = self.shaped_runs(text, size, max_width, weight, italic, monospace);
+        let family = if monospace { FontChoice::Monospace } else { FontChoice::SansSerif };
+        let runs = self.shaped_runs(text, size, max_width, weight, italic, &family);
         self.paint_runs(scene, &runs, size, color, transform);
+    }
+
+    /// Draw `text` shaped in an explicit [`FontChoice`] family (serif / a named
+    /// installed family / …) with a weight and italic flag. This is how an app
+    /// renders body text in a chosen book face rather than only sans/mono.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text_font(
+        &mut self,
+        scene: &mut Scene,
+        text: &str,
+        size: f32,
+        color: Color,
+        transform: Affine,
+        max_width: Option<f32>,
+        weight: TextWeight,
+        italic: bool,
+        family: &FontChoice,
+    ) {
+        if text.is_empty() { return; }
+        let runs = self.shaped_runs(text, size, max_width, weight, italic, family);
+        self.paint_runs(scene, &runs, size, color, transform);
+    }
+
+    /// Measure `text` shaped in an explicit [`FontChoice`]. Uncached (the family
+    /// varies enough that it isn't worth a key); callers measure during a
+    /// cached layout pass, so this runs only when a layout actually recomputes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn measure_font(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: Option<f32>,
+        weight: TextWeight,
+        italic: bool,
+        family: &FontChoice,
+    ) -> (f32, f32) {
+        if text.is_empty() {
+            return (0.0, 0.0);
+        }
+        let line_height = size * 1.25;
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
+        let mut attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
+        if italic {
+            attrs = attrs.style(FontStyle::Italic);
+        }
+        attrs = attrs.family(family.to_cosmic());
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.set_size(max_width, None);
+        buffer.set_wrap(Wrap::Word);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        let mut width = 0.0f32;
+        let mut lines = 0;
+        for run in buffer.layout_runs() {
+            width = width.max(run.line_w);
+            lines += 1;
+        }
+        (width, lines as f32 * line_height)
+    }
+
+    /// Distinct family names of installed faces, sorted — the pool an app's
+    /// font picker offers so a reader can choose any system family (including
+    /// serif book faces). De-duplicated across weights/styles of the same
+    /// family.
+    pub fn system_families(&self) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for face in self.font_system.db().faces() {
+            if let Some((name, _)) = face.families.first() {
+                // Skip internal/placeholder families with no real name.
+                if !name.trim().is_empty() {
+                    set.insert(name.clone());
+                }
+            }
+        }
+        set.into_iter().collect()
     }
 
     /// Measure `text` with style attributes. Mirrors
@@ -504,7 +628,7 @@ impl TextRenderer {
         weight: TextWeight,
     ) {
         if text.is_empty() { return; }
-        let runs = self.shaped_runs(text, size, max_width, weight, false, false);
+        let runs = self.shaped_runs(text, size, max_width, weight, false, &FontChoice::SansSerif);
         self.paint_runs(scene, &runs, size, color, transform);
     }
 
@@ -521,7 +645,7 @@ impl TextRenderer {
         max_width: Option<f32>,
         weight: TextWeight,
         italic: bool,
-        monospace: bool,
+        family: &FontChoice,
     ) -> Arc<Vec<GlyphRun>> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -533,7 +657,7 @@ impl TextRenderer {
             max_width_bits: max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX),
             weight: weight.to_u16(),
             italic,
-            monospace,
+            family: family.cache_hash(),
             generation: self.generation,
         };
         if let Some(runs) = self.shape_cache.get(&key) {
@@ -549,9 +673,7 @@ impl TextRenderer {
         if italic {
             attrs = attrs.style(FontStyle::Italic);
         }
-        if monospace {
-            attrs = attrs.family(Family::Monospace);
-        }
+        attrs = attrs.family(family.to_cosmic());
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.set_size(max_width, None);
         buffer.set_wrap(Wrap::Word);
@@ -994,6 +1116,73 @@ mod tests {
         tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
         let (_h, m, _ns) = tr.take_shape_stats();
         assert_eq!(m, 1, "draw after bump must reshape");
+    }
+
+    /// Real font-family support: the generic families resolve to installed
+    /// faces and shape to positive advances, a named installed family shapes,
+    /// and two different families are distinct shape-cache entries (so a serif
+    /// body render doesn't collide with the sans measurement).
+    #[test]
+    fn font_choice_families_resolve_and_shape() {
+        let mut tr = TextRenderer::new();
+        let fams = tr.system_families();
+        assert!(!fams.is_empty(), "the system font db exposes some families");
+
+        // Both generic families measure to a positive advance for real text.
+        let (ws, _) =
+            tr.measure_font("Reading", 20.0, None, TextWeight::Regular, false, &FontChoice::Serif);
+        let (wn, _) = tr.measure_font(
+            "Reading",
+            20.0,
+            None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::SansSerif,
+        );
+        assert!(ws > 0.0, "serif shapes to a real width");
+        assert!(wn > 0.0, "sans shapes to a real width");
+
+        // A specific installed family shapes into glyph runs without panicking.
+        let mut scene = Scene::new();
+        let named = FontChoice::Named(fams[0].clone());
+        tr.draw_text_font(
+            &mut scene,
+            "Reading",
+            20.0,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            TextWeight::Regular,
+            false,
+            &named,
+        );
+
+        // Serif and Sans of the same string are distinct shape-cache entries.
+        let _ = tr.take_shape_stats();
+        tr.draw_text_font(
+            &mut scene,
+            "Reading",
+            20.0,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::Serif,
+        );
+        tr.draw_text_font(
+            &mut scene,
+            "Reading",
+            20.0,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::SansSerif,
+        );
+        let (_h, m, _ns) = tr.take_shape_stats();
+        assert_eq!(m, 2, "serif and sans shape as separate families");
     }
 
     /// `bump_generation` blows away every cached entry — the next
