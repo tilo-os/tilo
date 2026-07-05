@@ -62,6 +62,23 @@ pub enum FileCommand {
     Cut,
     /// Paste the clipboard into the current directory.
     Paste,
+    /// Open the "New File" flyout populated from the Templates directory.
+    /// Handled by the app's menu routing (opens a submenu), not applied.
+    OpenTemplatesMenu,
+    /// Create a new file in the current directory by copying the given
+    /// template file, then drop into inline-rename.
+    NewFromTemplate(PathBuf),
+    /// Add a folder to the favourites / places list.
+    AddFavorite(PathBuf),
+    /// Remove a folder from the favourites list.
+    RemoveFavorite(PathBuf),
+    /// Move favourite `from` to index `to` (drag-to-reorder drop).
+    ReorderFavorite { from: usize, to: usize },
+    /// Increase / decrease the icon/row zoom level (Ctrl +/-, Ctrl-scroll).
+    ZoomIn,
+    ZoomOut,
+    /// Toggle showing dotfiles.
+    ToggleHidden,
 }
 
 /// Shared, cheaply-clonable queue the child widgets push into.
