@@ -20,6 +20,8 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, SmolStr};
 
 use crate::NotesApp;
 use crate::model::Workspace;
@@ -143,13 +145,19 @@ Active work, one page each.
     }
 }
 
-/// Render the notes app at `viewport` into a PNG at `out`. When
-/// `open_drawer` is set and the viewport is narrow, the overlay page
-/// drawer is shown so the flyout can be reviewed.
+/// Render the notes app at `viewport` into a PNG at `out`, optionally in a
+/// specific interaction `scenario` so states that only exist mid-gesture
+/// can be reviewed offscreen:
+///
+/// - `Some("drawer")` — open the narrow-mode page drawer.
+/// - `Some("drag")` — begin dragging a sidebar row (floating ghost +
+///   live reflow gap).
+/// - `Some("menu")` — open a page row's right-click context menu.
+/// - `Some("slash")` — open the editor's `/` block menu.
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
-    open_drawer: bool,
+    scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Hermetic workspace root — unique per process so parallel shots
     // don't collide, cleaned up on exit.
@@ -169,11 +177,11 @@ pub fn render_to_path(
     let mut state = ui::State::new();
     app.sync(&mut state.doc, &state.root);
 
-    // Run the layout cycle until the responsive structure settles. The
-    // first build defaults to the wide tree; `apply_layout` observes the
-    // real width and, on a narrow viewport, asks for a rebuild into the
-    // drawer layout. Mirrors what the live event loop does across frames.
-    for _ in 0..4 {
+    // Run the layout cycle until the responsive structure settles, keeping
+    // the final taffy tree so a scenario can dispatch events against a live
+    // layout (the same tree the frame draws from).
+    let mut kept: Option<(TaffyTree<()>, NodeId)> = None;
+    for _ in 0..5 {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -206,15 +214,17 @@ pub fn render_to_path(
             )?;
         }
         app.apply_layout(&taffy, child, Point::ORIGIN);
+        let settled = !app.take_structure_dirty();
+        kept = Some((taffy, child));
         // Settle: once no structural change is pending, this frame's
         // tree matches the observed width.
-        if !app.take_structure_dirty() {
+        if settled {
             break;
         }
     }
 
-    if open_drawer {
-        app.open_drawer_for_shots();
+    if let Some((taffy, child)) = kept.as_ref() {
+        drive_scenario(&mut app, &mut state, taffy, *child, scenario);
     }
 
     let mut scene = Scene::new();
@@ -230,4 +240,79 @@ pub fn render_to_path(
     renderer.render_png(&scene, Color::from_rgba8(15, 17, 21, 255), out);
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
+}
+
+/// Dispatch the events that drive `app` into the requested interaction
+/// state, against the settled `taffy`/`child` layout, before the frame is
+/// drawn. Produces output identical to the live binary reaching the same
+/// state through real input.
+fn drive_scenario(
+    app: &mut NotesApp,
+    state: &mut ui::State,
+    taffy: &TaffyTree<()>,
+    child: NodeId,
+    scenario: Option<&str>,
+) {
+    let mut send = |app: &mut NotesApp, ev: &WindowEvent| {
+        let no_mods = Modifiers::default();
+        let mut handled = false;
+        let mut ft = None;
+        app.handle_event(
+            ev, 1.0, &no_mods, &mut state.doc, &state.root, &mut handled, &mut ft, child, taffy,
+        );
+    };
+    let cursor = |x: f64, y: f64| WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    };
+    let mouse = |st: ElementState, b: MouseButton| WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: st,
+        button: b,
+    };
+    let char_key = |s: &str| {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(SmolStr::new(s));
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(SmolStr::new(s));
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    };
+
+    match scenario {
+        Some("drawer") => app.open_drawer_for_shots(),
+        Some("drag") => {
+            // Grab a lower row and drag it up between the first two rows —
+            // the ghost floats at the cursor and the list reflows a gap.
+            if let (Some(from), Some(dst)) = (
+                app.sidebar_row_center_for_test(2),
+                app.sidebar_row_center_for_test(1),
+            ) {
+                send(app, &cursor(from.x, from.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+                // Drop the cursor near the top of row 1 so the drop lands
+                // between rows 0 and 1 (a clear reflow gap, no re-parent).
+                send(app, &cursor(from.x, dst.y - 8.0));
+            }
+        }
+        Some("menu") => {
+            if let Some(row) = app.sidebar_row_center_for_test(1) {
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Right));
+            }
+        }
+        Some("slash") => {
+            // The editor holds focus on load; `/` opens the block menu.
+            send(app, &char_key("/"));
+        }
+        _ => {}
+    }
 }
