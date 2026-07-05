@@ -56,6 +56,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         perl perl-generators rsync \
         python3 python3-devel python3-rpm-macros \
         gzip xz cpio git which findutils \
+        createrepo_c \
     && dnf clean all
 
 # Fetch the Fedora kernel SRPM. Preferring the frozen-repo copy keeps the
@@ -205,10 +206,11 @@ RUN set -eux; \
 # needed for the `dnf swap kernel-core qos-kernel-core` step in
 # os/Containerfile to resolve.
 
-# Build the repo metadata inside the build stage; the final stage is
-# just a COPY of /repo so it stays tiny.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen dnf install -y --setopt=reposdir=/frozen createrepo_c \
-    && mkdir -p /repo \
+# Build the repo metadata. `createrepo_c` was installed in the
+# toolchain step above, so no `dnf install` runs here — that had been
+# probing `/repo` (which we're about to CREATE) and stalling on the
+# missing repomd.xml.
+RUN mkdir -p /repo \
     && cp /out/*.rpm /repo/ \
     && createrepo_c --quiet /repo \
     && printf '[qos-kernel]\nname=qOS custom kernel\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/qos-kernel.repo
