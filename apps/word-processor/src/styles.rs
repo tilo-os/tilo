@@ -148,6 +148,10 @@ impl Default for StyleSheet {
     }
 }
 
+/// The built-in style ids. Everything else in a document's sheet is a
+/// user-defined ("custom") style, which — unlike a built-in — can be deleted.
+pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
+
 impl StyleSheet {
     /// Resolve a style, falling back to Body for unknown ids.
     pub fn get(&self, key: &str) -> StyleProps {
@@ -158,12 +162,43 @@ impl StyleSheet {
             .unwrap_or_default()
     }
 
+    /// Whether `key` names a built-in style. Built-ins are permanent (the style
+    /// panel offers *Duplicate* on them but never *Delete*); custom styles can
+    /// be deleted.
+    pub fn is_builtin(key: &str) -> bool {
+        BUILTIN_STYLES.contains(&key)
+    }
+
+    /// Remove the custom style `key` from the sheet, returning `true` when it was
+    /// present and removable. Built-in styles are never removed (they are the
+    /// document's baseline component set). Callers are responsible for reassigning
+    /// any block that still references the removed style.
+    pub fn remove(&mut self, key: &str) -> bool {
+        if Self::is_builtin(key) {
+            return false;
+        }
+        self.styles.remove(key).is_some()
+    }
+
+    /// Allocate a fresh, unused `customN` style id (never colliding with an
+    /// existing entry). Used by the Duplicate / New-style flows.
+    pub fn fresh_custom_id(&self) -> String {
+        let mut n = 1;
+        loop {
+            let cand = format!("custom{n}");
+            if !self.styles.contains_key(&cand) {
+                return cand;
+            }
+            n += 1;
+        }
+    }
+
     /// Style ids in a stable presentation order (built-ins first, then custom).
     pub fn order(&self) -> Vec<String> {
-        const BUILTIN: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
-        let mut out: Vec<String> = BUILTIN.iter().filter(|k| self.styles.contains_key(**k)).map(|k| k.to_string()).collect();
+        let mut out: Vec<String> =
+            BUILTIN_STYLES.iter().filter(|k| self.styles.contains_key(**k)).map(|k| k.to_string()).collect();
         for k in self.styles.keys() {
-            if !BUILTIN.contains(&k.as_str()) {
+            if !BUILTIN_STYLES.contains(&k.as_str()) {
                 out.push(k.clone());
             }
         }

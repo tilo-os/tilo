@@ -128,12 +128,33 @@ panel-weight = Weight
 panel-bold = Bold
 panel-italic = Italic
 panel-colour = Colour
+panel-colour-custom = Custom…
 panel-align = Align
 panel-new-style = + New style from this
 panel-num-size = Size
 panel-num-space-before = Space before
 panel-num-space-after = Space after
 panel-num-indent = Indent
+
+## Image inspector (styles panel, when an image is selected)
+panel-image = IMAGE
+panel-image-size = Size
+panel-image-width = Width
+panel-image-flip = Flip
+panel-image-flip-h = Horizontal
+panel-image-flip-v = Vertical
+panel-image-smaller = Smaller
+panel-image-larger = Larger
+
+## Paragraph-style context menu (right-click a style chip)
+style-menu-delete = Delete style
+style-menu-duplicate = Duplicate style
+
+## Transient toasts (confirmation cues)
+toast-toc-updated = Table of contents updated ({ $n } entries)
+toast-toc-empty = Add headings first — a table of contents lists them
+toast-style-deleted = Style deleted
+toast-style-duplicated = Style duplicated
 
 ## Outline / navigation pane
 outline-header = OUTLINE

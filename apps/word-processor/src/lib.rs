@@ -9,6 +9,7 @@
 //! `ui::State` via tests.
 
 pub mod i18n;
+pub mod portal;
 pub mod styles;
 pub mod widget;
 pub mod word_processor;
