@@ -83,6 +83,16 @@ pub struct ColorPicker {
     /// Routing focus through the App (instead of taking it locally)
     /// is the path that blurs whatever sibling held focus before.
     hex_input_focus_pending: bool,
+    /// One-shot record of the last user-driven colour change, drained
+    /// by [`take_changed`]. This is the poll-based counterpart to the
+    /// [`on_change`](ColorPicker::on_change) callback: a retained-mode
+    /// app that stores the picker in its widget tree can't easily wire
+    /// a `FnMut` that borrows its own state, so instead it polls
+    /// `take_changed()` once per frame (mirroring
+    /// [`TextInput::take_dirty`](crate::widget::TextInput)). Set at the
+    /// `set_rgb` choke point on every user edit; a *programmatic*
+    /// [`set_color`](ColorPicker::set_color) does NOT set it.
+    changed: Option<Color>,
 }
 
 impl ColorPicker {
@@ -105,10 +115,45 @@ impl ColorPicker {
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,
             hex_input_focus_pending: false,
+            changed: None,
         };
         let hex = s.hex_string();
         s.hex_input.set_text(&hex);
         s
+    }
+
+    /// Poll for a user-driven colour change since the last call, draining
+    /// the record. Returns `Some(color)` when the SV square, hue strip, a
+    /// channel slider, or the hex field changed the colour; `None`
+    /// otherwise. This is the retained-mode integration seam: an app holds
+    /// the picker in its widget tree and calls `take_changed()` each frame
+    /// to fold the new colour into its own model — no `FnMut` callback and
+    /// no borrow gymnastics. A *programmatic* [`set_color`] is not
+    /// reported here (it's the app pushing a value in, not the user
+    /// changing it), matching [`TextInput::set_text`] clearing dirty.
+    ///
+    /// [`TextInput::set_text`]: crate::widget::TextInput::set_text
+    pub fn take_changed(&mut self) -> Option<Color> {
+        self.changed.take()
+    }
+
+    /// Push a new "current colour" into the picker from the outside —
+    /// e.g. a slides/docs inspector re-pointing the picker at the fill of
+    /// a newly-selected shape. Updates the swatch, the SV/hue/slider
+    /// positions (all derived from `self.color`) and the embedded hex
+    /// field, but does NOT fire `on_change` or set the `take_changed`
+    /// record: this is the app setting the value, not the user editing
+    /// it. No-op when the colour is unchanged.
+    pub fn set_color(&mut self, color: Color) {
+        if color.r() == self.color.r()
+            && color.g() == self.color.g()
+            && color.b() == self.color.b()
+            && color.a() == self.color.a()
+        {
+            return;
+        }
+        self.color = color;
+        self.sync_input();
     }
 
     /// Read-only access to the embedded hex input rect (set inside
@@ -283,6 +328,9 @@ impl ColorPicker {
             return;
         }
         self.color = new_color;
+        // Record for the poll-based `take_changed()` seam (retained-mode
+        // apps) and fire the optional callback (imperative callers).
+        self.changed = Some(self.color);
         if let Some(cb) = self.on_change.as_mut() {
             cb(self.color);
         }
@@ -1016,6 +1064,74 @@ mod tests {
         p.set_rgb(0x0a, 0x00, 0xff);
         let node = Widget::accessibility(&p).unwrap();
         assert_eq!(node.value.as_deref(), Some("#0A00FF"));
+    }
+
+    /// Retained-mode embed round-trip: an app drops the picker into its
+    /// widget tree, the user drags a channel, and the app reads the new
+    /// colour back by polling `take_changed()` (no callback wired). The
+    /// record drains after one read, and a *programmatic* `set_color`
+    /// updates the swatch/hex without reporting a spurious user change.
+    #[test]
+    fn embed_round_trip_take_changed_and_set_color() {
+        let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
+        // No change yet → nothing to report.
+        assert_eq!(p.take_changed(), None, "no edit → take_changed is None");
+
+        // User slams the R slider fully right (a real drag through the
+        // production handle_event path).
+        let r_x = p.r_slider_rect.x1 - 1.0;
+        let r_y = (p.r_slider_rect.y0 + p.r_slider_rect.y1) / 2.0;
+        dispatch(&mut p, &cursor_moved(r_x, r_y));
+        dispatch(&mut p, &mouse_press());
+        dispatch(&mut p, &mouse_release());
+
+        let reported = p.take_changed().expect("a drag reports a colour change");
+        assert_eq!(reported, p.color(), "reported colour matches the live colour");
+        assert!((reported.r() as i32 - 255).abs() <= 5, "R went to ~255, got {}", reported.r());
+        // Drained: a second poll with no new edit returns None.
+        assert_eq!(p.take_changed(), None, "take_changed drains after one read");
+
+        // Programmatic push-in (app re-points the picker at a new colour):
+        // the swatch + hex update, but it is NOT reported as a user edit.
+        p.set_color(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
+        assert_eq!(p.hex_string(), "#0A00FF", "set_color updates the hex readout");
+        assert_eq!(p.color().r(), 0x0a);
+        assert_eq!(
+            p.take_changed(),
+            None,
+            "programmatic set_color must not surface as a user change",
+        );
+    }
+
+    /// The `on_change` callback and the `take_changed` poll seam observe
+    /// the SAME choke point, so both fire for one user edit — an app can
+    /// pick whichever integration style fits.
+    #[test]
+    fn on_change_callback_and_take_changed_agree() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen: Rc<RefCell<Option<Color>>> = Rc::new(RefCell::new(None));
+        let seen2 = seen.clone();
+        let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 255))
+            .on_change(move |c| *seen2.borrow_mut() = Some(c));
+        // Re-run layout arithmetic (on_change consumed `self`, so build fresh
+        // rects the same way picker_at does).
+        let base = picker_at(Color::from_rgba8(0, 0, 0, 255), Point::ZERO);
+        p.rect = base.rect;
+        p.r_slider_rect = base.r_slider_rect;
+        p.g_slider_rect = base.g_slider_rect;
+        p.b_slider_rect = base.b_slider_rect;
+        p.sv_rect = base.sv_rect;
+        p.hue_strip_rect = base.hue_strip_rect;
+
+        let r_x = p.r_slider_rect.x1 - 1.0;
+        let r_y = (p.r_slider_rect.y0 + p.r_slider_rect.y1) / 2.0;
+        dispatch(&mut p, &cursor_moved(r_x, r_y));
+        dispatch(&mut p, &mouse_press());
+
+        let poll = p.take_changed().expect("poll seam saw the change");
+        let cb = seen.borrow().expect("callback saw the change");
+        assert_eq!(poll, cb, "both seams observe the identical colour");
     }
 
     #[test]

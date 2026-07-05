@@ -427,6 +427,7 @@ mod spacer;      pub use spacer::Spacer;
 mod image;       pub use image::{Image, ImageFit, ImageDecodeError};
 mod slider;      pub use slider::Slider;
 mod text_input;  pub use text_input::TextInput;
+mod number_input; pub use number_input::NumberInput;
 pub mod marks; pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};
 pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
