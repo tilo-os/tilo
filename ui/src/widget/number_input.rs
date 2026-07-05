@@ -314,6 +314,21 @@ impl NumberInput {
         self.sync_field();
     }
 
+    /// Position the control at an externally-computed `rect`, without a taffy
+    /// node. Lets a host that lays itself out imperatively (e.g. a slides / docs
+    /// inspector row) drop a `NumberInput` in and drive it directly — the
+    /// mirror of [`TextInput::apply_layout_external`]. Computes the same stepper
+    /// + field sub-rects `apply_layout` does.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+        let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+        let h = y1 - y0;
+        self.minus_rect = Rect::new(x0, y0, x0 + h, y1);
+        self.plus_rect = Rect::new(x1 - h, y0, x1, y1);
+        self.field_rect = Rect::new(self.minus_rect.x1 + GAP, y0, self.plus_rect.x0 - GAP, y1);
+        self.field.apply_layout_external(self.field_rect);
+    }
+
     /// Flush a pending committed value to the bound CRDT field, if any.
     fn flush_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(v) = self.pending_write.take() {
@@ -376,19 +391,7 @@ impl Widget for NumberInput {
         let y0 = origin.y + layout.location.y as f64;
         let x1 = x0 + layout.size.width as f64;
         let y1 = y0 + layout.size.height as f64;
-        self.rect = Rect::new(x0, y0, x1, y1);
-
-        let h = y1 - y0;
-        // Square stepper buttons flank the field.
-        self.minus_rect = Rect::new(x0, y0, x0 + h, y1);
-        self.plus_rect = Rect::new(x1 - h, y0, x1, y1);
-        self.field_rect = Rect::new(
-            self.minus_rect.x1 + GAP,
-            y0,
-            self.plus_rect.x0 - GAP,
-            y1,
-        );
-        self.field.apply_layout_external(self.field_rect);
+        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {

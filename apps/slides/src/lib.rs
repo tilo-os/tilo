@@ -12,6 +12,7 @@ pub mod assets;
 pub mod chrome;
 pub mod doc;
 pub mod model;
+pub mod odp;
 pub mod portal;
 pub mod render;
 
