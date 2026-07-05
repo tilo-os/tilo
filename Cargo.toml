@@ -92,6 +92,7 @@ members = [
     "apps/vpn",
     "apps/weather",
     "crates/session/greeter",
+    "crates/session/qos-power",
     "crates/session/installer",
 ]
 resolver = "2"
