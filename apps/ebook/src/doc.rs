@@ -332,11 +332,25 @@ impl BooksDoc {
         let _ = doc.put(&entry, "note", a.note.as_str());
         let _ = doc.put(&entry, "color", a.color.as_str());
         let _ = doc.put(&entry, "created", a.created as i64);
+        let _ = doc.put(&entry, "group", a.group.to_string().as_str());
     }
 
     pub fn remove_annotation(doc: &mut AutoCommit, id: Uuid) {
         let map = Self::annotations_map(doc);
         let _ = doc.delete(&map, id.to_string().as_str());
+    }
+
+    /// Remove every annotation row belonging to one logical group — a highlight
+    /// (its per-block pieces) together with all of its comments.
+    pub fn remove_group(doc: &mut AutoCommit, group: Uuid) {
+        let ids: Vec<Uuid> = Self::list_annotations(doc)
+            .into_iter()
+            .filter(|a| a.group == group)
+            .map(|a| a.id)
+            .collect();
+        for id in ids {
+            Self::remove_annotation(doc, id);
+        }
     }
 
     pub fn list_annotations(doc: &AutoCommit) -> Vec<Annotation> {
@@ -367,6 +381,11 @@ impl BooksDoc {
                     &Self::scalar_str(doc, &e, "color").unwrap_or_default(),
                 ),
                 created: Self::scalar_i64(doc, &e, "created").unwrap_or(0).max(0) as u64,
+                // Older rows predate grouping; fall back to a self-group (the
+                // row's own id) so each behaves as a standalone mark.
+                group: Self::scalar_str(doc, &e, "group")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(id),
             };
             out.push(a);
         }
