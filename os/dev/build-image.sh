@@ -43,9 +43,15 @@ done
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
 export SOURCE_DATE_EPOCH
-msg "1/3 podman build $QOS_IMAGE (rootless, in-image cargo compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
+# The digest-pinned frozen RPM repo the build installs from (written by
+# os/dev/snapshot-rpms.sh / the snapshot-rpms CI job). Cross-time reproducible.
+# shellcheck disable=SC1091
+[ -f "$QOS_OS_DIR/rpms-snapshot.env" ] && . "$QOS_OS_DIR/rpms-snapshot.env"
+[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run ./os/dev/snapshot-rpms.sh (or the snapshot-rpms CI job) first"
+msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; rpms=$RPMS_REF)"
 podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+  --build-arg "RPMS_REF=$RPMS_REF" \
   --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "$QOS_REPO"
 
