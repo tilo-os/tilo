@@ -436,6 +436,23 @@ Examples:\n\
 }
 
 fn main() {
+    // Startup timing capture. Same env-var contract as `shell` — a
+    // process launched with `QOS_STARTUP_METRICS_PATH=/tmp/x.json` gets
+    // a JSON dump on exit; without it, every `mark` call is a single
+    // atomic-load no-op. `shots` is the harness that measures the win
+    // from the cold-start warmup, so instrumenting it is the only way
+    // to A/B the two paths without a real display.
+    qos_startup_metrics::init();
+    let _startup_dump = qos_startup_metrics::ScopedDumper;
+    qos_startup_metrics::mark("main-start");
+
+    // Kick off cosmic-text + Vello warmup on a background thread. See
+    // `ui::warmup::spawn_warmup` for what runs; the point of doing it
+    // this early is that the FontSystem build and the scratch Vello
+    // render both overlap with argv parsing / driver bring-up. Disabled
+    // with QOS_STARTUP_WARM=off.
+    let _warmup_handle = ui::warmup::spawn_warmup(false);
+
     let args = match Args::parse() {
         Ok(a) => a,
         Err(e) => {
