@@ -540,33 +540,43 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
     use ui::widget::Block;
     let mut out = Vec::with_capacity(specs.len());
     for s in specs {
-        let block = match s {
+        match s {
             BlockSpec::Paragraph(t) => {
                 let mut b = Block::paragraph(&t.text);
                 b.line.set_marks(t.marks.clone());
-                b
+                out.push(b);
             }
             BlockSpec::Heading { level, text } => {
                 let mut b = Block::heading(*level, &text.text);
                 b.line.set_marks(text.marks.clone());
-                b
+                out.push(b);
             }
             BlockSpec::Bullet { indent, text } => {
                 let mut b = Block::bullet(*indent, &text.text);
                 b.line.set_marks(text.marks.clone());
-                b
+                out.push(b);
             }
             BlockSpec::Checklist { indent, done, text } => {
                 let mut b = Block::checklist(*indent, *done, &text.text);
                 b.line.set_marks(text.marks.clone());
-                b
+                out.push(b);
             }
             BlockSpec::CodeBlock { lang, text } => {
-                Block::code_block(lang.clone(), text)
+                // A multi-line fenced block maps to ONE code-block cell per
+                // line — the editor's `RichTextLine` substrate is single-line,
+                // and consecutive code cells render as one contiguous block.
+                // An empty fence still yields a single empty cell so the user
+                // has a place to type.
+                if text.is_empty() {
+                    out.push(Block::code_block(lang.clone(), ""));
+                } else {
+                    for line in text.split('\n') {
+                        out.push(Block::code_block(lang.clone(), line));
+                    }
+                }
             }
-            BlockSpec::Divider => Block::divider(),
-        };
-        out.push(block);
+            BlockSpec::Divider => out.push(Block::divider()),
+        }
     }
     out
 }
@@ -577,31 +587,67 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
 pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
     use ui::widget::BlockKind;
     let mut out = Vec::with_capacity(blocks.len());
-    for b in blocks {
-        let spec = match &b.kind {
+    let mut i = 0usize;
+    while i < blocks.len() {
+        let b = &blocks[i];
+        match &b.kind {
             BlockKind::Paragraph => {
-                BlockSpec::Paragraph(InlineText::new(b.text(), b.line.marks().to_vec()))
+                out.push(BlockSpec::Paragraph(InlineText::new(
+                    b.text(),
+                    b.line.marks().to_vec(),
+                )));
+                i += 1;
             }
-            BlockKind::Heading(level) => BlockSpec::Heading {
-                level: *level,
-                text: InlineText::new(b.text(), b.line.marks().to_vec()),
-            },
-            BlockKind::Bullet { indent } => BlockSpec::Bullet {
-                indent: *indent,
-                text: InlineText::new(b.text(), b.line.marks().to_vec()),
-            },
-            BlockKind::Checklist { indent, done } => BlockSpec::Checklist {
-                indent: *indent,
-                done: *done,
-                text: InlineText::new(b.text(), b.line.marks().to_vec()),
-            },
-            BlockKind::CodeBlock { lang } => BlockSpec::CodeBlock {
-                lang: lang.clone(),
-                text: b.text().to_string(),
-            },
-            BlockKind::Divider => BlockSpec::Divider,
-        };
-        out.push(spec);
+            BlockKind::Heading(level) => {
+                out.push(BlockSpec::Heading {
+                    level: *level,
+                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
+                });
+                i += 1;
+            }
+            BlockKind::Bullet { indent } => {
+                out.push(BlockSpec::Bullet {
+                    indent: *indent,
+                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
+                });
+                i += 1;
+            }
+            BlockKind::Checklist { indent, done } => {
+                out.push(BlockSpec::Checklist {
+                    indent: *indent,
+                    done: *done,
+                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
+                });
+                i += 1;
+            }
+            BlockKind::CodeBlock { lang } => {
+                // Coalesce a run of consecutive code cells (with the same
+                // language tag) back into ONE fenced block, inverting the
+                // per-line split `specs_to_blocks` does. Distinct adjacent
+                // fences (different lang) stay separate.
+                let mut lines: Vec<String> = vec![b.text().to_string()];
+                let run_lang = lang.clone();
+                i += 1;
+                while i < blocks.len() {
+                    if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind {
+                        if *next_lang == run_lang {
+                            lines.push(blocks[i].text().to_string());
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                out.push(BlockSpec::CodeBlock {
+                    lang: run_lang,
+                    text: lines.join("\n"),
+                });
+            }
+            BlockKind::Divider => {
+                out.push(BlockSpec::Divider);
+                i += 1;
+            }
+        }
     }
     out
 }
@@ -815,6 +861,49 @@ Last paragraph.
             }
             _ => panic!("expected paragraph"),
         }
+    }
+
+    #[test]
+    fn multiline_code_fence_splits_into_one_cell_per_line() {
+        use ui::widget::BlockKind;
+        let specs = parse("```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n");
+        // One spec, three source lines.
+        assert_eq!(specs.len(), 1);
+        let blocks = specs_to_blocks(&specs);
+        // Three single-line code cells so the editor's single-line substrate
+        // and the contiguous renderer see one row per line.
+        assert_eq!(blocks.len(), 3);
+        for b in &blocks {
+            assert!(matches!(b.kind, BlockKind::CodeBlock { .. }));
+        }
+        assert_eq!(blocks[0].text(), "let a = 1;");
+        assert_eq!(blocks[1].text(), "let b = 2;");
+        assert_eq!(blocks[2].text(), "let c = 3;");
+    }
+
+    #[test]
+    fn code_cells_coalesce_back_into_one_fence() {
+        let specs = parse("```sh\nfoo\nbar\nbaz\n```\n");
+        let blocks = specs_to_blocks(&specs);
+        let round = blocks_to_specs(&blocks);
+        assert_eq!(
+            round,
+            vec![BlockSpec::CodeBlock {
+                lang: Some("sh".into()),
+                text: "foo\nbar\nbaz".into(),
+            }],
+            "consecutive code cells coalesce back into a single fenced block"
+        );
+    }
+
+    #[test]
+    fn multiline_code_block_round_trips_byte_stably() {
+        // Full loop through the block layer (the notes save/load path) must
+        // reproduce the source markdown exactly.
+        let md = "# Title\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n";
+        let blocks = specs_to_blocks(&parse(md));
+        let re = serialize(&blocks_to_specs(&blocks));
+        assert_eq!(re, md, "multi-line code block must round-trip byte-stably");
     }
 
     #[test]

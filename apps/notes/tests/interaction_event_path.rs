@@ -38,6 +38,14 @@ fn mouse_press() -> WindowEvent {
     }
 }
 
+fn mouse_press_right() -> WindowEvent {
+    WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: ElementState::Pressed,
+        button: MouseButton::Right,
+    }
+}
+
 /// A printable-character keyboard event (mirrors `text_input`'s test
 /// helper — `KeyEvent` has a `pub(crate)` field so it can't be built by
 /// struct literal).
@@ -461,6 +469,214 @@ fn double_click_row_opens_inline_rename() {
     assert!(
         app.sidebar_is_renaming_for_test(),
         "double-click on a row must open the inline rename editor"
+    );
+}
+
+#[test]
+fn multiline_code_block_renders_as_one_contiguous_unit() {
+    // Bug: code blocks rendered as separate lines with gaps. A multi-line
+    // fenced block must render as ONE contiguous unit — consecutive code
+    // lines butt together (no inter-line gap), each in the monospace face.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let id = app.workspace_pages_for_test()[0].id;
+    let body = "Intro line.\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n\nAfter.\n";
+    app.main_panel_mut().load_page(id, "T".into(), body.to_string());
+
+    let mut state = ui::State::new();
+    let _ = settle_layout(&mut app, &mut state, 1200, 800);
+
+    let editor = app.main_panel_mut().editor();
+    let blocks = editor.blocks();
+    let code_idx: Vec<usize> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b.kind, ui::widget::BlockKind::CodeBlock { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(code_idx.len(), 3, "a 3-line fence yields 3 code cells");
+
+    // Consecutive code lines are contiguous — no 8px inter-block gap.
+    for w in code_idx.windows(2) {
+        let a = blocks[w[0]].line.get_rect();
+        let b = blocks[w[1]].line.get_rect();
+        let gap = b.y0 - a.y1;
+        assert!(
+            gap.abs() < 1.0,
+            "code lines must be contiguous (one visual block), gap was {gap}"
+        );
+    }
+    // Each code cell shapes its text in the monospace face.
+    for &i in &code_idx {
+        assert!(
+            blocks[i].line.inner().is_mono(),
+            "code cells render in the monospace face"
+        );
+    }
+    // The paragraph AFTER the code block keeps its inter-block gap, proving
+    // the no-gap rule is code-specific, not global.
+    let last = *code_idx.last().unwrap();
+    if last + 1 < blocks.len() {
+        let a = blocks[last].line.get_rect();
+        let p = blocks[last + 1].line.get_rect();
+        assert!(
+            p.y0 - a.y1 > 4.0,
+            "a normal block after the code run keeps its gap"
+        );
+    }
+}
+
+#[test]
+fn backspace_at_note_start_does_not_delete_or_switch_page() {
+    // Regression: with a page selected from the tree, the tree and the
+    // editor both hold focus. A Backspace at the very start of the note
+    // used to fall through to the tree's page-delete binding, deleting the
+    // note and jumping the user to another one. It must be a no-op now.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let welcome = app.workspace_pages_for_test()[0].id;
+    // A second root page so a stray delete would visibly "switch" pages.
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+
+    // Select the first page from the tree — this is the dual-focus state
+    // (tree focused for its shortcuts, editor focused for typing).
+    click_row(&mut app, &mut state, &taffy, child, 0);
+    assert_eq!(app.selected_for_test(), Some(welcome));
+    // Put the caret at the very start of the first block.
+    app.main_panel_mut().editor_mut().blocks_mut()[0]
+        .line
+        .set_cursor_pos(0);
+
+    let before = app.workspace_pages_for_test().len();
+    let no_mods = Modifiers::default();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Backspace));
+
+    assert_eq!(
+        app.workspace_pages_for_test().len(),
+        before,
+        "Backspace at the start of a note must NOT delete a page"
+    );
+    assert_eq!(
+        app.selected_for_test(),
+        Some(welcome),
+        "Backspace at the start of a note must NOT switch pages"
+    );
+}
+
+#[test]
+fn right_click_row_opens_context_menu_and_new_child_action_works() {
+    // Bug: right-click on a page row did nothing. It must open the context
+    // menu, and its actions must actually run.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let welcome = app.workspace_pages_for_test()[0].id;
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+
+    let c = app.sidebar_row_center_for_test(0).expect("row 0 laid out");
+    let no_mods = Modifiers::default();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(c.x, c.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press_right());
+    assert!(
+        app.sidebar_menu_open_for_test(),
+        "right-click on a page row must open the context menu"
+    );
+
+    // Drive the menu through its real key path: ArrowDown highlights the
+    // first action ("New child"), Enter fires it.
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::ArrowDown));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Enter));
+
+    let pages = app.workspace_pages_for_test();
+    assert_eq!(pages.len(), 2, "the New child action must create a page");
+    let children: Vec<_> = pages.iter().filter(|p| p.parent == Some(welcome)).collect();
+    assert_eq!(
+        children.len(),
+        1,
+        "New child must nest the new page under the right-clicked page"
+    );
+    assert!(
+        !app.sidebar_menu_open_for_test(),
+        "the menu closes after an action is chosen"
+    );
+}
+
+#[test]
+fn nested_child_renders_indented_under_its_parent() {
+    // Bug: the sidebar rendered a flat list despite the model's hierarchy.
+    // A child of the selected page must show one indent level below it.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let welcome = app.workspace_pages_for_test()[0].id;
+    // Creating a child auto-selects it, so revealing it proves the tree
+    // expands its ancestors (not a collapsed flat list).
+    app.apply_event_for_test(OutEvent::CreateChild { parent: Some(welcome) });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let _ = settle_layout(&mut app, &mut state, 1200, 800);
+
+    assert_eq!(app.sidebar_row_depth_for_test(0), Some(0), "parent sits at depth 0");
+    assert_eq!(
+        app.sidebar_row_has_children_for_test(0),
+        Some(true),
+        "the parent shows it has children (disclosure triangle)"
+    );
+    assert_eq!(
+        app.sidebar_row_depth_for_test(1),
+        Some(1),
+        "the child renders one level indented under its parent — a real tree"
+    );
+}
+
+#[test]
+fn inline_rename_is_plain_and_commits_on_click_outside() {
+    // Bug: the rename field was a jarring boxed input that never deselected.
+    // It must be plain-chrome (styled like the row) and commit on focus-out.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let welcome = app.workspace_pages_for_test()[0].id;
+    // Second root page so we can click a DIFFERENT row to blur + commit.
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+
+    // Double-click row 0 to open the in-place rename field.
+    let c = app.sidebar_row_center_for_test(0).expect("row 0 laid out");
+    let no_mods = Modifiers::default();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(c.x, c.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(c.x, c.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+    assert!(app.sidebar_is_renaming_for_test(), "double-click opens the rename field");
+    assert_eq!(
+        app.sidebar_rename_is_plain_for_test(),
+        Some(true),
+        "the rename field is plain-chrome (styled like the row, not a boxed input)"
+    );
+
+    // Type an edit into the field, then click a DIFFERENT row → focus-out
+    // must COMMIT (not discard) and end editing.
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key("!"));
+    let c1 = app.sidebar_row_center_for_test(1).expect("row 1 laid out");
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(c1.x, c1.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+
+    assert!(
+        !app.sidebar_is_renaming_for_test(),
+        "clicking outside the field must end editing (it deselects/blurs)"
+    );
+    let pages = app.workspace_pages_for_test();
+    let renamed = pages.iter().find(|p| p.id == welcome).unwrap();
+    assert_eq!(
+        renamed.title, "Welcome!",
+        "clicking outside must COMMIT the edit, not discard it"
     );
 }
 

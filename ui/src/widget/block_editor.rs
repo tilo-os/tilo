@@ -178,7 +178,10 @@ impl Block {
         let kind = BlockKind::CodeBlock { lang };
         Self {
             kind: kind.clone(),
-            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            line: RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size())
+                .with_mono(),
             soft_break: false,
         }
     }
@@ -957,6 +960,10 @@ impl BlockEditor {
         let mut new_line = RichTextLine::new()
             .with_text(body)
             .with_size(font_size);
+        // Code cells render in the monospace face so code reads as code.
+        if matches!(new_kind, BlockKind::CodeBlock { .. }) {
+            new_line.set_mono(true);
+        }
         // After conversion, keep the caret at the end of the preserved
         // body so the user can keep typing in the new kind. Focus
         // restoration honours the editor's current focused-block state.
@@ -1640,13 +1647,23 @@ impl Widget for BlockEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.child_nodes.clear();
+        // Precompute which blocks are code so consecutive code lines can
+        // butt together (no inter-line gap) and read as one fenced block.
+        let is_code: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
+            .collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let n = b.line.build_layout(taffy, theme, node_map);
             // Per-block top margin replaces the parent's `gap` so we
             // can zero it out for soft-break (Shift+Enter)
             // continuation blocks. First block always gets 0 (the
-            // parent's own padding handles the top).
-            let top_margin = if i == 0 || b.soft_break {
+            // parent's own padding handles the top). Consecutive code
+            // lines also get 0 so a multi-line fenced block renders as a
+            // single contiguous unit rather than separate boxes with gaps.
+            let continues_code_block = i > 0 && is_code[i] && is_code[i - 1];
+            let top_margin = if i == 0 || b.soft_break || continues_code_block {
                 0.0
             } else {
                 8.0
@@ -1769,6 +1786,17 @@ impl Widget for BlockEditor {
             );
         }
 
+        // Precompute code-block run geometry so a multi-line fenced block
+        // paints ONE contiguous background + left bar spanning all its
+        // lines, rather than a separate box per line. `line_rects` snapshots
+        // each block's laid-out rect (read-only, before the mut loop below).
+        let is_code: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
+            .collect();
+        let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
+
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             let line_rect = b.line.get_rect();
             let indent_px =
@@ -1859,37 +1887,51 @@ impl Widget for BlockEditor {
                     b.line.draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::CodeBlock { .. } => {
-                    // Subtle monospace-style chrome: a soft surface
-                    // background spanning the line's full width + a
-                    // thin accent bar on the left edge.
-                    let bg_rect = Rect::new(
-                        line_rect.x0 - gutter,
-                        line_rect.y0,
-                        line_rect.x1,
-                        line_rect.y1,
-                    );
-                    let shape =
-                        vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        tokens.colors.surfaces.raised,
-                        None,
-                        &shape,
-                    );
-                    let bar = Rect::new(
-                        bg_rect.x0,
-                        bg_rect.y0,
-                        bg_rect.x0 + 3.0,
-                        bg_rect.y1,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        tokens.colors.accent[5],
-                        None,
-                        &bar,
-                    );
+                    // A fenced code block can span several one-line cells.
+                    // Paint the surface background + left accent bar ONCE,
+                    // at the run's first line, spanning down to the last
+                    // consecutive code line — so the whole block reads as a
+                    // single contiguous unit (no per-line boxes or gaps).
+                    let is_run_start = idx == 0 || !is_code[idx - 1];
+                    if is_run_start {
+                        let mut end = idx;
+                        while end + 1 < is_code.len() && is_code[end + 1] {
+                            end += 1;
+                        }
+                        // A little vertical breathing room, kept inside the
+                        // inter-block gap so it never overlaps neighbours.
+                        const CODE_PAD_Y: f64 = 4.0;
+                        let top = line_rect.y0 - CODE_PAD_Y;
+                        let bottom = line_rects[end].y1 + CODE_PAD_Y;
+                        let bg_rect = Rect::new(
+                            line_rect.x0 - gutter,
+                            top,
+                            line_rect.x1,
+                            bottom,
+                        );
+                        let shape =
+                            vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            tokens.colors.surfaces.raised,
+                            None,
+                            &shape,
+                        );
+                        let bar = Rect::new(
+                            bg_rect.x0,
+                            bg_rect.y0,
+                            bg_rect.x0 + 3.0,
+                            bg_rect.y1,
+                        );
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            tokens.colors.accent[5],
+                            None,
+                            &bar,
+                        );
+                    }
                     b.line.draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::Divider => {
@@ -2741,6 +2783,27 @@ mod tests {
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(e.blocks()[0].line.selection_range(), None);
         assert_eq!(e.blocks()[1].line.selection_range(), None);
+    }
+
+    #[test]
+    fn code_block_cells_render_monospace() {
+        // A code block must read as code — its inner line uses the mono face.
+        let b = Block::code_block(Some("rust".into()), "let x = 1;");
+        assert!(
+            b.line.inner().is_mono(),
+            "code-block cells must shape their text in the monospace face"
+        );
+        // Converting a paragraph to a code block also switches to mono.
+        let mut e = BlockEditor::new();
+        e.blocks[0].line.set_text("plain");
+        e.focused = Some(0);
+        assert!(e.try_convert_to(0, BlockKind::CodeBlock { lang: None }));
+        assert!(
+            e.blocks()[0].line.inner().is_mono(),
+            "converting to a code block switches the cell to monospace"
+        );
+        // A plain paragraph is NOT mono.
+        assert!(!Block::paragraph("hi").line.inner().is_mono());
     }
 
     #[test]
