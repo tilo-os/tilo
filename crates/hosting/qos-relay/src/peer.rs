@@ -136,7 +136,14 @@ async fn handle_envelope(
                 }
             };
             let mut wr = ws.lock().await;
-            if !wr.membership.contains(&peer.device_public_key)
+            // Membership gates DEVICE subscribers. Peer-relay
+            // subscribers are already gated by cross-user auth (they
+            // must chain to the same user root, same handshake as any
+            // device) plus the `can_act_as_host` capability — they
+            // don't need to appear in the workspace membership list
+            // to legitimately federate.
+            if peer.role == crate::auth::PeerRole::Device
+                && !wr.membership.contains(&peer.device_public_key)
                 && !wr.membership.devices.is_empty()
             {
                 return Ok(Some(Envelope::NotAuthorised {
@@ -166,6 +173,7 @@ async fn handle_envelope(
             }
             wr.add_subscriber(Subscriber {
                 device_public_key: peer.device_public_key,
+                role: peer.role,
                 tx: outbound.clone(),
             });
             if !subscribed.contains(&workspace_id) {
@@ -208,14 +216,26 @@ async fn handle_envelope(
                 ..
             } = &env
             {
-                if author_device_public_key != &peer.device_public_key {
+                // A plain device can only publish deltas signed as
+                // itself; a peer relay legitimately forwards deltas
+                // authored by any device it hosts, so the author
+                // field is not required to match its own cert.
+                if peer.role == crate::auth::PeerRole::Device
+                    && author_device_public_key != &peer.device_public_key
+                {
                     return Err(PeerError::Protocol(
                         "author does not match authenticated device".into(),
                     ));
                 }
                 let seq = now_ns();
                 let raw_bytes = delta.clone();
-                let _ = wr.fanout_delta(&peer.device_public_key, env.clone(), &raw_bytes, seq)?;
+                let _ = wr.fanout_delta(
+                    author_device_public_key,
+                    peer.role,
+                    env.clone(),
+                    &raw_bytes,
+                    seq,
+                )?;
             }
             Ok(None)
         }
@@ -226,9 +246,38 @@ async fn handle_envelope(
                 unreachable!()
             };
             if let Some(ws) = workspaces.lock().await.get(&workspace_id).cloned() {
-                ws.lock().await.fanout_presence(&peer.device_public_key, env);
+                ws.lock()
+                    .await
+                    .fanout_presence(&peer.device_public_key, peer.role, env);
             }
             Ok(None)
+        }
+        Envelope::PeerRelayHello { hosted_workspaces } => {
+            // Peer-relay handshake: silently ignore if the peer's
+            // cert is not host-capable — otherwise a plain device
+            // could try to smuggle its way into the federation set.
+            if peer.role != crate::auth::PeerRole::PeerRelay {
+                return Ok(None);
+            }
+            // Compute the intersection with what THIS relay hosts and
+            // record the dialer's device pubkey as a federated peer
+            // relay for each shared workspace. On next `Subscribe`
+            // (which the peer relay is about to send for each
+            // intersection id), the existing subscriber path enrols
+            // it with role `PeerRelay` and the fan-out filter takes
+            // care of the rest.
+            let mut hosted_here: Vec<u64> = Vec::new();
+            let wsmap = workspaces.lock().await;
+            for id in &hosted_workspaces {
+                if let Some(ws) = wsmap.get(id).cloned() {
+                    ws.lock().await.record_peer_relay(peer.device_public_key);
+                    hosted_here.push(*id);
+                }
+            }
+            drop(wsmap);
+            Ok(Some(Envelope::PeerRelayHello {
+                hosted_workspaces: hosted_here,
+            }))
         }
         Envelope::Ping => Ok(Some(Envelope::Pong)),
         // Envelopes the relay only *sends*, never receives; ignore

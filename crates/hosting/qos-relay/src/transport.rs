@@ -112,6 +112,21 @@ pub enum Envelope {
     Ping,
     /// Response to Ping.
     Pong,
+
+    /// Sent by a peer relay immediately after auth — advertises the
+    /// set of workspaces it holds. The receiver computes the
+    /// intersection with its own hosted set and treats the sender as
+    /// a federated peer for that intersection.
+    ///
+    /// Sent by BOTH sides of a peer-relay session: the dialer sends
+    /// first, the accepter replies with its own hosted set. Only
+    /// meaningful when the sender's cert has
+    /// `capabilities.can_act_as_host = true` — otherwise the receiver
+    /// ignores it.
+    PeerRelayHello {
+        /// Workspace ids this peer relay currently hosts.
+        hosted_workspaces: Vec<u64>,
+    },
 }
 
 /// Encode an envelope for the wire. Returns the length-prefixed
