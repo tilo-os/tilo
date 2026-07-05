@@ -45,16 +45,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = ui::State::new();
     let app = ui::App::new(state, slides::app_root());
-    // Present mode is a borderless *full-window* takeover today (it paints the
-    // whole client area: black field + letterboxed slide, no chrome). The
-    // widget signals a desire for true OS fullscreen via
-    // `SlidesApp::wants_fullscreen()`, but `ui::App` owns the single
-    // `winit::Window` and exposes neither the window nor a fullscreen hook to
-    // its root widget — so a true borderless OS fullscreen is a documented
-    // seam (see `SlidesApp::wants_fullscreen` + `present_output_plan`). We do
-    // NOT edit `ui/` here; when `ui::App` grows a `wants_fullscreen()` poll in
-    // its redraw path (or the compositor promotes the surface to a full
-    // output), this lights up with no change to slides.
+    // Present mode requests true OS fullscreen: `SlidesApp` reports
+    // `fullscreen_intent() = Some(true)` while presenting (via
+    // `Widget::fullscreen_intent`), and `ui::App` polls that each frame and
+    // drives `window.set_fullscreen(...)`. On the qOS compositor that becomes
+    // an `xdg_toplevel.set_fullscreen` request the shell honors by promoting
+    // the surface to its full output; on any other host WM winit fullscreens
+    // the toplevel directly. Esc / a compositor-driven exit flow back through
+    // `Widget::on_fullscreen_changed`.
     app.run();
     Ok(())
 }
