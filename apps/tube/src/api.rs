@@ -24,11 +24,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(feature = "media"))]
+use std::time::Instant;
 
 use sha2::{Digest, Sha256};
 
-use crate::backend::{BackendResult, Query, StreamHandle, YtBackend};
+use crate::backend::{BackendResult, Query, YtBackend};
+#[cfg(not(feature = "media"))]
+use crate::backend::StreamHandle;
 use crate::model::{Category, Channel, Segment, Video};
 
 /// A unit of work for the background thread.
@@ -246,6 +250,14 @@ pub fn search(
                     .to_string(),
                 likes: 0,
                 seed: id.to_string(),
+                thumbnail_url: item
+                    .get("videoThumbnails")
+                    .and_then(|t| t.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|t| t.get("url"))
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
                 category: "Search".to_string(),
                 dearrow_thumb: false,
                 sponsor: vec![],
@@ -467,34 +479,127 @@ fn start_playback(
         ));
         return None;
     };
-    // Resolving the player URL is a one-time network round trip; done here on the
-    // worker thread (the streaming itself then runs on its own thread so the
-    // worker stays responsive to new requests).
-    let handle = match backend.resolve_video_stream(&id) {
-        Ok(h) => h,
-        Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
-            return None;
-        }
-    };
-    let _ = up_tx.send(Update::Note(format!(
-        "stream: itag {} {} {} {}x{}@{}fps",
-        handle.itag, handle.quality, handle.mime, handle.width, handle.height, handle.fps
-    )));
 
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
     let paused_t = paused.clone();
     let frame_tx = frame_tx.clone();
-    let up_tx = up_tx.clone();
-    let join = std::thread::Builder::new()
-        .name("tube-playback".into())
-        .spawn(move || {
-            stream_and_decode(handle, id, &frame_tx, &up_tx, &stop_t, &paused_t);
-        })
-        .ok()?;
-    Some(PlaybackHandle { stop, paused, join })
+
+    // GStreamer path (feature `media`): resolve a whole directly-playable URL
+    // via yt-dlp and let GStreamer decode any codec (VP9 / AV1 / H.264) + audio.
+    #[cfg(feature = "media")]
+    {
+        let source = match backend.resolve_playback_source(&id) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
+                return None;
+            }
+        };
+        let _ = up_tx.send(Update::Note(format!(
+            "stream (gstreamer): {} {}x{}@{}fps audio={} [{}]",
+            source.quality, source.width, source.height, source.fps, source.has_audio, source.format
+        )));
+        let up_tx = up_tx.clone();
+        let join = std::thread::Builder::new()
+            .name("tube-playback".into())
+            .spawn(move || {
+                stream_and_decode_gst(source, id, &frame_tx, &up_tx, &stop_t, &paused_t);
+            })
+            .ok()?;
+        return Some(PlaybackHandle { stop, paused, join });
+    }
+
+    // openh264 path (default `live` build, no `media`): resolve a byte-range
+    // H.264 stream and decode it through the legacy demux + openh264 decoder.
+    #[cfg(not(feature = "media"))]
+    {
+        let handle = match backend.resolve_video_stream(&id) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
+                return None;
+            }
+        };
+        let _ = up_tx.send(Update::Note(format!(
+            "stream: itag {} {} {} {}x{}@{}fps",
+            handle.itag, handle.quality, handle.mime, handle.width, handle.height, handle.fps
+        )));
+        let up_tx = up_tx.clone();
+        let join = std::thread::Builder::new()
+            .name("tube-playback".into())
+            .spawn(move || {
+                stream_and_decode(handle, id, &frame_tx, &up_tx, &stop_t, &paused_t);
+            })
+            .ok()?;
+        Some(PlaybackHandle { stop, paused, join })
+    }
+}
+
+/// The GStreamer playback loop (feature `media`), run on the dedicated playback
+/// thread. Opens a `playbin` on the resolved URL, pulls decoded RGBA frames from
+/// its appsink — paced to real time by the sink's `sync=true` — and emits a
+/// [`DecodedFrame`] per picture until the user navigates away or the stream
+/// ends. Audio (when the format is muxed) plays through the system sink.
+#[cfg(feature = "media")]
+fn stream_and_decode_gst(
+    source: crate::backend::PlaybackSource,
+    id: String,
+    frame_tx: &Sender<DecodedFrame>,
+    up_tx: &Sender<Update>,
+    stop: &AtomicBool,
+    paused: &AtomicBool,
+) {
+    use crate::backend::gst_playback::{GstPlayback, Pull};
+
+    let play = match GstPlayback::open(&source.url) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("gstreamer open failed: {e}")));
+            return;
+        }
+    };
+    let mut emitted: u64 = 0;
+    let mut was_paused = false;
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        // Reflect transport pause onto the pipeline (holds the clock).
+        let now_paused = paused.load(Ordering::SeqCst);
+        if now_paused != was_paused {
+            play.set_paused(now_paused);
+            was_paused = now_paused;
+        }
+        if now_paused {
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        match play.pull(Duration::from_millis(200)) {
+            Pull::Frame((width, height, rgba)) => {
+                emitted += 1;
+                if frame_tx
+                    .send(DecodedFrame { video: id.clone(), width, height, rgba })
+                    .is_err()
+                {
+                    break; // UI gone.
+                }
+            }
+            Pull::Timeout => continue,
+            Pull::Eos => {
+                let _ = up_tx.send(Update::Note(format!(
+                    "playback finished: {emitted} frames decoded (gstreamer)"
+                )));
+                break;
+            }
+            Pull::Err(e) => {
+                let _ = up_tx.send(Update::Note(format!("gstreamer decode error: {e}")));
+                break;
+            }
+        }
+    }
+    play.stop();
 }
 
 /// The continuous playback loop, run on the dedicated playback thread. Downloads
@@ -502,6 +607,7 @@ fn start_playback(
 /// decodes them through **one reused** decoder so inter-frames resolve against
 /// their references, and emits a [`DecodedFrame`] per picture paced to the
 /// stream's frame rate. Video only — audio is out of scope.
+#[cfg(not(feature = "media"))]
 fn stream_and_decode(
     handle: StreamHandle,
     id: String,
@@ -604,6 +710,7 @@ fn stream_and_decode(
 /// Single bounded-prefix fallback: download one prefix and decode a single frame
 /// (the pre-streaming behaviour) so a poster-replacement still shows when the
 /// continuous path is unavailable (e.g. a progressive/muxed stream with no sidx).
+#[cfg(not(feature = "media"))]
 fn decode_single_prefix(
     client: &reqwest::blocking::Client,
     handle: &StreamHandle,
@@ -637,6 +744,7 @@ fn decode_single_prefix(
 
 /// Sleep until `target`, waking early (and returning) if `stop` is set. Sleeps in
 /// short slices so a stop is honoured within ~20 ms regardless of frame interval.
+#[cfg(not(feature = "media"))]
 fn pace_until(target: Instant, stop: &AtomicBool) {
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -652,6 +760,7 @@ fn pace_until(target: Instant, stop: &AtomicBool) {
 
 /// Block while the transport is paused, polling in short slices so a resume or a
 /// stop is honoured promptly. Returns immediately when not paused.
+#[cfg(not(feature = "media"))]
 fn wait_while_paused(paused: &AtomicBool, stop: &AtomicBool) {
     while paused.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(20));
@@ -663,9 +772,23 @@ fn wait_while_paused(paused: &AtomicBool, stop: &AtomicBool) {
 /// (the worker then serves the offline sample). Never panics.
 #[cfg(feature = "live")]
 fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
-    match crate::backend::live::RustyPipeBackend::new() {
+    // Primary: yt-dlp, the community-maintained extractor. A subprocess, so it
+    // tracks YouTube's changes for us and needs no in-process PoToken/BotGuard.
+    match crate::backend::ytdlp::YtDlpBackend::new() {
         Ok(b) => {
             let _ = up_tx.send(Update::Note(format!("live backend ready: {}", b.name())));
+            return Some(Box::new(b));
+        }
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!(
+                "yt-dlp unavailable ({e}); falling back to rustypipe"
+            )));
+        }
+    }
+    // Fallback: the in-process rustypipe InnerTube client.
+    match crate::backend::live::RustyPipeBackend::new() {
+        Ok(b) => {
+            let _ = up_tx.send(Update::Note(format!("live backend ready (fallback): {}", b.name())));
             Some(Box::new(b))
         }
         Err(e) => {

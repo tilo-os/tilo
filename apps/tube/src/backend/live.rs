@@ -140,6 +140,7 @@ fn map_video_item(it: VideoItem) -> Video {
         duration: it.duration.unwrap_or(0),
         description: it.short_description.unwrap_or_default(),
         likes: 0,
+        thumbnail_url: crate::backend::yt_thumb_url(&it.id),
         seed: it.id,
         category: "Search".into(),
         dearrow_thumb: false,
@@ -221,6 +222,7 @@ impl YtBackend for RustyPipeBackend {
             // `description` is rustypipe's `RichText`; flatten to plain text.
             description: d.description.to_plaintext(),
             likes: d.like_count.unwrap_or(0) as u64,
+            thumbnail_url: crate::backend::yt_thumb_url(&d.id),
             seed: d.id,
             category: "Video".into(),
             dearrow_thumb: false,
@@ -244,6 +246,10 @@ impl YtBackend for RustyPipeBackend {
             verified: is_verified(ch.verification),
             description: ch.description.clone(),
             seed: ch.id.clone(),
+            // rustypipe is the fallback source; leave the real avatar/banner to
+            // the primary yt-dlp backend and show the seed gradient here.
+            avatar_url: String::new(),
+            banner_url: String::new(),
         };
         let uploads = ch.content.items.into_iter().map(map_video_item).collect();
         Ok(BackendResult::Channel { channel: Box::new(channel), uploads })

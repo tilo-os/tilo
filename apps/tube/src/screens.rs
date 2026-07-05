@@ -9,12 +9,13 @@ use ui::widget::{Avatar, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
+use crate::images::Imgs;
 use crate::model::{Category, Route, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
-    subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, IntoElement, Justify,
-    Len, SeekBar, Surface, Switch, Thumbnail, VideoSurface,
+    subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, ImageBox, IntoElement,
+    Justify, Len, SeekBar, Surface, Switch, Thumbnail, VideoSurface,
 };
 
 use crate::contrast::SelectedStyle;
@@ -100,6 +101,17 @@ fn initials(name: &str) -> String {
 
 fn avatar(name: &str, size: f32) -> Avatar {
     Avatar::from_initials(&initials(name), size)
+}
+
+/// A channel avatar that paints the real decoded avatar image when the store
+/// has it, else the deterministic initials chip. Looks the URL up on the
+/// channel record so any screen can render a real uploader photo.
+fn channel_avatar(imgs: Imgs, model: &TubeModel, channel_id: &str, name: &str, size: f32) -> Avatar {
+    let url = model.channel(channel_id).map(|c| c.avatar_url.as_str()).unwrap_or("");
+    match imgs.get(url) {
+        Some(img) => Avatar::new(img, size),
+        None => Avatar::from_initials(&initials(name), size),
+    }
 }
 
 fn icon(kind: IconKind, size: f32, color: Color) -> Icon {
@@ -192,12 +204,13 @@ fn section_header(theme: &Theme, kind: IconKind, title: &str, subtitle: &str) ->
 // cards
 // ---------------------------------------------------------------------------
 
-fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) -> Flex {
+fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: &Video) -> Flex {
     let dearrow = model.settings.dearrow_enabled;
     let active_dearrow = v.dearrow_active(dearrow);
     let progress = model.history.first().filter(|h| **h == v.id).map(|_| 0.35);
     let mut thumb = Thumbnail::new(&v.seed, v.duration)
         .height(THUMB_H)
+        .image(imgs.get(&v.thumbnail_url))
         .dearrow(active_dearrow && model.settings.dearrow_thumbnails)
         .live(v.live);
     if let Some(p) = progress {
@@ -253,13 +266,13 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) -> F
                 .gap(10.0)
                 .fill_w()
                 .align(Align::Start)
-                .push(avatar(&v.channel_name, 36.0))
+                .push(channel_avatar(imgs, model, &v.channel_id, &v.channel_name, 36.0))
                 .push(meta),
         )
 }
 
 /// Compact horizontal card for the "Up next" rail + history rows.
-fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) -> Flex {
+fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: &Video) -> Flex {
     let dearrow = model.settings.dearrow_enabled;
     Flex::row()
         .fill_w()
@@ -273,9 +286,12 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) ->
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
         .push(
-            Flex::col()
-                .w(Len::Px(160.0))
-                .push(Thumbnail::new(&v.seed, v.duration).height(90.0).live(v.live)),
+            Flex::col().w(Len::Px(160.0)).push(
+                Thumbnail::new(&v.seed, v.duration)
+                    .height(90.0)
+                    .image(imgs.get(&v.thumbnail_url))
+                    .live(v.live),
+            ),
         )
         .push(
             Flex::col()
@@ -530,8 +546,8 @@ fn scroll(content: Flex) -> Scrollable {
     Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(content.block()))
 }
 
-pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
-    let cards: Vec<Flex> = model.videos.iter().map(|v| video_card(model, theme, bus, v)).collect();
+pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
+    let cards: Vec<Flex> = model.videos.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
     scroll(
         Flex::col()
             .fill_w()
@@ -543,10 +559,10 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
     )
 }
 
-pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
+pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
     let mut vids: Vec<&Video> = model.videos.iter().collect();
     vids.sort_by(|a, b| b.views.cmp(&a.views));
-    let cards: Vec<Flex> = vids.iter().map(|v| video_card(model, theme, bus, v)).collect();
+    let cards: Vec<Flex> = vids.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
     scroll(
         Flex::col()
             .fill_w()
@@ -557,7 +573,7 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
     )
 }
 
-pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
+pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
     let mut rail = Flex::row().fill_w().wrap().gap(18.0);
     for cid in &model.subscriptions {
         if let Some(ch) = model.channel(cid) {
@@ -573,14 +589,14 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrol
                         border: None,
                     })
                     .on_click(bus, Action::OpenChannel(ch.id.clone()))
-                    .push(avatar(&ch.name, 56.0))
+                    .push(channel_avatar(imgs, model, &ch.id, &ch.name, 56.0))
                     .push(text_c(&ch.name, 11.5, theme.text_primary)),
             );
         }
     }
 
     let feed = model.subscription_feed();
-    let cards: Vec<Flex> = feed.iter().map(|v| video_card(model, theme, bus, v)).collect();
+    let cards: Vec<Flex> = feed.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
     let body = if cards.is_empty() {
         empty_state(theme, "No subscriptions yet", "Subscribe to channels and their latest uploads land here.")
     } else {
@@ -600,14 +616,14 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrol
     )
 }
 
-pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
+pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
     let vids = model.history_videos();
     let mut col = Flex::col().fill_w().gap(8.0);
     if vids.is_empty() {
         col = col.push(empty_state(theme, "Nothing watched yet", "Videos you watch show up here."));
     }
     for v in vids {
-        col = col.push(compact_card(model, theme, bus, v));
+        col = col.push(compact_card(model, theme, bus, imgs, v));
     }
     scroll(
         Flex::col()
@@ -620,9 +636,9 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable 
     )
 }
 
-pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, query: &str) -> Scrollable {
+pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, query: &str) -> Scrollable {
     let results = model.search_display(query);
-    let cards: Vec<Flex> = results.iter().map(|v| video_card(model, theme, bus, v)).collect();
+    let cards: Vec<Flex> = results.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
     let header = format!("{} results", cards.len());
     let col = Flex::col()
         .fill_w()
@@ -647,24 +663,25 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, query: &str) ->
     scroll(col)
 }
 
-pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> Scrollable {
+pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id: &str) -> Scrollable {
     let Some(ch) = model.channel(id) else {
         return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Channel not found", "")));
     };
     let subscribed = model.is_subscribed(id);
-    let (g0, _g1) = crate::util::seed_gradient(&ch.seed);
 
-    let banner = Flex::row().fill_w().h(Len::Px(120.0)).surface(Surface {
-        fill: Some(g0),
-        radius: theme.tokens.radii.lg as f64,
-        border: None,
-    });
+    // Real banner image when the store has it, else the seed gradient.
+    let banner = ImageBox::new(
+        &ch.seed,
+        160.0,
+        theme.tokens.radii.lg as f64,
+        imgs.get(&ch.banner_url),
+    );
 
     let header = Flex::row()
         .fill_w()
         .gap(18.0)
         .align(Align::Center)
-        .push(avatar(&ch.name, 86.0))
+        .push(channel_avatar(imgs, model, &ch.id, &ch.name, 86.0))
         .push(
             Flex::col()
                 .grow(1.0)
@@ -688,7 +705,7 @@ pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, id: &str) -> S
     let cards: Vec<Flex> = model
         .channel_videos(id)
         .iter()
-        .map(|v| video_card(model, theme, bus, v))
+        .map(|v| video_card(model, theme, bus, imgs, v))
         .collect();
 
     scroll(
@@ -724,6 +741,7 @@ pub fn watch(
     model: &TubeModel,
     theme: &Theme,
     bus: &ActionBus,
+    imgs: Imgs,
     id: &str,
     content_w: f64,
     frame: Option<&crate::api::DecodedFrame>,
@@ -757,9 +775,13 @@ pub fn watch(
             .fill_w()
             .push(VideoSurface::new(f.rgba.clone(), f.width, f.height, player_h))
     } else {
-        Flex::col()
-            .fill_w()
-            .push(Thumbnail::new(&v.seed, v.duration).height(player_h).hero().live(v.live))
+        Flex::col().fill_w().push(
+            Thumbnail::new(&v.seed, v.duration)
+                .height(player_h)
+                .image(imgs.get(&v.thumbnail_url))
+                .hero()
+                .live(v.live),
+        )
     };
 
     let enabled: Vec<bool> = v
@@ -825,7 +847,7 @@ pub fn watch(
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
-        .push(avatar(&v.channel_name, 48.0))
+        .push(channel_avatar(imgs, model, &v.channel_id, &v.channel_name, 48.0))
         .push(
             Flex::col()
                 .grow(1.0)
@@ -899,7 +921,7 @@ pub fn watch(
             .push(autoplay_toggle(model, theme, bus)),
     );
     for r in model.related_display(id).into_iter().take(6) {
-        up = up.push(compact_card(model, theme, bus, r));
+        up = up.push(compact_card(model, theme, bus, imgs, r));
     }
 
     // Wide: player column grows beside a fixed-width "Up next" rail. Narrow:
