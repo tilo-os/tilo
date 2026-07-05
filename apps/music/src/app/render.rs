@@ -45,6 +45,10 @@ struct PlaylistDisp {
     count: usize,
 }
 
+/// Minimum horizontal travel (logical px) for a now-playing-bar drag to count
+/// as a prev/next swipe rather than a tap.
+const BAR_SWIPE_PX: f64 = 56.0;
+
 // Vertical-center a single text line of `size` within a row of height `h`.
 fn vy(top: f64, h: f64, size: f32) -> f64 {
     top + (h - size as f64 * 1.25) / 2.0
@@ -58,6 +62,63 @@ fn human_count(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// A monotonic wall-clock phase in `[0,1)` for shimmer/pulse animations
+/// (~1.3s period). Process-relative so every skeleton sweeps in lockstep.
+fn anim_phase() -> f64 {
+    (anim_time() / 1.3).fract()
+}
+
+/// Monotonic seconds since first use — the shared animation clock.
+fn anim_time() -> f64 {
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+/// Normalised `0..=1` heights for the 3-bar now-playing equalizer. While
+/// `playing` the bars bounce on out-of-phase sinusoids; paused they hold a
+/// static silhouette.
+fn eq_bars(playing: bool) -> [f64; 3] {
+    if !playing {
+        return [0.35, 0.72, 0.48];
+    }
+    let ti = anim_time();
+    let speeds = [9.0, 12.5, 7.3];
+    let phases = [0.0, 1.7, 3.4];
+    let mut out = [0.0; 3];
+    for i in 0..3 {
+        out[i] = 0.15 + 0.85 * (0.5 + 0.5 * (ti * speeds[i] + phases[i]).sin());
+    }
+    out
+}
+
+/// A shimmering skeleton placeholder block: a rounded base with a soft
+/// highlight band sweeping left→right, clipped to the block. This is the
+/// loading affordance that replaces "fake title" text while real content
+/// streams in.
+fn draw_skeleton_block(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: &Palette) {
+    if r.width() <= 0.0 || r.height() <= 0.0 {
+        return;
+    }
+    fill_rrect(scene, t, r, radius, c.card);
+    // Moving highlight sweep, clipped to the block's rounded rect.
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rrect(r, radius));
+    let phase = anim_phase();
+    let band_w = (r.width() * 0.45).max(24.0);
+    let travel = r.width() + band_w;
+    let x = r.x0 - band_w + travel * phase;
+    // Two overlapping bands give a soft-edged sweep without a gradient brush.
+    scene.fill(Fill::NonZero, t, c.white5, None, &Rect::new(x, r.y0, x + band_w, r.y1));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        c.white10.multiply_alpha(0.7),
+        None,
+        &Rect::new(x + band_w * 0.28, r.y0, x + band_w * 0.72, r.y1),
+    );
+    scene.pop_layer();
 }
 
 impl Widget for MusicApp {
@@ -174,6 +235,10 @@ impl Widget for MusicApp {
                         }
                     }
                     *handled = true;
+                } else if self.bar_press.is_some() {
+                    // A now-playing-bar swipe is in progress; consume moves so
+                    // the gesture is resolved on release.
+                    *handled = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
@@ -184,6 +249,17 @@ impl Widget for MusicApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // A press outside the open volume popover (and its button)
+                // dismisses it.
+                if self.volume_popover_open
+                    && !self.volume_popover_rect.contains(self.mouse)
+                    && !self.volume_btn_rect.contains(self.mouse)
+                {
+                    self.volume_popover_open = false;
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // Hamburger toggle wins over everything (it sits above the
                 // scrim hit that otherwise covers the whole content in overlay).
                 if self.show_hamburger() && self.hamburger_rect.contains(self.mouse) {
@@ -206,6 +282,23 @@ impl Widget for MusicApp {
                     *handled = true;
                     return;
                 }
+                // Now-playing bar swipe: a horizontal drag over the bar's empty
+                // area (or the artwork) is captured here and resolved on release
+                // — swipe left → next, right → previous. Transport buttons still
+                // click through (they aren't swipe-eligible).
+                let bar = self.nowplaying_rect();
+                if bar.contains(self.mouse) {
+                    let hit = self.hit_test(self.mouse);
+                    let swipeable = matches!(
+                        hit,
+                        None | Some(Action::Nav(View::Lyrics)) | Some(Action::Nav(View::Album(_)))
+                    );
+                    if swipeable {
+                        self.bar_press = Some((self.mouse, hit));
+                        *handled = true;
+                        return;
+                    }
+                }
                 // Topmost matching hit wins (later-drawn = on top).
                 if let Some(action) = self.hit_test(self.mouse) {
                     // Clicking anywhere outside the search field blurs it.
@@ -219,6 +312,20 @@ impl Widget for MusicApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                // Resolve a now-playing-bar swipe: a large horizontal delta skips
+                // track; otherwise it was a tap on the captured target.
+                if let Some((start, tap)) = self.bar_press.take() {
+                    let dx = self.mouse.x - start.x;
+                    if dx <= -BAR_SWIPE_PX {
+                        self.dispatch(Action::Next, state);
+                    } else if dx >= BAR_SWIPE_PX {
+                        self.dispatch(Action::Prev, state);
+                    } else if let Some(a) = tap {
+                        self.dispatch(a, state);
+                    }
+                    *handled = true;
+                    return;
+                }
                 if self.drag.is_some() {
                     self.drag = None;
                     *handled = true;
@@ -265,6 +372,7 @@ impl Widget for MusicApp {
             || self.lyrics_pending_for.is_some()
             || self.search_edit_at.is_some()
             || (self.home_requested && self.home.is_none())
+            || self.detail_loading()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -292,6 +400,16 @@ impl MusicApp {
             }
         }
         None
+    }
+
+    /// Whether the current detail view is a real (live) artist/album page whose
+    /// content hasn't landed yet — so its loading skeleton must keep animating.
+    fn detail_loading(&self) -> bool {
+        match &self.view {
+            View::Artist(id) => is_live_id(id) && !self.artist_pages.contains_key(id) && !self.lib.artists.contains_key(id),
+            View::Album(id) => is_live_album_id(id) && !self.album_pages.contains_key(id) && !self.lib.albums.contains_key(id),
+            _ => false,
+        }
     }
 
     fn on_key(
@@ -375,7 +493,7 @@ impl MusicApp {
         match key {
             Key::Named(NamedKey::Escape) => {
                 // Dismiss an open overlay sidebar.
-                if self.sidebar_layout() == SplitLayout::Overlay && self.flap.is_open(self.sidebar_layout()) {
+                if self.drawer.is_overlay() && self.drawer.is_open() {
                     self.dispatch(Action::CloseSidebar, state);
                     *handled = true;
                 }
@@ -503,6 +621,7 @@ impl MusicApp {
         self.drain_worker();
         self.inject_live_hits();
         self.poll_lyrics();
+        self.maybe_prefetch();
         self.maybe_dispatch_live_search();
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
@@ -513,23 +632,12 @@ impl MusicApp {
             }
         }
 
-        // Advance the adaptive sidebar: reconcile a stale preference across a
-        // breakpoint crossing, then ease the reveal toward its target.
-        let layout = self.sidebar_layout();
-        self.flap.reconcile(layout);
-        if !self.flap_primed {
-            // First frame: the layout is only now known. Snap the reveal to the
-            // resolved openness so a cold start into a narrow window opens
-            // closed (and a `--shots` frame is settled), rather than animating
-            // in from the wide default. Honours an explicit scenario snap.
-            let open = self.flap.is_open(layout);
-            self.flap.snap(open);
-            self.flap_primed = true;
-        }
-        let now = Instant::now();
-        let dt = now.duration_since(self.flap_tick).as_secs_f64();
-        self.flap_tick = now;
-        self.flap.tick(layout, dt);
+        // Advance the adaptive sidebar drawer: tick eases the reveal off a real
+        // wall-clock delta, resolve re-decides docked-vs-overlay from the width
+        // and hands back the sidebar + content rects (settling the reveal on the
+        // first frame / a breakpoint crossing, honouring any `--shots` snap).
+        self.drawer.tick(false);
+        let content_rect = self.drawer.resolve(self.rect);
 
         let c = Palette::from(theme);
         let r = self.rect;
@@ -537,9 +645,9 @@ impl MusicApp {
         // App background.
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
 
-        // Content column begins after the docked sidebar inset (0 in overlay,
-        // where the content uses the full width and the sidebar floats over).
-        let content_x0 = r.x0 + self.content_inset();
+        // Content column begins after the docked sidebar inset (full-width in
+        // overlay, where the sidebar floats over the content).
+        let content_x0 = content_rect.x0;
         let header = Rect::new(content_x0, r.y0, r.x1, r.y0 + HEADER_H);
         let body = Rect::new(content_x0, r.y0 + HEADER_H, r.x1, r.y1 - NOWPLAYING_H);
         // The now-playing transport runs along the bottom of the content column,
@@ -562,15 +670,12 @@ impl MusicApp {
         self.draw_header(scene, t, tr, &c, header);
         self.draw_nowplaying(scene, t, tr, &c, nowplaying);
 
-        // Overlay flap: dim the content behind a scrim that fades with the
-        // reveal, then float the sidebar above it. A click on the scrim
-        // dismisses the flap (registered as a hit so the press handler closes
-        // it without matching a content target).
-        let reveal = self.flap.reveal();
-        if layout == SplitLayout::Overlay && reveal > 0.001 {
-            let scrim = c.scrim.multiply_alpha((reveal * 0.55) as f32);
-            scene.fill(Fill::NonZero, t, scrim, None, &r);
-            self.push_hit(r, Action::CloseSidebar);
+        // Overlay flap: dim the content behind the drawer's scrim (alpha tracks
+        // the eased reveal), and register a hit so a scrim tap dismisses it.
+        let scrim = self.drawer.scrim_rect();
+        if scrim.width() > 0.5 {
+            self.drawer.draw_scrim(scene, t);
+            self.push_hit(scrim, Action::CloseSidebar);
         }
 
         // Sidebar (docked beside the content, or floating in overlay). Skip the
@@ -585,6 +690,9 @@ impl MusicApp {
         if self.show_hamburger() {
             self.draw_hamburger(scene, t, &c, header);
         }
+
+        // Collapsed-volume popover floats above the now-playing bar.
+        self.draw_volume_popover(scene, t, tr, &c);
 
         self.draw_toast(scene, t, tr, &c);
 
@@ -612,8 +720,8 @@ impl MusicApp {
         let hover = btn.contains(self.mouse);
         fill_rrect(scene, t, btn, 10.0, if hover { c.white10 } else { c.white5 });
         let cx = btn.center();
-        let open = self.flap.reveal() > 0.5;
-        if open && self.sidebar_layout() == SplitLayout::Overlay {
+        let open = self.drawer.reveal() > 0.5;
+        if open && self.drawer.is_overlay() {
             // Close affordance: a left chevron.
             icon::draw(scene, t, Icon::ChevronLeft, cx, 18.0, c.text);
         } else {
@@ -635,6 +743,10 @@ impl MusicApp {
     // ---- sidebar ----------------------------------------------------------
 
     fn draw_sidebar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
+        // Clip ALL sidebar content to the (possibly narrowing) panel rect, so a
+        // collapse / slide never spills brand + nav pixels over the content
+        // beside it. The clip is popped at the end of the method.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
         scene.fill(Fill::NonZero, t, c.panel, None, &r);
         // Right divider.
         scene.fill(
@@ -653,10 +765,9 @@ impl MusicApp {
         // Docked-collapse affordance: a left-chevron button at the brand row's
         // right edge, shown only when the sidebar is docked + open (so there's
         // always a visible way to collapse it — the hamburger only reappears
-        // once collapsed). NOTE for ui promotion: NavSplit/FlapState provide
-        // the docked-collapse *state machine* but no collapse *button* or a
-        // collapsed-rail mode; this affordance is added app-locally.
-        if self.sidebar_layout() == SplitLayout::Docked && self.flap.reveal() > 0.5 {
+        // once collapsed). `SidebarDrawer` owns the collapse *state machine*;
+        // this button is the app's collapse *affordance*.
+        if self.drawer.is_docked() && self.drawer.reveal() > 0.5 {
             let cb = Rect::new(r.x1 - 44.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 46.0);
             let hover = self.push_hit(cb, Action::ToggleSidebar);
             if hover {
@@ -710,6 +821,9 @@ impl MusicApp {
             draw_text(tr, scene, t, &name, r.x0 + 24.0, vy(y, 34.0, 13.0), 13.0, col, TextWeight::Medium, None);
             y += 34.0;
         }
+
+        // Close the panel clip opened at the top of this method.
+        scene.pop_layer();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -883,12 +997,13 @@ impl MusicApp {
             return y;
         }
 
-        // Fallback (offline, or while the live fetch is in flight): the bundled
-        // sample library, with an honest status line when a real fetch is pending.
+        // While a real Home fetch is in flight, show a shimmering skeleton grid
+        // rather than the sample fallback (or any "fake title" text).
         if self.home_requested {
-            draw_text(tr, scene, t, "Loading charts from YouTube Music\u{2026}", body.x0 + pad, y - 16.0, 13.0, c.dim, TextWeight::Regular, None);
+            return self.draw_home_skeleton(scene, t, c, body, y);
         }
 
+        // Offline fallback (no live fetch requested): the bundled sample library.
         // Quick-pick tiles: a mix of playlists rendered as wide chips.
         let pls = self.gather_playlists();
         let chip_h = 64.0;
@@ -1176,11 +1291,14 @@ impl MusicApp {
                     if hovered {
                         icon::draw(scene, t, Icon::Play, Point::new(left + 14.0, y + row_h / 2.0), 14.0, c.text);
                     } else if is_current {
-                        // little equalizer bars
-                        for b in 0..3 {
+                        // Now-playing equalizer: animates while playing, static
+                        // (a fixed silhouette) when paused.
+                        let bars = eq_bars(self.pb.playing);
+                        let mid = y + row_h / 2.0;
+                        for (b, &frac) in bars.iter().enumerate() {
                             let bx = left + 6.0 + b as f64 * 6.0;
-                            let bh = 6.0 + ((i + b) % 3) as f64 * 5.0;
-                            scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(bx, y + row_h / 2.0 - bh / 2.0, bx + 3.0, y + row_h / 2.0 + bh / 2.0));
+                            let bh = 5.0 + frac * 13.0;
+                            scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(bx, mid - bh / 2.0, bx + 3.0, mid + bh / 2.0));
                         }
                     } else {
                         let num = format!("{}", tk.no.max(i as u32 + 1));
@@ -1432,17 +1550,56 @@ impl MusicApp {
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true)
     }
 
-    /// A placeholder header shown while a real album/artist page is loading.
-    fn draw_loading_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64, kind: &str, id: &str) -> f64 {
+    /// A shimmering **skeleton** shown while a real album/artist page loads —
+    /// a placeholder cover + title/subtitle bars + several track rows, so the
+    /// page reads as loading without any "fake title" text.
+    fn draw_loading_detail(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64, kind: &str, id: &str) -> f64 {
+        let _ = (kind, id);
         let pad = 28.0;
         y += 12.0;
         let art = Rect::new(body.x0 + pad, y, body.x0 + pad + 168.0, y + 168.0);
-        fill_rrect(scene, t, art, 14.0, c.card);
+        draw_skeleton_block(scene, t, art, 14.0, c);
         let tx = art.x1 + 28.0;
-        draw_text(tr, scene, t, kind, tx, y + 8.0, 12.0, c.dim, TextWeight::Semibold, None);
-        draw_text(tr, scene, t, "Loading from YouTube Music\u{2026}", tx, y + 40.0, 22.0, c.text, TextWeight::Bold, None);
-        let _ = id;
-        y + 168.0 + 36.0
+        let right = body.x1 - pad;
+        draw_skeleton_block(scene, t, Rect::new(tx, y + 16.0, tx + 68.0, y + 30.0), 6.0, c);
+        draw_skeleton_block(scene, t, Rect::new(tx, y + 42.0, (tx + 340.0).min(right), y + 78.0), 9.0, c);
+        draw_skeleton_block(scene, t, Rect::new(tx, y + 90.0, (tx + 240.0).min(right), y + 110.0), 7.0, c);
+        draw_skeleton_block(scene, t, Rect::new(tx, y + 126.0, tx + 132.0, y + 158.0), 18.0, c);
+        y += 168.0 + 30.0;
+        // Skeleton track rows.
+        for _ in 0..7 {
+            let left = body.x0 + pad;
+            draw_skeleton_block(scene, t, Rect::new(left, y + 10.0, left + 16.0, y + 26.0), 4.0, c);
+            draw_skeleton_block(scene, t, Rect::new(left + 34.0, y + 8.0, (left + 300.0).min(right - 80.0), y + 22.0), 6.0, c);
+            draw_skeleton_block(scene, t, Rect::new(left + 34.0, y + 27.0, (left + 200.0).min(right - 80.0), y + 39.0), 5.0, c);
+            draw_skeleton_block(scene, t, Rect::new(right - 44.0, y + 16.0, right, y + 30.0), 5.0, c);
+            y += 52.0;
+        }
+        y
+    }
+
+    /// A shimmering skeleton grid for the Home page while the real charts /
+    /// new-releases sections stream in.
+    fn draw_home_skeleton(&mut self, scene: &mut Scene, t: Affine, c: &Palette, body: Rect, mut y: f64) -> f64 {
+        let pad = 28.0;
+        let gap = 20.0;
+        let target = 168.0;
+        let avail = body.width() - 2.0 * pad;
+        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
+        for _ in 0..2 {
+            // Section title bar.
+            draw_skeleton_block(scene, t, Rect::new(body.x0 + pad, y, body.x0 + pad + 180.0, y + 22.0), 7.0, c);
+            y += 40.0;
+            for i in 0..cols {
+                let cx = body.x0 + pad + i as f64 * (card_w + gap);
+                draw_skeleton_block(scene, t, Rect::new(cx, y, cx + card_w, y + card_w), 12.0, c);
+                draw_skeleton_block(scene, t, Rect::new(cx, y + card_w + 10.0, cx + card_w * 0.8, y + card_w + 24.0), 5.0, c);
+                draw_skeleton_block(scene, t, Rect::new(cx, y + card_w + 30.0, cx + card_w * 0.55, y + card_w + 42.0), 5.0, c);
+            }
+            y += card_w + 60.0;
+        }
+        y
     }
 
     fn draw_artist_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, id: &str) -> f64 {
@@ -1698,34 +1855,48 @@ impl MusicApp {
 
     // ---- lyrics -----------------------------------------------------------
 
-    fn draw_lyrics(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64) -> f64 {
+    fn draw_lyrics(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64) -> f64 {
+        let _ = y; // lyrics own the whole body: laid out + auto-scrolled here.
         let pad = 28.0;
         // Resolve lyrics for the current track (cached by id).
         self.ensure_lyrics();
-        y += 16.0;
+        // Fill the body (no wheel scroll — the active line auto-follows below).
+        let bottom = body.y1 - 24.0;
 
+        let top = body.y0 + 22.0;
         let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
-        if let Some(tk) = &cur {
-            draw_text(tr, scene, t, &tk.title, body.x0 + pad, y, 22.0, c.text, TextWeight::Bold, None);
-            draw_text(tr, scene, t, &tk.artist, body.x0 + pad, y + 30.0, 14.0, c.dim, TextWeight::Regular, None);
-            y += 64.0;
-        } else {
-            draw_text(tr, scene, t, "Play a track to see its lyrics.", body.x0 + pad, y, 14.0, c.dim, TextWeight::Regular, None);
-            return y + 40.0;
+        let Some(tk) = cur else {
+            let msg = "Play a track to see its lyrics.";
+            let (tw, _) = tr.measure_weighted(msg, 15.0, None, TextWeight::Regular);
+            draw_text(tr, scene, t, msg, body.x0 + (body.width() - tw as f64) / 2.0, body.center().y, 15.0, c.dim, TextWeight::Regular, None);
+            return bottom;
+        };
+
+        // Header: current track + a small "Synced" tag when time-stamped.
+        draw_text(tr, scene, t, &tk.title, body.x0 + pad, top, 22.0, c.text, TextWeight::Bold, None);
+        draw_text(tr, scene, t, &tk.artist, body.x0 + pad, top + 30.0, 14.0, c.dim, TextWeight::Regular, None);
+        if self.lyrics_synced && !self.lyrics.is_empty() {
+            let tag = "SYNCED";
+            let (tw, _) = tr.measure_weighted(tag, 10.0, None, TextWeight::Semibold);
+            let pill = Rect::new(body.x1 - pad - tw as f64 - 20.0, top - 2.0, body.x1 - pad, top + 18.0);
+            fill_rrect(scene, t, pill, 9.0, c.accent.multiply_alpha(0.16));
+            draw_text(tr, scene, t, tag, pill.x0 + 10.0, vy(pill.y0, 20.0, 10.0), 10.0, c.accent, TextWeight::Semibold, None);
         }
+        let band_top = top + 70.0;
 
         if self.lyrics.is_empty() {
-            draw_text(tr, scene, t, "No lyrics found for this track.", body.x0 + pad, y, 14.0, c.dim, TextWeight::Regular, None);
-            let note = if cfg!(feature = "lyrics") {
-                "Fetching from lrclib\u{2026}"
+            // Clean empty state — NO dev/compile-feature text.
+            let msg = if self.lyrics_pending_for.is_some() {
+                "Finding lyrics\u{2026}"
             } else {
-                "Live lyrics fetch is gated behind the `lyrics` feature; bundled samples shown when available."
+                "No lyrics found for this track."
             };
-            draw_text(tr, scene, t, note, body.x0 + pad, y + 24.0, 12.0, c.dim, TextWeight::Regular, None);
-            return y + 60.0;
+            let (tw, _) = tr.measure_weighted(msg, 15.0, None, TextWeight::Regular);
+            draw_text(tr, scene, t, msg, body.x0 + (body.width() - tw as f64) / 2.0, (band_top + bottom) / 2.0, 15.0, c.dim, TextWeight::Regular, None);
+            return bottom;
         }
 
-        // Highlight the current synced line against the playhead.
+        // The synced current line (last line whose timestamp <= playhead).
         let pos = self.playhead_ms as u64;
         let current = if self.lyrics_synced {
             lyrics::Lyrics { lines: self.lyrics.clone(), synced: true }.current_line(pos)
@@ -1733,20 +1904,47 @@ impl MusicApp {
             None
         };
 
-        let line_h = 30.0;
+        let line_h = 34.0;
+        let n = self.lyrics.len();
+        let band_bot = bottom;
+        let band_h = (band_bot - band_top).max(1.0);
+        // Auto-scroll so the active line sits ~42% down the band and moves in
+        // time with playback; plain (unsynced) lyrics anchor to the top.
+        let focus = current.unwrap_or(0);
+        let auto = if self.lyrics_synced && current.is_some() {
+            let want = focus as f64 * line_h - band_h * 0.42;
+            want.clamp(0.0, ((n as f64 * line_h) - band_h).max(0.0))
+        } else {
+            0.0
+        };
+
+        // Clip the scrolling band so lines never spill onto the header / bar.
+        let clip = Rect::new(body.x0, band_top - 6.0, body.x1, band_bot);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        let maxw = (body.width() - 2.0 * pad).min(620.0);
         for (i, line) in self.lyrics.iter().enumerate() {
+            let ly = band_top + i as f64 * line_h - auto;
+            if ly < band_top - line_h || ly > band_bot {
+                continue;
+            }
             let active = Some(i) == current;
-            let col = if active { c.accent } else if self.lyrics_synced { c.dim } else { c.text };
-            let weight = if active { TextWeight::Bold } else { TextWeight::Medium };
-            let size = if active { 17.0 } else { 15.0 };
-            let text = if line.text.is_empty() { " " } else { line.text.as_str() };
-            draw_text(tr, scene, t, text, body.x0 + pad, y, size, col, weight, Some((body.width() - 2.0 * pad) as f32));
-            y += line_h;
+            let dist = (i as i64 - focus as i64).unsigned_abs() as f32;
+            let (col, size, weight) = if active {
+                (c.accent, 21.0_f32, TextWeight::Bold)
+            } else if self.lyrics_synced {
+                // Fade neighbouring lines out with distance from the current one.
+                let a = (0.92 - dist * 0.14).clamp(0.30, 0.92);
+                (c.text.multiply_alpha(a), 16.0, TextWeight::Medium)
+            } else {
+                (c.text.multiply_alpha(0.86), 16.0, TextWeight::Medium)
+            };
+            let text = if line.text.trim().is_empty() { "\u{266a}" } else { line.text.as_str() };
+            let (tw, _) = tr.measure_weighted(text, size, Some(maxw as f32), weight);
+            let x = body.x0 + (body.width() - tw as f64) / 2.0;
+            draw_text(tr, scene, t, text, x, ly, size, col, weight, Some(maxw as f32));
         }
-        let src = if self.lyrics_synced { "Synced lyrics" } else { "Lyrics" };
-        let gated = if cfg!(feature = "lyrics") { "live fetch via lrclib" } else { "bundled sample (live fetch gated behind `lyrics`)" };
-        draw_text(tr, scene, t, &format!("{src} · {gated}"), body.x0 + pad, y + 8.0, 11.0, c.dim, TextWeight::Regular, None);
-        y + 28.0
+        scene.pop_layer();
+        bottom
     }
 
     // ---- search -----------------------------------------------------------
@@ -1876,7 +2074,8 @@ impl MusicApp {
         let lx = r.x0 + 16.0;
         if let Some(tk) = &cur {
             let art = Rect::new(lx, r.y0 + 14.0, lx + 64.0, r.y0 + 78.0);
-            self.draw_cover(scene, t, art, &tk.cover_id(), &tk.title, tr, 8.0);
+            let cover = self.best_cover_id(&tk.id, &tk.album_id);
+            self.draw_cover(scene, t, art, &cover, &tk.title, tr, 8.0);
             // Clicking the art jumps to its album.
             self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
             let tx = art.x1 + 14.0;
@@ -1889,6 +2088,14 @@ impl MusicApp {
             draw_text(tr, scene, t, &title, tx, r.y0 + 26.0, 14.0, c.text, TextWeight::Semibold, None);
             let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, maxw);
             draw_text(tr, scene, t, &artist, tx, r.y0 + 48.0, 12.0, c.dim, TextWeight::Regular, None);
+            // Real-playback indicator: only shown while the GStreamer pipeline
+            // is genuinely decoding the resolved stream (never a fake timer).
+            if let Some(ind) = self.streaming_indicator() {
+                let dot = Point::new(tx + 3.0, r.y0 + 66.0);
+                scene.fill(Fill::NonZero, t, c.accent, None, &Circle::new(dot, 2.5));
+                let ind = elide(tr, &ind, 10.5, TextWeight::Medium, maxw - 12.0);
+                draw_text(tr, scene, t, &ind, tx + 12.0, r.y0 + 60.0, 10.5, c.accent, TextWeight::Medium, None);
+            }
 
             // Heart / like toggle next to the song name.
             let liked = self.lib.is_liked(&tk.id);
@@ -1915,8 +2122,14 @@ impl MusicApp {
             draw_text(tr, scene, t, "Nothing playing", lx, vy(r.y0, NOWPLAYING_H, 14.0), 14.0, c.dim, TextWeight::Regular, None);
         }
 
-        // Right block reserved for queue + volume.
-        let right_w = 240.0;
+        // Right block reserved for queue + volume. As the bar narrows the
+        // volume slider shrinks toward a floor, then collapses to a button that
+        // opens a small popover (see below); on very narrow widths the whole
+        // bar drops to the compact transport (no volume) above.
+        let w = r.width();
+        let show_slider = w >= 900.0;
+        let slider_w = ((w - 720.0) * 0.32).clamp(58.0, 150.0);
+        let right_w = if show_slider { slider_w + 118.0 } else { 108.0 };
         let center = Rect::new(r.x0 + 300.0, r.y0, r.x1 - right_w, r.y1);
 
         // Transport buttons.
@@ -1981,29 +2194,90 @@ impl MusicApp {
         icon::draw(scene, t, Icon::Queue, q_c, 18.0, if self.view == View::Queue { c.accent } else if qh { c.text } else { c.dim });
 
         let vol_icon_c = Point::new(r.x1 - right_w + 64.0, r.y0 + NOWPLAYING_H / 2.0);
-        let vol = self.pb.volume as f64 / 100.0;
         let muted = self.pb.volume == 0;
-        // The speaker icon is a mute toggle: click to silence, click to restore.
-        let mh = self.push_hit(square_around(vol_icon_c, 28.0), Action::ToggleMute);
-        icon::draw(
-            scene,
-            t,
-            if muted { Icon::VolumeMute } else { Icon::VolumeHigh },
-            vol_icon_c,
-            18.0,
-            if muted { c.accent } else if mh { c.text } else { c.dim },
-        );
-        let vbar_x0 = vol_icon_c.x + 18.0;
-        let vbar_x1 = r.x1 - 24.0;
         let vbar_y = r.y0 + NOWPLAYING_H / 2.0;
-        self.volume_rect = Rect::new(vbar_x0, vbar_y - 8.0, vbar_x1, vbar_y + 8.0);
-        let vtrack = Rect::new(vbar_x0, vbar_y - 2.0, vbar_x1, vbar_y + 2.0);
+        if show_slider {
+            // Inline slider (shrinks with the bar). The speaker icon is a mute
+            // toggle: click to silence, click to restore.
+            self.volume_btn_rect = Rect::ZERO;
+            self.volume_popover_open = false;
+            let mh = self.push_hit(square_around(vol_icon_c, 28.0), Action::ToggleMute);
+            icon::draw(
+                scene,
+                t,
+                if muted { Icon::VolumeMute } else { Icon::VolumeHigh },
+                vol_icon_c,
+                18.0,
+                if muted { c.accent } else if mh { c.text } else { c.dim },
+            );
+            let vbar_x0 = vol_icon_c.x + 18.0;
+            let vbar_x1 = r.x1 - 24.0;
+            self.draw_volume_slider(scene, t, c, Rect::new(vbar_x0, vbar_y - 8.0, vbar_x1, vbar_y + 8.0));
+        } else {
+            // Collapsed: a single volume button that opens a slider popover.
+            self.volume_rect = Rect::ZERO;
+            let btn = square_around(vol_icon_c, 32.0);
+            self.volume_btn_rect = btn;
+            let bh = self.push_hit(btn, Action::ToggleVolumePopover);
+            if self.volume_popover_open || bh {
+                fill_rrect(scene, t, btn, 9.0, c.white10);
+            }
+            let icon = if muted { Icon::VolumeMute } else { Icon::VolumeHigh };
+            icon::draw(scene, t, icon, vol_icon_c, 18.0, if muted { c.accent } else if bh || self.volume_popover_open { c.text } else { c.dim });
+        }
+    }
+
+    /// Draw a horizontal volume slider filling `hit` (its full interactive
+    /// rect), registering the drag target. Shared by the inline bar slider and
+    /// the collapsed-volume popover.
+    fn draw_volume_slider(&mut self, scene: &mut Scene, t: Affine, c: &Palette, hit: Rect) {
+        self.volume_rect = hit;
+        let vol = self.pb.volume as f64 / 100.0;
+        let vbar_y = hit.center().y;
+        let x0 = hit.x0;
+        let x1 = hit.x1;
+        let vtrack = Rect::new(x0, vbar_y - 2.0, x1, vbar_y + 2.0);
         fill_rrect(scene, t, vtrack, 2.0, c.white10);
-        let vfill = vbar_x0 + (vbar_x1 - vbar_x0) * vol;
-        if vfill > vbar_x0 {
-            fill_rrect(scene, t, Rect::new(vbar_x0, vbar_y - 2.0, vfill, vbar_y + 2.0), 2.0, c.accent);
+        let vfill = x0 + (x1 - x0) * vol;
+        if vfill > x0 {
+            fill_rrect(scene, t, Rect::new(x0, vbar_y - 2.0, vfill, vbar_y + 2.0), 2.0, c.accent);
         }
         scene.fill(Fill::NonZero, t, c.text, None, &Circle::new(Point::new(vfill, vbar_y), 5.0));
+    }
+
+    /// The collapsed-volume popover: a small floating panel with a horizontal
+    /// slider + a mute toggle, anchored above the volume button. Drawn on top of
+    /// the bar (after it) so it never clips. Uses the shared drag target so the
+    /// existing scrubber/volume drag logic drives it.
+    fn draw_volume_popover(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette) {
+        if !self.volume_popover_open || self.volume_btn_rect.width() <= 0.0 {
+            self.volume_popover_rect = Rect::ZERO;
+            self.volume_popover_slider = Rect::ZERO;
+            return;
+        }
+        let btn = self.volume_btn_rect;
+        let pw = 220.0;
+        let ph = 56.0;
+        let x0 = (btn.center().x - pw / 2.0).max(self.rect.x0 + 8.0).min(self.rect.x1 - pw - 8.0);
+        let y1 = btn.y0 - 10.0;
+        let y0 = y1 - ph;
+        let panel = Rect::new(x0, y0, x0 + pw, y1);
+        self.volume_popover_rect = panel;
+        fill_rrect(scene, t, panel, 12.0, c.toast_bg);
+        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(panel, 12.0));
+        // Block clicks inside the panel from falling through.
+        self.push_hit(panel, Action::None);
+
+        let muted = self.pb.volume == 0;
+        let icon_c = Point::new(panel.x0 + 24.0, panel.center().y);
+        let mh = self.push_hit(square_around(icon_c, 30.0), Action::ToggleMute);
+        icon::draw(scene, t, if muted { Icon::VolumeMute } else { Icon::VolumeHigh }, icon_c, 18.0, if muted { c.accent } else if mh { c.text } else { c.dim });
+        let pct = format!("{}", self.pb.volume);
+        let (pw_txt, _) = tr.measure_weighted(&pct, 12.0, None, TextWeight::Medium);
+        draw_text(tr, scene, t, &pct, panel.x1 - 16.0 - pw_txt as f64, vy(panel.y0, ph, 12.0), 12.0, c.dim, TextWeight::Medium, None);
+        let slider = Rect::new(icon_c.x + 20.0, panel.center().y - 8.0, panel.x1 - 44.0, panel.center().y + 8.0);
+        self.volume_popover_slider = slider;
+        self.draw_volume_slider(scene, t, c, slider);
     }
 
     /// Compact now-playing transport for narrow windows: art + title on the
@@ -2013,22 +2287,26 @@ impl MusicApp {
     fn draw_nowplaying_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
         let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
 
-        // Progress line = the top 3px strip; the whole strip is the scrubber.
+        // Progress bar rendered BELOW the whole status bar (a full-width strip
+        // along the bar's bottom edge); the strip is also the scrubber.
         let dur = self.current_duration_ms();
         let pos = self.playhead_ms.min(dur as f64).max(0.0);
         let frac = if dur > 0 { pos / dur as f64 } else { 0.0 };
-        scene.fill(Fill::NonZero, t, c.white10, None, &Rect::new(r.x0, r.y0, r.x1, r.y0 + 3.0));
+        let pbar_top = r.y1 - 3.0;
+        scene.fill(Fill::NonZero, t, c.white10, None, &Rect::new(r.x0, pbar_top, r.x1, r.y1));
         if frac > 0.0 {
-            scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(r.x0, r.y0, r.x0 + r.width() * frac, r.y0 + 3.0));
+            scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(r.x0, pbar_top, r.x0 + r.width() * frac, r.y1));
         }
-        self.scrubber_rect = Rect::new(r.x0, r.y0 - 4.0, r.x1, r.y0 + 10.0);
+        self.scrubber_rect = Rect::new(r.x0, pbar_top - 8.0, r.x1, r.y1);
         self.volume_rect = Rect::ZERO;
+        self.volume_btn_rect = Rect::ZERO;
 
         let controls_w = 132.0;
         let lx = r.x0 + 14.0;
         if let Some(tk) = &cur {
             let art = Rect::new(lx, r.y0 + 16.0, lx + 60.0, r.y0 + 76.0);
-            self.draw_cover(scene, t, art, &tk.cover_id(), &tk.title, tr, 8.0);
+            let cover = self.best_cover_id(&tk.id, &tk.album_id);
+            self.draw_cover(scene, t, art, &cover, &tk.title, tr, 8.0);
             self.push_hit(art, Action::Nav(View::Lyrics));
             let tx = art.x1 + 12.0;
             let maxw = (r.x1 - controls_w - tx - 10.0).max(40.0);
