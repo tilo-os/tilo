@@ -215,6 +215,37 @@ impl TimePicker {
         self.minutes = m.min(MINSEC_MAX);
     }
 
+    /// Place the picker at an explicit rect without going through taffy — the
+    /// embed path a host uses when it hand-positions the spinner row inside a
+    /// form. Rebuilds the per-spinner hit-rects from `rect` exactly as
+    /// [`Widget::apply_layout`] does, so click/scroll/keyboard all work.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+        let cell_w = SPINNER_WIDTH as f64;
+        let colon_w = COLON_WIDTH as f64;
+        let y0 = self.rect.y0;
+        let y1 = self.rect.y1;
+        let mut x = self.rect.x0;
+        self.hour_rect = Rect::new(x, y0, x + cell_w, y1);
+        x += cell_w + colon_w;
+        self.minute_rect = Rect::new(x, y0, x + cell_w, y1);
+        if self.seconds.is_some() {
+            x += cell_w + colon_w;
+            self.second_rect = Rect::new(x, y0, x + cell_w, y1);
+        } else {
+            self.second_rect = Rect::ZERO;
+        }
+    }
+
+    /// Intrinsic size of the spinner row at the current seconds setting —
+    /// the width/height an embedding host should allocate for
+    /// [`Self::apply_layout_external`].
+    pub fn intrinsic_size(&self) -> (f64, f64) {
+        let n = if self.seconds.is_some() { 3.0 } else { 2.0 };
+        let w = n * SPINNER_WIDTH as f64 + (n - 1.0) * COLON_WIDTH as f64;
+        (w, PICKER_HEIGHT as f64)
+    }
+
     /// Compute the three sub-rects (up arrow / value cell / down arrow) for
     /// a spinner cell. Returned in `(up, value, down)` order.
     fn spinner_subrects(cell: Rect) -> (Rect, Rect, Rect) {
@@ -326,28 +357,12 @@ impl Widget for TimePicker {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
+        self.apply_layout_external(Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
-        );
-
-        let cell_w = SPINNER_WIDTH as f64;
-        let colon_w = COLON_WIDTH as f64;
-        let y0 = self.rect.y0;
-        let y1 = self.rect.y1;
-
-        let mut x = self.rect.x0;
-        self.hour_rect = Rect::new(x, y0, x + cell_w, y1);
-        x += cell_w + colon_w;
-        self.minute_rect = Rect::new(x, y0, x + cell_w, y1);
-        if self.seconds.is_some() {
-            x += cell_w + colon_w;
-            self.second_rect = Rect::new(x, y0, x + cell_w, y1);
-        } else {
-            self.second_rect = Rect::ZERO;
-        }
+        ));
     }
 
     fn draw(

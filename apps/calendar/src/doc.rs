@@ -178,6 +178,79 @@ impl CalDoc {
         }
     }
 
+    // --- CalDAV outbox --------------------------------------------------
+    //
+    // Events created (or retargeted) onto a remote CalDAV calendar are queued
+    // here for upload. Two-way CalDAV push (an ETag-guarded PUT) runs off the
+    // UI thread in the `live` build; queuing is what makes "create on that
+    // calendar" real without blocking on the network. The queue is a root
+    // `outbox` List of event-id strings, so it persists with the document and
+    // a pending push survives a restart.
+
+    fn outbox_list(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "outbox") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "outbox", ObjType::List)
+                .expect("put_object outbox list never fails"),
+        }
+    }
+
+    /// Queue an event for upload to its remote calendar. Idempotent: an id
+    /// already queued is not added twice.
+    pub fn enqueue_push(doc: &mut AutoCommit, id: Id) {
+        let list = Self::outbox_list(doc);
+        let target = id.to_string();
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
+                if matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target) {
+                    return;
+                }
+            }
+        }
+        let idx = doc.length(&list);
+        let _ = doc.insert(&list, idx, target.as_str());
+    }
+
+    /// Remove an event from the push queue (after a successful upload, or when
+    /// it is retargeted back to the local calendar).
+    pub fn dequeue_push(doc: &mut AutoCommit, id: Id) {
+        let list = Self::outbox_list(doc);
+        let target = id.to_string();
+        let mut i = 0;
+        while i < doc.length(&list) {
+            let hit = matches!(
+                doc.get(&list, i),
+                Ok(Some((Value::Scalar(v), _)))
+                    if matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target)
+            );
+            if hit {
+                let _ = doc.delete(&list, i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The event ids currently queued for remote upload, in insertion order.
+    pub fn outbox(doc: &AutoCommit) -> Vec<Id> {
+        let list = match doc.get(&ROOT, "outbox") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
+                if let automerge::ScalarValue::Str(s) = v.as_ref() {
+                    if let Ok(id) = s.as_str().parse::<Id>() {
+                        out.push(id);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Read the full model back out of the document. Used by peers that
     /// adopt a shared calendar (and exercised by the round-trip test).
     pub fn read_model(doc: &AutoCommit) -> Model {
@@ -317,6 +390,19 @@ mod tests {
 
         // A done task stays done.
         assert!(back.tasks.iter().any(|t| t.done));
+    }
+
+    #[test]
+    fn outbox_enqueues_dedupes_and_dequeues() {
+        let mut doc = AutoCommit::new();
+        let a = crate::model::Id::new_v4();
+        let b = crate::model::Id::new_v4();
+        CalDoc::enqueue_push(&mut doc, a);
+        CalDoc::enqueue_push(&mut doc, a); // dup — ignored
+        CalDoc::enqueue_push(&mut doc, b);
+        assert_eq!(CalDoc::outbox(&doc), vec![a, b]);
+        CalDoc::dequeue_push(&mut doc, a);
+        assert_eq!(CalDoc::outbox(&doc), vec![b]);
     }
 
     #[test]

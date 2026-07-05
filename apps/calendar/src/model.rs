@@ -265,8 +265,25 @@ pub struct Event {
     pub calendar_id: Option<String>,
 }
 
+/// Fallback label shown for an event whose title is still empty — a freshly
+/// created event whose title field the user hasn't filled in yet. Kept as a
+/// const so views and the form agree on the same wording.
+pub const UNTITLED_EVENT: &str = "New event";
+
 impl Event {
-    /// Whether this event should be shown given the set of currently-hidden
+    /// The title to render in views: the user's title, or [`UNTITLED_EVENT`]
+    /// when it is still empty. The stored `title` stays empty so the edit
+    /// form shows its placeholder rather than literal text the user must
+    /// delete.
+    pub fn display_title(&self) -> &str {
+        if self.title.trim().is_empty() {
+            UNTITLED_EVENT
+        } else {
+            self.title.as_str()
+        }
+    }
+
+    /// Whether this should be shown given the set of currently-hidden
     /// remote calendar ids. Local events (no `calendar_id`) are always visible;
     /// a synced event is hidden exactly when its source calendar is unchecked.
     pub fn visible_under(&self, hidden: &std::collections::HashSet<String>) -> bool {
