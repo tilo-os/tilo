@@ -13,6 +13,7 @@ use crate::draw::{self, Align};
 use crate::engine;
 use crate::mathfield::MathField;
 use crate::model::{CalcModel, View2d};
+use crate::zoom::ZoomAnim2d;
 
 /// Distinct, theme-derived colour for plot series `i`.
 pub fn series_color(theme: &Theme, i: usize) -> Color {
@@ -64,6 +65,9 @@ pub struct Graph2dScreen {
     /// or canvas size change — never on a theme or tab switch (colour is
     /// resolved from the theme at paint time from the cached series index).
     curve_cache: CurveCache,
+    /// Smooth, non-blocking wheel zoom. While active, the cached curves are
+    /// replayed under a cheap affine instead of re-sampling every frame.
+    zoom: ZoomAnim2d,
 }
 
 impl Default for Graph2dScreen {
@@ -87,6 +91,7 @@ impl Default for Graph2dScreen {
             fields: Vec::new(),
             card_heights: Vec::new(),
             curve_cache: CurveCache::default(),
+            zoom: ZoomAnim2d::new(View2d::default()),
         }
     }
 }
@@ -307,12 +312,18 @@ impl Graph2dScreen {
         self.layout(area, model);
         let c = &theme.tokens.colors;
 
+        // Advance the smooth-zoom ease one frame toward the model target. The
+        // eased `view` (== model when settled) drives the grid + trace so they
+        // move in lock-step with the cheaply-transformed curves.
+        self.zoom.tick(model.view2d, theme.reduce_motion);
+        let view = self.zoom.display();
+
         // ----- canvas -------------------------------------------------------
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
-        self.draw_grid(scene, t, tr, theme, &model.view2d);
+        self.draw_grid(scene, t, tr, theme, &view);
         self.draw_curves(scene, t, theme, model);
         if let Some(p) = trace {
-            self.draw_trace(scene, t, tr, theme, model, p);
+            self.draw_trace(scene, t, tr, theme, model, p, &view);
         }
         // canvas frame
         draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
@@ -554,14 +565,37 @@ impl Graph2dScreen {
     }
 
     fn draw_curves(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
-        self.ensure_curves(model);
+        // While the zoom is animating we reuse the last-sampled polylines under
+        // a cheap affine (a resample would block the frame). When settled we do
+        // the one real resample and record the view it represents.
+        let aff = if self.zoom.active() {
+            self.zoom.curve_affine(self.canvas.center())
+        } else {
+            self.ensure_curves(model);
+            self.zoom.mark_sampled(model.view2d);
+            Affine::IDENTITY
+        };
         scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
         let stroke = vello::kurbo::Stroke::new(2.0);
         for cp in &self.curve_cache.paths {
             let col = series_color(theme, cp.series);
-            scene.stroke(&stroke, t, col, None, &cp.path);
+            scene.stroke(&stroke, t * aff, col, None, &cp.path);
         }
         scene.pop_layer();
+    }
+
+    /// Begin a smooth zoom toward the (already-updated) model view, pinning the
+    /// world point `anchor_world` under the cursor `screen` for the whole ease.
+    pub fn begin_zoom(&mut self, anchor_world: Point, screen: Point) {
+        self.zoom.begin(anchor_world, screen, self.canvas.center());
+    }
+    /// Settle the zoom immediately (pan / edit / reset / mode switch).
+    pub fn settle_zoom(&mut self, v: View2d) {
+        self.zoom.settle(v);
+    }
+    /// Whether a smooth zoom is animating (drives the app's frame pump).
+    pub fn zoom_active(&self) -> bool {
+        self.zoom.active()
     }
 
     /// Re-sample every visible function into screen-space polylines, but only
@@ -624,12 +658,11 @@ impl Graph2dScreen {
         self.curve_cache.rebuilds = self.curve_cache.rebuilds.wrapping_add(1);
     }
 
-    fn draw_trace(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, p: Point) {
+    fn draw_trace(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, p: Point, v: &View2d) {
         if !self.canvas.contains(p) {
             return;
         }
         let c = &theme.tokens.colors;
-        let v = &model.view2d;
         let wx = self.to_world(p, v).x;
         let Some(expr) = model.active_expr() else { return };
         let Ok(comp) = engine::compile(expr, model.deg, false) else { return };
