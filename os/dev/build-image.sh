@@ -48,10 +48,17 @@ export SOURCE_DATE_EPOCH
 # shellcheck disable=SC1091
 [ -f "$QOS_OS_DIR/rpms-snapshot.env" ] && . "$QOS_OS_DIR/rpms-snapshot.env"
 [ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run ./os/dev/snapshot-rpms.sh (or the snapshot-rpms CI job) first"
-msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; rpms=$RPMS_REF)"
+# The digest-pinned qos-kernel image (built by .forgejo/workflows/build-kernel.yml
+# — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
+# qos-kernel-core out of it.  Cross-time reproducible.
+# shellcheck disable=SC1091
+[ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
+[ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
+msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF)"
 podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   --build-arg "RPMS_REF=$RPMS_REF" \
+  --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
   --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "$QOS_REPO"
 

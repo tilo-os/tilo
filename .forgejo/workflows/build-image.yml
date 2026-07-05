@@ -51,6 +51,11 @@ jobs:
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
 
+      # Pin the qos-kernel image the build swaps into kernel-core.  Same
+      # digest-pinning + strip-comments-strategy as RPMS_REF.
+      - name: Load KERNEL_RPMS_REF (qos-kernel image)
+        run: grep '^KERNEL_RPMS_REF=' os/kernel-snapshot.env >> "$GITHUB_ENV"
+
       # Deterministic timestamp for reproducible builds: the HEAD commit time.
       # buildkit rewrites layer/image timestamps to SOURCE_DATE_EPOCH, and the
       # builder stage honours it for the compile.
@@ -85,6 +90,7 @@ jobs:
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
