@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The shared multi-account store + encrypted secret vault. Mail reads its
+# email accounts from here (Settings owns the write lifecycle); credentials
+# are sealed in the vault, never in the plaintext store.
+accounts = { path = "../../crates/system/accounts" }
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

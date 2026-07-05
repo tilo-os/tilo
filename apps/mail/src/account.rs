@@ -1,32 +1,31 @@
-//! Multiple-account model and the shared, serialisable store the OS Settings
-//! app reads and writes.
+//! Mail's view of the shared multi-account store.
 //!
-//! ## Why a separate store
-//! In qOS, account *management* (adding, editing, removing mail accounts,
-//! entering credentials) lives in the **Settings app**, not in Mail — the
-//! same way display, network, and Bluetooth settings do. Mail only *consumes*
-//! the account list to fetch and send. To make that split real rather than
-//! aspirational, the account list is modelled as a plain, `serde`-serialisable
-//! [`AccountStore`] that both apps can read and write:
+//! ## One shared store, one vault
+//! Account *management* in qOS lives in the **Settings app**, not in Mail —
+//! the same way display, network, and Bluetooth settings do. Mail only
+//! *consumes* the account list to fetch and send. The canonical store is the
+//! shared [`accounts`] crate: a single JSON document under
+//! `$XDG_CONFIG_HOME/qos/accounts/` holding every account of every type, with
+//! credentials kept out of it entirely and sealed in the encrypted
+//! [`accounts::SecretVault`].
 //!
-//! * **Settings** owns the lifecycle: it loads the store, presents the
-//!   add/edit UI, persists credentials to the OS secret store, and writes the
-//!   store back.
-//! * **Mail** loads the same store, shows the accounts in its sidebar, and
-//!   drives IMAP/SMTP per account. Mail *also* offers a lightweight in-app
-//!   add/edit form for now (so the app is usable before Settings ships the
-//!   panel), writing through the identical [`AccountStore`] shape.
-//!
-//! The on-disk seam is a single JSON document at
-//! [`AccountStore::SETTINGS_PATH`]; [`AccountStore::to_json`] /
-//! [`AccountStore::from_json`] are the read/write entry points both apps share.
-//! Credentials are deliberately **not** serialised here (see
-//! [`AccountConfig`]'s note) — Settings stores those in the OS secret store and
-//! injects them at connect time.
+//! This module is the mail-side adapter over that store. It keeps the
+//! ergonomic in-memory shapes the rest of the app works with — [`Account`]
+//! (an [`AccountConfig`] plus per-account sidebar state) and [`AccountStore`]
+//! (the list plus the active index) — and hydrates them from the shared store
+//! + vault ([`AccountStore::load`]). The type-specific connection settings
+//! ([`AccountConfig`]) are serialised into each shared account's opaque
+//! `config`; the password is read back from the vault, never from the JSON.
 
+use std::path::Path;
+
+use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{AccountConfig, Folder};
+
+/// The account-type id Mail contributes to the shared store.
+pub const TYPE_ID: &str = "email";
 
 /// A single configured mail account: its connection settings plus the
 /// per-account UI state Mail needs (sidebar expand/collapse).
@@ -69,15 +68,53 @@ impl Account {
             "New account"
         }
     }
+
+    /// The opaque, secret-free config payload persisted into a shared
+    /// [`StoredAccount`]. The password is `#[serde(skip)]` on [`AccountConfig`],
+    /// so it never reaches this JSON — it lives only in the vault.
+    fn to_stored(&self) -> StoredAccount {
+        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
+        stored.display_name = self.label().to_string();
+        stored.tint = self.tint;
+        stored.set_config(&StoredConfig { config: self.config.clone(), collapsed: self.collapsed });
+        stored
+    }
+
+    /// Rebuild a mail account from a shared [`StoredAccount`], reading the
+    /// password back from `vault`. `None` when the stored config does not
+    /// deserialise (a store written by a newer type version).
+    fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
+        let payload = stored.config_as::<StoredConfig>()?;
+        let mut config = payload.config;
+        if let Some(secret) = vault.get(&stored.id) {
+            config.password = secret.password;
+        }
+        Some(Self {
+            id: stored.id.to_string(),
+            config,
+            collapsed: payload.collapsed,
+            tint: stored.tint,
+        })
+    }
 }
 
-/// The shared, serialisable account list. This is the contract surface
-/// between Mail and the Settings app.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The opaque config payload a mail [`Account`] serialises into a shared
+/// [`StoredAccount`]. The `#[serde(skip)]` password on [`AccountConfig`] keeps
+/// the credential out of this JSON by construction; `collapsed` (per-account
+/// UI state) rides along so it survives a reload.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredConfig {
+    #[serde(flatten)]
+    config: AccountConfig,
+    #[serde(default)]
+    collapsed: bool,
+}
+
+/// Mail's in-memory account list: the accounts plus which one is shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountStore {
     pub accounts: Vec<Account>,
     /// Index of the account whose mailbox is currently shown. Clamped on read.
-    #[serde(default)]
     pub active: usize,
 }
 
@@ -88,12 +125,6 @@ impl Default for AccountStore {
 }
 
 impl AccountStore {
-    /// The canonical on-disk location Settings writes and Mail reads. Lives
-    /// under the user's config root (projected through the qOS FUSE layer in a
-    /// real deployment). Kept as an associated const so both apps reference the
-    /// same path symbol rather than a stray string literal.
-    pub const SETTINGS_PATH: &'static str = "~/.config/qos/mail/accounts.json";
-
     pub fn new() -> Self {
         Self::default()
     }
@@ -102,14 +133,57 @@ impl AccountStore {
         Self { accounts: vec![Account::new(config)], active: 0 }
     }
 
-    /// Serialise the store for the Settings seam.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
+    /// Load the mail accounts from the shared canonical store, hydrating each
+    /// password from the secret vault. An empty store when nothing is
+    /// configured — never an error.
+    pub fn load() -> Self {
+        Self::from_shared(&SharedStore::load(), &SecretVault::open())
     }
 
-    /// Read a store written by Settings (or a previous Mail session).
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
+    /// Load under an explicit config root — the seam tests use, so they never
+    /// touch the real user config directory.
+    pub fn load_in(config_root: &Path) -> Self {
+        Self::from_shared(&SharedStore::load_in(config_root), &SecretVault::open_in(config_root))
+    }
+
+    fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
+        let ty = AccountTypeId::from(TYPE_ID);
+        let accounts: Vec<Account> = shared
+            .list(&ty)
+            .into_iter()
+            .filter_map(|stored| Account::from_stored(stored, vault))
+            .collect();
+        // Map the shared store's active-id back to Mail's active-index.
+        let active = shared
+            .active_id(&ty)
+            .and_then(|id| accounts.iter().position(|a| a.id == id.as_str()))
+            .unwrap_or(0);
+        Self { accounts, active }
+    }
+
+    /// Write these accounts into the shared store + vault under an explicit
+    /// config root, preserving accounts of other types already there. This is
+    /// the write half of the seam (Settings owns the lifecycle; this exists so
+    /// the round-trip is testable and so a future in-app persist has one path).
+    pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
+        let ty = AccountTypeId::from(TYPE_ID);
+        let mut shared = SharedStore::load_in(config_root);
+        let mut vault = SecretVault::open_in(config_root);
+        for acct in &self.accounts {
+            let id = AccountId::from(acct.id.clone());
+            shared.upsert(acct.to_stored());
+            if acct.config.password.is_empty() {
+                vault.remove(&id);
+            } else {
+                vault.put(&id, &accounts::Secret::password(acct.config.password.clone()));
+            }
+        }
+        if let Some(active) = self.accounts.get(self.active) {
+            shared.set_active(&ty, &AccountId::from(active.id.clone()));
+        }
+        shared.save_in(config_root)?;
+        vault.save();
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -188,16 +262,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn store_round_trips_through_json() {
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(cfg("a@x.example", "A")));
-        store.upsert(Account::new(cfg("b@y.example", "B")));
-        store.set_active(0);
-        let json = store.to_json();
-        let back = AccountStore::from_json(&json).expect("valid json");
-        assert_eq!(back.len(), 2);
-        assert_eq!(back.active_account().unwrap().config.email, "a@x.example");
+    fn temp_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("qos-mail-accounts-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
@@ -223,14 +289,37 @@ mod tests {
     }
 
     #[test]
-    fn credentials_are_not_serialised() {
+    fn shared_store_round_trips_accounts_and_active() {
+        let root = temp_root();
+        let mut store = AccountStore::new();
+        store.upsert(Account::new(cfg("a@x.example", "A")));
+        store.upsert(Account::new(cfg("b@y.example", "B")));
+        store.set_active(0);
+        store.persist_in(&root).expect("persist");
+
+        let back = AccountStore::load_in(&root);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back.active_account().unwrap().config.email, "a@x.example");
+        assert_eq!(back.accounts[1].config.display_name, "B");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn password_persists_to_the_vault_not_the_store_json() {
+        let root = temp_root();
         let mut c = cfg("a@x.example", "A");
         c.password = "hunter2".into();
         let store = AccountStore::single(c);
-        let json = store.to_json();
-        assert!(
-            !json.contains("hunter2"),
-            "passwords must not be written to the shared settings store"
-        );
+        store.persist_in(&root).expect("persist");
+
+        // The plaintext store must never carry the password …
+        let store_json =
+            std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
+        assert!(!store_json.contains("hunter2"), "password must not reach the shared store JSON");
+
+        // … but a reload recovers it from the vault.
+        let back = AccountStore::load_in(&root);
+        assert_eq!(back.accounts[0].config.password, "hunter2", "password rehydrates from the vault");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
