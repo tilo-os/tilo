@@ -35,6 +35,111 @@ pub enum PortalOutcome {
 /// `Some(rx)` means a picker is in flight; `None` means idle.
 pub type PortalChannel = Receiver<PortalOutcome>;
 
+/// The result of a `.odp` document open/save interaction. Open carries the
+/// path the user chose to load; Save carries the path to write the deck to.
+#[derive(Debug)]
+pub enum DocOutcome {
+    Open(PathBuf),
+    Save(PathBuf),
+    Cancelled,
+    Failed(String),
+}
+
+/// Receiver the UI thread drains for an in-flight `.odp` open/save.
+pub type DocPortalChannel = Receiver<DocOutcome>;
+
+/// Open the host file chooser for an OpenDocument Presentation to load, on a
+/// worker thread. The chosen path arrives over the returned channel; the UI
+/// thread reads + decodes the file when it drains it.
+pub fn request_open_document() -> DocPortalChannel {
+    spawn_doc("slides-portal-open-doc", || run_doc_blocking(false))
+}
+
+/// Open the host Save dialog for an OpenDocument Presentation. `suggested_name`
+/// seeds the filename field. The chosen destination arrives over the channel;
+/// the UI thread serialises + writes the deck there.
+pub fn request_save_document(suggested_name: &str) -> DocPortalChannel {
+    let name = suggested_name.to_string();
+    spawn_doc("slides-portal-save-doc", move || run_doc_blocking_save(&name))
+}
+
+fn spawn_doc(
+    thread_name: &str,
+    work: impl FnOnce() -> DocOutcome + Send + 'static,
+) -> DocPortalChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || {
+            let _ = tx.send(work());
+        })
+        .expect("spawn portal worker thread");
+    rx
+}
+
+fn run_doc_blocking(_save: bool) -> DocOutcome {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return DocOutcome::Failed(format!("portal runtime: {e}")),
+    };
+    rt.block_on(open_document_future())
+}
+
+fn run_doc_blocking_save(name: &str) -> DocOutcome {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return DocOutcome::Failed(format!("portal runtime: {e}")),
+    };
+    rt.block_on(save_document_future(name))
+}
+
+async fn open_document_future() -> DocOutcome {
+    use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
+    let request = SelectedFiles::open_file()
+        .title("Open presentation")
+        .accept_label("Open")
+        .modal(true)
+        .multiple(false)
+        .filter(FileFilter::new("Presentations").glob("*.odp"))
+        .filter(FileFilter::new("All files").glob("*"));
+    match request.send().await.and_then(|r| r.response()) {
+        Ok(files) => match map_uris(files.uris()) {
+            PortalOutcome::Opened(p) => DocOutcome::Open(p),
+            PortalOutcome::Cancelled => DocOutcome::Cancelled,
+            PortalOutcome::Failed(e) => DocOutcome::Failed(e),
+        },
+        Err(ashpd::Error::Response(_)) => DocOutcome::Cancelled,
+        Err(e) => DocOutcome::Failed(e.to_string()),
+    }
+}
+
+async fn save_document_future(name: &str) -> DocOutcome {
+    use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
+    let request = SelectedFiles::save_file()
+        .title("Save presentation")
+        .accept_label("Save")
+        .modal(true)
+        .current_name(name)
+        .filter(FileFilter::new("Presentations").glob("*.odp"));
+    match request.send().await.and_then(|r| r.response()) {
+        Ok(files) => match map_uris(files.uris()) {
+            PortalOutcome::Opened(p) => DocOutcome::Save(p),
+            PortalOutcome::Cancelled => DocOutcome::Cancelled,
+            PortalOutcome::Failed(e) => DocOutcome::Failed(e),
+        },
+        Err(ashpd::Error::Response(_)) => DocOutcome::Cancelled,
+        Err(e) => DocOutcome::Failed(e.to_string()),
+    }
+}
+
+/// Test-only: build a channel and immediately deliver a `.odp` `outcome`.
+#[cfg(test)]
+pub fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(outcome).expect("seed injected doc outcome");
+    rx
+}
+
 /// Spawn the portal image-open on a worker thread and return the receiver the
 /// caller drains each frame. The UI thread is never blocked: the D-Bus
 /// round-trip and the host dialog live entirely on the worker.

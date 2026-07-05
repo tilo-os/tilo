@@ -293,7 +293,10 @@ fn draw_text_element(
             // rows stay left-aligned relative to each other (this draw path has
             // no per-call align), which reads correctly for titles and bodies.
             let x = match e.align {
-                TextAlign::Left => er.x0,
+                // Justify anchors each row at the left edge; full inter-word
+                // spreading isn't done by this draw path, but the distinct
+                // alignment value is stored and round-trips.
+                TextAlign::Left | TextAlign::Justify => er.x0,
                 TextAlign::Center | TextAlign::Right => {
                     let (lw, _) =
                         tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
