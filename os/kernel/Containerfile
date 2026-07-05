@@ -84,7 +84,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
     export HOME=/work; \
     mkdir -p /work/rpmbuild/BUILD /work/rpmbuild/BUILDROOT /work/rpmbuild/RPMS \
              /work/rpmbuild/SOURCES /work/rpmbuild/SPECS /work/rpmbuild/SRPMS; \
-    printf '%%_topdir /work/rpmbuild\n' > /work/.rpmmacros; \
+    # Skip brp-compress — repeatedly hangs on this kernel's module
+    # tree with no timely exit. Downstream RPM install works fine
+    # without it (manpage compression is decorative for a kernel RPM).
+    printf '%%_topdir /work/rpmbuild\n%%__brp_compress %%{nil}\n' > /work/.rpmmacros; \
     rpm -i --define '_topdir /work/rpmbuild' /work/kernel.src.rpm; \
     cd /work/rpmbuild/SPECS; \
     KERN_SPEC="$(ls kernel*.spec 2>/dev/null | head -1)"; \
