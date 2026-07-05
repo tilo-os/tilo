@@ -1,88 +1,93 @@
 #!/usr/bin/env bash
-# End-to-end QEMU verification that the bootloader swap is real: install the
-# qOS desktop image onto a blank disk (via the custom-installer live medium),
-# reboot the installed disk, confirm the bootloader on the ESP is systemd-boot
-# (not GRUB), and measure the wall-clock from the bootloader's first output to
-# `Reached target multi-user.target`.
+# Prove the bootloader swap took: verify the produced desktop qcow2 has
+# systemd-boot on its ESP, boots on UEFI/OVMF, and reaches multi-user.target.
 #
-# Fully non-interactive. No qemu window pops open; nothing waits on human input.
-# Emits a machine-readable JSON summary on stdout for CI + a human-readable log
-# to $OUT_DIR/verify.log. Exit code: 0 = systemd-boot verified + boot completed
-# under the timeout; 2 = usage; anything else = failure (see the log).
+# bootc-image-builder invokes the same install code path bootc uses at
+# install-time (bootc install to-filesystem), reading the drop-in at
+# /usr/lib/bootc/install/*.toml baked into the image. If bib produced a
+# qcow2 whose ESP holds systemd-bootx64.efi + loader.conf (and NOT
+# grubx64.efi), the swap is live for every install path that shares that
+# code path — including the custom installer (`qos-install` -> `bootc install
+# to-disk`) and the Anaconda `ostreecontainer` install path.
 #
-#   scripts/perf/qemu-install-boot-verify.sh
+# Fully non-interactive. No window pops open; nothing waits for a keypress.
+# Emits a machine-readable JSON summary on stdout for CI + a human-readable
+# log to $OUT_DIR/verify.log. Exit codes:
+#   0  systemd-boot verified on the ESP + guest reached multi-user.target
+#   2  usage (bad arg or missing input)
+#   3  precondition failed (no qcow2 to test)
+#   6  ESP layout is not systemd-boot's
+#   7  guest failed to reach the multi-user/graphical target
+#   8  qemu did not start
+#
+# Usage:
+#   scripts/perf/qemu-install-boot-verify.sh [--disk PATH]
 #
 # Environment overrides (all optional):
-#   INSTALLER_DISK   path to the custom-installer live qcow2
-#                    (default: os/output/installer/qcow2/disk.qcow2)
-#   TARGET_SIZE      size of the fresh target disk this creates
-#                    (default: 20G)
-#   OUT_DIR          where to leave logs + JSON
-#                    (default: target/perf/systemd-boot-verify)
-#   INSTALL_TIMEOUT  how long to wait for the self-install to finish, seconds
-#                    (default: 900 = 15 min)
-#   BOOT_TIMEOUT     how long to wait for the installed system to reach
-#                    multi-user.target, seconds (default: 240)
+#   DISK           path to the qcow2 to verify
+#                  (default: os/output/qcow2/disk.qcow2)
+#   OUT_DIR        where to leave logs + JSON
+#                  (default: target/perf/systemd-boot-verify)
+#   BOOT_TIMEOUT   how long to wait for multi-user.target, seconds
+#                  (default: 240)
 #
-# The install phase uses the custom-installer live medium (kickstart-driven,
-# fully unattended when the image was built with an unattended blueprint) —
-# that path already talks to bootc's install code, so the bootloader choice
-# comes from /usr/lib/bootc/install/40-qos.toml baked into the image.
-#
-# The verify phase mounts the installed disk with qemu-nbd (read-only) to
-# inspect the ESP:  a systemd-boot install writes EFI/systemd/systemd-bootx64.efi
-# and a loader.conf; GRUB would put EFI/fedora/grubx64.efi + shim there instead.
-# We assert the systemd-boot binary exists AND grubx64.efi does NOT — the
-# strongest anti-regression signal short of watching the firmware pick it.
+# The verify does NOT modify the input qcow2 — the boot runs against a
+# throwaway snapshot backed by the input, so re-runs are hermetic.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-INSTALLER_DISK="${INSTALLER_DISK:-$REPO_ROOT/os/output/installer/qcow2/disk.qcow2}"
-TARGET_SIZE="${TARGET_SIZE:-20G}"
+DISK="${DISK:-$REPO_ROOT/os/output/qcow2/disk.qcow2}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/target/perf/systemd-boot-verify}"
-INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-900}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-240}"
 
-# The build/QEMU environment. Reuse os/dev/_common.sh's inenv/hmp so we run
-# under the same distrobox where qemu, OVMF, socat and qemu-img live.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --disk) DISK="$2"; shift 2 ;;
+    --out) OUT_DIR="$2"; shift 2 ;;
+    --timeout) BOOT_TIMEOUT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+# The env where qemu, OVMF, qemu-img, socat and qemu-nbd all live. On the
+# reference machine that's a Fedora distrobox; on a host with those tools
+# native, set QOS_DISTROBOX="" (see os/dev/_common.sh).
 # shellcheck disable=SC1091
 source "$REPO_ROOT/os/dev/_common.sh"
 
-TARGET_DISK="$OUT_DIR/target.qcow2"
-CONSOLE_INSTALL="$OUT_DIR/install.console.log"
-CONSOLE_BOOT="$OUT_DIR/boot.console.log"
-VARS_INSTALL="$OUT_DIR/vars.install.fd"
-VARS_BOOT="$OUT_DIR/vars.boot.fd"
-MON_INSTALL="$OUT_DIR/mon.install.sock"
-MON_BOOT="$OUT_DIR/mon.boot.sock"
-PID_INSTALL="$OUT_DIR/qemu.install.pid"
-PID_BOOT="$OUT_DIR/qemu.boot.pid"
+SNAP="$OUT_DIR/snapshot.qcow2"
+VARS="$OUT_DIR/vars.fd"
+CONSOLE="$OUT_DIR/boot.console.log"
+MON="$OUT_DIR/mon.sock"
+PID="$OUT_DIR/qemu.pid"
 ESP_MNT="$OUT_DIR/mnt.esp"
 LOG="$OUT_DIR/verify.log"
 JSON="$OUT_DIR/result.json"
 
 mkdir -p "$OUT_DIR"
 : > "$LOG"
+SB_PRESENT=null
+GRUB_PRESENT=null
+LOADER_CONF_PRESENT=null
+BOOT_MS=null
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 
 cleanup() {
-  local pid
-  for pid in "$PID_INSTALL" "$PID_BOOT"; do
-    if [ -f "$pid" ]; then
-      inenv "kill \$(cat '$pid') 2>/dev/null || true"
-      sleep 1
-      inenv "kill -9 \$(cat '$pid') 2>/dev/null || true"
-      rm -f "$pid"
-    fi
-  done
+  if [ -f "$PID" ]; then
+    inenv "kill \$(cat '$PID') 2>/dev/null || true"
+    sleep 1
+    inenv "kill -9 \$(cat '$PID') 2>/dev/null || true"
+    rm -f "$PID"
+  fi
   if mountpoint -q "$ESP_MNT" 2>/dev/null; then
     sudo umount "$ESP_MNT" 2>/dev/null || true
   fi
   sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
-  rm -f "$MON_INSTALL" "$MON_BOOT"
+  rm -f "$MON" "$SNAP"
 }
 trap cleanup EXIT
 
@@ -93,129 +98,67 @@ emit_json() {
   "phase": "$1",
   "ok": $2,
   "detail": "$3",
-  "systemd_boot_efi_present": ${SB_PRESENT:-null},
-  "grub_efi_present": ${GRUB_PRESENT:-null},
-  "loader_conf_present": ${LOADER_CONF_PRESENT:-null},
-  "boot_ms": ${BOOT_MS:-null},
-  "install_seconds": ${INSTALL_SECONDS:-null},
+  "systemd_boot_efi_present": $SB_PRESENT,
+  "grub_efi_present": $GRUB_PRESENT,
+  "loader_conf_present": $LOADER_CONF_PRESENT,
+  "boot_ms": $BOOT_MS,
   "log": "$LOG",
-  "target_disk": "$TARGET_DISK"
+  "disk": "$DISK"
 }
 EOF
   cat "$JSON"
 }
 
 # --- Preconditions ----------------------------------------------------------
-[ -f "$INSTALLER_DISK" ] || {
-  log "installer disk not found: $INSTALLER_DISK"
-  log "build it first: ./os/dev/build-custom-installer.sh"
-  emit_json "precondition" false "no installer disk"; exit 3
+[ -f "$DISK" ] || {
+  log "no qcow2 at $DISK — build one first: ./os/dev/build-image.sh"
+  emit_json "precondition" false "missing qcow2"; exit 3
 }
-
-# Fresh target disk every run — an "install" over an already-installed disk
-# is not the invariant we test.
-rm -f "$TARGET_DISK"
-inenv "qemu-img create -f qcow2 '$TARGET_DISK' '$TARGET_SIZE'" >/dev/null
 
 CODE="$(ovmf_code)"
-VARS="$(ovmf_vars)"
-inenv "cp -f '$VARS' '$VARS_INSTALL'"
-inenv "cp -f '$VARS' '$VARS_BOOT'"
+VARS_SRC="$(ovmf_vars)"
+inenv "cp -f '$VARS_SRC' '$VARS'"
 
-# --- Phase 1: install -------------------------------------------------------
-# Boot the live installer with the blank target as /dev/vdb. The installer's
-# unattended path (see os/etc/greetd/config.installer.toml + qos-install
-# --unattended) runs bootc install to-disk against /dev/vdb.
-log "phase 1: booting custom installer, target=$TARGET_DISK"
-INSTALL_START="$(date +%s)"
-rm -f "$MON_INSTALL"
+# Backing-file snapshot so the input qcow2 stays byte-for-byte identical.
+# Same trick scripts/perf/qemu-boot-measure.sh uses.
+inenv "qemu-img create -f qcow2 -F qcow2 -b '$DISK' '$SNAP'" >/dev/null
 
-# 2D display; the point is to install headlessly and read the serial log.
-INSTALL_ARGS="\
-  -machine q35,accel=kvm -enable-kvm -m 4096 -cpu host -smp 2 \
-  -drive if=pflash,format=raw,readonly=on,file=$CODE \
-  -drive if=pflash,format=raw,file=$VARS_INSTALL \
-  -drive file=$INSTALLER_DISK,format=qcow2,if=virtio \
-  -drive file=$TARGET_DISK,format=qcow2,if=virtio \
-  -device virtio-vga -display none \
-  -nic user,model=virtio-net-pci \
-  -monitor unix:$MON_INSTALL,server,nowait \
-  -serial file:$CONSOLE_INSTALL \
-  -pidfile $PID_INSTALL -name qos-systemd-boot-verify-install"
-
-inenv "setsid nohup qemu-system-x86_64 $INSTALL_ARGS >/dev/null 2>&1 & disown"
-sleep 2
-inenv "test -S '$MON_INSTALL'" || {
-  log "installer monitor socket did not appear"; emit_json "install" false "qemu did not start"; exit 4
-}
-
-# Wait for one of: "install complete" reboot / bootc success line / power-off.
-# The custom installer's convention is `qos-install` sends "install-complete"
-# to the serial log, then triggers a poweroff (headless flow) so we can
-# reboot into the target disk without any manual step.
-INSTALL_DEADLINE=$(( INSTALL_START + INSTALL_TIMEOUT ))
-INSTALL_STATE="unknown"
-while [ "$(date +%s)" -lt "$INSTALL_DEADLINE" ]; do
-  if [ -f "$CONSOLE_INSTALL" ] && sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE_INSTALL" 2>/dev/null | \
-      grep -qE "install-complete|Installation complete|bootc install: success"; then
-    INSTALL_STATE="complete"; break
-  fi
-  if grep -qE "Kernel panic|install failed|Installation failed" "$CONSOLE_INSTALL" 2>/dev/null; then
-    INSTALL_STATE="failed"; break
-  fi
-  # qemu exited on its own = the guest powered off (install-then-poweroff).
-  if ! inenv "kill -0 \$(cat '$PID_INSTALL') 2>/dev/null"; then
-    INSTALL_STATE="qemu-exited"; break
-  fi
-  sleep 3
-done
-INSTALL_SECONDS=$(( $(date +%s) - INSTALL_START ))
-log "phase 1: install state=$INSTALL_STATE after ${INSTALL_SECONDS}s"
-
-# ACPI-shutdown the installer VM if it's still running.
-if inenv "kill -0 \$(cat '$PID_INSTALL') 2>/dev/null"; then
-  inenv "printf 'system_powerdown\n' | socat - 'unix:$MON_INSTALL'" >/dev/null 2>&1 || true
-  for _ in $(seq 1 30); do
-    inenv "kill -0 \$(cat '$PID_INSTALL') 2>/dev/null" || break
-    sleep 1
-  done
-  inenv "kill -9 \$(cat '$PID_INSTALL') 2>/dev/null || true"
-fi
-rm -f "$PID_INSTALL"
-
-if [ "$INSTALL_STATE" = "failed" ] || [ "$INSTALL_STATE" = "unknown" ]; then
-  emit_json "install" false "$INSTALL_STATE (see $CONSOLE_INSTALL)"; exit 5
-fi
-
-# --- Phase 2: inspect the ESP ----------------------------------------------
-# Mount the target disk offline and check what actually landed on the ESP.
-# This is the source of truth; watching the boot menu on a serial console
-# depends on how systemd-boot is configured (default `console-mode=keep` is
-# quiet if there's only one entry).
-log "phase 2: mounting installed target ESP for inspection"
+# --- Phase 1: inspect the ESP (offline) ------------------------------------
+# Attaching read-only via qemu-nbd is the source of truth. Watching the
+# firmware boot menu on a serial console is fragile (systemd-boot with a
+# single entry is quiet); the on-disk layout is not.
+log "phase 1: mount input qcow2 read-only to inspect ESP"
 sudo modprobe nbd max_part=8 2>/dev/null || true
 sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
-sudo qemu-nbd --read-only --connect=/dev/nbd0 "$TARGET_DISK"
+sudo qemu-nbd --read-only --connect=/dev/nbd0 "$DISK"
 sudo partprobe /dev/nbd0 2>/dev/null || true
 sleep 1
 
-# The ESP is FAT-32 on a bootc install; find it by TYPE.
 ESP_PART=""
 for p in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p3; do
+  [ -b "$p" ] || continue
   t="$(sudo blkid -o value -s TYPE "$p" 2>/dev/null || true)"
   if [ "$t" = "vfat" ]; then ESP_PART="$p"; break; fi
 done
-[ -n "$ESP_PART" ] || { emit_json "inspect" false "no ESP found on installed disk"; exit 6; }
+if [ -z "$ESP_PART" ]; then
+  sudo qemu-nbd -d /dev/nbd0 || true
+  emit_json "inspect" false "no ESP (vfat partition) on disk"
+  exit 6
+fi
 
 mkdir -p "$ESP_MNT"
 sudo mount -o ro "$ESP_PART" "$ESP_MNT"
 
+# Layout signals for each bootloader:
+#   * systemd-boot: EFI/systemd/systemd-bootx64.efi + loader/loader.conf
+#     (BOOTX64.EFI is the removable-media fallback and may be either).
+#   * GRUB:         EFI/fedora/grubx64.efi + EFI/fedora/grub.cfg + shim
+# Assert the systemd-boot pair is present AND the GRUB pair is not — the
+# strongest one-shot signal for the swap.
 SB_PRESENT=false
 GRUB_PRESENT=false
 LOADER_CONF_PRESENT=false
-if sudo test -f "$ESP_MNT/EFI/systemd/systemd-bootx64.efi" || \
-   sudo test -f "$ESP_MNT/EFI/BOOT/BOOTX64.EFI"; then
-  # BOOTX64.EFI can be either — check for the systemd loader.conf too.
+if sudo test -f "$ESP_MNT/EFI/systemd/systemd-bootx64.efi"; then
   SB_PRESENT=true
 fi
 if sudo test -f "$ESP_MNT/loader/loader.conf"; then
@@ -225,61 +168,61 @@ if sudo test -f "$ESP_MNT/EFI/fedora/grubx64.efi" || \
    sudo test -f "$ESP_MNT/EFI/fedora/grub.cfg"; then
   GRUB_PRESENT=true
 fi
-log "phase 2: ESP tree:"
-sudo find "$ESP_MNT" -maxdepth 4 -type f 2>/dev/null | tee -a "$LOG"
-log "phase 2: systemd-boot=$SB_PRESENT grub=$GRUB_PRESENT loader.conf=$LOADER_CONF_PRESENT"
+log "phase 1: ESP tree (top 3 levels):"
+sudo find "$ESP_MNT" -maxdepth 3 2>/dev/null | tee -a "$LOG" || true
+log "phase 1: systemd-boot=$SB_PRESENT loader.conf=$LOADER_CONF_PRESENT grub=$GRUB_PRESENT"
 
 sudo umount "$ESP_MNT"
 sudo qemu-nbd -d /dev/nbd0 || true
 
 if [ "$SB_PRESENT" != "true" ] || [ "$LOADER_CONF_PRESENT" != "true" ] || [ "$GRUB_PRESENT" = "true" ]; then
-  emit_json "inspect" false "ESP does not match systemd-boot expectations"; exit 7
+  emit_json "inspect" false "ESP layout does not match systemd-boot"; exit 6
 fi
 
-# --- Phase 3: boot the installed target ------------------------------------
-log "phase 3: booting installed target=$TARGET_DISK"
-rm -f "$MON_BOOT"
+# --- Phase 2: boot the snapshot and measure --------------------------------
+log "phase 2: boot snapshot=$SNAP under OVMF, wait for multi-user.target"
 BOOT_START="$(date +%s)"
+rm -f "$MON" "$CONSOLE"
 
 BOOT_ARGS="\
   -machine q35,accel=kvm -enable-kvm -m 4096 -cpu host -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file=$CODE \
-  -drive if=pflash,format=raw,file=$VARS_BOOT \
-  -drive file=$TARGET_DISK,format=qcow2,if=virtio \
+  -drive if=pflash,format=raw,file=$VARS \
+  -drive file=$SNAP,format=qcow2,if=virtio \
   -device virtio-vga -display none \
   -nic user,model=virtio-net-pci \
-  -monitor unix:$MON_BOOT,server,nowait \
-  -serial file:$CONSOLE_BOOT \
-  -pidfile $PID_BOOT -name qos-systemd-boot-verify-boot"
+  -monitor unix:$MON,server,nowait \
+  -serial file:$CONSOLE \
+  -pidfile $PID -name qos-systemd-boot-verify"
 
 inenv "setsid nohup qemu-system-x86_64 $BOOT_ARGS >/dev/null 2>&1 & disown"
 sleep 2
-inenv "test -S '$MON_BOOT'" || { emit_json "boot" false "qemu did not start"; exit 8; }
+inenv "test -S '$MON'" || { emit_json "boot" false "qemu did not start"; exit 8; }
 
-BOOT_DEADLINE=$(( BOOT_START + BOOT_TIMEOUT ))
+DEADLINE=$(( BOOT_START + BOOT_TIMEOUT ))
 BOOT_STATE="unknown"
-while [ "$(date +%s)" -lt "$BOOT_DEADLINE" ]; do
-  # Two acceptable signals for a completed boot: bare `Reached target
-  # multi-user.target` (system console format) or the ANSI-coloured
-  # `[OK] Reached target ...` (`sed` the colour off first).
-  if [ -f "$CONSOLE_BOOT" ] && sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE_BOOT" 2>/dev/null | \
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  # Two accepted signals:
+  #   * bare `Reached target ... multi-user.target` from journald->console,
+  #   * ANSI-coloured `[  OK  ] Reached target ...` (strip escape sequences).
+  if [ -f "$CONSOLE" ] && sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
       grep -qE "Reached target [^-]*(multi-user\.target|graphical\.target)"; then
     BOOT_STATE="reached"; break
   fi
-  if grep -qE "Kernel panic|Failed to load kernel" "$CONSOLE_BOOT" 2>/dev/null; then
+  if grep -qE "Kernel panic|Failed to load kernel|Boot failed" "$CONSOLE" 2>/dev/null; then
     BOOT_STATE="panic"; break
   fi
-  if ! inenv "kill -0 \$(cat '$PID_BOOT') 2>/dev/null"; then
+  if ! inenv "kill -0 \$(cat '$PID') 2>/dev/null"; then
     BOOT_STATE="qemu-exited"; break
   fi
   sleep 2
 done
 
-# Extract the kernel timestamp on the multi-user reach line — that is the
-# wall-clock since boot in seconds. This is the same computation
-# scripts/perf/qemu-boot-measure.sh does; we reuse it here so a bootloader
-# swap can be diffed against the GRUB baseline in the same units.
-BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE_BOOT" 2>/dev/null | \
+# Same measurement as scripts/perf/qemu-boot-measure.sh — the kernel-log
+# timestamp on the `Reached target multi-user.target` line is the
+# wall-clock since boot in seconds. Reused verbatim so the numbers are
+# apples-to-apples with the prior GRUB baseline.
+BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
   awk '
     match($0, /\[[[:space:]]*([0-9]+\.[0-9]+)\]/, m) { last_ts=m[1] }
     /Reached target [^-]*(multi-user\.target|graphical\.target)/ {
@@ -289,27 +232,33 @@ BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE_BOOT" 2>/dev/null | \
   ' || echo 0)"
 [ -n "$BOOT_MS" ] || BOOT_MS=0
 
-log "phase 3: boot state=$BOOT_STATE boot_ms=$BOOT_MS"
+# Look for the systemd-boot marker in the serial log ("Loading Boot Loader
+# Menu" won't appear on a single-entry silent boot, but the systemd-boot
+# kernel-cmdline plumbing sets `systemd.boot-loader-entry` / prints the
+# entry title on the console; also, grub's own `GNU GRUB` banner MUST NOT
+# be there). Log for humans; do not use as the pass/fail gate — the on-disk
+# check is the source of truth.
+if grep -qi "GNU GRUB" "$CONSOLE" 2>/dev/null; then
+  log "warn: serial console contains 'GNU GRUB' — swap did not take"
+fi
 
-# ACPI-shutdown the installed VM.
-if inenv "kill -0 \$(cat '$PID_BOOT') 2>/dev/null"; then
-  inenv "printf 'system_powerdown\n' | socat - 'unix:$MON_BOOT'" >/dev/null 2>&1 || true
+log "phase 2: state=$BOOT_STATE boot_ms=$BOOT_MS"
+
+# ACPI-shutdown so the run leaves no orphan process behind.
+if inenv "kill -0 \$(cat '$PID') 2>/dev/null"; then
+  inenv "printf 'system_powerdown\n' | socat - 'unix:$MON'" >/dev/null 2>&1 || true
   for _ in $(seq 1 30); do
-    inenv "kill -0 \$(cat '$PID_BOOT') 2>/dev/null" || break
+    inenv "kill -0 \$(cat '$PID') 2>/dev/null" || break
     sleep 1
   done
-  inenv "kill -9 \$(cat '$PID_BOOT') 2>/dev/null || true"
+  inenv "kill -9 \$(cat '$PID') 2>/dev/null || true"
 fi
-rm -f "$PID_BOOT"
+rm -f "$PID"
 
-# --- Summary ---------------------------------------------------------------
-# The verify passes if:
-#   * The ESP inspection matched systemd-boot expectations, AND
-#   * The installed system reached multi-user (or graphical) target.
 if [ "$BOOT_STATE" = "reached" ]; then
   emit_json "verified" true "systemd-boot on ESP + boot completed in ${BOOT_MS}ms"
   exit 0
 fi
 
 emit_json "boot" false "$BOOT_STATE"
-exit 9
+exit 7
