@@ -18,7 +18,7 @@ use ui::ImageStore;
 use crate::account::AccountStore;
 use crate::doc::MailDoc;
 use crate::engine::EngineRequest;
-use crate::model::{Folder, Mailbox, MessageId, Thread};
+use crate::model::{Folder, Mailbox, Message, MessageId, Thread};
 
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
@@ -244,29 +244,33 @@ impl MailState {
 
     /// Push a live-path request to mirror a message's flags to the server
     /// (`UID STORE`). A no-op under the offline stub backend, but it means the
-    /// mark-read/star state genuinely reaches IMAP in the `live` build.
+    /// mark-read/star state genuinely reaches IMAP in the `live` build. Called
+    /// after the local flag mutation so the pushed message carries the new
+    /// state (and its current, source folder for the `SELECT`).
     fn sync_flag_to_server(&mut self, id: MessageId) {
         let Some(msg) = self.mailbox.get(id).cloned() else { return };
-        let account_id = self.accounts.active_config().email;
-        if account_id.is_empty() {
+        let account = self.accounts.active_config();
+        if account.email.is_empty() {
             return;
         }
         self.push_intent(Intent::Engine(EngineRequest::StoreFlag {
-            account_id,
+            account,
             message: Box::new(msg),
         }));
     }
 
     /// Push a live-path request to move a message to another folder
-    /// (`UID MOVE`). A no-op under the offline stub backend.
-    fn sync_move_to_server(&mut self, id: MessageId, to: Folder) {
-        let account_id = self.accounts.active_config().email;
-        if account_id.is_empty() {
+    /// (`UID MOVE`). A no-op under the offline stub backend. `source` is the
+    /// message as it was **before** the local move, so the live backend can
+    /// `SELECT` its origin mailbox and locate it by `Message-ID`.
+    fn sync_move_to_server(&mut self, source: Message, to: Folder) {
+        let account = self.accounts.active_config();
+        if account.email.is_empty() {
             return;
         }
         self.push_intent(Intent::Engine(EngineRequest::Move {
-            account_id,
-            message_id: id.to_string(),
+            account,
+            message: Box::new(source),
             to,
         }));
     }
@@ -294,8 +298,10 @@ impl MailState {
             None => MailDoc::set_selected(doc, None),
         }
         // Ask the live engine to fetch this folder (a no-op offline).
-        let account_id = self.accounts.active_config().email;
-        self.push_intent(Intent::Engine(EngineRequest::Fetch { account_id, folder }));
+        let account = self.accounts.active_config();
+        if !account.email.is_empty() {
+            self.push_intent(Intent::Engine(EngineRequest::Fetch { account, folder }));
+        }
         self.dirty = true;
     }
 
@@ -351,13 +357,19 @@ impl MailState {
             }
             CtxAction::Archive => {
                 let was_selected = self.selected == Some(id);
+                let source = self.mailbox.get(id).cloned();
                 self.mailbox.archive(id);
                 self.persist_flags(doc, id);
-                self.sync_move_to_server(id, Folder::Archive);
+                if let Some(src) = source {
+                    self.sync_move_to_server(src, Folder::Archive);
+                }
                 self.after_remove(doc, was_selected);
             }
             CtxAction::Delete => {
                 let was_selected = self.selected == Some(id);
+                // Snapshot the source before the local move so a live UID MOVE
+                // can find it in its origin mailbox.
+                let source = self.mailbox.get(id).cloned();
                 // Capture the folder the delete routed the message to (Trash),
                 // or `None` when it was purged (already in Trash).
                 let moved_to = {
@@ -365,23 +377,29 @@ impl MailState {
                     self.mailbox.get(id).map(|m| m.folder)
                 };
                 self.persist_flags(doc, id);
-                if let Some(to) = moved_to {
-                    self.sync_move_to_server(id, to);
+                if let (Some(to), Some(src)) = (moved_to, source) {
+                    self.sync_move_to_server(src, to);
                 }
                 self.after_remove(doc, was_selected);
             }
             CtxAction::MoveToInbox => {
+                let source = self.mailbox.get(id).cloned();
                 self.mailbox.move_to(id, Folder::Inbox);
                 self.persist_flags(doc, id);
-                self.sync_move_to_server(id, Folder::Inbox);
+                if let Some(src) = source {
+                    self.sync_move_to_server(src, Folder::Inbox);
+                }
                 let was_selected = self.selected == Some(id);
                 self.after_remove(doc, was_selected);
             }
             CtxAction::Junk => {
                 let was_selected = self.selected == Some(id);
+                let source = self.mailbox.get(id).cloned();
                 self.mailbox.move_to(id, Folder::Junk);
                 self.persist_flags(doc, id);
-                self.sync_move_to_server(id, Folder::Junk);
+                if let Some(src) = source {
+                    self.sync_move_to_server(src, Folder::Junk);
+                }
                 self.after_remove(doc, was_selected);
             }
         }

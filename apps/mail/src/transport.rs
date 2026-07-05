@@ -180,6 +180,30 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
     })
 }
 
+/// Parse a raw RFC 5322 message fetched over IMAP, carrying the server's flag
+/// state and internal date. Reuses [`parse_eml`] for the header/body/attachment
+/// extraction, then overlays the `\Seen`/`\Flagged` state and the message
+/// timestamp. `internal_date_min` is the IMAP `INTERNALDATE` (minutes since the
+/// epoch) when the server supplied one; otherwise the message's own `Date:`
+/// header is used, falling back to `fallback_min`.
+pub fn parse_fetched(
+    raw: &[u8],
+    folder: Folder,
+    seen: bool,
+    flagged: bool,
+    internal_date_min: Option<i64>,
+    fallback_min: i64,
+) -> Option<Message> {
+    let header_date_min = MessageParser::default()
+        .parse(raw)
+        .and_then(|p| p.date().map(|d| d.to_timestamp() / 60));
+    let ts = internal_date_min.or(header_date_min).unwrap_or(fallback_min);
+    let mut msg = parse_eml(raw, ts, folder)?;
+    msg.read = seen;
+    msg.starred = flagged;
+    Some(msg)
+}
+
 fn addr_from_parsed(a: &mail_parser::Addr) -> Addr {
     let name = a.name.as_ref().map(|c| c.to_string()).unwrap_or_default();
     let email = a
@@ -340,6 +364,33 @@ Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
         assert!(att.is_downloadable(), "parsed attachment should carry its bytes");
         assert!(att.content.starts_with(b"%PDF-1.4 real body"));
         assert_eq!(att.size, att.content.len() as u64);
+    }
+
+    #[test]
+    fn parse_fetched_overlays_flags_and_uses_header_date() {
+        // A real fetched blob: the \Seen/\Flagged state comes from IMAP FLAGS,
+        // and with no INTERNALDATE the timestamp falls back to the Date header.
+        let raw = b"From: A <a@x.example>\r\n\
+To: b@y.example\r\n\
+Subject: Fetched\r\n\
+Date: Thu, 01 Jan 1970 00:30:00 +0000\r\n\
+\r\n\
+Hello from the server.\r\n";
+        let msg = parse_fetched(raw, Folder::Inbox, true, true, None, 999).unwrap();
+        assert!(msg.read, "\\Seen maps to read");
+        assert!(msg.starred, "\\Flagged maps to starred");
+        assert_eq!(msg.timestamp_min, 30, "Date header (00:30 UTC) → 30 minutes");
+        assert_eq!(msg.subject, "Fetched");
+    }
+
+    #[test]
+    fn parse_fetched_prefers_internaldate_over_header() {
+        let raw = b"From: a@x.example\r\nSubject: S\r\nDate: Thu, 01 Jan 1970 00:30:00 +0000\r\n\r\nbody\r\n";
+        // INTERNALDATE wins when the server supplied one.
+        let msg = parse_fetched(raw, Folder::Sent, false, false, Some(120), 999).unwrap();
+        assert_eq!(msg.timestamp_min, 120);
+        assert!(!msg.read && !msg.starred);
+        assert_eq!(msg.folder, Folder::Sent);
     }
 
     #[test]
