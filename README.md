@@ -5,7 +5,7 @@ A spatial, collaborative Linux desktop built as a vertically-integrated stack:
 - **`shell/`** — Wayland compositor. Niri-inspired scrollable strips of tiled window-groups; wheel-disc workspace switcher; no overlapping windows. Per-workspace bubblewrap sandbox with seccomp deny-by-default. Built on `smithay` + `vello` + `wgpu`. Collaboration over `libp2p` (gossipsub + mDNS) + `automerge` incremental sync.
 - **`ui/`** — Retained-mode CRDT-native UI toolkit. Every widget reads/writes a shared automerge document, so undo, redo, persistence, and remote collaboration all share one mechanism. Stack: `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`.
 - **`fs/`** — FUSE3 driver. Iroh content addressing, `blake3` hashes, `moka` cache. Mounted at `/var/workspace`; cache at `/var/cache/qos-fs`. Projects metadata on first byte; hydrates content on demand.
-- **`apps/{terminal,file-explorer,browser}/`** — Native applications. All three use `ui`. The browser embeds Servo for page rendering.
+- **`apps/`** — 40+ native applications (terminal, file-explorer, browser, mail, calendar, sheets, music, maps, code_editor, …), each its own crate on `ui`. The browser embeds Servo for page rendering. See [`apps/README.md`](apps/README.md).
 - **`os/`** — Bootc-based Fedora image. Greetd → Wayland session → `shell`. Disk image via `bootc-image-builder`.
 
 ## Repository layout
@@ -17,7 +17,7 @@ Single Cargo workspace (monorepo) — no submodules. Key members:
 | `shell/` | `shell` (compositor), `qos-control` (test CLI), `shots` (screenshot tool) |
 | `fs/` | `fs` (FUSE driver) |
 | `ui/` | library only |
-| `apps/` | `terminal`, `file-explorer`, `browser`, and more (each its own crate) |
+| `apps/` | 40+ app crates — `terminal`, `file-explorer`, `browser`, `mail`, … (see [`apps/README.md`](apps/README.md)) |
 | `crates/` | supporting libraries grouped by domain (collab, doc, runtime, packaging, …) |
 | `os/` | Containerfile + systemd units + image build scripts |
 
