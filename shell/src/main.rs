@@ -77,6 +77,13 @@ fn install_crash_log_hook() {
 }
 
 fn main() {
+    // Startup timing capture. `init()` is a no-op unless the env var
+    // is set, so production boots pay zero cost. The scope guard
+    // dumps the recorded events to disk when `main` returns.
+    qos_startup_metrics::init();
+    let _startup_dump = qos_startup_metrics::ScopedDumper;
+    qos_startup_metrics::mark("main-start");
+
     // Landlock launcher shim (`plan/security.md` §7.1). bwrap execs us as
     // `shell __sandbox-exec --ro <p>… --rw <p>… [--net-restricted] -- <app
     // argv>` from inside the per-workspace sandbox; we apply an in-kernel
@@ -173,6 +180,7 @@ fn main() {
                      native mode currently ignores it"
                 );
             }
+            qos_startup_metrics::mark("compositor-native-run-start");
             compositor::native::run();
         }
     }
