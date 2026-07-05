@@ -96,7 +96,17 @@ fn main() {
     // QOS_STARTUP_WARM=off (used for A/B measurement). The handle is
     // kept alive on the main-fn stack so the thread survives to
     // completion regardless of what `main` is currently blocked on.
-    let _warmup_handle = ui::warmup::spawn_warmup(false);
+    // FontSystem warmup is enabled by default and measures a clean win
+    // on cold-start (~90 ms / 22% of first-paint against the shots harness).
+    // The Vello scratch-render warmup is off by default — it contends
+    // for the process-wide `SHARED_RENDER_CONTEXT` mutex with the
+    // compositor's own paint, and measured slower than no warmup at all.
+    // Opt back in with QOS_STARTUP_WARM_VELLO=1 when a separate-device
+    // strategy lands.
+    let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
+        .ok()
+        .is_some_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "off" | "false" | "no"));
+    let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
     // Landlock launcher shim (`plan/security.md` §7.1). bwrap execs us as
     // `shell __sandbox-exec --ro <p>… --rw <p>… [--net-restricted] -- <app
