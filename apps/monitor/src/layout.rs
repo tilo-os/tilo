@@ -57,20 +57,15 @@ pub struct StripGrid {
     pub rows: usize,
 }
 
-/// Choose how many columns the four-cell summary strip wraps to for a content
-/// area `avail_w` wide. Prefers four-across, then a 2×2 block, then a single
-/// column — never three, which would orphan the fourth cell.
-pub fn summary_grid(avail_w: f64) -> StripGrid {
-    let fit = ((avail_w + GAP) / (STRIP_CELL_MIN_W + GAP)).floor() as usize;
-    let cols = if fit >= 4 {
-        4
-    } else if fit >= 2 {
-        2
-    } else {
-        1
-    };
-    let rows = STRIP_CELLS.div_ceil(cols);
-    StripGrid { cols, rows }
+/// Geometry of the four-cell summary strip. The strip stays a **single row**
+/// at every width: its height is constant, so the process table below it keeps
+/// the available vertical space instead of losing height as the window narrows.
+/// The strip adapts *horizontally* — the four cells share the width and each
+/// stacks its value under its label when it gets too narrow for both on one
+/// line (see `draw_summary_strip`) — mirroring the "adapt horizontally, don't
+/// collapse vertically" rule the process table itself follows.
+pub fn summary_grid(_avail_w: f64) -> StripGrid {
+    StripGrid { cols: STRIP_CELLS, rows: 1 }
 }
 
 /// Height the summary strip occupies once wrapped to `g`.
@@ -263,26 +258,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_strip_wraps_but_never_orphans_a_cell() {
-        // Wide content seats all four stat cells across one row.
-        let wide = summary_grid(1200.0);
-        assert_eq!(wide.cols, 4);
-        assert_eq!(wide.rows, 1);
-        // A phone-narrow strip drops to a 2×2 block — never three-across,
-        // which would leave the fourth cell orphaned on its own row.
-        let narrow = summary_grid(520.0);
-        assert_eq!(narrow.cols, 2);
-        assert_eq!(narrow.rows, 2);
-        assert_ne!(summary_grid(560.0).cols, 3, "never a 3-wide orphan layout");
-        // Whatever the width, the cols hold every cell.
-        for &w in &[300.0_f64, 520.0, 772.0, 1200.0] {
+    fn summary_strip_stays_one_row_so_table_keeps_height() {
+        // The strip is a single row at EVERY width — its height is constant, so
+        // narrowing the window can never steal vertical space from the process
+        // table below it. All four cells sit on that one row; the strip adapts
+        // horizontally (cells share the width), not vertically.
+        let base_h = summary_strip_h(summary_grid(1200.0));
+        for &w in &[300.0_f64, 460.0, 520.0, 680.0, 772.0, 1200.0] {
             let g = summary_grid(w);
-            assert!(g.cols * g.rows >= STRIP_CELLS, "w={w} holds every cell");
-            // Each cell keeps at least its minimum width (no squeezing).
-            let cell_w = (w - (g.cols as f64 - 1.0) * GAP) / g.cols as f64;
+            assert_eq!(g.rows, 1, "w={w}: the strip must stay a single row");
+            assert_eq!(g.cols, STRIP_CELLS, "w={w}: all four cells on the one row");
+            assert_eq!(g.cols * g.rows, STRIP_CELLS, "w={w}: holds exactly every cell");
             assert!(
-                g.cols == 1 || cell_w >= STRIP_CELL_MIN_W - 0.001,
-                "w={w}: cell {cell_w} below min {STRIP_CELL_MIN_W}"
+                (summary_strip_h(g) - base_h).abs() < f64::EPSILON,
+                "w={w}: strip height must be constant across widths"
             );
         }
     }
