@@ -1,0 +1,26 @@
+# bootc reads every /usr/lib/bootc/install/*.toml at `bootc install {to-disk,
+# to-filesystem}` time and merges them into the install configuration. Baking
+# this drop-in into the image makes systemd-boot the default bootloader for
+# every install path — the desktop qcow2 that bootc-image-builder produces
+# (the same install code path bib drives internally), the Anaconda
+# `ostreecontainer` path from the ISO, and the custom `qos-install` frontend
+# that ultimately execs `bootc install to-disk` — without every caller having
+# to pass `--bootloader systemd`.
+#
+# systemd-boot vs GRUB, why:
+#   * Faster boot (no menu render step, no grub2 module load, no font/theme).
+#   * Simpler chain (BLS entries live on the ESP; kernel + initrd load in one
+#     hop; no chainload from grub2-efi -> shim -> vmlinuz).
+#   * Aligned with the direction of UKI + measured-boot: systemd-boot has
+#     first-class UKI verification; grub2's story is bolt-on.
+#
+# The accepted values for the `bootloader` key are `grub`, `systemd`, `none`
+# (verified against bootc 1.15.2's config schema — `systemd-boot` is rejected).
+# The `systemd-boot-unsigned` RPM must be installed in the image (see
+# os/Containerfile) — that's the package bootupd hands to bootc when it plants
+# the loader on the ESP. `shim-x64` isn't required for the systemd path (there
+# is no third-party Secure Boot chain today for systemd-boot on Fedora); a
+# Secure Boot story that binds the systemd-boot EFI binary itself is a
+# follow-up.
+[install]
+bootloader = "systemd"
