@@ -154,7 +154,7 @@ impl FileExplorerWidget {
 
     /// Build the full composed widget tree, wiring every interactive child
     /// to the command sink.
-    fn build_composition(&self) -> Box<dyn Widget> {
+    fn build_composition(&self, theme: &ui::Theme) -> Box<dyn Widget> {
         let displayed = self.displayed_entries();
 
         // Toolbar (nav + view + sort + search + terminal).
@@ -170,36 +170,32 @@ impl FileExplorerWidget {
             &self.cmds,
         );
 
-        // Breadcrumb — one button per path component, wired to Navigate.
+        // Breadcrumb — a compact, clickable path trail directly under the
+        // toolbar (leading vector icon + text segments + chevrons).
         let crumbs = crate::breadcrumbs::breadcrumb_components(
             &self.current_path,
             self.home_path.as_deref(),
         );
-        let mut breadcrumb_row = Row::new();
-        for (i, (label, target)) in crumbs.iter().enumerate() {
-            let id = format!("files.crumb.{i}");
-            let sink = self.cmds.clone();
-            let target = target.clone();
-            breadcrumb_row = breadcrumb_row.push(Box::new(
-                ui::widget::Button::new(&id, label, None)
-                    .on_click(move || crate::command::push(&sink, FileCommand::Navigate(target.clone()))),
-            ));
-            if i + 1 < crumbs.len() {
-                breadcrumb_row = breadcrumb_row.push(Box::new(Text::new("›")));
-            }
-        }
+        let breadcrumb = crate::breadcrumb_bar::BreadcrumbBar::new(crumbs, self.cmds.clone());
 
-        // Sidebar — tiered shortcuts, each wired to Navigate.
+        // Sidebar — tiered shortcuts, each wired to Navigate. Section titles
+        // are small dim labels; rows carry a themed vector glyph.
         let tiers = crate::sidebar::build_tiers(self.home_path.as_deref());
-        let mut sidebar_col = Column::new();
+        let mut sidebar_col = Column::new()
+            .with_horizontal_padding(10.0, 10.0)
+            .with_vertical_padding(10.0);
         let mut flat_index = 0usize;
         for tier in &tiers {
-            sidebar_col = sidebar_col.push(Box::new(Text::new(tier.title)));
-            for (label, target) in &tier.entries {
+            sidebar_col = sidebar_col.push(Box::new(
+                Text::new(&tier.title.to_uppercase())
+                    .with_size(11.0)
+                    .with_color(theme.tokens.colors.text_dim),
+            ));
+            for (icon, label, target) in &tier.entries {
                 let id = format!("files.sidebar.{flat_index}");
                 let is_active = *target == self.current_path;
                 sidebar_col = sidebar_col.push(Box::new(
-                    crate::sidebar_row::SidebarFolderRow::new(&id, label, target.clone())
+                    crate::sidebar_row::SidebarFolderRow::new(&id, *icon, label, target.clone())
                         .with_active(is_active)
                         .with_sink(self.cmds.clone()),
                 ));
@@ -209,15 +205,22 @@ impl FileExplorerWidget {
         let sidebar: Box<dyn Widget> = Box::new(
             Container::new()
                 .with_width(crate::sidebar::SIDEBAR_WIDTH_PX as f32)
+                .with_no_padding()
                 .with_child(Box::new(sidebar_col)),
         );
 
         // Main view: list or grid, bound to the displayed entries + selection.
+        // Tight top padding so the list starts right under the breadcrumb —
+        // no wasted vertical band — while a small left inset separates it
+        // from the sidebar.
         let view_child: Box<dyn Widget> = match self.view_mode {
             ViewMode::List => crate::views::list_view::build_list(&displayed, &self.selection, &self.cmds),
             ViewMode::Grid => crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds),
         };
-        let mut view_col = Column::new().with_fill_remaining_height();
+        let mut view_col = Column::new()
+            .with_fill_remaining_height()
+            .with_vertical_padding(0.0)
+            .with_horizontal_padding(8.0, 0.0);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
             // wired to re-read the directory (Refresh).
@@ -240,22 +243,22 @@ impl FileExplorerWidget {
         let body = Row::new()
             .with_fill_remaining_height()
             .push(sidebar)
-            .push(Box::new(Column::new().with_fill_remaining_height().push(Box::new(view_col))));
+            .push(Box::new(view_col));
 
-        // Footer: status (if any) else item count + path summary.
+        // Footer: status (if any) else item count + path summary (dimmed).
         let (count, path_str) = self.footer_text();
         let left = self
             .status
             .clone()
             .unwrap_or_else(|| format!("{count} items"));
         let footer = Row::new()
-            .push(Box::new(Text::new(&left)))
+            .push(Box::new(Text::new(&left).with_size(12.0).with_color(theme.tokens.colors.text_dim)))
             .push(Box::new(Spacer::new()))
-            .push(Box::new(Text::new(&path_str)));
+            .push(Box::new(Text::new(&path_str).with_size(12.0).with_color(theme.tokens.colors.text_dim)));
 
         let mut root_col = Column::new()
             .push(toolbar)
-            .push(Box::new(breadcrumb_row))
+            .push(Box::new(breadcrumb))
             .push(Box::new(body));
         // Inline-rename bar sits just above the footer while a rename is
         // active; its TextInput edits the RENAME_QUERY_PATH Text object.
@@ -1016,7 +1019,7 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let mut composed = self.build_composition();
+        let mut composed = self.build_composition(theme);
         let child_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -1091,7 +1094,7 @@ impl Widget for FileExplorerWidget {
             // next frame will — the host's `take_structure_dirty`
             // pump rebuilds taffy and the third frame onward is
             // populated correctly.
-            self.composed = Some(self.build_composition());
+            self.composed = Some(self.build_composition(theme));
             self.structure_dirty = true;
         }
         if let Some(c) = &mut self.composed {
