@@ -35,6 +35,8 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -66,7 +68,8 @@ struct ContextMenu {
     items: Vec<CtxAction>,
 }
 
-/// A hit region in one of the app-owned overlays (setup sheet / context menu).
+/// A hit region in one of the app-owned overlays (setup sheet / context menu /
+/// first-run onboarding).
 #[derive(Clone)]
 enum OverlayHit {
     SetupField(usize),
@@ -75,6 +78,13 @@ enum OverlayHit {
     SetupSave,
     CancelSetup,
     CtxItem(usize),
+    /// Pick the account's sign-in method (password vs OAuth).
+    AuthPassword,
+    AuthOAuth,
+    /// Trigger the OAuth authorization flow for the detected provider.
+    OAuthSignIn,
+    /// The first-run "Add account" button.
+    FirstRunAdd,
 }
 
 /// The engine worker channel pair (live app only).
@@ -99,6 +109,13 @@ pub struct MailApp {
     setup_smtp_tls: bool,
     setup_editing: Option<usize>,
     setup_focus: Option<usize>,
+    /// The account's chosen sign-in method in the setup sheet.
+    setup_auth: crate::model::AuthMethod,
+    /// The OAuth provider detected from the typed email domain, if any.
+    setup_provider: Option<crate::oauth::OAuthProvider>,
+    /// The most recent validation message from a save attempt (shown inline in
+    /// the sheet); cleared when the sheet is (re)opened.
+    setup_error: Option<String>,
 
     engine: Option<EngineHandle>,
     connect_requested: bool,
@@ -133,6 +150,13 @@ impl MailApp {
         Self::assemble(shared, Some(EngineHandle { tx, rx }))
     }
 
+    /// A first-run constructor with no configured account and no engine —
+    /// renders the onboarding / welcome screen. Used by the `firstrun` shot.
+    pub fn new_first_run() -> Self {
+        let shared = MailState::shared(MailState::new_live(AccountStore::new(), avatar_store()));
+        Self::assemble(shared, None)
+    }
+
     fn assemble(shared: Shared, engine: Option<EngineHandle>) -> Self {
         let sidebar = Pane::boxed(Role::Sidebar, shared.clone());
         let overview = Pane::boxed(Role::List, shared.clone());
@@ -156,6 +180,9 @@ impl MailApp {
             setup_smtp_tls: cfg.smtp_tls,
             setup_editing: None,
             setup_focus: None,
+            setup_auth: cfg.auth,
+            setup_provider: None,
+            setup_error: None,
             engine,
             connect_requested: false,
             awaiting_engine: false,
@@ -187,6 +214,27 @@ impl MailApp {
         self.open_setup_edit(Some(active));
     }
 
+    /// Open a blank "Add account" sheet with an email typed + servers
+    /// autofilled, so the shot shows the add flow with single-border fields.
+    pub fn prime_setup_add_shot(&mut self) {
+        self.open_setup_edit(None);
+        self.setup_inputs[0].set_text("Grace Hopper");
+        self.setup_inputs[1].set_text("grace@fastmail.com");
+        self.maybe_autofill();
+        // Land focus on a server field so the single-border focus ring shows.
+        self.focus_setup(Some(4));
+    }
+
+    /// Open a blank "Add account" sheet with a Gmail address — which presets to
+    /// OAuth — so the shot shows the OAuth sign-in flow.
+    pub fn prime_setup_oauth_shot(&mut self) {
+        self.open_setup_edit(None);
+        self.setup_inputs[0].set_text("Grace Hopper");
+        self.setup_inputs[1].set_text("grace.hopper@gmail.com");
+        self.maybe_autofill();
+        self.focus_setup(Some(1));
+    }
+
     /// Open the sidebar overlay drawer and snap it (narrow drawer shot).
     pub fn prime_drawer_shot(&mut self) {
         self.nav.open_sidebar();
@@ -199,9 +247,11 @@ impl MailApp {
     fn publish_shell_flags(&mut self) {
         let narrow = self.rect.width() < BREAKPOINT;
         let detail = self.nav.is_detail_shown();
+        let sidebar_open = self.nav.is_sidebar_open();
         let mut st = self.shared.borrow_mut();
         st.narrow = narrow;
         st.detail_pushed = detail;
+        st.sidebar_open = sidebar_open;
     }
 
     /// Lay the shell out into the app's rect via a throwaway sub-taffy, the
@@ -501,6 +551,12 @@ impl MailApp {
         self.setup_inputs = build_setup_inputs(&cfg);
         self.setup_imap_tls = cfg.imap_tls;
         self.setup_smtp_tls = cfg.smtp_tls;
+        self.setup_auth = cfg.auth;
+        self.setup_provider = cfg
+            .email
+            .split_once('@')
+            .and_then(|(_, d)| crate::oauth::OAuthProvider::from_domain(d));
+        self.setup_error = None;
         self.setup_open = true;
         self.focus_setup(Some(1));
         self.context_menu = None;
@@ -509,8 +565,44 @@ impl MailApp {
 
     fn close_setup(&mut self) {
         self.setup_open = false;
+        self.setup_error = None;
         self.focus_setup(None);
         self.dirty = true;
+    }
+
+    /// Whether the app is at first run (no account configured) and should show
+    /// the onboarding screen rather than an empty mailbox.
+    fn is_first_run(&self) -> bool {
+        self.shared.borrow().accounts.is_empty() && !self.setup_open
+    }
+
+    /// The ordered field indices the Tab key walks. The password field is
+    /// dropped from the order when the account uses OAuth (there is no
+    /// password to type).
+    fn setup_tab_order(&self) -> Vec<usize> {
+        let mut order = vec![0usize, 1, 2];
+        if self.setup_auth == crate::model::AuthMethod::Password {
+            order.push(3);
+        }
+        order.extend([4, 5, 6, 7]);
+        order
+    }
+
+    /// Advance focus to the next (`+1`) / previous (`-1`) setup field, wrapping.
+    fn focus_setup_step(&mut self, delta: i32) {
+        let order = self.setup_tab_order();
+        let cur = self
+            .setup_focus
+            .and_then(|f| order.iter().position(|&i| i == f))
+            .unwrap_or(0) as i32;
+        let n = order.len() as i32;
+        let next = ((cur + delta) % n + n) % n;
+        // Leaving the email field triggers autoconfig, same as a click-away.
+        let leaving_email = self.setup_focus == Some(1) && order[next as usize] != 1;
+        self.focus_setup(Some(order[next as usize]));
+        if leaving_email {
+            self.maybe_autofill();
+        }
     }
 
     fn focus_setup(&mut self, which: Option<usize>) {
@@ -534,30 +626,50 @@ impl MailApp {
             smtp_port: g(7).trim().parse().unwrap_or(465),
             imap_tls: self.setup_imap_tls,
             smtp_tls: self.setup_smtp_tls,
+            auth: self.setup_auth,
         }
     }
 
-    /// Guess IMAP/SMTP hosts + ports from the typed email when the host fields
-    /// are still blank, using [`AccountConfig::autofill_from_email`]. Runs when
-    /// focus leaves the email field and again on save, so typing an address
-    /// actually fills the connection settings.
+    /// Fill IMAP/SMTP hosts + ports from the typed email when the host fields
+    /// are still blank, and detect the provider so Gmail/Outlook preset to
+    /// OAuth. Under `live` this runs the real Mozilla autoconfig lookup;
+    /// offline it falls back to [`AccountConfig::autofill_from_email`]'s guess.
+    /// Runs when focus leaves the email field and again on save.
     fn maybe_autofill(&mut self) {
         let email = self.setup_inputs[1].value().trim().to_string();
         if !email.contains('@') {
             return;
         }
+        let domain = email.split_once('@').map(|(_, d)| d.to_string()).unwrap_or_default();
+
+        // Provider detection → OAuth for the providers that block passwords.
+        self.setup_provider = crate::oauth::OAuthProvider::from_domain(&domain);
+        if self.setup_provider.is_some() {
+            self.setup_auth = crate::model::AuthMethod::OAuth;
+        }
+
         let imap_blank = self.setup_inputs[4].value().trim().is_empty();
         let smtp_blank = self.setup_inputs[6].value().trim().is_empty();
         if !imap_blank && !smtp_blank {
+            self.dirty = true;
             return;
         }
+
         let mut cfg = AccountConfig {
-            email,
+            email: email.clone(),
             username: self.setup_inputs[2].value().to_string(),
             display_name: self.setup_inputs[0].value().to_string(),
+            auth: self.setup_auth,
             ..Default::default()
         };
-        cfg.autofill_from_email();
+        // Real autoconfig discovery (live) or the built-in heuristic (offline).
+        match autoconfig_lookup(&email) {
+            Some(ac) => ac.apply_to(&mut cfg),
+            None => {
+                cfg.autofill_from_email();
+            }
+        }
+
         if imap_blank {
             self.setup_inputs[4].set_text(&cfg.imap_host);
             self.setup_inputs[5].set_text(&cfg.imap_port.to_string());
@@ -574,17 +686,32 @@ impl MailApp {
         if self.setup_inputs[0].value().trim().is_empty() {
             self.setup_inputs[0].set_text(&cfg.display_name);
         }
+        // Autoconfig may have upgraded the auth method (OAuth2 in the XML).
+        self.setup_auth = cfg.auth;
         self.dirty = true;
     }
 
     fn save_setup(&mut self, doc: &mut AutoCommit) {
+        self.save_setup_with(doc, &default_probe());
+    }
+
+    /// Save the account, but only after its credentials pass a live IMAP login
+    /// + SMTP handshake through `probe`. On failure the sheet stays open with a
+    /// specific error; on success the account is persisted and connected. The
+    /// `probe` seam makes the persist-on-success / keep-on-failure behaviour
+    /// unit-testable without a network.
+    fn save_setup_with(&mut self, doc: &mut AutoCommit, probe: &dyn crate::validate::ProbeTransport) {
         self.maybe_autofill();
         let cfg = self.read_setup_config();
-        if !cfg.is_valid() {
-            self.shared.borrow_mut().status = Some("Fix the highlighted fields".into());
+        let outcome = crate::validate::validate_account(&cfg, probe);
+        if !outcome.persisted() {
+            let msg = outcome.message();
+            self.setup_error = Some(msg.clone());
+            self.shared.borrow_mut().status = Some(msg);
             self.dirty = true;
             return;
         }
+        self.setup_error = None;
         {
             let mut st = self.shared.borrow_mut();
             let mut account = match self.setup_editing.and_then(|i| st.accounts.accounts.get(i)) {
@@ -610,10 +737,49 @@ impl MailApp {
         self.close_setup();
     }
 
+    /// Begin the OAuth authorization-code + PKCE flow for the detected
+    /// provider. Constructs the (real) authorization URL and opens the browser;
+    /// surfaces a clear note when a registered client id has not been
+    /// provisioned (the flow can't complete without one).
+    fn start_oauth(&mut self) {
+        let email = self.setup_inputs[1].value().trim().to_string();
+        let Some(provider) = self.setup_provider else {
+            self.shared.borrow_mut().status =
+                Some("Enter a Gmail or Outlook address to sign in".into());
+            self.dirty = true;
+            return;
+        };
+        match provider.client_id() {
+            Some(client_id) => {
+                let req = crate::oauth::AuthRequest {
+                    provider,
+                    client_id,
+                    redirect_uri: "http://127.0.0.1:8017/oauth".into(),
+                    pkce: crate::oauth::Pkce::generate(),
+                    state: uuid::Uuid::new_v4().to_string(),
+                    login_hint: email,
+                };
+                let url = req.authorization_url();
+                open_oauth_url(&url);
+                self.setup_error = None;
+                self.shared.borrow_mut().status =
+                    Some(format!("Opening {} sign-in in your browser…", provider.label()));
+            }
+            None => {
+                let env = provider.client_id_env();
+                self.shared.borrow_mut().status =
+                    Some(format!("Set {env} to complete {} sign-in", provider.label()));
+            }
+        }
+        self.dirty = true;
+    }
+
     fn overlay_panel_rect(&self) -> Rect {
         let r = self.rect;
-        let w = 640.0_f64.min(r.width() - 48.0);
-        let h = 540.0_f64.min(r.height() - 48.0);
+        let w = 660.0_f64.min(r.width() - 48.0);
+        // The first-run welcome is shorter than the taller account form.
+        let target_h: f64 = if self.setup_open { 500.0 } else { 440.0 };
+        let h = target_h.min(r.height() - 48.0);
         let cx = (r.x0 + r.x1) / 2.0;
         let y0 = r.y0 + (r.height() - h) / 2.0;
         Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h)
@@ -621,42 +787,76 @@ impl MailApp {
 
     fn rebuild_overlay_hits(&mut self) {
         self.overlay_hits.clear();
+        if self.is_first_run() {
+            let p = self.overlay_panel_rect();
+            let bw = 200.0;
+            let cx = (p.x0 + p.x1) / 2.0;
+            let by = p.y0 + p.height() * 0.66;
+            self.overlay_hits.push((Rect::new(cx - bw / 2.0, by, cx + bw / 2.0, by + 44.0), OverlayHit::FirstRunAdd));
+        }
         if self.setup_open {
             let p = self.overlay_panel_rect();
-            let pad = 24.0;
+            let pad = 26.0;
             let lx = p.x0 + pad;
             let rx = p.x1 - pad;
             let field_h = 34.0;
-            let label_w = 132.0;
-            let mut y = p.y0 + 64.0;
-            for i in 0..4 {
-                let fr = Rect::new(lx + label_w, y, rx, y + field_h);
+            let label_w = 120.0;
+            let fx = lx + label_w; // field left edge
+            let mut y = p.y0 + 76.0;
+
+            // Identity fields: Display name (0), Email (1), Username (2).
+            for i in [0usize, 1, 2] {
+                let fr = Rect::new(fx, y, rx, y + field_h);
                 self.setup_inputs[i].apply_layout_external(fr);
                 self.overlay_hits.push((fr, OverlayHit::SetupField(i)));
-                y += field_h + 10.0;
+                y += field_h + 12.0;
             }
-            y += 6.0;
-            let half = (rx - lx - label_w - 12.0) * 0.62;
-            let imap_host = Rect::new(lx + label_w, y, lx + label_w + half, y + field_h);
+
+            // Sign-in method pills.
+            let pill_w = 104.0;
+            let pw_pill = Rect::new(fx, y, fx + pill_w, y + field_h);
+            let oauth_pill = Rect::new(fx + pill_w + 10.0, y, fx + pill_w * 2.0 + 10.0, y + field_h);
+            self.overlay_hits.push((pw_pill, OverlayHit::AuthPassword));
+            self.overlay_hits.push((oauth_pill, OverlayHit::AuthOAuth));
+            y += field_h + 12.0;
+
+            // Password field (3) OR the OAuth sign-in button.
+            if self.setup_auth == crate::model::AuthMethod::Password {
+                let fr = Rect::new(fx, y, rx, y + field_h);
+                self.setup_inputs[3].apply_layout_external(fr);
+                self.overlay_hits.push((fr, OverlayHit::SetupField(3)));
+            } else {
+                let btn = Rect::new(fx, y, fx + 240.0, y + field_h + 4.0);
+                self.overlay_hits.push((btn, OverlayHit::OAuthSignIn));
+            }
+            y += field_h + 20.0;
+
+            // Server rows: host | port | TLS.
+            let port_w = 60.0;
+            let tls_w = 58.0;
+            let host_w = (rx - fx) - 12.0 - port_w - 12.0 - tls_w;
+            let imap_host = Rect::new(fx, y, fx + host_w, y + field_h);
             self.setup_inputs[4].apply_layout_external(imap_host);
             self.overlay_hits.push((imap_host, OverlayHit::SetupField(4)));
-            let port_imap = Rect::new(imap_host.x1 + 12.0, y, imap_host.x1 + 12.0 + 64.0, y + field_h);
+            let port_imap = Rect::new(imap_host.x1 + 12.0, y, imap_host.x1 + 12.0 + port_w, y + field_h);
             self.setup_inputs[5].apply_layout_external(port_imap);
             self.overlay_hits.push((port_imap, OverlayHit::SetupField(5)));
             let imap_tls = Rect::new(port_imap.x1 + 12.0, y, rx, y + field_h);
             self.overlay_hits.push((imap_tls, OverlayHit::ToggleImapTls));
-            y += field_h + 10.0;
-            let smtp_host = Rect::new(lx + label_w, y, lx + label_w + half, y + field_h);
+            y += field_h + 12.0;
+
+            let smtp_host = Rect::new(fx, y, fx + host_w, y + field_h);
             self.setup_inputs[6].apply_layout_external(smtp_host);
             self.overlay_hits.push((smtp_host, OverlayHit::SetupField(6)));
-            let port_smtp = Rect::new(smtp_host.x1 + 12.0, y, smtp_host.x1 + 12.0 + 64.0, y + field_h);
+            let port_smtp = Rect::new(smtp_host.x1 + 12.0, y, smtp_host.x1 + 12.0 + port_w, y + field_h);
             self.setup_inputs[7].apply_layout_external(port_smtp);
             self.overlay_hits.push((port_smtp, OverlayHit::SetupField(7)));
             let smtp_tls = Rect::new(port_smtp.x1 + 12.0, y, rx, y + field_h);
             self.overlay_hits.push((smtp_tls, OverlayHit::ToggleSmtpTls));
-            let by = p.y1 - 52.0;
-            self.overlay_hits.push((Rect::new(lx, by, lx + 150.0, by + 36.0), OverlayHit::SetupSave));
-            self.overlay_hits.push((Rect::new(rx - 92.0, by, rx, by + 36.0), OverlayHit::CancelSetup));
+
+            let by = p.y1 - 54.0;
+            self.overlay_hits.push((Rect::new(lx, by, lx + 168.0, by + 38.0), OverlayHit::SetupSave));
+            self.overlay_hits.push((Rect::new(rx - 92.0, by, rx, by + 38.0), OverlayHit::CancelSetup));
         }
         if let Some(menu) = &self.context_menu {
             let mr = context_menu_rect(menu, self.rect);
@@ -813,13 +1013,15 @@ impl MailApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.rect, c.surfaces.overlay);
         let p = self.overlay_panel_rect();
-        fill_round(scene, t, p, 14.0, c.surfaces.raised);
-        stroke_round(scene, t, p, 14.0, 1.0, c.border_white_10);
-        let pad = 24.0;
+        // Soft drop shadow so the sheet floats above the dimmed mailbox.
+        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 90), None, &RoundedRect::from_rect(Rect::new(p.x0, p.y0 + 6.0, p.x1, p.y1 + 10.0), 16.0));
+        fill_round(scene, t, p, 16.0, c.surfaces.raised);
+        stroke_round(scene, t, p, 16.0, 1.0, c.border_white_10);
+        let pad = 26.0;
         let lx = p.x0 + pad;
         let heading = if self.setup_editing.is_some() { "Edit account" } else { "Add account" };
-        tr.draw_text_weighted(scene, heading, 16.0, c.text_primary, t * Affine::translate((lx, p.y0 + 18.0)), None, TextWeight::Bold);
-        tr.draw_text(scene, "IMAP fetch and SMTP submit for this address.", 11.5, c.text_dim, t * Affine::translate((lx, p.y0 + 38.0)), None);
+        tr.draw_text_weighted(scene, heading, 17.0, c.text_primary, t * Affine::translate((lx, p.y0 + 20.0)), None, TextWeight::Bold);
+        tr.draw_text(scene, "Enter your email — server details fill in automatically.", 11.5, c.text_dim, t * Affine::translate((lx, p.y0 + 44.0)), None);
 
         let labels = ["Display name", "Email", "Username", "Password", "IMAP host", "", "SMTP host", ""];
         let cfg_errs: std::collections::HashSet<&str> = self.read_setup_config().validate().into_iter().map(|(k, _)| k).collect();
@@ -831,55 +1033,161 @@ impl MailApp {
             _ => false,
         };
         let last_mouse = self.shared.borrow().last_mouse;
+
+        // Field labels (left column). The single border + focus ring is drawn
+        // by each TextInput itself — no second app-drawn border stacks on top.
+        let mut shown: Vec<usize> = Vec::new();
+        let mut smtp_row_bottom = p.y0;
         for (rect, hit) in &self.overlay_hits {
             let OverlayHit::SetupField(i) = hit else { continue };
             let i = *i;
-            if i >= self.setup_inputs.len() {
-                continue;
+            shown.push(i);
+            if i == 6 {
+                smtp_row_bottom = rect.y1;
             }
-            let focused = self.setup_focus == Some(i);
             if i < labels.len() && !labels[i].is_empty() {
-                tr.draw_text(scene, labels[i], 12.5, c.text_dim, t * Affine::translate((lx, rect.y0 + 9.0)), None);
+                let col = if err_for(i) { c.semantic.danger } else { c.text_dim };
+                tr.draw_text(scene, labels[i], 12.5, col, t * Affine::translate((lx, rect.y0 + 9.0)), None);
             }
             if i == 5 {
-                tr.draw_text(scene, "Port", 11.0, c.text_dim, t * Affine::translate((rect.x0, rect.y0 - 14.0)), None);
+                tr.draw_text(scene, "Port", 11.0, c.text_dim, t * Affine::translate((rect.x0, rect.y0 - 15.0)), None);
             }
-            fill_round(scene, t, Rect::new(rect.x0 - 2.0, rect.y0 - 2.0, rect.x1 + 2.0, rect.y1 + 2.0), 7.0, c.surfaces.base);
-            let border = if err_for(i) { c.semantic.danger } else if focused { c.border_focus } else { c.border_standard };
-            stroke_round(scene, t, Rect::new(rect.x0 - 2.0, rect.y0 - 2.0, rect.x1 + 2.0, rect.y1 + 2.0), 7.0, 1.0, border);
         }
+        for i in shown {
+            self.setup_inputs[i].draw(scene, t, tr, theme, presence);
+        }
+
+        // Sign-in method pills + label.
+        for (rect, hit) in &self.overlay_hits {
+            let (label, active) = match hit {
+                OverlayHit::AuthPassword => ("Password", self.setup_auth == crate::model::AuthMethod::Password),
+                OverlayHit::AuthOAuth => ("OAuth", self.setup_auth == crate::model::AuthMethod::OAuth),
+                _ => continue,
+            };
+            if matches!(hit, OverlayHit::AuthPassword) {
+                tr.draw_text(scene, "Sign-in", 12.5, c.text_dim, t * Affine::translate((lx, rect.y0 + 9.0)), None);
+            }
+            let hov = rect.contains(last_mouse);
+            let bg = if active { c.accent[5].with_alpha_factor(0.22) } else if hov { c.surface_white_10 } else { c.surface_white_5 };
+            fill_round(scene, t, *rect, 8.0, bg);
+            stroke_round(scene, t, *rect, 8.0, 1.0, if active { c.accent[5] } else { c.border_white_10 });
+            let col = if active { c.text_primary } else { c.neutral[7] };
+            let (w, _) = tr.measure_weighted(label, 12.5, None, TextWeight::Medium);
+            tr.draw_text_weighted(scene, label, 12.5, col, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 9.0)), None, TextWeight::Medium);
+        }
+
+        // OAuth sign-in button (shown in place of the password field).
+        for (rect, hit) in &self.overlay_hits {
+            if !matches!(hit, OverlayHit::OAuthSignIn) {
+                continue;
+            }
+            let prov = self.setup_provider.map(|pr| pr.label()).unwrap_or("your provider");
+            let hov = rect.contains(last_mouse);
+            fill_round(scene, t, *rect, 9.0, if hov { c.accent[4] } else { c.accent[5] });
+            let label = format!("Sign in with {prov}");
+            tr.draw_text_weighted(scene, &label, 13.0, Color::WHITE, t * Affine::translate((rect.x0 + 16.0, rect.y0 + 11.0)), None, TextWeight::Semibold);
+            // Note whether a registered client id is provisioned.
+            let has_client = self.setup_provider.and_then(|pr| pr.client_id()).is_some();
+            let note = if has_client {
+                "Opens your browser to authorize (OAuth2 + PKCE).".to_string()
+            } else {
+                let env = self.setup_provider.map(|pr| pr.client_id_env()).unwrap_or("QOS_MAIL_*_CLIENT_ID");
+                format!("Set {env} to enable sign-in.")
+            };
+            tr.draw_text(scene, &note, 10.5, c.text_dim, t * Affine::translate((rect.x1 + 12.0, rect.y0 + 12.0)), None);
+        }
+
+        // TLS toggles.
         for (rect, hit) in &self.overlay_hits {
             let (on, label) = match hit {
                 OverlayHit::ToggleImapTls => (self.setup_imap_tls, "TLS"),
                 OverlayHit::ToggleSmtpTls => (self.setup_smtp_tls, "TLS"),
                 _ => continue,
             };
-            let pill = Rect::new(rect.x0, rect.y0 + 4.0, rect.x0 + 44.0, rect.y0 + 26.0);
+            let pill = Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 40.0, rect.y0 + 28.0);
             fill_round(scene, t, pill, 11.0, if on { c.accent[5] } else { c.neutral[3] });
             let knob_x = if on { pill.x1 - 18.0 } else { pill.x0 + 4.0 };
             scene.fill(Fill::NonZero, t, Color::WHITE, None, &Circle::new(Point::new(knob_x + 7.0, pill.y0 + 11.0), 8.0));
-            tr.draw_text(scene, label, 12.0, c.neutral[8], t * Affine::translate((pill.x1 + 8.0, rect.y0 + 8.0)), None);
+            tr.draw_text(scene, label, 12.0, c.neutral[8], t * Affine::translate((pill.x1 + 8.0, rect.y0 + 10.0)), None);
         }
+
+        // Autoconfig hint + validation message, between the server rows and the
+        // button row.
+        let hint_y = smtp_row_bottom + 18.0;
+        match &self.setup_error {
+            Some(msg) => {
+                Icon::Ban.draw(scene, t, Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0), c.semantic.danger);
+                tr.draw_text(scene, msg, 11.5, c.semantic.danger, t * Affine::translate((lx + 22.0, hint_y + 1.0)), None);
+            }
+            None => {
+                Icon::Check.draw(scene, t, Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0), c.semantic.success);
+                tr.draw_text(scene, "Credentials are verified before the account is saved.", 11.5, c.text_dim, t * Affine::translate((lx + 22.0, hint_y + 1.0)), None);
+            }
+        }
+
+        // Save / Cancel.
         for (rect, hit) in &self.overlay_hits {
             match hit {
                 OverlayHit::SetupSave => {
                     let hov = rect.contains(last_mouse);
                     fill_round(scene, t, *rect, 9.0, if hov { c.accent[4] } else { c.accent[5] });
-                    let label = "Save account";
+                    let label = "Save & verify";
                     let (w, _) = tr.measure_weighted(label, 13.5, None, TextWeight::Semibold);
-                    tr.draw_text_weighted(scene, label, 13.5, Color::WHITE, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None, TextWeight::Semibold);
+                    tr.draw_text_weighted(scene, label, 13.5, Color::WHITE, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 11.0)), None, TextWeight::Semibold);
                 }
                 OverlayHit::CancelSetup => {
                     let hov = rect.contains(last_mouse);
                     fill_round(scene, t, *rect, 9.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
                     let (w, _) = tr.measure("Cancel", 13.0, None);
-                    tr.draw_text(scene, "Cancel", 13.0, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None);
+                    tr.draw_text(scene, "Cancel", 13.0, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 11.0)), None);
                 }
                 _ => {}
             }
         }
-        for inp in &mut self.setup_inputs {
-            inp.draw(scene, t, tr, theme, presence);
+    }
+
+    /// The first-run onboarding screen: a welcome panel with a single
+    /// "Add account" call to action that opens the setup flow. Shown whenever
+    /// no account is configured (instead of an empty inbox).
+    fn draw_first_run(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if !self.is_first_run() {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        // Opaque cover over the (empty) mailbox behind it.
+        fill_rect(scene, t, self.rect, c.surfaces.base);
+        let p = self.overlay_panel_rect();
+        fill_round(scene, t, p, 18.0, c.surfaces.raised);
+        stroke_round(scene, t, p, 18.0, 1.0, c.border_white_10);
+        let cx = (p.x0 + p.x1) / 2.0;
+
+        // Hero mail glyph in an accent disc.
+        let disc_r = 34.0;
+        let disc_c = Point::new(cx, p.y0 + p.height() * 0.24);
+        scene.fill(Fill::NonZero, t, c.accent[5].with_alpha_factor(0.16), None, &Circle::new(disc_c, disc_r));
+        Icon::Mail.draw(scene, t, Rect::new(disc_c.x - 20.0, disc_c.y - 20.0, disc_c.x + 20.0, disc_c.y + 20.0), c.accent[5]);
+
+        let title = "Welcome to Mail";
+        let (tw, _) = tr.measure_weighted(title, 22.0, None, TextWeight::Bold);
+        tr.draw_text_weighted(scene, title, 22.0, c.text_primary, t * Affine::translate((cx - tw as f64 / 2.0, disc_c.y + disc_r + 18.0)), None, TextWeight::Bold);
+        let sub = "Add your email account to start reading and sending mail.";
+        let (sw, _) = tr.measure(sub, 13.0, None);
+        tr.draw_text(scene, sub, 13.0, c.text_dim, t * Affine::translate((cx - sw as f64 / 2.0, disc_c.y + disc_r + 50.0)), None);
+
+        // The single call to action.
+        let last_mouse = self.shared.borrow().last_mouse;
+        for (rect, hit) in &self.overlay_hits {
+            if !matches!(hit, OverlayHit::FirstRunAdd) {
+                continue;
+            }
+            let hov = rect.contains(last_mouse);
+            fill_round(scene, t, *rect, 11.0, if hov { c.accent[4] } else { c.accent[5] });
+            let label = "Add account";
+            let (w, _) = tr.measure_weighted(label, 14.5, None, TextWeight::Semibold);
+            let group_w = 18.0 + 8.0 + w as f64;
+            let gx = (rect.x0 + rect.x1) / 2.0 - group_w / 2.0;
+            Icon::Plus.draw(scene, t, Rect::new(gx, rect.y0 + 13.0, gx + 18.0, rect.y0 + 31.0), Color::WHITE);
+            tr.draw_text_weighted(scene, label, 14.5, Color::WHITE, t * Affine::translate((gx + 26.0, rect.y0 + 13.0)), None, TextWeight::Semibold);
         }
     }
 
@@ -911,13 +1219,13 @@ impl MailApp {
 
 fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
     vec![
-        TextInput::local().with_initial_value(&cfg.display_name),
-        TextInput::local().with_initial_value(&cfg.email),
-        TextInput::local().with_initial_value(&cfg.username),
-        TextInput::local().with_initial_value(&cfg.password).with_secret(true),
-        TextInput::local().with_initial_value(&cfg.imap_host),
+        TextInput::local().with_initial_value(&cfg.display_name).with_placeholder("Your name"),
+        TextInput::local().with_initial_value(&cfg.email).with_placeholder("you@example.com"),
+        TextInput::local().with_initial_value(&cfg.username).with_placeholder("Usually your email"),
+        TextInput::local().with_initial_value(&cfg.password).with_secret(true).with_placeholder("Account password"),
+        TextInput::local().with_initial_value(&cfg.imap_host).with_placeholder("imap.example.com"),
         TextInput::local().with_initial_value(&cfg.imap_port.to_string()),
-        TextInput::local().with_initial_value(&cfg.smtp_host),
+        TextInput::local().with_initial_value(&cfg.smtp_host).with_placeholder("smtp.example.com"),
         TextInput::local().with_initial_value(&cfg.smtp_port.to_string()),
     ]
 }
@@ -1009,6 +1317,39 @@ fn avatar_fetcher() -> ui::Fetcher {
     std::sync::Arc::new(|_url: &str| None)
 }
 
+/// The account-verification probe used on save. A real IMAP login + SMTP
+/// handshake under `--features live`; a no-op offline probe otherwise, so
+/// `--shots` and headless tests still persist an account after the config-level
+/// checks pass.
+#[cfg(feature = "live")]
+fn default_probe() -> crate::validate::LiveProbe {
+    crate::validate::LiveProbe
+}
+#[cfg(not(feature = "live"))]
+fn default_probe() -> crate::validate::OfflineProbe {
+    crate::validate::OfflineProbe
+}
+
+/// Mozilla autoconfig discovery for a typed email. Real HTTP under
+/// `--features live`; `None` offline (the caller falls back to the heuristic).
+#[cfg(feature = "live")]
+fn autoconfig_lookup(email: &str) -> Option<crate::autoconfig::Autoconfig> {
+    crate::autoconfig::discover(email)
+}
+#[cfg(not(feature = "live"))]
+fn autoconfig_lookup(_email: &str) -> Option<crate::autoconfig::Autoconfig> {
+    None
+}
+
+/// Open an OAuth authorization URL in the user's browser. Live builds only —
+/// the offline build (and `--shots`) never launches a browser.
+#[cfg(feature = "live")]
+fn open_oauth_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+#[cfg(not(feature = "live"))]
+fn open_oauth_url(_url: &str) {}
+
 // =============================== Widget impl ===============================
 
 impl Widget for MailApp {
@@ -1079,6 +1420,9 @@ impl Widget for MailApp {
         // The navigation shell (sidebar + list + reader) draws itself, its
         // dividers, the collapse/back affordance, and the drawer scrim.
         self.nav.draw_with_presence(scene, t, tr, theme, presence, permissions);
+        // First-run onboarding covers the (empty) mailbox until an account is
+        // added.
+        self.draw_first_run(scene, t, tr, theme);
         // App-owned overlays on top.
         self.compose.draw(scene, t, tr, theme, presence);
         self.compose.draw_inputs(scene, t, tr, theme, presence);
@@ -1118,6 +1462,21 @@ impl Widget for MailApp {
                 ComposeAction::None => {}
             }
             if consumed {
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
+
+        // 1.5) First-run onboarding is modal until an account exists: the only
+        // action is "Add account", which opens the setup sheet.
+        if self.is_first_run() {
+            if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+                let pt = self.shared.borrow().last_mouse;
+                self.rebuild_overlay_hits();
+                if self.overlay_hits.iter().any(|(rc, h)| matches!(h, OverlayHit::FirstRunAdd) && rc.contains(pt)) {
+                    self.open_setup_edit(None);
+                }
                 *handled = true;
                 self.dirty = true;
                 return;
@@ -1194,6 +1553,8 @@ impl Widget for MailApp {
             Some(self.compose.window_rect())
         } else if self.setup_open {
             Some(self.overlay_panel_rect())
+        } else if self.is_first_run() {
+            Some(self.rect)
         } else {
             None
         }
@@ -1242,7 +1603,31 @@ impl MailApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // Keyboard → focused field.
+        // Keyboard: Tab/Shift+Tab move between fields, Enter advances (or
+        // submits on the last field); everything else routes to the focused
+        // field.
+        if let WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } = event {
+            match logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    let dir = if modifiers.state().shift_key() { -1 } else { 1 };
+                    self.focus_setup_step(dir);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    let order = self.setup_tab_order();
+                    let is_last = self.setup_focus.map(|f| order.last() == Some(&f)).unwrap_or(false);
+                    if is_last {
+                        self.save_setup(state);
+                    } else {
+                        self.focus_setup_step(1);
+                    }
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
             if let Some(i) = self.setup_focus.and_then(|i| self.setup_inputs.get_mut(i)) {
                 i.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
@@ -1261,6 +1646,20 @@ impl MailApp {
                     if leaving_email {
                         self.maybe_autofill();
                     }
+                    *handled = true;
+                }
+                Some(OverlayHit::AuthPassword) => {
+                    self.setup_auth = crate::model::AuthMethod::Password;
+                    self.dirty = true;
+                    *handled = true;
+                }
+                Some(OverlayHit::AuthOAuth) => {
+                    self.setup_auth = crate::model::AuthMethod::OAuth;
+                    self.dirty = true;
+                    *handled = true;
+                }
+                Some(OverlayHit::OAuthSignIn) => {
+                    self.start_oauth();
                     *handled = true;
                 }
                 Some(OverlayHit::ToggleImapTls) => {
@@ -1722,5 +2121,139 @@ mod tests {
         let before = app.shared.borrow().mailbox.count(Folder::Trash);
         dispatch(&mut app, &named_key(NamedKey::Delete), &mut doc);
         assert_eq!(app.shared.borrow().mailbox.count(Folder::Trash), before + 1, "Delete moved the selection to Trash");
+    }
+
+    // ---- first-run onboarding --------------------------------------------
+
+    #[test]
+    fn first_run_shows_onboarding_and_add_opens_setup() {
+        let mut app = MailApp::new_first_run();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.layout_for_test(1100.0, 780.0);
+        assert!(app.is_first_run(), "no configured account → first-run onboarding");
+        app.rebuild_overlay_hits();
+        let add = app
+            .overlay_hits
+            .iter()
+            .find_map(|(r, h)| matches!(h, OverlayHit::FirstRunAdd).then_some(*r))
+            .expect("the onboarding Add-account button");
+        assert!(click_at(&mut app, &mut doc, add.center()), "Add-account click consumed");
+        assert!(app.setup_open, "clicking Add opens the account setup sheet");
+        assert!(!app.is_first_run(), "an open setup sheet supersedes the first-run screen");
+    }
+
+    // ---- add-account: single-border layout, Tab, autoconfig, OAuth --------
+
+    #[test]
+    fn setup_fields_use_single_border_no_wrapper() {
+        let (mut app, _doc) = app();
+        app.layout_for_test(1100.0, 780.0);
+        app.open_setup_edit(None);
+        app.rebuild_overlay_hits();
+        let mut n = 0;
+        for (rect, hit) in &app.overlay_hits {
+            if let OverlayHit::SetupField(i) = hit {
+                // The input is laid out at exactly the field hit rect, so only
+                // its own single border draws — no wider app-drawn border rect
+                // stacks a second outline on top.
+                assert_eq!(
+                    app.setup_inputs[*i].get_rect(),
+                    *rect,
+                    "field {i}: input rect must equal its hit rect (single border)"
+                );
+                n += 1;
+            }
+        }
+        assert_eq!(n, 8, "all eight fields are shown in password mode");
+    }
+
+    #[test]
+    fn setup_tab_key_advances_between_fields() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1100.0, 780.0);
+        app.open_setup_edit(None);
+        app.focus_setup(Some(0));
+        assert!(dispatch(&mut app, &named_key(NamedKey::Tab), &mut doc), "Tab consumed");
+        assert_eq!(app.setup_focus, Some(1), "Tab advances to the next field");
+        assert!(dispatch(&mut app, &named_key(NamedKey::Tab), &mut doc));
+        assert_eq!(app.setup_focus, Some(2), "Tab keeps advancing");
+        // Reverse step wraps back.
+        app.focus_setup_step(-1);
+        assert_eq!(app.setup_focus, Some(1), "Shift+Tab moves back a field");
+    }
+
+    #[test]
+    fn oauth_mode_drops_password_from_tab_order() {
+        let (mut app, _doc) = app();
+        app.open_setup_edit(None);
+        app.setup_auth = crate::model::AuthMethod::Password;
+        assert!(app.setup_tab_order().contains(&3), "password field is tabbable under password auth");
+        app.setup_auth = crate::model::AuthMethod::OAuth;
+        assert!(!app.setup_tab_order().contains(&3), "no password field to tab to under OAuth");
+    }
+
+    #[test]
+    fn setup_enter_on_last_field_submits() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1100.0, 780.0);
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("z@host.example");
+        app.setup_inputs[2].set_text("z@host.example");
+        app.setup_inputs[4].set_text("imap.host.example");
+        app.setup_inputs[6].set_text("smtp.host.example");
+        let before = app.shared.borrow().accounts.len();
+        let last = *app.setup_tab_order().last().unwrap();
+        app.focus_setup(Some(last));
+        assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc), "Enter consumed");
+        assert_eq!(app.shared.borrow().accounts.len(), before + 1, "Enter on the last field saves the account");
+    }
+
+    #[test]
+    fn gmail_email_presets_oauth_and_still_autofills_hosts() {
+        let (mut app, _doc) = app();
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("someone@gmail.com");
+        app.maybe_autofill();
+        assert_eq!(app.setup_auth, crate::model::AuthMethod::OAuth, "Gmail presets to OAuth");
+        assert!(app.setup_provider.is_some(), "provider detected from the domain");
+        assert_eq!(app.setup_inputs[4].value(), "imap.gmail.com", "IMAP host still autofilled");
+    }
+
+    // ---- test-before-save state machine (persist on success only) --------
+
+    struct FixedProbe {
+        imap_ok: bool,
+    }
+    impl crate::validate::ProbeTransport for FixedProbe {
+        fn imap_login(&self, _cfg: &AccountConfig) -> Result<(), String> {
+            if self.imap_ok { Ok(()) } else { Err("535 auth rejected".into()) }
+        }
+        fn smtp_handshake(&self, _cfg: &AccountConfig) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn save_persists_only_when_verification_succeeds() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("new@host.example");
+        app.setup_inputs[2].set_text("new@host.example");
+        app.setup_inputs[4].set_text("imap.host.example");
+        app.setup_inputs[6].set_text("smtp.host.example");
+        let before = app.shared.borrow().accounts.len();
+
+        // Failing verification: no persist, sheet stays open, error surfaced.
+        app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+        assert_eq!(app.shared.borrow().accounts.len(), before, "a failed IMAP check must not persist the account");
+        assert!(app.setup_open, "the sheet stays open on a failed verification");
+        assert!(app.setup_error.as_deref().unwrap_or("").contains("IMAP"), "a specific IMAP error is shown");
+
+        // Succeeding verification: account saved, sheet closes.
+        app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+        assert_eq!(app.shared.borrow().accounts.len(), before + 1, "a verified account persists");
+        assert!(!app.setup_open, "the sheet closes on success");
+        assert!(app.setup_error.is_none());
     }
 }
