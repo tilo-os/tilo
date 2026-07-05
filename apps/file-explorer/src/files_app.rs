@@ -10,7 +10,8 @@
 
 use crate::command::{new_sink, CommandSink, FileCommand};
 use crate::model::{initial_path, read_dir_sync, sort_entries, Entry, SortBy, SortOrder, ViewMode};
-use crate::fileops;
+use crate::places_sidebar::{self, FavStore, PlacesSidebar};
+use crate::{config, favorites, fileops, templates};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -91,9 +92,23 @@ pub struct FileExplorerWidget {
     /// for menu item `i` (None for separators).
     context_menu: ContextMenu,
     menu_commands: Vec<Option<FileCommand>>,
+    /// The "New File ▸" flyout submenu, populated from the Templates dir when
+    /// the main menu opens; empty (and closed) when there are no templates.
+    submenu: ContextMenu,
+    submenu_commands: Vec<Option<FileCommand>>,
     /// Last cursor position in logical coords (for menu placement + the
     /// context-menu hit-test).
     last_cursor: Point,
+    /// Shared, persistent favourites + drag-reorder state (see
+    /// [`crate::places_sidebar`]). Cloned into the sidebar each rebuild.
+    favs: FavStore,
+    /// Per-user config dir for persisting favourites + zoom (`None` when the
+    /// environment has no config dir — the UI still works, just doesn't persist).
+    config_dir: Option<PathBuf>,
+    /// Icon/row zoom step (see [`crate::config`]); `0` = default.
+    zoom_level: i32,
+    /// Whether dotfiles are shown.
+    show_hidden: bool,
 }
 
 impl Default for FileExplorerWidget {
@@ -104,9 +119,28 @@ impl Default for FileExplorerWidget {
 
 impl FileExplorerWidget {
     pub fn new() -> Self {
-        let home = dirs::home_dir();
+        Self::with_persistence(config::config_dir(), dirs::home_dir())
+    }
+
+    /// Construct with an explicit persistence directory + home. `new` uses the
+    /// real per-user config dir; tests pass a `tempdir` (or `None`) so they
+    /// never read or write the user's real favourites/zoom state.
+    #[doc(hidden)]
+    pub fn with_persistence(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Self {
         let cwd = initial_path();
+        let zoom_level = config_dir.as_deref().map(config::load_zoom).unwrap_or(0);
+        // Favourites: persisted list when we have a home + config dir, else the
+        // built-in defaults so the sidebar is never empty.
+        let favorites = match (home.as_deref(), config_dir.as_deref()) {
+            (Some(h), Some(dir)) => favorites::load(dir, h),
+            (Some(h), None) => favorites::defaults(h),
+            (None, _) => Vec::new(),
+        };
+        let show_hidden = false;
         let mut entries = read_dir_sync(&cwd).unwrap_or_default();
+        if !show_hidden {
+            entries.retain(|e| !e.name.starts_with('.'));
+        }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         Self {
             current_path: cwd,
@@ -134,7 +168,25 @@ impl FileExplorerWidget {
             structure_dirty: false,
             context_menu: ContextMenu::new(),
             menu_commands: Vec::new(),
+            submenu: ContextMenu::new(),
+            submenu_commands: Vec::new(),
             last_cursor: Point::ZERO,
+            favs: places_sidebar::new_store(favorites),
+            config_dir,
+            zoom_level,
+            show_hidden,
+        }
+    }
+
+    /// The current zoom scale multiplier (icon/row size).
+    fn zoom_scale(&self) -> f64 {
+        config::zoom_scale(self.zoom_level)
+    }
+
+    /// Persist the favourites list (best-effort).
+    fn save_favorites(&self) {
+        if let Some(dir) = self.config_dir.as_deref() {
+            favorites::save(dir, &self.favs.borrow().favorites);
         }
     }
 
@@ -178,49 +230,37 @@ impl FileExplorerWidget {
         );
         let breadcrumb = crate::breadcrumb_bar::BreadcrumbBar::new(crumbs, self.cmds.clone());
 
-        // Sidebar — tiered shortcuts, each wired to Navigate. Section titles
-        // are small dim labels; rows carry a themed vector glyph.
-        let tiers = crate::sidebar::build_tiers(self.home_path.as_deref());
-        let mut sidebar_col = Column::new()
-            .with_horizontal_padding(10.0, 10.0)
-            .with_vertical_padding(10.0);
-        let mut flat_index = 0usize;
-        for tier in &tiers {
-            sidebar_col = sidebar_col.push(Box::new(
-                Text::new(&tier.title.to_uppercase())
-                    .with_size(11.0)
-                    .with_color(theme.tokens.colors.text_dim),
-            ));
-            for (icon, label, target) in &tier.entries {
-                let id = format!("files.sidebar.{flat_index}");
-                let is_active = *target == self.current_path;
-                sidebar_col = sidebar_col.push(Box::new(
-                    crate::sidebar_row::SidebarFolderRow::new(&id, *icon, label, target.clone())
-                        .with_active(is_active)
-                        .with_sink(self.cmds.clone()),
-                ));
-                flat_index += 1;
-            }
-        }
-        let sidebar: Box<dyn Widget> = Box::new(
-            Container::new()
-                .with_width(crate::sidebar::SIDEBAR_WIDTH_PX as f32)
-                .with_no_padding()
-                .with_child(Box::new(sidebar_col)),
-        );
+        // Sidebar — the modern Favourites / Places list. A single widget that
+        // owns drag-to-reorder for the favourites (via the shared, persistent
+        // FavStore) so a reorder survives the per-frame rebuild.
+        let sidebar: Box<dyn Widget> = Box::new(PlacesSidebar::new(
+            self.favs.clone(),
+            self.current_path.clone(),
+            self.cmds.clone(),
+        ));
 
-        // Main view: list or grid, bound to the displayed entries + selection.
-        // Tight top padding so the list starts right under the breadcrumb —
-        // no wasted vertical band — while a small left inset separates it
-        // from the sidebar.
+        // Main view: list or grid, bound to the displayed entries + selection,
+        // sized by the current zoom level.
+        let scale = self.zoom_scale();
         let view_child: Box<dyn Widget> = match self.view_mode {
-            ViewMode::List => crate::views::list_view::build_list(&displayed, &self.selection, &self.cmds),
-            ViewMode::Grid => crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds),
+            ViewMode::List => crate::views::list_view::build_list(
+                &displayed,
+                &self.selection,
+                &self.cmds,
+                scale,
+                self.sort_by,
+                self.sort_order,
+            ),
+            ViewMode::Grid => {
+                crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds, scale)
+            }
         };
+        // Intentional, consistent gutter between the sidebar and the content —
+        // no awkward variable margin.
         let mut view_col = Column::new()
             .with_fill_remaining_height()
-            .with_vertical_padding(0.0)
-            .with_horizontal_padding(8.0, 0.0);
+            .with_vertical_padding(6.0)
+            .with_horizontal_padding(14.0, 8.0);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
             // wired to re-read the directory (Refresh).
@@ -353,6 +393,9 @@ impl FileExplorerWidget {
         self.status = None;
         match read_dir_sync(&path) {
             Ok(mut entries) => {
+                if !self.show_hidden {
+                    entries.retain(|e| !e.name.starts_with('.'));
+                }
                 sort_entries(self.sort_by, self.sort_order, &mut entries);
                 self.entries = entries;
             }
@@ -596,7 +639,139 @@ impl FileExplorerWidget {
                 self.paste();
                 true
             }
+            FileCommand::OpenTemplatesMenu => {
+                // Opened from the menu-routing path with real geometry; if it
+                // arrives via the command queue just open it at the cursor.
+                self.open_templates_submenu(self.last_cursor);
+                true
+            }
+            FileCommand::NewFromTemplate(template) => {
+                match templates::create_from_template(&template, &self.current_path) {
+                    Ok(path) => {
+                        self.refresh();
+                        if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                            self.selection.select_only(i);
+                            self.begin_rename();
+                        }
+                        self.status = Some("Created file".to_string());
+                    }
+                    Err(e) => self.status = Some(format!("New file failed: {e}")),
+                }
+                true
+            }
+            FileCommand::AddFavorite(path) => {
+                let added = {
+                    let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
+                    let mut favs = self.favs.borrow_mut();
+                    favorites::add(&mut favs.favorites, path, &home)
+                };
+                if added {
+                    self.save_favorites();
+                    self.status = Some("Added to Favourites".to_string());
+                }
+                true
+            }
+            FileCommand::RemoveFavorite(path) => {
+                let removed = {
+                    let mut favs = self.favs.borrow_mut();
+                    favorites::remove(&mut favs.favorites, &path)
+                };
+                if removed {
+                    self.save_favorites();
+                    self.status = Some("Removed from Favourites".to_string());
+                }
+                true
+            }
+            FileCommand::ReorderFavorite { from, to } => {
+                {
+                    let mut favs = self.favs.borrow_mut();
+                    favorites::reorder(&mut favs.favorites, from, to);
+                }
+                self.save_favorites();
+                true
+            }
+            FileCommand::ZoomIn => {
+                self.set_zoom(self.zoom_level + 1);
+                true
+            }
+            FileCommand::ZoomOut => {
+                self.set_zoom(self.zoom_level - 1);
+                true
+            }
+            FileCommand::ToggleHidden => {
+                self.show_hidden = !self.show_hidden;
+                self.refresh();
+                true
+            }
         }
+    }
+
+    /// Set the zoom level (clamped) and persist it.
+    fn set_zoom(&mut self, level: i32) {
+        let level = config::clamp_zoom(level);
+        if level != self.zoom_level {
+            self.zoom_level = level;
+            if let Some(dir) = self.config_dir.as_deref() {
+                config::save_zoom(dir, level);
+            }
+        }
+    }
+
+    /// The current zoom level (for tests).
+    pub fn zoom_level(&self) -> i32 {
+        self.zoom_level
+    }
+
+    /// Whether hidden files are shown (for tests).
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    /// Borrow the favourites list (for tests).
+    pub fn favorites(&self) -> Vec<crate::favorites::Favorite> {
+        self.favs.borrow().favorites.clone()
+    }
+
+    /// Shared favourites store (tests / the headless shots demo).
+    #[doc(hidden)]
+    pub fn favorites_store(&self) -> FavStore {
+        self.favs.clone()
+    }
+
+    /// Open the right-click context menu at `at` (headless shots demo).
+    #[doc(hidden)]
+    pub fn debug_open_context_menu(&mut self, at: Point) {
+        self.open_context_menu(at);
+    }
+
+    /// Open the context menu *and* its "New File" flyout (headless shots demo).
+    #[doc(hidden)]
+    pub fn debug_show_templates_menu(&mut self, at: Point) {
+        self.open_context_menu(at);
+        let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, at.y + 66.0);
+        self.open_templates_submenu(anchor);
+    }
+
+    /// Begin an active favourite drag from `from` toward `to`, for a mid-drag
+    /// screenshot. Requires the sidebar to have been laid out first (so the
+    /// favourites band geometry is published).
+    #[doc(hidden)]
+    pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {
+        crate::places_sidebar::debug_begin_drag(&self.favs, from, to)
+    }
+
+    /// Select the given displayed-entry indices (headless shots demo).
+    #[doc(hidden)]
+    pub fn debug_select(&mut self, indices: &[usize]) {
+        self.selection.clear();
+        for (n, &i) in indices.iter().enumerate() {
+            if n == 0 {
+                self.selection.select_only(i);
+            } else {
+                self.selection.toggle(i);
+            }
+        }
+        self.structure_dirty = true;
     }
 
     fn primary_path(&self) -> Option<PathBuf> {
@@ -762,6 +937,28 @@ pub fn filter_entries<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
     entries.iter().filter(|e| e.name.to_lowercase().contains(&q)).collect()
 }
 
+/// Resolve a standalone [`ContextMenu`]'s rect from its anchor (it isn't part
+/// of the App's taffy tree, so drive a throwaway layout pass). Shared by the
+/// main menu and the "New File" flyout.
+fn layout_menu_widget(menu: &mut ContextMenu) {
+    if !menu.is_open() {
+        return;
+    }
+    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+    let mut node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget> =
+        std::collections::HashMap::new();
+    let theme = ui::Theme::dark();
+    let node = menu.build_layout(&mut taffy, &theme, &mut node_map);
+    let _ = taffy.compute_layout(
+        node,
+        taffy::Size {
+            width: taffy::AvailableSpace::Definite(400.0),
+            height: taffy::AvailableSpace::Definite(800.0),
+        },
+    );
+    menu.apply_layout(&taffy, node, Point::ZERO);
+}
+
 /// Thin mockable wrapper around process launch + the desktop "open with
 /// default app" handler. Mocked in tests so the open/launch paths are
 /// verifiable without actually spawning anything.
@@ -812,37 +1009,101 @@ impl FileExplorerWidget {
 
     /// Build + open the right-click menu at `at`, with items appropriate to
     /// the current selection and clipboard.
-    fn open_context_menu(&mut self, at: Point) {
+    /// The template files currently available for the "New File ▸" submenu.
+    pub fn available_templates(&self) -> Vec<PathBuf> {
+        templates::templates_dir()
+            .map(|d| templates::list_templates(&d))
+            .unwrap_or_default()
+    }
+
+    /// The menu item specs for the current selection / clipboard / state, given
+    /// the available `templates`. Returns `(label, command)` pairs; a `None`
+    /// command with an empty label is a separator. Pure (templates injected) so
+    /// the menu contents — including the "New File ▸" gating — are unit-testable.
+    fn context_menu_spec(&self, templates: &[PathBuf]) -> Vec<(String, Option<FileCommand>)> {
         let has_sel = !self.selection.is_empty();
         let can_paste = !self.clipboard.is_empty();
-        // (label, command) pairs; `None` command = separator.
-        let mut spec: Vec<(&str, Option<FileCommand>)> = Vec::new();
+        let has_templates = !templates.is_empty();
+        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
+
         if has_sel {
-            spec.push(("Open", self.selection.primary().map(FileCommand::Activate)));
-            spec.push(("Rename", Some(FileCommand::Rename)));
-            spec.push(("", None));
-            spec.push(("Cut", Some(FileCommand::Cut)));
-            spec.push(("Copy", Some(FileCommand::Copy)));
+            spec.push(("Open".into(), self.selection.primary().map(FileCommand::Activate)));
+            spec.push(("Rename".into(), Some(FileCommand::Rename)));
+            spec.push((String::new(), None));
+            spec.push(("Cut".into(), Some(FileCommand::Cut)));
+            spec.push(("Copy".into(), Some(FileCommand::Copy)));
         }
         if can_paste {
-            spec.push(("Paste", Some(FileCommand::Paste)));
+            spec.push(("Paste".into(), Some(FileCommand::Paste)));
         }
-        spec.push(("New Folder", Some(FileCommand::NewFolder)));
+        spec.push((String::new(), None));
+        spec.push(("New Folder".into(), Some(FileCommand::NewFolder)));
+        // Only offer "New File ▸" when the Templates dir actually has files.
+        if has_templates {
+            spec.push(("New File  \u{203A}".into(), Some(FileCommand::OpenTemplatesMenu)));
+        }
         if has_sel {
-            spec.push(("", None));
-            spec.push(("Move to Trash", Some(FileCommand::Delete)));
+            spec.push((String::new(), None));
+            spec.push(("Move to Trash".into(), Some(FileCommand::Delete)));
         }
+
+        // Favourites: add the single selected folder, or remove the current
+        // directory when it is a (non-home) favourite.
+        if let Some(dir) = self.single_selected_dir() {
+            spec.push((String::new(), None));
+            spec.push(("Add to Favourites".into(), Some(FileCommand::AddFavorite(dir))));
+        } else if self.current_is_removable_favourite() {
+            spec.push((String::new(), None));
+            spec.push((
+                "Remove from Favourites".into(),
+                Some(FileCommand::RemoveFavorite(self.current_path.clone())),
+            ));
+        }
+
+        // View section: show/hide hidden files.
+        spec.push((String::new(), None));
+        spec.push((
+            if self.show_hidden { "Hide Hidden Files".into() } else { "Show Hidden Files".into() },
+            Some(FileCommand::ToggleHidden),
+        ));
+
         // Sort section — the only place the sort *key* can be changed in grid
         // mode (which has no clickable column header) and the only way to
         // reach "Sort by Type" at all.
-        spec.push(("", None));
-        spec.push(("Sort by Name", Some(FileCommand::SetSort(SortBy::Name))));
-        spec.push(("Sort by Size", Some(FileCommand::SetSort(SortBy::Size))));
-        spec.push(("Sort by Type", Some(FileCommand::SetSort(SortBy::Type))));
-        spec.push(("Sort by Date", Some(FileCommand::SetSort(SortBy::Modified))));
-        spec.push(("", None));
-        spec.push(("Open Terminal Here", Some(FileCommand::OpenTerminal)));
+        spec.push((String::new(), None));
+        spec.push(("Sort by Name".into(), Some(FileCommand::SetSort(SortBy::Name))));
+        spec.push(("Sort by Size".into(), Some(FileCommand::SetSort(SortBy::Size))));
+        spec.push(("Sort by Type".into(), Some(FileCommand::SetSort(SortBy::Type))));
+        spec.push(("Sort by Date".into(), Some(FileCommand::SetSort(SortBy::Modified))));
+        spec.push((String::new(), None));
+        spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
+        spec
+    }
 
+    /// The path of the single selected entry when it is a directory (drives the
+    /// "Add to Favourites" action).
+    fn single_selected_dir(&self) -> Option<PathBuf> {
+        let disp = self.displayed_entries();
+        let sel = self.selection.selected();
+        if sel.len() != 1 {
+            return None;
+        }
+        disp.get(sel[0]).filter(|e| e.is_dir).map(|e| e.path.clone())
+    }
+
+    /// Whether the current directory is a favourite that may be removed (i.e.
+    /// present in the list and not the pinned Home entry).
+    fn current_is_removable_favourite(&self) -> bool {
+        self.favs
+            .borrow()
+            .favorites
+            .iter()
+            .any(|f| !f.is_home && f.path == self.current_path)
+    }
+
+    fn open_context_menu(&mut self, at: Point) {
+        self.submenu.close();
+        let spec = self.context_menu_spec(&self.available_templates());
         let mut menu = ContextMenu::new();
         let mut cmds = Vec::with_capacity(spec.len());
         for (label, cmd) in spec {
@@ -859,38 +1120,57 @@ impl FileExplorerWidget {
         menu.open_at([at.x as f32, at.y as f32]);
         self.context_menu = menu;
         self.menu_commands = cmds;
-        self.layout_menu();
+        layout_menu_widget(&mut self.context_menu);
     }
 
-    /// Resolve the context menu's rect from its anchor (it isn't part of the
-    /// App's taffy tree, so drive a throwaway layout pass).
-    fn layout_menu(&mut self) {
-        if !self.context_menu.is_open() {
-            return;
+    /// Open the "New File" flyout listing one "New <name>" entry per template.
+    fn open_templates_submenu(&mut self, at: Point) {
+        let tpls = self.available_templates();
+        let mut menu = ContextMenu::new();
+        let mut cmds = Vec::with_capacity(tpls.len());
+        for t in tpls {
+            menu.push(MenuItem::action(templates::menu_label(&t), || {}));
+            cmds.push(Some(FileCommand::NewFromTemplate(t)));
         }
-        let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let mut node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget> = std::collections::HashMap::new();
-        let theme = ui::Theme::dark();
-        let node = self.context_menu.build_layout(&mut taffy, &theme, &mut node_map);
-        let _ = taffy.compute_layout(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(400.0),
-                height: taffy::AvailableSpace::Definite(800.0),
-            },
-        );
-        self.context_menu.apply_layout(&taffy, node, Point::ZERO);
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.submenu = menu;
+        self.submenu_commands = cmds;
+        layout_menu_widget(&mut self.submenu);
     }
 
-    /// If the context menu is open, route a left-press to it. Returns true
-    /// when the press was consumed (item fired or menu dismissed).
+    /// If either menu is open, route a left-press to it. Returns true when the
+    /// press was consumed (item fired, submenu opened, or a menu dismissed).
     fn route_menu_click(&mut self, p: Point) -> bool {
+        // The submenu takes priority while it is up.
+        if self.submenu.is_open() {
+            if let Some(idx) = self.submenu.item_at([p.x, p.y]) {
+                let cmd = self.submenu_commands.get(idx).cloned().flatten();
+                self.submenu.close();
+                self.context_menu.close();
+                if let Some(cmd) = cmd {
+                    self.apply_command(cmd);
+                }
+                return true;
+            }
+            // A click outside the submenu closes both menus.
+            self.submenu.close();
+            self.context_menu.close();
+            return true;
+        }
         if !self.context_menu.is_open() {
             return false;
         }
         if let Some(idx) = self.context_menu.item_at([p.x, p.y]) {
+            let cmd = self.menu_commands.get(idx).cloned().flatten();
+            if let Some(FileCommand::OpenTemplatesMenu) = cmd {
+                // Open the flyout to the right of the clicked row; keep the
+                // main menu open behind it.
+                let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
+                self.open_templates_submenu(anchor);
+                return true;
+            }
             self.context_menu.close();
-            if let Some(Some(cmd)) = self.menu_commands.get(idx).cloned() {
+            if let Some(cmd) = cmd {
                 self.apply_command(cmd);
             }
             return true;
@@ -966,6 +1246,16 @@ impl FileExplorerWidget {
             }
             Key::Character(s) if (s == "v" || s == "V") && ctrl => {
                 self.apply_command(FileCommand::Paste);
+                true
+            }
+            // Ctrl + / Ctrl - zoom the icon/row size (both "+" and "=" cover
+            // keyboards where "+" is the shifted "=").
+            Key::Character(s) if ctrl && (s == "+" || s == "=") => {
+                self.set_zoom(self.zoom_level + 1);
+                true
+            }
+            Key::Character(s) if ctrl && (s == "-" || s == "_") => {
+                self.set_zoom(self.zoom_level - 1);
                 true
             }
             _ => false,
@@ -1111,13 +1401,17 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
     ) {
         // Composed overlays (dropdowns/popovers) first, then our top-layer
-        // context menu so it composites above everything.
+        // context menu (and its flyout) so they composite above everything.
         if let Some(c) = &mut self.composed {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         if self.context_menu.is_open() {
-            self.layout_menu();
+            layout_menu_widget(&mut self.context_menu);
             self.context_menu.draw(scene, transform, text_renderer, theme, presence);
+        }
+        if self.submenu.is_open() {
+            layout_menu_widget(&mut self.submenu);
+            self.submenu.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -1139,8 +1433,8 @@ impl Widget for FileExplorerWidget {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        // The open context menu gets first dibs on clicks + Escape.
-        if self.context_menu.is_open() {
+        // The open context menu (or its flyout) gets first dibs on clicks + Escape.
+        if self.context_menu.is_open() || self.submenu.is_open() {
             match event {
                 WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                     if self.route_menu_click(self.last_cursor) {
@@ -1154,6 +1448,7 @@ impl Widget for FileExplorerWidget {
                     if ke.state == ElementState::Pressed
                         && matches!(ke.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) =>
                 {
+                    self.submenu.close();
                     self.context_menu.close();
                     *handled = true;
                     self.structure_dirty = true;
@@ -1170,6 +1465,25 @@ impl Widget for FileExplorerWidget {
             *handled = true;
             self.structure_dirty = true;
             return;
+        }
+
+        // Ctrl + mouse-wheel zooms the icon/row size (before the wheel reaches
+        // the Scrollable, which would otherwise consume it for scrolling).
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            if modifiers.state().control_key() || modifiers.state().super_key() {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                if dy > 0.0 {
+                    self.set_zoom(self.zoom_level + 1);
+                } else if dy < 0.0 {
+                    self.set_zoom(self.zoom_level - 1);
+                }
+                *handled = true;
+                self.structure_dirty = true;
+                return;
+            }
         }
 
         // While an inline rename is active, Enter commits and Escape cancels
@@ -1665,5 +1979,158 @@ mod command_path_tests {
         assert_eq!(w.current_path(), d.path());
         w.history_forward();
         assert_eq!(w.current_path(), a, "forward re-visits");
+    }
+
+    /// A hermetic widget whose favourites/zoom persist to a throwaway dir, so
+    /// tests never touch the user's real `~/.config`.
+    fn hermetic() -> (FileExplorerWidget, tempfile::TempDir) {
+        let cfg = tempfile::tempdir().unwrap();
+        let w = FileExplorerWidget::with_persistence(
+            Some(cfg.path().to_path_buf()),
+            Some(PathBuf::from("/home/tester")),
+        );
+        (w, cfg)
+    }
+
+    #[test]
+    fn double_click_click_command_navigates_into_a_directory() {
+        // Drives the real pointer path: a `Click` command, then a second within
+        // the double-click window → the app opens (navigates into) the folder.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let (mut w, _cfg) = hermetic();
+        w.navigate(d.path().to_path_buf());
+        let idx = w.displayed_entries().iter().position(|e| e.name == "sub").unwrap();
+
+        w.apply_command(FileCommand::Click { index: idx, ctrl: false, shift: false });
+        assert_eq!(w.current_path(), d.path(), "first click only selects");
+        assert_eq!(w.selected_index(), Some(idx));
+
+        w.apply_command(FileCommand::Click { index: idx, ctrl: false, shift: false });
+        assert_eq!(w.current_path(), d.path().join("sub"), "double-click opens the directory");
+    }
+
+    #[test]
+    fn zoom_commands_step_the_item_size_and_clamp() {
+        let (mut w, _cfg) = hermetic();
+        let base = w.zoom_level();
+        w.apply_command(FileCommand::ZoomIn);
+        assert_eq!(w.zoom_level(), base + 1, "zoom in raises the step");
+        w.apply_command(FileCommand::ZoomOut);
+        w.apply_command(FileCommand::ZoomOut);
+        assert_eq!(w.zoom_level(), base - 1, "zoom out lowers the step");
+        // Clamps at the extremes.
+        for _ in 0..50 {
+            w.apply_command(FileCommand::ZoomOut);
+        }
+        assert_eq!(w.zoom_level(), config::ZOOM_MIN, "zoom clamps at the minimum");
+    }
+
+    #[test]
+    fn zoom_level_persists_across_reconstruction() {
+        let cfg = tempfile::tempdir().unwrap();
+        {
+            let mut w = FileExplorerWidget::with_persistence(
+                Some(cfg.path().to_path_buf()),
+                Some(PathBuf::from("/home/tester")),
+            );
+            w.apply_command(FileCommand::ZoomIn);
+            w.apply_command(FileCommand::ZoomIn);
+            assert_eq!(w.zoom_level(), 2);
+        }
+        // A fresh widget reads the persisted level back.
+        let w2 = FileExplorerWidget::with_persistence(
+            Some(cfg.path().to_path_buf()),
+            Some(PathBuf::from("/home/tester")),
+        );
+        assert_eq!(w2.zoom_level(), 2, "zoom level survives a restart");
+    }
+
+    #[test]
+    fn favorite_commands_add_reorder_and_remove_and_persist() {
+        let cfg = tempfile::tempdir().unwrap();
+        let make = || {
+            FileExplorerWidget::with_persistence(
+                Some(cfg.path().to_path_buf()),
+                Some(PathBuf::from("/home/tester")),
+            )
+        };
+        let sub = PathBuf::from("/home/tester/Projects/qos");
+        let mut w = make();
+        let before = w.favorites().len();
+        w.apply_command(FileCommand::AddFavorite(sub.clone()));
+        assert_eq!(w.favorites().len(), before + 1, "added one favourite");
+        assert_eq!(w.favorites().last().unwrap().path, sub);
+
+        // Reorder: drag the new favourite (last) up to index 1.
+        let last = w.favorites().len() - 1;
+        w.apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
+        assert_eq!(w.favorites()[1].path, sub, "reorder moved it to slot 1");
+
+        // The new order + membership persists to a fresh widget.
+        let w2 = make();
+        assert_eq!(w2.favorites()[1].path, sub, "reordered favourite persists");
+
+        // Remove drops it (and persists).
+        let mut w3 = make();
+        w3.apply_command(FileCommand::RemoveFavorite(sub.clone()));
+        assert!(!w3.favorites().iter().any(|f| f.path == sub));
+        let w4 = make();
+        assert!(!w4.favorites().iter().any(|f| f.path == sub), "removal persists");
+    }
+
+    #[test]
+    fn new_from_template_creates_the_file_and_opens_rename() {
+        let d = tempfile::tempdir().unwrap();
+        let tmpl = d.path().join("Doc.md");
+        std::fs::write(&tmpl, b"template body").unwrap();
+        let work = d.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+
+        let (mut w, _cfg) = hermetic();
+        w.navigate(work.clone());
+        w.apply_command(FileCommand::NewFromTemplate(tmpl));
+        assert!(work.join("Doc.md").exists(), "template copied into the current dir");
+        assert_eq!(std::fs::read(work.join("Doc.md")).unwrap(), b"template body");
+        assert!(w.is_renaming(), "new file drops straight into inline-rename");
+    }
+
+    #[test]
+    fn toggle_hidden_reveals_and_hides_dotfiles() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(".secret"), b"x").unwrap();
+        std::fs::write(d.path().join("visible.txt"), b"x").unwrap();
+        let (mut w, _cfg) = hermetic();
+        w.navigate(d.path().to_path_buf());
+        assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "dotfiles hidden by default");
+        w.apply_command(FileCommand::ToggleHidden);
+        assert!(w.show_hidden());
+        assert!(w.entries_snapshot().iter().any(|e| e.name == ".secret"), "dotfiles shown after toggle");
+        w.apply_command(FileCommand::ToggleHidden);
+        assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "toggled back off");
+    }
+
+    #[test]
+    fn context_menu_gates_new_file_on_templates_existing() {
+        // The "New File ▸" entry appears iff the Templates dir has files, and
+        // "New Folder" is always present. Templates are injected so the check is
+        // hermetic (no reliance on the ambient Templates dir).
+        let (w, _cfg) = hermetic();
+        let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
+            spec.iter().any(|(label, _)| label.starts_with("New File"))
+        };
+        let has_new_folder = |spec: &[(String, Option<FileCommand>)]| {
+            spec.iter().any(|(label, _)| label == "New Folder")
+        };
+
+        // Empty Templates dir → no "New File", but "New Folder" stays.
+        let none = w.context_menu_spec(&[]);
+        assert!(!has_new_file(&none), "no templates → submenu hidden");
+        assert!(has_new_folder(&none), "New Folder is always offered");
+
+        // Two templates → the "New File ▸" entry appears.
+        let two = w.context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
+        assert!(has_new_file(&two), "templates present → New File entry shown");
+        assert!(has_new_folder(&two));
     }
 }

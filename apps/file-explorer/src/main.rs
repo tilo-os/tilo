@@ -30,6 +30,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let scenario = parse_scenario_arg(&args);
         let mut widget = FileExplorerWidget::new();
         // Optional `--path <dir>` starts the shot in a specific directory
         // (e.g. to capture a deep breadcrumb trail), else the default
@@ -37,7 +38,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(p) = parse_path_arg(&args) {
             widget.navigate(p);
         }
-        render_shot_to_png(Box::new(widget), viewport, &out)?;
+        // Pre-layout scenario setup (view mode + selection must be set before
+        // the tree is built so the composed view captures them).
+        match scenario.as_deref() {
+            Some("grid") => widget.set_view_mode(file_explorer::model::ViewMode::Grid),
+            Some("select") => widget.debug_select(&[7, 8]),
+            _ => {}
+        }
+        render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;
         return Ok(());
     }
 
@@ -82,6 +90,21 @@ fn parse_size_arg(args: &[String]) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
+/// Returns `Some(name)` if `--scenario <name>` (or `--scenario=<name>`) appears
+/// in `args`. Drives headless demo shots (`grid`, `menu`, `reorder`).
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
 /// Returns `Some(dir)` if `--path <dir>` (or `--path=<dir>`) appears in
 /// `args`, otherwise `None`. Only meaningful alongside `--shots`.
 fn parse_path_arg(args: &[String]) -> Option<std::path::PathBuf> {
@@ -99,10 +122,14 @@ fn parse_path_arg(args: &[String]) -> Option<std::path::PathBuf> {
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
+/// `sync → build_layout → compute_layout → apply_layout → draw` cycle, then
+/// applies any post-layout `scenario` (which needs the laid-out geometry —
+/// e.g. a mid-drag reorder or an open context menu) and finally composites the
+/// overlay layer so context menus appear in the shot.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    mut widget: FileExplorerWidget,
     viewport: (u32, u32),
+    scenario: Option<&str>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -148,6 +175,34 @@ fn render_shot_to_png(
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
+    // Post-layout scenarios need the laid-out geometry.
+    match scenario {
+        Some("menu") => {
+            // Right-click context menu + the "New File" template flyout, anchored
+            // in the content pane.
+            widget.debug_show_templates_menu(Point::new((w as f64) * 0.45, (h as f64) * 0.34));
+        }
+        Some("reorder") => {
+            // Grab a favourite and lift it two rows up — mid-drag.
+            widget.debug_begin_favorite_drag(4, 1);
+        }
+        Some("select") => {
+            // Move the cursor over a (different) row so the hover veneer shows
+            // alongside the accent selection.
+            let ev = winit::event::WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new((w as f64) * 0.35, 560.0),
+            };
+            let mut handled = false;
+            let mut focus = None;
+            let mods = winit::event::Modifiers::default();
+            widget.handle_event(
+                &ev, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, child, &taffy,
+            );
+        }
+        _ => {}
+    }
+
     let mut scene = Scene::new();
     widget.draw_with_presence(
         &mut scene,
@@ -157,6 +212,8 @@ fn render_shot_to_png(
         &presence,
         &permission,
     );
+    // Composite the overlay layer (context menu + flyout) on top.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
