@@ -82,6 +82,18 @@ impl CalculatorApp {
         Self::with_model(CalcModel::seeded())
     }
 
+    /// Shots/demo only: force the initial mode (e.g. a 3D-plot screenshot).
+    pub fn shots_set_mode(&mut self, m: Mode) {
+        self.set_mode(m);
+    }
+
+    /// Shots/demo only: force the history sidebar open/closed with no
+    /// animation, so a headless frame deterministically captures the docked /
+    /// collapsed / overlay states.
+    pub fn shots_set_history_open(&mut self, open: bool) {
+        self.calc.snap_sidebar(open);
+    }
+
     fn with_model(model: CalcModel) -> Self {
         Self {
             model,
@@ -163,6 +175,10 @@ impl CalculatorApp {
     fn set_mode(&mut self, m: Mode) {
         if self.model.mode != m {
             self.model.mode = m;
+            // Leaving a graph mid-zoom must not carry a stale ease into the next
+            // visit; settle both animators to the current model view.
+            self.g2.settle_zoom(self.model.view2d);
+            self.g3.settle_zoom(self.model.view3d.zoom);
             // Give a freshly-entered graph mode something to edit rather than a
             // blank void: an empty `y =` row for 2D, an example `z =` surface
             // for 3D. These are editor affordances, not restored data.
@@ -410,11 +426,15 @@ impl CalculatorApp {
                 let s = self.model.view2d.scale;
                 self.model.view2d.cx -= d.x / s;
                 self.model.view2d.cy += d.y / s;
+                // A pan is immediate (not eased) and resamples in place.
+                self.g2.settle_zoom(self.model.view2d);
                 self.model_dirty = true;
             }
             Mode::Graph3d => {
                 self.model.view3d.yaw += d.x * 0.01;
                 self.model.view3d.pitch = (self.model.view3d.pitch + d.y * 0.01).clamp(-1.5, 1.5);
+                // An orbit re-projects regardless, so settle any zoom ease.
+                self.g3.settle_zoom(self.model.view3d.zoom);
                 self.model_dirty = true;
             }
             Mode::Calc => {}
@@ -463,10 +483,15 @@ impl CalculatorApp {
                 v.cx += before.x - after.x;
                 v.cy += before.y - after.y;
                 self.model.view2d = v;
+                // Ease toward this new scale while pinning the world point under
+                // the cursor (`before`) for the whole animation; the resample is
+                // deferred until the ease settles.
+                self.g2.begin_zoom(before, self.mouse);
                 self.model_dirty = true;
             }
             Mode::Graph3d if self.g3.canvas_contains(self.mouse) => {
                 self.model.view3d.zoom = (self.model.view3d.zoom * factor).clamp(0.25, 8.0);
+                self.g3.begin_zoom();
                 self.model_dirty = true;
             }
             _ => {}
@@ -893,6 +918,20 @@ impl Widget for CalculatorApp {
 
     fn name(&self) -> &str {
         "CalculatorApp"
+    }
+
+    /// Keep the host pumping frames while any frame-driven animation is in
+    /// flight: the history drawer's eased reveal, or a smooth graph zoom easing
+    /// toward its target. Without this the animation would paint one frame and
+    /// then freeze until the next unrelated event. Gated by the active mode so a
+    /// transition left mid-flight by a mode switch can't pump frames forever
+    /// (only the visible screen's `draw` advances its own animation).
+    fn needs_animation_frame(&self) -> bool {
+        match self.model.mode {
+            Mode::Calc => self.calc.drawer_animating(),
+            Mode::Graph2d => self.g2.zoom_active(),
+            Mode::Graph3d => self.g3.zoom_active(),
+        }
     }
 
     /// Seal a burst of edits into one undo checkpoint after a short pause, so

@@ -17,6 +17,7 @@ use crate::engine;
 use crate::graph2d::series_color;
 use crate::mathfield::MathField;
 use crate::model::CalcModel;
+use crate::zoom::ZoomAnim3d;
 
 /// Half-width of the sampled domain in x and y.
 const DOM: f64 = 7.0;
@@ -63,6 +64,9 @@ pub struct Graph3dScreen {
     /// theme or tab switch. Each cell carries its function's series index; the
     /// live colour is resolved from the theme at paint time.
     surface_cache: SurfaceCache,
+    /// Smooth, non-blocking wheel zoom. While active, the cached cells are
+    /// replayed scaled about the canvas centre instead of re-projecting.
+    zoom: ZoomAnim3d,
 }
 
 impl Default for Graph3dScreen {
@@ -85,6 +89,7 @@ impl Default for Graph3dScreen {
             fields: Vec::new(),
             card_heights: Vec::new(),
             surface_cache: SurfaceCache::default(),
+            zoom: ZoomAnim3d::new(crate::model::View3d::default().zoom),
         }
     }
 }
@@ -320,6 +325,9 @@ impl Graph3dScreen {
         self.layout(area, model);
         let c = &theme.tokens.colors;
 
+        // Advance the smooth-zoom ease one frame toward the model target.
+        self.zoom.tick(model.view3d.zoom, theme.reduce_motion);
+
         // background + surfaces
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
         self.draw_surfaces(scene, t, theme, model);
@@ -427,22 +435,45 @@ impl Graph3dScreen {
     }
 
     fn draw_surfaces(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
-        self.ensure_surfaces(model);
+        // While the zoom is animating we reuse the cached cells, scaled about
+        // the canvas centre (the projection scale is proportional to zoom), so
+        // no re-projection blocks the frame. When settled we re-project once.
+        let tt = if self.zoom.active() {
+            t * Affine::scale_about(self.zoom.scale_factor(), self.canvas.center())
+        } else {
+            self.ensure_surfaces(model);
+            self.zoom.mark_sampled(model.view3d.zoom);
+            t
+        };
 
         scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
         let wire = draw::with_alpha(theme.tokens.colors.neutral[0], 90);
         let wire_stroke = vello::kurbo::Stroke::new(0.6);
         for cell in &self.surface_cache.cells {
             let color = scale_rgb(series_color(theme, cell.series), cell.shade);
-            scene.fill(vello::peniko::Fill::NonZero, t, color, None, &cell.path);
-            scene.stroke(&wire_stroke, t, wire, None, &cell.path);
+            scene.fill(vello::peniko::Fill::NonZero, tt, color, None, &cell.path);
+            scene.stroke(&wire_stroke, tt, wire, None, &cell.path);
         }
         if let Some((o, xa, ya)) = self.surface_cache.axes {
             let c = &theme.tokens.colors;
-            draw::line(scene, t, o, xa, draw::with_alpha(c.semantic.danger, 180), 1.2);
-            draw::line(scene, t, o, ya, draw::with_alpha(c.semantic.success, 180), 1.2);
+            draw::line(scene, tt, o, xa, draw::with_alpha(c.semantic.danger, 180), 1.2);
+            draw::line(scene, tt, o, ya, draw::with_alpha(c.semantic.success, 180), 1.2);
         }
         scene.pop_layer();
+    }
+
+    /// Begin a smooth zoom toward the (already-updated) model zoom.
+    pub fn begin_zoom(&mut self) {
+        self.zoom.begin();
+    }
+    /// Settle the zoom immediately (orbit / edit / mode switch, which re-project
+    /// regardless).
+    pub fn settle_zoom(&mut self, z: f64) {
+        self.zoom.settle(z);
+    }
+    /// Whether a smooth zoom is animating (drives the app's frame pump).
+    pub fn zoom_active(&self) -> bool {
+        self.zoom.active()
     }
 
     /// Sample every visible `z = f(x, y)` surface on the grid, project + merge +
