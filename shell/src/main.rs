@@ -84,6 +84,20 @@ fn main() {
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
+    // Kick off cold-start warmup on a background thread as early as
+    // possible. Two things dominate the compositor's time-to-first-paint
+    // on a cold process: cosmic-text's FontSystem::new (mmaps every
+    // installed face, up to ~1s on release builds) and vello's
+    // Renderer::new (compiles ~30 WGSL pipelines). The warmup shapes
+    // canonical strings + paints a scratch 4×4 offscreen scene so the
+    // OS page cache, fontconfig cache, and the process-wide wgpu
+    // RenderContext are all hot by the time the compositor thread hits
+    // its real FontSystem/Renderer builds. Disabled with
+    // QOS_STARTUP_WARM=off (used for A/B measurement). The handle is
+    // kept alive on the main-fn stack so the thread survives to
+    // completion regardless of what `main` is currently blocked on.
+    let _warmup_handle = ui::warmup::spawn_warmup(false);
+
     // Landlock launcher shim (`plan/security.md` §7.1). bwrap execs us as
     // `shell __sandbox-exec --ro <p>… --rw <p>… [--net-restricted] -- <app
     // argv>` from inside the per-workspace sandbox; we apply an in-kernel

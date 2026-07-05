@@ -28,6 +28,10 @@ pub mod offscreen {
     pub struct PngDirSink<'a> {
         pub dir: &'a Path,
         pub renderer: &'a mut OffscreenRenderer,
+        /// Set once the first `capture` completes. Only the FIRST paint
+        /// matters for cold-start measurement — subsequent paints hit
+        /// warm caches unconditionally.
+        pub first_paint_seen: bool,
     }
 
     impl<'a> SnapshotSink for PngDirSink<'a> {
@@ -35,6 +39,17 @@ pub mod offscreen {
             let scene = driver.paint();
             let path = self.dir.join(format!("{name}.png"));
             self.renderer.render_png(&scene, Color::TRANSPARENT, &path);
+            if !self.first_paint_seen {
+                // Match the mark name the ui `App` emits at the same
+                // moment. Downstream analysis tools can look up
+                // `first-paint` regardless of whether the process was
+                // the live compositor or the shots harness. Mark AFTER
+                // `render_png` returns so the metric captures the
+                // vello pipeline compile too (they only fire on the
+                // first render_to_texture call).
+                qos_startup_metrics::mark("first-paint");
+                self.first_paint_seen = true;
+            }
             println!("  wrote {}", path.display());
         }
     }
@@ -62,6 +77,7 @@ pub mod offscreen {
         let mut sink = PngDirSink {
             dir,
             renderer: &mut renderer,
+            first_paint_seen: false,
         };
         scenario::run_with(driver, scenario, &mut sink, per_frame);
     }
@@ -78,6 +94,7 @@ pub mod offscreen {
             viewport.1,
             dir.display()
         );
+        let mut first_paint_seen = false;
         for name in scenes {
             let mut driver = ShellDriver::new(viewport);
             driver
@@ -86,6 +103,14 @@ pub mod offscreen {
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
+            if !first_paint_seen {
+                // First render_png forces vello's ~30 pipelines to
+                // compile against the live device. Mark AFTER the call
+                // returns so the metric captures the entire cold path,
+                // not just the CPU-side scene build.
+                qos_startup_metrics::mark("first-paint");
+                first_paint_seen = true;
+            }
             println!("  wrote {}", path.display());
         }
     }
