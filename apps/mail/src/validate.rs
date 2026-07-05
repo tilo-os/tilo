@@ -68,6 +68,56 @@ pub fn validate_account<T: ProbeTransport + ?Sized>(
     ValidationState::Ok
 }
 
+/// Classify a raw connection/transport error string into a specific,
+/// user-facing reason. Pure + dependency-free so it is compiled and tested in
+/// every build; the live IMAP/SMTP paths and the account probe both funnel
+/// their errors through it, so a "connection refused" reads the same whether it
+/// came from a fetch or a save-time check.
+pub fn classify_conn_failure(detail: &str) -> String {
+    let d = detail.to_ascii_lowercase();
+    // Auth first: a 535 / "authentication failed" is more specific than the
+    // generic transport keywords that might co-occur in the message.
+    if d.contains("535")
+        || d.contains("authenticationfailed")
+        || d.contains("authentication failed")
+        || d.contains("invalid credentials")
+        || d.contains("auth")
+            && (d.contains("fail") || d.contains("reject") || d.contains("denied") || d.contains("invalid"))
+        || d.contains("login failed")
+        || d.contains("[authenticationfailed]")
+    {
+        return "authentication failed — check the username and password".into();
+    }
+    if d.contains("certificate")
+        || d.contains("tls")
+        || d.contains("handshake")
+        || d.contains("self-signed")
+        || d.contains("ssl")
+    {
+        return "TLS/certificate error — the server's certificate wasn't trusted".into();
+    }
+    if d.contains("refused") {
+        return "connection refused — check the host and port".into();
+    }
+    if d.contains("timed out") || d.contains("timeout") {
+        return "connection timed out — the server didn't respond".into();
+    }
+    if d.contains("dns")
+        || d.contains("lookup")
+        || d.contains("resolve")
+        || d.contains("name or service not known")
+        || d.contains("not known")
+        || d.contains("no such host")
+    {
+        return "host not found — check the server address".into();
+    }
+    if d.contains("unreachable") || d.contains("network is unreachable") {
+        return "network unreachable — check your connection".into();
+    }
+    // Preserve the underlying detail rather than swallowing it.
+    format!("connection failed: {detail}")
+}
+
 /// The offline probe used by the default build / `--shots`: it never opens a
 /// socket and reports success, so an account can still be saved without a
 /// network. (Config-level validation in [`validate_account`] still runs.)
@@ -104,22 +154,153 @@ impl ProbeTransport for LiveProbe {
 
 #[cfg(feature = "live")]
 mod live_probe {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::model::AuthMethod;
+
+    /// Run `fut` to completion on a short-lived current-thread runtime. The
+    /// probe is called from the synchronous UI-save path, so it owns its
+    /// runtime rather than assuming one exists.
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("probe runtime")
+            .block_on(fut)
+    }
+
+    fn tls_config() -> Arc<rustls::ClientConfig> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("rustls default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        Arc::new(cfg)
+    }
+
+    /// The access token / password to present. Mirrors the engine's resolution:
+    /// a password from the config, or an OAuth token read from the vault.
+    fn creds(cfg: &AccountConfig) -> Result<(String, Option<String>), String> {
+        let user = if cfg.username.trim().is_empty() { cfg.email.clone() } else { cfg.username.clone() };
+        match cfg.auth {
+            AuthMethod::Password => {
+                if cfg.password.is_empty() {
+                    return Err("enter a password to verify the account".into());
+                }
+                Ok((user, None))
+            }
+            AuthMethod::OAuth => {
+                let token = oauth_access_token(&cfg.email)?;
+                Ok((user, Some(token)))
+            }
+        }
+    }
+
+    /// Read the OAuth access token for the account from the vault (it is sealed
+    /// there by the sign-in flow before the account is saved).
+    fn oauth_access_token(email: &str) -> Result<String, String> {
+        let vault = accounts::SecretVault::open();
+        let secret = vault
+            .get(&accounts::AccountId::from(email.to_string()))
+            .ok_or("sign in first — no OAuth token stored yet")?;
+        let tokens = crate::oauth::tokens_from_secret(&secret)
+            .ok_or("stored credential is not an OAuth token")?;
+        if tokens.access_token.is_empty() {
+            return Err("stored OAuth token is empty; sign in again".into());
+        }
+        Ok(tokens.access_token)
+    }
 
     pub fn imap_login(cfg: &AccountConfig) -> Result<(), String> {
-        // Bodies elided in this slice — the seam is here; enabling `live`
-        // wires async-imap in exactly as engine.rs's LiveEngine does.
-        if cfg.imap_host.is_empty() {
+        if cfg.imap_host.trim().is_empty() {
             return Err("no IMAP host".into());
         }
-        Ok(())
+        let (user, token) = creds(cfg)?;
+        let tls = tls_config();
+        block_on(async move {
+            let host = cfg.imap_host.trim();
+            let port = if cfg.imap_port == 0 { 993 } else { cfg.imap_port };
+            let tcp = tokio::net::TcpStream::connect((host, port))
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))?;
+            let connector = tokio_rustls::TlsConnector::from(tls);
+            let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+                .map_err(|e| format!("invalid IMAP host name: {e}"))?;
+            let stream = connector
+                .connect(server_name, tcp)
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))?;
+            let client = async_imap::Client::new(stream);
+            let mut session = match token {
+                Some(access) => {
+                    let auth = XOAuth2 { user: user.clone(), token: access };
+                    client
+                        .authenticate("XOAUTH2", auth)
+                        .await
+                        .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?
+                }
+                None => client
+                    .login(&user, &cfg.password)
+                    .await
+                    .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?,
+            };
+            // A successful SELECT proves the session is usable, not just that
+            // the greeting arrived.
+            session.select("INBOX").await.map_err(|e| classify_conn_failure(&e.to_string()))?;
+            let _ = session.logout().await;
+            Ok::<(), String>(())
+        })
+    }
+
+    /// async-imap `XOAUTH2` authenticator (raw SASL string; async-imap base64s).
+    struct XOAuth2 {
+        user: String,
+        token: String,
+    }
+    impl async_imap::Authenticator for XOAuth2 {
+        type Response = String;
+        fn process(&mut self, _challenge: &[u8]) -> Self::Response {
+            format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token)
+        }
     }
 
     pub fn smtp_handshake(cfg: &AccountConfig) -> Result<(), String> {
-        if cfg.smtp_host.is_empty() {
+        use lettre::transport::smtp::authentication::Credentials;
+        use lettre::{AsyncSmtpTransport, Tokio1Executor};
+
+        if cfg.smtp_host.trim().is_empty() {
             return Err("no SMTP host".into());
         }
-        Ok(())
+        let host = cfg.smtp_host.trim();
+        let port = if cfg.smtp_port == 0 { 465 } else { cfg.smtp_port };
+        let (user, token) = creds(cfg)?;
+        block_on(async move {
+            let builder = if port == 465 {
+                AsyncSmtpTransport::<Tokio1Executor>::relay(host)
+            } else {
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+            }
+            .map_err(|e| classify_conn_failure(&e.to_string()))?;
+            let secret = token.unwrap_or_else(|| cfg.password.clone());
+            let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
+                .port(port)
+                .credentials(Credentials::new(user, secret))
+                .build();
+            // test_connection performs connect + EHLO (+ TLS upgrade), proving
+            // the outgoing server is reachable and speaks the negotiated
+            // security. Credential validity is proven authoritatively by the
+            // IMAP login above (SMTP has no no-op AUTH probe).
+            match mailer.test_connection().await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("SMTP server did not accept the connection".into()),
+                Err(e) => Err(classify_conn_failure(&e.to_string())),
+            }
+        })
     }
 }
 
@@ -202,5 +383,36 @@ mod tests {
     fn offline_probe_reports_success() {
         let st = validate_account(&good_cfg(), &OfflineProbe);
         assert_eq!(st, ValidationState::Ok, "offline probe lets an account save");
+    }
+
+    #[test]
+    fn classify_maps_real_transport_errors_to_specific_reasons() {
+        // Auth: the exact IMAP tagged-NO an server sends on bad credentials.
+        assert!(classify_conn_failure("[AUTHENTICATIONFAILED] Invalid credentials")
+            .contains("authentication failed"));
+        assert!(classify_conn_failure("535 5.7.8 Username and Password not accepted")
+            .contains("authentication failed"));
+        // Connection refused (nothing listening on the port).
+        assert!(classify_conn_failure("Connection refused (os error 111)")
+            .contains("connection refused"));
+        // DNS failure.
+        assert!(classify_conn_failure("failed to lookup address information: Name or service not known")
+            .contains("host not found"));
+        // TLS/certificate.
+        assert!(classify_conn_failure("invalid peer certificate: UnknownIssuer")
+            .contains("TLS/certificate"));
+        // Timeout.
+        assert!(classify_conn_failure("connection timed out").contains("timed out"));
+        // Unknown → the underlying detail is preserved, not swallowed.
+        let unknown = classify_conn_failure("some novel failure mode");
+        assert!(unknown.contains("some novel failure mode"), "{unknown}");
+    }
+
+    #[test]
+    fn classify_prioritises_auth_over_generic_transport_words() {
+        // A message that mentions both a socket concept and auth must classify
+        // as auth (the more actionable, specific cause).
+        let msg = "AUTHENTICATE failed: login rejected";
+        assert!(classify_conn_failure(msg).contains("authentication failed"), "{}", classify_conn_failure(msg));
     }
 }

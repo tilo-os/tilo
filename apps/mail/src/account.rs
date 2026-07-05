@@ -161,19 +161,52 @@ impl AccountStore {
         Self { accounts, active }
     }
 
+    /// Persist to the default qOS config root
+    /// (`$XDG_CONFIG_HOME/qos/accounts/`). The in-app account add/edit/remove
+    /// flow calls this so accounts survive a restart; a no-op (Ok) when the
+    /// config root can't be resolved (read-only environment / `--shots`).
+    pub fn persist(&self) -> std::io::Result<()> {
+        match accounts::config_root() {
+            Some(root) => self.persist_in(&root),
+            None => Ok(()),
+        }
+    }
+
     /// Write these accounts into the shared store + vault under an explicit
     /// config root, preserving accounts of other types already there. This is
-    /// the write half of the seam (Settings owns the lifecycle; this exists so
-    /// the round-trip is testable and so a future in-app persist has one path).
+    /// the full write path: it upserts the current accounts, **reconciles
+    /// removals** (an email account deleted in Mail is dropped from the shared
+    /// store and its vault secret purged), and records the active selection.
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
         let ty = AccountTypeId::from(TYPE_ID);
         let mut shared = SharedStore::load_in(config_root);
         let mut vault = SecretVault::open_in(config_root);
+
+        // Reconcile deletions: any email account in the shared store that Mail
+        // no longer holds was removed by the user — drop it and its secret.
+        let current: std::collections::HashSet<String> =
+            self.accounts.iter().map(|a| a.id.clone()).collect();
+        let stale: Vec<AccountId> = shared
+            .list(&ty)
+            .into_iter()
+            .map(|s| s.id.clone())
+            .filter(|id| !current.contains(id.as_str()))
+            .collect();
+        for id in stale {
+            shared.remove(&id);
+            vault.remove(&id);
+        }
+
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
             shared.upsert(acct.to_stored());
+            // Keep an existing sealed OAuth token intact: an OAuth account has
+            // no password, and its token was sealed by the sign-in flow — do
+            // not clobber it. Only manage the password secret here.
             if acct.config.password.is_empty() {
-                vault.remove(&id);
+                if acct.config.auth != crate::model::AuthMethod::OAuth {
+                    vault.remove(&id);
+                }
             } else {
                 vault.put(&id, &accounts::Secret::password(acct.config.password.clone()));
             }
@@ -301,6 +334,66 @@ mod tests {
         assert_eq!(back.len(), 2);
         assert_eq!(back.active_account().unwrap().config.email, "a@x.example");
         assert_eq!(back.accounts[1].config.display_name, "B");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn removing_an_account_reconciles_the_shared_store_on_persist() {
+        let root = temp_root();
+        // Two accounts persisted.
+        let mut store = AccountStore::new();
+        store.upsert(Account::new(cfg("a@x.example", "A")));
+        store.upsert(Account::new(cfg("b@y.example", "B")));
+        store.persist_in(&root).expect("persist both");
+        assert_eq!(AccountStore::load_in(&root).len(), 2);
+
+        // Remove one and persist again — the shared store must drop it too, so
+        // a reload doesn't resurrect the removed account.
+        store.remove("a@x.example");
+        store.persist_in(&root).expect("persist after remove");
+        let back = AccountStore::load_in(&root);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back.accounts[0].config.email, "b@y.example");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn removed_account_secret_is_purged_from_the_vault() {
+        let root = temp_root();
+        let mut c = cfg("a@x.example", "A");
+        c.password = "top-secret".into();
+        let mut store = AccountStore::single(c);
+        store.persist_in(&root).expect("persist");
+        assert!(SecretVault::open_in(&root).get(&AccountId::from("a@x.example")).is_some());
+
+        store.remove("a@x.example");
+        store.persist_in(&root).expect("persist after remove");
+        assert!(
+            SecretVault::open_in(&root).get(&AccountId::from("a@x.example")).is_none(),
+            "the removed account's secret must be purged from the vault"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn persist_preserves_a_sealed_oauth_token_for_a_passwordless_account() {
+        let root = temp_root();
+        // Sign-in sealed an OAuth token before the account is saved.
+        let id = AccountId::from("g@gmail.com");
+        {
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(&id, &accounts::Secret { password: String::new(), token: Some("{\"access_token\":\"tok\"}".into()) });
+            vault.save();
+        }
+        // Persist an OAuth (passwordless) account with that id.
+        let mut c = cfg("g@gmail.com", "G");
+        c.auth = crate::model::AuthMethod::OAuth;
+        c.password.clear();
+        let store = AccountStore::single(c);
+        store.persist_in(&root).expect("persist");
+        // The OAuth token must NOT be clobbered by the password-secret path.
+        let secret = SecretVault::open_in(&root).get(&id).expect("token survives");
+        assert_eq!(secret.token.as_deref(), Some("{\"access_token\":\"tok\"}"));
         std::fs::remove_dir_all(&root).ok();
     }
 

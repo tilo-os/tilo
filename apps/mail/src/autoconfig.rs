@@ -136,6 +136,157 @@ fn extract_block<'a>(xml: &'a str, tag: &str, attr_value: &str) -> Option<&'a st
     None
 }
 
+/// A curated connection profile for a well-known provider, used when the
+/// provider is identified by something other than its ISPDB XML — a Microsoft
+/// consumer domain the ISPDB may not cover (`@outlook.de`, `@hotmail.co.uk`),
+/// or an MX record that points at a known host. These presets require OAuth,
+/// matching what Google and Microsoft now mandate for IMAP/SMTP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnownProvider {
+    Google,
+    Microsoft,
+    Yahoo,
+    Fastmail,
+    ICloud,
+}
+
+impl KnownProvider {
+    /// The connection settings for this provider. OAuth is required for Google
+    /// and Microsoft; the others accept an app-password.
+    pub fn autoconfig(self) -> Autoconfig {
+        match self {
+            KnownProvider::Google => Autoconfig {
+                display_name: None,
+                imap_host: "imap.gmail.com".into(),
+                imap_port: 993,
+                imap_tls: true,
+                smtp_host: "smtp.gmail.com".into(),
+                smtp_port: 465,
+                smtp_tls: true,
+                oauth: true,
+            },
+            KnownProvider::Microsoft => Autoconfig {
+                display_name: None,
+                imap_host: "outlook.office365.com".into(),
+                imap_port: 993,
+                imap_tls: true,
+                smtp_host: "smtp.office365.com".into(),
+                smtp_port: 587,
+                smtp_tls: true,
+                oauth: true,
+            },
+            KnownProvider::Yahoo => Autoconfig {
+                display_name: None,
+                imap_host: "imap.mail.yahoo.com".into(),
+                imap_port: 993,
+                imap_tls: true,
+                smtp_host: "smtp.mail.yahoo.com".into(),
+                smtp_port: 465,
+                smtp_tls: true,
+                oauth: false,
+            },
+            KnownProvider::Fastmail => Autoconfig {
+                display_name: None,
+                imap_host: "imap.fastmail.com".into(),
+                imap_port: 993,
+                imap_tls: true,
+                smtp_host: "smtp.fastmail.com".into(),
+                smtp_port: 465,
+                smtp_tls: true,
+                oauth: false,
+            },
+            KnownProvider::ICloud => Autoconfig {
+                display_name: None,
+                imap_host: "imap.mail.me.com".into(),
+                imap_port: 993,
+                imap_tls: true,
+                smtp_host: "smtp.mail.me.com".into(),
+                smtp_port: 587,
+                smtp_tls: true,
+                oauth: false,
+            },
+        }
+    }
+}
+
+/// Recognise a well-known provider from an email domain, covering the
+/// Microsoft/Google **consumer domains across every TLD** (so `@outlook.de`,
+/// `@hotmail.co.uk`, `@live.fr` all resolve to Microsoft — chosen by the
+/// domain family, never by the `.com` TLD). Returns `None` for domains that
+/// need real network discovery. Pure + unit-tested.
+pub fn known_provider_for_domain(domain: &str) -> Option<KnownProvider> {
+    let d = domain.to_ascii_lowercase();
+    // The provider name is the leftmost label of the registrable domain, so
+    // `outlook.de`, `hotmail.co.uk`, and `outlook.com` all reduce to their
+    // family ("outlook"/"hotmail") regardless of TLD.
+    let base = d.split('.').next().unwrap_or(&d);
+    match base {
+        "gmail" | "googlemail" => Some(KnownProvider::Google),
+        "outlook" | "hotmail" | "live" | "msn" => Some(KnownProvider::Microsoft),
+        "yahoo" | "ymail" | "rocketmail" => Some(KnownProvider::Yahoo),
+        "fastmail" => Some(KnownProvider::Fastmail),
+        "icloud" | "me" | "mac" => Some(KnownProvider::ICloud),
+        _ => match d.as_str() {
+            "office365.com" => Some(KnownProvider::Microsoft),
+            _ => None,
+        },
+    }
+}
+
+/// Map a resolved MX hostname onto a known provider. This is the authoritative
+/// signal for **hosted** domains: a company on Google Workspace or Microsoft
+/// 365 has its own vanity domain, but its MX points at the provider, so
+/// `example.com` with MX `aspmx.l.google.com` resolves to Google. Pure +
+/// unit-tested; the live `discover` feeds it the DNS answer.
+pub fn provider_from_mx_host(mx_host: &str) -> Option<KnownProvider> {
+    let h = mx_host.to_ascii_lowercase();
+    let h = h.trim_end_matches('.');
+    if h.ends_with("google.com") || h.ends_with("googlemail.com") || h.ends_with("aspmx.l.google.com") {
+        Some(KnownProvider::Google)
+    } else if h.ends_with("outlook.com") || h.ends_with("protection.outlook.com") || h.ends_with("office365.com") {
+        Some(KnownProvider::Microsoft)
+    } else if h.ends_with("yahoodns.net") || h.ends_with("yahoo.com") {
+        Some(KnownProvider::Yahoo)
+    } else if h.ends_with("messagingengine.com") || h.ends_with("fastmail.com") {
+        Some(KnownProvider::Fastmail)
+    } else if h.ends_with("icloud.com") || h.ends_with("me.com") || h.ends_with("mail.me.com") {
+        Some(KnownProvider::ICloud)
+    } else {
+        None
+    }
+}
+
+/// Pick the highest-priority (lowest-preference-number) provider from a set of
+/// MX records. Returns the first host that maps to a known provider, scanning
+/// in ascending preference. Pure + unit-tested.
+pub fn provider_from_mx_records(mut records: Vec<(u16, String)>) -> Option<KnownProvider> {
+    records.sort_by_key(|(pref, _)| *pref);
+    records.iter().find_map(|(_, host)| provider_from_mx_host(host))
+}
+
+/// Parse a DNS-over-HTTPS JSON answer (RFC 8484 / the `application/dns-json`
+/// shape Google and Cloudflare serve) into `(preference, exchange)` MX records.
+/// The `data` field of an MX answer is `"<pref> <host>"`. Pure + unit-tested;
+/// the live `discover` fetches the JSON.
+pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(answers) = v.get("Answer").and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    answers
+        .iter()
+        // MX record type is 15.
+        .filter(|a| a.get("type").and_then(|t| t.as_u64()) == Some(15))
+        .filter_map(|a| {
+            let data = a.get("data")?.as_str()?.trim();
+            let (pref, host) = data.split_once(char::is_whitespace)?;
+            Some((pref.trim().parse().ok()?, host.trim().to_string()))
+        })
+        .collect()
+}
+
 /// The autoconfig URLs to try, in priority order, for a domain + email.
 /// Public so the (network) `discover` and its test can share the list.
 pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
@@ -148,7 +299,10 @@ pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
 }
 
 /// Discover settings for an email by querying the standard autoconfig
-/// locations. Network path — compiled only under `live`.
+/// locations, then falling back to a curated known-provider table and finally
+/// an MX-record lookup. Network path — compiled only under `live`. Returns
+/// `None` when nothing matched, so the caller can prompt "enter details
+/// manually".
 #[cfg(feature = "live")]
 pub fn discover(email: &str) -> Option<Autoconfig> {
     let (_, domain) = email.split_once('@')?;
@@ -157,6 +311,8 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
         .user_agent("qOS Mail")
         .build()
         .ok()?;
+
+    // 1. Thunderbird ISPDB + provider `.well-known` autoconfig XML.
     for url in discovery_urls(domain, email) {
         let Ok(resp) = client.get(&url).send() else { continue };
         if !resp.status().is_success() {
@@ -165,6 +321,49 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
         let Ok(body) = resp.text() else { continue };
         if let Some(cfg) = parse_autoconfig(&body) {
             return Some(cfg);
+        }
+    }
+
+    // 2. Curated consumer-domain table (covers Microsoft/Google/etc. across
+    //    every TLD, so @outlook.de resolves even when the ISPDB misses it).
+    if let Some(p) = known_provider_for_domain(domain) {
+        return Some(p.autoconfig());
+    }
+
+    // 3. MX-based provider guess for hosted domains (a company on Google
+    //    Workspace / Microsoft 365 keeps its own domain but points MX at the
+    //    provider). Resolved via DNS-over-HTTPS so no resolver dependency is
+    //    pulled in.
+    if let Some(p) = discover_via_mx(&client, domain) {
+        return Some(p.autoconfig());
+    }
+
+    None
+}
+
+/// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
+/// provider. Tries Google and Cloudflare DoH endpoints. Network — `live` only.
+#[cfg(feature = "live")]
+fn discover_via_mx(client: &reqwest::blocking::Client, domain: &str) -> Option<KnownProvider> {
+    let endpoints = [
+        format!("https://dns.google/resolve?name={domain}&type=MX"),
+        format!("https://cloudflare-dns.com/dns-query?name={domain}&type=MX"),
+    ];
+    for url in endpoints {
+        let Ok(resp) = client
+            .get(&url)
+            .header("accept", "application/dns-json")
+            .send()
+        else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(body) = resp.text() else { continue };
+        let records = parse_doh_mx(&body);
+        if let Some(p) = provider_from_mx_records(records) {
+            return Some(p);
         }
     }
     None
@@ -265,5 +464,118 @@ mod tests {
         assert!(urls.iter().any(|u| u.contains("example.com/.well-known/autoconfig")));
         assert!(urls.iter().any(|u| u.contains("autoconfig.thunderbird.net/v1.1/example.com")));
         assert!(urls.iter().all(|u| u.contains("me%40example.com") || u.ends_with("example.com")));
+    }
+
+    // The real ISPDB document for outlook.com — an `@outlook.de` address must
+    // parse it into a Microsoft OAuth profile (chosen by provider, not TLD).
+    const MICROSOFT_ISPDB: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="outlook.com">
+    <domain>outlook.com</domain>
+    <domain>outlook.de</domain>
+    <domain>hotmail.com</domain>
+    <displayName>Microsoft</displayName>
+    <incomingServer type="imap">
+      <hostname>outlook.office365.com</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <authentication>OAuth2</authentication>
+      <username>%EMAILADDRESS%</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>smtp.office365.com</hostname>
+      <port>587</port>
+      <socketType>STARTTLS</socketType>
+      <authentication>OAuth2</authentication>
+      <username>%EMAILADDRESS%</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>"#;
+
+    #[test]
+    fn microsoft_ispdb_parses_to_oauth_office365() {
+        let cfg = parse_autoconfig(MICROSOFT_ISPDB).expect("valid microsoft autoconfig");
+        assert_eq!(cfg.imap_host, "outlook.office365.com");
+        assert_eq!(cfg.smtp_host, "smtp.office365.com");
+        assert_eq!(cfg.smtp_port, 587);
+        assert!(cfg.imap_tls && cfg.smtp_tls);
+        assert!(cfg.oauth, "Microsoft consumer mail requires OAuth");
+        // Applying it to an @outlook.de account presets OAuth.
+        let mut acct = AccountConfig { email: "person@outlook.de".into(), ..Default::default() };
+        cfg.apply_to(&mut acct);
+        assert_eq!(acct.auth, AuthMethod::OAuth);
+        assert_eq!(acct.imap_host, "outlook.office365.com");
+    }
+
+    #[test]
+    fn known_provider_covers_microsoft_consumer_domains_across_tlds() {
+        // The whole point: pick by domain family, not the .com TLD.
+        assert_eq!(known_provider_for_domain("outlook.de"), Some(KnownProvider::Microsoft));
+        assert_eq!(known_provider_for_domain("hotmail.co.uk"), Some(KnownProvider::Microsoft));
+        assert_eq!(known_provider_for_domain("live.fr"), Some(KnownProvider::Microsoft));
+        assert_eq!(known_provider_for_domain("Gmail.com"), Some(KnownProvider::Google));
+        assert_eq!(known_provider_for_domain("yahoo.co.jp"), Some(KnownProvider::Yahoo));
+        // An unknown vanity domain must fall through to network discovery.
+        assert_eq!(known_provider_for_domain("some-company.de"), None);
+    }
+
+    #[test]
+    fn microsoft_known_provider_config_is_oauth() {
+        let cfg = KnownProvider::Microsoft.autoconfig();
+        assert_eq!(cfg.imap_host, "outlook.office365.com");
+        assert_eq!(cfg.smtp_host, "smtp.office365.com");
+        assert!(cfg.oauth, "Microsoft preset must require OAuth");
+    }
+
+    #[test]
+    fn mx_records_identify_hosted_google_and_microsoft() {
+        // A vanity domain hosted on Google Workspace.
+        let google = vec![
+            (5, "alt1.aspmx.l.google.com".to_string()),
+            (1, "aspmx.l.google.com".to_string()),
+        ];
+        assert_eq!(provider_from_mx_records(google), Some(KnownProvider::Google));
+
+        // Microsoft 365 tenant.
+        let ms = vec![(0, "example-com.mail.protection.outlook.com".to_string())];
+        assert_eq!(provider_from_mx_records(ms), Some(KnownProvider::Microsoft));
+
+        // Self-hosted / unknown MX → no guess (caller prompts for manual).
+        let unknown = vec![(10, "mail.self-hosted.example".to_string())];
+        assert_eq!(provider_from_mx_records(unknown), None);
+    }
+
+    #[test]
+    fn mx_guess_respects_preference_order() {
+        // The lowest-preference (highest-priority) recognised host wins even
+        // when a higher-preference record is unknown.
+        let records = vec![
+            (20, "backup.self-hosted.example".to_string()),
+            (10, "aspmx.l.google.com".to_string()),
+        ];
+        assert_eq!(provider_from_mx_records(records), Some(KnownProvider::Google));
+    }
+
+    #[test]
+    fn parse_doh_mx_reads_google_dns_json() {
+        // The exact shape dns.google returns for an MX query.
+        let json = r#"{
+          "Status": 0,
+          "Answer": [
+            {"name":"example.com.","type":15,"TTL":300,"data":"10 aspmx.l.google.com."},
+            {"name":"example.com.","type":15,"TTL":300,"data":"20 alt1.aspmx.l.google.com."},
+            {"name":"example.com.","type":46,"TTL":300,"data":"mx 8 2 300 ..."}
+          ]
+        }"#;
+        let mx = parse_doh_mx(json);
+        assert_eq!(mx.len(), 2, "only MX (type 15) records are kept");
+        assert_eq!(mx[0], (10, "aspmx.l.google.com.".to_string()));
+        assert_eq!(provider_from_mx_records(mx), Some(KnownProvider::Google));
+    }
+
+    #[test]
+    fn parse_doh_mx_tolerates_missing_answer() {
+        assert!(parse_doh_mx(r#"{"Status":3}"#).is_empty());
+        assert!(parse_doh_mx("not json").is_empty());
     }
 }

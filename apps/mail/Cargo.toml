@@ -46,8 +46,17 @@ lettre = { version = "0.11", optional = true, default-features = false, features
 # Optional + gated behind `live`; the default build injects a no-op fetcher so
 # avatars render as initials and `--shots` never opens a socket.
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
+# The async runtime + TLS the engine worker drives async-imap/lettre on. The
+# worker thread owns a Tokio runtime and `block_on`s each request; TLS is
+# rustls (matching lettre/reqwest) with the bundled Mozilla roots so no OS
+# trust-store or OpenSSL dependency is needed. All `live`-only.
+tokio = { version = "1", optional = true, default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros"] }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = { version = "0.26", optional = true }
+futures = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 [features]
 # Compile the real IMAP/SMTP engine backend + remote avatar fetch. Requires
 # network + a TLS/async stack; not used by the headless build or `--shots`.
-live = ["dep:async-imap", "dep:lettre", "dep:reqwest"]
+live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:webpki-roots", "dep:futures"]
