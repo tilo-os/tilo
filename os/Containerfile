@@ -449,6 +449,26 @@ RUN systemctl enable qos-hidepid.service && \
 # qos-install) on a schedule, so installed systems stay current.
 RUN systemctl enable bootc-fetch-apply-updates.timer
 
+# Boot-time prune. These units sit on the critical chain but their work
+# is either irrelevant to a desktop qOS (offline man-db caching), or a
+# `Wants=network-online.target` wait we don't need (nothing on the boot
+# path blocks on a routable interface — the shell + peer sync tolerate
+# late network), or plymouth cleanup that we avoid by not booting with
+# plymouth in the first place. Masking (not just disabling) makes them
+# unable to be pulled in by transitive `Wants=`.
+#
+# `|| true` because the unit is only present when its package is
+# installed — we don't fail the image build if a mask target is absent.
+RUN for u in \
+        NetworkManager-wait-online.service \
+        systemd-networkd-wait-online.service \
+        plymouth-quit-wait.service \
+        plymouth-quit.service \
+        man-db-cache-update.timer \
+        man-db-cache-update.service \
+        systemd-update-utmp.service \
+    ; do systemctl mask "$u" || true; done
+
 # C5 firewall policy. Default to the desktop zone (FedoraWorkstation), whose
 # 1025-65535 tcp/udp ranges already cover the compositor's peer-sync traffic:
 #   * mDNS LAN discovery on 5353/udp (also added explicitly below).
