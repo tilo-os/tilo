@@ -23,6 +23,19 @@ pub fn alpha(c: Color, a: f32) -> Color {
     c.multiply_alpha(a)
 }
 
+/// Parse a hex colour string (`rrggbb`, optional leading `#`) to a `Color`.
+/// Used for authentic GTFS transit line colours (`routeColor`).
+pub fn hex_color(s: &str) -> Option<Color> {
+    let s = s.trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some(Color::from_rgba8(r, g, b, 255))
+}
+
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
 }

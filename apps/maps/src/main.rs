@@ -36,6 +36,10 @@ struct ShotArgs {
     edit_from: bool,
     /// Demo the Transit picker anchored to an "Arrive by" time.
     transit_arrive: bool,
+    /// Demo the floating search-results overlay (proximity-ordered).
+    search: bool,
+    /// Demo the live POI marker layer with an open info card.
+    pois: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,6 +77,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if shot.transit_arrive {
             app.set_demo_transit_arrive();
         }
+        if shot.search {
+            app.set_demo_search();
+        }
+        if shot.pois {
+            app.set_demo_pois();
+        }
         render_shot_to_png(Box::new(app), shot.viewport, &shot.out)?;
         return Ok(());
     }
@@ -92,6 +102,8 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut transit_mode = false;
     let mut edit_from = false;
     let mut transit_arrive = false;
+    let mut search = false;
+    let mut pois = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--shots" {
@@ -114,6 +126,10 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
             edit_from = true;
         } else if arg == "--transit-arrive" {
             transit_arrive = true;
+        } else if arg == "--search" {
+            search = true;
+        } else if arg == "--pois" {
+            pois = true;
         } else if arg == "--panel" {
             if let Some(s) = iter.next() {
                 apply_panel(s, &mut panel, &mut transit_mode);
@@ -131,6 +147,8 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         transit_mode,
         edit_from,
         transit_arrive,
+        search,
+        pois,
     })
 }
 

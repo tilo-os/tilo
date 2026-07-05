@@ -425,6 +425,31 @@ impl TileLayer {
         }
     }
 
+    /// Whether any already-cached tile lies within `max_depth` zoom levels
+    /// *below* `parent` (i.e. a descendant/child tile). Read-only — used to
+    /// decide whether a zoom-out hole can be filled from sharper child tiles
+    /// that were resident at the previous, deeper zoom.
+    pub fn has_descendants(&self, parent: TileId, max_depth: u8) -> bool {
+        for depth in 1..=max_depth {
+            let cz = parent.z as u32 + depth as u32;
+            if cz > 19 {
+                break;
+            }
+            let cz = cz as u8;
+            let span = 1u32 << depth;
+            let base_x = parent.x << depth;
+            let base_y = parent.y << depth;
+            for j in 0..span {
+                for i in 0..span {
+                    if self.mem.contains_key(&TileId::new(cz, base_x + i, base_y + j)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Find the nearest already-cached ancestor tile that covers `id`, for use
     /// as an instant zoom/pan placeholder. Returns the ancestor and how many
     /// zoom levels up it is (so the caller can sub-sample its pixels).
@@ -520,6 +545,15 @@ impl TileLayer {
     #[cfg(test)]
     fn with_cache_dir_url(cache_dir: PathBuf, base_url: String) -> Self {
         Self::with_cache_dir_and_base(cache_dir, base_url)
+    }
+
+    /// Seed a solid 256×256 decoded tile straight into the resident set, for
+    /// tests that need cached imagery without a worker or the network (e.g. the
+    /// canvas zoom-reuse test). Crate-visible so `canvas`'s tests can use it.
+    #[cfg(test)]
+    pub(crate) fn insert_solid_tile(&mut self, id: TileId) {
+        let img = make_image(vec![80u8; 256 * 256 * 4], 256, 256).expect("solid tile");
+        self.insert(id, DecodedTile { image: img });
     }
 
     /// The current backoff window recorded for a failed tile, if any.
@@ -836,6 +870,61 @@ pub fn paint_ancestor(
     scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &dst);
     scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
     scene.pop_layer();
+}
+
+/// Fill a zoom-out hole from *cached descendant* (higher-z, sharper) tiles.
+///
+/// When the view zooms out, the target integer-z tiles are usually not cached
+/// yet, and [`TileLayer::ancestor_placeholder`] can't help (there is no cached
+/// lower-z tile). But the child tiles that were resident at the previous,
+/// deeper zoom still cover `dst` — each child maps to a sub-cell of `parent`.
+/// Painting those children into their sub-rects keeps the map showing crisp
+/// imagery through the zoom-out instead of blanking to the land colour.
+///
+/// Tries depth 1 (the 2×2 direct children) first; if none of those are cached
+/// it falls back to depth 2 (the 4×4 grandchildren), covering a two-step zoom
+/// out. Returns whether it painted anything.
+pub fn paint_descendants(
+    scene: &mut Scene,
+    transform: Affine,
+    layer: &mut TileLayer,
+    parent: TileId,
+    dst: Rect,
+    max_depth: u8,
+) -> bool {
+    if dst.width() <= 0.0 || dst.height() <= 0.0 {
+        return false;
+    }
+    for depth in 1..=max_depth {
+        let cz = parent.z as u32 + depth as u32;
+        if cz > 19 {
+            break;
+        }
+        let cz = cz as u8;
+        let span = 1u32 << depth; // children per axis at this depth
+        let cw = dst.width() / span as f64;
+        let ch = dst.height() / span as f64;
+        let base_x = parent.x << depth;
+        let base_y = parent.y << depth;
+        let mut painted = false;
+        for j in 0..span {
+            for i in 0..span {
+                let cid = TileId::new(cz, base_x + i, base_y + j);
+                if let Some(img) = layer.get(cid).cloned() {
+                    let sx = dst.x0 + i as f64 * cw;
+                    let sy = dst.y0 + j as f64 * ch;
+                    paint_tile(scene, transform, &img, Rect::new(sx, sy, sx + cw, sy + ch));
+                    painted = true;
+                }
+            }
+        }
+        // Once a depth yields coverage, stop — deeper children would only
+        // overpaint the same region more expensively.
+        if painted {
+            return true;
+        }
+    }
+    false
 }
 
 /// A flat fill used under pending tiles so a never-seen area shows the map

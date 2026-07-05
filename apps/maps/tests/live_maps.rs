@@ -237,6 +237,83 @@ fn live_render_shows_real_tiles() {
     std::fs::remove_dir_all(&cache).ok();
 }
 
+/// Zoom must never blank. After z14 imagery is resident, jumping to a mid-zoom
+/// where the target-level tiles are NOT fetched yet must still paint imagery —
+/// the resident tiles reused *scaled* (lower-z ancestors on a zoom-in,
+/// higher-z descendants on a zoom-out) — rather than a flat land fill. Renders
+/// one zoom-out and one zoom-in mid-frame and asserts each shows varied imagery,
+/// exercising the real fetch→decode→draw path (only the base tiles ever load).
+#[test]
+fn live_mid_zoom_reuses_tiles_and_never_blanks() {
+    if !live_enabled() {
+        skip("live_mid_zoom_reuses_tiles_and_never_blanks");
+        return;
+    }
+    let cache = unique_cache();
+    let mut app = MapsApp::new_with_cache_dir(cache.clone());
+    let mut h = Harness::new(VP);
+    let out = out_dir();
+    let region = map_region();
+    let base_zoom = app.zoom_for_verify();
+
+    // Load the base-zoom imagery.
+    let _ = pump_frames_until(
+        &mut h,
+        &mut app,
+        Duration::from_secs(25),
+        Duration::from_millis(150),
+        |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
+    );
+    assert!(app.tiles_mem_len() > 0, "no base imagery loaded to reuse");
+    assert!(!app.tiles_has_failures(), "base tile fetch failed — imagery unreachable");
+
+    // Zoom OUT one integer level: the target tiles aren't loaded, so the frame
+    // must reuse the resident tiles as scaled descendants — never blank.
+    app.set_zoom_for_verify(base_zoom - 1.0);
+    let out_png = out.join("maps-mid-zoom-out.png");
+    let f_out = render_live_to_png(&mut h, &mut app, &out_png);
+    let out_colors = f_out.distinct_colors(region, 4);
+    eprintln!(
+        "mid zoom-out: zoom={:.2} colors={out_colors} mem={} -> {}",
+        app.zoom_for_verify(),
+        app.tiles_mem_len(),
+        out_png.display()
+    );
+    assert!(!f_out.is_uniform(region), "zoom-out mid-frame is a uniform fill — the blank bug");
+    assert!(
+        out_colors > 12,
+        "zoom-out mid-frame shows too little imagery ({out_colors}) — tiles not reused scaled"
+    );
+
+    // Re-settle at the base zoom, then zoom IN one integer level: reuse the
+    // resident tiles as scaled ancestors — again, never blank.
+    app.set_zoom_for_verify(base_zoom);
+    let _ = pump_frames_until(
+        &mut h,
+        &mut app,
+        Duration::from_secs(15),
+        Duration::from_millis(150),
+        |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
+    );
+    app.set_zoom_for_verify(base_zoom + 1.0);
+    let in_png = out.join("maps-mid-zoom-in.png");
+    let f_in = render_live_to_png(&mut h, &mut app, &in_png);
+    let in_colors = f_in.distinct_colors(region, 4);
+    eprintln!(
+        "mid zoom-in: zoom={:.2} colors={in_colors} mem={} -> {}",
+        app.zoom_for_verify(),
+        app.tiles_mem_len(),
+        in_png.display()
+    );
+    assert!(!f_in.is_uniform(region), "zoom-in mid-frame is a uniform fill — the blank bug");
+    assert!(
+        in_colors > 12,
+        "zoom-in mid-frame shows too little imagery ({in_colors}) — tiles not reused scaled"
+    );
+
+    std::fs::remove_dir_all(&cache).ok();
+}
+
 /// A trivially-runnable sanity assert on the pixel helpers themselves, so the
 /// content assertions are trusted (a uniform frame reads as uniform / low
 /// diversity). Runs hermetically — no gate, no network, no GPU.
