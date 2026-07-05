@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::model::ViewMode;
+use crate::model::{SortBy, ViewMode};
 
 /// A single user intent emitted by an interactive child widget.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,16 +37,24 @@ pub enum FileCommand {
     SortColumn(usize),
     /// Switch the main view mode.
     SetView(ViewMode),
+    /// Set the sort key (name/size/type/date) directly. Reachable from the
+    /// right-click menu, so it works in grid mode too (which has no header).
+    SetSort(SortBy),
     /// Flip ascending/descending.
     ToggleSortOrder,
     /// Select every entry.
     SelectAll,
     /// Launch a terminal in the current directory.
     OpenTerminal,
-    /// Create a new folder (prompts for a name).
+    /// Create a new folder, then drop into inline-rename so the user names
+    /// it (Finder/Nautilus behaviour).
     NewFolder,
-    /// Rename the primary selection.
+    /// Begin an inline rename of the primary selection (opens the rename bar).
     Rename,
+    /// Commit the in-progress inline rename to the chosen name.
+    RenameCommit,
+    /// Abandon the in-progress inline rename.
+    RenameCancel,
     /// Move the selection to the trash.
     Delete,
     /// Copy / cut the selection into the clipboard.
