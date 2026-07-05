@@ -918,17 +918,27 @@ impl MonitorApp {
         // ---- brand: glyph + title (+ subtitle when there's room) ----------
         let glyph = Rect::new(inner.x0, inner.y0 + 2.0, inner.x0 + 26.0, inner.y0 + 28.0);
         icons::draw_icon(scene, t, glyph, Icon::Monitor, c.accent[5], 1.8);
+        // The "Monitor" wordmark is the first thing to drop as the header
+        // narrows: the brand glyph already identifies the app, so hiding the
+        // label frees width for the tab control (which stays comfortable rather
+        // than collapsing to icon-only) and prevents the brand from crowding the
+        // tabs. Below this width only the glyph carries the brand.
+        let show_title = inner.width() >= 470.0;
         let (titw, _) = tr.measure_weighted("Monitor", theme.tokens.typography.scale.xl, None, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
-            "Monitor",
-            theme.tokens.typography.scale.xl,
-            c.text_primary,
-            t * Affine::translate((glyph.x1 + 10.0, inner.y0 - 1.0)),
-            None,
-            TextWeight::Bold,
-        );
-        if !header_narrow {
+        if show_title {
+            tr.draw_text_weighted(
+                scene,
+                "Monitor",
+                theme.tokens.typography.scale.xl,
+                c.text_primary,
+                t * Affine::translate((glyph.x1 + 10.0, inner.y0 - 1.0)),
+                None,
+                TextWeight::Bold,
+            );
+        }
+        // The subtitle needs both room and the title above it, so it only shows
+        // on a roomy header (never when the title itself is hidden).
+        if !header_narrow && show_title {
             tr.draw_text(
                 scene,
                 "System Activity",
@@ -938,7 +948,11 @@ impl MonitorApp {
                 None,
             );
         }
-        let brand_right = glyph.x1 + 10.0 + titw as f64;
+        let brand_right = if show_title {
+            glyph.x1 + 10.0 + titw as f64
+        } else {
+            glyph.x1 + 6.0
+        };
 
         // ---- centre tab segmented control ---------------------------------
         // Tabs want a comfortable width; clamp them into the gap between the
@@ -1045,8 +1059,10 @@ impl MonitorApp {
     /// tab: four small readouts — CPU / Memory / Network / Disk — each a
     /// label, a headline number and a sparkline. This is the old left rail's
     /// content, rehomed as a slim content band above the full-width table
-    /// instead of a fake sidebar. It wraps to fewer columns as the window
-    /// narrows (`layout::summary_grid`). Clicking a cell jumps to the
+    /// instead of a fake sidebar. It stays a single row at every width
+    /// (`layout::summary_grid`) so the table below keeps its height; the cells
+    /// share the width and stack their value under the label when narrow.
+    /// Clicking a cell jumps to the
     /// Resources dashboard where that stat's full gauge/chart lives; the cell
     /// hit rects are recorded for `on_click`.
     fn draw_summary_strip(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect, g: layout::StripGrid) {
@@ -1087,12 +1103,25 @@ impl MonitorApp {
             let y0 = r.y0 + row as f64 * (layout::STRIP_CELL_H + GAP);
             let rect = Rect::new(x0, y0, x0 + cell_w, y0 + layout::STRIP_CELL_H);
             let inner = charts::panel(scene, t, rect, theme, layout::STRIP_CELL_PAD);
-            // Label (dim, left) + headline value (bold, right).
+            // Label (dim, left). The single-row strip keeps a constant height so
+            // the table below never loses height; the cell instead adapts
+            // horizontally — value beside the label when it fits, else stacked
+            // beneath it — so a narrow cell never overlaps its own text.
             tr.draw_text(scene, cell.label, xs, c.text_dim, t * Affine::translate((inner.x0, inner.y0)), None);
+            let (lw, _) = tr.measure(cell.label, xs, None);
             let (vw, _) = tr.measure_weighted(&cell.value, sm, None, TextWeight::Bold);
-            tr.draw_text_weighted(scene, &cell.value, sm, cell.vcolor, t * Affine::translate((inner.x1 - vw as f64, inner.y0 - 1.0)), None, TextWeight::Bold);
-            // Sparkline fills the lower portion of the cell.
-            let sr = Rect::new(inner.x0, inner.y0 + 22.0, inner.x1, inner.y1);
+            let spark_top = if lw as f64 + 8.0 + vw as f64 <= inner.width() {
+                // Roomy: headline value right-aligned on the label's line.
+                tr.draw_text_weighted(scene, &cell.value, sm, cell.vcolor, t * Affine::translate((inner.x1 - vw as f64, inner.y0 - 1.0)), None, TextWeight::Bold);
+                inner.y0 + 22.0
+            } else {
+                // Tight: value drops onto its own line under the label so the
+                // two never collide, and the sparkline shifts down to clear it.
+                tr.draw_text_weighted(scene, &cell.value, sm, cell.vcolor, t * Affine::translate((inner.x0, inner.y0 + 14.0)), None, TextWeight::Bold);
+                inner.y0 + 34.0
+            };
+            // Sparkline fills the remaining lower portion of the cell.
+            let sr = Rect::new(inner.x0, spark_top.min(inner.y1), inner.x1, inner.y1);
             charts::sparkline(scene, t, sr, &cell.data, cell.max, cell.spark);
             self.hit.summary_cells.push(rect);
         }
@@ -3292,12 +3321,14 @@ mod tests {
         );
     }
 
-    /// Defect 2: the summary strip's cards must grow with the window width and
-    /// rewrap as it narrows — and critically, keep doing so when the SAME
-    /// instance is resized (not just on a fresh narrow launch). Drives the real
-    /// draw path, reading back the card hit rects it records.
+    /// The summary strip's cards grow with the window width but stay on a
+    /// **single row** at every width — so narrowing the window can never steal
+    /// vertical height from the process table below. Critically the width must
+    /// keep re-deriving on resize of the SAME instance (not freeze at the first
+    /// frame). Drives the real draw path, reading back the card hit rects it
+    /// records, and asserts the table keeps its height across the narrowing.
     #[test]
-    fn summary_strip_grows_and_rewraps_on_resize() {
+    fn summary_strip_stays_one_row_and_table_keeps_height() {
         let mut a = app();
 
         // Wide: four cards abreast on one row.
@@ -3306,6 +3337,7 @@ mod tests {
         assert_eq!(wide.len(), 4, "four summary cards");
         assert_eq!(distinct_rows(&wide), 1, "four abreast when wide");
         let wide_card_w = wide[0].width();
+        let wide_table_h = a.table_viewport.height();
         // The four cards fill the content width (within one gap of it).
         let content_w = 1280.0 - 2.0 * OUTER_PAD;
         let filled = wide.iter().map(|r| r.width()).sum::<f64>() + 3.0 * GAP;
@@ -3314,10 +3346,9 @@ mod tests {
             "cards fill the width: {filled} vs {content_w}"
         );
 
-        // Same instance, narrower but still four-across (800px): the cards must
-        // re-derive a SMALLER width from the new allocation — the "grows with
-        // width" property. A frozen-at-first-frame layout would keep the wide
-        // card width here and fail.
+        // Same instance, narrower (800px): the cards must re-derive a SMALLER
+        // width from the new allocation — the "grows with width" property. A
+        // frozen-at-first-frame layout would keep the wide card width and fail.
         draw_at(&mut a, 800.0, 720.0);
         let mid = a.hit.summary_cells.clone();
         assert_eq!(mid.len(), 4);
@@ -3329,19 +3360,26 @@ mod tests {
             wide_card_w
         );
 
-        // Phone-narrow (560px): the SAME instance rewraps to a 2x2 block.
-        draw_at(&mut a, 560.0, 720.0);
+        // Phone-narrow (480px): the strip STAYS one row (the fix — it must not
+        // wrap to a second row and steal the table's height), and the process
+        // table must not collapse vertically — at the same window height it is
+        // at least as tall as in the wide layout (the wide layout even reserves
+        // a detail strip, so the narrow table has more, not less, room).
+        draw_at(&mut a, 480.0, 720.0);
         let narrow = a.hit.summary_cells.clone();
         assert_eq!(narrow.len(), 4);
-        assert_eq!(distinct_rows(&narrow), 2, "rewraps to two rows when narrow");
-
-        // Widening straight back reflows to one row — no frozen mode.
-        draw_at(&mut a, 1280.0, 720.0);
-        assert_eq!(
-            distinct_rows(&a.hit.summary_cells),
-            1,
-            "widening reflows back to one row"
+        assert_eq!(distinct_rows(&narrow), 1, "strip stays a single row when narrow");
+        assert!(
+            a.table_viewport.height() >= wide_table_h - 1.0,
+            "the table must keep its height at narrow widths (narrow {} vs wide {})",
+            a.table_viewport.height(),
+            wide_table_h
         );
+
+        // Widening straight back keeps one row — no frozen mode — and the card
+        // width returns to its wide value.
+        draw_at(&mut a, 1280.0, 720.0);
+        assert_eq!(distinct_rows(&a.hit.summary_cells), 1, "one row at every width");
         assert!(
             (a.hit.summary_cells[0].width() - wide_card_w).abs() < 1.0,
             "card width returns to its wide value after resize round-trip"
