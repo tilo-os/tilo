@@ -6,3 +6,17 @@
 # which doesn't exist inside the container — this project-level override
 # fixes that without forcing every cargo invocation to set RUSTC_WRAPPER=.
 rustc-wrapper = "sccache"
+# CPU floor is `x86-64-v3` — Haswell/Excavator (2013+), the intersection
+# of "vast majority of installed hardware" and "enough SIMD to matter"
+# (AVX2, BMI2, FMA). NOT `native` — that pins to the current build
+# host's CPU, breaks reproducibility, and can't ship in the same OS
+# image across users. Not `x86-64-v4` (AVX-512) — too narrow, that's a
+# per-app opt-in ship.
+#
+# `force-frame-pointers=yes` keeps `perf record` + BOLT able to walk
+# stacks; the runtime cost is negligible on x86-64 and the sampling-
+# tooling win is large.
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-C", "force-frame-pointers=yes",
+]
