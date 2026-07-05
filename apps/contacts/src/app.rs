@@ -33,8 +33,12 @@ use ui::widget::{TextInput, Widget};
 use crate::date;
 use crate::doc::ContactsDoc;
 use crate::model::{Address, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts};
+use crate::portal::{self, ExportOutcome, ImportOutcome};
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
+
+/// Suggested file name for the export Save dialog.
+const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
 
 const TOOLBAR_H: f64 = 56.0;
 const ROW_H: f64 = 62.0;
@@ -373,6 +377,15 @@ pub struct ContactsApp {
     /// address book. Only the `--shots` and test constructors set this — the
     /// live app never fabricates content.
     seed_samples: bool,
+
+    /// In-flight import file-chooser: the portal worker's receiver, drained
+    /// once per frame. `Some` ⇒ the host's multi-select Open dialog is up.
+    import_rx: Option<portal::ImportChannel>,
+    /// In-flight export Save dialog: the portal worker's receiver.
+    export_rx: Option<portal::ExportChannel>,
+    /// The contacts + vCard version parked while the export Save dialog is up,
+    /// written to the chosen destination when the portal returns a path.
+    pending_export: Option<(Vec<ContactId>, VCardVersion)>,
 }
 
 impl ContactsApp {
@@ -432,6 +445,9 @@ impl ContactsApp {
             dirty: true,
             relayout: true,
             seeded: false,
+            import_rx: None,
+            export_rx: None,
+            pending_export: None,
         }
     }
 
@@ -463,6 +479,17 @@ impl ContactsApp {
     pub fn shots_edit_contact(&mut self) {
         if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
             self.begin_edit(c, false);
+            self.push.snap(Pane::Detail);
+        }
+    }
+
+    /// Snap the EDIT form open with its first field focused for `--shots`, so a
+    /// headless frame captures the keyboard-navigation focus ring (Tab lands
+    /// here). Mirrors opening the form and pressing Tab once.
+    pub fn shots_edit_focused(&mut self) {
+        if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+            self.begin_edit(c, false);
+            self.focus_adjacent_field(1);
             self.push.snap(Pane::Detail);
         }
     }
@@ -706,45 +733,122 @@ impl ContactsApp {
         self.relayout = true;
     }
 
-    fn import_vcards(&mut self, doc: &mut AutoCommit) {
-        // Import reads a real `.vcf` file. The path comes from
-        // `QOS_CONTACTS_IMPORT` (set by the OS file picker or the launching
-        // shell); with no path there's nothing to import, so we guide the
-        // user rather than fabricate a contact.
-        let text = match std::env::var("QOS_CONTACTS_IMPORT")
-            .ok()
-            .filter(|p| !p.is_empty())
-        {
-            Some(path) => match std::fs::read_to_string(&path) {
+    /// Live Import action: open the host's native multi-select file chooser
+    /// (XDG portal) filtered to vCard files. Non-blocking — the D-Bus
+    /// round-trip and the host dialog run on a worker thread; the chosen paths
+    /// arrive over a channel drained by [`drain_portal`]. An in-flight request
+    /// is not restarted.
+    fn request_import(&mut self) {
+        if self.import_rx.is_some() {
+            return;
+        }
+        self.import_rx = Some(portal::request_import());
+    }
+
+    /// Read, parse, and merge every vCard file in `paths` into the address
+    /// book, persisting once if anything was added. Returns the number of
+    /// contacts imported. This is the hermetic core shared by the live portal
+    /// drain and the tests — it never touches the picker, so multi-file import
+    /// can be driven directly without a desktop portal.
+    fn import_paths(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> usize {
+        if paths.is_empty() {
+            // An empty selection (or a cancelled picker) fabricates nothing.
+            return 0;
+        }
+        let mut n = 0usize;
+        let mut first_new = None;
+        let mut errors = 0usize;
+        for path in paths {
+            let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    self.show_toast(format!("Couldn't read {path}: {e}"));
-                    return;
+                    tracing::warn!(error = %e, path = %path.display(), "contacts: import read failed");
+                    errors += 1;
+                    continue;
                 }
-            },
-            None => {
-                self.show_toast("To import, set QOS_CONTACTS_IMPORT to a .vcf file path");
-                return;
+            };
+            // Each file may hold arbitrarily many, differently-shaped cards.
+            for c in vcard::parse_vcards(&text) {
+                if first_new.is_none() {
+                    first_new = Some(c.id);
+                }
+                self.store.upsert(c.clone());
+                ContactsDoc::upsert_contact(doc, &c);
+                n += 1;
             }
-        };
-        let parsed = vcard::parse_vcards(&text);
-        let n = parsed.len();
-        let mut first_new = None;
-        for c in parsed {
-            if first_new.is_none() {
-                first_new = Some(c.id);
-            }
-            self.store.upsert(c.clone());
-            ContactsDoc::upsert_contact(doc, &c);
         }
         if let Some(id) = first_new {
             self.selected = Some(id);
         }
         if n > 0 {
             self.persist();
+            self.show_toast(format!("Imported {n} contact{}", if n == 1 { "" } else { "s" }));
+            self.relayout = true;
+        } else if errors > 0 {
+            self.show_toast("Couldn't read the selected file(s)");
+        } else {
+            // A valid but empty/unparseable selection: say so rather than
+            // silently doing nothing.
+            self.show_toast("No contacts found in the selected file(s)");
         }
-        self.show_toast(format!("Imported {n} contact{}", if n == 1 { "" } else { "s" }));
-        self.relayout = true;
+        n
+    }
+
+    /// Whether a file-chooser portal (import or export) is currently awaiting
+    /// the user's choice. Keeps the host loop pumping frames so the outcome is
+    /// drained promptly once the dialog closes.
+    fn portal_in_flight(&self) -> bool {
+        self.import_rx.is_some() || self.export_rx.is_some()
+    }
+
+    /// Drain any in-flight import/export portal request. Called once per frame
+    /// from [`Widget::sync`]; a `try_recv` never blocks the UI thread. When an
+    /// outcome arrives the receiver is dropped (idle again).
+    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+        if let Some(rx) = &self.import_rx {
+            match rx.try_recv() {
+                Ok(ImportOutcome::Selected(paths)) => {
+                    self.import_rx = None;
+                    self.import_paths(doc, &paths);
+                }
+                Ok(ImportOutcome::Cancelled) => {
+                    // A dismissed picker is a silent no-op — nothing to say.
+                    self.import_rx = None;
+                }
+                Ok(ImportOutcome::Failed(reason)) => {
+                    self.import_rx = None;
+                    self.show_toast(format!("Import unavailable: {reason}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.import_rx = None;
+                }
+            }
+        }
+        if let Some(rx) = &self.export_rx {
+            match rx.try_recv() {
+                Ok(ExportOutcome::Chosen(path)) => {
+                    self.export_rx = None;
+                    if let Some((ids, version)) = self.pending_export.take() {
+                        self.write_export(&ids, version, &path);
+                    }
+                }
+                Ok(ExportOutcome::Cancelled) => {
+                    self.export_rx = None;
+                    self.pending_export = None;
+                }
+                Ok(ExportOutcome::Failed(reason)) => {
+                    self.export_rx = None;
+                    self.pending_export = None;
+                    self.show_toast(format!("Export unavailable: {reason}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.export_rx = None;
+                    self.pending_export = None;
+                }
+            }
+        }
     }
 
     /// Open the export-selection dialog, pre-ticking every contact currently
@@ -759,40 +863,29 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Resolve where an export `.vcf` is written, in priority order:
-    ///
-    ///   1. `QOS_CONTACTS_EXPORT` — the destination the OS save-picker (or the
-    ///      launching shell) hands us: a full file path, or an existing
-    ///      directory to drop the default file into. Symmetric with the
-    ///      `QOS_CONTACTS_IMPORT` open seam.
-    ///   2. The address book's own directory (where the live app persists), so
-    ///      an export lands next to the user's data.
-    ///   3. `$HOME` — a real, user-visible location as a last resort.
-    ///
-    /// Never a throwaway temp file presented to the user as a saved document.
-    fn export_destination(&self) -> PathBuf {
-        const FILE_NAME: &str = "contacts-export.vcf";
-        if let Some(dest) = std::env::var("QOS_CONTACTS_EXPORT")
-            .ok()
-            .filter(|p| !p.is_empty())
-            .map(PathBuf::from)
-        {
-            // A directory value receives the default file name; a file path is
-            // used verbatim (the save-picker contract).
-            return if dest.is_dir() { dest.join(FILE_NAME) } else { dest };
+    /// Live Export action: park the chosen `ids` + vCard `version`, then open
+    /// the host's native Save dialog (XDG portal) with a suggested file name.
+    /// Non-blocking — when the portal returns a destination, [`drain_portal`]
+    /// writes the file via [`write_export`]. An in-flight request is not
+    /// restarted. Returns `false` (nothing parked) when the selection is empty.
+    fn request_export(&mut self, ids: Vec<ContactId>, version: VCardVersion) -> bool {
+        if ids.is_empty() {
+            self.show_toast("Select at least one contact to export");
+            return false;
         }
-        if let Some(dir) = self.persist_path.as_ref().and_then(|p| p.parent()) {
-            return dir.join(FILE_NAME);
+        if self.export_rx.is_some() {
+            return false;
         }
-        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-            return PathBuf::from(home).join(FILE_NAME);
-        }
-        std::env::temp_dir().join(FILE_NAME)
+        self.pending_export = Some((ids, version));
+        self.export_rx = Some(portal::request_export(EXPORT_FILE_NAME.to_string()));
+        true
     }
 
-    /// Write the explicitly-chosen `ids` out as a `.vcf` of the given version
-    /// to the resolved [`export_destination`], reporting the real path.
-    fn export_ids(&mut self, ids: &[ContactId], version: VCardVersion) {
+    /// Write the chosen `ids` out as a `.vcf` of `version` to `path`, reporting
+    /// the real destination. Hermetic core shared by the live portal drain and
+    /// the tests — it takes an explicit path and never consults the picker or
+    /// an env var.
+    fn write_export(&mut self, ids: &[ContactId], version: VCardVersion, path: &std::path::Path) {
         let contacts: Vec<Contact> =
             ids.iter().filter_map(|id| self.store.get(*id).cloned()).collect();
         if contacts.is_empty() {
@@ -800,11 +893,10 @@ impl ContactsApp {
             return;
         }
         let body = vcard::to_vcards(&contacts, version);
-        let path = self.export_destination();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::write(&path, body) {
+        match std::fs::write(path, body) {
             Ok(()) => self.show_toast(format!(
                 "Exported {} ({}) → {}",
                 contacts.len(),
@@ -2495,6 +2587,9 @@ fn draw_toast(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme
 
 impl Widget for ContactsApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // Drain any in-flight file-chooser portal request first, so a chosen
+        // import/export lands in the book before this frame lays out.
+        self.drain_portal(state);
         if !self.seeded {
             let existing = ContactsDoc::list_contacts(state);
             let mut prefer = None;
@@ -2725,7 +2820,7 @@ impl Widget for ContactsApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.push.is_animating() || self.toast.is_some()
+        self.dirty || self.push.is_animating() || self.toast.is_some() || self.portal_in_flight()
     }
 
     fn mark_drawn(&mut self) {
@@ -2734,9 +2829,10 @@ impl Widget for ContactsApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the host pumping frames while the master↔detail push slide
-        // eases into place on a narrow window, or while a toast is up so its
-        // timed dismissal fires even without any further user input.
-        self.push.is_animating() || self.toast.is_some()
+        // eases into place on a narrow window, while a toast is up so its
+        // timed dismissal fires without further input, or while a file-chooser
+        // portal is in flight so its outcome is drained the moment it arrives.
+        self.push.is_animating() || self.toast.is_some() || self.portal_in_flight()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -2843,7 +2939,7 @@ impl ContactsApp {
 
         // Toolbar.
         if self.hit.import.contains(p) {
-            self.import_vcards(state);
+            self.request_import();
             *handled = true;
             return;
         }
@@ -3071,6 +3167,63 @@ impl ContactsApp {
                 f.ti.set_focus(f.ti.get_rect().contains(p));
             }
         }
+    }
+
+    /// Move edit-form focus to the next (`delta = 1`) or previous
+    /// (`delta = -1`) field in the form's natural order, wrapping at the ends.
+    /// With no field currently focused, focuses the first (forward) or last
+    /// (backward). Places the caret at the end of the newly-focused field so
+    /// the user can keep typing. Returns whether a field was focused.
+    fn focus_adjacent_field(&mut self, delta: isize) -> bool {
+        // Tabbing into the form takes focus away from the list search box.
+        self.search.set_focus(false);
+        let Some(form) = &mut self.form else {
+            return false;
+        };
+        let n = form.inputs.len();
+        if n == 0 {
+            return false;
+        }
+        let cur = form.inputs.iter().position(|f| f.ti.is_focused());
+        let next = match cur {
+            Some(i) => (i as isize + delta).rem_euclid(n as isize) as usize,
+            None if delta >= 0 => 0,
+            None => n - 1,
+        };
+        for (i, f) in form.inputs.iter_mut().enumerate() {
+            let focus = i == next;
+            f.ti.set_focus(focus);
+            if focus {
+                // Caret at the end of the field content (idiomatic tab-in).
+                let end = f.ti.value().len();
+                f.ti.set_selection(end, end);
+            }
+        }
+        self.dirty = true;
+        self.relayout = true;
+        true
+    }
+
+    /// Idiomatic Enter inside the edit form: advance to the next field, or —
+    /// when the last field is already focused — submit the form (save). With
+    /// no field focused, focuses the first. Returns whether it was handled.
+    fn form_enter(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let n = form.inputs.len();
+        if n == 0 {
+            return false;
+        }
+        match form.inputs.iter().position(|f| f.ti.is_focused()) {
+            // On the last field → submit, matching the Save button.
+            Some(i) if i + 1 == n => self.save_edit(doc),
+            // Anywhere else (or nothing focused) → advance to the next field.
+            _ => {
+                self.focus_adjacent_field(1);
+            }
+        }
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3370,8 +3523,10 @@ impl ContactsApp {
                 .into_iter()
                 .filter(|id| self.export_sel.as_ref().map(|s| s.contains(id)).unwrap_or(false))
                 .collect();
-            self.export_ids(&ids, version);
+            // Close the selection dialog and hand off to the host Save dialog;
+            // the file is written when the portal returns a destination.
             self.export_sel = None;
+            self.request_export(ids, version);
             return;
         }
         // Click on the scrim (outside the panel) dismisses.
@@ -3483,6 +3638,30 @@ impl ContactsApp {
                     *handled = true;
                     return;
                 }
+            }
+        }
+
+        // Edit-form keyboard navigation. Tab / Shift+Tab move across the form
+        // fields (wrapping); Enter advances to the next field and submits on
+        // the last. Handled *before* the "route typing to the focused input"
+        // branch below so the embedded TextInput never swallows Tab / Enter
+        // (which it otherwise drops as control characters).
+        if self.mode == Mode::Edit && self.form.is_some() {
+            match &ke.logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    let backward = modifiers.state().shift_key();
+                    self.focus_adjacent_field(if backward { -1 } else { 1 });
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.form_enter(state);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -3943,6 +4122,22 @@ mod tests {
             )
         }
 
+        /// Press Shift+Tab (previous-field navigation) through the real path.
+        fn press_shift_tab(&mut self) -> bool {
+            self.dispatch_key_mods(
+                &key_input_event(Key::Named(NamedKey::Tab), None),
+                ModifiersState::SHIFT,
+            )
+        }
+
+        /// The `Slot` of the currently-focused edit-form field, if any.
+        fn focused_slot(&self) -> Option<Slot> {
+            self.app
+                .form
+                .as_ref()
+                .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()).map(|i| i.slot))
+        }
+
         /// Type a string one keystroke at a time into whichever input is
         /// focused, driving the production `handle_event` → `TextInput` path
         /// (NOT `set_text`), so the live edit semantics are what's exercised.
@@ -4036,6 +4231,95 @@ mod tests {
             .map(|f| f.ti.is_focused())
             .unwrap_or(false);
         assert!(website_focused, "the double-clicked field is focused for editing");
+    }
+
+    /// Build an edit-mode harness on a known contact so the field order under
+    /// Tab is deterministic: First, Last, Org, Title, Phone(0), Email(0),
+    /// Birthday, Website, Notes, Groups.
+    fn edit_harness() -> Harness {
+        let mut h = Harness::new(1280, 800);
+        let mut c = Contact::new();
+        c.first = "Ada".into();
+        c.last = "Byron".into();
+        c.phones.push(Labeled::new("mobile", "+1 555 0100"));
+        c.emails.push(Labeled::new("home", "ada@example.com"));
+        h.app.begin_edit(c, true);
+        h.relayout();
+        h
+    }
+
+    #[test]
+    fn tab_moves_focus_forward_across_the_form_fields() {
+        let mut h = edit_harness();
+        assert_eq!(h.app.mode, Mode::Edit);
+        assert!(h.focused_slot().is_none(), "no field is focused until Tab");
+        // Tab lands on the first field, then walks the natural order.
+        assert!(h.press_named(NamedKey::Tab), "Tab is handled in the edit form");
+        assert_eq!(h.focused_slot(), Some(Slot::First));
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::Last));
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::Org));
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::Title));
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::Phone(0)), "repeated phone rows are in the order");
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::Email(0)));
+    }
+
+    #[test]
+    fn shift_tab_moves_focus_backward_and_wraps() {
+        let mut h = edit_harness();
+        // Forward twice → Last is focused.
+        h.press_named(NamedKey::Tab);
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::Last));
+        // Shift+Tab → back to First.
+        assert!(h.press_shift_tab(), "Shift+Tab is handled");
+        assert_eq!(h.focused_slot(), Some(Slot::First));
+        // Shift+Tab from the first field wraps to the last (Groups).
+        h.press_shift_tab();
+        assert_eq!(h.focused_slot(), Some(Slot::Groups), "backward from the first wraps to the last");
+        // Tab from the last field wraps forward to the first.
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::First), "forward from the last wraps to the first");
+    }
+
+    #[test]
+    fn enter_advances_to_the_next_field_then_submits_on_the_last() {
+        let mut h = edit_harness();
+        // Enter with nothing focused focuses the first field.
+        assert!(h.press_named(NamedKey::Enter), "Enter is handled in the edit form");
+        assert_eq!(h.focused_slot(), Some(Slot::First));
+        // Enter advances to the next field.
+        h.press_named(NamedKey::Enter);
+        assert_eq!(h.focused_slot(), Some(Slot::Last));
+        // Walk back to the last field: Last → First → (wrap) → Groups. Then
+        // Enter on the last field submits (saves) instead of wrapping forward.
+        h.press_shift_tab(); // Last → First
+        assert_eq!(h.focused_slot(), Some(Slot::First));
+        h.press_shift_tab(); // First → (wrap) → Groups
+        assert_eq!(h.focused_slot(), Some(Slot::Groups));
+        h.press_named(NamedKey::Enter);
+        assert_eq!(h.app.mode, Mode::View, "Enter on the last field submits the form");
+        assert!(h.app.form.is_none(), "the edit form closed on submit");
+        assert!(
+            h.app.store.contacts.iter().any(|c| c.first == "Ada" && c.last == "Byron"),
+            "the edited contact was saved to the store",
+        );
+    }
+
+    #[test]
+    fn tab_into_a_field_places_the_caret_at_the_end() {
+        // Tabbing into a pre-filled field puts the caret after its text so the
+        // user can keep typing rather than overwriting.
+        let mut h = edit_harness();
+        h.press_named(NamedKey::Tab); // First ("Ada")
+        let end = h.app.form.as_ref().unwrap().inputs[0].ti.value().len();
+        assert_eq!(end, "Ada".len());
+        h.type_text("!");
+        assert_eq!(h.field_value(Slot::First), "Ada!", "typing appends at the caret");
     }
 
     #[test]
@@ -4609,9 +4893,9 @@ mod tests {
         assert_eq!(h.app.store.get(id).unwrap().favorite, before, "draft-only: store unchanged until Save");
     }
 
-    /// A unique scratch `.vcf` destination for an export test, pointed at by
-    /// `QOS_CONTACTS_EXPORT` so the write lands somewhere deterministic instead
-    /// of the user's real home/book directory.
+    /// A unique scratch `.vcf` destination for an export test — the path the
+    /// portal Save dialog would return, driven directly since the picker can't
+    /// run headless.
     fn scratch_export() -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "contacts-export-test-{}-{}",
@@ -4624,12 +4908,8 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn export_dialog_select_none_then_toggle_then_export_writes_selection() {
+    fn export_selection_parks_then_save_portal_path_writes_the_vcf() {
         let (dir, vcf) = scratch_export();
-        // SAFETY: single-threaded (serialised) test; the env var is read
-        // synchronously inside the export below.
-        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &vcf) };
-
         let mut h = Harness::new(1280, 800);
         // Open the export dialog via the toolbar Export button.
         h.press_left(h.app.hit.export.center());
@@ -4637,82 +4917,69 @@ mod tests {
         // Pre-ticked with all visible contacts.
         let total = h.app.visible_export_ids().len();
         assert_eq!(h.app.export_sel.as_ref().unwrap().len(), total, "all pre-selected");
-        // Select none.
+        // Select none, then tick exactly one row.
         let g = h.app.export_geometry();
         h.press_left(g.select_none.center());
-        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), 0, "Select none clears the set");
-        // Tick exactly one row.
         let g = h.app.export_geometry();
         let (first_id, _row, cb) = g.rows[0];
         h.press_left(cb.center());
         assert_eq!(h.app.export_sel.as_ref().unwrap().len(), 1);
         assert!(h.app.export_sel.as_ref().unwrap().contains(&first_id));
-        // Export 3.0 → writes the file and closes the dialog.
+
+        // Export 3.0 → closes the dialog and parks the selection for the Save
+        // dialog. It must NOT write anything before the user chooses a path.
         let g = h.app.export_geometry();
         h.press_left(g.export_v3.center());
-        assert!(h.app.export_sel.is_none(), "exporting closes the dialog");
-        // The export wrote exactly the one chosen contact to the chosen path.
+        assert!(h.app.export_sel.is_none(), "choosing a version closes the dialog");
+        {
+            let (ids, version) = h.app.pending_export.as_ref().expect("selection is parked");
+            assert_eq!(ids, &vec![first_id], "the one ticked contact is parked");
+            assert_eq!(*version, VCardVersion::V3, "the chosen version is parked");
+        }
+        assert!(h.app.portal_in_flight(), "the Save dialog is in flight");
+        assert!(!vcf.exists(), "nothing is written until a destination is chosen");
+
+        // Deliver the destination the Save portal would return, then drain it
+        // through one real frame's sync — which writes the file.
+        h.app.export_rx = Some(portal::inject_export_for_test(ExportOutcome::Chosen(vcf.clone())));
+        h.app.sync(&mut h.doc, &ROOT);
+        assert!(h.app.pending_export.is_none(), "the parked selection was consumed");
+        assert!(!h.app.portal_in_flight(), "draining clears the request");
         let body = std::fs::read_to_string(&vcf).expect("export wrote a vcf to the chosen path");
-        let cards = body.matches("BEGIN:VCARD").count();
-        assert_eq!(cards, 1, "exported exactly the single ticked contact");
+        assert_eq!(body.matches("BEGIN:VCARD").count(), 1, "exactly the ticked contact");
 
-        unsafe { std::env::remove_var("QOS_CONTACTS_EXPORT") };
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     #[serial_test::serial]
-    fn export_select_all_round_trips_every_contact() {
+    fn write_export_round_trips_every_contact() {
+        // The hermetic write core: hand it every visible id + a version and it
+        // writes a matching .vcf to the given path.
         let (dir, vcf) = scratch_export();
-        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &vcf) };
-
         let mut h = Harness::new(1280, 800);
-        h.app.open_export_dialog();
-        let g = h.app.export_geometry();
-        h.press_left(g.select_none.center());
-        let g = h.app.export_geometry();
-        h.press_left(g.select_all.center());
-        let total = h.app.visible_export_ids().len();
-        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), total, "Select all ticks everyone");
-        let g = h.app.export_geometry();
-        h.press_left(g.export_v4.center());
+        let ids = h.app.visible_export_ids();
+        let total = ids.len();
+        h.app.write_export(&ids, VCardVersion::V4, &vcf);
         let body = std::fs::read_to_string(&vcf).unwrap();
-        assert_eq!(body.matches("BEGIN:VCARD").count(), total);
-        assert!(body.contains("VERSION:4.0"), "Export 4.0 emits a v4 card");
-
-        unsafe { std::env::remove_var("QOS_CONTACTS_EXPORT") };
+        assert_eq!(body.matches("BEGIN:VCARD").count(), total, "every contact written");
+        assert!(body.contains("VERSION:4.0"), "Export 4.0 emits v4 cards");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    #[serial_test::serial]
-    fn export_destination_prefers_env_then_book_dir() {
-        // 1. QOS_CONTACTS_EXPORT (a file path) is used verbatim.
-        let (dir, vcf) = scratch_export();
-        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &vcf) };
-        let app = ContactsApp::sample();
-        assert_eq!(app.export_destination(), vcf, "an explicit env file path wins");
-        // A directory value receives the default file name.
-        std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("QOS_CONTACTS_EXPORT", &dir) };
-        assert_eq!(
-            app.export_destination(),
-            dir.join("contacts-export.vcf"),
-            "a directory value receives the default file name",
-        );
-        unsafe { std::env::remove_var("QOS_CONTACTS_EXPORT") };
-
-        // 2. With no env override, a disk-backed app exports next to its book —
-        // never a throwaway temp file.
-        let book_dir = std::env::temp_dir().join(format!("contacts-book-{}", uuid::Uuid::new_v4()));
-        let book = book_dir.join("addressbook.automerge");
-        let app2 = ContactsApp::with_persist_path(book.clone());
-        assert_eq!(
-            app2.export_destination(),
-            book_dir.join("contacts-export.vcf"),
-            "the export lands next to the address book, not in a scratch temp dir",
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+    fn export_with_empty_selection_never_opens_the_portal() {
+        // Choosing a version with nothing ticked must not spin up a Save
+        // dialog or park anything — it guides the user instead.
+        let mut h = Harness::new(1280, 800);
+        let opened = h.app.request_export(Vec::new(), VCardVersion::V3);
+        assert!(!opened, "an empty selection does not open the Save dialog");
+        assert!(h.app.pending_export.is_none(), "nothing is parked");
+        assert!(!h.app.portal_in_flight(), "no portal request is in flight");
+        match &h.app.toast {
+            Some((msg, _)) => assert!(msg.to_lowercase().contains("select")),
+            None => panic!("an empty export must surface a guiding toast"),
+        }
     }
 
     #[test]
@@ -4849,60 +5116,104 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn import_reads_a_real_vcf_and_persists_it() {
+    fn import_reads_real_vcf_files_and_persists_them() {
         let (dir, path) = scratch_book();
-        // Write a real .vcf on disk and point the import env var at it.
-        let vcf_path = dir.join("incoming.vcf");
         std::fs::create_dir_all(&dir).unwrap();
+        // Two separate, differently-shaped .vcf files — the multi-select the
+        // portal hands back. The first holds one card, the second holds two,
+        // so the merge over arbitrarily many files is what's exercised.
+        let vcf_a = dir.join("work.vcf");
         std::fs::write(
-            &vcf_path,
+            &vcf_a,
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Imported Person\r\nN:Person;Imported;;;\r\nEMAIL;TYPE=HOME:imported@example.com\r\nEND:VCARD\r\n",
         )
         .unwrap();
-        // SAFETY: single-threaded test; the env var is read synchronously below.
-        unsafe { std::env::set_var("QOS_CONTACTS_IMPORT", &vcf_path) };
+        let vcf_b = dir.join("family.vcard");
+        std::fs::write(
+            &vcf_b,
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Byron\r\nN:Byron;Ada;;;\r\nTEL:+1 555 0100\r\nEND:VCARD\r\n\
+             BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nORG:US Navy\r\nEND:VCARD\r\n",
+        )
+        .unwrap();
 
         let mut doc = AutoCommit::new();
         let mut app = ContactsApp::with_persist_path(path.clone());
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty());
-        app.import_vcards(&mut doc);
-        assert_eq!(app.store.len(), 1, "the real .vcf was parsed and added");
-        assert_eq!(app.store.contacts[0].first, "Imported");
 
-        // The import persisted, so it survives a restart.
+        // Drive the parse+merge core directly with the paths the portal would
+        // have handed back (the picker itself can't run headless).
+        let n = app.import_paths(&mut doc, &[vcf_a.clone(), vcf_b.clone()]);
+        assert_eq!(n, 3, "all three cards across the two files were imported");
+        assert_eq!(app.store.len(), 3, "the parsed cards are in the working set");
+        let firsts: std::collections::HashSet<&str> =
+            app.store.contacts.iter().map(|c| c.first.as_str()).collect();
+        assert!(firsts.contains("Imported"));
+        assert!(firsts.contains("Ada"));
+        assert!(firsts.contains("Grace"));
+
+        // The import persisted, so it survives a restart, and every card is in
+        // the CRDT doc.
+        assert_eq!(ContactsDoc::list_contacts(&doc).len(), 3, "written to the doc");
         let reloaded = crate::storage::load(&path);
-        assert_eq!(reloaded.len(), 1, "the imported contact was written to disk");
+        assert_eq!(reloaded.len(), 3, "the imported contacts were written to disk");
 
-        unsafe { std::env::remove_var("QOS_CONTACTS_IMPORT") };
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    #[serial_test::serial]
-    fn import_with_no_source_is_a_noop_that_guides_the_user() {
-        // Clicking Import with no source path fabricates nothing: it must leave
-        // the book untouched and only raise an instructional toast, so the
-        // button never silently invents contacts.
-        unsafe { std::env::remove_var("QOS_CONTACTS_IMPORT") };
+    fn import_drain_merges_selected_files_through_sync() {
+        // The live plumbing end to end: an ImportOutcome::Selected on the
+        // channel is drained by `sync` (the per-frame drain) and merged into
+        // the book — exactly what the portal worker feeds after the user picks
+        // files. Only the picker is bypassed; the drain + parse + merge is real.
+        let (dir, path) = scratch_book();
+        std::fs::create_dir_all(&dir).unwrap();
+        let vcf = dir.join("incoming.vcf");
+        std::fs::write(
+            &vcf,
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Drained Person\r\nN:Person;Drained;;;\r\nEND:VCARD\r\n",
+        )
+        .unwrap();
+
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::with_persist_path(path.clone());
+        app.sync(&mut doc, &ROOT);
+        assert!(app.store.is_empty());
+
+        // Install the outcome the portal worker would deliver, then run one
+        // real frame's sync — which drains it.
+        app.import_rx = Some(portal::inject_import_for_test(ImportOutcome::Selected(vec![vcf])));
+        assert!(app.portal_in_flight(), "a request is in flight until drained");
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.portal_in_flight(), "draining the outcome clears the request");
+        assert_eq!(app.store.len(), 1, "the drained selection was imported");
+        assert_eq!(app.store.contacts[0].first, "Drained");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_of_nothing_is_a_clean_noop() {
+        // An empty selection (or a cancelled picker) fabricates nothing: the
+        // book stays empty and disk is untouched — the button never silently
+        // invents contacts.
         let (dir, path) = scratch_book();
         let mut doc = AutoCommit::new();
         let mut app = ContactsApp::with_persist_path(path.clone());
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty());
 
-        app.import_vcards(&mut doc);
+        // Empty selection.
+        assert_eq!(app.import_paths(&mut doc, &[]), 0);
+        // A cancelled picker drained through the real path.
+        app.import_rx = Some(portal::inject_import_for_test(ImportOutcome::Cancelled));
+        app.sync(&mut doc, &ROOT);
 
-        assert!(app.store.is_empty(), "import with no source adds nothing");
+        assert!(app.store.is_empty(), "import of nothing adds nothing");
         assert!(ContactsDoc::list_contacts(&doc).is_empty(), "and writes nothing to the doc");
         assert!(!path.exists(), "and never touches disk");
-        match &app.toast {
-            Some((msg, _)) => assert!(
-                msg.contains("import"),
-                "the toast guides the user toward importing, got {msg:?}",
-            ),
-            None => panic!("import with no source must surface an instructional toast"),
-        }
+        assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -24,7 +24,24 @@ winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
 
+# --- Host-native file open/save (XDG Desktop Portal) ------------------
+# Import (open) and Export (save) go through
+# org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its
+# own file picker and never keys off an env var (HIG §5). On GNOME the user
+# sees GNOME's file chooser; on qOS the compositor's portal backend renders
+# qOS's picker (and hosts the per-cluster file-access prompt). The portal
+# call runs off the UI thread on its own small Tokio runtime and the chosen
+# paths come back over a channel (see `portal`). All three are already
+# resolved in the shared workspace lockfile, so this adds no registry fetch.
+ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
+url = "2"
+
 [dev-dependencies]
-# Serialises the tests that read/write the process-global QOS_CONTACTS_IMPORT
-# and QOS_CONTACTS_EXPORT env vars so parallel runs don't race on them.
+# Serialises the tests that construct scratch files / drive the portal
+# drain path so parallel runs don't race on the shared temp dir.
 serial_test = "3"
+# Schema-validate the app manifest (`qos-app.toml`) in a test so the vCard
+# file-type association it declares is checked against the real packaging
+# schema, not just eyeballed. Already resolved in the workspace lockfile.
+pkg = { path = "../../crates/packaging/pkg" }
