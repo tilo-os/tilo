@@ -117,6 +117,24 @@ RUN systemctl mask gdm.service || true
 # desktop image because it's headless + always-on.
 RUN systemctl enable bootc-fetch-apply-updates.timer
 
+# Prune everything the headless relay does not need on the boot path.
+# Even more aggressive than the desktop image: no display stack, no
+# session manager, no `wait-online` blockers (iroh does its own NAT
+# traversal + reconnect), no plymouth. `|| true` so a missing unit
+# doesn't fail the image build.
+RUN for u in \
+        NetworkManager-wait-online.service \
+        systemd-networkd-wait-online.service \
+        plymouth-quit-wait.service \
+        plymouth-quit.service \
+        man-db-cache-update.timer \
+        man-db-cache-update.service \
+        systemd-update-utmp.service \
+        pipewire.socket \
+        pipewire-pulse.socket \
+        wireplumber.service \
+    ; do systemctl mask "$u" || true; done
+
 # Signed-image trust roots — the same policy the desktop image
 # uses. Refuses to `bootc upgrade` unless the image is signed.
 COPY keys/cosign.pub /usr/share/qos/cosign.pub
