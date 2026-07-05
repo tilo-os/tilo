@@ -129,6 +129,7 @@ pub fn sample_library() -> Library {
                 "tk_u1".into(), "tk_n1".into(), "tk_s1".into(), "tk_u4".into(),
                 "tk_n2".into(), "tk_g3".into(),
             ],
+            cover: String::new(),
         },
         Playlist {
             id: "pl_drive".into(),
@@ -138,12 +139,14 @@ pub fn sample_library() -> Library {
                 "tk_a1".into(), "tk_h1".into(), "tk_a4".into(), "tk_v1".into(),
                 "tk_h4".into(), "tk_a2".into(),
             ],
+            cover: String::new(),
         },
         Playlist {
             id: "pl_morning".into(),
             name: "Slow Morning".into(),
             description: "Easing into the day.".into(),
             track_ids: vec!["tk_p1".into(), "tk_r1".into(), "tk_g2".into(), "tk_r3".into()],
+            cover: String::new(),
         },
     ];
 
