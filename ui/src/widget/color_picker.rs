@@ -163,6 +163,54 @@ impl ColorPicker {
         self.hex_input_rect
     }
 
+    /// Position the picker at an externally-computed `rect`, without a taffy
+    /// node — for a host that lays itself out imperatively (e.g. a slides / docs
+    /// inspector popover). Computes the same SV / hue / preview / slider / hex
+    /// sub-rects `apply_layout` does. Mirrors [`TextInput::apply_layout_external`].
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+        let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+
+        // SV square pinned top-left.
+        self.sv_rect = Rect::new(x0, y0, x0 + SV_SIZE, y0 + SV_SIZE);
+
+        // Hue strip to the right of the SV square.
+        let hue_x0 = self.sv_rect.x1 + COMPONENT_GAP;
+        self.hue_strip_rect = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + SV_SIZE);
+
+        // Preview swatch in the top-right of the rect — right-aligned.
+        self.preview_rect = Rect::new(x1 - PREVIEW_SIZE, y0, x1, y0 + PREVIEW_SIZE);
+
+        // Three RGB sliders stacked below the SV/hue row.
+        let sliders_top = self.sv_rect.y1 + COMPONENT_GAP;
+        self.r_slider_rect = Rect::new(x0, sliders_top, x1, sliders_top + SLIDER_HEIGHT);
+        self.g_slider_rect = Rect::new(
+            x0,
+            self.r_slider_rect.y1 + SLIDER_GAP,
+            x1,
+            self.r_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
+        );
+        self.b_slider_rect = Rect::new(
+            x0,
+            self.g_slider_rect.y1 + SLIDER_GAP,
+            x1,
+            self.g_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
+        );
+        if self.b_slider_rect.y1 > y1 {
+            self.b_slider_rect =
+                Rect::new(self.b_slider_rect.x0, self.b_slider_rect.y0, self.b_slider_rect.x1, y1);
+        }
+
+        let text_h = 22.0;
+        self.hex_input_rect = Rect::new(
+            self.preview_rect.x0,
+            self.preview_rect.y1 + COMPONENT_GAP,
+            self.preview_rect.x1.max(self.preview_rect.x0 + 96.0),
+            self.preview_rect.y1 + COMPONENT_GAP + text_h,
+        );
+        self.hex_input.apply_layout_external(self.hex_input_rect);
+    }
+
     /// Programmatically set the text content of the embedded hex
     /// input. Tests use this to bypass character-by-character IME
     /// driving; production users edit the input themselves. The
@@ -449,71 +497,7 @@ impl Widget for ColorPicker {
         let y0 = origin.y + layout.location.y as f64;
         let x1 = x0 + layout.size.width as f64;
         let y1 = y0 + layout.size.height as f64;
-        self.rect = Rect::new(x0, y0, x1, y1);
-
-        // SV square pinned top-left.
-        self.sv_rect = Rect::new(x0, y0, x0 + SV_SIZE, y0 + SV_SIZE);
-
-        // Hue strip to the right of the SV square.
-        let hue_x0 = self.sv_rect.x1 + COMPONENT_GAP;
-        self.hue_strip_rect = Rect::new(
-            hue_x0,
-            y0,
-            hue_x0 + HUE_STRIP_WIDTH,
-            y0 + SV_SIZE,
-        );
-
-        // Preview swatch in the top-right of the rect — right-aligned.
-        self.preview_rect = Rect::new(
-            x1 - PREVIEW_SIZE,
-            y0,
-            x1,
-            y0 + PREVIEW_SIZE,
-        );
-
-        // Three RGB sliders stacked below the SV/hue row.
-        let sliders_top = self.sv_rect.y1 + COMPONENT_GAP;
-        self.r_slider_rect = Rect::new(
-            x0,
-            sliders_top,
-            x1,
-            sliders_top + SLIDER_HEIGHT,
-        );
-        self.g_slider_rect = Rect::new(
-            x0,
-            self.r_slider_rect.y1 + SLIDER_GAP,
-            x1,
-            self.r_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
-        );
-        self.b_slider_rect = Rect::new(
-            x0,
-            self.g_slider_rect.y1 + SLIDER_GAP,
-            x1,
-            self.g_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
-        );
-        // Clamp to the bottom of the widget rect (defensive — if the
-        // outer height is smaller than expected, sliders still fit).
-        if self.b_slider_rect.y1 > y1 {
-            self.b_slider_rect = Rect::new(
-                self.b_slider_rect.x0,
-                self.b_slider_rect.y0,
-                self.b_slider_rect.x1,
-                y1,
-            );
-        }
-
-        // Hex input under the preview swatch — at least as wide as
-        // the preview, but expand to ~96px so the full `#RRGGBB`
-        // string fits comfortably. Lives in the right column, above
-        // the slider stack.
-        let text_h = 22.0;
-        self.hex_input_rect = Rect::new(
-            self.preview_rect.x0,
-            self.preview_rect.y1 + COMPONENT_GAP,
-            self.preview_rect.x1.max(self.preview_rect.x0 + 96.0),
-            self.preview_rect.y1 + COMPONENT_GAP + text_h,
-        );
-        self.hex_input.apply_layout_external(self.hex_input_rect);
+        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {

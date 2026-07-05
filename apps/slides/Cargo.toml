@@ -24,6 +24,10 @@ image = "0.25"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+# LibreOffice .odp read/write: an ODF package is a ZIP of XML parts. Versions
+# match the `qdoc` document codecs so the workspace resolves one copy of each.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.36"
 # Host-native image open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
