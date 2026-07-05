@@ -6,6 +6,7 @@
 //! in `main.rs` because they're the shape of the CLI's on-disk
 //! contract, not something re-used elsewhere.
 
+pub mod isa;
 pub mod shim;
 
 pub use shim::{ShimError, ShimInstall, SIDECAR_SUFFIX, locate_shim_source, remove_shims, write_shims};
