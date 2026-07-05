@@ -21,6 +21,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::Widget;
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -60,6 +61,7 @@ enum Hit {
     RowStar(MessageId),
     SearchFocus,
     SearchClear,
+    Refresh,
     // reader
     Reply,
     Archive,
@@ -123,7 +125,17 @@ impl Pane {
         let st = self.shared.borrow();
         match self.role {
             Role::Sidebar => CHIP_CLEARANCE,
-            Role::List => if st.narrow { CHIP_CLEARANCE } else { 20.0 },
+            // The list is the leftmost content pane (so the shell's collapse /
+            // hamburger toggle sits over its header) whenever the layout is
+            // narrow OR the docked sidebar is collapsed. Reserve room so the
+            // folder title never renders under the toggle chip.
+            Role::List => {
+                if st.narrow || !st.sidebar_open {
+                    CHIP_CLEARANCE
+                } else {
+                    20.0
+                }
+            }
             Role::Reader => {
                 if st.narrow && st.detail_pushed {
                     BACK_CLEARANCE
@@ -134,12 +146,19 @@ impl Pane {
         }
     }
 
+    /// The manual sync / refresh button in the list header (right edge).
+    fn refresh_box_rect(&self) -> Rect {
+        let r = self.rect;
+        Rect::new(r.x1 - 16.0 - 32.0, r.y0 + 12.0, r.x1 - 16.0, r.y0 + 12.0 + 32.0)
+    }
+
     fn search_box_rect(&self) -> Rect {
         let r = self.rect;
-        let x1 = r.x1 - 16.0;
+        // Leave room for the refresh button on the far right.
+        let x1 = self.refresh_box_rect().x0 - 10.0;
         // Adapt the search width to the (often narrow) list column, always
         // leaving room for the folder title on its left.
-        let sw = (r.width() * 0.46).clamp(150.0, 240.0);
+        let sw = (r.width() * 0.46).clamp(140.0, 230.0);
         let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() + 70.0);
         Rect::new(x0, r.y0 + 12.0, x1, r.y0 + 12.0 + 32.0)
     }
@@ -172,16 +191,20 @@ impl Pane {
                         hits.push((chev, Hit::AccountToggle(ai)));
                         y += ACCOUNT_HEADER_H;
                         if !account.collapsed {
+                            // A gap after the account card so its highlight
+                            // never abuts the first folder row's highlight.
+                            y += 6.0;
                             for f in AccountStore::folders_for(account) {
-                                let row = Rect::new(sb.x0 + 16.0, y, sb.x1 - 8.0, y + FOLDER_ROW_H);
+                                let row = Rect::new(sb.x0 + 14.0, y, sb.x1 - 10.0, y + FOLDER_ROW_H);
                                 hits.push((row, Hit::Folder(ai, f)));
                                 y += FOLDER_ROW_H;
                             }
                         }
-                        y += 8.0;
+                        y += 16.0;
                     }
                 }
                 Role::List => {
+                    hits.push((self.refresh_box_rect(), Hit::Refresh));
                     let sr = self.search_box_rect();
                     search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
                     hits.push((sr, Hit::SearchFocus));
@@ -268,7 +291,7 @@ impl Pane {
                 if hov {
                     fill_round(scene, t, *rect, 8.0, c.surface_white_5);
                 }
-                tr.draw_text(scene, "\u{2699}", 18.0, c.neutral[7], t * Affine::translate((rect.x0 + 6.0, rect.y0 + 5.0)), None);
+                Icon::Settings.draw(scene, t, rect.inset(-8.0), c.neutral[7]);
             }
         }
 
@@ -277,14 +300,19 @@ impl Pane {
             let hov = rect.contains(st.last_mouse);
             let col = if hov { c.accent[4] } else { c.accent[5] };
             fill_round(scene, t, *rect, 10.0, col);
-            let label = "\u{270E}  Compose";
+            let label = "Compose";
             let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            // Icon + label centred as a unit.
+            let group_w = 18.0 + 8.0 + w as f64;
+            let gx = (rect.x0 + rect.x1) / 2.0 - group_w / 2.0;
+            let icon_box = Rect::new(gx, rect.y0 + 11.0, gx + 18.0, rect.y0 + 29.0);
+            Icon::Pencil.draw(scene, t, icon_box, Color::WHITE);
             tr.draw_text_weighted(
                 scene,
                 label,
                 14.0,
                 Color::WHITE,
-                t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 11.0)),
+                t * Affine::translate((icon_box.x1 + 8.0, rect.y0 + 11.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -301,8 +329,8 @@ impl Pane {
                     } else if hov {
                         fill_round(scene, t, *rect, 9.0, c.surface_white_5);
                     }
-                    let chev = if account.collapsed { "\u{25B8}" } else { "\u{25BE}" };
-                    tr.draw_text(scene, chev, 11.0, c.text_dim, t * Affine::translate((rect.x0 + 8.0, rect.y0 + 15.0)), None);
+                    let chev = if account.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+                    chev.draw(scene, t, Rect::new(rect.x0 + 6.0, rect.y0 + ACCOUNT_HEADER_H / 2.0 - 8.0, rect.x0 + 22.0, rect.y0 + ACCOUNT_HEADER_H / 2.0 + 8.0), c.text_dim);
                     draw_avatar(
                         scene,
                         tr,
@@ -332,13 +360,15 @@ impl Pane {
                     }
                     let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
                     let label_col = if selected { c.text_primary } else { c.neutral[7] };
-                    tr.draw_text(scene, f.glyph(), 13.5, label_col, t * Affine::translate((rect.x0 + 12.0, ty)), None);
+                    let icon_box = Rect::new(rect.x0 + 12.0, rect.y0 + FOLDER_ROW_H / 2.0 - 9.0, rect.x0 + 30.0, rect.y0 + FOLDER_ROW_H / 2.0 + 9.0);
+                    let icon_col = if selected { c.accent[5] } else { c.neutral[6] };
+                    f.icon().draw(scene, t, icon_box, icon_col);
                     tr.draw_text_weighted(
                         scene,
                         f.title(),
                         13.0,
                         label_col,
-                        t * Affine::translate((rect.x0 + 36.0, ty)),
+                        t * Affine::translate((rect.x0 + 40.0, ty)),
                         Some(120.0),
                         if selected { TextWeight::Semibold } else { TextWeight::Regular },
                     );
@@ -390,13 +420,20 @@ impl Pane {
         }
         fill_round(scene, t, sr, 9.0, c.surfaces.raised);
         stroke_round(scene, t, sr, 9.0, 1.0, if st.search_focused { c.border_focus } else { c.border_standard });
-        tr.draw_text(scene, "\u{1F50D}", 13.0, c.text_dim, t * Affine::translate((sr.x0 + 9.0, sr.y0 + 9.0)), None);
+        Icon::Search.draw(scene, t, Rect::new(sr.x0 + 8.0, sr.y0 + 8.0, sr.x0 + 24.0, sr.y0 + 24.0), c.text_dim);
         if st.search.is_empty() && !st.search_focused {
             tr.draw_text(scene, "Search", 13.0, c.text_dim, t * Affine::translate((sr.x0 + 30.0, sr.y0 + 9.0)), None);
         }
         if !st.search.is_empty() {
-            tr.draw_text(scene, "\u{2715}", 12.0, c.text_dim, t * Affine::translate((sr.x1 - 20.0, sr.y0 + 9.0)), None);
+            Icon::X.draw(scene, t, Rect::new(sr.x1 - 24.0, sr.y0 + 8.0, sr.x1 - 8.0, sr.y0 + 24.0), c.text_dim);
         }
+
+        // Manual sync / refresh button.
+        let rb = self.refresh_box_rect();
+        let rb_hov = rb.contains(st.last_mouse);
+        fill_round(scene, t, rb, 9.0, if rb_hov { c.surface_white_10 } else { c.surfaces.raised });
+        stroke_round(scene, t, rb, 9.0, 1.0, c.border_standard);
+        Icon::Refresh.draw(scene, t, rb.inset(-9.0), c.neutral[7]);
 
         // Rows.
         let rows = st.list_rows();
@@ -425,15 +462,15 @@ impl Pane {
 
             let swipe_dx = self.swipe.filter(|s| s.id == id).map(|s| s.dx).unwrap_or(0.0);
             if swipe_dx.abs() > 1.0 {
-                let (col, glyph, label, on_left) = if swipe_dx < 0.0 {
-                    (c.semantic.warning, "\u{1F5C4}", "Archive", false)
+                let (col, icon, label, on_left) = if swipe_dx < 0.0 {
+                    (c.semantic.warning, Icon::Archive, "Archive", false)
                 } else {
-                    (c.semantic.danger, "\u{1F5D1}", "Delete", true)
+                    (c.semantic.danger, Icon::Trash, "Delete", true)
                 };
                 fill_rect(scene, t, *rect, col.with_alpha_factor(0.9));
                 let gx = if on_left { rect.x0 + 18.0 } else { rect.x1 - 90.0 };
-                tr.draw_text(scene, glyph, 16.0, Color::WHITE, t * Affine::translate((gx, rect.y0 + 28.0)), None);
-                tr.draw_text_weighted(scene, label, 12.0, Color::WHITE, t * Affine::translate((gx + 26.0, rect.y0 + 30.0)), None, TextWeight::Semibold);
+                icon.draw(scene, t, Rect::new(gx, rect.y0 + 20.0, gx + 18.0, rect.y0 + 38.0), Color::WHITE);
+                tr.draw_text_weighted(scene, label, 12.0, Color::WHITE, t * Affine::translate((gx + 26.0, rect.y0 + 22.0)), None, TextWeight::Semibold);
             }
             let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
 
@@ -480,9 +517,9 @@ impl Pane {
             tr.draw_text(scene, &snippet, 11.5, c.text_dim, t * Affine::translate((text_x, row.y0 + 52.0)), None);
 
             let star_col = if msg.starred { c.semantic.warning } else { c.neutral[4] };
-            tr.draw_text(scene, if msg.starred { "\u{2605}" } else { "\u{2606}" }, 15.0, star_col, t * Affine::translate((right - 18.0, row.y0 + 50.0)), None);
+            Icon::Star.draw(scene, t, Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0), star_col);
             if msg.has_attachments() {
-                tr.draw_text(scene, "\u{1F4CE}", 12.0, c.text_dim, t * Affine::translate((right - 40.0, row.y0 + 52.0)), None);
+                Icon::Paperclip.draw(scene, t, Rect::new(right - 44.0, row.y0 + 48.0, right - 30.0, row.y0 + 62.0), c.text_dim);
             }
         }
     }
@@ -499,7 +536,7 @@ impl Pane {
             self.reader_attachment_hits.clear();
             let cx = (rr.x0 + rr.x1) / 2.0;
             let cy = rr.y0 + rr.height() / 2.0;
-            tr.draw_text(scene, "\u{2709}", 40.0, c.neutral[4], t * Affine::translate((cx - 18.0, cy - 40.0)), None);
+            Icon::Mail.draw(scene, t, Rect::new(cx - 26.0, cy - 66.0, cx + 26.0, cy - 14.0), c.neutral[4]);
             let hint = "Select a conversation to read";
             let (w, _) = tr.measure(hint, 14.0, None);
             tr.draw_text(scene, hint, 14.0, c.text_dim, t * Affine::translate((cx - w as f64 / 2.0, cy)), None);
@@ -510,12 +547,12 @@ impl Pane {
         let compact = st.narrow || rr.width() < READER_COMPACT_W;
         let starred = st.selected.and_then(|id| st.mailbox.get(id)).map(|m| m.starred).unwrap_or(false);
         for (rect, hit) in &self.hits {
-            let (label, danger, glyph) = match hit {
-                Hit::Reply => ("Reply", false, "\u{21A9}"),
-                Hit::Archive => ("Archive", false, "\u{1F5C4}"),
-                Hit::Delete => ("Delete", true, "\u{1F5D1}"),
-                Hit::Star => (if starred { "Starred" } else { "Star" }, false, if starred { "\u{2605}" } else { "\u{2606}" }),
-                Hit::Unread => ("Mark unread", false, "\u{2709}"),
+            let (label, danger, icon) = match hit {
+                Hit::Reply => ("Reply", false, Icon::Reply),
+                Hit::Archive => ("Archive", false, Icon::Archive),
+                Hit::Delete => ("Delete", true, Icon::Trash),
+                Hit::Star => (if starred { "Starred" } else { "Star" }, false, Icon::Star),
+                Hit::Unread => ("Mark unread", false, Icon::Mail),
                 _ => continue,
             };
             let hov = rect.contains(st.last_mouse);
@@ -524,11 +561,10 @@ impl Pane {
             stroke_round(scene, t, *rect, 8.0, 1.0, c.border_white_10);
             let col = if danger { c.semantic.danger } else if matches!(hit, Hit::Star) && starred { c.semantic.warning } else { c.neutral[8] };
             if compact {
-                let (gw, _) = tr.measure(glyph, 13.0, None);
-                tr.draw_text(scene, glyph, 13.0, col, t * Affine::translate((rect.center().x - gw as f64 / 2.0, rect.y0 + 8.0)), None);
+                icon.draw(scene, t, Rect::new(rect.center().x - 8.0, rect.y0 + 8.0, rect.center().x + 8.0, rect.y0 + 24.0), col);
             } else {
-                tr.draw_text(scene, glyph, 12.0, col, t * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)), None);
-                tr.draw_text_weighted(scene, label, 12.0, col, t * Affine::translate((rect.x0 + 28.0, rect.y0 + 9.0)), None, TextWeight::Medium);
+                icon.draw(scene, t, Rect::new(rect.x0 + 10.0, rect.y0 + 8.0, rect.x0 + 26.0, rect.y0 + 24.0), col);
+                tr.draw_text_weighted(scene, label, 12.0, col, t * Affine::translate((rect.x0 + 30.0, rect.y0 + 9.0)), None, TextWeight::Medium);
             }
         }
 
@@ -609,17 +645,18 @@ impl Pane {
                     let hov = chip.contains(hov_mouse);
                     fill_round(scene, t, chip, 8.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
                     stroke_round(scene, t, chip, 8.0, 1.0, c.border_white_10);
-                    tr.draw_text(scene, a.glyph(), 14.0, c.neutral[7], t * Affine::translate((chip.x0 + 8.0, chip.y0 + 7.0)), None);
+                    a.icon().draw(scene, t, Rect::new(chip.x0 + 7.0, chip.y0 + 7.0, chip.x0 + 23.0, chip.y0 + 23.0), c.neutral[7]);
                     tr.draw_text(scene, &a.filename, 11.5, c.text_primary, t * Affine::translate((chip.x0 + 30.0, chip.y0 + 4.0)), Some(lw));
                     tr.draw_text(scene, &a.size_human(), 10.0, c.text_dim, t * Affine::translate((chip.x0 + 30.0, chip.y0 + 17.0)), None);
-                    // Trailing affordance: a save glyph when the bytes are present
-                    // (clickable), a cloud when it must still be hydrated.
-                    let (glyph, col) = if a.is_downloadable() {
-                        ("\u{2B07}", c.accent[5]) // down arrow = save
+                    // Trailing affordance: a save/download icon when the bytes
+                    // are present (clickable), a cloud when it must still be
+                    // hydrated from the server.
+                    let (icon, col) = if a.is_downloadable() {
+                        (Icon::Download, c.accent[5])
                     } else {
-                        ("\u{2601}", c.neutral[5]) // cloud = not downloaded
+                        (Icon::CloudDownload, c.neutral[5])
                     };
-                    tr.draw_text(scene, glyph, 13.0, col, t * Affine::translate((chip.x1 - 22.0, chip.y0 + 6.0)), None);
+                    icon.draw(scene, t, Rect::new(chip.x1 - 24.0, chip.y0 + 7.0, chip.x1 - 8.0, chip.y0 + 23.0), col);
                     chip_hits.push((chip, m.id, ai));
                     ax += chip_w + 10.0;
                 }
@@ -672,6 +709,18 @@ impl Pane {
             Role::List => {
                 if let Some(hit) = self.hit_at(pt) {
                     match hit {
+                        Hit::Refresh => {
+                            // Manually re-fetch the current folder from the server.
+                            let (account_id, folder) = {
+                                let st = self.shared.borrow();
+                                (st.accounts.active_config().email, st.folder)
+                            };
+                            let mut st = self.shared.borrow_mut();
+                            st.push_intent(Intent::Engine(crate::engine::EngineRequest::Fetch { account_id, folder }));
+                            st.status = Some(format!("Syncing {}…", folder.title()));
+                            st.dirty = true;
+                            *handled = true;
+                        }
                         Hit::SearchFocus => {
                             self.set_search_focus(true);
                             *handled = true;

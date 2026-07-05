@@ -100,6 +100,11 @@ pub struct MailState {
     // --- shell-derived flags the app writes each layout, panes read ---
     pub narrow: bool,
     pub detail_pushed: bool,
+    /// Whether the shell's sidebar is currently revealed. The list pane reads
+    /// this so it can reserve room for the collapse/hamburger toggle when the
+    /// sidebar is closed (and the list becomes the leftmost pane, with the
+    /// toggle over its header).
+    pub sidebar_open: bool,
     /// The list pane owns the search field; it publishes focus here so the app
     /// knows whether a keyboard shortcut should fire.
     pub search_focused: bool,
@@ -157,6 +162,7 @@ impl MailState {
             images,
             narrow: false,
             detail_pushed: false,
+            sidebar_open: true,
             search_focused: false,
             focus_search_request: false,
             seeded: false,

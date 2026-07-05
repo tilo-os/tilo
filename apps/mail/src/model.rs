@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use ui::icons::Icon;
 use uuid::Uuid;
 
 /// Stable identifier for a single message. In the live app this is derived
@@ -56,17 +57,18 @@ impl Folder {
         }
     }
 
-    /// A small glyph rendered to the left of the folder name. Picked from a
-    /// font-agnostic Unicode set so it renders without an icon font.
-    pub fn glyph(self) -> &'static str {
+    /// The themed vector [`Icon`] shown to the left of the folder name. These
+    /// come from the shared `ui` lucide set so they render as crisp strokes at
+    /// any scale — never a font-dependent emoji that falls back to tofu.
+    pub fn icon(self) -> Icon {
         match self {
-            Folder::Inbox => "\u{1F4E5}",   // inbox tray
-            Folder::Starred => "\u{2605}",  // star
-            Folder::Sent => "\u{2197}",     // up-right arrow
-            Folder::Drafts => "\u{270E}",   // pencil
-            Folder::Archive => "\u{1F5C4}", // file cabinet
-            Folder::Trash => "\u{1F5D1}",   // wastebasket
-            Folder::Junk => "\u{2298}",     // circled slash
+            Folder::Inbox => Icon::Inbox,
+            Folder::Starred => Icon::Star,
+            Folder::Sent => Icon::Send,
+            Folder::Drafts => Icon::Pencil,
+            Folder::Archive => Icon::Archive,
+            Folder::Trash => Icon::Trash,
+            Folder::Junk => Icon::Ban,
         }
     }
 
@@ -177,21 +179,21 @@ impl Attachment {
         human_bytes(self.size)
     }
 
-    /// Coarse category used to pick an icon glyph.
-    pub fn glyph(&self) -> &'static str {
+    /// Coarse category used to pick a themed vector [`Icon`] for the chip.
+    pub fn icon(&self) -> Icon {
         let m = self.mime.to_ascii_lowercase();
         if m.starts_with("image/") {
-            "\u{1F5BC}" // framed picture
+            Icon::Image
         } else if m.contains("pdf") {
-            "\u{1F4D5}" // closed book (stand-in for PDF)
+            Icon::FileText
         } else if m.starts_with("text/") {
-            "\u{1F4C4}" // page
-        } else if m.contains("zip") || m.contains("compressed") || m.contains("tar") {
-            "\u{1F5DC}" // compression
+            Icon::FileText
+        } else if m.contains("zip") || m.contains("compressed") || m.contains("tar") || m.contains("gzip") {
+            Icon::Archive
         } else if m.contains("calendar") {
-            "\u{1F4C5}" // calendar
+            Icon::Calendar
         } else {
-            "\u{1F4CE}" // paperclip
+            Icon::Paperclip
         }
     }
 }
@@ -293,6 +295,41 @@ pub struct Thread {
     pub message_ids: Vec<MessageId>,
 }
 
+/// How an account authenticates to its IMAP/SMTP servers. Password is the
+/// classic user+secret; OAuth is the modern token flow the big providers now
+/// **require** (Gmail and Outlook block plain-password IMAP), so those
+/// providers preset to [`AuthMethod::OAuth`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AuthMethod {
+    /// Username + password (the field the setup form collects).
+    #[default]
+    Password,
+    /// OAuth2 authorization-code + PKCE; the account holds a bearer token
+    /// instead of a password (see [`crate::oauth`]).
+    OAuth,
+}
+
+impl AuthMethod {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            AuthMethod::Password => "password",
+            AuthMethod::OAuth => "oauth",
+        }
+    }
+    pub fn from_key(s: &str) -> Self {
+        match s {
+            "oauth" => AuthMethod::OAuth,
+            _ => AuthMethod::Password,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthMethod::Password => "Password",
+            AuthMethod::OAuth => "OAuth (sign in)",
+        }
+    }
+}
+
 /// Account-level connection settings. This is exactly the form the
 /// account-setup screen collects and the transport layer consumes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +343,10 @@ pub struct AccountConfig {
     pub smtp_port: u16,
     pub smtp_tls: bool,
     pub username: String,
+    /// How this account signs in. Providers that block password IMAP
+    /// (Gmail/Outlook) preset to [`AuthMethod::OAuth`].
+    #[serde(default)]
+    pub auth: AuthMethod,
     /// Stored only in memory in this slice; a real deployment pushes this to
     /// the OS secret store. Never written to the shared settings JSON (the
     /// Settings app injects it at connect time) — hence `serde(skip)`.
@@ -325,6 +366,7 @@ impl Default for AccountConfig {
             smtp_port: 465,
             smtp_tls: true,
             username: String::new(),
+            auth: AuthMethod::Password,
             password: String::new(),
         }
     }
