@@ -12,8 +12,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::model::{
-    Category, LatLon, Maneuver, Place, Route, RouteStep, TransitJourney, TransitLeg, TransitMode,
-    TravelMode,
+    Category, LatLon, Maneuver, Place, Poi, Route, RouteStep, TransitJourney, TransitLeg,
+    TransitMode, TravelMode,
 };
 
 const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
@@ -59,6 +59,13 @@ pub enum NetMsg {
     ReverseGeocode(Result<String, String>),
     Route(Result<Route, String>),
     Transit(Result<Vec<TransitJourney>, String>),
+    /// Point-of-interest markers for the current viewport (Overpass). Carries
+    /// the query generation so a stale in-flight reply for an old viewport can
+    /// be discarded rather than drawn over the current one.
+    Pois {
+        generation: u64,
+        pois: Result<Vec<Poi>, String>,
+    },
 }
 
 /// Depart/arrive anchoring for a transit query. `time` is an RFC-3339 wall
@@ -94,33 +101,187 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
     );
     let v = fetch_json(&url)?;
     let arr = v.as_array().ok_or("unexpected response")?;
+    let out = arr.iter().filter_map(place_from_json).collect();
+    Ok(out)
+}
+
+/// Build a `Place` from one Nominatim result object, or `None` if it has no
+/// usable coordinate. Split out (and pure) so the human-label derivation is
+/// unit-testable without a network round-trip.
+pub fn place_from_json(item: &Value) -> Option<Place> {
+    let lat = item["lat"].as_str().and_then(|s| s.parse::<f64>().ok())?;
+    let lon = item["lon"].as_str().and_then(|s| s.parse::<f64>().ok())?;
+    let display = item["display_name"].as_str().unwrap_or("").to_string();
+    let name = place_label(item, &display);
+    let class = item["class"].as_str().or_else(|| item["category"].as_str()).unwrap_or("");
+    let kind = item["type"].as_str().unwrap_or("");
+    let osm_type = item["osm_type"].as_str().unwrap_or("n");
+    let osm_id = item["osm_id"].as_i64().unwrap_or(0);
+    Some(Place::new(
+        &format!("osm-{osm_type}-{osm_id}"),
+        &name,
+        Category::from_osm(class, kind),
+        &display,
+        LatLon::new(lat, lon),
+    ))
+}
+
+/// Derive a proper human place-name for a Nominatim result.
+///
+/// The previous logic took the first comma-separated fragment of `display_name`
+/// whenever `name` was empty — but for an address hit that fragment is the bare
+/// **house number** (`display_name` = "18, Theatinerstraße, …"), so the search
+/// field ended up labelled "18". This prefers, in order:
+///   1. the POI `name` ("Marienplatz", "Café Glück"),
+///   2. a `road [house_number]` composed from `addressdetails`,
+///   3. the first `display_name` fragment that isn't a bare number.
+fn place_label(item: &Value, display: &str) -> String {
+    if let Some(name) = item["name"].as_str().filter(|s| !s.is_empty()) {
+        return name.to_string();
+    }
+    let addr = &item["address"];
+    let road = addr["road"]
+        .as_str()
+        .or_else(|| addr["pedestrian"].as_str())
+        .or_else(|| addr["footway"].as_str())
+        .filter(|s| !s.is_empty());
+    if let Some(road) = road {
+        return match addr["house_number"].as_str().filter(|s| !s.is_empty()) {
+            Some(hn) => format!("{road} {hn}"),
+            None => road.to_string(),
+        };
+    }
+    // Fall back to the first display fragment that isn't a bare house number.
+    display
+        .split(',')
+        .map(str::trim)
+        .find(|frag| !frag.is_empty() && !frag.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or("Place")
+        .to_string()
+}
+
+/// Build the Overpass QL query URL for categorised POIs inside the bbox
+/// `(south, west, north, east)`. Split out (and pure) so the query construction
+/// is unit-testable without a network round-trip.
+pub fn overpass_url(south: f64, west: f64, north: f64, east: f64) -> String {
+    let bbox = format!("{south:.5},{west:.5},{north:.5},{east:.5}");
+    // `nwr` matches node|way|relation; `out center` gives ways/relations a
+    // single representative point. The category filters keep the reply focused,
+    // and `out center 250` caps it server-side so the transfer stays small.
+    let ql = format!(
+        "[out:json][timeout:20];(\
+nwr[\"amenity\"~\"^(restaurant|cafe|bar|pub|fast_food|biergarten|hospital|clinic|pharmacy|bank|cinema|theatre)$\"]({bbox});\
+nwr[\"shop\"]({bbox});\
+nwr[\"tourism\"~\"^(museum|gallery|artwork|attraction|viewpoint|hotel|hostel|guest_house)$\"]({bbox});\
+nwr[\"leisure\"~\"^(park|garden)$\"]({bbox});\
+nwr[\"railway\"~\"^(station|halt|tram_stop)$\"]({bbox});\
+nwr[\"highway\"=\"bus_stop\"]({bbox});\
+nwr[\"public_transport\"=\"station\"]({bbox});\
+);out center 250;"
+    );
+    format!("https://overpass-api.de/api/interpreter?data={}", urlencode(&ql))
+}
+
+/// Fetch categorised POIs for a viewport bbox from the Overpass API.
+pub fn overpass(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Poi>, String> {
+    let url = overpass_url(south, west, north, east);
+    let v = fetch_json(&url)?;
+    Ok(parse_overpass(&v))
+}
+
+/// Parse an Overpass `out:json` response into POIs. Pure + unit-testable so the
+/// tag → category/label mapping is checked without a network round-trip.
+pub fn parse_overpass(v: &Value) -> Vec<Poi> {
+    let Some(elements) = v["elements"].as_array() else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    for item in arr {
-        let lat = item["lat"].as_str().and_then(|s| s.parse::<f64>().ok());
-        let lon = item["lon"].as_str().and_then(|s| s.parse::<f64>().ok());
-        let (Some(lat), Some(lon)) = (lat, lon) else {
+    let mut seen = std::collections::HashSet::new();
+    for el in elements {
+        let Some(poi) = poi_from_overpass(el) else {
             continue;
         };
-        let display = item["display_name"].as_str().unwrap_or("").to_string();
-        let name = item["name"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| display.split(',').next().unwrap_or("Place").to_string());
-        let class = item["class"].as_str().or_else(|| item["category"].as_str()).unwrap_or("");
-        let kind = item["type"].as_str().unwrap_or("");
-        let osm_type = item["osm_type"].as_str().unwrap_or("n");
-        let osm_id = item["osm_id"].as_i64().unwrap_or(0);
-        let place = Place::new(
-            &format!("osm-{osm_type}-{osm_id}"),
-            &name,
-            Category::from_osm(class, kind),
-            &display,
-            LatLon::new(lat, lon),
-        );
-        out.push(place);
+        if seen.insert(poi.id.clone()) {
+            out.push(poi);
+        }
     }
-    Ok(out)
+    out
+}
+
+/// One Overpass element → `Poi`. `None` when it has no name, no coordinate, or
+/// no recognised category (keeps the marker layer meaningful, not noise).
+fn poi_from_overpass(el: &Value) -> Option<Poi> {
+    let tags = &el["tags"];
+    // Require a name — an unnamed node clutters the map without adding info.
+    let name = tags["name"].as_str().filter(|s| !s.is_empty())?.to_string();
+    // Coordinate: nodes carry lat/lon; ways/relations carry a `center`.
+    let (lat, lon) = if let (Some(la), Some(lo)) = (el["lat"].as_f64(), el["lon"].as_f64()) {
+        (la, lo)
+    } else if let (Some(la), Some(lo)) =
+        (el["center"]["lat"].as_f64(), el["center"]["lon"].as_f64())
+    {
+        (la, lo)
+    } else {
+        return None;
+    };
+    let (class, kind) = overpass_class(tags)?;
+    let category = Category::from_osm(class, kind);
+    let el_type = el["type"].as_str().unwrap_or("node");
+    let el_id = el["id"].as_i64().unwrap_or(0);
+    Some(Poi {
+        id: format!("osm-{el_type}-{el_id}"),
+        name,
+        category,
+        pos: LatLon::new(lat, lon),
+        address: compose_address(tags),
+        opening_hours: tag_string(tags, "opening_hours"),
+        website: tag_string(tags, "website").or_else(|| tag_string(tags, "contact:website")),
+        phone: tag_string(tags, "phone").or_else(|| tag_string(tags, "contact:phone")),
+        kind: tag_string(tags, "cuisine")
+            .or_else(|| tag_string(tags, "shop"))
+            .map(|s| s.replace('_', " ")),
+    })
+}
+
+/// Pick the (class, kind) tag pair that classifies an Overpass element, in a
+/// priority order so a feature with several tags gets its most salient one.
+fn overpass_class(tags: &Value) -> Option<(&str, &str)> {
+    for class in [
+        "amenity",
+        "tourism",
+        "shop",
+        "leisure",
+        "railway",
+        "public_transport",
+        "highway",
+    ] {
+        if let Some(kind) = tags[class].as_str().filter(|s| !s.is_empty()) {
+            return Some((class, kind));
+        }
+    }
+    None
+}
+
+/// Compose a street address from `addr:*` tags (road + house number, + city).
+fn compose_address(tags: &Value) -> String {
+    let road = tag_string(tags, "addr:street");
+    let hn = tag_string(tags, "addr:housenumber");
+    let mut s = match (road, hn) {
+        (Some(r), Some(h)) => format!("{r} {h}"),
+        (Some(r), None) => r,
+        _ => String::new(),
+    };
+    if let Some(city) = tag_string(tags, "addr:city") {
+        if !s.is_empty() {
+            s.push_str(", ");
+        }
+        s.push_str(&city);
+    }
+    s
+}
+
+fn tag_string(tags: &Value, key: &str) -> Option<String> {
+    tags[key].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
 }
 
 /// Route between two coordinates with the OSRM public demo server.
@@ -288,6 +449,12 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
                 let dep = hhmm(leg["startTime"].as_str().unwrap_or(""));
                 let arr = hhmm(leg["endTime"].as_str().unwrap_or(""));
                 let duration_min = (leg["duration"].as_f64().unwrap_or(0.0) / 60.0).round() as u32;
+                let hex = |k: &str| {
+                    leg[k]
+                        .as_str()
+                        .map(|s| s.trim_start_matches('#').to_string())
+                        .filter(|s| s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit()))
+                };
                 legs.push(TransitLeg {
                     mode,
                     line,
@@ -299,6 +466,12 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
                     duration_min,
                     num_stops: leg["intermediateStops"].as_array().map(|a| a.len() as u32).unwrap_or(0),
                     geometry: leg_geometry(leg),
+                    // Authentic GTFS line colours from the feed.
+                    color: hex("routeColor"),
+                    text_color: hex("routeTextColor"),
+                    agency: leg["agencyName"].as_str().unwrap_or("").to_string(),
+                    // MOTIS marks a leg real-time when live data backs its times.
+                    realtime: leg["realTime"].as_bool().unwrap_or(false),
                 });
             }
         }
@@ -458,6 +631,10 @@ mod tests {
                 "legs": [{
                     "mode": "SUBWAY",
                     "routeShortName": "U3",
+                    "routeColor": "eb690b",
+                    "routeTextColor": "#FFFFFF",
+                    "agencyName": "MVG",
+                    "realTime": true,
                     "headsign": "Moosach",
                     "from": {"name": "Goetheplatz"},
                     "to": {"name": "Marienplatz"},
@@ -477,6 +654,11 @@ mod tests {
         assert_eq!(leg.num_stops, 3);
         assert_eq!(leg.geometry.len(), 3, "legGeometry must decode onto the leg");
         assert!((leg.geometry[0].lat - 38.5).abs() < 1e-5);
+        // The authentic feed colour + real-time flag + agency must land on the leg.
+        assert_eq!(leg.color.as_deref(), Some("eb690b"), "GTFS routeColor parsed");
+        assert_eq!(leg.text_color.as_deref(), Some("FFFFFF"), "routeTextColor parsed, '#' stripped");
+        assert_eq!(leg.agency, "MVG");
+        assert!(leg.realtime, "realTime flag parsed for the freshness signal");
     }
 
     #[test]
@@ -491,6 +673,94 @@ mod tests {
         });
         let js = parse_transit(&body).expect("parses");
         assert!(js[0].legs[0].geometry.is_empty());
+    }
+
+    #[test]
+    fn place_label_prefers_name_then_road_not_house_number() {
+        // A POI with an explicit name keeps it.
+        let poi = serde_json::json!({
+            "lat": "48.137", "lon": "11.575",
+            "name": "Marienplatz",
+            "display_name": "Marienplatz, Altstadt, München",
+            "class": "tourism", "type": "attraction", "osm_type": "node", "osm_id": 1,
+        });
+        assert_eq!(place_from_json(&poi).unwrap().name, "Marienplatz");
+
+        // A house-number address must NOT be labelled with the bare number —
+        // it must read as the street (+ number). This is the field-label bug.
+        let address = serde_json::json!({
+            "lat": "48.141", "lon": "11.577",
+            "name": "",
+            "display_name": "18, Theatinerstraße, Altstadt, München, 80333",
+            "address": { "house_number": "18", "road": "Theatinerstraße", "city": "München" },
+            "class": "place", "type": "house", "osm_type": "way", "osm_id": 2,
+        });
+        let p = place_from_json(&address).unwrap();
+        assert_eq!(p.name, "Theatinerstraße 18", "must be street + number, never a bare '18'");
+        assert_ne!(p.name, "18");
+
+        // No name and no address details: skip a leading bare-number fragment.
+        let bare = serde_json::json!({
+            "lat": "48.14", "lon": "11.57",
+            "name": "",
+            "display_name": "12, Sendlinger Straße, München",
+            "class": "place", "type": "house", "osm_type": "way", "osm_id": 3,
+        });
+        assert_eq!(place_from_json(&bare).unwrap().name, "Sendlinger Straße");
+    }
+
+    #[test]
+    fn overpass_url_encodes_bbox_and_filters() {
+        let url = overpass_url(48.10, 11.55, 48.15, 11.60);
+        assert!(url.starts_with("https://overpass-api.de/api/interpreter?data="));
+        // The bbox reaches the query (percent-encoded comma is %2C).
+        assert!(url.contains("48.10000%2C11.55000%2C48.15000%2C11.60000"), "{url}");
+        // Key categories are present in the (encoded) query.
+        assert!(url.contains("restaurant"));
+        assert!(url.contains("out%20center%20250"), "server-side cap present: {url}");
+    }
+
+    #[test]
+    fn parse_overpass_maps_tags_to_categories_and_details() {
+        let body = serde_json::json!({
+            "elements": [
+                { // a node café with rich tags
+                    "type": "node", "id": 1, "lat": 48.137, "lon": 11.575,
+                    "tags": {
+                        "name": "Café Glück", "amenity": "cafe", "cuisine": "coffee_shop",
+                        "opening_hours": "Mo-Fr 08:00-18:00", "website": "https://gluck.example",
+                        "phone": "+49 89 123", "addr:street": "Theatinerstraße", "addr:housenumber": "18",
+                        "addr:city": "München"
+                    }
+                },
+                { // a way museum with a center point
+                    "type": "way", "id": 2, "center": {"lat": 48.140, "lon": 11.578},
+                    "tags": {"name": "Stadtmuseum", "tourism": "museum"}
+                },
+                { // unnamed node — dropped (noise)
+                    "type": "node", "id": 3, "lat": 48.1, "lon": 11.5, "tags": {"amenity": "bench"}
+                },
+                { // no recognised category — dropped
+                    "type": "node", "id": 4, "lat": 48.1, "lon": 11.5, "tags": {"name": "Nowhere"}
+                },
+            ]
+        });
+        let pois = parse_overpass(&body);
+        assert_eq!(pois.len(), 2, "only named, categorised elements survive");
+
+        let cafe = &pois[0];
+        assert_eq!(cafe.id, "osm-node-1");
+        assert_eq!(cafe.name, "Café Glück");
+        assert_eq!(cafe.category, Category::Cafe);
+        assert_eq!(cafe.address, "Theatinerstraße 18, München");
+        assert_eq!(cafe.opening_hours.as_deref(), Some("Mo-Fr 08:00-18:00"));
+        assert_eq!(cafe.website.as_deref(), Some("https://gluck.example"));
+        assert_eq!(cafe.phone.as_deref(), Some("+49 89 123"));
+
+        let museum = &pois[1];
+        assert_eq!(museum.id, "osm-way-2");
+        assert_eq!(museum.category, Category::Museum);
+        assert!((museum.pos.lat - 48.140).abs() < 1e-9, "way center becomes the position");
     }
 
     #[test]

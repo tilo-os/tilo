@@ -100,15 +100,24 @@ fn road_width(class: RoadClass, zoom: f64) -> f64 {
 /// This is the non-blocking heart of the map. For every tile covering the
 /// viewport we:
 ///   1. paint the land colour first (so a never-seen area is never blank),
-///   2. paint a cached ancestor (lower-z) tile stretched under the hole so a
-///      fresh zoom shows imagery *instantly* instead of waiting on I/O,
-///   3. paint the exact tile on top if it is already decoded in memory,
-///   4. otherwise *request* it from the background worker and move on.
+///   2. paint a cached *ancestor* (lower-z) tile stretched under the hole so a
+///      fresh zoom-*in* shows imagery *instantly* instead of waiting on I/O,
+///   3. paint cached *descendant* (higher-z) tiles into the hole so a fresh
+///      zoom-*out* is filled from the sharper children we already had resident,
+///   4. paint the exact tile on top if it is already decoded in memory,
+///   5. otherwise *request* it from the background worker and move on.
 ///
-/// Nothing here ever blocks on the network or on image decode — step 4 returns
-/// immediately. Returns `true` if at least one exact tile was painted, so the
-/// caller can fall back to the stylised vector basemap when no real imagery is
-/// available yet (e.g. headless `--shots`, or the very first frame offline).
+/// Nothing here ever blocks on the network or on image decode — step 5 returns
+/// immediately. Because a fresh zoom (in *or* out) reuses the already-loaded
+/// neighbouring-zoom tiles scaled under an affine, the map keeps showing
+/// imagery through the whole zoom and never blanks mid-transition.
+///
+/// Returns `true` if *any* imagery was painted — exact, ancestor, or descendant.
+/// The caller uses this to decide whether to fall back to the stylised vector
+/// basemap / reference-grid substrate: it must only do so when the viewport is
+/// genuinely empty (headless `--shots`, or the very first frame offline), never
+/// when scaled placeholder tiles are already covering it (which the substrate
+/// would otherwise paint straight over — the old mid-zoom blank).
 pub fn draw_tiles(
     scene: &mut Scene,
     t: Affine,
@@ -122,38 +131,43 @@ pub fn draw_tiles(
     // Clip the whole tile pass to the viewport so edge tiles don't bleed.
     scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
 
-    let mut painted_exact = false;
+    let mut painted_any = false;
     let mut pending: Vec<crate::tiles::TileId> = Vec::new();
 
     for (id, rect) in &visible {
         // (1) land underlay.
         tiles::paint_placeholder(scene, t, *rect, pal.land);
 
-        // (2) ancestor placeholder (only needed when the exact tile is absent).
         let have_exact = tiles_layer.get(*id).is_some();
         if !have_exact {
+            // (2) ancestor placeholder (blurry lower-z fill for zoom-in / pan).
             if let Some((anc_id, levels)) = tiles_layer.ancestor_placeholder(*id) {
                 if let Some(anc_img) = tiles_layer.get(anc_id).cloned() {
                     tiles::paint_ancestor(scene, t, &anc_img, anc_id, *id, levels, *rect);
+                    painted_any = true;
                 }
+            }
+            // (3) descendant placeholder (sharp higher-z fill for zoom-out).
+            if tiles::paint_descendants(scene, t, tiles_layer, *id, *rect, 2) {
+                painted_any = true;
             }
             pending.push(*id);
         }
 
-        // (3) exact tile on top.
+        // (4) exact tile on top.
         if let Some(img) = tiles_layer.get(*id).cloned() {
             tiles::paint_tile(scene, t, &img, *rect);
-            painted_exact = true;
+            painted_any = true;
         }
     }
     scene.pop_layer();
 
-    // (4) request the missing tiles — non-blocking; results arrive via drain().
+    // (5) request the missing tiles — non-blocking; results arrive via drain().
     for id in pending {
         tiles_layer.request(id);
     }
 
-    painted_exact
+    painted_any
 }
 
 /// Paint a reference-grid substrate aligned to the slippy-map tile pyramid.
@@ -277,7 +291,7 @@ pub fn draw_route(
 }
 
 /// Per-mode colour for a public-transport leg, resolved from theme tokens (no
-/// hard-coded RGB). Shared by the on-map itinerary and the panel leg pills.
+/// hard-coded RGB). The fallback when a leg carries no authentic feed colour.
 pub fn transit_leg_color(theme: &Theme, mode: TransitMode) -> Color {
     let c = &theme.tokens.colors;
     match mode {
@@ -288,6 +302,17 @@ pub fn transit_leg_color(theme: &Theme, mode: TransitMode) -> Color {
         TransitMode::Rail => c.semantic.success,
         TransitMode::Ferry => c.accent[6],
     }
+}
+
+/// The colour to draw a transit leg in: the *authentic* GTFS line colour from
+/// the feed (`routeColor`, e.g. the S2's green) when present, otherwise the
+/// theme-derived per-mode colour. This is what makes the on-map legs and the
+/// panel pills read as the real lines a rider recognises.
+pub fn leg_color(theme: &Theme, leg: &crate::model::TransitLeg) -> Color {
+    leg.color
+        .as_deref()
+        .and_then(draw::hex_color)
+        .unwrap_or_else(|| transit_leg_color(theme, leg.mode))
 }
 
 /// Paint the selected public-transport itinerary onto the map: each transit leg
@@ -313,7 +338,7 @@ pub fn draw_transit(
             continue;
         }
         let pts = project_pts(proj, &leg.geometry);
-        let col = transit_leg_color(theme, leg.mode);
+        let col = leg_color(theme, leg);
         if leg.mode == TransitMode::Walk {
             // Walking connector: a short dashed line, no casing.
             draw_dashed(scene, t, &pts, 3.0, draw::alpha(col, 0.9), 6.0, 5.0);
@@ -328,7 +353,7 @@ pub fn draw_transit(
             continue;
         }
         let pts = project_pts(proj, &leg.geometry);
-        let col = transit_leg_color(theme, leg.mode);
+        let col = leg_color(theme, leg);
         for anchor in [pts.first(), pts.last()].into_iter().flatten() {
             if clip.contains(*anchor) {
                 draw::fill_circle(scene, t, *anchor, 5.0, pal.marker_ring);
@@ -431,6 +456,76 @@ pub fn draw_markers(
                 TextWeight::Semibold,
             );
         }
+    }
+}
+
+/// Draw the live POI marker layer (Overpass results) as small themed category
+/// dots over the basemap — OUR markers, resolved from the OS theme, never baked
+/// into the raster tiles. The selected POI is enlarged with an accent halo and
+/// always labelled; at close zoom every POI is labelled.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_pois(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    proj: &Projection,
+    pois: &[crate::model::Poi],
+    selected: Option<&str>,
+    theme: &Theme,
+    pal: &MapPalette,
+    clip: Rect,
+) {
+    let show_labels = proj.zoom() >= 16.5;
+    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    for poi in pois {
+        if selected == Some(poi.id.as_str()) {
+            continue; // draw the selected POI last, on top
+        }
+        let p = proj.project(poi.pos);
+        if !clip.contains(p) {
+            continue;
+        }
+        draw_poi_dot(scene, t, tr, p, poi, theme, pal, false, show_labels);
+    }
+    if let Some(sel) = selected {
+        if let Some(poi) = pois.iter().find(|p| p.id == sel) {
+            let p = proj.project(poi.pos);
+            if clip.contains(p) {
+                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true);
+            }
+        }
+    }
+    scene.pop_layer();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_poi_dot(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    p: Point,
+    poi: &crate::model::Poi,
+    theme: &Theme,
+    pal: &MapPalette,
+    selected: bool,
+    label: bool,
+) {
+    let col = category_color(theme, poi.category);
+    let r = if selected { 8.5 } else { 4.5 };
+    draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.7), r + 1.2, draw::alpha(Color::BLACK, 0.35));
+    draw::fill_circle(scene, t, p, r, col);
+    draw::stroke_circle(scene, t, p, r, if selected { 2.5 } else { 1.5 }, pal.marker_ring);
+    if selected {
+        draw::stroke_circle(scene, t, p, r + 4.0, 2.0, draw::alpha(col, 0.5));
+    }
+    if label {
+        let size = if selected { 12.0 } else { 11.0 };
+        let tw = draw::measure_w(tr, &poi.name, size);
+        let lx = p.x + r + 6.0;
+        let ly = p.y - size as f64 * 0.72;
+        let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + size as f64 + 3.0);
+        draw::fill_rrect(scene, t, plate, 4.0, draw::alpha(theme.tokens.colors.surfaces.base, 0.74));
+        draw::text_w(scene, tr, t, &poi.name, lx, ly, size, theme.text_primary, TextWeight::Medium);
     }
 }
 
@@ -546,5 +641,83 @@ mod tests {
         assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
         // The offline layer must not even mark tiles in-flight.
         assert!(!layer.has_inflight());
+    }
+
+    /// Zoom must never blank: with only z14 imagery cached, a zoom-*in* (to z15)
+    /// reuses the z14 tiles as scaled *ancestors*, and a zoom-*out* (to z13)
+    /// reuses them as *descendants* — both keep painting real imagery so the
+    /// caller never covers the viewport with the reference-grid substrate.
+    /// Guards the mid-zoom blank where `draw_tiles` reported "no imagery" during
+    /// a transition and the substrate was painted straight over the placeholders.
+    #[test]
+    fn zoom_reuses_cached_tiles_and_never_blanks() {
+        let theme = Theme::dark();
+        let pal = MapPalette::from_theme(&theme);
+        let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let vc = clip.center();
+        let center = crate::model::LatLon::new(48.1371, 11.5754);
+
+        // Seed the z14 tiles covering the viewport — the resident set you'd have
+        // after sitting at z14 for a moment.
+        let mut layer = TileLayer::offline();
+        for (id, _) in TileLayer::visible_tiles(center, 14.0, vc, clip) {
+            layer.insert_solid_tile(id);
+        }
+        assert!(layer.mem_len() > 0, "seeded z14 imagery");
+
+        let paints = |layer: &mut TileLayer, zoom: f64| {
+            let mut model = MapModel::default();
+            model.center = center;
+            model.zoom = zoom;
+            let mut scene = Scene::new();
+            draw_tiles(&mut scene, Affine::IDENTITY, clip, layer, &model, vc, &pal)
+        };
+
+        assert!(paints(&mut layer, 14.0), "exact-zoom tiles paint imagery");
+        assert!(
+            paints(&mut layer, 15.0),
+            "zoom-in reuses z14 as scaled ancestors — must not blank"
+        );
+        assert!(
+            paints(&mut layer, 13.0),
+            "zoom-out reuses z14 as descendants — must not blank"
+        );
+
+        // A genuinely empty cache paints no imagery, so the caller still falls
+        // back to the substrate/vector basemap on a true first frame.
+        let mut empty = TileLayer::offline();
+        assert!(!paints(&mut empty, 14.0), "empty cache paints no imagery");
+    }
+
+    /// A transit leg is drawn in its authentic GTFS `routeColor` when the feed
+    /// provides one, and falls back to the theme per-mode colour otherwise.
+    #[test]
+    fn leg_color_uses_feed_color_then_theme_fallback() {
+        use crate::model::TransitLeg;
+        let theme = Theme::dark();
+        let base = TransitLeg {
+            mode: TransitMode::Subway,
+            line: "U3".into(),
+            headsign: String::new(),
+            from_name: String::new(),
+            to_name: String::new(),
+            dep: String::new(),
+            arr: String::new(),
+            duration_min: 5,
+            num_stops: 2,
+            geometry: vec![crate::model::LatLon::new(0.0, 0.0), crate::model::LatLon::new(0.1, 0.1)],
+            color: Some("eb690b".into()),
+            text_color: Some("ffffff".into()),
+            agency: "MVG".into(),
+            realtime: true,
+        };
+        // Feed colour wins.
+        assert_eq!(leg_color(&theme, &base), Color::from_rgba8(0xeb, 0x69, 0x0b, 255));
+        // No feed colour → theme per-mode fallback (not the feed hex).
+        let no_color = TransitLeg { color: None, ..base.clone() };
+        assert_eq!(leg_color(&theme, &no_color), transit_leg_color(&theme, TransitMode::Subway));
+        // A malformed hex also falls back rather than panicking.
+        let bad = TransitLeg { color: Some("nothex".into()), ..base };
+        assert_eq!(leg_color(&theme, &bad), transit_leg_color(&theme, TransitMode::Subway));
     }
 }

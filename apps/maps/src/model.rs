@@ -117,6 +117,41 @@ impl Place {
     }
 }
 
+/// A point of interest fetched live from the Overpass API for the current
+/// viewport and drawn as our own themed marker layer (never baked into tiles).
+/// Ephemeral view data — re-fetched on pan/zoom, not persisted in the CRDT — so
+/// it carries the readable OSM tags the info card surfaces rather than the
+/// slimmer persisted [`Place`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Poi {
+    /// Stable OSM identity, e.g. `osm-node-12345` — dedupes across refetches.
+    pub id: String,
+    pub name: String,
+    pub category: Category,
+    pub pos: LatLon,
+    /// Composed street address (house number + road) when tagged.
+    pub address: String,
+    pub opening_hours: Option<String>,
+    pub website: Option<String>,
+    pub phone: Option<String>,
+    /// Cuisine / shop-kind subtitle, e.g. "italian", "bakery".
+    pub kind: Option<String>,
+}
+
+impl Poi {
+    /// A one-line detail subtitle for the marker/info card: the address if
+    /// present, else the cuisine/kind, else the category label.
+    pub fn subtitle(&self) -> String {
+        if !self.address.is_empty() {
+            self.address.clone()
+        } else if let Some(k) = &self.kind {
+            k.clone()
+        } else {
+            self.category.label().to_string()
+        }
+    }
+}
+
 /// Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads
 /// (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is
 /// a mode of Directions, not a separate surface.
@@ -322,6 +357,21 @@ pub struct TransitLeg {
     pub duration_min: u32,
     pub num_stops: u32,
     pub geometry: Vec<LatLon>,
+    /// Authentic GTFS line colour (`routeColor`) as a hex string without `#`,
+    /// e.g. "78b82c" for the S2. `None` for walk legs / feeds without a colour;
+    /// the renderer falls back to a theme-derived per-mode colour.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// GTFS `routeTextColor` hex (label colour on the line pill).
+    #[serde(default)]
+    pub text_color: Option<String>,
+    /// Operating agency, e.g. "DB Regio AG S-Bahn München".
+    #[serde(default)]
+    pub agency: String,
+    /// Whether this leg's times are backed by real-time data (vs. schedule
+    /// only). Surfaced as a "live" indicator so freshness is honest.
+    #[serde(default)]
+    pub realtime: bool,
 }
 
 /// A full door-to-door public-transport journey option.
