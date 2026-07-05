@@ -52,22 +52,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# The env where qemu, OVMF, qemu-img, socat and qemu-nbd all live. On the
+# The env where qemu-system-x86_64, qemu-img, OVMF and socat live. On the
 # reference machine that's a Fedora distrobox; on a host with those tools
-# native, set QOS_DISTROBOX="" (see os/dev/_common.sh).
+# native, set QOS_DISTROBOX="" (see os/dev/_common.sh). The ESP inspection
+# needs mtools (mattrib + mdir) on the host — that's the only requirement
+# outside the distrobox.
 # shellcheck disable=SC1091
 source "$REPO_ROOT/os/dev/_common.sh"
 
 SNAP="$OUT_DIR/snapshot.qcow2"
 VARS="$OUT_DIR/vars.fd"
 CONSOLE="$OUT_DIR/boot.console.log"
-MON="$OUT_DIR/mon.sock"
+# AF_UNIX socket paths are capped at 108 bytes; a deep $OUT_DIR overflows
+# that on the qemu -monitor arg. Keep the monitor socket under a short
+# fixed prefix so the -monitor arg stays valid regardless of $OUT_DIR.
+SHORT_RUN="${SHORT_RUN:-/tmp/qos-vb-$$}"
+MON="$SHORT_RUN/mon.sock"
 PID="$OUT_DIR/qemu.pid"
-ESP_MNT="$OUT_DIR/mnt.esp"
 LOG="$OUT_DIR/verify.log"
 JSON="$OUT_DIR/result.json"
 
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR" "$SHORT_RUN"
 : > "$LOG"
 SB_PRESENT=null
 GRUB_PRESENT=null
@@ -83,11 +88,8 @@ cleanup() {
     inenv "kill -9 \$(cat '$PID') 2>/dev/null || true"
     rm -f "$PID"
   fi
-  if mountpoint -q "$ESP_MNT" 2>/dev/null; then
-    sudo umount "$ESP_MNT" 2>/dev/null || true
-  fi
-  sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
-  rm -f "$MON" "$SNAP"
+  rm -f "$MON" "$SNAP" "$OUT_DIR/full.img" "$OUT_DIR/esp.img"
+  rmdir "$SHORT_RUN" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -124,56 +126,74 @@ inenv "cp -f '$VARS_SRC' '$VARS'"
 inenv "qemu-img create -f qcow2 -F qcow2 -b '$DISK' '$SNAP'" >/dev/null
 
 # --- Phase 1: inspect the ESP (offline) ------------------------------------
-# Attaching read-only via qemu-nbd is the source of truth. Watching the
-# firmware boot menu on a serial console is fragile (systemd-boot with a
-# single entry is quiet); the on-disk layout is not.
-log "phase 1: mount input qcow2 read-only to inspect ESP"
-sudo modprobe nbd max_part=8 2>/dev/null || true
-sudo qemu-nbd -d /dev/nbd0 2>/dev/null || true
-sudo qemu-nbd --read-only --connect=/dev/nbd0 "$DISK"
-sudo partprobe /dev/nbd0 2>/dev/null || true
-sleep 1
+# Extract the ESP partition to a plain raw file and read it with mtools
+# (which understands FAT-32 directly). This avoids qemu-nbd / kernel NBD /
+# loop mounts / privileged mount points — a rootless read of the ESP works
+# on the reference workstation, in a distrobox, and in CI without any
+# extra kernel modules. `qemu-img map` prints the partition ranges from
+# the qcow2, `qemu-img dd` extracts one to a raw file.
+log "phase 1: extracting ESP from qcow2 to read with mtools"
+ESP_RAW="$OUT_DIR/esp.img"
+rm -f "$ESP_RAW"
 
-ESP_PART=""
-for p in /dev/nbd0p1 /dev/nbd0p2 /dev/nbd0p3; do
-  [ -b "$p" ] || continue
-  t="$(sudo blkid -o value -s TYPE "$p" 2>/dev/null || true)"
-  if [ "$t" = "vfat" ]; then ESP_PART="$p"; break; fi
-done
-if [ -z "$ESP_PART" ]; then
-  sudo qemu-nbd -d /dev/nbd0 || true
-  emit_json "inspect" false "no ESP (vfat partition) on disk"
+# The ESP is the FAT-32 partition. `qemu-img map --output=json` gives every
+# extent, but not partition boundaries; `qemu-img info` doesn't either. Do
+# it two-step: `qemu-img convert` to a temporary raw image (sparse, so the
+# cost is only allocated data), then `sfdisk -J` for the partition table.
+FULL_RAW="$OUT_DIR/full.img"
+rm -f "$FULL_RAW"
+inenv "qemu-img convert -O raw '$DISK' '$FULL_RAW'"
+
+# Find the ESP: EFI System partition GUID or plain FAT-32 by type.
+ESP_INFO="$(inenv "sfdisk -J '$FULL_RAW'" | python3 -c "
+import json, sys
+p = json.load(sys.stdin)
+for part in p['partitiontable']['partitions']:
+    t = part.get('type', '').lower()
+    # EFI System Partition GUID (GPT) or type 0xEF (MBR).
+    if t == 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' or t == 'ef':
+        # sfdisk emits start/size in 512-byte sectors.
+        print('%d %d' % (part['start']*512, part['size']*512))
+        sys.exit(0)
+sys.exit(1)
+")" || {
+  emit_json "inspect" false "no ESP (EFI System Partition) in the disk's partition table"
+  rm -f "$FULL_RAW"
   exit 6
-fi
+}
+ESP_OFFSET="${ESP_INFO%% *}"
+ESP_SIZE="${ESP_INFO##* }"
+log "phase 1: ESP at offset=$ESP_OFFSET size=$ESP_SIZE bytes"
 
-mkdir -p "$ESP_MNT"
-sudo mount -o ro "$ESP_PART" "$ESP_MNT"
+# Slice the ESP out; keeps mtools invocations simple (no --offset math).
+dd if="$FULL_RAW" of="$ESP_RAW" bs=512 skip=$((ESP_OFFSET/512)) count=$((ESP_SIZE/512)) status=none
+rm -f "$FULL_RAW"
 
-# Layout signals for each bootloader:
+# Layout signals per bootloader:
 #   * systemd-boot: EFI/systemd/systemd-bootx64.efi + loader/loader.conf
 #     (BOOTX64.EFI is the removable-media fallback and may be either).
 #   * GRUB:         EFI/fedora/grubx64.efi + EFI/fedora/grub.cfg + shim
 # Assert the systemd-boot pair is present AND the GRUB pair is not — the
-# strongest one-shot signal for the swap.
+# strongest one-shot signal for the swap. `mdir -i FILE ::PATH` walks the
+# FAT tree directly; mtype (or a `mattrib` existence check) verifies files.
 SB_PRESENT=false
 GRUB_PRESENT=false
 LOADER_CONF_PRESENT=false
-if sudo test -f "$ESP_MNT/EFI/systemd/systemd-bootx64.efi"; then
-  SB_PRESENT=true
-fi
-if sudo test -f "$ESP_MNT/loader/loader.conf"; then
-  LOADER_CONF_PRESENT=true
-fi
-if sudo test -f "$ESP_MNT/EFI/fedora/grubx64.efi" || \
-   sudo test -f "$ESP_MNT/EFI/fedora/grub.cfg"; then
+mtools_has() {
+  # $1 = image, $2 = /-rooted path. Non-zero if not found.
+  MTOOLS_SKIP_CHECK=1 mattrib -i "$1" "::$2" >/dev/null 2>&1
+}
+mtools_has "$ESP_RAW" "EFI/systemd/systemd-bootx64.efi" && SB_PRESENT=true
+mtools_has "$ESP_RAW" "loader/loader.conf"              && LOADER_CONF_PRESENT=true
+if mtools_has "$ESP_RAW" "EFI/fedora/grubx64.efi" || mtools_has "$ESP_RAW" "EFI/fedora/grub.cfg"; then
   GRUB_PRESENT=true
 fi
-log "phase 1: ESP tree (top 3 levels):"
-sudo find "$ESP_MNT" -maxdepth 3 2>/dev/null | tee -a "$LOG" || true
+
+log "phase 1: ESP tree:"
+MTOOLS_SKIP_CHECK=1 mdir -i "$ESP_RAW" -/ ::/EFI 2>&1 | tee -a "$LOG" || true
 log "phase 1: systemd-boot=$SB_PRESENT loader.conf=$LOADER_CONF_PRESENT grub=$GRUB_PRESENT"
 
-sudo umount "$ESP_MNT"
-sudo qemu-nbd -d /dev/nbd0 || true
+rm -f "$ESP_RAW"
 
 if [ "$SB_PRESENT" != "true" ] || [ "$LOADER_CONF_PRESENT" != "true" ] || [ "$GRUB_PRESENT" = "true" ]; then
   emit_json "inspect" false "ESP layout does not match systemd-boot"; exit 6
