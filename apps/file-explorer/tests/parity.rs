@@ -362,24 +362,35 @@ fn open_terminal_button_spawns_quick_terminal_subprocess() {
 }
 
 #[test]
-fn list_mode_row_has_icon_name_size_modified_columns() {
-    use file_explorer::views::list_view::{build_columns, COLUMN_KEYS};
-    let cols = build_columns();
-    let keys: Vec<&str> = cols.iter().map(|c| c.key.as_str()).collect();
-    assert_eq!(keys, COLUMN_KEYS);
-    assert_eq!(keys, vec!["icon", "name", "size", "modified"]);
-    // The three data columns (name, size, modified) must be sortable.
-    assert!(!cols[0].sortable, "icon column is not sortable");
-    assert!(cols[1].sortable, "name column sortable");
-    assert!(cols[2].sortable, "size column sortable");
-    assert!(cols[3].sortable, "modified column sortable");
+fn list_mode_has_name_size_modified_columns() {
+    // The type glyph is now drawn inline in the Name column, so the header
+    // columns are Name / Size / Modified.
+    use file_explorer::views::list_view::COLUMN_KEYS;
+    assert_eq!(COLUMN_KEYS, ["name", "size", "modified"]);
 }
 
 #[test]
-fn grid_mode_uses_responsive_icon_grid() {
-    // The fixed six-per-row grid was replaced by the toolkit's responsive
-    // IconGrid: the column count now reflows to the available width rather
-    // than being hard-coded. build_grid must yield an IconGrid widget.
+fn list_build_yields_a_file_view() {
+    use file_explorer::command::new_sink;
+    use file_explorer::model::{Entry, SortBy, SortOrder};
+    use file_explorer::views::list_view::build_list;
+    use ui::SelectionModel;
+    let entries = vec![Entry {
+        name: "a.txt".into(),
+        path: PathBuf::from("/a.txt"),
+        is_dir: false,
+        size: 0,
+        modified: None,
+        mime: String::new(),
+    }];
+    let w = build_list(&entries, &SelectionModel::new(), &new_sink(), 1.0, SortBy::Name, SortOrder::Ascending);
+    assert_eq!(ui::widget::Widget::name(&*w), "FileView");
+}
+
+#[test]
+fn grid_mode_uses_responsive_file_view() {
+    // The grid is a responsive FileView: the column count reflows to the
+    // available width rather than being hard-coded.
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
     use file_explorer::views::grid_view::{build_grid, GRID_CELL_HEIGHT, GRID_CELL_WIDTH};
@@ -397,16 +408,16 @@ fn grid_mode_uses_responsive_icon_grid() {
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();
-    let w = build_grid(&entries, &sel, &sink);
-    assert_eq!(ui::widget::Widget::name(&*w), "IconGrid");
+    let w = build_grid(&entries, &sel, &sink, 1.0);
+    assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
 #[test]
 fn grid_cell_metrics_are_documented_values() {
-    // Pins the default icon-grid cell size so a regression in the grid
-    // builder is caught (the grid derives its column count from these).
-    assert_eq!(file_explorer::views::grid_view::GRID_CELL_WIDTH, 104.0);
-    assert_eq!(file_explorer::views::grid_view::GRID_CELL_HEIGHT, 92.0);
+    // Pins the default grid cell size so a regression in the grid builder is
+    // caught (the grid derives its column count from these).
+    assert_eq!(file_explorer::views::grid_view::GRID_CELL_WIDTH, 112.0);
+    assert_eq!(file_explorer::views::grid_view::GRID_CELL_HEIGHT, 104.0);
 }
 
 #[test]

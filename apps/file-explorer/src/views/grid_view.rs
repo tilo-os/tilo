@@ -1,38 +1,30 @@
-//! Grid-mode content built on the toolkit's responsive `IconGrid`.
+//! Grid-mode content: a responsive icon grid built on [`FileView`].
 //!
-//! Replaces the old fixed six-cards-per-row layout: the grid now reflows to
-//! the available width, draws crisp file-type vector glyphs, supports
-//! multi-selection, and reports clicks through the command sink.
+//! Items flow left-to-right and wrap to fill the available width (the view
+//! fills its parent's width, so the column count reflects the real pane width
+//! instead of collapsing to a single column). Icons + labels, hover veneer,
+//! accent selection, double-click to open.
 
-use crate::command::{push, CommandSink, FileCommand};
-use crate::model::Entry;
-use ui::icons::icon_for_path;
-use ui::widget::{IconGrid, IconGridItem, Widget};
+use crate::command::CommandSink;
+use crate::model::{Entry, ViewMode};
+use crate::views::file_view::FileView;
+use ui::widget::Widget;
 use ui::SelectionModel;
 
-/// Default icon-grid cell size (logical px). The grid derives its column
-/// count from this and the available width.
-pub const GRID_CELL_WIDTH: f64 = 104.0;
-pub const GRID_CELL_HEIGHT: f64 = 92.0;
+/// Default icon-grid cell size (logical px, at zoom level 0).
+pub const GRID_CELL_WIDTH: f64 = 112.0;
+pub const GRID_CELL_HEIGHT: f64 = 104.0;
 
-/// Build the responsive icon grid bound to the live selection + sink.
-pub fn build_grid(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Box<dyn Widget> {
-    let items: Vec<IconGridItem> = entries
-        .iter()
-        .map(|e| IconGridItem::new(icon_for_path(&e.path, e.is_dir), e.name.clone()))
-        .collect();
-
-    let mut grid = IconGrid::new(items)
-        .with_cell_size(GRID_CELL_WIDTH, GRID_CELL_HEIGHT)
-        .with_selection(selection.clone());
-
-    let click_sink = sink.clone();
-    grid = grid.on_item_click(move |i, ctrl, shift| {
-        push(&click_sink, FileCommand::Click { index: i, ctrl, shift });
-    });
-    let activate_sink = sink.clone();
-    grid = grid.on_activate(move |i| {
-        push(&activate_sink, FileCommand::Activate(i));
-    });
-    Box::new(grid)
+/// Build the grid view bound to the live entries, selection and zoom.
+pub fn build_grid(
+    entries: &[Entry],
+    selection: &SelectionModel,
+    sink: &CommandSink,
+    scale: f64,
+) -> Box<dyn Widget> {
+    Box::new(
+        FileView::new(entries, selection, sink)
+            .mode(ViewMode::Grid)
+            .with_scale(scale),
+    )
 }
