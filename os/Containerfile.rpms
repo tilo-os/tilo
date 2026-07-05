@@ -18,12 +18,21 @@ ARG PACKAGES
 # conditional deps like greetd-selinux and the exact non-conflicting versions),
 # download-only, then collect the cached RPMs into a repo. qemu-user-static-*
 # (foreign-arch emulators, weak Recommends qOS doesn't need) are excluded.
+#
+# We ALSO download the Fedora kernel SRPM so os/kernel/Containerfile can
+# rebuild it offline against this same digest-pinned base (no live-mirror
+# fetch mid-build — required for the kernel image to be reproducible).
+# dnf5 uses --srpm; dnf4 uses --source; try dnf5 first (the base's dnf is
+# dnf5) and fall back to dnf4 semantics if the flag isn't recognised.
 RUN dnf install -y createrepo_c \
  && dnf clean packages \
  && dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
  && mkdir -p /repo \
  && { find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; ; true; } 2>/dev/null \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
+ && ( dnf5 download --srpm --destdir=/repo kernel 2>/dev/null \
+      || dnf --enablerepo='*-source' download --source --destdir=/repo kernel ) \
+ && ls -1 /repo/kernel-*.src.rpm >/dev/null \
  && createrepo_c --quiet /repo \
  && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo
 

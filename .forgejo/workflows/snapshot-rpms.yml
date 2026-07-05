@@ -26,11 +26,16 @@ jobs:
       - name: Derive base image + package set from Containerfiles
         run: |
           echo "BASE=$(awk '/^FROM .*fedora-bootc.* AS builder/{print $2; exit}' os/Containerfile)" >> "$GITHUB_ENV"
-          # Enumerate all Containerfiles we snapshot for.
+          # Enumerate all Containerfiles we snapshot for.  The qos-kernel
+          # build (os/kernel/Containerfile) installs its toolchain from the
+          # same frozen repo — including it here means the kernel build
+          # deps (rpm-build, gcc, kernel-devel, ...) land in the snapshot
+          # automatically.
           FILES=(
             os/Containerfile
             os/Containerfile.host
             os/containers/qos-relay/Containerfile
+            os/kernel/Containerfile
           )
           pkgs=$(awk '
             /(dnf|microdnf) install -y/ {
