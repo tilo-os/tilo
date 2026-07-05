@@ -41,7 +41,11 @@ path = "src/admin.rs"
 [dependencies]
 # Iroh 0.96.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
-# The unified iroh transport is the SP2 decision this crate implements.
+# iroh gives us stable node ids + NAT hole punching + n0-hosted relay
+# fallback out of the box, so the relay is reachable from any device
+# without extra infrastructure. `fs/` already depends on iroh-blobs, so
+# unifying on iroh here means one transport stack across CRDT-op fanout
+# and content hydration.
 iroh = "0.96.1"
 iroh-base = "0.96.1"
 
