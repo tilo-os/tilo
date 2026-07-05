@@ -9,7 +9,7 @@
 
 use vello::peniko::Color;
 
-use crate::model::{HiColor, ReadTheme};
+use crate::model::{ColorScheme, HiColor, ReadTheme};
 use ui::theme::Theme;
 
 /// Resolved colours for one reading mode.
@@ -27,11 +27,32 @@ pub struct ReaderPalette {
     pub rule: Color,
     /// Inline-code chip background.
     pub code_bg: Color,
+    /// The scheme accent — tints on-page affordances (progress bar, selection).
+    /// Built-in tints inherit the OS accent; custom schemes carry their own.
+    pub accent: Color,
     /// Whether this is a dark reading mode (affects highlight alpha).
     pub dark: bool,
 }
 
 impl ReaderPalette {
+    /// Build a palette from a custom [`ColorScheme`] (its derived parts + its
+    /// accent). Built-in tints still route through [`Self::resolve`] to keep
+    /// their hand-tuned look; custom schemes come through here.
+    pub fn from_scheme(s: &ColorScheme) -> Self {
+        let (page, page_edge, ink, ink_dim, rule, code_bg) = s.palette_parts();
+        let rgb = |c: [u8; 3]| Color::from_rgb8(c[0], c[1], c[2]);
+        ReaderPalette {
+            page: rgb(page),
+            page_edge: rgb(page_edge),
+            ink: rgb(ink),
+            ink_dim: rgb(ink_dim),
+            rule: rgb(rule),
+            code_bg: rgb(code_bg),
+            accent: rgb(s.accent),
+            dark: s.dark,
+        }
+    }
+
     pub fn resolve(mode: ReadTheme, theme: &Theme) -> Self {
         match mode {
             ReadTheme::Light => ReaderPalette {
@@ -41,6 +62,7 @@ impl ReaderPalette {
                 ink_dim: Color::from_rgb8(0x6B, 0x6B, 0x73),
                 rule: Color::from_rgb8(0xDA, 0xDA, 0xD2),
                 code_bg: Color::from_rgb8(0xEE, 0xEE, 0xE8),
+                accent: theme.accent_primary,
                 dark: false,
             },
             ReadTheme::Sepia => ReaderPalette {
@@ -50,19 +72,23 @@ impl ReaderPalette {
                 ink_dim: Color::from_rgb8(0x8A, 0x76, 0x59),
                 rule: Color::from_rgb8(0xD8, 0xC4, 0x9F),
                 code_bg: Color::from_rgb8(0xEA, 0xDC, 0xC0),
+                accent: theme.accent_primary,
                 dark: false,
             },
             ReadTheme::Dark => {
-                // Derive from OS theme tokens so the dark page tracks the
-                // active OS palette (Dracula, Nord, etc.).
-                let c = &theme.tokens.colors;
+                // A warm, near-neutral dark paper — deliberately NOT derived
+                // from the OS surface tokens, which skew cool/blue. Reading for
+                // long stretches on a blue-black page is fatiguing; this is a
+                // soft warm charcoal with a faintly warm off-white ink, the
+                // dark-reading tint people actually reach for.
                 ReaderPalette {
-                    page: c.surfaces.raised,
-                    page_edge: c.border_standard,
-                    ink: c.text_primary,
-                    ink_dim: c.text_dim,
-                    rule: c.border_standard,
-                    code_bg: c.neutral[2],
+                    page: Color::from_rgb8(0x1D, 0x1B, 0x18),
+                    page_edge: Color::from_rgb8(0x30, 0x2B, 0x25),
+                    ink: Color::from_rgb8(0xE9, 0xE3, 0xD7),
+                    ink_dim: Color::from_rgb8(0x9C, 0x93, 0x84),
+                    rule: Color::from_rgb8(0x3A, 0x34, 0x2C),
+                    code_bg: Color::from_rgb8(0x2A, 0x26, 0x20),
+                    accent: theme.accent_primary,
                     dark: true,
                 }
             }

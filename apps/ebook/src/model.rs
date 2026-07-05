@@ -349,52 +349,268 @@ impl ReadTheme {
     }
 }
 
-/// Reading face. The text backend exposes the system proportional family and a
-/// monospace family, so we offer those two honestly: a proportional "Sans" for
-/// normal reading and a fixed-width "Mono" some readers prefer for alignment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReadFont {
-    Sans,
+/// Which font *class* a registered face resolves to. `Default` is the reader's
+/// proportional face (also used for EPUB-specified text); `Serif` / `Mono` are
+/// the other generic classes; `Named` targets a specific installed family the
+/// reader picked from the system font list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontKind {
+    Default,
+    Serif,
     Mono,
+    Named(String),
 }
 
-impl ReadFont {
-    pub const ALL: [ReadFont; 2] = [ReadFont::Sans, ReadFont::Mono];
-    pub fn label(self) -> &'static str {
+impl FontKind {
+    /// Encode as a single scalar string for the CRDT.
+    pub fn as_code(&self) -> String {
         match self {
-            ReadFont::Sans => "Sans",
-            ReadFont::Mono => "Mono",
+            FontKind::Default => "default".to_string(),
+            FontKind::Serif => "serif".to_string(),
+            FontKind::Mono => "mono".to_string(),
+            FontKind::Named(n) => format!("named:{n}"),
         }
     }
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReadFont::Sans => "sans",
-            ReadFont::Mono => "mono",
+    pub fn from_code(s: &str) -> Self {
+        if let Some(n) = s.strip_prefix("named:") {
+            return FontKind::Named(n.to_string());
         }
-    }
-    pub fn from_str(s: &str) -> Self {
         match s {
-            "mono" => ReadFont::Mono,
-            _ => ReadFont::Sans,
+            "serif" => FontKind::Serif,
+            "mono" => FontKind::Mono,
+            _ => FontKind::Default,
         }
     }
     /// Whether body text should render in the monospace family.
-    pub fn is_mono(self) -> bool {
-        matches!(self, ReadFont::Mono)
+    pub fn is_mono(&self) -> bool {
+        matches!(self, FontKind::Mono)
     }
+}
+
+/// A registered reading font. Fonts carry a display name and a per-face size
+/// multiplier (installed faces differ in x-height, so the same nominal size
+/// reads larger or smaller). `shown` controls whether it appears in the quick
+/// display-settings font row. Unlike colour schemes, fonts are **not**
+/// duplicable — a face is a face; there is no per-instance colour to vary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FontEntry {
+    pub id: String,
+    pub kind: FontKind,
+    pub name: String,
+    /// Multiplier on top of the global text-size setting. Clamped to bounds.
+    pub size_mult: f32,
+    /// Whether this font appears in the quick display-settings picker.
+    pub shown: bool,
+}
+
+impl FontEntry {
+    pub const MULT_MIN: f32 = 0.7;
+    pub const MULT_MAX: f32 = 1.4;
+
+    pub fn new(id: &str, kind: FontKind, name: &str, size_mult: f32, shown: bool) -> Self {
+        Self {
+            id: id.to_string(),
+            kind,
+            name: name.to_string(),
+            size_mult: size_mult.clamp(Self::MULT_MIN, Self::MULT_MAX),
+            shown,
+        }
+    }
+}
+
+/// The built-in font registry: the reader's default proportional face plus a
+/// serif book face and a monospace face. A fresh library starts here; the font
+/// manager can add installed families, rename, retune size, or hide any of them.
+pub fn default_fonts() -> Vec<FontEntry> {
+    vec![
+        FontEntry::new("default", FontKind::Default, "Default", 1.0, true),
+        FontEntry::new("serif", FontKind::Serif, "Serif", 1.05, true),
+        FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true),
+    ]
+}
+
+// ===========================================================================
+// Colour schemes
+// ===========================================================================
+
+/// Relative luminance (0..1) of an sRGB colour, for light/dark decisions.
+pub fn luminance(c: [u8; 3]) -> f32 {
+    (0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32) / 255.0
+}
+
+/// Linear blend of two colours; `t` in 0..1 moves from `a` to `b`.
+pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round() as u8,
+        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round() as u8,
+        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round() as u8,
+    ]
+}
+
+fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
+    let (r, g, b) = (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) * 60.0
+    } else if max == g {
+        ((b - r) / d + 2.0) * 60.0
+    } else {
+        ((r - g) / d + 4.0) * 60.0
+    };
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
+    let h = ((h % 360.0) + 360.0) % 360.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - (((h / 60.0) % 2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [
+        ((r + m) * 255.0).round() as u8,
+        ((g + m) * 255.0).round() as u8,
+        ((b + m) * 255.0).round() as u8,
+    ]
+}
+
+/// A reader colour scheme: a page (paper) colour, body ink, and an accent, plus
+/// a dark flag. The rest of the palette (faint edges, dim ink, rules, code
+/// chips) is **derived**, so a scheme stays coherent from just these three
+/// colours — and so a whole scheme can be spun up from one background colour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorScheme {
+    pub id: String,
+    pub name: String,
+    pub page: [u8; 3],
+    pub ink: [u8; 3],
+    pub accent: [u8; 3],
+    pub dark: bool,
+    pub enabled: bool,
+    /// Built-in presets can be disabled/duplicated but never deleted or edited.
+    pub builtin: bool,
+}
+
+impl ColorScheme {
+    /// The three editable colours, labelled — drives the per-colour editor.
+    pub fn slots(&self) -> [(&'static str, [u8; 3]); 3] {
+        [("Page", self.page), ("Text", self.ink), ("Accent", self.accent)]
+    }
+
+    pub fn set_slot(&mut self, i: usize, c: [u8; 3]) {
+        match i {
+            0 => self.page = c,
+            1 => self.ink = c,
+            _ => self.accent = c,
+        }
+        // Keep the dark flag consistent with the paper so highlight alpha and
+        // ink defaults stay sensible after an edit.
+        self.dark = luminance(self.page) < 0.5;
+    }
+
+    /// Derive a full scheme from one background colour: pick a legible ink
+    /// (warm off-white on a dark paper, near-black on a light one) and a vivid,
+    /// hue-rotated accent that keeps contrast against the paper.
+    pub fn from_bg(id: &str, name: &str, bg: [u8; 3]) -> Self {
+        let dark = luminance(bg) < 0.5;
+        let ink = if dark { [0xEA, 0xE4, 0xD8] } else { [0x22, 0x20, 0x1E] };
+        let (h, _s, _l) = rgb_to_hsl(bg);
+        let acc_l = if dark { 0.64 } else { 0.48 };
+        let accent = hsl_to_rgb(h + 150.0, 0.62, acc_l);
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            page: bg,
+            ink,
+            accent,
+            dark,
+            enabled: true,
+            builtin: false,
+        }
+    }
+
+    /// The derived palette parts `(page, page_edge, ink, ink_dim, rule, code_bg)`.
+    pub fn palette_parts(&self) -> ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]) {
+        let page = self.page;
+        let ink = self.ink;
+        (
+            page,
+            mix(page, ink, 0.14), // page_edge
+            ink,
+            mix(ink, page, 0.42), // ink_dim
+            mix(page, ink, 0.22), // rule
+            mix(page, ink, 0.10), // code_bg
+        )
+    }
+}
+
+/// The built-in colour schemes (mirrors the three classic tints). They ship
+/// enabled; the scheme manager can disable, duplicate, or clone them.
+pub fn default_schemes() -> Vec<ColorScheme> {
+    vec![
+        ColorScheme {
+            id: "light".into(),
+            name: "Light".into(),
+            page: [0xFC, 0xFC, 0xFA],
+            ink: [0x1B, 0x1B, 0x1F],
+            accent: [0x3B, 0x82, 0xF6],
+            dark: false,
+            enabled: true,
+            builtin: true,
+        },
+        ColorScheme {
+            id: "sepia".into(),
+            name: "Sepia".into(),
+            page: [0xF6, 0xEC, 0xD8],
+            ink: [0x40, 0x33, 0x22],
+            accent: [0xB4, 0x6A, 0x2E],
+            dark: false,
+            enabled: true,
+            builtin: true,
+        },
+        ColorScheme {
+            id: "dark".into(),
+            name: "Dark".into(),
+            page: [0x1D, 0x1B, 0x18],
+            ink: [0xE9, 0xE3, 0xD7],
+            accent: [0x8A, 0xB4, 0xF8],
+            dark: true,
+            enabled: true,
+            builtin: true,
+        },
+    ]
 }
 
 /// Global reading preferences, shared across the library and persisted in the
 /// CRDT so collaborators see a consistent layout when reading together.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// Body font size multiplier; 1.0 == 19px base. Clamped to [0.8, 1.8].
     pub font_scale: f32,
     /// Line-height multiplier on top of the font's own 1.25. [0.95, 1.6].
     pub line_spacing: f32,
-    pub font: ReadFont,
+    /// Id of the selected [`FontEntry`] in the registry. Empty means "use the
+    /// registry default".
+    pub font_id: String,
+    /// Built-in page tint. Retained for the three classic presets; a custom
+    /// colour scheme (when selected) is carried by `scheme_id`.
     pub theme: ReadTheme,
+    /// Id of a selected custom colour scheme, or empty to use `theme`.
+    pub scheme_id: String,
 }
 
 impl Default for Settings {
@@ -402,8 +618,9 @@ impl Default for Settings {
         Self {
             font_scale: 1.0,
             line_spacing: 1.2,
-            font: ReadFont::Sans,
+            font_id: String::new(),
             theme: ReadTheme::Sepia,
+            scheme_id: String::new(),
         }
     }
 }
@@ -419,6 +636,11 @@ impl Settings {
 
     pub fn body_size(&self) -> f32 {
         Self::BASE_SIZE * self.font_scale
+    }
+
+    /// Body size including a selected font's per-face size multiplier.
+    pub fn body_size_with(&self, font_mult: f32) -> f32 {
+        Self::BASE_SIZE * self.font_scale * font_mult
     }
 }
 
@@ -450,13 +672,31 @@ mod tests {
     }
 
     #[test]
-    fn read_theme_and_font_round_trip() {
+    fn read_theme_round_trips() {
         for t in ReadTheme::ALL {
             assert_eq!(ReadTheme::from_str(t.as_str()), t);
         }
-        for f in ReadFont::ALL {
-            assert_eq!(ReadFont::from_str(f.as_str()), f);
+    }
+
+    #[test]
+    fn font_kind_round_trips_including_named() {
+        for k in [
+            FontKind::Default,
+            FontKind::Serif,
+            FontKind::Mono,
+            FontKind::Named("Literata".into()),
+        ] {
+            assert_eq!(FontKind::from_code(&k.as_code()), k);
         }
+    }
+
+    #[test]
+    fn default_fonts_are_shown_and_unique() {
+        let f = default_fonts();
+        assert!(f.iter().any(|e| e.kind == FontKind::Serif), "a serif face ships by default");
+        assert!(f.iter().all(|e| e.shown), "the built-in fonts all show in quick settings");
+        let ids: std::collections::HashSet<_> = f.iter().map(|e| &e.id).collect();
+        assert_eq!(ids.len(), f.len(), "font ids are unique");
     }
 
     #[test]
@@ -475,5 +715,44 @@ mod tests {
         let mut s = Settings::default();
         s.font_scale = 1.5;
         assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn scheme_from_dark_bg_derives_light_ink_and_contrasting_accent() {
+        let s = ColorScheme::from_bg("u1", "Midnight", [0x12, 0x14, 0x1C]);
+        assert!(s.dark, "a dark background yields a dark scheme");
+        assert!(luminance(s.ink) > 0.7, "ink is a light off-white on a dark paper");
+        assert_eq!(s.page, [0x12, 0x14, 0x1C], "paper is the given background");
+        // The accent must stand clearly apart from the paper in luminance.
+        assert!(
+            (luminance(s.accent) - luminance(s.page)).abs() > 0.2,
+            "accent contrasts with the paper",
+        );
+    }
+
+    #[test]
+    fn scheme_from_light_bg_derives_dark_ink() {
+        let s = ColorScheme::from_bg("u2", "Paper", [0xF3, 0xEE, 0xE2]);
+        assert!(!s.dark, "a light background yields a light scheme");
+        assert!(luminance(s.ink) < 0.3, "ink is near-black on a light paper");
+    }
+
+    #[test]
+    fn scheme_derived_parts_sit_between_page_and_ink() {
+        let s = ColorScheme::from_bg("u3", "Warm", [0x20, 0x1C, 0x18]);
+        let (page, edge, ink, dim, _rule, _code) = s.palette_parts();
+        assert_eq!(page, s.page);
+        assert_eq!(ink, s.ink);
+        // Derived tones are genuine blends, never equal to an endpoint.
+        assert_ne!(edge, page);
+        assert_ne!(dim, ink);
+    }
+
+    #[test]
+    fn set_slot_recomputes_dark_from_paper() {
+        let mut s = default_schemes()[0].clone(); // Light
+        assert!(!s.dark);
+        s.set_slot(0, [0x10, 0x10, 0x12]); // paint the paper dark
+        assert!(s.dark, "editing the page to a dark colour flips the scheme dark");
     }
 }
