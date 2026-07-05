@@ -62,6 +62,194 @@ pub struct Package {
     /// runtime). The version side must parse as semver.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Minimum CPU feature-level per architecture this build's
+    /// binaries require. Publishers ship one entry per architecture
+    /// they support:
+    ///
+    /// ```toml
+    /// [package.isa]
+    /// x86_64 = "v3"
+    /// aarch64 = "v8.2-a"
+    /// ```
+    ///
+    /// A missing entry for the local host's arch means "no build
+    /// available for this arch"; `qos-install` refuses the install with
+    /// a clear error. A missing entry that IS provided at the widest
+    /// value (`baseline` for x86, `armv8-a` for aarch64) is the widest
+    /// possible floor.
+    #[serde(default)]
+    pub isa: IsaRequirements,
+}
+
+/// Per-arch minimum-feature-level requirements. Every field is
+/// optional — a publisher who only ships x86_64 leaves aarch64
+/// unset.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IsaRequirements {
+    #[serde(default)]
+    pub x86_64: Option<X86_64Level>,
+    #[serde(default)]
+    pub aarch64: Option<AArch64Level>,
+}
+
+impl IsaRequirements {
+    /// The requirement for the given architecture. `None` = no build
+    /// declared for this arch; caller refuses the install.
+    pub fn for_arch(&self, arch: Arch) -> Option<IsaLevel> {
+        match arch {
+            Arch::X86_64 => self.x86_64.map(IsaLevel::X86_64),
+            Arch::AArch64 => self.aarch64.map(IsaLevel::AArch64),
+        }
+    }
+}
+
+/// Architectures qOS distributes packages for. Deliberately narrow —
+/// broader targets (riscv64, ppc64le) join as they clear the
+/// "publisher pipeline supports it + we have a bootc image + we can
+/// test it" gate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Arch {
+    X86_64,
+    AArch64,
+}
+
+/// Per-arch level, arch-tagged so mismatched compares are impossible
+/// at the type level (a v3 x86 tag can't accidentally be compared
+/// with an armv8.2 tag).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum IsaLevel {
+    X86_64(X86_64Level),
+    AArch64(AArch64Level),
+}
+
+impl IsaLevel {
+    pub fn arch(self) -> Arch {
+        match self {
+            IsaLevel::X86_64(_) => Arch::X86_64,
+            IsaLevel::AArch64(_) => Arch::AArch64,
+        }
+    }
+
+    /// Machine-readable label used in `.qpkg` filenames — e.g.
+    /// `dev.qos.editor-0.1.0-x86_64-v3.qpkg`.
+    pub fn wire_label(self) -> &'static str {
+        match self {
+            IsaLevel::X86_64(l) => l.wire_label(),
+            IsaLevel::AArch64(l) => l.wire_label(),
+        }
+    }
+
+    /// Ranks within an arch — cross-arch compare panics because it's
+    /// a caller bug (comparison between arm and x86 has no semantic
+    /// meaning).
+    pub fn rank(self) -> u8 {
+        match self {
+            IsaLevel::X86_64(l) => l.rank(),
+            IsaLevel::AArch64(l) => l.rank(),
+        }
+    }
+}
+
+/// x86-64 microarchitecture feature levels per the SysV psABI x86-64
+/// supplement. Each level is a strict superset of the previous.
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum X86_64Level {
+    /// Baseline x86-64 (K8, 2003+). SSE2 + CMPXCHG16B + generic AMD64.
+    #[serde(alias = "x86-64")]
+    #[serde(alias = "baseline")]
+    Baseline,
+    /// v2 — Nehalem (Intel 2008) + Bulldozer (AMD 2011). Adds
+    /// SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT/CMPXCHG16B.
+    #[serde(rename = "v2")]
+    #[serde(alias = "x86-64-v2")]
+    V2,
+    /// v3 — Haswell (Intel 2013) + Excavator (AMD 2015). Adds AVX/AVX2
+    /// + BMI1/BMI2/FMA/F16C/LZCNT/MOVBE/OSXSAVE. **qOS default floor.**
+    #[serde(rename = "v3")]
+    #[serde(alias = "x86-64-v3")]
+    V3,
+    /// v4 — Skylake-X (Intel 2017) + Zen 4 (AMD 2022, opt-in). Adds
+    /// AVX-512F/BW/CD/DQ/VL. Server + top-tier laptop only.
+    #[serde(rename = "v4")]
+    #[serde(alias = "x86-64-v4")]
+    V4,
+}
+
+impl X86_64Level {
+    pub fn wire_label(self) -> &'static str {
+        match self {
+            X86_64Level::Baseline => "x86_64",
+            X86_64Level::V2 => "x86_64-v2",
+            X86_64Level::V3 => "x86_64-v3",
+            X86_64Level::V4 => "x86_64-v4",
+        }
+    }
+    pub fn rank(self) -> u8 {
+        match self {
+            X86_64Level::Baseline => 0,
+            X86_64Level::V2 => 1,
+            X86_64Level::V3 => 2,
+            X86_64Level::V4 => 3,
+        }
+    }
+}
+
+/// ARMv8/v9-A profile levels covering the practical publishing tiers.
+/// Modelled on the ARM Architecture Reference Manual's profile
+/// designators, condensed to the four that map cleanly to shipping
+/// silicon families.
+///
+/// Deliberately excluded from the level dimension: SVE vector width
+/// (SVE2 code is width-agnostic — the same binary runs on 128/256/
+/// 512-bit implementations); vendor-specific extras (Apple AMX,
+/// Qualcomm MSA). Those become opt-in `target-cpu` selections per app,
+/// not a tier bump.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AArch64Level {
+    /// ARMv8-A baseline (2013+). NEON + FP + AES/SHA1/SHA2 crypto
+    /// (mandatory in v8-A). Every 64-bit Android + iPhone 5S+.
+    #[serde(rename = "armv8-a")]
+    #[serde(alias = "v8-a")]
+    #[serde(alias = "aarch64")]
+    #[serde(alias = "baseline")]
+    Armv8A,
+    /// ARMv8.2-A (Cortex-A75/A55, 2017+, Apple A11+, Snapdragon 845+).
+    /// Adds FP16, dot-product (SDOT/UDOT).
+    #[serde(rename = "armv8.2-a")]
+    #[serde(alias = "v8.2-a")]
+    Armv8_2A,
+    /// ARMv8.4-A (Cortex-A76+, 2019+, Apple A12+, Neoverse N1). Adds
+    /// i8mm, ARMv8.2-SHA3.
+    #[serde(rename = "armv8.4-a")]
+    #[serde(alias = "v8.4-a")]
+    Armv8_4A,
+    /// ARMv9-A (Cortex-X2/A710+, 2021+, Apple M2+, Neoverse V2).
+    /// Adds SVE2 (width-agnostic — code runs on any SVE2 impl).
+    #[serde(rename = "armv9-a")]
+    #[serde(alias = "v9-a")]
+    Armv9A,
+}
+
+impl AArch64Level {
+    pub fn wire_label(self) -> &'static str {
+        match self {
+            AArch64Level::Armv8A => "aarch64",
+            AArch64Level::Armv8_2A => "aarch64-v8.2",
+            AArch64Level::Armv8_4A => "aarch64-v8.4",
+            AArch64Level::Armv9A => "aarch64-v9",
+        }
+    }
+    pub fn rank(self) -> u8 {
+        match self {
+            AArch64Level::Armv8A => 0,
+            AArch64Level::Armv8_2A => 1,
+            AArch64Level::Armv8_4A => 2,
+            AArch64Level::Armv9A => 3,
+        }
+    }
 }
 
 /// `[publisher]` — who signed it.
