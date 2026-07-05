@@ -8,8 +8,10 @@ and, if a peer is offline, its deltas are store-and-forwarded.
 ## What it does
 
 - Binds an iroh endpoint on the `qos-relay/1` ALPN.
-- Verifies every inbound peer's `DeviceCert` (SP1 identity) chains
-  to the same user identity as this relay (default `TrustPolicy`).
+- Verifies every inbound peer's `DeviceCert` chains to the same user
+  identity as this relay (default `TrustPolicy`). Certs are Ed25519
+  signatures over `blake3("qos-devcert-v1\0" || postcard(view))`; the
+  canonical types live in `qos-user-identity`.
 - Fans out incoming Automerge deltas to every other subscribed
   peer for the same workspace.
 - Pins configured workspaces on disk (persistent CRDT snapshot).
@@ -44,9 +46,9 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   binding — one relay dialling another and exchanging deltas — is
   future work. Today they operate as independent pinning replicas.
 - Directory-driven bindings: workspace bindings come from the
-  admin CLI (which edits `/etc/qos/relay.toml`). Reading them
-  from a `WorkspaceDirectory` CRDT the user's primary device
-  published lands with SP3.
+  admin CLI (which edits `/etc/qos/relay.toml`). Deriving them
+  automatically from a `WorkspaceDirectory` CRDT the user's
+  primary device publishes is a follow-up.
 - Store-and-forward compaction: pending queues grow unbounded
   today. A compaction pass that merges consecutive deltas from
   the same author before delivery is the follow-up.
