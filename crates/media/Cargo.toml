@@ -1,0 +1,27 @@
+[package]
+name = "media"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# Real GStreamer decode: `playbin` diverts video through
+# `videoconvert ! appsink(RGBA)` for decoded frames and routes audio to a real
+# system sink (`autoaudiosink`) — the audible + visible path. Off by default so
+# hermetic builds, `--shots` and CI need no gstreamer-1.0 dev stack, no codecs
+# and no media pipeline; the synthesized-frame fallback keeps those green.
+# Enable on a host that has the gstreamer stack: `--features decode`.
+decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+
+[dependencies]
+# Transport CRDT. A tiny automerge document carries follow-the-host playback
+# state (playing / position / rate / epoch) between peers so a joiner follows
+# the host with drift correction. Same pin as `ui` so a single copy resolves.
+automerge = "0.8.0"
+tracing = "0.1"
+
+# Real decode stack — only linked under `--features decode`. Same pins as
+# `apps/tube` / `apps/camera` so no second gstreamer copy resolves.
+gstreamer = { version = "0.24", optional = true }
+gstreamer-app = { version = "0.24", optional = true }
+gstreamer-video = { version = "0.24", optional = true }

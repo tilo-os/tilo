@@ -66,6 +66,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
 openh264 = { version = "0.9", features = ["source"] }
+# Shared qOS media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
+# and pulls frames from it; `media`'s default (no `decode`) build carries no
+# gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
+# An app that wants real decode enables `media/decode` in its own manifest.
+media = { path = "../crates/media" }
 # System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
 # Wayland uses `wl_data_device`; X11 uses the selection protocol —
 # `arboard` wraps both. The "wayland-data-control" feature lets us
