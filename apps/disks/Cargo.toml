@@ -11,6 +11,15 @@ path = "src/lib.rs"
 name = "disks"
 path = "src/main.rs"
 
+[features]
+default = []
+# `live` links udisks2 over D-Bus (zbus) for privileged mount / unmount /
+# format. OFF by default so the standard build, unit tests and `--shots`
+# never pull in zbus and never touch the system bus. The CLI fallback
+# (`udisksctl`, `mount`/`umount`/`mkfs.<fs>`) and the read benchmark compile
+# unconditionally but only run when `DISKS_LIVE` is set at runtime.
+live = ["dep:zbus"]
+
 [dependencies]
 ui = { path = "../../ui" }
 automerge = "0.8.0"
@@ -23,3 +32,5 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+# Pinned to match `apps/chat` so a single zbus copy resolves from the lock.
+zbus = { version = "4.4", optional = true }
