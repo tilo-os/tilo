@@ -52,6 +52,7 @@ pub mod doc;
 pub mod icon;
 pub mod lyrics;
 pub mod model;
+pub mod net;
 pub mod relay;
 pub mod seed;
 pub mod source;
@@ -83,6 +84,11 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"new-playlist"` — the inline create-playlist name prompt open.
 /// * `"search-focus"` — the header search pill focused with an empty query, so
 ///   the caret sits at the field start (not at the end of the placeholder).
+/// * `"skeleton"` — the Home page in its shimmering skeleton loading state.
+/// * `"nowplaying"` — a bundled track playing (cover art in the transport bar +
+///   a live equalizer on the current row). Pair with a narrow `--viewport` to
+///   capture the compact bottom bar.
+/// * `"lyrics"` — the synced-lyrics view with the current line highlighted.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     // Hermetic: a headless shot never spawns a worker or fetches covers, so the
@@ -94,6 +100,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "context" => app.snap_track_menu(),
         "new-playlist" => app.snap_new_playlist_prompt(),
         "search-focus" => app.snap_search_focus(),
+        "skeleton" => app.snap_skeleton(),
+        "nowplaying" => app.snap_nowplaying(),
+        "lyrics" => app.snap_lyrics(),
         _ => {}
     }
     Box::new(app)

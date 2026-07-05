@@ -24,7 +24,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{SidebarDrawer, SplitLayout, Widget};
 use ui::ImageStore;
 
 use crate::art;
@@ -86,6 +86,9 @@ enum Action {
     VolumeFrac(f64),
     /// Toggle mute: drop the volume to 0, or restore the pre-mute level.
     ToggleMute,
+    /// Open / close the volume popover (shown when the inline slider collapses
+    /// to a button on a narrower bar).
+    ToggleVolumePopover,
     ToggleDownload(String),
     /// Append a track to the end of the play queue.
     AddToQueue(String),
@@ -181,6 +184,11 @@ pub struct MusicApp {
     /// Count of in-flight stream resolutions (keeps redraws flowing until the
     /// resolved URL lands and can be handed to the audio engine).
     resolve_in_flight: usize,
+    /// The resolved audio stream's `(container, bitrate_bps)` for the current
+    /// track, set when a real stream lands and handed to the audio engine. The
+    /// now-playing bar shows a "Streaming …" indicator from this **only while
+    /// the pipeline is genuinely playing** (never on a fake timer).
+    stream_info: Option<(String, u32)>,
 
     seeded: bool,
     /// Whether the initial playback snapshot has been adopted from the
@@ -213,19 +221,14 @@ pub struct MusicApp {
     scroll: f64,
     content_height: f64,
 
-    /// Adaptive navigation sidebar: docked beside the content on a wide
-    /// window, an overlay flap (with a dimming scrim, closed by default,
-    /// summoned by the hamburger) on a narrow one. The eased reveal kernel is
-    /// the shared [`ui::widget::FlapState`].
-    flap: FlapState,
-    /// Wall-clock of the last flap animation tick.
-    flap_tick: Instant,
-    /// `false` until the first frame has resolved the layout, so a cold start
-    /// directly into a narrow window snaps the sidebar to its closed default
-    /// instead of animating in from the wide (open) initial reveal.
-    flap_primed: bool,
+    /// Adaptive navigation sidebar: the shared [`ui::widget::sidebar::SidebarDrawer`]
+    /// primitive. It owns the docked-vs-overlay decision, the eased reveal, the
+    /// dimming scrim and the user-toggle memory, and hands back the resolved
+    /// sidebar/content rects — so collapse clears cleanly (its own clip) and the
+    /// panel never resizes against the content.
+    drawer: SidebarDrawer,
     /// Hit rect of the hamburger toggle, captured during draw so the event
-    /// handler can route a press to [`FlapState::toggle`].
+    /// handler can route a press to [`SidebarDrawer::toggle`].
     hamburger_rect: Rect,
 
     mouse: Point,
@@ -235,10 +238,21 @@ pub struct MusicApp {
     /// row while a right-click opens its context menu).
     row_menu_hits: Vec<Hit>,
     drag: Option<Drag>,
+    /// A horizontal swipe in progress on the now-playing bar: `(start point,
+    /// tap action under the press)`. On release a large horizontal delta skips
+    /// track (swipe left → next, right → previous); a small delta falls back to
+    /// the captured tap. Enables touch-style prev/next on the bottom bar.
+    bar_press: Option<(Point, Option<Action>)>,
     /// Interactive bar rects in the now-playing transport, captured during
     /// draw so the event handler can map drags to fractions.
     scrubber_rect: Rect,
     volume_rect: Rect,
+    /// The volume button's hit rect (shown when the inline slider is collapsed)
+    /// and the open state + slider rect of its popover.
+    volume_btn_rect: Rect,
+    volume_popover_open: bool,
+    volume_popover_rect: Rect,
+    volume_popover_slider: Rect,
     dirty: bool,
     toast: Option<(String, Instant)>,
 
@@ -302,12 +316,23 @@ pub struct MusicApp {
     /// covers). False for the hermetic `--shots`/test path so a headless render
     /// never opens a socket; the live-shots pre-warm flips it on.
     allow_network: bool,
+    /// Test override for the metered-connection check (bypasses NetworkManager
+    /// so prefetch gating is deterministic in tests). `None` ⇒ query the real
+    /// connection via [`crate::net`].
+    force_metered: Option<bool>,
 
     // ---- lyrics fetch ----------------------------------------------------
     /// Async lyrics worker (LRCLIB). Spawned lazily; results fold into `lyrics`.
     lyrics_worker: Option<LyricsWorker>,
     /// The track id a lyrics fetch is in flight for (dedupes requests).
     lyrics_pending_for: Option<String>,
+    /// Resolved lyrics cached by track id (`lines`, `synced`), so revisiting a
+    /// track — or prefetching the next queued one on a stable connection — is
+    /// instant. Populated for every resolved track, not just the current one.
+    lyrics_cache: HashMap<String, (Vec<LyricsLine>, bool)>,
+    /// The current track id we've already run a prefetch pass for (dedupe), so
+    /// prefetch fires once per track change, not every frame.
+    prefetched_for: Option<String>,
 
     // ---- search performance ----------------------------------------------
     /// Memoised local search results for the last query, so the Search view
@@ -324,6 +349,13 @@ pub struct MusicApp {
 enum ShotStage {
     TrackMenu,
     NewPlaylistPrompt,
+    /// The Home page in its shimmering skeleton loading state.
+    Skeleton,
+    /// A bundled track playing, so the now-playing bar shows cover art + a live
+    /// equalizer on the current row.
+    NowPlaying,
+    /// The synced-lyrics view with a highlighted current line at ~40s.
+    Lyrics,
 }
 
 /// What the inline name-input overlay is collecting.
@@ -359,6 +391,7 @@ impl MusicApp {
             live_search_pending: None,
             live_results: None,
             resolve_in_flight: 0,
+            stream_info: None,
             seeded: false,
             playback_loaded: false,
             bound_track: None,
@@ -372,16 +405,22 @@ impl MusicApp {
             body_rect: Rect::ZERO,
             scroll: 0.0,
             content_height: 0.0,
-            flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
-            flap_primed: false,
+            drawer: SidebarDrawer::new()
+                .left()
+                .docked_width(SIDEBAR_W)
+                .breakpoint(SIDEBAR_BREAKPOINT),
             hamburger_rect: Rect::ZERO,
             mouse: Point::ZERO,
             hits: Vec::new(),
             row_menu_hits: Vec::new(),
             drag: None,
+            bar_press: None,
             scrubber_rect: Rect::ZERO,
             volume_rect: Rect::ZERO,
+            volume_btn_rect: Rect::ZERO,
+            volume_popover_open: false,
+            volume_popover_rect: Rect::ZERO,
+            volume_popover_slider: Rect::ZERO,
             dirty: true,
             toast: None,
             context: ContextMenu::new(),
@@ -405,8 +444,11 @@ impl MusicApp {
             album_pages: HashMap::new(),
             album_requested: HashSet::new(),
             allow_network: true,
+            force_metered: None,
             lyrics_worker: None,
             lyrics_pending_for: None,
+            lyrics_cache: HashMap::new(),
+            prefetched_for: None,
             search_cache: None,
             search_edit_at: preset_search_at,
             live_query_sent: None,
@@ -557,6 +599,34 @@ impl MusicApp {
             .unwrap_or(0)
     }
 
+    /// The "Streaming <container> · <kbps>" indicator for the now-playing bar,
+    /// present ONLY while a real audio pipeline is genuinely playing the
+    /// resolved stream. `None` on the silent stub, while a stream is still
+    /// resolving/buffering, when paused, or with no live stream — so the
+    /// indicator never fakes playback.
+    fn streaming_indicator(&self) -> Option<String> {
+        let (fmt, bitrate) = self.stream_info.as_ref()?;
+        if self.audio.is_playing_real() {
+            Some(format!("Streaming {fmt} \u{00b7} {} kbps", bitrate / 1000))
+        } else {
+            None
+        }
+    }
+
+    /// The best cover-art id for a track: the track's own recorded cover when
+    /// present, else its album's cover. Album-track hits frequently omit a
+    /// per-track thumbnail (only the album carries one), so the now-playing bar
+    /// must fall back to the album art rather than a procedural placeholder.
+    fn best_cover_id(&self, track_id: &str, album_id: &str) -> String {
+        if self.art_urls.contains_key(track_id) {
+            track_id.to_string()
+        } else if !album_id.is_empty() && self.art_urls.contains_key(album_id) {
+            album_id.to_string()
+        } else {
+            track_id.to_string()
+        }
+    }
+
     /// Advance the playhead while playing and auto-advance at end of track.
     /// In-memory only (called from `draw`, which has no document handle); the
     /// updated position persists to the document on the next user event.
@@ -569,12 +639,15 @@ impl MusicApp {
         }
         // When the live GStreamer backend is actually decoding a stream, drive
         // the playhead off the *real* pipeline position rather than simulating
-        // it. Offline / no-audio builds fall back to the local clock so the
-        // transport still advances for the UI.
+        // it, so the counter reflects genuine playback. Before the pipeline has
+        // prerolled (no position yet) we only advance if it has really reached
+        // PLAYING — otherwise the counter holds instead of running a fake timer
+        // while the stream is still resolving/buffering. Offline / no-audio
+        // builds fall back to the local clock so the transport still advances.
         if self.audio.has_stream() {
             if let Some(pos) = self.audio.position_ms() {
                 self.playhead_ms = pos as f64;
-            } else {
+            } else if self.audio.is_playing_real() {
                 self.playhead_ms += dt * 1000.0;
             }
         } else {
@@ -803,8 +876,8 @@ impl MusicApp {
                 }
                 // Picking a destination dismisses the overlay sidebar so the
                 // chosen screen takes the full width (Adwaita flap behaviour).
-                if self.sidebar_layout() == SplitLayout::Overlay {
-                    self.flap.close();
+                if self.drawer.is_overlay() {
+                    self.drawer.close();
                 }
             }
             Action::Back => {
@@ -880,6 +953,9 @@ impl MusicApp {
                 }
                 self.audio.set_volume(self.pb.volume as f32 / 100.0);
                 self.persist_playback(state);
+            }
+            Action::ToggleVolumePopover => {
+                self.volume_popover_open = !self.volume_popover_open;
             }
             Action::ToggleMute => {
                 if self.pb.volume > 0 {
@@ -1054,7 +1130,7 @@ impl MusicApp {
                 self.toggle_sidebar();
             }
             Action::CloseSidebar => {
-                self.flap.close();
+                self.drawer.close();
             }
             Action::CloseNamePrompt => {
                 self.name_prompt = None;
@@ -1074,6 +1150,9 @@ impl MusicApp {
     /// builds without the `live` feature) fall back to the legacy Piped
     /// resolver, or stay silent with the local playhead advancing offline.
     fn start_stream(&mut self, track_id: String) {
+        // A new stream is resolving: drop the previous stream's indicator so it
+        // doesn't linger over the wrong track.
+        self.stream_info = None;
         let Some(t) = self.lib.track(&track_id) else { return };
         let yt_id = t.yt_id.clone();
 
@@ -1204,6 +1283,7 @@ impl MusicApp {
                         if self.pb.playing {
                             self.audio.play();
                         }
+                        self.stream_info = Some((stream.format.clone(), stream.bitrate));
                         self.toast = Some((
                             format!(
                                 "Streaming {} \u{00b7} {} kbps",
@@ -1388,79 +1468,55 @@ impl MusicApp {
         self.row_menu_hits.iter().rev().find(|h| h.rect.contains(p)).map(|h| h.action.clone())
     }
 
-    // ---- adaptive sidebar geometry ---------------------------------------
+    // ---- adaptive sidebar geometry (delegated to `SidebarDrawer`) --------
 
-    /// Resolve the sidebar layout (docked vs overlay) from the app's allocated
-    /// width against the breakpoint.
+    /// The width-driven sidebar layout (docked vs overlay). Computed straight
+    /// from the allocated width so it's valid even before the first `resolve`.
+    #[allow(dead_code)]
     fn sidebar_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), SIDEBAR_BREAKPOINT)
+        self.drawer.layout_for(self.rect.width())
     }
 
-    /// The width the content area is inset by on the left for the sidebar.
-    /// Docked: the revealed sidebar width (full width when open, 0 collapsed).
-    /// Overlay: always 0 — the flap floats over the content.
+    /// The width the content column is inset by on the left for the docked
+    /// sidebar (0 while overlaying — the flap floats over the content). Read
+    /// from the drawer's last-resolved geometry.
+    #[allow(dead_code)]
     fn content_inset(&self) -> f64 {
-        match self.sidebar_layout() {
-            SplitLayout::Docked => SIDEBAR_W * self.flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        }
+        (self.drawer.content_rect().x0 - self.rect.x0).max(0.0)
     }
 
-    /// The sidebar's on-screen rect. Docked: pinned to the left, its width
-    /// scaled by the reveal so collapsing slides the content over it. Overlay:
-    /// slides in from the left edge, fully off-screen at reveal 0.
-    ///
-    /// The sidebar spans the **full window height** (down to `r.y1`). The
-    /// now-playing transport is inset to start to the right of the docked
-    /// sidebar (see `nowplaying_rect`), so the two never overlap — the sidebar
-    /// is not truncated above the bar, and the bar does not claim the sidebar's
-    /// bottom-left corner.
+    /// The sidebar's on-screen rect (from the drawer's last `resolve`). Spans
+    /// the full window height; the now-playing transport is inset to its right
+    /// (see `nowplaying_rect`) so the two never overlap.
     fn sidebar_rect(&self) -> Rect {
-        let r = self.rect;
-        let bottom = r.y1;
-        match self.sidebar_layout() {
-            SplitLayout::Docked => {
-                let w = SIDEBAR_W * self.flap.reveal();
-                Rect::new(r.x0, r.y0, r.x0 + w, bottom)
-            }
-            SplitLayout::Overlay => {
-                let slide = self.flap.slide();
-                let x0 = r.x0 - SIDEBAR_W * (1.0 - slide);
-                Rect::new(x0, r.y0, x0 + SIDEBAR_W, bottom)
-            }
-        }
+        self.drawer.sidebar_rect()
     }
 
-    /// The now-playing transport's on-screen rect. It runs along the bottom of
-    /// the content column — starting to the right of the docked sidebar (so the
-    /// full-height sidebar is never occluded) and spanning to the window's right
-    /// edge. In overlay mode `content_inset()` is 0, so the bar is full-width
-    /// and the floating sidebar draws above it.
+    /// The now-playing transport's on-screen rect: it starts at the content
+    /// column's left edge (right of the docked sidebar; full-width in overlay,
+    /// where the floating sidebar draws above it) and spans to the right edge.
     fn nowplaying_rect(&self) -> Rect {
         let r = self.rect;
-        Rect::new(r.x0 + self.content_inset(), r.y1 - NOWPLAYING_H, r.x1, r.y1)
+        Rect::new(self.drawer.content_rect().x0, r.y1 - NOWPLAYING_H, r.x1, r.y1)
     }
 
-    /// Whether the hamburger toggle is currently shown — i.e. whenever the
-    /// sidebar is not fully docked-open, so the user can summon it. True when
-    /// the sidebar is logically closed (so a freshly-collapsed rail offers the
-    /// re-expand affordance before its slide animation has finished) OR while
-    /// it's mid-collapse animation.
+    /// Whether the hamburger toggle is currently shown — whenever the sidebar
+    /// is not fully docked-open, so the user can summon / re-expand it (also
+    /// while it's mid-collapse animation).
     fn show_hamburger(&self) -> bool {
-        let layout = self.sidebar_layout();
-        layout == SplitLayout::Overlay || !self.flap.is_open(layout) || self.flap.reveal() < 0.999
+        self.drawer.is_overlay() || !self.drawer.is_open() || self.drawer.reveal() < 0.999
     }
 
     /// Flip the sidebar open/closed for the current layout.
     fn toggle_sidebar(&mut self) {
-        self.flap.toggle(self.sidebar_layout());
+        self.drawer.toggle();
         self.dirty = true;
     }
 
     /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
     /// drive the reveal animation). `open` snaps it fully revealed.
     pub fn snap_sidebar(&mut self, open: bool) {
-        self.flap.snap(open);
+        self.drawer.snap(open);
     }
 
     /// Stage a track context menu open for a `--shots` frame. Deferred to the
@@ -1490,6 +1546,41 @@ impl MusicApp {
         self.search_query.clear();
     }
 
+    /// Stage the Home skeleton loading state for a `--shots` frame.
+    pub fn snap_skeleton(&mut self) {
+        self.shot_stage = Some(ShotStage::Skeleton);
+        self.view = View::Home;
+    }
+
+    /// Stage a bundled track playing for a now-playing `--shots` frame (cover
+    /// art in the transport bar + a live equalizer on the current row).
+    pub fn snap_nowplaying(&mut self) {
+        self.shot_stage = Some(ShotStage::NowPlaying);
+        self.view = View::Songs;
+    }
+
+    /// Stage the synced-lyrics view with a highlighted current line.
+    pub fn snap_lyrics(&mut self) {
+        self.shot_stage = Some(ShotStage::Lyrics);
+        self.view = View::Lyrics;
+    }
+
+    /// Start a bundled track playing at `pos_ms` for a deterministic shot.
+    /// Prefers `tk_g1` (it carries bundled synced lyrics).
+    fn stage_play_bundled(&mut self, pos_ms: f64) {
+        let ids: Vec<String> = self.lib.tracks_sorted().iter().map(|t| t.id.clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let idx = ids.iter().position(|id| id == "tk_g1").unwrap_or(0);
+        self.pb.queue = ids;
+        self.pb.queue_index = idx;
+        self.pb.current = self.pb.queue.get(idx).cloned();
+        self.pb.playing = true;
+        self.playhead_ms = pos_ms;
+        self.bound_track = self.pb.current.clone();
+    }
+
     /// Apply a deferred `--shots` staging action now that the library is
     /// loaded. Runs once; clears itself.
     fn apply_shot_stage(&mut self) {
@@ -1510,6 +1601,19 @@ impl MusicApp {
             ShotStage::NewPlaylistPrompt => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = "Late Night Coding".to_string();
+            }
+            ShotStage::Skeleton => {
+                // Force the loading state offline so the shimmer skeleton renders
+                // hermetically (no network fetch actually runs).
+                self.home_requested = true;
+                self.home = None;
+            }
+            ShotStage::NowPlaying => {
+                self.stage_play_bundled(48_000.0);
+            }
+            ShotStage::Lyrics => {
+                // ~40s in lands mid-song so a synced line is highlighted.
+                self.stage_play_bundled(40_000.0);
             }
         }
     }
@@ -1664,9 +1768,16 @@ impl MusicApp {
         self.lyrics_synced = false;
         self.lyrics_pending_for = None;
         let Some(id) = cur else { return };
+        // Already resolved (revisited track, or prefetched) — use the cache.
+        if let Some((lines, synced)) = self.lyrics_cache.get(&id) {
+            self.lyrics = lines.clone();
+            self.lyrics_synced = *synced;
+            return;
+        }
         let Some(track) = self.lib.track(&id).cloned() else { return };
         // Bundled sample lyrics (seed tracks) resolve instantly + offline.
         if let Some(l) = lyrics::bundled::for_track(&id) {
+            self.lyrics_cache.insert(id.clone(), (l.lines.clone(), l.synced));
             self.lyrics = l.lines;
             self.lyrics_synced = l.synced;
             return;
@@ -1696,6 +1807,8 @@ impl MusicApp {
             }
         }
         for (id, l) in got {
+            // Cache every resolved result (current OR prefetched next track).
+            self.lyrics_cache.insert(id.clone(), (l.lines.clone(), l.synced));
             if self.pb.current.as_deref() == Some(id.as_str()) {
                 self.lyrics = l.lines;
                 self.lyrics_synced = l.synced;
@@ -1705,6 +1818,60 @@ impl MusicApp {
                 self.lyrics_pending_for = None;
             }
         }
+    }
+
+    /// The next track in the play order (respecting shuffle), if any — the
+    /// prefetch target.
+    fn next_queued_track(&self) -> Option<String> {
+        if self.pb.queue.is_empty() {
+            return None;
+        }
+        if self.pb.shuffle && !self.shuffle_order.is_empty() {
+            let pos = self.shuffle_order.iter().position(|&i| i == self.pb.queue_index)?;
+            let ni = *self.shuffle_order.get(pos + 1)?;
+            return self.pb.queue.get(ni).cloned();
+        }
+        self.pb.queue.get(self.pb.queue_index + 1).cloned()
+    }
+
+    /// Prefetch on a **stable (non-metered)** connection: warm the next queued
+    /// song's lyrics + its album metadata so the transition is instant. Runs at
+    /// most once per current-track change and never on a metered link (or with
+    /// networking disabled for a headless render). Returns whether it ran.
+    fn maybe_prefetch(&mut self) -> bool {
+        let stable = self.force_metered.map(|m| !m).unwrap_or_else(crate::net::connection_is_stable);
+        if !self.allow_network || !stable {
+            return false;
+        }
+        let Some(cur) = self.pb.current.clone() else { return false };
+        if self.prefetched_for.as_deref() == Some(cur.as_str()) {
+            return false;
+        }
+        self.prefetched_for = Some(cur);
+
+        let Some(next) = self.next_queued_track() else { return false };
+        // Prefetch lyrics for the next track (into the shared cache) unless we
+        // already have them.
+        if !self.lyrics_cache.contains_key(&next) && self.lyrics_pending_for.as_deref() != Some(next.as_str()) {
+            if let Some(track) = self.lib.track(&next).cloned() {
+                if let Some(l) = lyrics::bundled::for_track(&next) {
+                    self.lyrics_cache.insert(next.clone(), (l.lines, l.synced));
+                } else {
+                    let meta = TrackMeta {
+                        track_id: next.clone(),
+                        title: track.title.clone(),
+                        artist: self.lib.artist_name(&track.artist_id).to_string(),
+                        album: self.lib.album_title(&track.album_id).to_string(),
+                        duration_s: track.duration_s,
+                    };
+                    self.lyrics_worker.get_or_insert_with(LyricsWorker::new).request(meta);
+                }
+                // Warm the next track's album metadata + cover.
+                let album_id = track.album_id.clone();
+                self.ensure_album(&album_id);
+            }
+        }
+        true
     }
 
     // ---- search (debounced + memoised) -----------------------------------
@@ -2107,9 +2274,11 @@ mod tests {
 
     // ---- responsive sidebar -----------------------------------------------
 
-    /// Set the app's allocated width directly (normally done by `apply_layout`).
+    /// Set the app's allocated width directly (normally done by `apply_layout`)
+    /// and resolve the sidebar drawer against it, as a real frame would.
     fn sized(app: &mut MusicApp, w: f64) {
         app.rect = Rect::new(0.0, 0.0, w, 800.0);
+        app.drawer.resolve(app.rect);
     }
 
     #[test]
@@ -2130,11 +2299,11 @@ mod tests {
     fn sidebar_open_docked_closed_overlay_by_default() {
         let mut app = MusicApp::new();
         sized(&mut app, 1280.0);
-        assert!(app.flap.is_open(app.sidebar_layout()), "wide: docked + open");
+        assert!(app.drawer.is_open(), "wide: docked + open");
         assert!(app.content_inset() > 0.0, "wide content is inset by the sidebar");
 
         sized(&mut app, 480.0);
-        assert!(!app.flap.is_open(app.sidebar_layout()), "narrow: overlay + closed");
+        assert!(!app.drawer.is_open(), "narrow: overlay + closed");
         assert_eq!(app.content_inset(), 0.0, "narrow content is full-width");
     }
 
@@ -2142,23 +2311,23 @@ mod tests {
     fn hamburger_toggles_overlay_sidebar() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 480.0); // overlay
-        assert!(!app.flap.is_open(SplitLayout::Overlay));
+        assert!(!app.drawer.is_open());
         app.dispatch(Action::ToggleSidebar, &mut doc);
-        assert!(app.flap.is_open(SplitLayout::Overlay), "hamburger opens the flap");
+        assert!(app.drawer.is_open(), "hamburger opens the flap");
         app.dispatch(Action::ToggleSidebar, &mut doc);
-        assert!(!app.flap.is_open(SplitLayout::Overlay), "toggling again closes it");
+        assert!(!app.drawer.is_open(), "toggling again closes it");
     }
 
     #[test]
     fn navigating_dismisses_overlay_sidebar() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 480.0); // overlay
-        app.flap.open();
-        assert!(app.flap.is_open(SplitLayout::Overlay));
+        app.drawer.open();
+        assert!(app.drawer.is_open());
         // Selecting a destination from the open flap closes it.
         app.dispatch(Action::Nav(View::Albums), &mut doc);
         assert_eq!(app.view, View::Albums);
-        assert!(!app.flap.is_open(SplitLayout::Overlay), "selection dismisses the flap");
+        assert!(!app.drawer.is_open(), "selection dismisses the flap");
     }
 
     #[test]
@@ -2166,16 +2335,16 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 1280.0); // docked
         app.dispatch(Action::Nav(View::Albums), &mut doc);
-        assert!(app.flap.is_open(SplitLayout::Docked), "docked sidebar persists across nav");
+        assert!(app.drawer.is_open(), "docked sidebar persists across nav");
     }
 
     #[test]
     fn close_action_dismisses_sidebar() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 480.0);
-        app.flap.open();
+        app.drawer.open();
         app.dispatch(Action::CloseSidebar, &mut doc);
-        assert!(!app.flap.is_open(SplitLayout::Overlay));
+        assert!(!app.drawer.is_open());
     }
 
     // ---- 1. sidebar collapse ----------------------------------------------
@@ -2184,14 +2353,30 @@ mod tests {
     fn docked_collapse_toggles_and_reexpands() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 1280.0); // docked, open by default
-        assert!(app.flap.is_open(SplitLayout::Docked));
+        assert!(app.drawer.is_open());
         // Collapse via the (docked) toggle.
         app.dispatch(Action::ToggleSidebar, &mut doc);
-        assert!(!app.flap.is_open(SplitLayout::Docked), "docked sidebar collapses");
+        assert!(!app.drawer.is_open(), "docked sidebar collapses");
         // Once collapsed, the hamburger reappears so it can be re-expanded.
         assert!(app.show_hamburger(), "collapsed docked rail offers a re-expand affordance");
         app.dispatch(Action::ToggleSidebar, &mut doc);
-        assert!(app.flap.is_open(SplitLayout::Docked), "toggling again re-expands it");
+        assert!(app.drawer.is_open(), "toggling again re-expands it");
+    }
+
+    /// Collapsing the docked sidebar clears it: after a settled collapse the
+    /// resolved sidebar rect has zero width (nothing left to paint), so no
+    /// stale sidebar pixels remain under the content.
+    #[test]
+    fn collapsed_docked_sidebar_clears_to_zero_width() {
+        let (mut app, mut doc) = app_with_doc();
+        sized(&mut app, 1280.0);
+        assert!(app.sidebar_rect().width() > 100.0, "open docked sidebar has width");
+        app.dispatch(Action::ToggleSidebar, &mut doc);
+        // Settle the collapse animation.
+        app.drawer.snap(false);
+        app.drawer.resolve(app.rect);
+        assert!(app.sidebar_rect().width() < 0.5, "collapsed sidebar clears to zero width");
+        assert_eq!(app.content_inset(), 0.0, "collapsed content reclaims the full width");
     }
 
     // ---- 2. context menu --------------------------------------------------
@@ -2825,5 +3010,210 @@ mod tests {
             assert!(app.content_height > 0.0, "{v:?} produced a frame");
             assert!(!app.hits.is_empty(), "{v:?} registered interactive hits");
         }
+    }
+
+    // ---- 19. real audio / playback state ----------------------------------
+
+    /// Render one full frame at a specific viewport size (drives the same
+    /// passes the live app + `--shots` do), so responsive layout + captured
+    /// interaction rects can be asserted.
+    fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.sync(doc, &automerge::ROOT);
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    }
+
+    #[test]
+    fn streaming_indicator_never_fakes_playback() {
+        let (mut app, _doc) = app_with_doc();
+        app.stream_info = Some(("m4a".into(), 128_000));
+        // The default build links the silent audio stub, so the pipeline is not
+        // really playing → the "Streaming …" indicator must stay hidden (it may
+        // never imply audio the engine isn't producing).
+        assert!(
+            app.streaming_indicator().is_none(),
+            "no streaming indicator without a genuinely-playing pipeline"
+        );
+    }
+
+    #[test]
+    fn now_playing_uses_album_cover_when_track_art_missing() {
+        let (mut app, _doc) = app_with_doc();
+        // An album-track hit often omits per-track art; only the album cover is
+        // known — the now-playing bar must use it, not a procedural placeholder.
+        app.art_urls.insert("al_x".into(), "http://cover/al_x.jpg".into());
+        assert_eq!(app.best_cover_id("tk_x", "al_x"), "al_x", "falls back to album art");
+        // Track art wins when present.
+        app.art_urls.insert("tk_x".into(), "http://cover/tk_x.jpg".into());
+        assert_eq!(app.best_cover_id("tk_x", "al_x"), "tk_x");
+        // With neither, the (procedural) track id is used.
+        assert_eq!(app.best_cover_id("tk_none", "al_none"), "tk_none");
+    }
+
+    // ---- 20. lyrics: synced load + moving highlight ------------------------
+
+    #[test]
+    fn lyrics_view_loads_synced_and_highlight_moves_with_playhead() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true; // don't let sync clobber the staged track
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        app.view = View::Lyrics;
+        app.playhead_ms = 40_000.0;
+        draw_at(&mut app, &mut doc, 1000.0, 800.0);
+        assert!(!app.lyrics.is_empty(), "synced lyrics loaded for the current track");
+        assert!(app.lyrics_synced, "tk_g1 lyrics are time-synced");
+        // The highlighted line (last timestamp <= playhead) advances with time.
+        let l = crate::lyrics::Lyrics { lines: app.lyrics.clone(), synced: true };
+        let early = l.current_line(10_000).expect("a line at 10s");
+        let late = l.current_line(50_000).expect("a line at 50s");
+        assert!(late > early, "the highlighted current line moves forward in time");
+    }
+
+    // ---- 21. favourites sync via the CRDT document ------------------------
+
+    #[test]
+    fn favourite_like_writes_to_synced_doc_and_converges() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(!doc::load_library(&doc).is_liked("tk_g2"));
+        // Like via the normal action pipeline (what a click dispatches).
+        app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
+        assert!(
+            doc::load_library(&doc).is_liked("tk_g2"),
+            "the like is written to the app's synced Automerge document"
+        );
+        // It converges to another device's replica over the standard sync path.
+        let mut peer = AutoCommit::new();
+        crate::sync::converge(&mut doc, &mut peer);
+        assert!(
+            doc::load_library(&peer).is_liked("tk_g2"),
+            "the favourite syncs to another device via the CRDT"
+        );
+    }
+
+    #[test]
+    fn saved_album_syncs_via_doc() {
+        let (mut app, mut doc) = app_with_doc();
+        let before = doc::load_library(&doc).is_album_saved("al_glasslight");
+        app.dispatch(Action::ToggleSaveAlbum("al_glasslight".into()), &mut doc);
+        let after = doc::load_library(&doc).is_album_saved("al_glasslight");
+        assert_ne!(before, after, "toggling flips the saved-album state in the synced doc");
+        let mut peer = AutoCommit::new();
+        crate::sync::converge(&mut doc, &mut peer);
+        assert_eq!(
+            doc::load_library(&peer).is_album_saved("al_glasslight"),
+            after,
+            "the saved-album state syncs to another device via the CRDT"
+        );
+    }
+
+    // ---- 22. responsive bottom bar: volume + swipe ------------------------
+
+    #[test]
+    fn volume_control_is_responsive_by_bar_width() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        // Wide bar (docked sidebar, ~1044px content): inline slider.
+        draw_at(&mut app, &mut doc, 1280.0, 800.0);
+        assert!(app.volume_rect.width() > 0.0, "wide bar shows an inline volume slider");
+        assert_eq!(app.volume_btn_rect, Rect::ZERO, "wide bar has no collapsed button");
+        // Mid bar (~764px content): slider collapses to a button.
+        draw_at(&mut app, &mut doc, 1000.0, 800.0);
+        assert_eq!(app.volume_rect, Rect::ZERO, "mid bar drops the inline slider");
+        assert!(app.volume_btn_rect.width() > 0.0, "mid bar shows a volume button");
+        // Very small (compact bar): volume hidden entirely.
+        draw_at(&mut app, &mut doc, 520.0, 800.0);
+        assert_eq!(app.volume_rect, Rect::ZERO);
+        assert_eq!(app.volume_btn_rect, Rect::ZERO, "compact bar hides volume");
+    }
+
+    #[test]
+    fn volume_button_opens_a_slider_popover() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        draw_at(&mut app, &mut doc, 1000.0, 800.0); // collapsed-to-button width
+        assert!(app.volume_btn_rect.width() > 0.0);
+        app.dispatch(Action::ToggleVolumePopover, &mut doc);
+        draw_at(&mut app, &mut doc, 1000.0, 800.0);
+        assert!(app.volume_popover_open, "the volume button opens the popover");
+        assert!(app.volume_popover_slider.width() > 0.0, "the popover hosts a volume slider");
+        assert_eq!(
+            app.volume_rect, app.volume_popover_slider,
+            "the popover slider is the active volume drag target"
+        );
+    }
+
+    #[test]
+    fn compact_bar_renders_progress_below_the_status_bar() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact
+        assert!(
+            app.scrubber_rect.y1 >= app.rect.y1 - 1.0,
+            "the progress bar sits below the whole status bar (its bottom edge)"
+        );
+        assert!(app.scrubber_rect.width() > 300.0, "the progress spans the bar width");
+    }
+
+    #[test]
+    fn swiping_the_bar_left_plays_next() {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(
+            Action::Play { queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()], index: 0 },
+            &mut doc,
+        );
+        app.set_offline_for_shot();
+        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact bar
+        let bar = app.nowplaying_rect();
+        // Start on the bar's empty title area (left of the transport buttons).
+        let start = Point::new(bar.x0 + bar.width() * 0.35, bar.center().y);
+        let endp = Point::new(start.x - 130.0, start.y);
+        send(&mut app, &cursor_at(start), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        send(&mut app, &cursor_at(endp), &mut doc);
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert_eq!(app.pb.queue_index, 1, "a leftward swipe skips to the next track");
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+    }
+
+    // ---- 23. prefetch on a stable connection ------------------------------
+
+    #[test]
+    fn prefetch_only_runs_on_a_stable_connection() {
+        let (mut app, _doc) = app_with_doc();
+        app.playback_loaded = true;
+        app.pb.queue = vec!["tk_g1".into(), "tk_a1".into()]; // tk_a1 has bundled lyrics
+        app.pb.queue_index = 0;
+        app.pb.current = Some("tk_g1".into());
+        // Metered → suppressed.
+        app.force_metered = Some(true);
+        assert!(!app.maybe_prefetch(), "prefetch is suppressed on a metered link");
+        assert!(app.prefetched_for.is_none());
+        assert!(!app.lyrics_cache.contains_key("tk_a1"));
+        // Stable → runs, warming the next queued track's lyrics into the cache.
+        app.force_metered = Some(false);
+        assert!(app.maybe_prefetch(), "prefetch runs on a stable connection");
+        assert_eq!(app.prefetched_for.as_deref(), Some("tk_g1"));
+        assert!(
+            app.lyrics_cache.contains_key("tk_a1"),
+            "the next queued track's lyrics are prefetched into the shared cache"
+        );
+        // Idempotent within the same current track.
+        assert!(!app.maybe_prefetch(), "prefetch fires once per track change");
     }
 }
