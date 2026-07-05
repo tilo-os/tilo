@@ -153,50 +153,57 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
+# Build vmlinuz + modules directly and stage into a rootfs image tree.
+# We do NOT use `make binrpm-pkg`: that macro path drags in the full
+# Fedora spec (brp-compress, brp-strip, %post scriptlets, debuginfo
+# subpackages, doc/man packaging) and reliably stalls at the payload
+# phase on this kernel size. Rolling our own spec below skips the
+# entire brp-* chain and produces the exact three files we need
+# (vmlinuz, modules tree, System.map) as a single tight RPM.
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     cd "$KSRC"; \
-    # Rename the produced RPM: `kernel` → `qos-kernel`.  `make binrpm-pkg`
-    # invokes `scripts/package/mkspec` (a shell script) to synthesise the
-    # binkernel.spec on the fly — patch its `Name:`, `Summary:` and
-    # `Provides:` heredoc lines so the final RPM is `qos-kernel-*`.
-    # Kept generic (matches `Name: kernel` anywhere in mkspec) so a Fedora
-    # spec re-layout doesn't silently drop the rename.
-    for f in scripts/package/mkspec scripts/package/kernel.spec; do \
-        [ -f "$f" ] && sed -i -E \
-            -e 's/(Name:[[:space:]]*)kernel([[:space:]]|$)/\1qos-kernel\2/g' \
-            -e 's/(Provides:[[:space:]]*)kernel([[:space:]]|=|$)/\1qos-kernel\2/g' \
-            -e 's/(%package[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
-            -e 's/(%description[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
-            -e 's/(%files[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
-            -e 's/(%post[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
-            -e 's/(%preun[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
-            "$f" || true; \
-    done; \
-    # Sanity check: at least one file was patched.  If neither exists the
-    # kernel Makefile has moved to a different packaging path and this
-    # Containerfile needs updating.
-    grep -q 'qos-kernel' scripts/package/mkspec scripts/package/kernel.spec 2>/dev/null \
-        || { echo "ERROR: neither mkspec nor kernel.spec was patched; check kernel packaging layout"; exit 1; }; \
-    make -j"$(nproc)" binrpm-pkg; \
-    mkdir -p /out; \
-    find /work/rpmbuild/RPMS -name 'qos-kernel-*.rpm' -exec cp -v {} /out/ \;; \
-    ls -lh /out/
+    make -j"$(nproc)" all; \
+    KVER="$(make -s kernelrelease)"; \
+    printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
+    STAGE=/work/stage; \
+    rm -rf "$STAGE"; \
+    mkdir -p "$STAGE/boot" "$STAGE/lib/modules/$KVER"; \
+    cp arch/x86/boot/bzImage "$STAGE/boot/vmlinuz-$KVER"; \
+    cp System.map "$STAGE/boot/System.map-$KVER"; \
+    cp .config "$STAGE/boot/config-$KVER"; \
+    make INSTALL_MOD_PATH="$STAGE" INSTALL_MOD_STRIP=1 modules_install; \
+    # `depmod` builds modules.dep + friends inside the staging tree so
+    # `dnf install` doesn't have to run scriptlets on the live system.
+    /sbin/depmod -a -b "$STAGE" "$KVER"; \
+    # Remove the source + build symlinks that `modules_install` creates
+    # — they point outside the staging tree and rpm would fail file
+    # ownership checks on them.
+    rm -f "$STAGE/lib/modules/$KVER/source" "$STAGE/lib/modules/$KVER/build"; \
+    du -sh "$STAGE"
 
-# Provide a `qos-kernel-core` alias package name.  `dnf swap kernel-core
-# qos-kernel-core` (in os/Containerfile) resolves by package name — the
-# `make binrpm-pkg` output is a single `qos-kernel` RPM; wrap it in a
-# tiny meta-RPM that Provides: qos-kernel-core so the swap succeeds.
-COPY os/kernel/qos-kernel-core.spec /work/qos-kernel-core.spec
+# Hand-written spec — no Fedora scriptlets, no debuginfo, no brp-*
+# chain. `dnf swap kernel-core qos-kernel-core` in os/Containerfile
+# resolves against the `Provides: kernel-core` line.
+COPY os/kernel/qos-kernel-payload.spec /work/qos-kernel-payload.spec
 RUN set -eux; \
-    KVER="$(rpm -qp --queryformat '%{VERSION}-%{RELEASE}' /out/qos-kernel-[0-9]*.rpm | head -1)"; \
-    test -n "$KVER"; \
+    . /work/kver.env; \
     rpmbuild -bb \
         --define "_topdir /work/rpmbuild" \
-        --define "_kver $KVER" \
-        /work/qos-kernel-core.spec; \
-    find /work/rpmbuild/RPMS -name 'qos-kernel-core-*.rpm' -exec cp -v {} /out/ \;; \
+        --define "_binary_payload w0.gzdio" \
+        --define "kver $KVER" \
+        --define "stage /work/stage" \
+        --define "__spec_install_pre %{nil}" \
+        --define "__os_install_post %{nil}" \
+        /work/qos-kernel-payload.spec; \
+    mkdir -p /out; \
+    find /work/rpmbuild/RPMS -name 'qos-kernel*.rpm' -exec cp -v {} /out/ \;; \
     ls -lh /out/
+
+# The payload spec is named `qos-kernel-core` and already Provides:
+# kernel-core / kernel-modules / kernel — no separate meta-RPM is
+# needed for the `dnf swap kernel-core qos-kernel-core` step in
+# os/Containerfile to resolve.
 
 # Build the repo metadata inside the build stage; the final stage is
 # just a COPY of /repo so it stays tiny.
