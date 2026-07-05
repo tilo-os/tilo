@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
@@ -37,6 +38,22 @@ use crate::widgets::{card, caption, rows, setting_row, value_row};
 
 pub const AUTO_TIME_KEY: &str = "time.auto";
 pub const H24_KEY: &str = "time.h24";
+
+/// Side-effect interface for the automatic-time (NTP) toggle. Production
+/// forwards to `os_actions::set_ntp` (`timedatectl set-ntp`); tests inject a
+/// recorder so the "auto → set-ntp" path is asserted without shelling out.
+pub trait NtpControl: Send + Sync {
+    fn set_ntp(&self, enabled: bool) -> Result<(), String>;
+}
+
+/// Production impl — `timedatectl set-ntp`.
+pub struct RealNtp;
+
+impl NtpControl for RealNtp {
+    fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+        os_actions::set_ntp(enabled)
+    }
+}
 
 /// Read the configured time zone from `/etc/timezone`, falling back to a
 /// sample so the pane is never blank.
@@ -62,6 +79,7 @@ fn timezone() -> String {
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
 /// re-render the live clock when the 24-hour preference flips.
 pub struct TimeDatePane {
+    ntp: Arc<dyn NtpControl>,
     timezone: String,
     h24: bool,
     initial_auto: bool,
@@ -83,6 +101,23 @@ impl TimeDatePane {
     pub fn new() -> Self {
         let initial_auto = os_actions::get_ntp().unwrap_or(true);
         Self {
+            ntp: Arc::new(RealNtp),
+            timezone: timezone(),
+            h24: true,
+            initial_auto,
+            last_auto: initial_auto,
+            last_h24: true,
+            needs_seed: true,
+            structure_dirty: false,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// Test constructor: inject the NTP control and starting auto-state.
+    pub fn with_ntp(ntp: Arc<dyn NtpControl>, initial_auto: bool) -> Self {
+        Self {
+            ntp,
             timezone: timezone(),
             h24: true,
             initial_auto,
@@ -156,7 +191,7 @@ impl Widget for TimeDatePane {
             if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
                 if *b != self.last_auto {
                     self.last_auto = *b;
-                    if let Err(e) = os_actions::set_ntp(*b) {
+                    if let Err(e) = self.ntp.set_ntp(*b) {
                         warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
                     }
                 }
@@ -302,8 +337,41 @@ impl Widget for TimeDatePane {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Mutex;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
+
+    #[derive(Default)]
+    struct RecordingNtp {
+        calls: Mutex<Vec<bool>>,
+    }
+    impl NtpControl for RecordingNtp {
+        fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+            self.calls.lock().unwrap().push(enabled);
+            Ok(())
+        }
+    }
+
+    /// Toggling "Set time automatically" forwards to `set_ntp` exactly once
+    /// per change, with the new value — the real dispatch path.
+    #[test]
+    fn auto_time_toggle_invokes_set_ntp() {
+        let ntp = Arc::new(RecordingNtp::default());
+        // Start with auto=true (the seed), then flip off.
+        let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert!(ntp.calls.lock().unwrap().is_empty(), "seed must not dispatch");
+        let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
+        pane.sync(&mut doc, &root);
+        pane.sync(&mut doc, &root); // idempotent at rest
+        assert_eq!(ntp.calls.lock().unwrap().as_slice(), [false]);
+        // Flip back on.
+        let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut doc, &root);
+        assert_eq!(ntp.calls.lock().unwrap().as_slice(), [false, true]);
+    }
 
     #[test]
     fn builds_layout() {
