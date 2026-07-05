@@ -37,7 +37,7 @@ use chrono::NaiveDate;
 
 use crate::account::{CalDavConfig, RemoteCalendar};
 use crate::ics;
-use crate::model::{Event, Palette, Task};
+use crate::model::{Event, Model, Palette, Task};
 
 /// What a sync pass produced: the events and tasks parsed out of a calendar's
 /// `calendar-data`, tagged with the colour and id of their source calendar.
@@ -63,6 +63,50 @@ pub enum SyncOutcome {
     Offline,
     /// The server (or transport) failed; carries the reason.
     Failed(String),
+}
+
+/// The concrete CalDAV `PUT` a queued local event turns into: the resource URL
+/// under the target collection and the `text/calendar` body to upload. This is
+/// what "queue the event for the chosen CalDAV calendar" produces — a real
+/// request the `live` push path (or a test) can inspect and send. Building it
+/// runs the event through [`ics::export`], so the body is the exact iCalendar a
+/// server would store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PutRequest {
+    /// Absolute URL of the event resource (`<collection>/<uid>.ics`).
+    pub url: String,
+    /// `text/calendar` payload — a one-event `VCALENDAR`.
+    pub body: String,
+}
+
+/// Build the CalDAV `PUT` that uploads `event` to `calendar` under `config`.
+/// The resource name is the event's UID with a `.ics` suffix, joined onto the
+/// collection URL exactly as the pull path resolves it, and the body is a
+/// single-event `VCALENDAR` produced by the in-tree exporter.
+pub fn build_put_request(
+    config: &CalDavConfig,
+    calendar: &RemoteCalendar,
+    event: &Event,
+) -> PutRequest {
+    let collection = collection_url_for(config, calendar);
+    let url = format!("{}/{}.ics", collection.trim_end_matches('/'), event.id);
+    let model = Model { projects: Vec::new(), events: vec![event.clone()], tasks: Vec::new() };
+    PutRequest { url, body: ics::export(&model) }
+}
+
+/// Resolve a collection href (absolute or relative to the configured server)
+/// to an absolute URL. Shared by the pull and push paths so both address the
+/// same resource.
+fn collection_url_for(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
+    if cal.id.starts_with("http://") || cal.id.starts_with("https://") {
+        cal.id.clone()
+    } else {
+        format!(
+            "{}/{}",
+            config.server_url.trim_end_matches('/'),
+            cal.id.trim_start_matches('/')
+        )
+    }
 }
 
 /// Sample pull for one remote calendar (demo / tests only).
@@ -112,6 +156,27 @@ pub fn sync_all(
     }
 }
 
+/// Upload every queued local event to its target CalDAV collection.
+///
+/// Each job is a `(config, calendar, event)` triple — the event and the remote
+/// calendar it was created on. Compiled with `live` this sends an `ETag`-free
+/// `PUT` of the event's `.ics` (via [`build_put_request`]) to each collection
+/// and returns the ids that stored successfully, so the caller can clear them
+/// from the outbox. Without the feature (headless / demo build) there is no
+/// transport, so it uploads nothing and returns an empty list — the queue is
+/// simply retained until a live build drains it.
+pub fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
+    #[cfg(feature = "live")]
+    {
+        live::push_all_live(jobs)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = jobs;
+        Vec::new()
+    }
+}
+
 /// The offline sample pull used by the hermetic `--shots` / demo build and by
 /// tests. It synthesises each calendar's events as real iCalendar and parses
 /// them back through [`ics::parse`], so the sample data travels the exact
@@ -143,7 +208,7 @@ pub fn sample_pull_all(
 /// each synced calendar shows different events. Built by round-tripping a tiny
 /// model through [`ics::export`], so the parser is exercised end to end.
 fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
-    use crate::model::{Model, Recurrence};
+    use crate::model::Recurrence;
     use chrono::{Duration, NaiveDateTime, NaiveTime};
 
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
@@ -313,17 +378,37 @@ mod live {
     }
 
     fn collection_url(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
-        // A collection href (`cal.id`) may be absolute or relative to the
-        // server. Absolute wins; otherwise join onto the configured base.
-        if cal.id.starts_with("http://") || cal.id.starts_with("https://") {
-            cal.id.clone()
-        } else {
-            format!(
-                "{}/{}",
-                config.server_url.trim_end_matches('/'),
-                cal.id.trim_start_matches('/')
-            )
+        super::collection_url_for(config, cal)
+    }
+
+    /// PUT every queued event to its target collection, returning the ids that
+    /// stored successfully. Best-effort: a failed upload leaves that event in
+    /// the outbox for the next attempt and does not abort the rest.
+    pub fn push_all_live(
+        jobs: &[(CalDavConfig, RemoteCalendar, super::Event)],
+    ) -> Vec<crate::model::Id> {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("qOS-Calendar/0.1")
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut pushed = Vec::new();
+        for (config, cal, event) in jobs {
+            let req = super::build_put_request(config, cal, event);
+            let resp = client
+                .put(&req.url)
+                .basic_auth(&config.username, Some(&config.password))
+                .header(reqwest::header::CONTENT_TYPE, "text/calendar; charset=utf-8")
+                .body(req.body)
+                .send();
+            if matches!(resp, Ok(r) if r.status().is_success()) {
+                pushed.push(event.id);
+            }
         }
+        pushed
     }
 
     fn calendar_query_body(today: NaiveDate) -> String {
@@ -409,6 +494,70 @@ mod tests {
         assert!(!res.is_empty());
         // The hidden "Holidays" calendar's event must not appear.
         assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
+    }
+
+    #[test]
+    fn build_put_request_targets_collection_and_carries_event_ics() {
+        use crate::model::{Event, Palette, Recurrence};
+        use chrono::NaiveDate;
+        let store = AccountStore::sample();
+        let (account, cal) = store
+            .all_calendars()
+            .find(|(_, c)| c.id == "work/default")
+            .unwrap();
+        let start = NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let ev = Event {
+            id: uuid::Uuid::new_v4(),
+            title: "Kickoff".into(),
+            start,
+            end: start + chrono::Duration::hours(1),
+            all_day: false,
+            location: "Room 1".into(),
+            color: Palette::Indigo,
+            recurrence: Recurrence::None,
+            reminder_min: None,
+            calendar_id: Some(cal.id.clone()),
+            project: None,
+        };
+        let req = build_put_request(&account.config, cal, &ev);
+        // URL is the event resource under the collection.
+        assert!(req.url.starts_with(&account.config.server_url), "url = {}", req.url);
+        assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
+        // Body is a real one-event VCALENDAR carrying the title.
+        assert!(req.body.contains("BEGIN:VEVENT"));
+        assert!(req.body.contains("Kickoff"));
+    }
+
+    #[test]
+    fn push_all_without_live_feature_uploads_nothing() {
+        // The default headless build has no transport: push is an honest no-op
+        // that keeps the queue rather than fabricating a successful upload.
+        let store = AccountStore::sample();
+        let (account, cal) = store.all_calendars().next().unwrap();
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let ev = crate::model::Event {
+            id: uuid::Uuid::new_v4(),
+            title: "x".into(),
+            start,
+            end: start,
+            all_day: false,
+            location: String::new(),
+            color: crate::model::Palette::Indigo,
+            recurrence: crate::model::Recurrence::None,
+            reminder_min: None,
+            calendar_id: Some(cal.id.clone()),
+            project: None,
+        };
+        let jobs = vec![(account.config.clone(), cal.clone(), ev)];
+        #[cfg(not(feature = "live"))]
+        assert!(push_all(&jobs).is_empty());
+        let _ = jobs;
     }
 
     #[test]

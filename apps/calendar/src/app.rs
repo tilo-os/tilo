@@ -37,7 +37,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::BlockEditor;
+use ui::widget::{BlockEditor, DatePicker, TimePicker, TextInput};
 
 use crate::account::AccountStore;
 use crate::caldav::{self, SyncOutcome};
@@ -45,6 +45,12 @@ use crate::date;
 use crate::doc::CalDoc;
 use crate::ics;
 use crate::model::{seed_demo, Event, Id, ListSel, Model, Palette, Priority, Recurrence, View};
+
+/// Placeholder shown in the empty title field of a new event.
+const TITLE_PLACEHOLDER: &str = "New event";
+/// Placeholder shown in the empty notes editor of an event (dim hint text that
+/// disappears the moment the user types — never seeded as real body text).
+const NOTES_PLACEHOLDER: &str = "Add details…";
 
 const SIDEBAR_W: f64 = 252.0;
 const TOPBAR_H: f64 = 60.0;
@@ -131,6 +137,67 @@ enum Action {
     ToggleAccountCollapsed(String),
     /// Pull events from the configured CalDAV calendars.
     Sync,
+    /// Flip the selected event's all-day flag.
+    ToggleAllDay,
+    /// Open one of the form's transient popovers (date grid / time spinners /
+    /// calendar list) over the currently-edited event.
+    OpenPopover(FormPopover),
+    /// Assign the selected event to a target calendar (local or a remote
+    /// CalDAV collection), and close the calendar popover.
+    PickCalendar(CalTarget),
+    /// Focus one of the form's text fields (used by the title/location field
+    /// click targets so a press lands the caret).
+    FocusField(FormField),
+    /// Dismiss any open form popover (scrim / outside click).
+    ClosePopover,
+}
+
+/// Which transient popover is floating over the event form, if any. Only one is
+/// ever open at a time; opening one closes the others.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FormPopover {
+    None,
+    StartDate,
+    EndDate,
+    StartTime,
+    EndTime,
+    Calendar,
+}
+
+/// The two keyboard-focusable text fields in the form. Tab cycles between them
+/// (and the notes editor); the pickers/selector are opened with Enter/click.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FormField {
+    Title,
+    Location,
+}
+
+/// A calendar an event can be filed under: the on-device local calendar, or a
+/// specific remote CalDAV collection (identified by its stable id, matching
+/// [`Event::calendar_id`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CalTarget {
+    Local,
+    Remote(String),
+}
+
+/// Cached rects for the event form's fields, recomputed every `relayout` from
+/// the detail panel. Kept together so the draw pass, the hit map, and the
+/// embedded widgets' `apply_layout_external` all read the same geometry.
+#[derive(Clone, Debug, Default)]
+struct FormRects {
+    header_bottom: f64,
+    title: Rect,
+    allday: Rect,
+    start_date: Rect,
+    start_time: Rect,
+    end_date: Rect,
+    end_time: Rect,
+    location: Rect,
+    calendar: Rect,
+    chips_y: f64,
+    /// Y offset (from the detail rect top) at which the NOTES section starts.
+    notes_top: f64,
 }
 
 pub struct CalendarApp {
@@ -149,6 +216,29 @@ pub struct CalendarApp {
     notes_editor: BlockEditor,
     bound: Option<Sel>,
     seeded: bool,
+
+    // --- event form (live only while an Event detail is open) -----------
+    /// Editable title field (local text, mirrored into the event on change).
+    title_input: TextInput,
+    /// Editable location field.
+    location_input: TextInput,
+    /// Start/end clock spinners, shown in the time popovers.
+    start_time_picker: TimePicker,
+    end_time_picker: TimePicker,
+    /// The month grid shown in the date popovers; retargeted per open.
+    date_picker: DatePicker,
+    /// Which event the form widgets are currently seeded from — so a new
+    /// selection reseeds the inputs and edits land on the right event.
+    form_event: Option<Id>,
+    /// Which transient popover is floating over the form.
+    popover: FormPopover,
+    /// Cached form field geometry (see [`FormRects`]).
+    form: FormRects,
+    /// Shots-only: spawn a fresh event on the first sync so the offscreen
+    /// renderer can capture the New-Event form. No effect on live runtime.
+    shots_pending_new_event: bool,
+    /// Shots-only: open this popover once the form is bound.
+    shots_pending_popover: Option<FormPopover>,
 
     /// True for the hermetic `--shots` / test build: it seeds sample content
     /// and drives the offline (synthesised) CalDAV path. The live app leaves
@@ -205,7 +295,10 @@ pub struct CalendarApp {
     /// Receiver for an in-flight background CalDAV pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
-    sync_rx: Option<std::sync::mpsc::Receiver<(caldav::SyncResult, SyncOutcome)>>,
+    /// A finished background pass delivers `(pull result, outcome, pushed ids)`
+    /// — the queued events that uploaded successfully, so they can be cleared
+    /// from the outbox.
+    sync_rx: Option<std::sync::mpsc::Receiver<(caldav::SyncResult, SyncOutcome, Vec<Id>)>>,
     /// True while a background sync is running, which keeps the event loop
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
@@ -260,9 +353,24 @@ impl CalendarApp {
             selection,
             detail_open,
             accounts,
-            notes_editor: BlockEditor::new(),
+            notes_editor: BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER),
             bound: None,
             seeded: false,
+            title_input: TextInput::local()
+                .with_placeholder(TITLE_PLACEHOLDER)
+                .with_font_size(20.0)
+                .with_id("event_title"),
+            location_input: TextInput::local()
+                .with_placeholder("Add location")
+                .with_id("event_location"),
+            start_time_picker: TimePicker::new(12, 0),
+            end_time_picker: TimePicker::new(13, 0),
+            date_picker: DatePicker::new(today),
+            form_event: None,
+            popover: FormPopover::None,
+            form: FormRects::default(),
+            shots_pending_new_event: false,
+            shots_pending_popover: None,
             demo,
             data_path,
             saved_heads: Vec::new(),
@@ -321,6 +429,29 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Create a fresh event on the next sync and open its edit form — the
+    /// New-Event screenshot. The event has an empty title (so the field shows
+    /// its placeholder) and empty notes (so the notes editor shows its hint).
+    pub fn shots_new_event(&mut self) {
+        self.shots_pending_new_event = true;
+        self.dirty = true;
+    }
+
+    /// Open the start-date grid popover over the New-Event form for a
+    /// screenshot of the date picker.
+    pub fn shots_open_date_popover(&mut self) {
+        self.shots_pending_new_event = true;
+        self.shots_pending_popover = Some(FormPopover::StartDate);
+        self.dirty = true;
+    }
+
+    /// Open the calendar/account selector popover for a screenshot.
+    pub fn shots_open_calendar_popover(&mut self) {
+        self.shots_pending_new_event = true;
+        self.shots_pending_popover = Some(FormPopover::Calendar);
+        self.dirty = true;
+    }
+
     /// Kick off a CalDAV pull from the configured calendars. The live pull
     /// touches the network, so it runs on a worker thread and its result is
     /// drained in [`Self::poll_sync`]; the UI stays responsive throughout. The
@@ -352,11 +483,16 @@ impl CalendarApp {
             return;
         }
 
-        // Live pull on a background thread; the result lands via `poll_sync`.
+        // Live pull + push on a background thread; the result lands via
+        // `poll_sync`. Queued local events (created on a remote calendar) are
+        // uploaded first, then the collections are pulled.
+        let push_jobs = self.gather_push_jobs(doc);
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
         std::thread::spawn(move || {
-            let _ = tx.send(caldav::sync_all(&inputs, today));
+            let pushed = caldav::push_all(&push_jobs);
+            let (result, outcome) = caldav::sync_all(&inputs, today);
+            let _ = tx.send((result, outcome, pushed));
         });
         self.sync_rx = Some(rx);
         self.syncing = true;
@@ -372,9 +508,13 @@ impl CalendarApp {
             return;
         };
         match rx.try_recv() {
-            Ok((result, outcome)) => {
+            Ok((result, outcome, pushed)) => {
                 self.sync_rx = None;
                 self.syncing = false;
+                // Clear successfully-uploaded events from the outbox.
+                for id in pushed {
+                    CalDoc::dequeue_push(doc, id);
+                }
                 self.apply_sync_result(result, outcome, doc);
                 // A landed pull mutated the document — persist it.
                 self.force_persist = true;
@@ -428,6 +568,28 @@ impl CalendarApp {
             SyncOutcome::Failed(reason) => format!("Sync failed: {reason}"),
         });
         self.dirty = true;
+    }
+
+    /// Resolve the outbox into concrete upload jobs: each queued event paired
+    /// with the account config and remote calendar it targets. Events whose
+    /// calendar is no longer configured (or that became local) are skipped and
+    /// left in the queue for a later attempt — never fabricated.
+    fn gather_push_jobs(
+        &self,
+        doc: &AutoCommit,
+    ) -> Vec<(crate::account::CalDavConfig, crate::account::RemoteCalendar, Event)> {
+        let mut jobs = Vec::new();
+        for id in CalDoc::outbox(doc) {
+            let Some(event) = self.model.event(id) else { continue };
+            let Some(cal_id) = &event.calendar_id else { continue };
+            for acc in &self.accounts.accounts {
+                if let Some(cal) = acc.calendars.iter().find(|c| &c.id == cal_id) {
+                    jobs.push((acc.config.clone(), cal.clone(), event.clone()));
+                    break;
+                }
+            }
+        }
+        jobs
     }
 
     /// The single notes-editor entry point. All notes rendering and editing for
@@ -487,7 +649,7 @@ impl CalendarApp {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = BlockEditor::new();
+                    self.notes_editor = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
                     self.bound = None;
                 }
                 return;
@@ -497,12 +659,65 @@ impl CalendarApp {
             return;
         }
         if let Some(list) = self.notes_list_for(doc, sel) {
-            let mut ed = BlockEditor::new();
+            let mut ed = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
             ed.bind_blocks(doc, list);
             // Install the freshly-bound editor through the single notes-editor
             // seam (the swap-point for the shared WYSIWYG editor).
             *self.notes_editor() = ed;
             self.bound = Some(sel);
+            self.dirty = true;
+        }
+    }
+
+    /// Seed the form's title/location fields and clock spinners from the
+    /// currently-selected event whenever the selection changes. The fields are
+    /// local (widget-owned) text/values; edits flow back into the model +
+    /// CRDT via [`Self::flush_form_edits`]. A stale popover is closed so it
+    /// can't act on the previous event.
+    fn ensure_form_bound(&mut self) {
+        let ev_id = match self.selection {
+            Some(Sel::Event(id)) if self.detail_open => Some(id),
+            _ => None,
+        };
+        if self.form_event == ev_id {
+            return;
+        }
+        self.form_event = ev_id;
+        self.popover = FormPopover::None;
+        if let Some(id) = ev_id {
+            if let Some(e) = self.model.event(id) {
+                self.title_input.set_text(&e.title);
+                self.location_input.set_text(&e.location);
+                self.start_time_picker.set_hours(e.start.hour() as u8);
+                self.start_time_picker.set_minutes(e.start.minute() as u8);
+                self.end_time_picker.set_hours(e.end.hour() as u8);
+                self.end_time_picker.set_minutes(e.end.minute() as u8);
+            }
+        } else {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+        }
+        self.dirty = true;
+    }
+
+    /// Pull any pending text edits out of the title/location fields and mirror
+    /// them into the selected event (model + CRDT). Called after routing an
+    /// event to the inputs so a keystroke persists like every other edit.
+    fn flush_form_edits(&mut self, doc: &mut AutoCommit) {
+        let Some(Sel::Event(id)) = self.selection else { return };
+        let title_dirty = self.title_input.take_dirty();
+        let loc_dirty = self.location_input.take_dirty();
+        if title_dirty.is_none() && loc_dirty.is_none() {
+            return;
+        }
+        let title = self.title_input.value().to_string();
+        let location = self.location_input.value().to_string();
+        if let Some(e) = self.model.event_mut(id) {
+            e.title = title;
+            e.location = location;
+            let snap = e.clone();
+            CalDoc::update_event(doc, &snap);
+            self.force_persist = true;
             self.dirty = true;
         }
     }
@@ -592,8 +807,12 @@ impl CalendarApp {
             .anchor
             .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
         let ev = Event {
+            // Empty title: the form's title field shows its "New event"
+            // placeholder rather than literal text the user has to clear. The
+            // event still renders as "New event" in the views via
+            // `Event::display_title`.
             id: Uuid::new_v4(),
-            title: "New event".into(),
+            title: String::new(),
             start,
             end: start + Duration::hours(1),
             all_day: false,
@@ -601,18 +820,332 @@ impl CalendarApp {
             color: self.model.next_event_order_color(),
             recurrence: Recurrence::None,
             reminder_min: Some(10),
+            // Filed on the local (on-device) calendar by default; the form's
+            // calendar selector can retarget it to a configured account.
             calendar_id: None,
             project: None,
         };
         let id = ev.id;
         CalDoc::update_event(doc, &ev);
-        if let Some(list) = CalDoc::event_notes(doc, id) {
-            CalDoc::seed_notes_if_empty(doc, &list, &["Add details…"]);
-        }
+        // Notes are left EMPTY on purpose — the notes editor paints its
+        // placeholder until the user types. Seeding body text here is exactly
+        // the "fake content the user must delete" this form avoids.
         self.model.events.push(ev);
         self.model.events.sort_by_key(|e| e.start);
         self.select_event(id);
-        self.status = Some("New event created".into());
+        self.status = Some("New event".into());
+    }
+
+    // --- event form model edits -----------------------------------------
+
+    /// Every calendar an event can be filed under: the local on-device
+    /// calendar plus each remote CalDAV collection configured in Settings
+    /// (the shared [`AccountStore`]). This is the selector's option list —
+    /// sourced from real configured accounts, never fabricated.
+    fn calendar_options(&self) -> Vec<(CalTarget, String)> {
+        let mut out = vec![(CalTarget::Local, "On this device".to_string())];
+        for acc in &self.accounts.accounts {
+            for cal in &acc.calendars {
+                out.push((
+                    CalTarget::Remote(cal.id.clone()),
+                    format!("{} · {}", acc.label(), cal.name),
+                ));
+            }
+        }
+        out
+    }
+
+    /// The display label for an event's current calendar target.
+    fn calendar_label(&self, calendar_id: &Option<String>) -> String {
+        match calendar_id {
+            None => "On this device".to_string(),
+            Some(id) => self
+                .accounts
+                .accounts
+                .iter()
+                .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
+                .find(|(_, c)| &c.id == id)
+                .map(|(a, c)| format!("{} · {}", a.label(), c.name))
+                // A synced calendar that is no longer configured: show its raw
+                // id rather than pretending it is local.
+                .unwrap_or_else(|| id.clone()),
+        }
+    }
+
+    /// File the selected event on `target`. A remote target tags the event
+    /// with the calendar id, adopts that calendar's colour, and queues it for
+    /// upload; the local target clears the tag and drops it from the queue.
+    fn set_event_calendar(&mut self, target: CalTarget, doc: &mut AutoCommit) {
+        let Some(Sel::Event(id)) = self.selection else { return };
+        // Resolve the remote calendar's palette up front (immutable borrow of
+        // `self.accounts`) so the mutable event borrow below doesn't overlap.
+        let remote_color = match &target {
+            CalTarget::Remote(cid) => self
+                .accounts
+                .accounts
+                .iter()
+                .flat_map(|a| a.calendars.iter())
+                .find(|c| &c.id == cid)
+                .map(|c| c.palette()),
+            CalTarget::Local => None,
+        };
+        if let Some(e) = self.model.event_mut(id) {
+            match &target {
+                CalTarget::Local => e.calendar_id = None,
+                CalTarget::Remote(cid) => {
+                    e.calendar_id = Some(cid.clone());
+                    if let Some(col) = remote_color {
+                        e.color = col;
+                    }
+                }
+            }
+            let snap = e.clone();
+            CalDoc::update_event(doc, &snap);
+        }
+        // Update the outbox: queue for a remote target, unqueue for local.
+        match target {
+            CalTarget::Local => CalDoc::dequeue_push(doc, id),
+            CalTarget::Remote(_) => CalDoc::enqueue_push(doc, id),
+        }
+        self.popover = FormPopover::None;
+        self.force_persist = true;
+        self.dirty = true;
+    }
+
+    /// Open one of the form popovers, seeding the embedded picker from the
+    /// event's current value and giving it keyboard focus so it is immediately
+    /// arrow-navigable. Opening a popover takes focus off the text fields.
+    fn open_popover(&mut self, which: FormPopover) {
+        let ev = match self.selection {
+            Some(Sel::Event(id)) => self.model.event(id).cloned(),
+            _ => None,
+        };
+        let Some(e) = ev else { return };
+        self.title_input.set_focus(false);
+        self.location_input.set_focus(false);
+        self.date_picker.set_focus(false);
+        self.start_time_picker.set_focus(false);
+        self.end_time_picker.set_focus(false);
+        match which {
+            FormPopover::StartDate => {
+                self.date_picker.set_selected(e.start.date());
+                self.date_picker.set_focus(true);
+            }
+            FormPopover::EndDate => {
+                self.date_picker.set_selected(e.end.date());
+                self.date_picker.set_focus(true);
+            }
+            FormPopover::StartTime => {
+                self.start_time_picker.set_hours(e.start.hour() as u8);
+                self.start_time_picker.set_minutes(e.start.minute() as u8);
+                self.start_time_picker.set_focus(true);
+            }
+            FormPopover::EndTime => {
+                self.end_time_picker.set_hours(e.end.hour() as u8);
+                self.end_time_picker.set_minutes(e.end.minute() as u8);
+                self.end_time_picker.set_focus(true);
+            }
+            FormPopover::Calendar | FormPopover::None => {}
+        }
+        self.popover = which;
+        self.dirty = true;
+    }
+
+    /// Move keyboard focus to a form text field (click / Tab target).
+    fn focus_field(&mut self, field: FormField) {
+        self.popover = FormPopover::None;
+        self.notes_editor.set_focus(false);
+        match field {
+            FormField::Title => {
+                self.title_input.set_focus(true);
+                self.location_input.set_focus(false);
+            }
+            FormField::Location => {
+                self.title_input.set_focus(false);
+                self.location_input.set_focus(true);
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The topmost hit-map action under point `p`, if any (later hits win, so
+    /// popovers/scrims added last take precedence over the fields beneath).
+    fn hit_action_at(&self, p: Point) -> Option<Action> {
+        self.hits.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, a)| a.clone())
+    }
+
+    /// Advance (or, with `backwards`, retreat) keyboard focus through the
+    /// form's fields: title → location → notes → title. Opening a field closes
+    /// any popover.
+    fn cycle_form_focus(&mut self, backwards: bool) {
+        let cur: i32 = if self.title_input.is_focused() {
+            0
+        } else if self.location_input.is_focused() {
+            1
+        } else if self.notes_editor.is_focused() {
+            2
+        } else {
+            -1
+        };
+        let n = 3;
+        let next = if cur < 0 {
+            if backwards { n - 1 } else { 0 }
+        } else {
+            (cur + if backwards { n - 1 } else { 1 }) % n
+        };
+        self.popover = FormPopover::None;
+        self.title_input.set_focus(false);
+        self.location_input.set_focus(false);
+        self.notes_editor.set_focus(false);
+        match next {
+            0 => self.title_input.set_focus(true),
+            1 => self.location_input.set_focus(true),
+            _ => self.notes_editor.set_focus(true),
+        }
+        self.dirty = true;
+    }
+
+    /// Route an event to the open date/time popover's embedded picker, mirror
+    /// the resulting value into the event, and close the popover when the user
+    /// commits (a day click, or Enter). The calendar list popover carries no
+    /// embedded widget — it is resolved by the hit map — so this leaves
+    /// `handled` false for it.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_popover_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        // Escape closes any popover.
+        if let WindowEvent::KeyboardInput {
+            event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+            ..
+        } = event
+        {
+            self.apply_action(Action::ClosePopover, state);
+            *handled = true;
+            return;
+        }
+        let is_enter = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        let is_click = matches!(
+            event,
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+        );
+
+        match self.popover {
+            FormPopover::StartDate | FormPopover::EndDate => {
+                let which = self.popover;
+                let before = self.date_picker.selected();
+                self.date_picker.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+                let after = self.date_picker.selected();
+                if after != before {
+                    self.set_event_date(which, after, state);
+                }
+                // A committed day (click that changed the selection) or Enter
+                // closes the grid; a chevron month-step keeps it open.
+                if (is_click && *handled && after != before) || is_enter {
+                    self.popover = FormPopover::None;
+                    self.date_picker.set_focus(false);
+                    *handled = true;
+                }
+            }
+            FormPopover::StartTime | FormPopover::EndTime => {
+                let which = self.popover;
+                let mut changed = None;
+                {
+                    let picker = if which == FormPopover::StartTime {
+                        &mut self.start_time_picker
+                    } else {
+                        &mut self.end_time_picker
+                    };
+                    let before = (picker.hours(), picker.minutes());
+                    picker.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+                    let after = (picker.hours(), picker.minutes());
+                    if after != before {
+                        changed = Some(after);
+                    }
+                }
+                if let Some((h, m)) = changed {
+                    self.set_event_time(which, h, m, state);
+                }
+                if is_enter {
+                    self.popover = FormPopover::None;
+                    self.start_time_picker.set_focus(false);
+                    self.end_time_picker.set_focus(false);
+                    *handled = true;
+                }
+            }
+            FormPopover::Calendar | FormPopover::None => {}
+        }
+    }
+
+    /// Flip the selected event's all-day flag.
+    fn toggle_all_day(&mut self, doc: &mut AutoCommit) {
+        self.cycle_event(doc, |e| e.all_day = !e.all_day);
+        self.popover = FormPopover::None;
+    }
+
+    /// Apply the date grid's current selection to the start or end of the
+    /// event, keeping the clock time and preserving a sane ordering (a start
+    /// past the end drags the end along; an end before the start is clamped).
+    fn set_event_date(&mut self, which: FormPopover, date: NaiveDate, doc: &mut AutoCommit) {
+        self.cycle_event(doc, |e| {
+            match which {
+                FormPopover::StartDate => {
+                    e.start = date.and_time(e.start.time());
+                    if e.end < e.start {
+                        e.end = e.start + Duration::hours(1);
+                    }
+                }
+                FormPopover::EndDate => {
+                    e.end = date.and_time(e.end.time());
+                    if e.end < e.start {
+                        e.end = e.start + Duration::hours(1);
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+
+    /// Apply a clock spinner's current value to the start or end time.
+    fn set_event_time(&mut self, which: FormPopover, h: u8, m: u8, doc: &mut AutoCommit) {
+        let time = NaiveTime::from_hms_opt(h as u32, m as u32, 0)
+            .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        self.cycle_event(doc, |e| {
+            match which {
+                FormPopover::StartTime => {
+                    e.start = e.start.date().and_time(time);
+                    if e.end < e.start {
+                        e.end = e.start + Duration::hours(1);
+                    }
+                }
+                FormPopover::EndTime => {
+                    e.end = e.end.date().and_time(time);
+                    if e.end < e.start {
+                        e.end = e.start + Duration::hours(1);
+                    }
+                }
+                _ => {}
+            }
+        });
     }
 
     fn export_ics(&mut self) {
@@ -782,14 +1315,106 @@ impl CalendarApp {
         // the narrow single-pane screen fills its width instead of leaving a
         // fixed-width column stranded against a wide empty margin.
         self.notes_w = self.detail_body_w();
+        // Compute the editable event-form geometry (fields + pickers) for the
+        // current detail, then position the embedded inputs. The notes section
+        // begins below the form when an event is being edited; a task detail
+        // (or no selection) falls back to the fixed offset.
+        self.form = self.form_layout();
+        let editing_event =
+            matches!(self.selection, Some(Sel::Event(_))) && self.detail_rect.area() > 0.0;
+        let notes_top = if editing_event {
+            self.form.notes_top
+        } else {
+            self.notes_top_offset()
+        };
         if self.detail_rect.area() > 0.0 {
             self.notes_origin = Point::new(
                 self.detail_rect.x0 + DETAIL_PAD,
-                self.detail_rect.y0 + self.notes_top_offset(),
+                self.detail_rect.y0 + notes_top,
             );
         } else {
             self.notes_origin = Point::new(-10000.0, -10000.0);
         }
+
+        if editing_event {
+            self.title_input.apply_layout_external(self.form.title);
+            self.location_input.apply_layout_external(self.form.location);
+        } else {
+            // Park the inputs off-screen so a stale click can't hit them.
+            self.title_input.apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
+            self.location_input.apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
+        }
+    }
+
+    /// Compute the event-form field rects from the current detail panel. Pure
+    /// function of the detail rect, body width, sidebar mode and the selected
+    /// event's all-day flag, so `draw`, the hit map, and the embedded widgets
+    /// all read identical geometry. Returns a zeroed layout when no event is
+    /// being edited.
+    fn form_layout(&self) -> FormRects {
+        let mut f = FormRects::default();
+        let r = self.detail_rect;
+        let editing = matches!(self.selection, Some(Sel::Event(_))) && r.area() > 0.0;
+        if !editing {
+            f.notes_top = self.notes_top_offset();
+            return f;
+        }
+        let all_day = match self.selection {
+            Some(Sel::Event(id)) => self.model.event(id).map(|e| e.all_day).unwrap_or(false),
+            _ => false,
+        };
+        let x = r.x0 + DETAIL_PAD;
+        let w = self.detail_body_w();
+        let overlay = matches!(self.sidebar_mode, SidebarMode::Overlay);
+        // Header: 18px top pad, plus a back bar in the narrow pushed screen,
+        // plus the "EVENT" kind label row.
+        let top = r.y0 + 18.0 + if overlay { 34.0 } else { 0.0 };
+        f.header_bottom = top + 22.0;
+        let mut y = top + 30.0;
+
+        let field_h = 40.0;
+        f.title = Rect::new(x, y, x + w, y + 44.0);
+        y += 44.0 + 16.0;
+
+        f.allday = Rect::new(x, y, x + w, y + 30.0);
+        y += 30.0 + 14.0;
+
+        // Start row: [label] [date field] [time field]. Time is hidden for an
+        // all-day event, and the date field then spans the row.
+        let label_w = 52.0;
+        let time_w = 92.0;
+        let gap = 12.0;
+        let date_w = if all_day {
+            (w - label_w).max(120.0)
+        } else {
+            (w - label_w - time_w - gap).max(120.0)
+        };
+        f.start_date = Rect::new(x + label_w, y, x + label_w + date_w, y + field_h);
+        f.start_time = if all_day {
+            Rect::ZERO
+        } else {
+            Rect::new(x + label_w + date_w + gap, y, x + w, y + field_h)
+        };
+        y += field_h + 12.0;
+        f.end_date = Rect::new(x + label_w, y, x + label_w + date_w, y + field_h);
+        f.end_time = if all_day {
+            Rect::ZERO
+        } else {
+            Rect::new(x + label_w + date_w + gap, y, x + w, y + field_h)
+        };
+        y += field_h + 16.0;
+
+        f.location = Rect::new(x, y, x + w, y + field_h);
+        y += field_h + 14.0;
+
+        f.calendar = Rect::new(x, y, x + w, y + field_h);
+        y += field_h + 18.0;
+
+        f.chips_y = y;
+        y += 34.0 + 20.0;
+
+        f.notes_top = y - r.y0;
+        f
     }
 
     /// Width of the detail body column (fields + notes editor). Fixed in the
@@ -906,6 +1531,16 @@ impl CalendarApp {
                 if let Some(Sel::Task(id)) = self.selection {
                     self.toggle_task(id, doc);
                 }
+            }
+            Action::ToggleAllDay => self.toggle_all_day(doc),
+            Action::OpenPopover(which) => self.open_popover(which),
+            Action::PickCalendar(target) => self.set_event_calendar(target, doc),
+            Action::FocusField(field) => self.focus_field(field),
+            Action::ClosePopover => {
+                self.popover = FormPopover::None;
+                self.date_picker.set_focus(false);
+                self.start_time_picker.set_focus(false);
+                self.end_time_picker.set_focus(false);
             }
         }
         // Discrete actions are worth an immediate save; if the action didn't
@@ -1733,7 +2368,7 @@ impl CalendarApp {
             let evs: Vec<(Id, String, Palette, bool, NaiveDateTime)> = self
                 .visible_events_on(*day)
                 .iter()
-                .map(|e| (e.id, e.title.clone(), e.color, e.all_day, e.start))
+                .map(|e| (e.id, e.display_title().to_string(), e.color, e.all_day, e.start))
                 .collect();
             let max_chips = ((cell_h - 30.0) / 20.0).floor().max(0.0) as usize;
             let mut cy = cell.y0 + 30.0;
@@ -1847,7 +2482,7 @@ impl CalendarApp {
                 .visible_events_on(*day)
                 .iter()
                 .filter(|e| e.all_day)
-                .map(|e| (e.id, e.title.clone(), e.color))
+                .map(|e| (e.id, e.display_title().to_string(), e.color))
                 .collect();
             let strip = Rect::new(x0 + 2.0, area.y0 + head_h + 2.0, x0 + col_w - 2.0, area.y0 + head_h + allday_h - 2.0);
             if !allday.is_empty() {
@@ -1906,7 +2541,7 @@ impl CalendarApp {
                 .visible_events_on(*day)
                 .iter()
                 .filter(|e| !e.all_day)
-                .map(|e| (e.id, e.title.clone(), e.location.clone(), e.color, e.start, e.end))
+                .map(|e| (e.id, e.display_title().to_string(), e.location.clone(), e.color, e.start, e.end))
                 .collect();
             for (id, title, loc, color, start, end) in timed {
                 let s = (start.hour() as i64 - DAY_START) as f64 + start.minute() as f64 / 60.0;
@@ -2148,55 +2783,12 @@ impl CalendarApp {
         match self.selection {
             Some(Sel::Event(id)) => {
                 if let Some(e) = self.model.event(id) {
-                    // colour dot + kind label
+                    // Kind label + calendar-colour dot only. Every editable
+                    // field (title, dates, times, location, calendar, repeat/
+                    // reminder/colour) is drawn by `draw_event_form`, which
+                    // owns the real inputs and pickers.
                     scene.fill(Fill::NonZero, t, e.color.color(theme), None, &Circle::new(Point::new(x + 6.0, y + 8.0), 6.0));
                     tr.draw_text(scene, "EVENT", 11.0, c.text_dim, t * Affine::translate((x + 20.0, y + 2.0)), None);
-                    y += 26.0;
-                    tr.draw_text(scene, &e.title, 22.0, c.text_primary, t * Affine::translate((x, y)), Some(w as f32));
-                    y += 40.0;
-
-                    // when
-                    let when = if e.all_day {
-                        format!("{} · All day", date::fmt_day_long(e.start.date()))
-                    } else {
-                        format!(
-                            "{} · {}–{}",
-                            date::fmt_day_long(e.start.date()),
-                            date::fmt_time(&e.start),
-                            date::fmt_time(&e.end)
-                        )
-                    };
-                    field_row(scene, tr, theme, t, x, y, w, "When", &when);
-                    y += 34.0;
-                    if !e.location.is_empty() {
-                        field_row(scene, tr, theme, t, x, y, w, "Where", &e.location);
-                        y += 34.0;
-                    }
-                    if let Some(p) = e.project.and_then(|pid| self.model.project(pid)) {
-                        field_row(scene, tr, theme, t, x, y, w, "Calendar", &p.name);
-                        y += 34.0;
-                    }
-
-                    // editable chips: recurrence / reminder / colour
-                    let rec_label = if e.recurrence == Recurrence::None {
-                        "No repeat".to_string()
-                    } else {
-                        e.recurrence.short().to_string()
-                    };
-                    let rec_chip = chip(scene, t, tr, theme, x, y, &format!("↻ {rec_label}"), false);
-                    hits.push((rec_chip, Action::CycleRecurrence));
-                    let rem_label = match e.reminder_min {
-                        None => "No reminder".to_string(),
-                        Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
-                        Some(m) => format!("⏰ {m}m before"),
-                    };
-                    let rem_chip = chip(scene, t, tr, theme, rec_chip.x1 + 8.0, y, &rem_label, false);
-                    hits.push((rem_chip, Action::CycleReminder));
-                    y += 38.0;
-                    let col_chip = chip(scene, t, tr, theme, x, y, &format!("● {}", e.color.name()), false);
-                    // recolour the bullet
-                    scene.fill(Fill::NonZero, t, e.color.color(theme), None, &Circle::new(Point::new(col_chip.x0 + 12.0, col_chip.center().y), 4.0));
-                    hits.push((col_chip, Action::CycleColor));
                 }
             }
             Some(Sel::Task(id)) => {
@@ -2236,11 +2828,239 @@ impl CalendarApp {
             None => {}
         }
 
-        // Notes header (the editor itself is drawn separately in draw()).
-        let notes_label_y = r.y0 + self.notes_top_offset() - 26.0;
+        // Notes header (the editor itself is drawn separately in draw()). For
+        // an event the notes sit below the form; a task uses the fixed offset.
+        let notes_top = if matches!(self.selection, Some(Sel::Event(_))) {
+            self.form.notes_top
+        } else {
+            self.notes_top_offset()
+        };
+        let notes_label_y = r.y0 + notes_top - 26.0;
         tr.draw_text(scene, "NOTES", 11.0, c.text_dim, t * Affine::translate((x, notes_label_y)), None);
         stroke_line(scene, t, c.border_standard, Point::new(x, notes_label_y + 18.0), Point::new(x + w, notes_label_y + 18.0), 1.0);
 
+        hits
+    }
+
+    /// Draw the editable event form (title/location inputs, all-day switch,
+    /// start/end date+time field buttons, calendar selector, and the repeat/
+    /// reminder/colour chips) and return its click targets. Runs with `&mut
+    /// self` so the embedded `TextInput`s can render; the transient date/time/
+    /// calendar popovers are painted separately (on top) by
+    /// [`Self::draw_form_popovers`].
+    fn draw_event_form(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Vec<(Rect, Action)> {
+        let mut hits = Vec::new();
+        let Some(Sel::Event(id)) = self.selection else { return hits };
+        let Some(e) = self.model.event(id).cloned() else { return hits };
+        let c = &theme.tokens.colors;
+        let f = self.form.clone();
+        let mouse = self.last_mouse;
+        let label_x = f.title.x0;
+
+        // --- Title (real text input, prominent) -------------------------
+        self.title_input.draw(scene, t, tr, theme, presence);
+        hits.push((f.title, Action::FocusField(FormField::Title)));
+
+        // --- All-day row: label + pill switch ---------------------------
+        tr.draw_text(
+            scene,
+            "All day",
+            14.0,
+            c.text_primary,
+            t * Affine::translate((label_x, f.allday.center().y - 8.0)),
+            None,
+        );
+        let sw = Rect::new(f.allday.x1 - 44.0, f.allday.center().y - 12.0, f.allday.x1, f.allday.center().y + 12.0);
+        draw_switch(scene, t, theme, sw, e.all_day);
+        hits.push((f.allday, Action::ToggleAllDay));
+
+        // --- Starts / Ends rows -----------------------------------------
+        let row = |scene: &mut Scene,
+                   tr: &mut TextRenderer,
+                   hits: &mut Vec<(Rect, Action)>,
+                   label: &str,
+                   date_rect: Rect,
+                   time_rect: Rect,
+                   date_str: &str,
+                   time_str: &str,
+                   date_pop: FormPopover,
+                   time_pop: FormPopover,
+                   popover: FormPopover| {
+            tr.draw_text(
+                scene,
+                label,
+                12.0,
+                c.text_dim,
+                t * Affine::translate((label_x, date_rect.center().y - 6.0)),
+                None,
+            );
+            let date_active = date_rect.contains(mouse) || popover == date_pop;
+            draw_field_button(scene, t, tr, theme, date_rect, date_str, date_active, true);
+            hits.push((date_rect, Action::OpenPopover(date_pop)));
+            if time_rect.area() > 0.0 {
+                let time_active = time_rect.contains(mouse) || popover == time_pop;
+                draw_field_button(scene, t, tr, theme, time_rect, time_str, time_active, true);
+                hits.push((time_rect, Action::OpenPopover(time_pop)));
+            }
+        };
+        row(
+            scene, tr, &mut hits, "Starts", f.start_date, f.start_time,
+            &date::fmt_day_long(e.start.date()), &date::fmt_time(&e.start),
+            FormPopover::StartDate, FormPopover::StartTime, self.popover,
+        );
+        row(
+            scene, tr, &mut hits, "Ends", f.end_date, f.end_time,
+            &date::fmt_day_long(e.end.date()), &date::fmt_time(&e.end),
+            FormPopover::EndDate, FormPopover::EndTime, self.popover,
+        );
+
+        // --- Location (real text input) ---------------------------------
+        self.location_input.draw(scene, t, tr, theme, presence);
+        hits.push((f.location, Action::FocusField(FormField::Location)));
+
+        // --- Calendar selector: colour dot + value + disclosure caret ----
+        let cal_active = f.calendar.contains(mouse) || self.popover == FormPopover::Calendar;
+        {
+            let r = f.calendar;
+            let bg = if cal_active { c.surface_white_10 } else { c.surfaces.raised };
+            fill_round(scene, t, bg, r, 8.0);
+            let (bw, border) = if cal_active { (2.0, c.border_focus) } else { (1.0, c.border_standard) };
+            stroke_round(scene, t, border, r, 8.0, bw);
+            scene.fill(Fill::NonZero, t, e.color.color(theme), None, &Circle::new(Point::new(r.x0 + 16.0, r.center().y), 5.0));
+            let label = self.calendar_label(&e.calendar_id);
+            let disp = elide_to_width(tr, &label, 14.0, (r.width() - 56.0).max(0.0));
+            tr.draw_text(scene, &disp, 14.0, c.text_primary, t * Affine::translate((r.x0 + 30.0, r.center().y - 8.0)), None);
+            draw_caret(scene, t, c.text_dim, Point::new(r.x1 - 16.0, r.center().y), true);
+        }
+        hits.push((f.calendar, Action::OpenPopover(FormPopover::Calendar)));
+
+        // --- Repeat / reminder / colour chips (cycle-on-click) ----------
+        let rec_label = if e.recurrence == Recurrence::None {
+            "No repeat".to_string()
+        } else {
+            e.recurrence.short().to_string()
+        };
+        let rec_chip = chip(scene, t, tr, theme, label_x, f.chips_y, &format!("↻ {rec_label}"), false);
+        hits.push((rec_chip, Action::CycleRecurrence));
+        let rem_label = match e.reminder_min {
+            None => "No reminder".to_string(),
+            Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
+            Some(m) => format!("⏰ {m}m before"),
+        };
+        let rem_chip = chip(scene, t, tr, theme, rec_chip.x1 + 8.0, f.chips_y, &rem_label, false);
+        hits.push((rem_chip, Action::CycleReminder));
+        let col_chip = chip(scene, t, tr, theme, rem_chip.x1 + 8.0, f.chips_y, &format!("● {}", e.color.name()), false);
+        scene.fill(Fill::NonZero, t, e.color.color(theme), None, &Circle::new(Point::new(col_chip.x0 + 12.0, col_chip.center().y), 4.0));
+        hits.push((col_chip, Action::CycleColor));
+
+        hits
+    }
+
+    /// Paint the open form popover (date grid / time spinners / calendar list)
+    /// on top of everything and return its click targets. A full-panel scrim
+    /// hit sits underneath so a click outside the popover dismisses it.
+    fn draw_form_popovers(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Vec<(Rect, Action)> {
+        let mut hits = Vec::new();
+        if self.popover == FormPopover::None {
+            return hits;
+        }
+        let c = &theme.tokens.colors;
+        // Dismiss scrim across the whole detail panel (below the popover).
+        hits.push((self.detail_rect, Action::ClosePopover));
+
+        let anchor = match self.popover {
+            FormPopover::StartDate | FormPopover::StartTime => self.form.start_date,
+            FormPopover::EndDate | FormPopover::EndTime => self.form.end_date,
+            FormPopover::Calendar => self.form.calendar,
+            FormPopover::None => return hits,
+        };
+
+        match self.popover {
+            FormPopover::StartDate | FormPopover::EndDate => {
+                // Size the month grid, clamp it inside the detail panel, place
+                // it just under the anchor field.
+                let pw = 7.0 * 32.0;
+                let ph = 32.0 + 20.0 + 6.0 * 32.0;
+                let px = (anchor.x0).min(self.detail_rect.x1 - pw - 8.0).max(self.detail_rect.x0 + 8.0);
+                let py = (anchor.y1 + 6.0).min(self.detail_rect.y1 - ph - 8.0);
+                let pr = Rect::new(px, py, px + pw, py + ph);
+                // Shadow-ish backing panel with a border.
+                fill_round(scene, t, c.surfaces.raised, pr.inflate(6.0, 6.0), 10.0);
+                stroke_round(scene, t, c.border_standard, pr.inflate(6.0, 6.0), 10.0, 1.0);
+                self.date_picker.apply_layout_external(pr);
+                self.date_picker.draw(scene, t, tr, theme, presence);
+                // The picker handles its own clicks (routed while open); a hit
+                // over its rect must NOT fall through to the dismiss scrim.
+                hits.push((pr.inflate(6.0, 6.0), Action::OpenPopover(self.popover)));
+            }
+            FormPopover::StartTime | FormPopover::EndTime => {
+                let picker = if self.popover == FormPopover::StartTime {
+                    &mut self.start_time_picker
+                } else {
+                    &mut self.end_time_picker
+                };
+                let (pw, ph) = picker.intrinsic_size();
+                let px = (anchor.x0).max(self.detail_rect.x0 + 8.0);
+                let py = (anchor.y1 + 6.0).min(self.detail_rect.y1 - ph - 8.0);
+                let pr = Rect::new(px, py, px + pw, py + ph);
+                fill_round(scene, t, c.surfaces.raised, pr.inflate(8.0, 8.0), 10.0);
+                stroke_round(scene, t, c.border_standard, pr.inflate(8.0, 8.0), 10.0, 1.0);
+                picker.apply_layout_external(pr);
+                picker.draw(scene, t, tr, theme, presence);
+                let guard = pr.inflate(8.0, 8.0);
+                hits.push((guard, Action::OpenPopover(self.popover)));
+            }
+            FormPopover::Calendar => {
+                let options = self.calendar_options();
+                let current = match self.selection {
+                    Some(Sel::Event(id)) => self.model.event(id).and_then(|e| e.calendar_id.clone()),
+                    _ => None,
+                };
+                let row_h = 34.0;
+                let pw = anchor.width();
+                let ph = row_h * options.len() as f64 + 8.0;
+                let px = anchor.x0;
+                let py = (anchor.y1 + 6.0).min(self.detail_rect.y1 - ph - 8.0);
+                let pr = Rect::new(px, py, px + pw, py + ph);
+                fill_round(scene, t, c.surfaces.raised, pr, 10.0);
+                stroke_round(scene, t, c.border_standard, pr, 10.0, 1.0);
+                // Backing guard FIRST so a click on padding doesn't dismiss;
+                // the per-row targets are pushed after it and (last-wins hit
+                // resolution) take precedence over the guard.
+                hits.push((pr, Action::OpenPopover(FormPopover::Calendar)));
+                for (i, (target, label)) in options.iter().enumerate() {
+                    let ry = pr.y0 + 4.0 + i as f64 * row_h;
+                    let rr = Rect::new(pr.x0 + 4.0, ry, pr.x1 - 4.0, ry + row_h);
+                    let is_current = match target {
+                        CalTarget::Local => current.is_none(),
+                        CalTarget::Remote(cid) => current.as_deref() == Some(cid.as_str()),
+                    };
+                    if rr.contains(self.last_mouse) || is_current {
+                        fill_round(scene, t, c.surface_white_10, rr, 6.0);
+                    }
+                    tr.draw_text(scene, label, 13.0, c.text_primary, t * Affine::translate((rr.x0 + 12.0, rr.center().y - 7.0)), Some((rr.width() - 40.0) as f32));
+                    if is_current {
+                        draw_check(scene, t, c.accent[5], Rect::new(rr.x1 - 24.0, rr.center().y - 7.0, rr.x1 - 10.0, rr.center().y + 7.0));
+                    }
+                    hits.push((rr, Action::PickCalendar(target.clone())));
+                }
+            }
+            FormPopover::None => {}
+        }
         hits
     }
 
@@ -2291,8 +3111,19 @@ impl Widget for CalendarApp {
         // Drain a finished background CalDAV pull, if one landed since the last
         // frame, before binding the editor so a freshly-synced selection reads
         // back its notes.
+        // Shots-only: spawn a fresh event to capture the New-Event form.
+        if self.shots_pending_new_event {
+            self.shots_pending_new_event = false;
+            self.new_event(state);
+        }
         self.poll_sync(state);
         self.ensure_bound(state);
+        // Seed the form's title/location/time widgets from the current event
+        // whenever the selection changes.
+        self.ensure_form_bound();
+        if let Some(which) = self.shots_pending_popover.take() {
+            self.open_popover(which);
+        }
         self.notes_editor.sync(state, path);
         // Persist after the editor's sync so notes edits land too. Cheap: only
         // writes when the document's heads changed since the last save.
@@ -2404,6 +3235,12 @@ impl Widget for CalendarApp {
 
         if detail_drawn {
             hits.extend(self.draw_detail(scene, t, text_renderer, theme));
+            // The editable event form (title/location inputs, date/time/
+            // calendar fields, chips) draws over the event detail body.
+            let editing_event = matches!(self.selection, Some(Sel::Event(_)));
+            if editing_event {
+                hits.extend(self.draw_event_form(scene, t, text_renderer, theme, presence));
+            }
             // Notes editor — clipped to the notes region below the header.
             // Clip to the editor's own column (not the whole panel) so a
             // long single-line note block scrolls/cuts at the notes
@@ -2418,6 +3255,11 @@ impl Widget for CalendarApp {
             self.notes_editor.draw(scene, t, text_renderer, theme, presence);
             scene.pop_layer();
             self.notes_editor.draw_overlay(scene, t, text_renderer, theme);
+            // Transient date/time/calendar popovers paint on top of the form
+            // and the notes, with a dismiss scrim beneath them.
+            if editing_event {
+                hits.extend(self.draw_form_popovers(scene, t, text_renderer, theme, presence));
+            }
         }
 
         // Sidebar last so the overlay flap (and its scrim) paint over the
@@ -2449,9 +3291,30 @@ impl Widget for CalendarApp {
         // drawn (in the narrow layout it isn't, while the calendar screen
         // shows).
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
+        let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
+        let popover_open = form_active && self.popover != FormPopover::None;
         let in_notes = editor_active
             && self.last_mouse.x >= self.detail_rect.x0
             && self.last_mouse.y >= self.notes_origin.y - 4.0;
+
+        // --- Open popover owns input first --------------------------------
+        if popover_open {
+            self.handle_popover_event(event, scale_factor, modifiers, state, path, handled, focus_target, _node_id, taffy);
+            if *handled {
+                self.dirty = true;
+                return;
+            }
+            // A left click the picker didn't consume resolves against the hit
+            // map (the dismiss scrim, a calendar row, or a popover guard).
+            if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+                if let Some(a) = self.hit_action_at(self.last_mouse) {
+                    self.apply_action(a, state);
+                    *handled = true;
+                }
+            }
+            self.dirty = true;
+            return;
+        }
 
         // Keyboard.
         if let WindowEvent::KeyboardInput {
@@ -2459,9 +3322,19 @@ impl Widget for CalendarApp {
             ..
         } = event
         {
-            // Escape: dismiss the overlay flap, else pop the narrow detail
-            // screen back to the calendar, else close the detail entirely.
+            let field_focused = self.title_input.is_focused() || self.location_input.is_focused();
+            let notes_focused = editor_active && self.notes_editor.is_focused();
+
+            // Escape: blur a focused field first, then dismiss the overlay
+            // flap, then pop the narrow detail screen, then close the detail.
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                if field_focused {
+                    self.title_input.set_focus(false);
+                    self.location_input.set_focus(false);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
                 if matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open {
                     self.sidebar_open = false;
                     *handled = true;
@@ -2487,8 +3360,19 @@ impl Widget for CalendarApp {
                     return;
                 }
             }
-            // When notes are focused, let the editor own the keystrokes.
-            if !(editor_active && self.notes_editor.is_focused()) {
+
+            // Tab / Shift+Tab move between the form fields (title → location →
+            // notes) on the real key path while an event is being edited.
+            if form_active && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+                self.cycle_form_focus(modifiers.state().shift_key());
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+
+            // Global letter/arrow shortcuts fire only when NOT typing into a
+            // text field or the notes editor.
+            if !field_focused && !notes_focused {
                 if let Key::Character(ch) = logical_key {
                     let key = ch.to_lowercase();
                     let act = match key.as_str() {
@@ -2529,8 +3413,30 @@ impl Widget for CalendarApp {
 
         // Mouse click resolution.
         if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+            let p = self.last_mouse;
+            // A click inside a form text field focuses it and lands the caret.
+            if form_active && self.form.title.contains(p) {
+                self.location_input.set_focus(false);
+                self.notes_editor.set_focus(false);
+                self.title_input.set_focus(true);
+                self.title_input.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, _node_id, taffy);
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+            if form_active && self.form.location.contains(p) {
+                self.title_input.set_focus(false);
+                self.notes_editor.set_focus(false);
+                self.location_input.set_focus(true);
+                self.location_input.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, _node_id, taffy);
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
             // Clicks inside the notes region go to the editor (focus + caret).
             if in_notes {
+                self.title_input.set_focus(false);
+                self.location_input.set_focus(false);
                 if let Some(n) = self.editor_node {
                     self.notes_editor.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
                 }
@@ -2538,18 +3444,30 @@ impl Widget for CalendarApp {
                 return;
             }
             // Otherwise resolve against the hit-map (topmost last).
-            let p = self.last_mouse;
-            let mut chosen: Option<Action> = None;
-            for (rect, action) in self.hits.iter().rev() {
-                if rect.contains(p) {
-                    chosen = Some(action.clone());
-                    break;
-                }
-            }
-            if let Some(a) = chosen {
+            if let Some(a) = self.hit_action_at(p) {
+                self.title_input.set_focus(false);
+                self.location_input.set_focus(false);
                 self.notes_editor.set_focus(false);
                 self.apply_action(a, state);
                 *handled = true;
+                return;
+            }
+        }
+
+        // Forward typing (and other events) to a focused form text field so
+        // edits land, mirroring the change into the event via `flush_form_edits`.
+        if self.title_input.is_focused() {
+            self.title_input.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, _node_id, taffy);
+            self.flush_form_edits(state);
+            self.dirty = true;
+            if *handled {
+                return;
+            }
+        } else if self.location_input.is_focused() {
+            self.location_input.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, _node_id, taffy);
+            self.flush_form_edits(state);
+            self.dirty = true;
+            if *handled {
                 return;
             }
         }
@@ -2573,12 +3491,17 @@ impl Widget for CalendarApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.notes_editor.needs_redraw()
+        self.dirty
+            || self.notes_editor.needs_redraw()
+            || self.title_input.needs_redraw()
+            || self.location_input.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.notes_editor.mark_drawn();
+        self.title_input.mark_drawn();
+        self.location_input.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -2599,7 +3522,10 @@ impl Widget for CalendarApp {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.dirty || self.notes_editor.needs_redraw()
+        self.dirty
+            || self.notes_editor.needs_redraw()
+            || self.title_input.needs_redraw()
+            || self.location_input.needs_redraw()
     }
 
     fn draw_with_presence(
@@ -2761,6 +3687,53 @@ fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     p.line_to(Point::new(center.x + 4.0, center.y - 1.0));
     scene.stroke(&Stroke::new(1.6), t, color, None, &p);
     stroke_line(scene, t, color, Point::new(center.x - 5.0, center.y + 6.0), Point::new(center.x + 5.0, center.y + 6.0), 1.6);
+}
+
+/// A field-shaped button that reads as an editable control (rounded rect,
+/// standard border that thickens to the focus colour when active), showing a
+/// value and an optional trailing disclosure caret. Backs the date/time/
+/// calendar fields, mirroring the `TextInput` chrome so the whole form looks
+/// uniformly editable.
+#[allow(clippy::too_many_arguments)]
+fn draw_field_button(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    r: Rect,
+    label: &str,
+    active: bool,
+    trailing_caret: bool,
+) {
+    let c = &theme.tokens.colors;
+    let bg = if active { c.surface_white_10 } else { c.surfaces.raised };
+    fill_round(scene, t, bg, r, 8.0);
+    let (bw, border) = if active { (2.0, c.border_focus) } else { (1.0, c.border_standard) };
+    stroke_round(scene, t, border, r, 8.0, bw);
+    let text_max = (r.width() - if trailing_caret { 40.0 } else { 24.0 }).max(0.0);
+    let disp = elide_to_width(tr, label, 14.0, text_max);
+    tr.draw_text(
+        scene,
+        &disp,
+        14.0,
+        c.text_primary,
+        t * Affine::translate((r.x0 + 12.0, r.center().y - 8.0)),
+        None,
+    );
+    if trailing_caret {
+        draw_caret(scene, t, c.text_dim, Point::new(r.x1 - 16.0, r.center().y), true);
+    }
+}
+
+/// A pill switch (used for the all-day toggle). Filled accent track + white
+/// knob when on; muted track with the knob on the left when off.
+fn draw_switch(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
+    let c = &theme.tokens.colors;
+    let track = if on { c.accent[5] } else { c.neutral[4] };
+    fill_round(scene, t, track, r, r.height() / 2.0);
+    let knob_r = r.height() / 2.0 - 3.0;
+    let cx = if on { r.x1 - knob_r - 3.0 } else { r.x0 + knob_r + 3.0 };
+    scene.fill(Fill::NonZero, t, Color::WHITE, None, &Circle::new(Point::new(cx, r.center().y), knob_r));
 }
 
 /// Draw a small pill chip and return its rect.
@@ -2953,8 +3926,17 @@ mod tests {
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
         app.apply_action(Action::NewEvent, &mut state.doc);
-        let created = app.model.events.iter().find(|e| e.title == "New event").map(|e| e.id);
+        // A new event starts untitled (the title field shows its placeholder),
+        // and is the current selection.
+        let created = match app.selection {
+            Some(Sel::Event(id)) => Some(id),
+            _ => None,
+        };
         assert!(created.is_some(), "NewEvent added an event to the model");
+        assert!(
+            app.model.events.iter().any(|e| e.title.is_empty()),
+            "the fresh event has no title yet"
+        );
         // Persist runs on the next sync (writes only when heads changed).
         app.sync(&mut state.doc, &state.root);
         assert!(path.exists(), "document was written to disk");
@@ -2964,7 +3946,7 @@ mod tests {
         let mut state2 = ui::State::new();
         app2.sync(&mut state2.doc, &state2.root);
         assert!(
-            app2.model.events.iter().any(|e| e.title == "New event"),
+            app2.model.events.iter().any(|e| Some(e.id) == created),
             "event survived the restart via on-disk persistence"
         );
 
@@ -3285,6 +4267,7 @@ mod tests {
         tx.send((
             caldav::SyncResult { events: vec![synced], tasks: Vec::new() },
             SyncOutcome::Synced { calendars: 1, events: 1 },
+            Vec::new(),
         ))
         .unwrap();
         app.sync_rx = Some(rx);
@@ -3756,7 +4739,11 @@ mod tests {
         );
         // A locally-created event stays untagged, so it is always visible.
         app.apply_action(Action::NewEvent, &mut state);
-        let new = app.model.events.iter().find(|e| e.title == "New event").unwrap();
+        let new_id = match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("NewEvent selects the created event"),
+        };
+        let new = app.model.event(new_id).unwrap();
         assert!(new.calendar_id.is_none(), "local events carry no source calendar");
     }
 
@@ -3992,7 +4979,7 @@ mod tests {
         app.demo = false;
         let mut state = AutoCommit::new();
         let (tx, rx) =
-            std::sync::mpsc::channel::<(caldav::SyncResult, SyncOutcome)>();
+            std::sync::mpsc::channel::<(caldav::SyncResult, SyncOutcome, Vec<Id>)>();
         app.sync_rx = Some(rx);
         app.syncing = true;
         drop(tx); // worker vanished without sending
@@ -4071,5 +5058,230 @@ mod tests {
         assert!(joined.contains("ZQ9"), "typed note persisted across restart: {joined:?}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- editable event form -------------------------------------------
+
+    fn selected_event_id(app: &CalendarApp) -> Id {
+        match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("expected an event selection"),
+        }
+    }
+
+    #[test]
+    fn event_title_is_a_real_editable_field_on_the_key_path() {
+        // The title is a focusable text input, not static text: clicking it
+        // focuses the field and typing edits the event through the production
+        // handle_event path.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let before = h.app.model.event(id).unwrap().title.clone();
+        let p = h
+            .hit_center(|a| matches!(a, Action::FocusField(FormField::Title)))
+            .expect("the title is a click target");
+        h.click(p);
+        assert!(h.app.title_input.is_focused(), "clicking the title focuses it");
+        h.type_char("!");
+        let after = h.app.model.event(id).unwrap().title.clone();
+        assert_ne!(after, before, "typing edited the event title");
+        assert!(after.contains('!'), "the typed character landed in the title: {after:?}");
+    }
+
+    #[test]
+    fn location_is_editable_and_tab_traverses_the_fields() {
+        // Tab / Shift-nothing here, but Tab moves focus title → location →
+        // notes → title on the real key path (App leaves Tab to the root
+        // widget because the calendar exposes no focusable children).
+        let mut h = Harness::new(1280, 800);
+        let p = h
+            .hit_center(|a| matches!(a, Action::FocusField(FormField::Title)))
+            .expect("title target");
+        h.click(p);
+        assert!(h.app.title_input.is_focused());
+        h.press_named(winit::keyboard::NamedKey::Tab);
+        assert!(h.app.location_input.is_focused(), "Tab: title → location");
+        assert!(!h.app.title_input.is_focused());
+        // Typing into the now-focused location field edits the event location.
+        let id = selected_event_id(&h.app);
+        h.type_char("Q");
+        assert!(h.app.model.event(id).unwrap().location.contains('Q'), "location is editable");
+        h.press_named(winit::keyboard::NamedKey::Tab);
+        assert!(h.app.notes_editor.is_focused(), "Tab: location → notes");
+        h.press_named(winit::keyboard::NamedKey::Tab);
+        assert!(h.app.title_input.is_focused(), "Tab wraps notes → title");
+    }
+
+    #[test]
+    fn shift_tab_retreats_through_the_form_fields() {
+        // Reverse traversal: the exact seam the Shift+Tab key path invokes
+        // (winit exposes no constructor for a shift-held `Modifiers`, so — as
+        // the toolkit's own widgets do — the direction logic is exercised
+        // directly).
+        let mut h = Harness::new(1280, 800);
+        h.app.focus_field(FormField::Title);
+        assert!(h.app.title_input.is_focused());
+        h.app.cycle_form_focus(true);
+        assert!(h.app.notes_editor.is_focused(), "Shift+Tab: title → notes (wrap)");
+        h.app.cycle_form_focus(true);
+        assert!(h.app.location_input.is_focused(), "Shift+Tab: notes → location");
+        h.app.cycle_form_focus(true);
+        assert!(h.app.title_input.is_focused(), "Shift+Tab: location → title");
+    }
+
+    #[test]
+    fn new_event_is_untitled_with_a_placeholder_and_empty_notes() {
+        // A fresh event has NO seeded title or notes: both fields show their
+        // placeholders instead of literal text the user must delete.
+        let mut h = Harness::new(1280, 800);
+        let p = h.hit_center(|a| matches!(a, Action::NewEvent)).expect("New button");
+        h.click(p);
+        let id = selected_event_id(&h.app);
+        assert!(h.app.model.event(id).unwrap().title.is_empty(), "new event starts untitled");
+        // Bind the notes editor to the new event, then confirm the block list
+        // carries no seeded body text.
+        h.app.sync(&mut h.doc, &automerge::ROOT);
+        assert_eq!(
+            h.app.notes_editor.empty_hint(),
+            NOTES_PLACEHOLDER,
+            "the notes editor shows a calendar-specific placeholder hint"
+        );
+        let list = CalDoc::event_notes(&mut h.doc, id).expect("notes list exists");
+        let mut ed = BlockEditor::new();
+        ed.bind_blocks(&mut h.doc, list);
+        let joined: String = ed
+            .blocks()
+            .iter()
+            .map(|b| b.text().to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(joined.trim().is_empty(), "notes start empty, not seeded: {joined:?}");
+        assert!(!joined.contains("Add details"), "the hint is a placeholder, not body text");
+        // The title field paints its placeholder while empty and unfocused.
+        h.relayout();
+        assert!(h.app.title_input.shows_placeholder(), "empty title shows its placeholder");
+        assert_eq!(h.app.title_input.placeholder(), TITLE_PLACEHOLDER);
+    }
+
+    #[test]
+    fn date_popover_arrow_key_picks_and_sets_the_start_date() {
+        // Opening the start-date field floats the month grid; an arrow key
+        // moves the selection and drives the new date into the event.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let before = h.app.model.event(id).unwrap().start.date();
+        let p = h
+            .hit_center(|a| matches!(a, Action::OpenPopover(FormPopover::StartDate)))
+            .expect("the start-date field opens a popover");
+        h.click(p);
+        assert_eq!(h.app.popover, FormPopover::StartDate, "the date grid is open");
+        h.press_named(winit::keyboard::NamedKey::ArrowRight);
+        let after = h.app.model.event(id).unwrap().start.date();
+        assert_eq!(
+            after,
+            before.succ_opt().unwrap(),
+            "arrow-key navigation picked the next day and set the event start"
+        );
+    }
+
+    #[test]
+    fn time_popover_arrow_key_sets_the_start_time() {
+        // The time popover's spinner is keyboard-navigable; an arrow step
+        // drives the new hour into the event.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        // Ensure the event is timed (not all-day) so the time field exists.
+        assert!(!h.app.model.event(id).unwrap().all_day);
+        let before_h = h.app.model.event(id).unwrap().start.hour();
+        let p = h
+            .hit_center(|a| matches!(a, Action::OpenPopover(FormPopover::StartTime)))
+            .expect("the start-time field opens a popover");
+        h.click(p);
+        assert_eq!(h.app.popover, FormPopover::StartTime);
+        h.press_named(winit::keyboard::NamedKey::ArrowUp);
+        let after_h = h.app.model.event(id).unwrap().start.hour();
+        assert_eq!(after_h, (before_h + 1) % 24, "the clock spinner set the start hour");
+    }
+
+    #[test]
+    fn all_day_toggle_flips_the_flag() {
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let before = h.app.model.event(id).unwrap().all_day;
+        let p = h.hit_center(|a| matches!(a, Action::ToggleAllDay)).expect("all-day toggle");
+        h.click(p);
+        assert_eq!(h.app.model.event(id).unwrap().all_day, !before, "all-day flipped");
+    }
+
+    #[test]
+    fn calendar_selector_files_event_on_a_configured_account_and_queues_it() {
+        // The selector lists calendars from the shared account store; picking a
+        // remote CalDAV calendar tags the event AND queues it for upload.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let p = h
+            .hit_center(|a| matches!(a, Action::OpenPopover(FormPopover::Calendar)))
+            .expect("the calendar field opens a selector");
+        h.click(p);
+        assert_eq!(h.app.popover, FormPopover::Calendar);
+        h.relayout(); // draw the list so its row targets populate
+        let p2 = h
+            .hit_center(|a| matches!(a, Action::PickCalendar(CalTarget::Remote(cid)) if cid == "work/default"))
+            .expect("a configured remote calendar appears in the list");
+        h.click(p2);
+        assert_eq!(
+            h.app.model.event(id).unwrap().calendar_id.as_deref(),
+            Some("work/default"),
+            "the event is filed on the chosen CalDAV calendar"
+        );
+        assert!(
+            CalDoc::outbox(&h.doc).contains(&id),
+            "creating on a CalDAV calendar queues the event for upload"
+        );
+        assert_eq!(h.app.popover, FormPopover::None, "picking a calendar closes the selector");
+    }
+
+    #[test]
+    fn refiling_on_the_local_calendar_clears_the_upload_queue() {
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        // File it remote first (queued), then move it back to the device.
+        h.app.set_event_calendar(CalTarget::Remote("work/default".into()), &mut h.doc);
+        assert!(CalDoc::outbox(&h.doc).contains(&id));
+        h.app.set_event_calendar(CalTarget::Local, &mut h.doc);
+        assert!(h.app.model.event(id).unwrap().calendar_id.is_none());
+        assert!(
+            !CalDoc::outbox(&h.doc).contains(&id),
+            "filing back on the local calendar drops it from the queue"
+        );
+    }
+
+    #[test]
+    fn calendar_options_come_from_the_shared_account_store() {
+        // The option list is sourced from the configured accounts, never faked:
+        // the sample store's calendars all appear, plus the local option.
+        let h = Harness::new(1280, 800);
+        let opts = h.app.calendar_options();
+        assert!(matches!(opts.first(), Some((CalTarget::Local, _))), "local is first");
+        for (_, cal) in h.app.accounts.all_calendars() {
+            assert!(
+                opts.iter().any(|(t, _)| matches!(t, CalTarget::Remote(id) if id == &cal.id)),
+                "configured calendar {} is offered in the selector",
+                cal.id
+            );
+        }
+    }
+
+    #[test]
+    fn event_form_exposes_the_expected_editable_targets() {
+        // The form paints real hit targets for every editable control.
+        let h = Harness::new(1280, 800);
+        let has = |pred: fn(&Action) -> bool| h.app.hits.iter().any(|(_, a)| pred(a));
+        assert!(has(|a| matches!(a, Action::FocusField(FormField::Title))), "title field");
+        assert!(has(|a| matches!(a, Action::FocusField(FormField::Location))), "location field");
+        assert!(has(|a| matches!(a, Action::ToggleAllDay)), "all-day toggle");
+        assert!(has(|a| matches!(a, Action::OpenPopover(FormPopover::StartDate))), "start date");
+        assert!(has(|a| matches!(a, Action::OpenPopover(FormPopover::StartTime))), "start time");
+        assert!(has(|a| matches!(a, Action::OpenPopover(FormPopover::Calendar))), "calendar selector");
     }
 }
