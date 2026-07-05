@@ -30,11 +30,12 @@ use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{DragController, ListMetrics};
 
 use crate::chart::{self, ChartPoint};
 use crate::icon;
 use crate::interaction::{ContextMenu, EntryAction, PointerPress, SWIPE_COMMIT_DX};
-use crate::model::{DayForecast, SavedLocation, WeatherModel, WeatherSnapshot};
+use crate::model::{DayForecast, LocationId, SavedLocation, WeatherModel, WeatherSnapshot};
 use crate::net::{Request, Response};
 use crate::units::{self, Units};
 use crate::wxcode::Sky;
@@ -109,9 +110,14 @@ pub struct Core {
     last_mouse: Point,
 
     // --- overview: saved-place direct manipulation ---
+    /// Press classifier: distinguishes a click from a vertical reorder-drag
+    /// from a horizontal delete-swipe once the pointer moves.
     press: Option<PointerPress>,
     menu: Option<ContextMenu>,
-    drop_index: Option<usize>,
+    /// The reusable drag-to-reorder model (live gap + reflow + floating
+    /// ghost). Armed once a press classifies as a vertical reorder; commits
+    /// the `(from, to)` move on drop and restores the order on cancel.
+    reorder: DragController<LocationId>,
     over_rect: Rect,
     over_list_top: f64,
     over_scroll: f64,
@@ -161,7 +167,7 @@ impl Core {
             last_mouse: Point::ZERO,
             press: None,
             menu: None,
-            drop_index: None,
+            reorder: DragController::vertical(),
             over_rect: Rect::ZERO,
             over_list_top: 0.0,
             over_scroll: 0.0,
@@ -521,6 +527,11 @@ impl Core {
         self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
         self.over_list_top = list_top - self.over_scroll;
 
+        // Re-pin the live insertion gap to the cursor against this frame's
+        // geometry so a held drag reflows correctly even as the list scrolls.
+        let metrics = self.list_metrics();
+        self.reorder.sync_insertion(&metrics);
+
         // Clip the scrolling list to its region.
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
@@ -730,13 +741,18 @@ impl Core {
         hot: &mut Vec<Hotspot>,
     ) {
         let units = self.units;
-        let n = self.model.locations.len();
-        let dragging = self.dragged_index();
-        let drop_at = self.drop_index;
+        let metrics = self.list_metrics();
+        let dragging = self.reorder.from_index();
         let slot_y = |i: usize| self.over_list_top + i as f64 * (CHIP_H + CHIP_GAP);
 
-        if let (Some(_), Some(di)) = (dragging, drop_at) {
-            let gy = slot_y(di) - CHIP_GAP / 2.0;
+        // While a reorder is live the toolkit's `DragController` reflows the
+        // list: every non-dragged chip slides by `item_shift` to close the
+        // vacated hole and open a one-slot gap exactly where the dragged chip
+        // will land — so the list visibly rearranges under the cursor rather
+        // than only on release. A faint accent caret sits at the top of the
+        // reflowed gap (the live target slot) to mark where the chip will drop.
+        if let Some(gap) = self.reorder.insertion() {
+            let gy = slot_y(gap) - CHIP_GAP / 2.0;
             scene.fill(Fill::NonZero, t, self.accent(theme), None, &RoundedRect::new(x, gy - 1.5, x + w, gy + 1.5, 1.5));
         }
 
@@ -744,7 +760,7 @@ impl Core {
             if Some(i) == dragging {
                 continue;
             }
-            let y = slot_y(i);
+            let y = slot_y(i) + self.reorder.item_shift(i, &metrics);
             let chip = Rect::new(x, y, x + w, y + CHIP_H);
             let swipe_dx = self.swipe_dx_for(i);
             if swipe_dx > 0.0 {
@@ -755,22 +771,24 @@ impl Core {
             hot.push(Hotspot { rect: chip, action: OverAction::PressChip(i) });
         }
 
-        if let (Some(_), Some(di)) = (dragging, drop_at) {
-            if di == n {
-                let gy = slot_y(n) - CHIP_GAP / 2.0;
-                scene.fill(Fill::NonZero, t, self.accent(theme), None, &RoundedRect::new(x, gy - 1.5, x + w, gy + 1.5, 1.5));
-            }
-        }
-
+        // The dragged chip floats free as a ghost at its grab offset under the
+        // cursor, drawn last so it rides above the reflowing list.
         if let Some(i) = dragging {
-            if let Some(loc) = self.model.locations.get(i) {
-                let dy = self.last_mouse.y - CHIP_H / 2.0;
-                let chip = Rect::new(x, dy, x + w, dy + CHIP_H);
+            if let (Some(loc), Some(chip)) =
+                (self.model.locations.get(i), self.reorder.ghost_rect(x, x + w, &metrics))
+            {
                 let sh = RoundedRect::from_rect(chip.inset(-2.0), theme.tokens.radii.md as f64 + 2.0);
                 scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
                 self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
             }
         }
+    }
+
+    /// The reorderable saved-place list's geometry this frame, for the
+    /// toolkit's [`DragController`]. `over_list_top` is the scroll-adjusted
+    /// leading edge of the first chip, set during `draw_overview`.
+    fn list_metrics(&self) -> ListMetrics {
+        ListMetrics::uniform(self.over_list_top, CHIP_H, CHIP_GAP, self.model.locations.len())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -911,11 +929,7 @@ impl Core {
     // ---- overview drag / swipe helpers ------------------------------
 
     fn is_reorder_active(&self) -> bool {
-        self.press.map(|p| p.is_reorder()).unwrap_or(false)
-    }
-
-    fn dragged_index(&self) -> Option<usize> {
-        self.press.filter(|p| p.is_reorder()).map(|p| p.index)
+        self.reorder.is_active()
     }
 
     fn swipe_dx_for(&self, i: usize) -> f64 {
@@ -931,12 +945,6 @@ impl Core {
         let w = (rect.width() - 2.0 * RP).max(80.0);
         let h = 96.0;
         Rect::new(x, rect.y1 - h - RP, x + w, rect.y1 - RP)
-    }
-
-    fn reorder_drop_index(&self) -> usize {
-        let n = self.model.locations.len();
-        let rel = (self.last_mouse.y - self.over_list_top) / (CHIP_H + CHIP_GAP);
-        ((rel.round()).max(0.0) as usize).min(n)
     }
 
     fn chip_at(&self, p: Point) -> Option<usize> {
@@ -1006,8 +1014,23 @@ impl Core {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
                 if let Some(press) = self.press.as_mut() {
                     press.update(self.last_mouse);
+                }
+                // Drive the reusable reorder model only while the gesture is a
+                // vertical reorder. A horizontal delete-swipe drops any pending
+                // drag so the two gestures never fight for the same pointer.
+                if let Some(press) = self.press {
                     if press.is_reorder() {
-                        self.drop_index = Some(self.reorder_drop_index());
+                        let metrics = self.list_metrics();
+                        if !self.reorder.is_pending() {
+                            // Lazily arm the drag the moment it classifies as a
+                            // reorder, grabbing the chip at the press point.
+                            let grab = press.origin.y - metrics.slot_lead(press.index);
+                            let id = self.model.locations[press.index].id;
+                            self.reorder.begin(id, press.index, grab, press.origin);
+                        }
+                        self.reorder.pointer_moved(self.last_mouse, &metrics);
+                    } else if press.is_swipe() {
+                        self.reorder.cancel();
                     }
                 }
             }
@@ -1054,7 +1077,7 @@ impl Core {
                     match hit {
                         Some(OverAction::PressChip(i)) => {
                             self.press = Some(PointerPress::new(i, self.last_mouse));
-                            self.drop_index = None;
+                            self.reorder.cancel();
                             handled = true;
                         }
                         Some(action) => {
@@ -1072,17 +1095,18 @@ impl Core {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if let Some(press) = self.press.take() {
-                    self.drop_index = None;
                     handled = true;
                     if press.is_reorder() {
                         if self.delete_zone_rect().contains(self.last_mouse) {
+                            // Drop onto the trash: abandon the reorder, delete.
+                            self.reorder.cancel();
                             changed = self.apply_entry_action(press.index, EntryAction::Delete);
+                        } else if let Some((from, to)) = self.reorder.commit() {
+                            // Commit the live insertion the controller tracked.
+                            changed = self.model.move_location(from, to);
                         } else {
-                            let mut to = self.reorder_drop_index();
-                            if to > press.index {
-                                to -= 1;
-                            }
-                            changed = self.model.move_location(press.index, to);
+                            // Dropped in place (or never activated): no change.
+                            self.reorder.cancel();
                         }
                     } else if press.is_swipe() {
                         if press.swipe_dx() >= SWIPE_COMMIT_DX {
@@ -1129,7 +1153,14 @@ impl Core {
                 } else {
                     match logical_key {
                         Key::Named(NamedKey::Escape) => {
-                            if self.menu.is_some() {
+                            // Escape abandons an in-flight reorder, snapping the
+                            // list back to its original order (the model was
+                            // never touched — the drag is purely visual until
+                            // drop).
+                            if self.reorder.cancel() {
+                                self.press = None;
+                                handled = true;
+                            } else if self.menu.is_some() {
                                 self.menu = None;
                                 handled = true;
                             }
@@ -1551,12 +1582,30 @@ impl Core {
 
     // ---- test / scenario seams --------------------------------------
 
-    /// Stage a reorder drag of the second saved place for a headless shot.
+    /// Stage a live mid-drag reorder of the second saved place for a headless
+    /// shot: the chip floats free as a ghost under the cursor while the rest
+    /// of the list has reflowed to open a gap near the tail where it will
+    /// land. Insertion is finalised by `sync_insertion` against real geometry
+    /// during the shot's draw pass.
     pub fn seed_drag(&mut self) {
-        let mut press = PointerPress::new(1, Point::new(150.0, 250.0));
-        press.update(Point::new(150.0, 470.0));
-        self.last_mouse = Point::new(150.0, 470.0);
-        self.drop_index = Some(self.model.locations.len());
+        if self.model.locations.is_empty() {
+            return;
+        }
+        let from = 1.min(self.model.locations.len() - 1);
+        let id = self.model.locations[from].id;
+        let start = Point::new(200.0, 232.0);
+        let target = Point::new(200.0, start.y + 2.4 * (CHIP_H + CHIP_GAP));
+        // Grab the chip at its vertical centre so the ghost sits on the cursor.
+        self.reorder.begin(id, from, CHIP_H / 2.0, start);
+        self.last_mouse = target;
+        // A rough metrics is enough to clear the drag-start threshold; the draw
+        // pass re-pins the insertion index against the real list geometry.
+        let m = ListMetrics::uniform(0.0, CHIP_H, CHIP_GAP, self.model.locations.len());
+        self.reorder.pointer_moved(target, &m);
+        // Keep the classifier in the reorder state so the delete drop-zone and
+        // list-bottom inset match a real in-flight drag.
+        let mut press = PointerPress::new(from, start);
+        press.update(target);
         self.press = Some(press);
     }
 
@@ -1638,6 +1687,23 @@ impl Core {
     #[cfg(test)]
     pub fn refresh_btn_rect(&self) -> Rect {
         self.refresh_btn
+    }
+    /// Test seam: the live insertion boundary the reorder controller tracks
+    /// this frame, or `None` when no reorder is in flight.
+    #[cfg(test)]
+    pub fn reorder_insertion_for_test(&self) -> Option<usize> {
+        self.reorder.insertion()
+    }
+    /// Test seam: index of the chip currently being dragged, if any.
+    #[cfg(test)]
+    pub fn reorder_from_for_test(&self) -> Option<usize> {
+        self.reorder.from_index()
+    }
+    /// Test seam: the reflow shift (logical px) the controller applies to the
+    /// non-dragged chip at `i` while a drag is live.
+    #[cfg(test)]
+    pub fn reorder_item_shift_for_test(&self, i: usize) -> f64 {
+        self.reorder.item_shift(i, &self.list_metrics())
     }
 }
 
