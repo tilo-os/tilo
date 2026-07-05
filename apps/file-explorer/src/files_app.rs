@@ -18,6 +18,35 @@ use ui::widget::{Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, T
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 
+/// CRDT map key holding the toolbar search field's `Text` object. The
+/// widget seeds this object in `sync` (the toolkit's `TextInput` only writes
+/// into an existing `Text`, never lazily creates one), so keystrokes in the
+/// search box splice here and `sync` reads the query back out to filter.
+const SEARCH_QUERY_PATH: &str = "files.search_query";
+/// CRDT map key holding the inline-rename field's `Text` object. Seeded with
+/// the current name when a rename begins; the rename bar's `TextInput` edits
+/// it and `commit_rename` reads the chosen name back out.
+const RENAME_QUERY_PATH: &str = "files.rename_query";
+
+/// Ensure a `Text` object exists at `key` on `root`, returning its id. The
+/// toolkit's `TextInput` binds to (and writes into) an existing `Text`
+/// object but never creates one, so the app must seed it — otherwise
+/// keystrokes mutate only the input's local string and never reach the CRDT.
+fn ensure_text_obj(
+    state: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+    key: &str,
+) -> automerge::ObjId {
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc, Value};
+    if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
+        return id;
+    }
+    state
+        .put_object(root, key, ObjType::Text)
+        .expect("put_object Text never fails")
+}
+
 pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
@@ -39,6 +68,17 @@ pub struct FileExplorerWidget {
     clipboard_cut: bool,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
+    /// When `Some(i)`, an inline rename of displayed entry `i` is in
+    /// progress: the rename bar is shown and its `TextInput` edits
+    /// [`RENAME_QUERY_PATH`]. `None` = not renaming.
+    renaming: Option<usize>,
+    /// Editable name mirrored from the rename field's `Text` object each
+    /// `sync` while renaming; `commit_rename` renames the file to this.
+    rename_buffer: String,
+    /// Set when a rename just began so the next `sync` seeds the CRDT
+    /// `Text` object with `rename_buffer` (the current name) before the
+    /// input reads it back.
+    rename_seed_pending: bool,
     rect: vello::kurbo::Rect,
     composed: Option<Box<dyn Widget>>,
     /// Command queue the interactive children push into.
@@ -85,6 +125,9 @@ impl FileExplorerWidget {
             clipboard: Vec::new(),
             clipboard_cut: false,
             status: None,
+            renaming: None,
+            rename_buffer: String::new(),
+            rename_seed_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             composed: None,
             cmds: new_sink(),
@@ -176,7 +219,17 @@ impl FileExplorerWidget {
         };
         let mut view_col = Column::new().with_fill_remaining_height();
         if let Some(err) = self.error.as_deref() {
-            view_col = view_col.push(Box::new(Text::new(err)));
+            // Real error affordance: the message plus a "Try Again" button
+            // wired to re-read the directory (Refresh).
+            let sink = self.cmds.clone();
+            let retry = ui::widget::Button::new("files.retry", "Try Again", None)
+                .on_click(move || crate::command::push(&sink, FileCommand::Refresh));
+            view_col = view_col.push(Box::new(
+                Row::new()
+                    .push(Box::new(Text::new(err)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(retry)),
+            ));
         }
         view_col = view_col.push(Box::new(
             Scrollable::new(ScrollAxis::Vertical).with_child(view_child),
@@ -200,19 +253,46 @@ impl FileExplorerWidget {
             .push(Box::new(Spacer::new()))
             .push(Box::new(Text::new(&path_str)));
 
-        // Hidden search anchor binding the CRDT path the toolbar's search
-        // field writes to, so `sync` can pick the query back up.
-        let search_anchor = TextInput::new(vec![])
-            .with_id("files.search_anchor")
-            .with_on_change_path("files.search_query");
+        let mut root_col = Column::new()
+            .push(toolbar)
+            .push(Box::new(breadcrumb_row))
+            .push(Box::new(body));
+        // Inline-rename bar sits just above the footer while a rename is
+        // active; its TextInput edits the RENAME_QUERY_PATH Text object.
+        if self.renaming.is_some() {
+            root_col = root_col.push(self.build_rename_bar());
+        }
+        root_col = root_col.push(Box::new(footer));
+        Box::new(root_col)
+    }
 
+    /// The inline-rename editor row: a label, a CRDT-bound name field, and
+    /// confirm/cancel buttons. Shown only while [`renaming`](Self::renaming)
+    /// is set. Enter/Escape (handled in `handle_event`) mirror the buttons.
+    fn build_rename_bar(&self) -> Box<dyn Widget> {
+        let commit = self.cmds.clone();
+        let cancel = self.cmds.clone();
+        let input = TextInput::new(vec![])
+            .with_id("files.rename_input")
+            .with_on_change_path(RENAME_QUERY_PATH)
+            .with_placeholder("New name");
         Box::new(
-            Column::new()
-                .push(toolbar)
-                .push(Box::new(breadcrumb_row))
-                .push(Box::new(body))
-                .push(Box::new(footer))
-                .push(Box::new(search_anchor)),
+            Row::new()
+                .no_wrap()
+                .push(Box::new(Text::new("Rename:")))
+                .push(Box::new(
+                    Container::new()
+                        .with_width(260.0)
+                        .with_child(Box::new(input)),
+                ))
+                .push(Box::new(
+                    ui::widget::Button::new("files.rename_confirm", "Rename", None)
+                        .on_click(move || crate::command::push(&commit, FileCommand::RenameCommit)),
+                ))
+                .push(Box::new(
+                    ui::widget::Button::new("files.rename_cancel", "Cancel", None)
+                        .on_click(move || crate::command::push(&cancel, FileCommand::RenameCancel)),
+                )),
         )
     }
 
@@ -272,12 +352,18 @@ impl FileExplorerWidget {
             Ok(mut entries) => {
                 sort_entries(self.sort_by, self.sort_order, &mut entries);
                 self.entries = entries;
-                self.current_path = path;
             }
             Err(e) => {
+                // Drop stale entries so the error view isn't backed by the old
+                // directory's contents.
+                self.entries.clear();
                 self.error = Some(e);
             }
         }
+        // Always record the path we attempted, even on error, so a Refresh
+        // ("Try Again") retries the same target rather than reloading the
+        // previous valid directory and silently clearing the error.
+        self.current_path = path;
         self.is_loading = false;
     }
 
@@ -430,6 +516,10 @@ impl FileExplorerWidget {
                 self.set_view_mode(m);
                 true
             }
+            FileCommand::SetSort(by) => {
+                self.set_sort_by(by);
+                true
+            }
             FileCommand::ToggleSortOrder => {
                 self.toggle_sort_order();
                 true
@@ -444,8 +534,18 @@ impl FileExplorerWidget {
             }
             FileCommand::NewFolder => {
                 match fileops::new_folder(&self.current_path, "New Folder") {
-                    Ok(_) => {
+                    Ok(path) => {
                         self.refresh();
+                        // Select the freshly-created folder and drop into
+                        // inline-rename so the user names it right away.
+                        if let Some(i) = self
+                            .displayed_entries()
+                            .iter()
+                            .position(|e| e.path == path)
+                        {
+                            self.selection.select_only(i);
+                            self.begin_rename();
+                        }
                         self.status = Some("Created folder".to_string());
                     }
                     Err(e) => self.status = Some(format!("New folder failed: {e}")),
@@ -453,22 +553,15 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::Rename => {
-                // A full inline-rename editor is a follow-up; for now the
-                // command appends " (renamed)" so the wiring is real and
-                // testable. The interactive editor lands with the context
-                // menu's text field.
-                if let Some(p) = self.primary_path() {
-                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                        let new = format!("{name} (renamed)");
-                        match fileops::rename(&p, &new) {
-                            Ok(_) => {
-                                self.refresh();
-                                self.status = Some("Renamed".to_string());
-                            }
-                            Err(e) => self.status = Some(format!("Rename failed: {e}")),
-                        }
-                    }
-                }
+                self.begin_rename();
+                true
+            }
+            FileCommand::RenameCommit => {
+                self.commit_rename();
+                true
+            }
+            FileCommand::RenameCancel => {
+                self.cancel_rename();
                 true
             }
             FileCommand::Delete => {
@@ -550,11 +643,111 @@ impl FileExplorerWidget {
 
     /// Open a path: navigate into directories, else launch its app.
     fn open_path(&mut self, path: PathBuf) {
+        let mut runner = SystemRunner;
+        let _ = self.open_target(path, &mut runner);
+    }
+
+    /// Open `path` with `runner`: navigate into directories, launch the
+    /// registered app for document types, and hand everything else to the
+    /// desktop default handler (`open::that`, via `CommandRunner::open_default`).
+    /// Returns whether a launch happened (`false` when it navigated a dir).
+    fn open_target<R: CommandRunner>(
+        &mut self,
+        path: PathBuf,
+        runner: &mut R,
+    ) -> std::io::Result<bool> {
         if path.is_dir() {
             self.navigate(path);
-        } else if let Some(app) = app_for_path(&path) {
-            let cwd = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.current_path.clone());
-            let _ = SystemRunner.spawn_arg(app, &path, &cwd);
+            return Ok(false);
+        }
+        let cwd = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.current_path.clone());
+        match app_for_path(&path) {
+            Some(app) => runner.spawn_arg(app, &path, &cwd)?,
+            // No registered qOS app for this type — open with the desktop
+            // default (images, PDFs, video, audio, plain text, code, …).
+            None => runner.open_default(&path)?,
+        }
+        Ok(true)
+    }
+
+    // --- inline rename -------------------------------------------------
+
+    /// Whether an inline rename is currently in progress.
+    pub fn is_renaming(&self) -> bool {
+        self.renaming.is_some()
+    }
+
+    /// The current editable rename text (the field's live contents).
+    pub fn rename_buffer(&self) -> &str {
+        &self.rename_buffer
+    }
+
+    /// Replace the editable rename text. The next `sync` seeds this into the
+    /// rename field's CRDT `Text` object; used by tests to drive the flow
+    /// without a keystroke round-trip through the widget tree.
+    pub fn set_rename_buffer(&mut self, s: String) {
+        self.rename_buffer = s;
+        self.rename_seed_pending = true;
+    }
+
+    /// Begin an inline rename of the primary selection: open the rename bar
+    /// seeded with the entry's current name. No-op without a selection.
+    pub fn begin_rename(&mut self) {
+        let disp = self.displayed_entries();
+        if let Some(i) = self.selection.primary() {
+            if let Some(e) = disp.get(i) {
+                self.renaming = Some(i);
+                self.rename_buffer = e.name.clone();
+                self.rename_seed_pending = true;
+                self.status = None;
+            }
+        }
+    }
+
+    /// Abandon the in-progress rename, leaving the file untouched.
+    pub fn cancel_rename(&mut self) {
+        self.renaming = None;
+        self.rename_seed_pending = false;
+    }
+
+    /// Commit the in-progress rename: rename the target file to
+    /// `rename_buffer` (trimmed). Returns whether the file was renamed. A
+    /// blank or unchanged name just closes the bar; an fs error keeps the
+    /// bar open with a status message so the user can retry.
+    pub fn commit_rename(&mut self) -> bool {
+        let Some(idx) = self.renaming else { return false };
+        let disp = self.displayed_entries();
+        let Some(entry) = disp.get(idx) else {
+            self.renaming = None;
+            return false;
+        };
+        let path = entry.path.clone();
+        let new_name = self.rename_buffer.trim().to_string();
+        let unchanged = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|cur| cur == new_name);
+        if new_name.is_empty() || unchanged {
+            self.renaming = None;
+            self.rename_seed_pending = false;
+            return false;
+        }
+        match fileops::rename(&path, &new_name) {
+            Ok(_) => {
+                self.renaming = None;
+                self.rename_seed_pending = false;
+                self.refresh();
+                self.status = Some("Renamed".to_string());
+                true
+            }
+            Err(e) => {
+                // Keep the bar open so the user can fix the name.
+                self.status = Some(format!("Rename failed: {e}"));
+                false
+            }
         }
     }
 }
@@ -566,10 +759,17 @@ pub fn filter_entries<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
     entries.iter().filter(|e| e.name.to_lowercase().contains(&q)).collect()
 }
 
-/// Thin mockable wrapper around `std::process::Command::spawn`.
+/// Thin mockable wrapper around process launch + the desktop "open with
+/// default app" handler. Mocked in tests so the open/launch paths are
+/// verifiable without actually spawning anything.
 pub trait CommandRunner {
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()>;
     fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()>;
+    /// Open `path` with the system default handler. This is the fallback for
+    /// every file type qOS has no registered app for (images, PDFs, video,
+    /// audio, plain text, …) so double-click/Enter/Open never silently do
+    /// nothing.
+    fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()>;
 }
 
 pub struct SystemRunner;
@@ -580,6 +780,9 @@ impl CommandRunner for SystemRunner {
     }
     fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()> {
         std::process::Command::new(program).arg(arg).current_dir(cwd).spawn().map(|_c| ())
+    }
+    fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        open::that(path)
     }
 }
 
@@ -600,16 +803,8 @@ impl FileExplorerWidget {
     pub fn open_entry<R: CommandRunner>(&mut self, idx: usize, runner: &mut R) -> std::io::Result<bool> {
         let disp = self.displayed_entries();
         let Some(entry) = disp.get(idx) else { return Ok(false) };
-        if entry.is_dir {
-            let p = entry.path.clone();
-            self.navigate(p);
-            return Ok(false);
-        }
         let path = entry.path.clone();
-        let Some(app) = app_for_path(&path) else { return Ok(false) };
-        let cwd = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.current_path.clone());
-        runner.spawn_arg(app, &path, &cwd)?;
-        Ok(true)
+        self.open_target(path, runner)
     }
 
     /// Build + open the right-click menu at `at`, with items appropriate to
@@ -634,6 +829,14 @@ impl FileExplorerWidget {
             spec.push(("", None));
             spec.push(("Move to Trash", Some(FileCommand::Delete)));
         }
+        // Sort section — the only place the sort *key* can be changed in grid
+        // mode (which has no clickable column header) and the only way to
+        // reach "Sort by Type" at all.
+        spec.push(("", None));
+        spec.push(("Sort by Name", Some(FileCommand::SetSort(SortBy::Name))));
+        spec.push(("Sort by Size", Some(FileCommand::SetSort(SortBy::Size))));
+        spec.push(("Sort by Type", Some(FileCommand::SetSort(SortBy::Type))));
+        spec.push(("Sort by Date", Some(FileCommand::SetSort(SortBy::Modified))));
         spec.push(("", None));
         spec.push(("Open Terminal Here", Some(FileCommand::OpenTerminal)));
 
@@ -712,6 +915,12 @@ impl FileExplorerWidget {
         if ke.state != winit::event::ElementState::Pressed {
             return false;
         }
+        // While renaming, the rename field owns the keyboard (Enter/Escape are
+        // handled upstream in `handle_event`); don't let list nav / Delete /
+        // clipboard shortcuts fire underneath the editor.
+        if self.renaming.is_some() {
+            return false;
+        }
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let len = self.displayed_entries().len();
@@ -763,22 +972,40 @@ impl FileExplorerWidget {
 
 impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        use automerge::{transaction::Transactable, ReadDoc};
+        // Seed the backing Text objects *before* the children sync so the
+        // search + rename inputs resolve a real object to write into. The
+        // toolkit's TextInput binds to an existing Text but never lazily
+        // creates one — the missing seed is exactly why the search box was
+        // previously dead (keystrokes mutated only the input's local string).
+        let search_obj = ensure_text_obj(state, path, SEARCH_QUERY_PATH);
+        let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
+
+        // A just-started rename seeds the field with the entry's current name.
+        if self.rename_seed_pending {
+            let cur_len = state.text(&rename_obj).map(|t| t.chars().count()).unwrap_or(0);
+            let _ = state.splice_text(&rename_obj, 0, cur_len as isize, &self.rename_buffer);
+            self.rename_seed_pending = false;
+        }
+
         if let Some(c) = &mut self.composed {
             c.sync(state, path);
         }
-        // Pull the search query back out of the CRDT (the toolbar's search
-        // field + hidden anchor write it there). A change re-filters the
-        // displayed list, which is a structural change.
-        use automerge::ReadDoc;
-        if let Ok(Some((automerge::Value::Scalar(s), _))) =
-            state.get(path, "files.search_query")
-        {
-            if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                if text.as_str() != self.search_query {
-                    self.search_query = text.to_string();
-                    self.selection.clear();
-                    self.structure_dirty = true;
-                }
+
+        // Pull the search query out of its Text object; a change re-filters
+        // the displayed list, which is a structural change (rebuild).
+        if let Ok(text) = state.text(&search_obj) {
+            if text != self.search_query {
+                self.search_query = text;
+                self.selection.clear();
+                self.structure_dirty = true;
+            }
+        }
+        // While renaming, mirror the field's live text into our buffer so a
+        // commit renames to what the user actually typed.
+        if self.renaming.is_some() {
+            if let Ok(text) = state.text(&rename_obj) {
+                self.rename_buffer = text;
             }
         }
     }
@@ -942,6 +1169,42 @@ impl Widget for FileExplorerWidget {
             return;
         }
 
+        // While an inline rename is active, Enter commits and Escape cancels
+        // — intercepted before the keystroke reaches the rename field so it
+        // never falls through to app-level nav (Enter-open / Escape). Typed
+        // characters are NOT intercepted here; they fall through to the field.
+        if self.renaming.is_some() {
+            if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                use winit::keyboard::{Key, NamedKey};
+                if ke.state == ElementState::Pressed {
+                    match &ke.logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            // Pull the freshest field text from the CRDT, then
+                            // commit — the last keystroke may not have synced.
+                            let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
+                            if let Ok(text) = {
+                                use automerge::ReadDoc;
+                                state.text(&rename_obj)
+                            } {
+                                self.rename_buffer = text;
+                            }
+                            self.commit_rename();
+                            *handled = true;
+                            self.structure_dirty = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.cancel_rename();
+                            *handled = true;
+                            self.structure_dirty = true;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // Deliver to the composed tree first (buttons, views, search field).
         if let Some(c) = &mut self.composed {
             if let Ok(children) = taffy.children(node_id) {
@@ -1015,6 +1278,8 @@ mod open_with_tests {
     #[derive(Default)]
     struct RecRunner {
         calls: Vec<(String, Option<PathBuf>)>,
+        /// Paths handed to the system default handler (non-document opens).
+        opened: Vec<PathBuf>,
     }
     impl CommandRunner for RecRunner {
         fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
@@ -1023,6 +1288,10 @@ mod open_with_tests {
         }
         fn spawn_arg(&mut self, program: &str, arg: &Path, _cwd: &Path) -> std::io::Result<()> {
             self.calls.push((program.to_string(), Some(arg.to_path_buf())));
+            Ok(())
+        }
+        fn open_default(&mut self, path: &Path) -> std::io::Result<()> {
+            self.opened.push(path.to_path_buf());
             Ok(())
         }
     }
@@ -1049,8 +1318,25 @@ mod open_with_tests {
         assert!(w.open_entry(0, &mut runner).unwrap(), "document spawns an app");
         assert_eq!(runner.calls, vec![("word-processor".to_string(), Some(PathBuf::from("/docs/report.odt")))]);
 
-        assert!(!w.open_entry(1, &mut runner).unwrap());
-        assert_eq!(runner.calls.len(), 1);
+        // A non-document (image) opens via the system default handler — it
+        // must NOT silently do nothing (the previous behaviour, and the bug).
+        assert!(w.open_entry(1, &mut runner).unwrap(), "non-document opens via default handler");
+        assert_eq!(runner.calls.len(), 1, "no qOS app spawn for a plain image");
+        assert_eq!(runner.opened, vec![PathBuf::from("/docs/photo.png")]);
+    }
+
+    #[test]
+    fn open_entry_uses_default_handler_for_every_nondocument_type() {
+        // Images, PDFs, video, audio, code — none have a qOS app, so every one
+        // must route to the desktop default handler rather than no-op.
+        for f in ["pic.jpg", "movie.mp4", "song.flac", "doc.pdf", "main.rs"] {
+            let mut w = FileExplorerWidget::new();
+            w.entries = vec![file_entry(f)];
+            let mut runner = RecRunner::default();
+            assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
+            assert!(runner.calls.is_empty(), "{f} must not spawn a qOS app");
+            assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
+        }
     }
 
     #[test]
@@ -1107,5 +1393,274 @@ mod open_with_tests {
             .filter_map(|i| i.label().map(|s| s.to_string()))
             .collect();
         assert!(labels.contains(&"Paste".to_string()));
+    }
+}
+
+/// Tests for the real command-application paths — the things a user actually
+/// triggers from the toolbar / context menu / keyboard, exercised through
+/// `apply_command`, `sync`, and the fs mutations (never through a tautological
+/// helper). These are the paths the review flagged as untested.
+#[cfg(test)]
+mod command_path_tests {
+    use super::*;
+    use crate::model::Entry;
+    use std::path::PathBuf;
+
+    /// In-memory entry with a controllable name/mime (no fs touch).
+    fn ent(name: &str, is_dir: bool, mime: &str) -> Entry {
+        Entry {
+            name: name.into(),
+            path: PathBuf::from(name),
+            is_dir,
+            size: 0,
+            modified: None,
+            mime: mime.into(),
+        }
+    }
+
+    #[test]
+    fn search_box_filters_through_the_crdt_text_object() {
+        use automerge::{transaction::Transactable, ObjType, ReadDoc, Value};
+
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![
+            ent("README.md", false, "text/markdown"),
+            ent("Cargo.toml", false, "text/plain"),
+            ent("src", true, "inode/directory"),
+        ];
+        let mut st = ui::State::new();
+
+        // The first sync MUST create the backing Text object the search input
+        // writes into — the toolkit's TextInput never lazily creates one, so
+        // without this seed the search box was completely dead.
+        w.sync(&mut st.doc, &st.root);
+        let obj = match st.doc.get(&st.root, SEARCH_QUERY_PATH) {
+            Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            other => panic!("search must be backed by a Text object, got {other:?}"),
+        };
+        assert_eq!(w.displayed_entries().len(), 3, "no query → nothing filtered");
+
+        // Type "argo" the way the input does: splice into the shared object.
+        st.doc.splice_text(&obj, 0, 0, "argo").unwrap();
+        w.sync(&mut st.doc, &st.root);
+        assert_eq!(w.search_query(), "argo", "sync reads the query back from the Text object");
+        let shown = w.displayed_entries();
+        assert_eq!(shown.len(), 1, "only Cargo.toml contains 'argo'");
+        assert_eq!(shown[0].name, "Cargo.toml");
+
+        // Clearing the field restores the full list.
+        st.doc.splice_text(&obj, 0, 4, "").unwrap();
+        w.sync(&mut st.doc, &st.root);
+        assert_eq!(w.displayed_entries().len(), 3);
+    }
+
+    #[test]
+    fn set_sort_command_selects_the_key_including_type() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![
+            ent("b.png", false, "image/png"),
+            ent("a.txt", false, "text/plain"),
+        ];
+        // SortBy::Type is ONLY reachable via this command (no column/button),
+        // so exercising it proves the previously-unreachable key now works.
+        assert!(w.apply_command(FileCommand::SetSort(SortBy::Type)));
+        assert_eq!(w.sort_by(), SortBy::Type);
+        assert_eq!(w.entries_snapshot()[0].name, "b.png", "image/png < text/plain");
+
+        assert!(w.apply_command(FileCommand::SetSort(SortBy::Name)));
+        assert_eq!(w.sort_by(), SortBy::Name);
+        assert_eq!(w.entries_snapshot()[0].name, "a.txt");
+    }
+
+    #[test]
+    fn context_menu_exposes_the_sort_section_including_type() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![ent("a.txt", false, "text/plain")];
+        w.open_context_menu(Point::new(5.0, 5.0));
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(str::to_string))
+            .collect();
+        for s in ["Sort by Name", "Sort by Size", "Sort by Type", "Sort by Date"] {
+            assert!(labels.contains(&s.to_string()), "menu missing {s}: {labels:?}");
+        }
+    }
+
+    #[test]
+    fn error_state_composition_adds_exactly_the_retry_button() {
+        use std::collections::HashMap;
+        use taffy::{NodeId, TaffyTree};
+        use ui::theme::Theme;
+
+        fn button_count(err: bool) -> usize {
+            let mut w = FileExplorerWidget::new();
+            if err {
+                w.error = Some("could not read directory".into());
+            }
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let theme = Theme::dark();
+            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            w.build_layout(&mut taffy, &theme, &mut nm);
+            nm.values()
+                .filter(|&&p| unsafe { (*p).name() } == "Button")
+                .count()
+        }
+        // The only structural difference is the error flag, so the delta is
+        // precisely the "Try Again" button the error view now builds.
+        assert_eq!(
+            button_count(true),
+            button_count(false) + 1,
+            "error view must add the retry button"
+        );
+    }
+
+    #[test]
+    fn retry_refresh_recovers_from_error_once_the_dir_exists() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("appears-later");
+        let mut w = FileExplorerWidget::new();
+        w.navigate(target.clone());
+        assert!(w.error_message().is_some(), "missing dir sets an error");
+        // The "Try Again" button pushes Refresh — still errors while missing.
+        assert!(w.apply_command(FileCommand::Refresh));
+        assert!(w.error_message().is_some());
+        // Once the directory exists, the same retry clears the error.
+        std::fs::create_dir(&target).unwrap();
+        assert!(w.apply_command(FileCommand::Refresh));
+        assert!(w.error_message().is_none(), "retry succeeds once the dir exists");
+    }
+
+    #[test]
+    fn rename_flow_renames_the_selected_file_on_disk() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("old.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let idx = w.displayed_entries().iter().position(|e| e.name == "old.txt").unwrap();
+        w.select(Some(idx));
+
+        // Begin the rename via the real command; the bar seeds the name.
+        assert!(w.apply_command(FileCommand::Rename));
+        assert!(w.is_renaming());
+        assert_eq!(w.rename_buffer(), "old.txt");
+
+        // Type a new name + commit through the command path.
+        w.set_rename_buffer("new.txt".into());
+        assert!(w.apply_command(FileCommand::RenameCommit));
+        assert!(!w.is_renaming(), "commit closes the rename bar");
+        assert!(d.path().join("new.txt").exists(), "file renamed on disk");
+        assert!(!d.path().join("old.txt").exists());
+    }
+
+    #[test]
+    fn rename_commit_is_a_noop_for_blank_or_unchanged_names() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("keep.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let idx = w.displayed_entries().iter().position(|e| e.name == "keep.txt").unwrap();
+
+        w.select(Some(idx));
+        w.begin_rename();
+        w.set_rename_buffer("   ".into());
+        assert!(!w.commit_rename(), "blank name does not rename");
+        assert!(!w.is_renaming());
+        assert!(d.path().join("keep.txt").exists());
+
+        w.select(Some(idx));
+        w.begin_rename();
+        w.set_rename_buffer("keep.txt".into());
+        assert!(!w.commit_rename(), "unchanged name does not rename");
+        assert!(d.path().join("keep.txt").exists());
+    }
+
+    #[test]
+    fn rename_cancel_leaves_the_file_untouched() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("stay.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let idx = w.displayed_entries().iter().position(|e| e.name == "stay.txt").unwrap();
+        w.select(Some(idx));
+        w.apply_command(FileCommand::Rename);
+        w.set_rename_buffer("other.txt".into());
+        assert!(w.apply_command(FileCommand::RenameCancel));
+        assert!(!w.is_renaming());
+        assert!(d.path().join("stay.txt").exists());
+        assert!(!d.path().join("other.txt").exists());
+    }
+
+    #[test]
+    fn new_folder_creates_the_folder_and_opens_inline_rename() {
+        let d = tempfile::tempdir().unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        assert!(w.apply_command(FileCommand::NewFolder));
+        assert!(d.path().join("New Folder").is_dir(), "folder actually created");
+        assert!(w.is_renaming(), "new folder drops straight into rename");
+        assert_eq!(w.rename_buffer(), "New Folder");
+    }
+
+    #[test]
+    fn copy_then_paste_duplicates_the_file_into_the_current_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"hello").unwrap();
+        let dest = d.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(src.clone());
+        let idx = w.displayed_entries().iter().position(|e| e.name == "a.txt").unwrap();
+        w.select(Some(idx));
+        assert!(w.apply_command(FileCommand::Copy));
+        w.navigate(dest.clone());
+        assert!(w.apply_command(FileCommand::Paste));
+        assert!(dest.join("a.txt").exists(), "copied into dest");
+        assert!(src.join("a.txt").exists(), "original kept (copy, not move)");
+    }
+
+    #[test]
+    fn cut_then_paste_moves_the_file_into_the_current_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("m.txt"), b"x").unwrap();
+        let dest = d.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(src.clone());
+        let idx = w.displayed_entries().iter().position(|e| e.name == "m.txt").unwrap();
+        w.select(Some(idx));
+        assert!(w.apply_command(FileCommand::Cut));
+        w.navigate(dest.clone());
+        assert!(w.apply_command(FileCommand::Paste));
+        assert!(dest.join("m.txt").exists(), "moved into dest");
+        assert!(!src.join("m.txt").exists(), "original removed (move)");
+    }
+
+    #[test]
+    fn history_back_and_forward_traverse_visited_dirs() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a");
+        std::fs::create_dir(&a).unwrap();
+        let b = d.path().join("b");
+        std::fs::create_dir(&b).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        w.navigate(a.clone());
+        w.navigate(b.clone());
+        assert_eq!(w.current_path(), b);
+        w.history_back();
+        assert_eq!(w.current_path(), a, "back to the previously-visited dir");
+        w.history_back();
+        assert_eq!(w.current_path(), d.path());
+        w.history_forward();
+        assert_eq!(w.current_path(), a, "forward re-visits");
     }
 }
