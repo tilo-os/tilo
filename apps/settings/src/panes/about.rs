@@ -7,23 +7,18 @@
 //! under `--shots` on minimal containers.
 //!
 //! The "device identity" block surfaces a stable device name + a short
-//! identity fingerprint (the handle peers see in collaboration), and the
-//! transfer affordances ("Transfer to device" / "Receive") are the entry
-//! points for moving a session or settings between machines. Those
-//! affordances carry CRDT keys; the actual transfer flow lives in the
-//! compositor's P2P layer, which this app reaches through a documented
-//! key seam rather than a direct dependency.
+//! identity fingerprint (the handle peers see in collaboration). Moving a
+//! session between machines is driven from the compositor's P2P layer, not
+//! from this app, so this pane reports identity truthfully rather than
+//! offering transfer buttons it can't fulfil.
 
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use ui::widget::{Button, Row, Spacer, Text, Widget};
+use ui::widget::Widget;
 
-use crate::widgets::{card, caption, rows, value_row, El};
-
-pub const TRANSFER_TO_KEY: &str = "about.transfer_to";
-pub const RECEIVE_KEY: &str = "about.receive";
+use crate::widgets::{card, caption, rows, value_row};
 
 /// Snapshot of the data the About pane reads at construction time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,20 +98,6 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
-    let transfer = card(
-        "Transfer",
-        rows(vec![
-            Box::new(
-                Text::new(
-                    "Move a session or your settings to another qOS device, \
-                     or receive one here.",
-                )
-                .with_size(12.0),
-            ),
-            transfer_buttons(),
-        ]),
-    );
-
     let system = card(
         "System",
         rows(vec![
@@ -126,24 +107,7 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
-    crate::widgets::cards(vec![identity, transfer, system])
-}
-
-fn transfer_buttons() -> El {
-    Box::new(
-        Row::new()
-            .push(Box::new(Button::new(
-                "settings.about.transfer_to",
-                "\u{f0b22}  Transfer to device",
-                Some(TRANSFER_TO_KEY),
-            )))
-            .push(Box::new(Button::new(
-                "settings.about.receive",
-                "\u{f01da}  Receive",
-                Some(RECEIVE_KEY),
-            )))
-            .push(Box::new(Spacer::new())),
-    )
+    crate::widgets::cards(vec![identity, system])
 }
 
 pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {

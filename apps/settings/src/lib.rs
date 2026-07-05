@@ -20,12 +20,16 @@
 //!   and Mail / Calendar / file apps consume.
 //! - [`region`] — the **shared region & formats store** (global user
 //!   locale) Settings owns and Sheets / Weather consume.
+//! - [`prefs`] — the **shared system-preferences store** (device sounds,
+//!   display comfort, pointer/keyboard behaviour, update policy) Settings
+//!   owns and the compositor / update service consume.
 //! - [`dispatcher`] — the `os-actions` plumbing the hardware panes share.
 
 pub mod accounts;
 pub mod categories;
 pub mod dispatcher;
 pub mod panes;
+pub mod prefs;
 pub mod region;
 pub mod settings_app;
 pub mod shots;
