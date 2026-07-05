@@ -49,22 +49,36 @@ fn hdr_edid_blob() -> [u8; 256] {
     edid[34] = wy_hi;
     edid[126] = 1;
 
-    // CTA-861 extension block: tag + revision + DTD offset just past
-    // our two data blocks, then Colorimetry + HDR Static Metadata.
+    // CTA-861 extension block:
+    //   ext[0]=0x02   extension tag
+    //   ext[1]=3      revision (CTA-861-D)
+    //   ext[2]=16     DTD offset (past the two data blocks below)
+    //   ext[3]=0x00   flags byte per CTA-861-D §7.5 (native counts /
+    //                 IT support / basic audio — all zero for this
+    //                 synthetic HDR-only display)
+    //   ext[4..8]     Colorimetry Data Block: header 0xE3 (extended
+    //                 tag, 3-byte payload) + ext-tag 0x05 + 2 body
+    //                 bytes advertising BT.2020 across all three
+    //                 sub-blocks (bits 5,6,7).
+    //   ext[8..16]    HDR Static Metadata Data Block: header 0xE7
+    //                 (extended tag, 7-byte payload) + ext-tag 0x06
+    //                 + EOTF byte + SMD flag byte + 3 luminance
+    //                 descriptor codes (max, FALL, min).
     edid[128] = 0x02;
     edid[129] = 3;
-    edid[130] = 15;
-    edid[131] = 0xE3;
-    edid[132] = 0x05;
-    edid[133] = 0b1110_0000;
-    edid[134] = 0x00;
-    edid[135] = 0xE6;
-    edid[136] = 0x06;
-    edid[137] = 0b0000_1101; // SDR + PQ + HLG
-    edid[138] = 0x01;
-    edid[139] = 138; // max ≈ 1000 cd/m²
-    edid[140] = 96;  // FALL ≈ 400 cd/m²
-    edid[141] = 18;  // min ≈ 0.05 cd/m²
+    edid[130] = 16;
+    edid[131] = 0x00;
+    edid[132] = 0xE3;
+    edid[133] = 0x05;
+    edid[134] = 0b1110_0000;
+    edid[135] = 0x00;
+    edid[136] = 0xE7;
+    edid[137] = 0x06;
+    edid[138] = 0b0000_1101; // SDR + PQ + HLG
+    edid[139] = 0x01;
+    edid[140] = 138; // max ≈ 1000 cd/m²
+    edid[141] = 96;  // FALL ≈ 400 cd/m²
+    edid[142] = 18;  // min ≈ 0.05 cd/m²
     edid
 }
 
