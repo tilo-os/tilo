@@ -452,6 +452,7 @@ pub mod date_picker;      pub use date_picker::DatePicker;
 pub mod time_picker;      pub use time_picker::TimePicker;
 pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
+pub mod popover;          pub use popover::Popover;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
 pub mod toolbar;          pub use toolbar::Toolbar;
 pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;

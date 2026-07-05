@@ -87,9 +87,21 @@ pub struct ProcessInfo {
     /// CPU usage as a percentage of a single core (so > 100 on a busy
     /// multi-threaded process — matches `top`/`htop` semantics).
     pub cpu: f32,
+    /// Resident memory (RSS) in bytes — physical pages the process holds.
     pub mem_bytes: u64,
+    /// Virtual memory size in bytes — the process's whole address space,
+    /// typically several times RSS. Surfaced in the detail pane.
+    pub virt_bytes: u64,
     pub threads: usize,
     pub status: String,
+    /// Full command line (argv joined with spaces), or the bare name when the
+    /// kernel exposes no argv (kernel threads, zombies).
+    pub cmd: String,
+    /// Wall-clock seconds the process has been running (from its start time).
+    pub run_secs: u64,
+    /// Open file-descriptor count, when the platform exposes it (`/proc/<pid>/fd`
+    /// on Linux). `None` when unavailable rather than a fabricated zero.
+    pub open_files: Option<usize>,
     /// Linux kernel worker thread (pid-2 descendant). Hidden unless the
     /// "show kernel threads" preference is on.
     pub kernel: bool,
@@ -367,19 +379,68 @@ fn sample_processes() -> Vec<ProcessInfo> {
                     .position(|r| r.0 == *parent)
                     .map(|j| pids[j])
             };
+            let mem_bytes = *mem_mib * 1024 * 1024;
+            // Synthesise a believable command line, virtual size, run time and
+            // fd count from the row's stable inputs so the detail pane reads as
+            // "alive" in the hermetic `--shots` frame (which never samples).
+            let cmd = if *kernel {
+                format!("[{name}]")
+            } else {
+                sample_cmdline(name, user)
+            };
+            // Virtual size runs a few× RSS (shared libs + reserved heap/stack).
+            let virt_bytes = if mem_bytes == 0 {
+                0
+            } else {
+                mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
+            };
+            // Deterministic run time from the pid so rows differ but are stable.
+            let run_secs = 37 + (pids[i] as u64 * 7) % 90_000;
+            let open_files = if *kernel {
+                None
+            } else {
+                Some(*threads * 2 + (pids[i] as usize % 17) + 4)
+            };
             ProcessInfo {
                 pid: pids[i],
                 ppid,
                 name: (*name).to_string(),
                 user: (*user).to_string(),
                 cpu: *cpu,
-                mem_bytes: *mem_mib * 1024 * 1024,
+                mem_bytes,
+                virt_bytes,
                 threads: *threads,
                 status: (*status).to_string(),
+                cmd,
+                run_secs,
+                open_files,
                 kernel: *kernel,
             }
         })
         .collect()
+}
+
+/// A believable argv for a sample process — a real-looking binary path plus a
+/// couple of flags, so the detail pane's command-line row isn't just the name.
+fn sample_cmdline(name: &str, user: &str) -> String {
+    match name {
+        "shell" => "/usr/bin/shell --session wayland --workspace 0".into(),
+        "browser" => "/usr/bin/browser --profile default --enable-gpu".into(),
+        "Web Content" => "/usr/lib/browser/content --type=renderer --field-trial-handle=3".into(),
+        "GPU Process" => "/usr/lib/browser/content --type=gpu-process".into(),
+        "code" => format!("/usr/bin/code --unity-launch /home/{user}/Development"),
+        "rust-analyzer" => "/usr/bin/rust-analyzer --log-file /tmp/ra.log".into(),
+        "cargo" => "/usr/bin/cargo build --release -p ui".into(),
+        "rustc" => "/usr/bin/rustc --edition 2024 --crate-type lib src/lib.rs".into(),
+        "firefox" => format!("/usr/lib/firefox/firefox -P {user}"),
+        "terminal" => "/usr/bin/terminal --shots off".into(),
+        "monitor" => "/usr/bin/monitor".into(),
+        "systemd" => "/usr/lib/systemd/systemd --system --deserialize 34".into(),
+        "qos-fs" => "/usr/bin/qos-fs --mount /var/workspace --cache /var/cache/qos-fs".into(),
+        "iroh-node" => "/usr/bin/iroh-node --relay code.sandbox.example".into(),
+        "pipewire" => "/usr/bin/pipewire".into(),
+        _ => format!("/usr/bin/{name}"),
+    }
 }
 
 /// Human-readable byte size: 18 B / 4.2 KiB / 1.8 GiB.
