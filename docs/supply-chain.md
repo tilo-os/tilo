@@ -26,9 +26,18 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   buildkit honours `SOURCE_DATE_EPOCH` + `provenance: false` in CI).
   Reproduce: `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) ./os/dev/build-image.sh`
   twice → identical `podman image inspect --format '{{.Id}}'`.
-  **Caveat:** reproducibility holds for a fixed package set. `dnf` pulls current
-  Fedora package versions, so a rebuild *weeks later* can differ as upstream
-  packages move; for cross-time reproducibility, pin a dnf repo snapshot/mirror.
+- **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
+  too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
+  set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built +
+  pushed by the `snapshot-rpms` CI job to `code.sandbox.example/qos/rpms`), pinned in
+  `os/rpms-snapshot.env` (`RPMS_REF=…@sha256`). Every `os/Containerfile` `dnf
+  install` mounts that repo and installs from it only
+  (`--setopt=reposdir=/repo`), never live Fedora mirrors.
+  **When you add/remove/rename a package in `os/Containerfile`,** re-run the
+  `snapshot-rpms` workflow (`workflow_dispatch`); it prints the new `RPMS_REF` —
+  commit that into `os/rpms-snapshot.env`. Otherwise the build fails
+  `No match for argument: <pkg>`. The package list is auto-derived from
+  `os/Containerfile`, so there is no separate list to maintain.
 
 ## ⚠️ Operational caveat — first signed image
 
@@ -64,11 +73,6 @@ The signing key is the root of update trust — rotate on exposure or schedule.
   and a measured-boot PCR policy that *requires* the running image to appear in
   it (plan §4/§9) — is not yet stood up. This is what makes "trust qOS"
   publicly verifiable rather than "trust our key."
-- **Cross-time reproducibility.** Same-commit builds are now byte-identical
-  (above), but only against a fixed package set. To let a third party reproduce
-  the published digest *weeks later*, pin a `dnf` repo snapshot/mirror (and a
-  fixed rust/cargo package version) so upstream package movement can't change
-  the result.
 - **Key custody.** Private keys are file-based + in the CI secret store. Move to
   a **KMS/HSM** (`cosign --key <kms-ref>`) or sigstore keyless so no copyable
   file can sign as qOS (plan §3 "no single root of trust").
