@@ -79,20 +79,20 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # instead of via the SRPM's BuildRequires (some of those are pandoc / bindgen
 # heavyweights the qOS build doesn't need — DEBUG_INFO=n skips them).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
-    export HOME=/root; \
-    mkdir -p /root/rpmbuild/BUILD /root/rpmbuild/BUILDROOT /root/rpmbuild/RPMS \
-             /root/rpmbuild/SOURCES /root/rpmbuild/SPECS /root/rpmbuild/SRPMS; \
-    printf '%%_topdir /root/rpmbuild\n' > /root/.rpmmacros; \
-    rpm -i --define '_topdir /root/rpmbuild' /work/kernel.src.rpm; \
-    cd /root/rpmbuild/SPECS; \
+    export HOME=/work; \
+    mkdir -p /work/rpmbuild/BUILD /work/rpmbuild/BUILDROOT /work/rpmbuild/RPMS \
+             /work/rpmbuild/SOURCES /work/rpmbuild/SPECS /work/rpmbuild/SRPMS; \
+    printf '%%_topdir /work/rpmbuild\n' > /work/.rpmmacros; \
+    rpm -i --define '_topdir /work/rpmbuild' /work/kernel.src.rpm; \
+    cd /work/rpmbuild/SPECS; \
     KERN_SPEC="$(ls kernel*.spec 2>/dev/null | head -1)"; \
     test -n "$KERN_SPEC"; \
-    rpmbuild -bp --nodeps --define "_topdir /root/rpmbuild" "$KERN_SPEC"
+    rpmbuild -bp --nodeps --define "_topdir /work/rpmbuild" "$KERN_SPEC"
 
 # ---- Merge our config fragment on top of Fedora's --------------------------
 COPY os/kernel/config-fragments/qos.config /work/qos.config
 
-# The prepared source lands at /root/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
+# The prepared source lands at /work/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
 # with a resolved .config in place.  Use the in-tree merge_config.sh (the
 # canonical kconfig fragment merger) to overlay our overrides, then
 # olddefconfig to resolve any newly-exposed symbols non-interactively.
@@ -101,7 +101,7 @@ COPY os/kernel/config-fragments/qos.config /work/qos.config
 # dropping them) — a Fedora rename that killed one of our knobs surfaces here
 # instead of at boot.
 RUN set -eux; \
-    KSRC="$(find /root/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
+    KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
     cd "$KSRC"; \
     cp .config /work/fedora.config; \
@@ -129,7 +129,7 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
     TZ=UTC
 
 RUN set -eux; \
-    KSRC="$(find /root/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
+    KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     cd "$KSRC"; \
     # Rename the produced RPM: `kernel` → `qos-kernel`.  `make binrpm-pkg`
     # invokes `scripts/package/mkspec` (a shell script) to synthesise the
@@ -150,7 +150,7 @@ RUN set -eux; \
         || { echo "ERROR: neither mkspec nor kernel.spec was patched; check kernel packaging layout"; exit 1; }; \
     make -j"$(nproc)" binrpm-pkg; \
     mkdir -p /out; \
-    find /root/rpmbuild/RPMS -name 'qos-kernel-*.rpm' -exec cp -v {} /out/ \;; \
+    find /work/rpmbuild/RPMS -name 'qos-kernel-*.rpm' -exec cp -v {} /out/ \;; \
     ls -lh /out/
 
 # Provide a `qos-kernel-core` alias package name.  `dnf swap kernel-core
@@ -162,10 +162,10 @@ RUN set -eux; \
     KVER="$(rpm -qp --queryformat '%{VERSION}-%{RELEASE}' /out/qos-kernel-[0-9]*.rpm | head -1)"; \
     test -n "$KVER"; \
     rpmbuild -bb \
-        --define "_topdir /root/rpmbuild" \
+        --define "_topdir /work/rpmbuild" \
         --define "_kver $KVER" \
         /work/qos-kernel-core.spec; \
-    find /root/rpmbuild/RPMS -name 'qos-kernel-core-*.rpm' -exec cp -v {} /out/ \;; \
+    find /work/rpmbuild/RPMS -name 'qos-kernel-core-*.rpm' -exec cp -v {} /out/ \;; \
     ls -lh /out/
 
 # Build the repo metadata inside the build stage; the final stage is
