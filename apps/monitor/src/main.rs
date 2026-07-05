@@ -52,7 +52,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, monitor::app_root());
+    #[allow(unused_mut)]
+    let mut app = ui::App::new(state, monitor::app_root());
+    // Widget-debug overlays (bounds outline + widget-name labels) are a
+    // development aid the toolkit enables from the `QUICK_UI_DEBUG` env var
+    // alone. Force them off in release so a var inherited from the launching
+    // environment can never leak the overlay into a shipped Monitor; debug
+    // builds keep the env-driven toggle.
+    #[cfg(not(debug_assertions))]
+    {
+        app.debug_mode = false;
+    }
     app.run();
     Ok(())
 }
