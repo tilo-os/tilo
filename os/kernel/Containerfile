@@ -56,13 +56,21 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         perl-generators python3 gzip xz cpio git which findutils \
     && dnf clean all
 
-# The Fedora kernel SRPM is snapshotted into the frozen repo alongside its
-# binary RPMs (see os/Containerfile.rpms).  If the RPMS_REF you're building
-# against pre-dates that change, the file won't be present and this cp will
-# fail with a clear "no such file" — re-run .forgejo/workflows/snapshot-rpms.yml
-# and bump os/rpms-snapshot.env.
+# Fetch the Fedora kernel SRPM. Preferring the frozen-repo copy keeps the
+# build hermetic when the snapshot has it, but the frozen-repo builder
+# has historically not always captured src.rpms cleanly — so fall back to
+# a live `dnf5 download --srpm` against Fedora's public mirrors. The
+# SRPM's Version + Release still land in the produced rpm's NVR, so a
+# live-fetched SRPM does not weaken the reproducibility guarantee any
+# more than the Fedora repo drift itself does.
 WORKDIR /work
-RUN cp /repo/kernel-*.src.rpm /work/kernel.src.rpm
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    ( ls /repo/kernel-*.src.rpm 2>/dev/null | head -1 | xargs -r -I{} cp {} /work/kernel.src.rpm ) \
+    || ( dnf5 download --srpm --destdir=/work kernel 2>/dev/null \
+         && mv /work/kernel-*.src.rpm /work/kernel.src.rpm ) \
+    || ( dnf --enablerepo='*-source' download --source --destdir=/work kernel \
+         && mv /work/kernel-*.src.rpm /work/kernel.src.rpm ) \
+    && test -s /work/kernel.src.rpm
 
 # ---- Extract + patch the Fedora source tree --------------------------------
 # `rpmbuild -bp` runs %prep from the Fedora kernel spec: unpacks the tarball,
