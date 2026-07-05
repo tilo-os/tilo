@@ -15,6 +15,7 @@
 //                             sync after dispatch
 
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Arc;
 
 use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
@@ -28,11 +29,10 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card, card_with_action, caption, rows, setting_row, value_row, El};
+use crate::widgets::{card, card_with_action, caption, rows, value_row, El};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
-pub const VPN_KEY: &str = "network.open_vpn";
 /// CRDT key holding the SSID whose inline password prompt is expanded
 /// (empty string = none). Kept in the document, not a pane field, so the
 /// expansion survives the host's structure rebuilds (which reconstruct the
@@ -87,6 +87,60 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 /// (or only thread-safe state).
 type NetworkLister = Arc<dyn Fn() -> Result<Vec<WifiNetworkInfo>, String> + Send + Sync>;
 
+/// A configured VPN / WireGuard connection and whether it is currently up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VpnInfo {
+    pub name: String,
+    pub active: bool,
+}
+
+/// VPN-list provider — prod shells out to `nmcli`, tests supply a closure.
+type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
+
+/// Read the configured VPN connections from NetworkManager. Two `nmcli`
+/// calls: every connection (to find the VPN/WireGuard ones) and the active
+/// set (to mark which are up). Best-effort — an empty vec when `nmcli` is
+/// missing.
+fn read_vpn_connections() -> Vec<VpnInfo> {
+    let run = |args: &[&str]| -> Option<String> {
+        let out = Command::new("nmcli").args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    let all = match run(&["-t", "-f", "NAME,TYPE", "connection", "show"]) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let active = run(&["-t", "-f", "NAME", "connection", "show", "--active"]).unwrap_or_default();
+    parse_vpn_connections(&all, &active)
+}
+
+/// Parse the two `nmcli -t` outputs into [`VpnInfo`]s. `all` lines are
+/// `NAME:TYPE`; a connection is a VPN when its type is `vpn` or
+/// `wireguard`. `active` lines are bare `NAME`s of up connections.
+pub fn parse_vpn_connections(all: &str, active: &str) -> Vec<VpnInfo> {
+    let active_names: Vec<&str> = active.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let mut out = Vec::new();
+    for line in all.lines() {
+        // NAME may itself contain no colon in practice; split on the LAST
+        // colon so a name is preserved even if it had one (nmcli escapes it,
+        // but be defensive).
+        let Some((name, ty)) = line.rsplit_once(':') else {
+            continue;
+        };
+        let ty = ty.trim();
+        if ty != "vpn" && ty != "wireguard" {
+            continue;
+        }
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let active = active_names.contains(&name.as_str());
+        out.push(VpnInfo { name, active });
+    }
+    out
+}
+
 pub struct NetworkPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
     lister: NetworkLister,
@@ -96,6 +150,10 @@ pub struct NetworkPane {
     /// Cached wired-connection snapshot, sampled at construction and on
     /// refresh.
     wired: WiredInfo,
+    /// Configured VPN connections (read-only status), sampled at
+    /// construction and on refresh.
+    vpns: Vec<VpnInfo>,
+    vpn_lister: VpnLister,
     initial_wifi_enabled: bool,
     last_wifi_enabled: bool,
     needs_seed: bool,
@@ -126,11 +184,15 @@ impl NetworkPane {
         let networks = lister().unwrap_or_default();
         let initial_wifi = os_actions::get_wifi().unwrap_or(true);
         let wired = os_actions::get_wired().unwrap_or_default();
+        let vpn_lister: VpnLister = Arc::new(read_vpn_connections);
+        let vpns = vpn_lister();
         Self {
             dispatcher: dispatcher_or_real(None),
             lister,
             networks,
             wired,
+            vpns,
+            vpn_lister,
             initial_wifi_enabled: initial_wifi,
             last_wifi_enabled: initial_wifi,
             needs_seed: true,
@@ -157,6 +219,8 @@ impl NetworkPane {
             lister,
             networks,
             wired: WiredInfo::default(),
+            vpns: Vec::new(),
+            vpn_lister: Arc::new(|| Vec::<VpnInfo>::new()),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
             needs_seed: true,
@@ -178,6 +242,8 @@ impl NetworkPane {
             lister,
             networks,
             wired: WiredInfo::default(),
+            vpns: Vec::new(),
+            vpn_lister: Arc::new(|| Vec::<VpnInfo>::new()),
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
             needs_seed: true,
@@ -194,6 +260,41 @@ impl NetworkPane {
     pub fn with_wired(mut self, wired: WiredInfo) -> Self {
         self.wired = wired;
         self
+    }
+
+    /// Test/`--shots` helper: pin the VPN list so the VPN card renders
+    /// deterministic content. Also pins the refresh lister to the same set.
+    pub fn with_vpns(mut self, vpns: Vec<VpnInfo>) -> Self {
+        let snapshot = vpns.clone();
+        self.vpn_lister = Arc::new(move || snapshot.clone());
+        self.vpns = vpns;
+        self
+    }
+
+    pub fn vpns(&self) -> &[VpnInfo] {
+        &self.vpns
+    }
+
+    /// Rows for the VPN card — a read-only status list of configured
+    /// profiles. Connecting/disconnecting needs a privileged NetworkManager
+    /// action seam that isn't in this app yet, so the card reports status
+    /// truthfully rather than offering a button that can't act.
+    fn vpn_rows(&self) -> Vec<El> {
+        if self.vpns.is_empty() {
+            return vec![caption(
+                "No VPN profiles configured. Add a VPN connection to see its \
+                 status here.",
+            )];
+        }
+        let mut out: Vec<El> = Vec::new();
+        for v in &self.vpns {
+            out.push(value_row(
+                &v.name,
+                if v.active { "Connected" } else { "Disconnected" },
+            ));
+        }
+        out.push(caption("VPN profiles are managed with your network connections."));
+        out
     }
 
     /// Test/`--shots` helper: pre-expand a network's inline password prompt
@@ -261,21 +362,8 @@ impl NetworkPane {
         // --- Wired card (real nmcli snapshot).
         let wired_card = card("Wired", rows(self.wired_rows()));
 
-        // --- VPN shortcut card (opens the dedicated VPN app/panel).
-        let vpn_card = card(
-            "VPN",
-            rows(vec![
-                setting_row(
-                    "Virtual Private Network",
-                    Box::new(Button::new(
-                        "settings.network.open_vpn",
-                        "\u{f0582}  Manage VPN",
-                        Some(VPN_KEY),
-                    )),
-                ),
-                caption("Configure and connect VPN profiles in the VPN app."),
-            ]),
-        );
+        // --- VPN card (real read-only status of configured profiles).
+        let vpn_card = card("VPN", rows(self.vpn_rows()));
 
         crate::widgets::cards(vec![wifi_card, wired_card, vpn_card])
     }
@@ -447,6 +535,7 @@ impl Widget for NetworkPane {
                 Ok(nets) => self.networks = nets,
                 Err(e) => warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed"),
             }
+            self.vpns = (self.vpn_lister)();
         }
 
         // Restore the expanded-prompt SSID from the document so it
@@ -853,5 +942,38 @@ mod tests {
         let pane = NetworkPane::new_demo(sample_networks());
         // Default WiredInfo is disconnected → status + caption only.
         assert_eq!(pane.wired_rows().len(), 2);
+    }
+
+    #[test]
+    fn parse_vpn_connections_filters_to_vpn_types_and_marks_active() {
+        let all = "Wired connection 1:ethernet\n\
+                   Work VPN:vpn\n\
+                   home-wg:wireguard\n\
+                   MyWifi:wifi\n";
+        let active = "Wired connection 1\nhome-wg\n";
+        let vpns = parse_vpn_connections(all, active);
+        assert_eq!(vpns.len(), 2, "only vpn + wireguard rows: {vpns:?}");
+        let work = vpns.iter().find(|v| v.name == "Work VPN").unwrap();
+        let wg = vpns.iter().find(|v| v.name == "home-wg").unwrap();
+        assert!(!work.active, "Work VPN isn't in the active set");
+        assert!(wg.active, "home-wg is up");
+    }
+
+    #[test]
+    fn vpn_rows_reflect_configured_profiles() {
+        let pane = NetworkPane::new_demo(sample_networks()).with_vpns(vec![
+            VpnInfo { name: "Work VPN".into(), active: true },
+            VpnInfo { name: "Home WG".into(), active: false },
+        ]);
+        assert_eq!(pane.vpns().len(), 2);
+        // 2 status rows + 1 caption.
+        assert_eq!(pane.vpn_rows().len(), 3);
+    }
+
+    #[test]
+    fn vpn_rows_show_empty_state_when_none() {
+        let pane = NetworkPane::new_demo(sample_networks());
+        // Just the "no profiles" caption.
+        assert_eq!(pane.vpn_rows().len(), 1);
     }
 }

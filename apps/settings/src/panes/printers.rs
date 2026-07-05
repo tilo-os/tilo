@@ -1,21 +1,31 @@
-//! Printers pane — configured printers plus their recent queue / job
-//! status.
+//! Printers pane — configured printers plus their live CUPS job queue.
 //!
-//! Reads real printers from CUPS via `lpstat -p` when it's available
-//! ([`read_cups_printers`]), so on a machine with configured printers the
-//! panel reflects them. When `lpstat` is absent or reports no printers (a
-//! minimal container, or `--shots` on CI) it falls back to a realistic
-//! sample so the surface always reads as designed. The job queue is still a
-//! sample today (parsing `lpstat -o` per-printer is a follow-up that slots
-//! into [`jobs_for_display`] the same way).
+//! Printers are read from CUPS via `lpstat -p -d` ([`read_cups_printers`]);
+//! the job queue is read from `lpstat -o` ([`parse_lpstat_jobs`]); and each
+//! job's **Cancel** button really runs `cancel <job-id>` through
+//! [`JobCanceller`], then re-reads the queue. When `lpstat` is absent (a
+//! minimal container, or `--shots` on CI) the printer list falls back to a
+//! realistic sample so the surface reads as designed, and the queue shows an
+//! honest empty state.
+//!
+//! Adding and per-printer administration need privileged CUPS operations and
+//! a dialog flow that lives outside this app, so those affordances are not
+//! offered here rather than shipping buttons that can't act.
 
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Arc;
 
-use ui::widget::{Button, Column, ProgressBar, Row, Spacer, Text, Widget};
+use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use taffy::{NodeId, TaffyTree};
+use tracing::warn;
+use ui::theme::Theme;
+use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::Scene;
+use winit::event::{Modifiers, WindowEvent};
 
-use crate::widgets::{card, card_with_action, caption, rows, El};
-
-pub const ADD_PRINTER_KEY: &str = "printers.add";
+use crate::widgets::{card, caption, rows, El};
 
 /// A configured printer and its readiness.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,15 +64,54 @@ impl PrinterState {
     }
 }
 
-/// A job in a printer's queue.
-#[derive(Clone, Debug, PartialEq)]
+/// A live job in a printer's CUPS queue, as reported by `lpstat -o`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintJob {
-    pub document: String,
+    /// The CUPS job id, e.g. `Office_LaserJet-42` — the handle `cancel`
+    /// takes.
+    pub id: String,
     pub owner: String,
-    pub printer: String,
-    /// 0..1 completion; `None` for queued-but-not-started.
-    pub progress: Option<f32>,
-    pub pages: u32,
+    /// Size in bytes as reported by CUPS.
+    pub size: u64,
+    /// Submission time text, verbatim from `lpstat`.
+    pub when: String,
+}
+
+impl PrintJob {
+    /// Human-readable size, e.g. `1.0 MB`.
+    fn size_label(&self) -> String {
+        let b = self.size as f64;
+        if b >= 1_048_576.0 {
+            format!("{:.1} MB", b / 1_048_576.0)
+        } else if b >= 1024.0 {
+            format!("{:.0} KB", b / 1024.0)
+        } else {
+            format!("{} B", self.size)
+        }
+    }
+}
+
+/// Side-effect interface for cancelling a CUPS job. Production runs
+/// `cancel <id>`; tests inject a recorder.
+pub trait JobCanceller: Send + Sync {
+    fn cancel(&self, job_id: &str) -> Result<(), String>;
+}
+
+/// Production impl: `cancel <job-id>`.
+pub struct RealCanceller;
+
+impl JobCanceller for RealCanceller {
+    fn cancel(&self, job_id: &str) -> Result<(), String> {
+        let out = Command::new("cancel")
+            .arg(job_id)
+            .output()
+            .map_err(|e| format!("cancel not available: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    }
 }
 
 impl Printer {
@@ -89,7 +138,7 @@ fn sample_printers() -> Vec<Printer> {
         Printer::sample(
             "Office LaserJet",
             "Floor 2 · Copy room",
-            PrinterState::Printing,
+            PrinterState::Ready,
             true,
         ),
         Printer::sample("Front Desk Inkjet", "Reception", PrinterState::Ready, false),
@@ -97,34 +146,44 @@ fn sample_printers() -> Vec<Printer> {
     ]
 }
 
-/// Read configured printers from CUPS via `lpstat -p -d`. Returns `None`
-/// when `lpstat` isn't installed or the call fails; an empty `Vec` when it
-/// runs but reports no printers. Best-effort and unprivileged.
+/// Read configured printers from CUPS via `lpstat -p -d`.
 fn read_cups_printers() -> Option<Vec<Printer>> {
-    let which = Command::new("which")
-        .arg("lpstat")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !which {
+    if !have("lpstat") {
         return None;
     }
     let out = Command::new("lpstat").args(["-p", "-d"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    Some(parse_lpstat(&stdout))
+    Some(parse_lpstat(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Read the live job queue from `lpstat -o`. Returns an empty vec when
+/// `lpstat` is missing or the queue is empty.
+fn read_cups_jobs() -> Vec<PrintJob> {
+    if !have("lpstat") {
+        return Vec::new();
+    }
+    let Ok(out) = Command::new("lpstat").arg("-o").output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_lpstat_jobs(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn have(bin: &str) -> bool {
+    Command::new("which")
+        .arg(bin)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Parse `lpstat -p -d` output into [`Printer`]s.
-///
-/// `lpstat -p` prints one line per printer, e.g.:
-/// `printer Office_LaserJet is idle.  enabled since …`
-/// `printer Front_Desk is printing job 42.`
-/// `lpstat -d` prints `system default destination: Office_LaserJet`.
 fn parse_lpstat(stdout: &str) -> Vec<Printer> {
     let default = stdout
         .lines()
@@ -137,7 +196,6 @@ fn parse_lpstat(stdout: &str) -> Vec<Printer> {
         let Some(rest) = line.strip_prefix("printer ") else {
             continue;
         };
-        // `<name> is <state>.` — the name is up to " is ".
         let Some((name, tail)) = rest.split_once(" is ") else {
             continue;
         };
@@ -157,8 +215,6 @@ fn parse_lpstat(stdout: &str) -> Vec<Printer> {
         };
         out.push(Printer {
             name: name.to_string(),
-            // CUPS doesn't carry a human location in `lpstat -p`; show the
-            // connection/queue name as a stand-in.
             location: "CUPS queue".to_string(),
             state,
             default: default.as_deref() == Some(name),
@@ -167,53 +223,127 @@ fn parse_lpstat(stdout: &str) -> Vec<Printer> {
     out
 }
 
-fn jobs_for_display() -> Vec<PrintJob> {
-    vec![
-        PrintJob {
-            document: "Q2-report.pdf".into(),
-            owner: "ada".into(),
-            printer: "Office LaserJet".into(),
-            progress: Some(0.62),
-            pages: 14,
-        },
-        PrintJob {
-            document: "invoice-8842.pdf".into(),
-            owner: "ada".into(),
-            printer: "Office LaserJet".into(),
-            progress: None,
-            pages: 2,
-        },
-    ]
+/// Parse `lpstat -o` output into [`PrintJob`]s. Each line is
+/// `<job-id> <owner> <size> <submission time…>`, e.g.
+/// `Office_LaserJet-42  ada  1048576  Mon 04 Jul 2026 10:15:00 AM`.
+pub fn parse_lpstat_jobs(stdout: &str) -> Vec<PrintJob> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let (Some(id), Some(owner), Some(size)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        // The id must look like `<dest>-<number>`; skip header/other noise.
+        if !id.rsplit_once('-').is_some_and(|(_, n)| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty()) {
+            continue;
+        }
+        let size = size.parse::<u64>().unwrap_or(0);
+        let when = parts.collect::<Vec<_>>().join(" ");
+        out.push(PrintJob {
+            id: id.to_string(),
+            owner: owner.to_string(),
+            size,
+            when,
+        });
+    }
+    out
+}
+
+fn slug(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect()
+}
+
+/// Printers pane widget — holds the printer list, live job queue, and the
+/// canceller so per-job Cancel really runs.
+pub struct PrintersPane {
+    printers: Vec<Printer>,
+    jobs: Vec<PrintJob>,
+    canceller: Arc<dyn JobCanceller>,
+    jobs_lister: Arc<dyn Fn() -> Vec<PrintJob> + Send + Sync>,
+    dispatched_cancels: Vec<String>,
+    structure_dirty: bool,
+    composed: Option<Box<dyn Widget>>,
+    rect: Rect,
+}
+
+impl Default for PrintersPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrintersPane {
+    pub fn new() -> Self {
+        let jobs_lister: Arc<dyn Fn() -> Vec<PrintJob> + Send + Sync> = Arc::new(read_cups_jobs);
+        let jobs = jobs_lister();
+        Self {
+            printers: printers_for_display(),
+            jobs,
+            canceller: Arc::new(RealCanceller),
+            jobs_lister,
+            dispatched_cancels: Vec::new(),
+            structure_dirty: false,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// Test / `--shots` constructor: pin the printers, the initial queue, and
+    /// the canceller. The queue lister returns the pinned jobs so a Cancel
+    /// re-read is deterministic.
+    pub fn with_data(
+        printers: Vec<Printer>,
+        jobs: Vec<PrintJob>,
+        canceller: Arc<dyn JobCanceller>,
+    ) -> Self {
+        let snapshot = jobs.clone();
+        let jobs_lister: Arc<dyn Fn() -> Vec<PrintJob> + Send + Sync> =
+            Arc::new(move || snapshot.clone());
+        Self {
+            printers,
+            jobs,
+            canceller,
+            jobs_lister,
+            dispatched_cancels: Vec::new(),
+            structure_dirty: false,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    pub fn jobs(&self) -> &[PrintJob] {
+        &self.jobs
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        let mut printer_rows: Vec<El> = Vec::new();
+        for p in &self.printers {
+            printer_rows.push(printer_row(p));
+        }
+        let printer_card = card("Printers", rows(printer_rows));
+
+        let job_card = if self.jobs.is_empty() {
+            card("Print queue", rows(vec![caption("No active jobs.")]))
+        } else {
+            let mut job_rows: Vec<El> = Vec::new();
+            for j in &self.jobs {
+                job_rows.push(job_row(j));
+            }
+            card("Print queue", rows(job_rows))
+        };
+
+        crate::widgets::cards(vec![printer_card, job_card])
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
-    build_with(&printers_for_display(), &jobs_for_display())
-}
-
-pub fn build_with(printers: &[Printer], jobs: &[PrintJob]) -> Box<dyn Widget> {
-    let add_btn: El = Box::new(Button::new(
-        "settings.printers.add",
-        "\u{f0415}  Add printer",
-        Some(ADD_PRINTER_KEY),
-    ));
-
-    let mut printer_rows: Vec<El> = Vec::new();
-    for p in printers {
-        printer_rows.push(printer_row(p));
-    }
-    let printer_card = card_with_action("Printers", add_btn, rows(printer_rows));
-
-    let job_card = if jobs.is_empty() {
-        card("Print queue", rows(vec![caption("No active jobs.")]))
-    } else {
-        let mut job_rows: Vec<El> = Vec::new();
-        for j in jobs {
-            job_rows.push(job_row(j));
-        }
-        card("Print queue", rows(job_rows))
-    };
-
-    crate::widgets::cards(vec![printer_card, job_card])
+    Box::new(PrintersPane::new())
 }
 
 fn printer_row(p: &Printer) -> El {
@@ -232,9 +362,6 @@ fn printer_row(p: &Printer) -> El {
                 .with_color(ui::Theme::dark().text_dim),
         ));
 
-    let manage_id = format!("settings.printers.manage.{}", slug(&p.name));
-    let manage_key = format!("settings.printers.manage.{}", slug(&p.name));
-
     Box::new(
         Row::new()
             .push(Box::new(block))
@@ -243,84 +370,212 @@ fn printer_row(p: &Printer) -> El {
                 Text::new(p.state.label())
                     .with_size(11.0)
                     .with_color(p.state.color()),
-            ))
-            .push(Box::new(Button::new(&manage_id, "Manage", Some(&manage_key)))),
+            )),
     )
 }
 
-/// A job row shows the document, owner, and either a progress bar (for the
-/// active job) or a "Queued" tag — the "job preview/status".
+/// A job row shows the job id, owner + size, and a real Cancel button.
 fn job_row(j: &PrintJob) -> El {
     let block = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
+        .push(Box::new(Text::new(&j.id).with_size(13.0)))
         .push(Box::new(
-            Text::new(&format!("{} · {} pages", j.document, j.pages)).with_size(13.0),
-        ))
-        .push(Box::new(
-            Text::new(&format!("{} → {}", j.owner, j.printer))
+            Text::new(&format!("{} · {}", j.owner, j.size_label()))
                 .with_size(11.0)
                 .with_color(ui::Theme::dark().text_dim),
         ));
 
-    let status: El = match j.progress {
-        Some(p) => Box::new(ProgressBar::new(p)),
-        None => Box::new(
-            Text::new("Queued")
-                .with_size(11.0)
-                .with_color(ui::Theme::dark().text_dim),
-        ),
-    };
-
-    let cancel_id = format!("settings.printers.cancel.{}", slug(&j.document));
-    let cancel_key = format!("settings.printers.cancel.{}", slug(&j.document));
+    let cancel_id = format!("settings.printers.cancel.{}", slug(&j.id));
+    let cancel_key = cancel_id.clone();
 
     Box::new(
         Row::new()
             .push(Box::new(block))
             .push(Box::new(Spacer::new()))
-            .push(status)
             .push(Box::new(Button::new(&cancel_id, "Cancel", Some(&cancel_key)))),
     )
 }
 
-fn slug(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
-        .collect()
+impl Widget for PrintersPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // Per-job Cancel: when a job's cancel key is set, run `cancel <id>`
+        // once, clear the key, and re-read the queue so the cancelled job
+        // drops out. Dedup per id so a single click doesn't re-fire.
+        let jobs: Vec<(String, String)> = self
+            .jobs
+            .iter()
+            .map(|j| (j.id.clone(), format!("settings.printers.cancel.{}", slug(&j.id))))
+            .collect();
+        let mut cancelled_any = false;
+        for (id, key) in jobs {
+            let pressed = matches!(
+                state.get(root, key.as_str()),
+                Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
+            );
+            if !pressed || self.dispatched_cancels.contains(&id) {
+                continue;
+            }
+            self.dispatched_cancels.push(id.clone());
+            let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
+            if let Err(e) = self.canceller.cancel(&id) {
+                warn!(target: "qos::settings", op = "cancel_job", job = %id, error = %e, "print job cancel failed");
+            }
+            cancelled_any = true;
+        }
+        if cancelled_any {
+            self.jobs = (self.jobs_lister)()
+                .into_iter()
+                .filter(|j| !self.dispatched_cancels.contains(&j.id))
+                .collect();
+            self.structure_dirty = true;
+        }
+
+        if let Some(c) = &mut self.composed {
+            c.sync(state, root);
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let mut composed = self.build_composition();
+        let child = composed.build_layout(taffy, theme, node_map);
+        self.composed = Some(composed);
+        let style = taffy::Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
+            },
+            ..Default::default()
+        };
+        let node = taffy.new_with_children(style, &[child]).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        if let Some(c) = &mut self.composed {
+            if let Ok(children) = taffy.children(node) {
+                if let Some(&cn) = children.first() {
+                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+                }
+            }
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if let Some(c) = &mut self.composed {
+            c.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let Some(c) = &mut self.composed {
+            if let Ok(children) = taffy.children(node_id) {
+                if let Some(&cn) = children.first() {
+                    c.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        cn,
+                        taffy,
+                    );
+                }
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.composed
+            .as_ref()
+            .map(|c| c.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.composed
+            .as_mut()
+            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+
+    fn name(&self) -> &str {
+        "PrintersPane"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self
+            .composed
+            .as_mut()
+            .map(|c| c.take_structure_dirty())
+            .unwrap_or(false);
+        own || child
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use taffy::{NodeId, TaffyTree};
-    use ui::Theme;
+    use std::sync::Mutex;
 
-    #[test]
-    fn builds_layout_with_jobs() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+    #[derive(Default)]
+    struct RecordingCanceller {
+        calls: Mutex<Vec<String>>,
+    }
+    impl JobCanceller for RecordingCanceller {
+        fn cancel(&self, job_id: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(job_id.to_string());
+            Ok(())
+        }
     }
 
-    #[test]
-    fn empty_queue_renders_no_jobs_message() {
-        let printers = printers_for_display();
-        let mut pane = build_with(&printers, &[]);
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
-    #[test]
-    fn active_job_has_progress_queued_job_does_not() {
-        let jobs = jobs_for_display();
-        assert!(jobs[0].progress.is_some());
-        assert!(jobs[1].progress.is_none());
+    fn sample_jobs() -> Vec<PrintJob> {
+        vec![
+            PrintJob { id: "Office_LaserJet-42".into(), owner: "ada".into(), size: 1_048_576, when: "Mon".into() },
+            PrintJob { id: "Front_Desk-7".into(), owner: "ada".into(), size: 2048, when: "Mon".into() },
+        ]
     }
 
     #[test]
@@ -333,17 +588,71 @@ system default destination: Front_Desk\n\
 ";
         let printers = parse_lpstat(stdout);
         assert_eq!(printers.len(), 3);
-        assert_eq!(printers[0].name, "Office_LaserJet");
         assert_eq!(printers[0].state, PrinterState::Printing);
-        assert!(!printers[0].default);
-        assert_eq!(printers[1].name, "Front_Desk");
-        assert_eq!(printers[1].state, PrinterState::Ready);
-        assert!(printers[1].default, "the default destination is flagged");
+        assert!(printers[1].default);
         assert_eq!(printers[2].state, PrinterState::Paused);
     }
 
     #[test]
-    fn parse_lpstat_empty_yields_no_printers() {
-        assert!(parse_lpstat("no printers here\n").is_empty());
+    fn parse_lpstat_jobs_extracts_id_owner_size() {
+        let stdout = "\
+Office_LaserJet-42        ada          1048576   Mon 04 Jul 2026 10:15:00 AM\n\
+Front_Desk-7             charles      2048      Mon 04 Jul 2026 10:16:00 AM\n\
+this is not a job line\n\
+";
+        let jobs = parse_lpstat_jobs(stdout);
+        assert_eq!(jobs.len(), 2, "the non-job line is skipped: {jobs:?}");
+        assert_eq!(jobs[0].id, "Office_LaserJet-42");
+        assert_eq!(jobs[0].owner, "ada");
+        assert_eq!(jobs[0].size, 1_048_576);
+        assert_eq!(jobs[0].size_label(), "1.0 MB");
+        assert_eq!(jobs[1].id, "Front_Desk-7");
+    }
+
+    #[test]
+    fn empty_queue_yields_no_jobs() {
+        assert!(parse_lpstat_jobs("").is_empty());
+        assert!(parse_lpstat_jobs("\n  \n").is_empty());
+    }
+
+    /// Clicking a job's Cancel runs `cancel <id>` exactly once and drops the
+    /// job from the live queue.
+    #[test]
+    fn cancel_button_cancels_job_and_refreshes_queue() {
+        let canceller = Arc::new(RecordingCanceller::default());
+        let mut pane =
+            PrintersPane::with_data(sample_printers(), sample_jobs(), canceller.clone());
+        assert_eq!(pane.jobs().len(), 2);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        // Press Cancel on the first job.
+        let key = format!("settings.printers.cancel.{}", slug("Office_LaserJet-42"));
+        let _ = doc.put(&root, key.as_str(), automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut doc, &root);
+        pane.sync(&mut doc, &root); // must not re-cancel
+        assert_eq!(
+            canceller.calls.lock().unwrap().as_slice(),
+            ["Office_LaserJet-42"]
+        );
+        assert!(pane.take_structure_dirty(), "cancel refreshes the queue view");
+        assert!(
+            !pane.jobs().iter().any(|j| j.id == "Office_LaserJet-42"),
+            "the cancelled job left the queue: {:?}",
+            pane.jobs()
+        );
+    }
+
+    #[test]
+    fn builds_layout_with_and_without_jobs() {
+        let canceller = Arc::new(RecordingCanceller::default());
+        for jobs in [sample_jobs(), vec![]] {
+            let mut pane =
+                PrintersPane::with_data(sample_printers(), jobs, canceller.clone());
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
     }
 }

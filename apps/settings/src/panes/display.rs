@@ -1,23 +1,26 @@
-//! Display pane — brightness slider + "Auto brightness" placeholder
-//! toggle.
+//! Display pane — real connected-output list, brightness, and the display
+//! comfort preferences.
 //!
-//! Plumbs `os_actions::display::{get_brightness, set_brightness}`. The
-//! initial value is sampled once on construction (cached in
-//! [`DisplayPane::initial_brightness`]); subsequent drag-driven CRDT
-//! updates are observed in `sync` and forwarded to
-//! [`os_actions::Dispatcher::set_brightness`] only when the value
-//! actually changes — that keeps `brightnessctl` from firing on every
-//! frame just because the slider committed an identical f64.
+//! - **Displays** enumerates the machine's real DRM connectors from
+//!   `/sys/class/drm/*/status`, so the arrangement card reflects what's
+//!   actually plugged in (built-in panel + any external monitors), not a
+//!   hard-coded pair of rows.
+//! - **Brightness** forwards to `os_actions::set_brightness`
+//!   (`brightnessctl`), sampled once on construction.
+//! - **Automatic brightness / Night light** are durable preferences
+//!   persisted to the shared store ([`crate::prefs::SystemPrefs`]); the
+//!   compositor's output layer reads them.
 //!
-//! Auto-brightness has no real backing yet; the toggle is wired to a
-//! CRDT key (`display.auto_brightness`) so the bit is captured, but no
-//! dispatcher hook fires when it flips. Tracked in the pane docstring
-//! so the omission is visible to anyone wiring real ambient-light
-//! handling later.
+//! Resolution and scale are deliberately *not* offered here: qOS's
+//! compositor owns mode-setting and there is no unprivileged, compositor-
+//! agnostic way to apply a mode from this app, so a picker would list modes
+//! it could not switch to. The connector list shows the real hardware
+//! instead.
 //
-// CRDT keys this pane reads / writes on `state.doc`:
+// CRDT keys this pane reads / writes:
 //   `display.brightness`        — f64 in `[0.0, 1.0]`, slider value
-//   `display.auto_brightness`   — bool, auto-brightness toggle stub
+//   `display.auto_brightness`   — bool, durable preference
+//   `display.night_light`       — bool, durable preference
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,39 +36,80 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card, caption, rows, setting_row, value_row};
+use crate::prefs::{DisplayPrefs, SystemPrefs};
+use crate::widgets::{card, caption, rows, setting_row, value_row, El};
 
 /// CRDT key the brightness slider writes into.
 pub const BRIGHTNESS_KEY: &str = "display.brightness";
 /// CRDT key the auto-brightness toggle writes into.
 pub const AUTO_BRIGHTNESS_KEY: &str = "display.auto_brightness";
-pub const RESOLUTION_KEY: &str = "display.resolution";
-pub const SCALE_KEY: &str = "display.scale";
+/// CRDT key the night-light toggle writes into.
 pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
 
+/// One real display output, derived from a DRM connector.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayOutput {
+    /// User-facing name, e.g. `"Built-in display"` or `"HDMI-A-1"`.
+    pub label: String,
+    pub connected: bool,
+    pub builtin: bool,
+}
+
+/// Map a raw DRM connector directory name + its `status` file contents to a
+/// [`DisplayOutput`]. `conn` looks like `card0-eDP-1`; the `cardN-` prefix
+/// is stripped and built-in panels (eDP/LVDS/DSI) get a friendly label.
+pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
+    // Strip the leading `cardN-` so we're left with the connector, e.g.
+    // `eDP-1`, `HDMI-A-1`, `DP-2`.
+    let name = conn.split_once('-').map(|(_, rest)| rest).unwrap_or(conn);
+    let upper = name.to_ascii_uppercase();
+    let builtin = upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
+    let label = if builtin {
+        "Built-in display".to_string()
+    } else {
+        name.to_string()
+    };
+    DisplayOutput {
+        label,
+        connected: status.trim() == "connected",
+        builtin,
+    }
+}
+
+/// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
+/// an empty vec when the directory is unavailable (a container under
+/// `--shots`), in which case the pane shows an honest "no displays" note.
+fn read_outputs() -> Vec<DisplayOutput> {
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/sys/class/drm") else {
+        return out;
+    };
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // A connector directory is `cardN-<connector>` and carries a
+        // `status` file; the bare `cardN` render node does not.
+        if !name.contains('-') || !name.starts_with("card") {
+            continue;
+        }
+        let status_path = entry.path().join("status");
+        if let Ok(status) = std::fs::read_to_string(&status_path) {
+            out.push(classify_connector(&name, &status));
+        }
+    }
+    // Deterministic order: built-in first, then alphabetical.
+    out.sort_by(|a, b| b.builtin.cmp(&a.builtin).then(a.label.cmp(&b.label)));
+    out
+}
+
 /// Display pane widget.
-///
-/// Owns the dispatcher used to forward slider changes onto
-/// `brightnessctl`. Tests inject a recording dispatcher via
-/// [`DisplayPane::with_dispatcher`].
 pub struct DisplayPane {
-    /// Side-effect surface. Default is `RealDispatcher`; tests pass a
-    /// recording impl.
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-    /// Initial brightness, sampled once on construction. Pushed into
-    /// the CRDT on the first `sync` so the slider rests at the right
-    /// position on first frame.
+    outputs: Vec<DisplayOutput>,
     initial_brightness: f32,
-    /// Last observed brightness on the CRDT, used to detect changes
-    /// without re-dispatching every frame.
+    initial_prefs: DisplayPrefs,
     last_brightness: f32,
-    /// Same idea for the auto-brightness toggle.
-    last_auto_brightness: bool,
-    /// `true` while we still need to push `initial_brightness` into the
-    /// CRDT. Cleared after the first successful `sync`.
+    last_prefs: DisplayPrefs,
     needs_seed: bool,
-    /// Composed child tree, rebuilt each `build_layout` so a CRDT
-    /// change immediately re-skins the widgets.
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -77,93 +121,79 @@ impl Default for DisplayPane {
 }
 
 impl DisplayPane {
-    /// Construct a pane wired to the real dispatcher. Samples the
-    /// current brightness once via [`os_actions::get_brightness`] —
-    /// failures fall back to `0.5` so the slider still has a
-    /// reasonable rest position on hosts without `brightnessctl`.
     pub fn new() -> Self {
         let initial = os_actions::get_brightness().unwrap_or(0.5);
         Self {
             dispatcher: dispatcher_or_real(None),
+            outputs: read_outputs(),
             initial_brightness: initial,
+            initial_prefs: SystemPrefs::load().display,
             last_brightness: initial,
-            last_auto_brightness: false,
+            last_prefs: DisplayPrefs::default(),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
         }
     }
 
-    /// Construct a pane with a caller-supplied dispatcher (used by
-    /// tests). The initial brightness is taken from
-    /// `initial_brightness` so test fixtures don't depend on the host
-    /// machine.
+    /// Test / `--shots` constructor: inject the dispatcher, initial
+    /// brightness, and a deterministic output list so the render/assertions
+    /// don't depend on the host's hardware.
     pub fn with_dispatcher(
         dispatcher: Arc<dyn Dispatcher + Send + Sync>,
         initial_brightness: f32,
     ) -> Self {
         Self {
             dispatcher,
+            outputs: vec![
+                DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
+            ],
             initial_brightness,
+            initial_prefs: DisplayPrefs::default(),
             last_brightness: initial_brightness,
-            last_auto_brightness: false,
+            last_prefs: DisplayPrefs::default(),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
         }
     }
 
+    /// Pin the output list (tests / `--shots`).
+    pub fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
+        self.outputs = outputs;
+        self
+    }
+
+    pub fn outputs(&self) -> &[DisplayOutput] {
+        &self.outputs
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
-        use ui::widget::Dropdown;
+        // --- Arrangement card: the real connected outputs.
+        let arrangement = if self.outputs.is_empty() {
+            card(
+                "Displays",
+                rows(vec![caption(
+                    "No displays detected on this device.",
+                )]),
+            )
+        } else {
+            let mut out_rows: Vec<El> = Vec::new();
+            for o in &self.outputs {
+                let status = if o.connected {
+                    if o.builtin { "Active · primary" } else { "Connected" }
+                } else {
+                    "Not connected"
+                };
+                out_rows.push(value_row(&o.label, status));
+            }
+            out_rows.push(caption(
+                "Connect a second display to extend or mirror your screen.",
+            ));
+            card("Displays", rows(out_rows))
+        };
 
-        // --- Arrangement card: which display + its layout.
-        let arrangement = card(
-            "Displays",
-            rows(vec![
-                value_row("Built-in display", "Active · primary"),
-                value_row("External display", "Not connected"),
-                caption(
-                    "Connect a second display to arrange screens side by \
-                     side or mirror them.",
-                ),
-            ]),
-        );
-
-        // --- Resolution & scale card.
-        let resolutions = vec![
-            "3840 × 2160 (4K)".to_string(),
-            "2560 × 1440 (QHD)".to_string(),
-            "1920 × 1080 (FHD)".to_string(),
-        ];
-        let scales = vec![
-            "100%".to_string(),
-            "125%".to_string(),
-            "150%".to_string(),
-            "200%".to_string(),
-        ];
-        let resolution = card(
-            "Resolution & scale",
-            rows(vec![
-                setting_row(
-                    "Resolution",
-                    Box::new(
-                        Dropdown::new(resolutions, RESOLUTION_KEY)
-                            .with_id("display.resolution")
-                            .with_placeholder("2560 × 1440 (QHD)"),
-                    ),
-                ),
-                setting_row(
-                    "Scale",
-                    Box::new(
-                        Dropdown::new(scales, SCALE_KEY)
-                            .with_id("display.scale")
-                            .with_placeholder("150%"),
-                    ),
-                ),
-            ]),
-        );
-
-        // --- Brightness & night light card.
+        // --- Brightness & comfort card.
         let brightness = card(
             "Brightness",
             rows(vec![
@@ -189,31 +219,31 @@ impl DisplayPane {
                     ),
                 ),
                 caption(
-                    "Brightness drives the backlight. Night light warms the \
-                     colour temperature in the evening.",
+                    "Brightness drives the backlight now; automatic brightness \
+                     and night light are applied by the compositor.",
                 ),
             ]),
         );
 
-        crate::widgets::cards(vec![arrangement, resolution, brightness])
+        crate::widgets::cards(vec![arrangement, brightness])
+    }
+
+    /// Load prefs fresh, apply `f` to the display section, persist.
+    fn persist_display(f: impl FnOnce(&mut DisplayPrefs)) {
+        let mut p = SystemPrefs::load();
+        f(&mut p.display);
+        if let Err(e) = p.save() {
+            warn!(target: "qos::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
+        }
     }
 }
 
-/// Public entry point — the SettingsApp constructs this when the user
-/// selects the Display category. Matches the historical `build()`
-/// signature so the dispatch table in `settings_app::build_pane` keeps
-/// compiling without changes.
 pub fn build() -> Box<dyn Widget> {
     Box::new(DisplayPane::new())
 }
 
 impl Widget for DisplayPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Seed the CRDT with the initial brightness exactly once so the
-        // slider rests where it should. The seed lives behind a
-        // `needs_seed` flag rather than checking "is the key absent"
-        // because the slider's own `sync` could fill it with the
-        // default `0.5` before we run.
         if self.needs_seed {
             let _ = state.put(
                 root,
@@ -223,15 +253,18 @@ impl Widget for DisplayPane {
             let _ = state.put(
                 root,
                 AUTO_BRIGHTNESS_KEY,
-                automerge::ScalarValue::Boolean(false),
+                automerge::ScalarValue::Boolean(self.initial_prefs.auto_brightness),
             );
+            let _ = state.put(
+                root,
+                NIGHT_LIGHT_KEY,
+                automerge::ScalarValue::Boolean(self.initial_prefs.night_light),
+            );
+            self.last_prefs = self.initial_prefs;
             self.needs_seed = false;
         }
 
-        // Read the CRDT and forward changes to the dispatcher. Cached
-        // `last_brightness` guards against re-dispatching on identical
-        // commits (the Slider widget already debounces by ε, but the
-        // first `sync` of every frame still walks the path).
+        // Brightness → dispatcher, guarded so we don't shell out every frame.
         if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY) {
             if let Value::Scalar(s) = val {
                 if let automerge::ScalarValue::F64(f) = s.as_ref() {
@@ -247,11 +280,18 @@ impl Widget for DisplayPane {
                 }
             }
         }
-        if let Ok(Some((val, _))) = state.get(root, AUTO_BRIGHTNESS_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    self.last_auto_brightness = *b;
-                }
+
+        // Comfort preferences → persist to the shared store on change.
+        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY) {
+            if b != self.last_prefs.auto_brightness {
+                self.last_prefs.auto_brightness = b;
+                Self::persist_display(|d| d.auto_brightness = b);
+            }
+        }
+        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY) {
+            if b != self.last_prefs.night_light {
+                self.last_prefs.night_light = b;
+                Self::persist_display(|d| d.night_light = b);
             }
         }
 
@@ -369,15 +409,39 @@ impl Widget for DisplayPane {
     }
 }
 
+/// Read a `bool` scalar at `key`.
+fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
+    match state.get(root, key) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            automerge::ScalarValue::Boolean(b) => Some(*b),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
 
-    /// The pane forwards a slider-committed brightness onto the
-    /// dispatcher. We bypass the Slider widget here (it commits via
-    /// real winit events) and simulate the same CRDT mutation directly,
-    /// then drive `sync` to provoke the dispatch.
+    #[test]
+    fn classify_builtin_and_external_connectors() {
+        let builtin = classify_connector("card0-eDP-1", "connected\n");
+        assert_eq!(builtin.label, "Built-in display");
+        assert!(builtin.builtin);
+        assert!(builtin.connected);
+
+        let hdmi = classify_connector("card0-HDMI-A-1", "disconnected\n");
+        assert_eq!(hdmi.label, "HDMI-A-1");
+        assert!(!hdmi.builtin);
+        assert!(!hdmi.connected);
+
+        let dp = classify_connector("card1-DP-2", "connected");
+        assert_eq!(dp.label, "DP-2");
+        assert!(dp.connected);
+    }
+
     #[test]
     fn brightness_slider_invokes_set_brightness_on_drag() {
         let rec = Arc::new(RecordingDispatcher::default());
@@ -385,37 +449,16 @@ mod tests {
             DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-
-        // First sync seeds the CRDT and observes the seed — should not
-        // dispatch (last_brightness == initial).
         pane.sync(&mut doc, &root);
-        assert!(
-            rec.calls().is_empty(),
-            "seed sync should not dispatch: {:?}",
-            rec.calls()
-        );
-
-        // Simulate the slider committing a new value to the CRDT.
+        assert!(rec.calls().is_empty(), "seed sync should not dispatch");
         let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
         pane.sync(&mut doc, &root);
         let calls = rec.calls();
         assert_eq!(calls.len(), 1, "expected one dispatch, got {:?}", calls);
-        assert!(
-            calls[0].starts_with("set_brightness("),
-            "expected set_brightness, got {:?}",
-            calls[0]
-        );
-        // 0.75 * 100 → 75.00
-        assert!(
-            calls[0].contains("75."),
-            "expected 75% in {:?}",
-            calls[0]
-        );
+        assert!(calls[0].starts_with("set_brightness("));
+        assert!(calls[0].contains("75."), "expected 75% in {:?}", calls[0]);
     }
 
-    /// A second sync with the same CRDT value must not re-dispatch.
-    /// Otherwise every frame would shell out to brightnessctl while the
-    /// slider is at rest.
     #[test]
     fn brightness_unchanged_does_not_redispatch() {
         let rec = Arc::new(RecordingDispatcher::default());
@@ -431,9 +474,6 @@ mod tests {
         assert_eq!(rec.calls().len(), 1);
     }
 
-    /// Seed sets `display.brightness` from the constructor argument on
-    /// the first `sync`, so the Slider widget reads the right rest
-    /// position.
     #[test]
     fn seed_writes_initial_brightness_into_crdt() {
         let rec = Arc::new(RecordingDispatcher::default());
@@ -445,12 +485,27 @@ mod tests {
         let (val, _) = doc.get(&root, BRIGHTNESS_KEY).unwrap().unwrap();
         match val {
             automerge::Value::Scalar(s) => match s.as_ref() {
-                automerge::ScalarValue::F64(f) => {
-                    assert!((f - 0.42).abs() < 1e-6, "got {f}");
-                }
+                automerge::ScalarValue::F64(f) => assert!((f - 0.42).abs() < 1e-6, "got {f}"),
                 other => panic!("expected F64 scalar, got {other:?}"),
             },
             other => panic!("expected scalar, got {other:?}"),
         }
+    }
+
+    /// The arrangement card is driven by the injected output list, proving
+    /// it renders real hardware rather than a hard-coded pair.
+    #[test]
+    fn arrangement_reflects_injected_outputs() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let pane = DisplayPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            0.5,
+        )
+        .with_outputs(vec![
+            DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
+            DisplayOutput { label: "HDMI-A-1".into(), connected: true, builtin: false },
+        ]);
+        assert_eq!(pane.outputs().len(), 2);
+        assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
     }
 }
