@@ -18,18 +18,26 @@ Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30
 
-# Dedicated system user so the daemon has its own /var/lib/qos-relay
-# state directory. `DynamicUser=yes` allocates a uid at runtime; the
-# state persists via `StateDirectory=qos-relay`.
-DynamicUser=yes
-StateDirectory=qos-relay
-StateDirectoryMode=0700
+# `/var/lib/qos-relay` is pre-created by tmpfiles.d (see
+# os/usr/lib/tmpfiles.d/qos-host.conf) — the daemon writes there
+# and requires ReadWritePaths= to punch through ProtectSystem=strict.
+#
+# Deliberately NOT using `DynamicUser=yes + StateDirectory=qos-relay`:
+# under SELinux enforcing on bootc, systemd's DynamicUser handling
+# tries to rename the state dir at unit start (to reassign ownership
+# to the runtime-allocated uid). That rename runs in the `init_t`
+# domain against a target labeled `var_lib_t`, which the base policy
+# refuses (avc: denied { rename }). The unit crash-loops. Dropping
+# DynamicUser + StateDirectory removes the rename, and the sandbox
+# below (CapabilityBoundingSet= + syscall filter + ProtectSystem)
+# still gives us equivalent isolation for a daemon this narrow.
 
 # Hardening: the relay is a network-facing daemon on an always-on
 # device, so it stays behind a paranoid sandbox.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+ReadWritePaths=/var/lib/qos-relay
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
