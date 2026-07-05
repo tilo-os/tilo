@@ -55,7 +55,7 @@ use winit::keyboard::Key;
 use crate::bottom_panel::{BottomPanel, PanelTab};
 use crate::command_palette::{Command, CommandPalette, Entry, PaletteKind};
 use crate::doc::EditorDoc;
-use crate::editor_view::EditorView;
+use crate::editor_view::{EditorView, LspAsk};
 use crate::file_tree::{FileTree, TreeEvent};
 use crate::lint;
 use crate::model::{NodeId as TreeId, NodeKind, Session};
@@ -138,6 +138,33 @@ pub struct CodeApp {
     bound_node: Option<TreeId>,
     /// One-time seed guard for the CRDT buffers.
     seeded: bool,
+
+    /// The embedded system terminal, spawned lazily the first time the Terminal
+    /// dock tab is shown. `None` until then (so `CodeApp::new` — used across the
+    /// test suite — never spawns a shell) and if the shell fails to launch.
+    terminal: Option<terminal::TerminalWidget>,
+    /// True while the terminal owns keyboard input (the user clicked into it).
+    /// Cleared when a press lands anywhere else.
+    terminal_focused: bool,
+
+    /// The live LSP session for the active buffer's language, when one has been
+    /// started (opt-in — see `maybe_start_lsp`). Diagnostics / completion /
+    /// hover / definition responses are drained from it each frame.
+    lsp: Option<crate::lsp::LspClient>,
+    /// The language the current `lsp` client serves, so we restart it when the
+    /// active buffer switches to a different language.
+    lsp_language: Option<crate::model::Language>,
+    /// The `file://` URI most recently opened on the LSP server, so edits go out
+    /// as `didChange` against the right document.
+    lsp_uri: Option<String>,
+    /// Monotonic document version for LSP `didChange`.
+    lsp_version: i64,
+    /// LSP-provided diagnostics, keyed by document URI. Merged with the local
+    /// linter into the Problems panel + editor squiggles.
+    lsp_diagnostics: std::collections::HashMap<String, Vec<crate::lsp::LspDiagnostic>>,
+    /// The buffer text last sent to the LSP server (as `didChange`), so we only
+    /// notify on an actual change.
+    lsp_sent_text: String,
 }
 
 impl CodeApp {
@@ -184,6 +211,14 @@ impl CodeApp {
             editor_col_node: None,
             bound_node: default,
             seeded: false,
+            terminal: None,
+            terminal_focused: false,
+            lsp: None,
+            lsp_language: None,
+            lsp_uri: None,
+            lsp_version: 0,
+            lsp_diagnostics: std::collections::HashMap::new(),
+            lsp_sent_text: String::new(),
         }
     }
 
@@ -360,15 +395,23 @@ impl CodeApp {
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
-    /// status bar.
+    /// status bar. LSP diagnostics (when a server is live) are merged with the
+    /// local linter; the LSP set also drives the editor's inline squiggles.
     fn refresh_diagnostics(&mut self, doc: &AutoCommit) {
-        let diagnostics = match self.session.active_buffer() {
+        let mut diagnostics = match self.session.active_buffer() {
             Some(buf) => {
                 let text = EditorDoc::read_buffer(doc, buf.node).unwrap_or_default();
                 lint::lint(&text, buf.language)
             }
             None => Vec::new(),
         };
+        // Merge in any LSP diagnostics for the active document.
+        if let Some(uri) = &self.lsp_uri {
+            if let Some(lsp) = self.lsp_diagnostics.get(uri) {
+                diagnostics.extend(lsp.iter().map(|d| d.to_panel()));
+            }
+        }
+        diagnostics.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
         self.panel.set_problems(diagnostics);
     }
 
@@ -508,6 +551,7 @@ impl CodeApp {
             Command::GoToTerminal => {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Terminal);
+                self.ensure_terminal();
             }
         }
     }
@@ -530,6 +574,192 @@ impl CodeApp {
         }
     }
 
+    /// Spawn the embedded system terminal on first use. Idempotent. On success
+    /// the panel hands the Terminal tab body to the live widget; on failure it
+    /// shows a clear note instead of the static log.
+    fn ensure_terminal(&mut self) {
+        if self.terminal.is_some() {
+            return;
+        }
+        match terminal::TerminalWidget::spawn_default() {
+            Ok(w) => {
+                self.terminal = Some(w);
+                self.panel.set_has_live_terminal(true);
+                self.panel.set_terminal_note(None);
+            }
+            Err(e) => {
+                self.panel.set_has_live_terminal(false);
+                self.panel
+                    .set_terminal_note(Some(format!("Terminal unavailable: {e}")));
+            }
+        }
+    }
+
+    /// Whether the Terminal dock tab is currently visible with a live terminal.
+    fn terminal_visible(&self) -> bool {
+        self.panel_visible
+            && self.panel.active_tab() == PanelTab::Terminal
+            && self.terminal.is_some()
+    }
+
+    // ---- LSP orchestration ------------------------------------------------
+
+    /// Build a `file://` URI for a project node, mirroring the sample project's
+    /// tree onto a synthetic root so servers get a plausible path.
+    fn node_uri(&self, node: TreeId) -> String {
+        format!("file:///{}", self.session.project.path_of(node))
+    }
+
+    /// LSP `languageId` string for a language (the server's expected token).
+    fn language_id(lang: crate::model::Language) -> &'static str {
+        use crate::model::Language::*;
+        match lang {
+            Rust => "rust",
+            Python => "python",
+            TypeScript => "typescript",
+            JavaScript => "javascript",
+            Go => "go",
+            C => "c",
+            Cpp => "cpp",
+            Toml => "toml",
+            Json => "json",
+            Yaml => "yaml",
+            Html => "html",
+            Css => "css",
+            Markdown => "markdown",
+            Shell => "shellscript",
+            PlainText => "plaintext",
+        }
+    }
+
+    /// Start (or restart) a language server for the active buffer, but only when
+    /// live LSP is opted into via the `QOS_CODE_LSP` env var. Kept opt-in so the
+    /// hermetic build, the test suite, and `--shots` never launch rust-analyzer.
+    /// A missing binary degrades to a Problems-panel note.
+    fn maybe_start_lsp(&mut self, doc: &AutoCommit) {
+        if std::env::var("QOS_CODE_LSP").is_err() {
+            return;
+        }
+        let Some(buf) = self.session.active_buffer() else {
+            return;
+        };
+        let (node, lang) = (buf.node, buf.language);
+        if self.lsp.is_some() && self.lsp_language == Some(lang) {
+            return; // already serving this language
+        }
+        if crate::lsp::LspClient::server_command(lang).is_none() {
+            return; // no server mapping for this language
+        }
+        let root_uri = format!("file:///{}", self.session.project.name);
+        match crate::lsp::LspClient::start(lang, &root_uri) {
+            Ok(mut client) => {
+                let uri = self.node_uri(node);
+                let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+                tracing::info!(
+                    "started language server {} for {}",
+                    client.server_name(),
+                    lang.label()
+                );
+                self.lsp_version = 1;
+                client.did_open(&uri, Self::language_id(lang), self.lsp_version, &text);
+                self.lsp = Some(client);
+                self.lsp_language = Some(lang);
+                self.lsp_uri = Some(uri);
+            }
+            Err(e) => {
+                // Surface the failure where the user will look for diagnostics.
+                self.lsp = None;
+                self.lsp_language = None;
+                self.panel.set_problems(vec![crate::bottom_panel::Diagnostic {
+                    severity: crate::bottom_panel::Severity::Info,
+                    line: 1,
+                    col: 1,
+                    message: format!("Language server: {e}"),
+                }]);
+            }
+        }
+    }
+
+    /// Drain events the LSP reader thread produced and fold them into the editor
+    /// (diagnostics → panel + squiggles; completion/hover/definition → editor).
+    fn poll_lsp(&mut self) {
+        let events = match self.lsp.as_mut() {
+            Some(c) => c.poll(),
+            None => return,
+        };
+        for ev in events {
+            match ev {
+                crate::lsp::LspEvent::Diagnostics { uri, diagnostics } => {
+                    self.lsp_diagnostics.insert(uri, diagnostics);
+                    self.apply_diagnostics_to_editor();
+                }
+                crate::lsp::LspEvent::Completion(items) => {
+                    self.editor.show_completions(items);
+                }
+                crate::lsp::LspEvent::Hover(text) => {
+                    self.editor.set_hover(text);
+                }
+                crate::lsp::LspEvent::Definition(locs) => {
+                    self.apply_definition(locs);
+                }
+                crate::lsp::LspEvent::Initialized | crate::lsp::LspEvent::Exited => {}
+            }
+        }
+    }
+
+    /// Push the active buffer's LSP diagnostics into the editor's inline model
+    /// and merge them with the local linter for the Problems panel.
+    fn apply_diagnostics_to_editor(&mut self) {
+        let uri = self.lsp_uri.clone();
+        let lsp_diags = uri
+            .as_ref()
+            .and_then(|u| self.lsp_diagnostics.get(u))
+            .cloned()
+            .unwrap_or_default();
+        self.editor.set_diagnostics(&lsp_diags);
+    }
+
+    /// Move the caret to a definition result when it lands in the current
+    /// buffer (a same-file jump). Cross-file jumps would need to open the target
+    /// file; left as a follow-up.
+    fn apply_definition(&mut self, locs: Vec<crate::lsp::Location>) {
+        let Some(cur) = self.lsp_uri.clone() else {
+            return;
+        };
+        if let Some(loc) = locs.into_iter().find(|l| l.uri == cur) {
+            self.editor.move_caret_to(
+                loc.range.start.line as usize,
+                loc.range.start.character as usize,
+            );
+        }
+    }
+
+    /// The LSP position of the editor's primary caret.
+    fn caret_lsp_pos(&self) -> crate::lsp::Position {
+        let (line, col) = self.editor.primary_caret();
+        crate::lsp::Position {
+            line: line as u32,
+            character: col as u32,
+        }
+    }
+
+    /// Issue the language-server request the editor asked for, at the caret.
+    /// A no-op when no server is live (opt-in).
+    fn dispatch_lsp_ask(&mut self, ask: LspAsk) {
+        let uri = match self.lsp_uri.clone() {
+            Some(u) => u,
+            None => return,
+        };
+        let pos = self.caret_lsp_pos();
+        if let Some(c) = self.lsp.as_mut() {
+            match ask {
+                LspAsk::Completion => c.request_completion(&uri, pos),
+                LspAsk::Hover => c.request_hover(&uri, pos),
+                LspAsk::Definition => c.request_definition(&uri, pos),
+            }
+        }
+    }
+
     /// Seed the Terminal panel with a representative build log the first time.
     fn seed_terminal(&mut self) {
         self.panel.set_terminal(vec![
@@ -544,6 +774,109 @@ impl CodeApp {
             "$ ".to_string(),
         ]);
     }
+
+    // ---- headless `--shots` scenario staging ------------------------------
+
+    /// Open the Terminal dock tab and spawn the live shell (for a screenshot of
+    /// the embedded terminal).
+    pub fn shots_open_terminal(&mut self) {
+        self.panel_visible = true;
+        self.panel.set_tab(PanelTab::Terminal);
+        self.ensure_terminal();
+    }
+
+    /// Type a command into the embedded terminal (drives the real shell).
+    pub fn shots_terminal_input(&mut self, s: &str) {
+        if let Some(t) = self.terminal.as_mut() {
+            t.write_input(s.as_bytes());
+        }
+    }
+
+    /// Stage a multi-word selection in the editor for the selection screenshot.
+    pub fn shots_select_words(&mut self) {
+        // Select a span on the first line that covers several words. Line 0 of
+        // every sample buffer is a doc comment, so this is content-stable.
+        if self.editor.line_count() > 0 {
+            self.editor.set_selection_lc((0, 4), (0, 24));
+        }
+    }
+
+    /// Stage a diagnostics + completion-popup screenshot by feeding canned LSP
+    /// JSON through the *real* parser and model path (no server binary needed).
+    /// This proves the same code the live client uses renders correctly.
+    pub fn shots_completion_demo(&mut self, doc: &AutoCommit) {
+        use crate::lsp::{parse_completion, parse_publish_diagnostics};
+
+        let Some(node) = self.session.active_buffer().map(|b| b.node) else {
+            return;
+        };
+        let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+        let uri = self.node_uri(node);
+        self.lsp_uri = Some(uri.clone());
+
+        // Canned diagnostics shaped exactly like rust-analyzer's, anchored to
+        // real spans found in the buffer so the squiggles land on real tokens.
+        let mut diag_json = Vec::new();
+        if let Some((l, c0, c1)) = find_char_span(&text, "unwrap_or(20)") {
+            diag_json.push(serde_json::json!({
+                "range": { "start": {"line": l, "character": c0}, "end": {"line": l, "character": c1} },
+                "severity": 2,
+                "source": "clippy",
+                "message": "manual `unwrap_or` — consider `unwrap_or_default()`"
+            }));
+        }
+        if let Some((l, c0, c1)) = find_char_span(&text, "parse_limit") {
+            diag_json.push(serde_json::json!({
+                "range": { "start": {"line": l, "character": c0}, "end": {"line": l, "character": c1} },
+                "severity": 1,
+                "source": "rustc",
+                "message": "cannot find function `parse_limitt` in this scope"
+            }));
+        }
+        let notif = serde_json::json!({
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": uri, "diagnostics": diag_json }
+        });
+        if let Some((_, diags)) = parse_publish_diagnostics(&notif) {
+            self.editor.set_diagnostics(&diags);
+            self.lsp_diagnostics.insert(uri, diags);
+        }
+        self.refresh_diagnostics(doc);
+
+        // Canned completion response fed through the real parser.
+        let completion_json = serde_json::json!({
+            "result": {
+                "isIncomplete": false,
+                "items": [
+                    { "label": "primes_below", "kind": 3, "detail": "fn(u64) -> Vec<u64>" },
+                    { "label": "print", "kind": 3, "detail": "macro" },
+                    { "label": "println", "kind": 3, "detail": "macro" },
+                    { "label": "parse_limit", "kind": 3, "detail": "fn(&[String]) -> Option<u64>" },
+                    { "label": "primary", "kind": 6, "detail": "let binding" }
+                ]
+            }
+        });
+        let items = parse_completion(&completion_json);
+        // Place the caret after a partial identifier so the popup anchors on a
+        // real token, then show the completions.
+        if let Some((l, _c0, c1)) = find_char_span(&text, "primes") {
+            self.editor.move_caret_to(l, c1);
+        }
+        self.editor.show_completions(items);
+    }
+}
+
+/// Locate the first occurrence of `needle` in `text`, returning its
+/// `(line, start_col, end_col)` in zero-based *character* coordinates. Used by
+/// the shots scenarios to anchor canned diagnostics on real tokens.
+fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
+    let byte = text.find(needle)?;
+    let prefix = &text[..byte];
+    let line = prefix.matches('\n').count();
+    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let start_col = text[line_start..byte].chars().count();
+    let end_col = start_col + needle.chars().count();
+    Some((line, start_col, end_col))
 }
 
 impl Widget for CodeApp {
@@ -554,6 +887,40 @@ impl Widget for CodeApp {
         }
         self.ensure_buffers(state);
         self.editor.sync(state, path);
+
+        // Pump the embedded terminal: its `sync` drains the PTY reader and
+        // reflects it into the grid (the plain `ui::App` loop never calls
+        // `update`, so pumping happens here — see `TerminalWidget::sync`).
+        if self.terminal.is_some() {
+            let tr = EditorDoc::terminal_root(state);
+            if let Some(t) = self.terminal.as_mut() {
+                t.sync(state, &tr);
+            }
+        }
+
+        // Language server: start on demand (opt-in), stream edits out as
+        // `didChange`, and drain diagnostics/completions/hover back in.
+        self.maybe_start_lsp(state);
+        if self.lsp.is_some() {
+            if let Some((node, uri)) = self
+                .session
+                .active_buffer()
+                .map(|b| b.node)
+                .zip(self.lsp_uri.clone())
+            {
+                let text = EditorDoc::read_buffer(state, node).unwrap_or_default();
+                if text != self.lsp_sent_text {
+                    self.lsp_version += 1;
+                    let version = self.lsp_version;
+                    if let Some(c) = self.lsp.as_mut() {
+                        c.did_change(&uri, version, &text);
+                    }
+                    self.lsp_sent_text = text;
+                }
+            }
+        }
+        self.poll_lsp();
+
         self.refresh_tabs();
         self.refresh_diagnostics(state);
         self.refresh_status();
@@ -837,6 +1204,16 @@ impl Widget for CodeApp {
             }
         }
 
+        // The embedded terminal renders its live grid over the panel's content
+        // region whenever the Terminal dock tab is showing.
+        if self.terminal_visible() {
+            let content = self.panel.content_rect();
+            if let Some(t) = self.terminal.as_mut() {
+                t.place_at(content);
+                t.draw(scene, transform, text_renderer, theme, presence);
+            }
+        }
+
         self.status.draw(scene, transform, text_renderer, theme, presence);
         // Palette floats on top.
         self.palette.draw_overlay(scene, transform, text_renderer, theme);
@@ -973,6 +1350,45 @@ impl Widget for CodeApp {
             }
         }
 
+        // Terminal input capture: while the Terminal dock tab shows a live
+        // terminal, a click in its content region focuses the shell and routes
+        // keyboard + pointer input to it (like clicking into any terminal); a
+        // press elsewhere returns focus to the editor.
+        let term_active = self.terminal_visible();
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.terminal_focused =
+                term_active && self.panel.content_rect().contains(self.last_cursor);
+        }
+        if term_active && self.terminal_focused {
+            let tr = EditorDoc::terminal_root(state);
+            if let Some(t) = self.terminal.as_mut() {
+                let mut th = false;
+                let mut tf = None;
+                t.handle_event(
+                    event, scale_factor, modifiers, state, &tr, &mut th, &mut tf,
+                    NodeId::new(0), taffy,
+                );
+                if th {
+                    *handled = true;
+                }
+            }
+            // The focused terminal owns keyboard + pointer; consume those so the
+            // editor underneath doesn't also react.
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::CursorMoved { .. }
+            ) {
+                return;
+            }
+        }
+
         // Route to child widgets.
         //
         // Sidebar routing depends on the layout:
@@ -1027,6 +1443,12 @@ impl Widget for CodeApp {
             );
         }
 
+        // If the editor asked for a language-server action (Ctrl+Space, F1,
+        // F12), issue it now with the caret position.
+        if let Some(ask) = self.editor.take_lsp_ask() {
+            self.dispatch_lsp_ask(ask);
+        }
+
         // Drain whatever the children produced, then refresh derived views.
         self.drain_child_events();
         self.refresh_diagnostics(state);
@@ -1051,12 +1473,16 @@ impl Widget for CodeApp {
             || self.status.needs_redraw()
             || self.palette.is_visible()
             || self.flap.is_animating(self.sidebar_layout())
+            // A live terminal repaints continuously while visible.
+            || self.terminal_visible()
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while the sidebar flap is
-        // mid-transition so the slide + scrim fade play to completion.
-        self.flap.is_animating(self.sidebar_layout())
+        // mid-transition (so the slide + scrim fade play out) OR while a live
+        // terminal is visible — its PTY is drained from `sync`, which the App
+        // only re-runs while an animation frame is requested.
+        self.flap.is_animating(self.sidebar_layout()) || self.terminal_visible()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
