@@ -34,3 +34,11 @@ roxmltree = "0.20"
 # rather than a generated spine. Already in the workspace graph, so no new
 # compilation beyond feature unification.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[dev-dependencies]
+# Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`
+# env var (library discovery + the empty-shelf reload) so cargo's default
+# parallel runner can't race them.
+serial_test = "3"
+# Real temp directories for the on-disk library-discovery tests.
+tempfile = "3"

@@ -117,6 +117,9 @@ enum Action {
     JumpTo(Uuid),
     Delete(Uuid),
     EditNote(Uuid),
+    /// Re-scan the on-disk library directories (the empty-shelf affordance —
+    /// picks up `.epub` files added to the Books folder without a restart).
+    ReloadLibrary,
 }
 
 /// Icon glyphs the chrome draws (each maps to a `paint::*` vector helper).
@@ -163,6 +166,15 @@ pub struct BooksApp {
     /// column count + row heights are known, and read back by the wheel handler
     /// (which runs before the next layout) to clamp the offset.
     shelf_max_scroll: f64,
+    /// Keyboard-focused book on the shelf. Arrow keys move it, Enter/Space
+    /// opens it — so the library is reachable without a pointer.
+    shelf_cursor: usize,
+    /// Last-known column count of the shelf grid, computed in `draw_library` and
+    /// read back by the keyboard handler so up/down move by a whole row.
+    shelf_cols: usize,
+    /// Set when the shelf cursor moves via the keyboard, so the next
+    /// `draw_library` scrolls the focused card into view.
+    scroll_to_cursor: bool,
     /// Accumulated wheel delta in the reader, so a trackpad's many small pixel
     /// deltas coalesce into whole page turns instead of flipping wildly.
     turn_accum: f64,
@@ -232,6 +244,9 @@ impl BooksApp {
             hi_color: HiColor::Yellow,
             shelf_scroll: 0.0,
             shelf_max_scroll: 0.0,
+            shelf_cursor: 0,
+            shelf_cols: 1,
+            scroll_to_cursor: false,
             turn_accum: 0.0,
             type_popover: false,
             cursor: Point::ZERO,
@@ -636,6 +651,20 @@ impl BooksApp {
                 }
                 BooksDoc::remove_annotation(doc, id);
             }
+            Action::ReloadLibrary => {
+                // Re-scan the on-disk library directories. If the reader has
+                // since dropped `.epub` files into their Books folder (as the
+                // empty-shelf hint suggests), this picks them up live. Stays on
+                // the shelf so the freshly discovered books are visible; only an
+                // explicit tap on a card enters the reader.
+                self.library = load_library();
+                self.cover_cache.clear();
+                self.book_idx = 0;
+                self.shelf_cursor = 0;
+                self.shelf_scroll = 0.0;
+                self.scroll_to_cursor = false;
+                self.layout = None;
+            }
         }
     }
 
@@ -914,6 +943,57 @@ impl Widget for BooksApp {
 }
 
 impl BooksApp {
+    /// Library-shelf keyboard navigation. A directional cursor moves across the
+    /// grid (up/down step by a whole row, using the column count the last draw
+    /// resolved); Enter/Space opens the focused book. Returns `true` when the
+    /// key was consumed. Without this the shelf was pointer-only.
+    fn handle_library_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+        let n = self.library.len();
+        if n == 0 {
+            return false;
+        }
+        let last = n - 1;
+        let cols = self.shelf_cols.max(1);
+        let cursor = self.shelf_cursor.min(last);
+        match key {
+            Key::Named(NamedKey::ArrowRight) => {
+                self.shelf_cursor = (cursor + 1).min(last);
+                self.scroll_to_cursor = true;
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.shelf_cursor = cursor.saturating_sub(1);
+                self.scroll_to_cursor = true;
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.shelf_cursor = (cursor + cols).min(last);
+                self.scroll_to_cursor = true;
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.shelf_cursor = cursor.saturating_sub(cols);
+                self.scroll_to_cursor = true;
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                self.shelf_cursor = 0;
+                self.scroll_to_cursor = true;
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                self.shelf_cursor = last;
+                self.scroll_to_cursor = true;
+                true
+            }
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                self.dispatch(Action::OpenBook(cursor), doc);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Keyboard handling. Returns `true` if the key was consumed (so the App's
     /// focus-navigation fallback doesn't also steal the arrows).
     fn handle_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
@@ -937,9 +1017,7 @@ impl BooksApp {
         }
 
         if self.view == View::Library {
-            // Enter / space opens the first book; arrows could move a cursor —
-            // keep it simple and let clicks drive the shelf.
-            return false;
+            return self.handle_library_key(key, doc);
         }
 
         match key {
@@ -1218,7 +1296,7 @@ impl BooksApp {
                 None,
                 TextWeight::Semibold,
             );
-            let hint = "Add .epub files to your Books folder to see them here.";
+            let hint = "Add .epub files to your Books folder, then reload.";
             let (tw2, _) = tr.measure(hint, 13.0, None);
             tr.draw_text(
                 scene,
@@ -1228,6 +1306,35 @@ impl BooksApp {
                 t * Affine::translate((cx - tw2 as f64 / 2.0, cy + 4.0)),
                 None,
             );
+            // A real, in-app action: re-scan the library directories so books
+            // dropped in after launch appear without restarting. (Browsing for a
+            // file needs a shell file-picker portal, which lives outside the app.)
+            let label = "Reload library";
+            let (bw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
+            let bh = 34.0;
+            let bwidth = bw as f64 + 34.0;
+            let bx = cx - bwidth / 2.0;
+            let by = cy + 30.0;
+            let brect = Rect::new(bx, by, bx + bwidth, by + bh);
+            let bhover = self.is_hover(brect);
+            paint::fill_round(
+                scene,
+                t,
+                brect,
+                bh / 2.0,
+                if bhover { theme.bg_hover } else { c.surfaces.overlay },
+            );
+            paint::stroke_round(scene, t, brect, bh / 2.0, c.border_standard, 1.0);
+            tr.draw_text_weighted(
+                scene,
+                label,
+                13.0,
+                c.text_primary,
+                t * Affine::translate((bx + 17.0, by + (bh - 13.0) / 2.0)),
+                None,
+                TextWeight::Medium,
+            );
+            self.push_hit(brect, Action::ReloadLibrary);
             self.library = lib;
             return;
         }
@@ -1240,6 +1347,9 @@ impl BooksApp {
         let card_h = cover_h + 78.0;
         let avail = (r.width() - 2.0 * margin + gap).max(card_w);
         let cols = (avail / (card_w + gap)).floor().max(1.0) as usize;
+        // Publish the column count so keyboard up/down can step a whole row.
+        self.shelf_cols = cols;
+        self.shelf_cursor = self.shelf_cursor.min(lib.len().saturating_sub(1));
         let grid_w = cols as f64 * card_w + (cols as f64 - 1.0) * gap;
         let start_x = r.x0 + (r.width() - grid_w) / 2.0;
         let start_y = r.y0 + TOP_BAR + 36.0;
@@ -1255,6 +1365,20 @@ impl BooksApp {
         };
         let visible_h = (r.y1 - start_y).max(0.0);
         self.shelf_max_scroll = (content_h - visible_h).max(0.0);
+        // Keyboard navigation asked to reveal the focused card: nudge the scroll
+        // so the focused row sits fully inside the viewport, then clear the flag.
+        if self.scroll_to_cursor {
+            let cur_row = self.shelf_cursor / cols;
+            let rel = cur_row as f64 * row_pitch;
+            let full = card_h + 84.0;
+            let top_screen = start_y + rel - self.shelf_scroll;
+            if top_screen < start_y {
+                self.shelf_scroll = rel;
+            } else if top_screen + full > r.y1 {
+                self.shelf_scroll = start_y + rel + full - r.y1;
+            }
+            self.scroll_to_cursor = false;
+        }
         self.shelf_scroll = self.shelf_scroll.clamp(0.0, self.shelf_max_scroll);
         let scroll = self.shelf_scroll;
 
@@ -1271,7 +1395,8 @@ impl BooksApp {
             if y > r.y1 || y + card_h + 84.0 < r.y0 + TOP_BAR {
                 continue;
             }
-            self.draw_book_card(scene, t, tr, theme, book, i, x, y, card_w, cover_h);
+            let focused = i == self.shelf_cursor;
+            self.draw_book_card(scene, t, tr, theme, book, i, x, y, card_w, cover_h, focused);
         }
         scene.pop_layer();
 
@@ -1327,6 +1452,7 @@ impl BooksApp {
         y: f64,
         w: f64,
         cover_h: f64,
+        focused: bool,
     ) {
         let c = &theme.tokens.colors;
         let cover = Rect::new(x, y, x + w, y + cover_h);
@@ -1386,7 +1512,11 @@ impl BooksApp {
                 Some(title_w as f32),
             );
         }
-        if hover {
+        // Keyboard focus draws a ring even without a pointer over the card, so
+        // arrow-key navigation is visible; hover uses the same treatment.
+        if focused {
+            paint::stroke_round(scene, t, cover, 12.0, theme.accent_primary, 2.5);
+        } else if hover {
             paint::stroke_round(scene, t, cover, 12.0, theme.border_focus, 2.0);
         }
 
@@ -2399,12 +2529,20 @@ impl BooksApp {
                 t * Affine::translate((card_x1 - 30.0 - lw as f64, y + 12.0)),
                 None,
             );
-            // delete affordance
+            // Delete (×) — always drawn and always registered as a hit, so it is
+            // reachable by touch and by keyboard-driven navigation, not only
+            // while a pointer happens to hover the card. Hover just strengthens
+            // it. This is the only way to remove an annotation, so gating it on
+            // hover made deletion impossible without a mouse.
             let del = Rect::new(card_x1 - 26.0, y + 6.0, card_x1 - 6.0, y + 26.0);
-            if hover {
-                paint::close(scene, t, del, c.text_dim, 1.4);
-                self.push_hit(del, Action::Delete(a.id));
-            }
+            let del_hover = self.is_hover(del);
+            let del_col = if del_hover {
+                c.text_primary
+            } else {
+                c.text_dim.with_alpha_factor(0.55)
+            };
+            paint::close(scene, t, del, del_col, 1.4);
+            self.push_hit(del, Action::Delete(a.id));
 
             // excerpt
             tr.draw_text(
@@ -2543,9 +2681,10 @@ mod interaction_tests {
     use super::*;
     use crate::content::load_sample_library;
     use crate::model::AnnoKind;
+    use serial_test::serial;
     use ui::presence::PresenceCtx;
     use winit::dpi::PhysicalPosition;
-    use winit::event::DeviceId;
+    use winit::event::{DeviceId, KeyEvent};
 
     fn app_with_sample() -> BooksApp {
         BooksApp::with_library(load_sample_library())
@@ -2607,6 +2746,51 @@ mod interaction_tests {
         };
         app.handle_event(&ev, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
         handled
+    }
+
+    // Synthesised winit key presses (the zeroed-KeyEvent trick the toolkit's own
+    // widget tests use — every field is overwritten before use). Routed through
+    // the real `handle_event`, so they exercise the exact production keyboard
+    // path the compositor drives.
+    fn char_press(ch: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(ch.into());
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(ch.into());
+        WindowEvent::KeyboardInput { device_id: DeviceId::dummy(), event: ev, is_synthetic: false }
+    }
+    fn named_press(named: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: DeviceId::dummy(), event: ev, is_synthetic: false }
+    }
+    fn feed(app: &mut BooksApp, doc: &mut AutoCommit, ev: WindowEvent) -> bool {
+        let mods = Modifiers::default();
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&ev, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+    fn key_char(app: &mut BooksApp, doc: &mut AutoCommit, ch: &str) -> bool {
+        feed(app, doc, char_press(ch))
+    }
+    fn key_named(app: &mut BooksApp, doc: &mut AutoCommit, named: NamedKey) -> bool {
+        feed(app, doc, named_press(named))
     }
 
     #[test]
@@ -2737,5 +2921,357 @@ mod interaction_tests {
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(BooksDoc::list_annotations(&doc).is_empty(), "no seeded annotations");
+    }
+
+    // ---- library-shelf keyboard (was inert: handle_key returned false) ------
+
+    #[test]
+    fn library_keyboard_moves_focus_and_opens_the_focused_book() {
+        let mut app = app_with_sample();
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 720.0);
+        assert!(app.library.len() >= 3, "sample shelf has several books");
+        assert_eq!(app.shelf_cursor, 0, "focus starts on the first book");
+
+        // Arrow-right/-left move the focus along the row.
+        assert!(key_named(&mut app, &mut doc, NamedKey::ArrowRight), "arrow consumed");
+        assert_eq!(app.shelf_cursor, 1, "arrow-right moved focus");
+        assert!(key_named(&mut app, &mut doc, NamedKey::ArrowLeft));
+        assert_eq!(app.shelf_cursor, 0, "arrow-left moved focus back");
+
+        // End jumps to the last book; Home back to the first.
+        assert!(key_named(&mut app, &mut doc, NamedKey::End));
+        assert_eq!(app.shelf_cursor, app.library.len() - 1, "End -> last book");
+        assert!(key_named(&mut app, &mut doc, NamedKey::Home));
+        assert_eq!(app.shelf_cursor, 0, "Home -> first book");
+
+        // Enter opens the focused book into the reader.
+        assert!(key_named(&mut app, &mut doc, NamedKey::Enter), "enter consumed");
+        assert_eq!(app.view, View::Reader, "enter opened the focused book");
+        assert_eq!(app.book_idx, 0, "opened the focused (first) book");
+    }
+
+    #[test]
+    fn library_arrow_down_steps_a_whole_row() {
+        let mut app = app_with_sample();
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        // A narrow window forces a single column, so down moves to the next book.
+        frame(&mut app, &mut doc, 320.0, 700.0);
+        assert_eq!(app.shelf_cols, 1, "one column at this width");
+        assert!(key_named(&mut app, &mut doc, NamedKey::ArrowDown));
+        assert_eq!(app.shelf_cursor, 1, "down stepped one row (one book) in a single column");
+    }
+
+    // ---- empty-shelf reload (was a static dead end) -------------------------
+
+    #[test]
+    #[serial]
+    fn empty_shelf_reload_button_repopulates_via_the_real_load_path() {
+        // Point discovery at an empty directory: load_library() then yields only
+        // the bundled starter, so the reload has an observable effect.
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", tmp.path()) };
+
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 900.0, 640.0);
+        assert!(app.library.is_empty(), "starts on a genuinely empty shelf");
+        assert_eq!(app.view, View::Library);
+
+        let reload = find_hit(&app, |a| matches!(a, Action::ReloadLibrary))
+            .expect("empty shelf offers a Reload button");
+        assert!(click(&mut app, &mut doc, reload), "reload click handled");
+        assert!(!app.library.is_empty(), "reload discovered books through the real load path");
+
+        unsafe { std::env::remove_var("EBOOK_LIBRARY_DIR") };
+    }
+
+    // ---- delete affordance (was unreachable without hover) ------------------
+
+    #[test]
+    fn annotation_delete_is_reachable_and_removes_it() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        // Wide window so the annotations rail is docked-open.
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        // Create one highlight via select + swatch.
+        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
+        click(&mut app, &mut doc, block);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(_))).expect("a swatch");
+        click(&mut app, &mut doc, swatch);
+        assert_eq!(BooksDoc::list_annotations(&doc).len(), 1, "one highlight created");
+
+        // The delete (×) is registered without the pointer hovering the card
+        // (the cursor is still over the swatch on the page), proving reachability.
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let del = find_hit(&app, |a| matches!(a, Action::Delete(_)))
+            .expect("delete affordance is present without hover");
+        assert!(click(&mut app, &mut doc, del), "delete click handled");
+        assert!(BooksDoc::list_annotations(&doc).is_empty(), "annotation removed");
+    }
+
+    // ---- bookmark toggle (icon + 'b') ---------------------------------------
+
+    #[test]
+    fn bookmark_toggles_via_icon_and_key() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let bookmarks = |d: &AutoCommit| {
+            BooksDoc::list_annotations(d)
+                .into_iter()
+                .filter(|a| a.kind == AnnoKind::Bookmark)
+                .count()
+        };
+        assert_eq!(bookmarks(&doc), 0, "no bookmark yet");
+        // Add via the top-bar bookmark icon.
+        let bm = find_hit(&app, |a| matches!(a, Action::ToggleBookmark)).expect("bookmark icon");
+        assert!(click(&mut app, &mut doc, bm), "bookmark icon handled");
+        assert_eq!(bookmarks(&doc), 1, "icon added a bookmark");
+        // Remove via the 'b' shortcut (same page position -> same anchor).
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(key_char(&mut app, &mut doc, "b"), "'b' consumed");
+        assert_eq!(bookmarks(&doc), 0, "'b' removed the bookmark");
+    }
+
+    // ---- note authoring: type / backspace / done ----------------------------
+
+    #[test]
+    fn composing_a_note_types_backspaces_and_persists() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        // Select a paragraph, then start a note with the 'm' shortcut.
+        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
+        click(&mut app, &mut doc, block);
+        assert!(key_char(&mut app, &mut doc, "m"), "'m' started a note");
+        let nid = app.composing.expect("a note is now being composed");
+
+        for ch in ["H", "i"] {
+            assert!(key_char(&mut app, &mut doc, ch), "char consumed while composing");
+        }
+        assert!(key_named(&mut app, &mut doc, NamedKey::Space), "space consumed");
+        for ch in ["t", "h", "e", "r", "e"] {
+            assert!(key_char(&mut app, &mut doc, ch));
+        }
+        assert!(key_named(&mut app, &mut doc, NamedKey::Backspace), "backspace consumed");
+        assert!(key_named(&mut app, &mut doc, NamedKey::Enter), "enter finished the note");
+        assert!(app.composing.is_none(), "enter ended composing");
+
+        let note = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.id == nid)
+            .expect("the composed note is in the document");
+        assert_eq!(note.kind, AnnoKind::Note);
+        assert_eq!(note.note, "Hi ther", "typed text with one backspace persisted");
+    }
+
+    #[test]
+    fn clicking_a_finished_note_reopens_it_for_editing() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
+        click(&mut app, &mut doc, block);
+        key_char(&mut app, &mut doc, "m");
+        key_char(&mut app, &mut doc, "x");
+        key_named(&mut app, &mut doc, NamedKey::Enter);
+        assert!(app.composing.is_none(), "note finished");
+
+        // Clicking the note card's lower zone reopens it (Action::EditNote).
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let edit = find_hit(&app, |a| matches!(a, Action::EditNote(_))).expect("edit zone");
+        assert!(click(&mut app, &mut doc, edit), "edit click handled");
+        assert!(app.composing.is_some(), "note reopened for editing");
+    }
+
+    // ---- jump-to-annotation location resolution -----------------------------
+
+    #[test]
+    fn clicking_an_annotation_card_jumps_to_its_location() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        // Docked notes rail at a wide width so the card (with a JumpTo hit) shows.
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let book_id = app.book_id();
+        let nblocks = app.library[app.book_idx].chapters[0].blocks.len().max(1);
+        let target = (nblocks / 2).min(nblocks - 1);
+        let a = Annotation::new(&book_id, AnnoKind::Highlight, 0, target)
+            .with_color(HiColor::Green)
+            .with_excerpt("anchored passage");
+        BooksDoc::upsert_annotation(&mut doc, &a);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+
+        // Pretend we've navigated away, then jump from the annotation card.
+        app.selected_block = None;
+        let jump = find_hit(&app, |ac| matches!(ac, Action::JumpTo(_))).expect("annotation card");
+        assert!(click(&mut app, &mut doc, jump), "jump handled");
+        assert_eq!(app.chapter, 0, "jumped to the annotation's chapter");
+        assert_eq!(app.selected_block, Some(target), "jumped to the annotation's block");
+        // The deferred page resolution runs on the next settled frame.
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        assert!(app.pending_jump_block.is_none(), "pending jump was consumed by layout");
+    }
+
+    #[test]
+    fn page_for_block_maps_a_block_to_its_page() {
+        use crate::model::{Block, Span};
+        use crate::paginate::layout_chapter;
+        let mut tr = TextRenderer::new();
+        // Eight fat paragraphs into a small box -> several pages.
+        let blocks: Vec<Block> = (0..8)
+            .map(|_| Block::Paragraph { spans: vec![Span::plain("word ".repeat(60))] })
+            .collect();
+        let layout = layout_chapter(&mut tr, &blocks, 300.0, 160.0, &Settings::default(), 0);
+        assert!(layout.page_count() >= 2, "content spans multiple pages");
+        assert_eq!(page_for_block(&layout, 0), 0, "first block is on page 0");
+        let last = layout.blocks.last().unwrap().index;
+        assert!(page_for_block(&layout, last) >= 1, "the last block is past page 0");
+        for b in &layout.blocks {
+            assert!(page_for_block(&layout, b.index) < layout.page_count(), "valid page index");
+        }
+        assert_eq!(page_for_block(&layout, 9999), 0, "unknown block -> safe page 0");
+    }
+
+    // ---- TOC chapter navigation ---------------------------------------------
+
+    #[test]
+    fn toc_row_click_navigates_to_that_chapter() {
+        let mut app = app_with_sample();
+        app.book_idx = 1; // Field Notes has three chapters.
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        assert!(app.toc_open(), "contents rail docked-open at 1280");
+        assert!(app.num_chapters() >= 2, "multi-chapter book");
+        assert_eq!(app.chapter, 0);
+        let target = app.num_chapters() - 1;
+        let row = find_hit(&app, |a| matches!(a, Action::GotoChapter(c) if *c == target))
+            .expect("a TOC row for the last chapter");
+        assert!(click(&mut app, &mut doc, row), "toc row handled");
+        assert_eq!(app.chapter, target, "navigated to the clicked chapter");
+        assert_eq!(app.page, 0, "chapter opens at page 0");
+    }
+
+    // ---- type popover steppers persist --------------------------------------
+
+    #[test]
+    fn type_popover_steppers_change_and_persist_settings() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
+        click(&mut app, &mut doc, aa);
+
+        // Text-size + button grows and persists the font scale.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let base = BooksDoc::read_settings(&doc).font_scale;
+        let inc = find_hit(&app, |a| matches!(a, Action::FontInc)).expect("font + stepper");
+        click(&mut app, &mut doc, inc);
+        let grown = BooksDoc::read_settings(&doc).font_scale;
+        assert!(grown > base, "font scale grew and persisted ({base} -> {grown})");
+
+        // Line-spacing − button shrinks and persists the spacing.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let sbase = BooksDoc::read_settings(&doc).line_spacing;
+        let dec = find_hit(&app, |a| matches!(a, Action::SpacingDec)).expect("spacing - stepper");
+        click(&mut app, &mut doc, dec);
+        let shrunk = BooksDoc::read_settings(&doc).line_spacing;
+        assert!(shrunk < sbase, "line spacing shrank and persisted ({sbase} -> {shrunk})");
+    }
+
+    // ---- reader keyboard layer ----------------------------------------------
+
+    #[test]
+    fn reader_keyboard_drives_navigation_and_chrome() {
+        let mut app = app_with_sample();
+        app.book_idx = 1; // Field Notes: three chapters, so nav is deterministic.
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert_eq!(app.chapter, 0);
+
+        // Up/Down move by chapter.
+        assert!(key_named(&mut app, &mut doc, NamedKey::ArrowDown));
+        assert_eq!(app.chapter, 1, "arrow-down advanced a chapter");
+        assert!(key_named(&mut app, &mut doc, NamedKey::ArrowUp));
+        assert_eq!(app.chapter, 0, "arrow-up went back a chapter");
+
+        // Right turns the page (into the next chapter if the first is one page).
+        let start = (app.chapter, app.page);
+        assert!(key_named(&mut app, &mut doc, NamedKey::ArrowRight));
+        assert_ne!((app.chapter, app.page), start, "arrow-right turned the page");
+
+        // 't' toggles the docked contents rail.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let toc0 = app.toc_open();
+        assert!(key_char(&mut app, &mut doc, "t"), "'t' consumed");
+        assert_ne!(app.toc_open(), toc0, "'t' toggled the contents rail");
+
+        // Digit keys set the page tint and persist it (Light differs from the
+        // Sepia default, so this proves a real write, not a coincidence).
+        assert!(key_char(&mut app, &mut doc, "1"));
+        assert_eq!(BooksDoc::read_settings(&doc).theme, ReadTheme::Light, "'1' set Light");
+        assert!(key_char(&mut app, &mut doc, "3"));
+        assert_eq!(BooksDoc::read_settings(&doc).theme, ReadTheme::Dark, "'3' set Dark");
+
+        // Escape from a clean reader leaves the book.
+        assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
+        assert_eq!(app.view, View::Library, "escape left the book");
+    }
+
+    #[test]
+    fn escape_peels_back_popover_then_overlay_then_book() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+
+        // Layer 1: an open type popover — first Escape closes only that.
+        app.type_popover = true;
+        assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
+        assert!(!app.type_popover, "escape closed the popover");
+        assert_eq!(app.view, View::Reader, "still in the book");
+
+        // Layer 2: a narrow window with the contents overlay flap open.
+        frame(&mut app, &mut doc, 560.0, 720.0);
+        assert_eq!(app.toc_layout(), SplitLayout::Overlay);
+        app.toc_flap.snap(true);
+        assert!(app.toc_open(), "overlay flap open");
+        assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
+        assert!(!app.toc_open(), "escape dismissed the overlay flap");
+        assert_eq!(app.view, View::Reader, "still in the book");
+
+        // Layer 3: nothing floating -> escape leaves the book.
+        assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
+        assert_eq!(app.view, View::Library, "escape left the book");
+    }
+
+    // ---- reading-progress persistence + restore -----------------------------
+
+    #[test]
+    fn reading_progress_persists_and_restores_on_reopen() {
+        let mut first = app_with_sample();
+        first.book_idx = 1; // multi-chapter
+        let mut doc = AutoCommit::new();
+        frame(&mut first, &mut doc, 1000.0, 700.0);
+        let book_id = first.book_id();
+
+        // Advance two chapters; each turn persists progress to the CRDT.
+        key_named(&mut first, &mut doc, NamedKey::ArrowDown);
+        key_named(&mut first, &mut doc, NamedKey::ArrowDown);
+        let reached = first.chapter;
+        assert!(reached >= 1, "advanced into the book");
+        assert_eq!(
+            BooksDoc::read_progress(&doc, &book_id).chapter,
+            reached,
+            "progress written to the document"
+        );
+
+        // A fresh reader on the same document restores the saved position.
+        let mut reopened = app_with_sample();
+        reopened.book_idx = 1;
+        frame(&mut reopened, &mut doc, 1000.0, 700.0);
+        assert_eq!(reopened.chapter, reached, "reopen restored the saved chapter");
     }
 }

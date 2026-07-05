@@ -248,3 +248,80 @@ const TIDEGLASS: &[(&str, &str)] = &[
 <p>— O.</p>
 </body>"#),
 ];
+
+#[cfg(test)]
+mod tests {
+    //! Discovery is exercised against a real temp directory via the
+    //! `EBOOK_LIBRARY_DIR` override. The env-var tests are `#[serial]` because
+    //! the variable is process-global.
+
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    fn bundled_sample_parses_into_a_real_book() {
+        let b = bundled_sample().expect("the embedded starter epub parses");
+        assert!(!b.title.is_empty(), "has a title");
+        assert!(!b.chapters.is_empty(), "has chapters");
+        assert!(b.block_count() > 0, "has readable content");
+    }
+
+    #[test]
+    #[serial]
+    fn empty_library_dir_falls_back_to_the_bundled_starter() {
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
+        let lib = load_library();
+        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
+        assert_eq!(lib.len(), 1, "no epubs on disk -> just the bundled starter");
+    }
+
+    #[test]
+    #[serial]
+    fn discovers_epubs_recursively_and_ignores_non_epubs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Two real epubs, one nested one level down; plus a decoy non-epub.
+        std::fs::write(tmp.path().join("alpha.epub"), SAMPLE_EPUB).unwrap();
+        let sub = tmp.path().join("shelf");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("beta.EPUB"), SAMPLE_EPUB).unwrap();
+        std::fs::write(tmp.path().join("readme.txt"), b"not a book").unwrap();
+
+        unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
+        let lib = load_library();
+        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
+
+        // Both epubs found (case-insensitive extension, shallow recursion); the
+        // .txt is skipped; and since epubs were found there is no starter added.
+        assert_eq!(lib.len(), 2, "both epubs discovered, non-epub ignored");
+    }
+
+    #[test]
+    #[serial]
+    fn multiple_roots_are_all_scanned() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(a.path().join("one.epub"), SAMPLE_EPUB).unwrap();
+        std::fs::write(b.path().join("two.epub"), SAMPLE_EPUB).unwrap();
+        let joined = format!("{}:{}", a.path().display(), b.path().display());
+        unsafe { std::env::set_var(LIBRARY_DIR_ENV, &joined) };
+        let lib = load_library();
+        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
+        assert_eq!(lib.len(), 2, "both colon-separated roots scanned");
+    }
+
+    #[test]
+    fn open_epub_path_reads_a_real_file_and_rejects_junk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().join("book.epub");
+        std::fs::write(&good, SAMPLE_EPUB).unwrap();
+        assert!(open_epub_path(&good).is_some(), "a real epub opens by path");
+
+        let bad = tmp.path().join("bad.epub");
+        std::fs::write(&bad, b"definitely not a zip").unwrap();
+        assert!(open_epub_path(&bad).is_none(), "a corrupt file is rejected, not panicked on");
+
+        let missing = tmp.path().join("gone.epub");
+        assert!(open_epub_path(&missing).is_none(), "a missing file is rejected");
+    }
+}
