@@ -8,10 +8,28 @@ use iroh::endpoint::Endpoint;
 use tempfile::tempdir;
 use tokio::time::timeout;
 
+// These integration tests mount a real FUSE filesystem, which needs `/dev/fuse`
+// (+ fusermount3). Minimal CI containers don't have it, so `spawn_mount2` fails
+// with NotFound. Skip cleanly there rather than panicking. When FUSE IS present
+// (dev machines, the VM) the test runs in full — this gates on capability, it
+// does not weaken any assertion.
+fn fuse_available() -> bool {
+    std::path::Path::new("/dev/fuse").exists()
+}
+macro_rules! require_fuse {
+    () => {
+        if !fuse_available() {
+            eprintln!("skipping: requires /dev/fuse + fusermount3");
+            return;
+        }
+    };
+}
+
 // Multi-thread runtime: the FUSE read path uses `block_in_place`, which panics
 // on a current-thread runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fuse_projects_tree_and_reads_real_content() {
+    require_fuse!();
     let test_timeout = Duration::from_secs(20);
 
     let _ = timeout(test_timeout, async {
@@ -79,6 +97,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
 // mkdir, rename, unlink.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fuse_write_create_overwrite_rename_unlink() {
+    require_fuse!();
     let _ = timeout(Duration::from_secs(20), async {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
@@ -131,6 +150,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
 // mount, while unknown formats stay opaque bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fuse_document_roundtrip_and_opaque_still_works() {
+    require_fuse!();
     let _ = timeout(Duration::from_secs(20), async {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
@@ -169,6 +189,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
 // refuse a directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
+    require_fuse!();
     let _ = timeout(Duration::from_secs(20), async {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
