@@ -31,6 +31,7 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
@@ -205,6 +206,22 @@ pub struct State {
     /// encoder reads the current per-surface description through
     /// [`crate::wayland::color_management::surface_current_colorimetry`].
     pub color_manager: ColorManagerState,
+    /// **Transient fullscreen surface** — the window group id of the toplevel
+    /// that currently holds the output fullscreen via
+    /// `xdg_toplevel.set_fullscreen`, or `None` in the normal tiled state.
+    /// Set by [`XdgShellHandler::fullscreen_request`] and cleared by
+    /// `unfullscreen_request` (or by surface destroy). The native render loop
+    /// mirrors this into the `FrameBuilder` each frame so the shell scene
+    /// promotes the group to the whole output; it is deliberately NOT part of
+    /// the persisted `WorkspaceTree` (a live presentation must never survive a
+    /// reboot) and restores the exact prior layout when cleared.
+    pub fullscreen_group: Option<u64>,
+    /// Combined output size in physical pixels, mirrored from the backend by
+    /// the native loop (`(0, 0)` until the first output is known). Used as the
+    /// size sent in a fullscreen `xdg_toplevel` configure so a fullscreened
+    /// client fills the whole output; `(0, 0)` leaves the size unspecified so
+    /// the client keeps its own.
+    pub output_size: (i32, i32),
 }
 
 impl State {
@@ -305,6 +322,8 @@ impl State {
             surface_resolver: None,
             active_sessions: HashMap::new(),
             color_manager,
+            fullscreen_group: None,
+            output_size: (0, 0),
         }
     }
 
@@ -821,6 +840,14 @@ impl XdgShellHandler for State {
         // Phase 6 Task 6.2 — remove the matching `Foreign` tab so the
         // chrome stops advertising a destroyed surface.
         let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        // If the destroyed surface held the output fullscreen, drop the
+        // transient promotion so the layout restores rather than staying
+        // collapsed around a group that no longer exists.
+        if self.fullscreen_group
+            == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
+        {
+            self.fullscreen_group = None;
+        }
         let _ = tab_binding::close_tab_for_destroyed_surface(
             &mut self.workspace_tree,
             surface_id,
@@ -875,6 +902,61 @@ impl XdgShellHandler for State {
         _token: u32,
     ) {
         // No-op until popup positioning is wired up.
+    }
+
+    /// A client asked to occupy its output fullscreen
+    /// (`xdg_toplevel.set_fullscreen`). We honor it: record which window group
+    /// the surface belongs to (so the native render loop promotes it to the
+    /// whole output — top bar / sidebar / other strips suppressed — and
+    /// restores exactly on exit), and send the client a configure carrying the
+    /// `Fullscreen` state plus the full output size so its own surface fills
+    /// the screen. The `_wl_output` hint is ignored: this compositor spans one
+    /// combined scene across all outputs, so fullscreen always targets the
+    /// single presentation surface (see the multi-output note in
+    /// `plan/compositor.md`).
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _wl_output: Option<WlOutput>,
+    ) {
+        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        self.fullscreen_group =
+            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
+        let (w, h) = self.output_size;
+        surface.with_pending_state(|state| {
+            state.states.set(
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+            );
+            // Size the surface to the whole output when we know it; leave it
+            // untouched otherwise so the client keeps its own extent.
+            if w > 0 && h > 0 {
+                state.size = Some((w, h).into());
+            }
+        });
+        surface.send_configure();
+    }
+
+    /// A client dropped out of fullscreen (`xdg_toplevel.unset_fullscreen`),
+    /// or Esc / a compositor exit flowed back through the UI. Clear the
+    /// transient promotion — the native loop restores the exact prior tiling —
+    /// and send a configure clearing the `Fullscreen` state and the imposed
+    /// size so the surface returns to its windowed extent.
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        // Only clear if THIS surface was the fullscreen one (a stale request
+        // from a background toplevel must not steal another's fullscreen).
+        if self.fullscreen_group
+            == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
+        {
+            self.fullscreen_group = None;
+        }
+        surface.with_pending_state(|state| {
+            state.states.unset(
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+            );
+            state.size = None;
+        });
+        surface.send_configure();
     }
 }
 

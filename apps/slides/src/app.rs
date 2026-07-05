@@ -3699,6 +3699,28 @@ impl Widget for SlidesApp {
             || self.images.any_loading()
     }
 
+    /// Present mode wants the surface promoted to true OS fullscreen so the
+    /// slideshow fills the whole output (over the shell's strips + top bar).
+    /// The host ([`ui::App`]) polls this each frame and drives
+    /// `window.set_fullscreen`, which on the qOS compositor becomes an
+    /// `xdg_toplevel.set_fullscreen` request. Level-triggered: a steady
+    /// `Some(true)` for the whole talk is correct and idempotent.
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.wants_fullscreen())
+    }
+
+    /// React to the *actual* fullscreen state reported by the host. A
+    /// compositor-initiated exit (a global un-fullscreen keybind, or the grant
+    /// being revoked) drops us out of present mode so the editor chrome comes
+    /// back — without this the app would keep painting the borderless slideshow
+    /// in a now-windowed surface. App-initiated exits (Esc → `exit_present`)
+    /// already left present mode, so this is a no-op for them.
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if !active && self.mode == Mode::Present {
+            self.exit_present();
+        }
+    }
+
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -4786,6 +4808,37 @@ mod tests {
         assert!(press_named(&mut app, NamedKey::ArrowRight));
         assert_eq!(app.blank, Blank::None, "navigation resumes a blanked screen");
         assert_eq!(app.cur_slide, before, "the resuming keypress does not also advance");
+    }
+
+    #[test]
+    fn fullscreen_intent_tracks_present_mode() {
+        // `Widget` is in scope via `use super::*`.
+        let mut app = SlidesApp::new();
+        // Editor: no fullscreen request.
+        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+        // Present: request true fullscreen.
+        app.enter_present();
+        assert_eq!(Widget::fullscreen_intent(&app), Some(true));
+        // Back to editor via Esc: request windowed again.
+        app.exit_present();
+        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+    }
+
+    #[test]
+    fn compositor_exit_of_fullscreen_leaves_present_mode() {
+        let mut app = presenting_app();
+        assert_eq!(app.mode, Mode::Present);
+        // A compositor-driven fullscreen exit (e.g. a global un-fullscreen
+        // keybind) must drop us out of present mode so the editor chrome
+        // returns rather than painting a windowed borderless slideshow.
+        Widget::on_fullscreen_changed(&mut app, false);
+        assert_eq!(app.mode, Mode::Edit, "losing fullscreen leaves present mode");
+        // Idempotent + safe when not presenting: a redundant notification is a
+        // no-op, and gaining fullscreen never forces present mode on.
+        Widget::on_fullscreen_changed(&mut app, false);
+        assert_eq!(app.mode, Mode::Edit);
+        Widget::on_fullscreen_changed(&mut app, true);
+        assert_eq!(app.mode, Mode::Edit, "a fullscreen grant alone doesn't start a talk");
     }
 
     #[test]
