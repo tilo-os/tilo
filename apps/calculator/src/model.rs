@@ -102,7 +102,13 @@ pub struct CalcModel {
     pub history: Vec<HistoryEntry>,
     pub funcs: Vec<PlotFn>,
     pub active_fn: usize,
-    pub surface: String,
+    /// The Graph 3D surface list: each `PlotFn` is a `z = f(x, y)` surface,
+    /// mirroring how `funcs` holds the 2D `y = f(x)` curves. Multiple surfaces
+    /// render as separate, per-function-coloured sheets (visibility-toggleable).
+    pub surfaces: Vec<PlotFn>,
+    /// Active surface row in [`surfaces`] (the one the editor edits) — the 3D
+    /// analogue of [`active_fn`].
+    pub active_surface: usize,
     pub view2d: View2d,
     pub view3d: View3d,
 }
@@ -123,7 +129,8 @@ impl Default for CalcModel {
             history: Vec::new(),
             funcs: Vec::new(),
             active_fn: 0,
-            surface: String::new(),
+            surfaces: Vec::new(),
+            active_surface: 0,
             view2d: View2d::default(),
             view3d: View3d::default(),
         }
@@ -140,7 +147,15 @@ impl CalcModel {
     /// loop (which boots empty via [`CalcModel::default`]).
     pub fn seeded() -> Self {
         let mut m = CalcModel::default();
-        m.surface = DEFAULT_SURFACE.to_string();
+        // A lived-in 3D surface list — several `z = f(x, y)` sheets at
+        // different heights so the Graph 3D shot shows multiple, distinctly
+        // coloured surfaces (not a lone surface).
+        m.surfaces = vec![
+            PlotFn { expr: DEFAULT_SURFACE.to_string(), visible: true },
+            PlotFn { expr: "0.05*(x^2+y^2)-3".into(), visible: true },
+            PlotFn { expr: "3-0.06*(x^2+y^2)".into(), visible: true },
+        ];
+        m.active_surface = 0;
         m.mode = Mode::Graph2d;
         // The headless screenshot picks which tab it captures via this hook;
         // unset (the live default) keeps the lived-in Graph 2D launch view.
