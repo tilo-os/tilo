@@ -132,9 +132,6 @@ filed down in follow-up phases.
   text padding. Harmless in practice (the editor draws in
   plain-chrome mode where padding is zero) but a TODO when light
   theme lands.
-- **No collaboration yet.** The app is single-user. The UI toolkit
-  has the CRDT-native plumbing wired all the way through; a peer
-  layer is the next phase.
 - **No multi-cursor / multi-selection inside blocks.** One caret per
   line; the editor selects by paragraph, not by a free-form range.
 - **No drag-and-drop reordering of pages or blocks.** Pages get
