@@ -9,7 +9,7 @@
 
 use crate::geo::{haversine_m, polyline_length_m};
 use crate::model::{
-    Category, LatLon, MapModel, Maneuver, Panel, Place, Route, RouteStep, TransitJourney,
+    Category, LatLon, MapModel, Maneuver, Panel, Place, Poi, Route, RouteStep, TransitJourney,
     TransitLeg, TransitMode, TravelMode,
 };
 
@@ -309,6 +309,77 @@ pub fn origin() -> LatLon {
     cell(-6.5, -6.0)
 }
 
+/// Bundled viewport POIs with rich tags, standing in for a live Overpass reply
+/// so the offline `--shots`/tests can render the themed POI marker layer and an
+/// open info card without a network round-trip.
+pub fn pois() -> Vec<Poi> {
+    let mk = |id: &str, name: &str, cat: Category, nx: f64, ny: f64| Poi {
+        id: id.to_string(),
+        name: name.to_string(),
+        category: cat,
+        pos: cell(nx, ny),
+        address: String::new(),
+        opening_hours: None,
+        website: None,
+        phone: None,
+        kind: None,
+    };
+    vec![
+        Poi {
+            address: "Theatinerstraße 12, München".to_string(),
+            opening_hours: Some("Mo–Sa 08:00–20:00".to_string()),
+            website: Some("https://cafe-tambosi.example".to_string()),
+            phone: Some("+49 89 2900 8600".to_string()),
+            kind: Some("coffee".to_string()),
+            ..mk("osm-node-201", "Café Tambosi", Category::Cafe, 1.2, 1.6)
+        },
+        Poi {
+            address: "Sparkassenstraße 2, München".to_string(),
+            opening_hours: Some("11:00–23:30".to_string()),
+            kind: Some("bavarian".to_string()),
+            ..mk("osm-node-202", "Ratskeller", Category::Restaurant, -0.8, 0.6)
+        },
+        Poi {
+            address: "Am Platzl 9, München".to_string(),
+            opening_hours: Some("09:00–24:00".to_string()),
+            website: Some("https://hofbraeuhaus.example".to_string()),
+            kind: Some("beer garden".to_string()),
+            ..mk("osm-node-203", "Hofbräuhaus", Category::Bar, 1.6, 0.9)
+        },
+        Poi {
+            address: "St.-Jakobs-Platz 1".to_string(),
+            opening_hours: Some("Tu–Su 10:00–18:00".to_string()),
+            ..mk("osm-way-204", "Jüdisches Museum", Category::Museum, -2.0, -1.0)
+        },
+        Poi {
+            opening_hours: Some("24/7".to_string()),
+            ..mk("osm-node-205", "Marienplatz (U/S)", Category::Transit, 0.2, -0.3)
+        },
+        Poi {
+            kind: Some("bakery".to_string()),
+            opening_hours: Some("06:00–19:00".to_string()),
+            ..mk("osm-node-206", "Rischart Backhaus", Category::Shop, 0.6, -0.9)
+        },
+        Poi {
+            address: "Neuhauser Str. 2".to_string(),
+            ..mk("osm-node-207", "St. Michael", Category::Landmark, -1.6, 0.2)
+        },
+        Poi {
+            opening_hours: Some("08:00–22:00".to_string()),
+            ..mk("osm-node-208", "Viktualien Café", Category::Cafe, 0.5, -2.0)
+        },
+        Poi {
+            address: "Sendlinger Str. 44".to_string(),
+            phone: Some("+49 89 5525 570".to_string()),
+            ..mk("osm-node-209", "Hotel Blauer Bock", Category::Hotel, 3.8, -4.0)
+        },
+        Poi {
+            kind: Some("park".to_string()),
+            ..mk("osm-way-210", "Hofgarten", Category::Park, 1.5, 5.2)
+        },
+    ]
+}
+
 /// A sample driving route from the origin to Marienplatz that follows the
 /// street grid (east, then north), with believable steps.
 pub fn sample_route() -> Route {
@@ -438,6 +509,10 @@ pub fn sample_transit() -> Vec<TransitJourney> {
         duration_min: min,
         num_stops: 0,
         geometry: geom,
+        color: None,
+        text_color: None,
+        agency: String::new(),
+        realtime: false,
     };
 
     vec![
@@ -459,6 +534,10 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     duration_min: 6,
                     num_stops: 3,
                     geometry: vec![cell(-5.0, -5.0), cell(-3.0, -3.0), cell(-1.0, -1.0), cell(0.0, 0.0)],
+                    color: Some("eb690b".to_string()),
+                    text_color: Some("ffffff".to_string()),
+                    agency: "MVG".to_string(),
+                    realtime: true,
                 },
                 walk("Marienplatz", "Marienplatz", "09:24", "09:26", 2, seg((0.0, 0.0), (0.2, -0.2))),
             ],
@@ -481,6 +560,10 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     duration_min: 4,
                     num_stops: 2,
                     geometry: vec![cell(-4.0, -4.0), cell(-3.0, -2.5), cell(-2.0, -1.5)],
+                    color: Some("e30613".to_string()),
+                    text_color: Some("ffffff".to_string()),
+                    agency: "MVG".to_string(),
+                    realtime: true,
                 },
                 TransitLeg {
                     mode: TransitMode::Bus,
@@ -493,6 +576,10 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     duration_min: 6,
                     num_stops: 3,
                     geometry: vec![cell(-2.0, -1.5), cell(-1.0, -0.5), cell(0.0, 0.0)],
+                    color: Some("005e82".to_string()),
+                    text_color: Some("ffffff".to_string()),
+                    agency: "MVG".to_string(),
+                    realtime: false,
                 },
                 walk("Marienplatz", "Marienplatz", "09:25", "09:27", 2, seg((0.0, 0.0), (0.2, -0.2))),
             ],
@@ -515,6 +602,10 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     duration_min: 8,
                     num_stops: 4,
                     geometry: vec![cell(-6.0, -4.5), cell(-4.0, -2.0), cell(-1.0, 2.0), cell(1.5, 5.0)],
+                    color: Some("0065ae".to_string()),
+                    text_color: Some("ffffff".to_string()),
+                    agency: "MVG".to_string(),
+                    realtime: true,
                 },
                 TransitLeg {
                     mode: TransitMode::Rail,
@@ -527,6 +618,10 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     duration_min: 3,
                     num_stops: 1,
                     geometry: vec![cell(1.5, 5.0), cell(0.5, 2.0), cell(0.0, 0.0)],
+                    color: Some("16bae7".to_string()),
+                    text_color: Some("ffffff".to_string()),
+                    agency: "DB Regio AG S-Bahn München".to_string(),
+                    realtime: true,
                 },
                 walk("Marienplatz", "Marienplatz", "09:27", "09:29", 2, seg((0.0, 0.0), (0.2, -0.2))),
             ],
