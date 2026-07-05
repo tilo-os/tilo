@@ -40,7 +40,29 @@ pub mod stream;
 #[cfg(feature = "live")]
 pub mod live;
 
+/// yt-dlp subprocess extractor — the maintained YouTube data source. Gated
+/// behind `live` alongside the rustypipe fallback.
+#[cfg(feature = "live")]
+pub mod ytdlp;
+
+/// GStreamer decode/playback (VP9 / AV1 / H.264 + audio, adaptive). Gated
+/// behind `media`.
+#[cfg(feature = "media")]
+pub mod gst_playback;
+
 use crate::model::{Channel, Video};
+
+/// Canonical i.ytimg.com thumbnail URL for a video id. `hqdefault.jpg` is the
+/// stable 480×360 still every public video serves, so a real card image is
+/// available from just the id — no extra extraction round trip. Empty id in →
+/// empty string out (the caller shows the seed gradient).
+pub fn yt_thumb_url(video_id: &str) -> String {
+    if video_id.is_empty() {
+        String::new()
+    } else {
+        format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
+    }
+}
 
 /// A read request against a [`YtBackend`]. Kept serde-free and toolkit-free so
 /// it can cross the worker-thread boundary cheaply.
@@ -123,6 +145,32 @@ pub struct StreamHandle {
     pub index_range: Option<(u64, u64)>,
 }
 
+/// A resolved, directly-playable media URL for the GStreamer decode path.
+///
+/// Unlike [`StreamHandle`] (a byte-range H.264 stream for the openh264 demux
+/// path), this is a whole playable URL handed straight to GStreamer's
+/// `uridecodebin`, which negotiates the demuxer + decoder itself — so it works
+/// for VP9 / AV1 / H.264 and, when the format is muxed, audio too. Produced by
+/// [`YtBackend::resolve_playback_source`]; consumed by
+/// [`crate::backend::gst_playback`].
+#[derive(Clone, Debug)]
+pub struct PlaybackSource {
+    /// Directly-playable media URL (progressive muxed when available, else the
+    /// best video-only stream). Signature/nsig already applied by the extractor.
+    pub url: String,
+    /// Full format description, e.g. `video/mp4; codecs="avc1.42001E"` or the
+    /// yt-dlp format note — informational, for the status log.
+    pub format: String,
+    /// True when the chosen URL carries audio as well as video (a progressive
+    /// muxed format), so the caller knows sound will play.
+    pub has_audio: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u8,
+    /// YouTube quality label, e.g. "360p".
+    pub quality: String,
+}
+
 /// The data-source seam. One trait, two worlds (offline sample / live
 /// rustypipe). Methods are intentionally coarse-grained — one per screen need
 /// — so a backend can batch the underlying InnerTube calls however it likes.
@@ -165,6 +213,14 @@ pub trait YtBackend: Send + Sync {
     /// when this fails.
     fn resolve_video_stream(&self, _id: &str) -> Result<StreamHandle, BackendError> {
         Err(BackendError("this backend cannot resolve video streams".into()))
+    }
+
+    /// Resolve a whole directly-playable media URL for `id`, for the GStreamer
+    /// decode path (VP9 / AV1 / H.264 + audio). The default errors — only a
+    /// backend that can reach a real extractor (yt-dlp) produces one. The UI
+    /// degrades to the poster when this fails.
+    fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
+        Err(BackendError("this backend cannot resolve a playback source".into()))
     }
 
     /// Fan-out the latest uploads across `channel_ids` (the subscriptions

@@ -18,6 +18,7 @@ pub mod api;
 pub mod app;
 pub mod backend;
 pub mod contrast;
+pub mod images;
 pub mod model;
 pub mod playback;
 pub mod recommend;
