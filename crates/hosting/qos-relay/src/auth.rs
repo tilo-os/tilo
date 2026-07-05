@@ -76,6 +76,38 @@ pub struct HelloAck2 {
     pub sig_over_server_nonce: [u8; 64],
 }
 
+/// What kind of peer sits on the other end of an authenticated
+/// stream. Set at handshake time from the device cert's capabilities
+/// and threaded through the peer session so fan-out can distinguish
+/// "another user device" from "another relay in a federated mesh".
+///
+/// The important consequence: a peer relay's messages must NOT be
+/// re-forwarded to other peer relays (both live and store-and-
+/// forward), because the shared automerge doc would echo forever
+/// otherwise. See [`crate::workspace::WorkspaceRuntime::fanout_delta`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerRole {
+    /// A user device (laptop / phone / desktop) — subscribes to
+    /// receive workspace ops.
+    Device,
+    /// Another relay hosting one or more of the same workspaces —
+    /// federated peer.
+    PeerRelay,
+}
+
+impl PeerRole {
+    /// Derive the role from a device cert's capabilities. A cert
+    /// with `can_act_as_host = true` is treated as a peer relay when
+    /// it dials another host; every other cert is a plain device.
+    pub fn from_cert(cert: &DeviceCert) -> Self {
+        if cert.capabilities.can_act_as_host {
+            Self::PeerRelay
+        } else {
+            Self::Device
+        }
+    }
+}
+
 /// Authenticated peer state that survives past the handshake — used
 /// by the daemon to route subsequent messages.
 #[derive(Clone, Debug)]
@@ -87,6 +119,10 @@ pub struct AuthenticatedPeer {
     pub user_public_key: [u8; 32],
     /// The peer's device pubkey. Copied out for the same reason.
     pub device_public_key: [u8; 32],
+    /// Which side of the federation this peer represents. Derived
+    /// from `cert.capabilities.can_act_as_host` — a device with the
+    /// host capability that dials in is federating, not subscribing.
+    pub role: PeerRole,
 }
 
 /// Failure modes for the handshake.
@@ -135,6 +171,7 @@ pub fn accept_hello(
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(&hello.cert),
         cert: hello.cert.clone(),
         user_public_key: hello.cert.user_public_key,
         device_public_key: hello.cert.device_public_key,
@@ -185,6 +222,7 @@ pub fn verify_hello_ack(
     vk.verify(&digest, &sig)
         .map_err(|_| AuthError::BadChallengeSig)?;
     Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,

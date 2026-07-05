@@ -66,8 +66,9 @@ pub mod store;
 pub mod transport;
 pub mod workspace;
 
+pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
-pub use config::{RelayConfig, WorkspaceBinding};
+pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use policy::TrustPolicy;
 pub use transport::{ALPN, Envelope};

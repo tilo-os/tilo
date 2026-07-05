@@ -74,6 +74,39 @@ pub struct RelayConfig {
     /// `qos-relay-admin bind-workspace`; hand-editable.
     #[serde(default, rename = "workspace")]
     pub workspaces: Vec<WorkspaceBinding>,
+
+    /// Other relays this one federates with. Each entry becomes an
+    /// outbound dial on startup; the pair mutually auths using the
+    /// existing device-cert challenge/response, and thereafter looks
+    /// exactly like any other peer session — same fan-out, same
+    /// store-and-forward, one filter line for echo suppression. An
+    /// empty list keeps the relay standalone (current behaviour).
+    #[serde(default, rename = "peer_relays")]
+    pub peer_relays: Vec<PeerRelayConfig>,
+}
+
+/// A configured federated peer relay. Two relays that list each
+/// other here converge on their shared workspaces via the same CRDT
+/// merge that any two devices already do — no new transport, no new
+/// fan-out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerRelayConfig {
+    /// Iroh endpoint id (Ed25519 public key) of the peer relay,
+    /// hex-encoded (64 chars).
+    pub iroh_node_id: String,
+    /// Human-readable label — appears in status output / logs.
+    #[serde(default)]
+    pub label: String,
+    /// Preference weight for peer-selection strategies; larger =
+    /// preferred. Currently only surfaced in status; a client will
+    /// use it once the wheel-disc chooses a nearest host.
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+}
+
+fn default_priority() -> i32 {
+    0
 }
 
 /// A single workspace this relay is bound to.
@@ -118,6 +151,7 @@ impl Default for RelayConfig {
             iroh_listen: default_iroh_listen(),
             trust_policy: TrustPolicy::default(),
             workspaces: Vec::new(),
+            peer_relays: Vec::new(),
         }
     }
 }
@@ -171,6 +205,25 @@ impl RelayConfig {
         self.workspaces.retain(|w| w.id != id);
         before != self.workspaces.len()
     }
+
+    /// Ensure a peer-relay entry exists; returns `true` if it was
+    /// added. Uniqueness is by iroh node id (case-insensitive hex).
+    pub fn add_peer_relay(&mut self, iroh_node_id: &str, label: &str, priority: i32) -> bool {
+        let norm = iroh_node_id.to_ascii_lowercase();
+        if self
+            .peer_relays
+            .iter()
+            .any(|r| r.iroh_node_id.eq_ignore_ascii_case(&norm))
+        {
+            return false;
+        }
+        self.peer_relays.push(PeerRelayConfig {
+            iroh_node_id: norm,
+            label: label.to_string(),
+            priority,
+        });
+        true
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +275,37 @@ mod tests {
         cfg.add_workspace(1, true);
         assert!(cfg.remove_workspace(1));
         assert!(!cfg.remove_workspace(1));
+    }
+
+    #[test]
+    fn parses_peer_relays_toml() {
+        let text = r#"
+            identity_root = "/var/lib/qos"
+            state_root = "/var/lib/qos-relay"
+
+            [[peer_relays]]
+            iroh_node_id = "aa"
+            label = "west"
+            priority = 100
+
+            [[peer_relays]]
+            iroh_node_id = "bb"
+            label = "east"
+        "#;
+        let cfg: RelayConfig = toml::from_str(text).unwrap();
+        assert_eq!(cfg.peer_relays.len(), 2);
+        assert_eq!(cfg.peer_relays[0].label, "west");
+        assert_eq!(cfg.peer_relays[0].priority, 100);
+        // Default priority for the second entry.
+        assert_eq!(cfg.peer_relays[1].priority, 0);
+    }
+
+    #[test]
+    fn add_peer_relay_dedups_by_node_id() {
+        let mut cfg = RelayConfig::default();
+        assert!(cfg.add_peer_relay("ABCD", "a", 1));
+        assert!(!cfg.add_peer_relay("abcd", "again", 2));
+        assert_eq!(cfg.peer_relays.len(), 1);
     }
 
     #[test]
