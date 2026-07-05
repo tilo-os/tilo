@@ -146,8 +146,18 @@ pub struct Channel {
     pub subscribers: u64,
     pub verified: bool,
     pub description: String,
-    /// Seed for the deterministic avatar/banner gradient.
+    /// Seed for the deterministic avatar/banner gradient (fallback when no
+    /// real image URL is available or before it loads).
     pub seed: String,
+    /// Real channel avatar image URL (yt3.googleusercontent.com), fetched
+    /// through the [`ui::ImageStore`] and painted in place of the initials
+    /// avatar once decoded. Empty on the offline sample.
+    #[serde(default)]
+    pub avatar_url: String,
+    /// Real channel banner image URL, painted across the channel header once
+    /// decoded. Empty on the offline sample (the seed gradient shows instead).
+    #[serde(default)]
+    pub banner_url: String,
 }
 
 /// A video and everything the watch page needs about it.
@@ -168,6 +178,11 @@ pub struct Video {
     pub description: String,
     pub likes: u64,
     pub seed: String,
+    /// Real video thumbnail image URL (i.ytimg.com), fetched through the
+    /// [`ui::ImageStore`] and painted cover-fit on the card / poster once
+    /// decoded. Empty on the offline sample (the seed gradient shows instead).
+    #[serde(default)]
+    pub thumbnail_url: String,
     pub category: String,
     /// Marks whether DeArrow has a community thumbnail for this video
     /// (we render a "neutral frame" treatment instead of the clickbait
@@ -448,6 +463,7 @@ impl TubeModel {
             let keep_sponsor = std::mem::take(&mut slot.sponsor);
             let keep_comments = std::mem::take(&mut slot.comments);
             let keep_dearrow = slot.dearrow_title.take();
+            let keep_thumb = std::mem::take(&mut slot.thumbnail_url);
             *slot = v;
             if slot.sponsor.is_empty() {
                 slot.sponsor = keep_sponsor;
@@ -457,6 +473,12 @@ impl TubeModel {
             }
             if slot.dearrow_title.is_none() {
                 slot.dearrow_title = keep_dearrow;
+            }
+            // A later detail/related fetch may not carry a thumbnail URL; keep
+            // the one a search/feed item already resolved so the card image
+            // doesn't blank out on refresh.
+            if slot.thumbnail_url.is_empty() {
+                slot.thumbnail_url = keep_thumb;
             }
         } else {
             self.videos.push(v);
@@ -487,6 +509,8 @@ impl TubeModel {
             verified: false,
             description: String::new(),
             seed: id.to_string(),
+            avatar_url: String::new(),
+            banner_url: String::new(),
         });
     }
 
@@ -632,6 +656,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn image_url_fields_round_trip_and_default() {
+        // A video/channel carrying real image URLs survives a serde round-trip
+        // (the model is mirrored into the CRDT as JSON), and legacy JSON without
+        // the new fields deserializes with empty defaults (no data loss on old
+        // persisted state).
+        let mut v = sample_video();
+        v.thumbnail_url = "https://i.ytimg.com/vi/x/hqdefault.jpg".into();
+        let json = serde_json::to_string(&v).unwrap();
+        let back: Video = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.thumbnail_url, v.thumbnail_url);
+
+        let legacy = r#"{"id":"y","title":"T","channel_id":"c","channel_name":"C",
+            "channel_seed":"c","views":0,"published":"","duration":0,"description":"",
+            "likes":0,"seed":"y","category":"x"}"#;
+        let v2: Video = serde_json::from_str(legacy).unwrap();
+        assert_eq!(v2.thumbnail_url, "", "missing thumbnail_url defaults empty");
+
+        let ch = Channel {
+            id: "c".into(),
+            name: "C".into(),
+            handle: "@c".into(),
+            subscribers: 1,
+            verified: false,
+            description: String::new(),
+            seed: "c".into(),
+            avatar_url: "https://yt3/av".into(),
+            banner_url: "https://yt3/ba".into(),
+        };
+        let cj = serde_json::to_string(&ch).unwrap();
+        let cback: Channel = serde_json::from_str(&cj).unwrap();
+        assert_eq!(cback.avatar_url, "https://yt3/av");
+        assert_eq!(cback.banner_url, "https://yt3/ba");
+    }
+
     fn sample_video() -> Video {
         Video {
             id: "x".into(),
@@ -646,6 +705,7 @@ mod tests {
             description: "".into(),
             likes: 0,
             seed: "x".into(),
+            thumbnail_url: String::new(),
             category: "Tech".into(),
             dearrow_thumb: false,
             sponsor: vec![],

@@ -62,6 +62,26 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe_trending();
     }
 
+    // `--live-shots <dir>` — render REAL offscreen proof stills: a watch page
+    // with a real GStreamer-decoded video frame, and a creator page with real
+    // fetched thumbnails/avatar/banner. Requires `--features "live media"`.
+    if let Some(dir) = parse_two_arg(&args, "--live-shots") {
+        return run_live_shots(&dir);
+    }
+
+    // `--probe-ytdlp [query]` — prove the yt-dlp extractor: search + video +
+    // channel (with avatar/banner urls). Requires `--features live`.
+    if let Some(query) = parse_opt_query(&args, "--probe-ytdlp", "blender open movie") {
+        return run_probe_ytdlp(&query);
+    }
+
+    // `--probe-gst [id] [seconds]` — prove the GStreamer decode path: resolve a
+    // real stream URL via yt-dlp and decode a sequence of real frames (checksums
+    // prove motion). Requires `--features "live media"`.
+    if let Some((id, seconds)) = parse_probe_gst_arg(&args) {
+        return run_probe_gst(&id, seconds);
+    }
+
     // `--probe-stream <id> [seconds]` — prove CONTINUOUS playback: resolve a
     // stream, page through its fragments, and decode a *sequence* of real frames
     // over time through one reused decoder, printing per-frame evidence.
@@ -156,6 +176,67 @@ fn parse_probe_play_arg(args: &[String]) -> Option<String> {
         if let Some(rest) = arg.strip_prefix("--probe-play=") {
             return Some(if rest.is_empty() { DEFAULT_ID.to_string() } else { rest.to_string() });
         }
+    }
+    None
+}
+
+/// Parse a `--flag VALUE` / `--flag=VALUE` two-token argument.
+fn parse_two_arg(args: &[String], flag: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Parse `--flag [query]` / `--flag=<query>` with a default when the flag is
+/// present but no value follows.
+fn parse_opt_query(args: &[String], flag: &str, default: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return Some(match iter.next() {
+                Some(q) if !q.starts_with("--") => q.clone(),
+                _ => default.to_string(),
+            });
+        }
+        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
+            return Some(if rest.is_empty() { default.to_string() } else { rest.to_string() });
+        }
+    }
+    None
+}
+
+/// Parse `--probe-gst <id> [seconds]` → (id, seconds). Defaults to Big Buck
+/// Bunny for 5 seconds.
+fn parse_probe_gst_arg(args: &[String]) -> Option<(String, u64)> {
+    const DEFAULT_ID: &str = "aqz-KE-bpKQ";
+    const DEFAULT_SECS: u64 = 5;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let id = if arg == "--probe-gst" {
+            match iter.next() {
+                Some(id) if !id.starts_with("--") => id.clone(),
+                _ => DEFAULT_ID.to_string(),
+            }
+        } else if let Some(rest) = arg.strip_prefix("--probe-gst=") {
+            if rest.is_empty() { DEFAULT_ID.to_string() } else { rest.to_string() }
+        } else {
+            continue;
+        };
+        let seconds = iter
+            .clone()
+            .find_map(|s| s.parse::<u64>().ok())
+            .filter(|s| *s > 0)
+            .unwrap_or(DEFAULT_SECS);
+        return Some((id, seconds));
     }
     None
 }
@@ -512,6 +593,276 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
         "probe-trending: built WITHOUT the `live` feature — rebuild with \
          `--features live` to hit real YouTube."
     );
+    Ok(())
+}
+
+/// Shorten a URL for log lines (host + a hint), so proof output stays readable.
+#[cfg(feature = "live")]
+fn short_url(url: &str) -> String {
+    if url.is_empty() {
+        return "<none>".into();
+    }
+    let head = url.split('?').next().unwrap_or(url);
+    if head.len() > 72 {
+        format!("{}…", &head[..72])
+    } else {
+        head.to_string()
+    }
+}
+
+/// `--probe-ytdlp [query]`: prove the yt-dlp extractor end-to-end — search,
+/// video metadata, and a channel page with its real avatar + banner URLs.
+#[cfg(feature = "live")]
+fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use tube::backend::{BackendResult, YtBackend};
+
+    eprintln!("probe-ytdlp: constructing the yt-dlp backend…");
+    let backend = tube::backend::ytdlp::YtDlpBackend::new()
+        .map_err(|e| format!("yt-dlp backend: {e}"))?;
+    println!("probe-ytdlp: backend = {}", backend.name());
+
+    println!("probe-ytdlp: searching YouTube for {query:?} …");
+    let (first_id, first_channel) = match backend.search(query)? {
+        BackendResult::Videos(vs) => {
+            if vs.is_empty() {
+                eprintln!("probe-ytdlp: EMPTY result set — reached yt-dlp but nothing parsed.");
+                std::process::exit(2);
+            }
+            println!("  {} REAL results from YouTube:", vs.len());
+            for (i, v) in vs.iter().take(10).enumerate() {
+                println!(
+                    "  {:>2}. [{}] {} — {} ({} views)\n        thumb={}",
+                    i + 1,
+                    v.id,
+                    v.title,
+                    v.channel_name,
+                    v.views,
+                    short_url(&v.thumbnail_url)
+                );
+            }
+            (vs[0].id.clone(), vs[0].channel_id.clone())
+        }
+        _ => {
+            println!("probe-ytdlp: unexpected result variant");
+            return Ok(());
+        }
+    };
+
+    println!("\nprobe-ytdlp: video_details [{first_id}] …");
+    if let BackendResult::Video(v) = backend.video(&first_id)? {
+        println!(
+            "  title={:?} channel={:?} views={} likes={} desc_len={}\n  thumb={}",
+            v.title,
+            v.channel_name,
+            v.views,
+            v.likes,
+            v.description.len(),
+            short_url(&v.thumbnail_url)
+        );
+    }
+
+    println!("\nprobe-ytdlp: channel [{first_channel}] …");
+    if let BackendResult::Channel { channel, uploads } = backend.channel(&first_channel)? {
+        println!(
+            "  {:?} ({} subscribers, verified={}); {} uploads",
+            channel.name,
+            channel.subscribers,
+            channel.verified,
+            uploads.len()
+        );
+        println!("  avatar_url = {}", short_url(&channel.avatar_url));
+        println!("  banner_url = {}", short_url(&channel.banner_url));
+        if channel.avatar_url.is_empty() || channel.banner_url.is_empty() {
+            eprintln!("probe-ytdlp: WARNING — channel avatar/banner url missing.");
+        }
+        for u in uploads.iter().take(3) {
+            println!("    upload [{}] {} — thumb={}", u.id, u.title, short_url(&u.thumbnail_url));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "live"))]
+fn run_probe_ytdlp(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("probe-ytdlp: built WITHOUT `live` — rebuild with `--features live`.");
+    Ok(())
+}
+
+/// `--probe-gst <id> [seconds]`: prove the GStreamer decode path. Resolves a
+/// real stream URL via yt-dlp and decodes a *sequence* of real frames, using
+/// per-frame checksums to prove the picture actually moves (not one still).
+#[cfg(all(feature = "live", feature = "media"))]
+fn run_probe_gst(id: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+    use tube::backend::{gst_playback, ytdlp::YtDlpBackend, YtBackend};
+
+    eprintln!("probe-gst: constructing the yt-dlp backend…");
+    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+
+    println!("probe-gst: resolving a directly-playable URL for [{id}] …");
+    let src = backend
+        .resolve_playback_source(id)
+        .map_err(|e| format!("resolve: {e}"))?;
+    println!(
+        "  RESOLVED: {} {}x{}@{}fps audio={} [{}]\n  url(host)={}",
+        src.quality,
+        src.width,
+        src.height,
+        src.fps,
+        src.has_audio,
+        src.format,
+        short_url(&src.url)
+    );
+
+    let max_frames = (seconds as usize * 60).max(30);
+    println!("probe-gst: decoding through GStreamer for up to {seconds}s…");
+    let frames = gst_playback::decode_frames(&src.url, max_frames, Duration::from_secs(seconds + 25))
+        .map_err(|e| format!("gstreamer decode: {e}"))?;
+    if frames.is_empty() {
+        eprintln!("probe-gst: NO frames decoded — reported honestly, not faked.");
+        std::process::exit(3);
+    }
+
+    let sums: Vec<u64> = frames.iter().map(|(_, _, rgba)| checksum(rgba)).collect();
+    let distinct: std::collections::HashSet<u64> = sums.iter().copied().collect();
+    let (w, h, _) = &frames[0];
+    println!(
+        "probe-gst: decoded {} frames at {}x{}; {} of {} have a DISTINCT checksum \
+         — REAL moving video, not a still.",
+        frames.len(),
+        w,
+        h,
+        distinct.len(),
+        frames.len()
+    );
+    for (i, (fw, fh, rgba)) in frames.iter().enumerate().take(3) {
+        println!("  frame {i}: {fw}x{fh}  checksum=0x{:016x}", checksum(rgba));
+    }
+    if distinct.len() < 2 {
+        eprintln!("probe-gst: frames did NOT change — no motion proven. Failing loudly.");
+        std::process::exit(3);
+    }
+    Ok(())
+}
+
+#[cfg(not(all(feature = "live", feature = "media")))]
+fn run_probe_gst(_id: &str, _seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("probe-gst: needs `--features \"live media\"` (yt-dlp resolve + GStreamer decode).");
+    Ok(())
+}
+
+/// Pick the decoded frame with the most non-trivial pixels, so a real-frame
+/// shot isn't an initial black/blank frame.
+#[cfg(all(feature = "live", feature = "media"))]
+fn pick_interesting_frame(
+    frames: &[(u32, u32, Vec<u8>)],
+) -> Option<(u32, u32, Vec<u8>)> {
+    frames
+        .iter()
+        .max_by_key(|(_, _, rgba)| rgba.iter().step_by(37).filter(|&&b| b > 16).count())
+        .cloned()
+}
+
+/// `--live-shots <dir>`: render REAL offscreen proof stills — a watch page with
+/// a real GStreamer-decoded video frame, and a creator page with real fetched
+/// thumbnails/avatar/banner. Everything is live data + real decode; nothing is
+/// sample content.
+#[cfg(all(feature = "live", feature = "media"))]
+fn run_live_shots(dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+    use tube::backend::{gst_playback, ytdlp::YtDlpBackend, BackendResult, YtBackend};
+    use tube::model::{Route, TubeModel};
+
+    let out_dir = std::path::Path::new(dir);
+    std::fs::create_dir_all(out_dir).ok();
+    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+
+    // ---- Watch page with a REAL decoded frame ----
+    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY)
+    println!("live-shots[watch]: metadata + stream for [{watch_id}]…");
+    let video = match backend.video(watch_id)? {
+        BackendResult::Video(v) => *v,
+        _ => return Err("no video".into()),
+    };
+    let src = backend
+        .resolve_playback_source(watch_id)
+        .map_err(|e| format!("resolve: {e}"))?;
+    println!(
+        "  stream {} {}x{}@{}fps audio={}",
+        src.quality, src.width, src.height, src.fps, src.has_audio
+    );
+    let frames = gst_playback::decode_frames(&src.url, 60, Duration::from_secs(45))
+        .map_err(|e| format!("gstreamer decode: {e}"))?;
+    let (fw, fh, rgba) = pick_interesting_frame(&frames).ok_or("no decoded frames")?;
+    println!("  decoded {} frames; painting a real {fw}x{fh} frame", frames.len());
+
+    let mut wmodel = TubeModel::default();
+    wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
+    wmodel.upsert_video(video.clone());
+    let watch_app = tube::TubeApp::new()
+        .with_viewport(1280.0, 860.0)
+        .with_model_for_test(wmodel)
+        .with_decoded_frame_for_test(watch_id, fw, fh, rgba);
+    let watch_png = out_dir.join("watch.png");
+    render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
+
+    // ---- Creator page with REAL images ----
+    let channel_ref = if video.channel_id.is_empty() {
+        "@BlenderStudio".to_string()
+    } else {
+        video.channel_id.clone()
+    };
+    println!("live-shots[creator]: channel [{channel_ref}]…");
+    let (channel, uploads) = match backend.channel(&channel_ref)? {
+        BackendResult::Channel { channel, uploads } => (*channel, uploads),
+        _ => return Err("no channel".into()),
+    };
+    println!(
+        "  {} ({} subs); {} uploads; avatar={} banner={}",
+        channel.name,
+        channel.subscribers,
+        uploads.len(),
+        !channel.avatar_url.is_empty(),
+        !channel.banner_url.is_empty()
+    );
+
+    let mut cmodel = TubeModel::default();
+    let cid = channel.id.clone();
+    cmodel.upsert_channel(channel.clone());
+    for u in &uploads {
+        cmodel.ensure_channel_stub(&u.channel_id, &u.channel_name);
+        cmodel.upsert_video(u.clone());
+    }
+    cmodel.route = Route::Channel(cid);
+
+    let store = tube::images::image_store();
+    store.get(&channel.avatar_url);
+    store.get(&channel.banner_url);
+    for u in &uploads {
+        store.get(&u.thumbnail_url);
+    }
+    println!("  prewarming {} images…", uploads.len() + 2);
+    store.block_until_idle(Duration::from_secs(45));
+    println!("  images settled: {} still pending", store.pending());
+
+    let creator_app = tube::TubeApp::new()
+        .with_viewport(1280.0, 900.0)
+        .with_model_for_test(cmodel)
+        .with_image_store(store);
+    let creator_png = out_dir.join("creator.png");
+    render_shot_to_png(Box::new(creator_app) as Box<dyn Widget>, (1280, 900), &creator_png)?;
+
+    println!(
+        "live-shots: wrote\n  {}\n  {}",
+        watch_png.display(),
+        creator_png.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(all(feature = "live", feature = "media")))]
+fn run_live_shots(_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("live-shots: needs `--features \"live media\"` (real data + decode + images).");
     Ok(())
 }
 

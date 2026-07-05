@@ -113,6 +113,12 @@ pub struct TubeApp {
     /// `None` until the first frame lands (poster shows), and dropped when a
     /// different video opens so a stale picture never bleeds across videos.
     current_frame: Option<DecodedFrame>,
+
+    /// Async image loader/cache for real thumbnails / avatars / banners, keyed
+    /// by URL. `Some` when online (or seeded for a real-image `--shots` proof);
+    /// `None` on the hermetic offline path, where every image lookup returns
+    /// `None` and the procedural gradient/initials fallback shows.
+    images: Option<ui::ImageStore>,
 }
 
 impl Default for TubeApp {
@@ -142,6 +148,7 @@ impl TubeApp {
             kicked_off: false,
             playing_id: None,
             current_frame: None,
+            images: None,
         }
     }
 
@@ -153,6 +160,26 @@ impl TubeApp {
     /// "offline — sample data" and the bundled catalogue stays on screen.
     pub fn online(mut self) -> Self {
         self.online = true;
+        // Real thumbnails / avatars / banners: an async image store backed by a
+        // network fetcher. Kept off the offline/`--shots` path (which never
+        // calls `online`) so screenshots stay hermetic.
+        self.images = Some(crate::images::image_store());
+        self
+    }
+
+    /// Test/shots hook: attach a real image store so an offscreen `--shots`
+    /// render can paint fetched thumbnails/avatar/banner (the creator-page
+    /// proof). The live app gets its store via [`Self::online`]; the default
+    /// offscreen path leaves it `None` and stays hermetic.
+    pub fn with_image_store(mut self, store: ui::ImageStore) -> Self {
+        self.images = Some(store);
+        self
+    }
+
+    /// Test/shots hook: replace the model wholesale (e.g. a channel page built
+    /// from real yt-dlp data) so an offscreen render shows real content.
+    pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
+        self.model = model;
         self
     }
 
@@ -247,17 +274,18 @@ impl TubeApp {
     fn build_shell_themed(&self, theme: &Theme) -> Box<dyn Widget> {
         let m = &self.model;
         let bus = &self.bus;
+        let imgs = crate::images::Imgs(self.images.as_ref());
         let content = match &m.route {
-            Route::Home => screens::home(m, theme, bus),
-            Route::Trending => screens::trending(m, theme, bus),
-            Route::Subscriptions => screens::subscriptions(m, theme, bus),
-            Route::History => screens::history(m, theme, bus),
+            Route::Home => screens::home(m, theme, bus, imgs),
+            Route::Trending => screens::trending(m, theme, bus, imgs),
+            Route::Subscriptions => screens::subscriptions(m, theme, bus, imgs),
+            Route::History => screens::history(m, theme, bus, imgs),
             Route::Settings => screens::settings(m, theme, bus),
             Route::Watch(id) => {
-                screens::watch(m, theme, bus, id, self.content_width(), self.frame_for(id))
+                screens::watch(m, theme, bus, imgs, id, self.content_width(), self.frame_for(id))
             }
-            Route::Channel(id) => screens::channel(m, theme, bus, id),
-            Route::Search(q) => screens::search(m, theme, bus, q),
+            Route::Channel(id) => screens::channel(m, theme, bus, imgs, id),
+            Route::Search(q) => screens::search(m, theme, bus, imgs, q),
         };
 
         // `fill_w` pins the content pane to a *definite* width (the split lays
@@ -362,6 +390,12 @@ impl TubeApp {
     /// the wrong page.
     fn frame_for(&self, id: &str) -> Option<&DecodedFrame> {
         self.current_frame.as_ref().filter(|f| f.video == id)
+    }
+
+    /// Whether any real image (thumbnail / avatar / banner) is still loading, so
+    /// the app keeps redrawing/idle-syncing until each decoded image lands.
+    fn images_pending(&self) -> bool {
+        self.images.as_ref().map(|s| s.pending() > 0).unwrap_or(false)
     }
 
     /// If the current route is a watch page we haven't started playing yet, ask
@@ -1033,6 +1067,7 @@ impl Widget for TubeApp {
 
     fn needs_redraw(&self) -> bool {
         self.structure_dirty
+            || self.images_pending()
             || self
                 .root_child
                 .as_ref()
@@ -1054,8 +1089,10 @@ impl Widget for TubeApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing while a fetch is outstanding so results fold in.
-        self.worker.is_some()
+        // Keep syncing while a fetch is outstanding so results fold in, and
+        // while images are still loading so freshly-decoded thumbnails/avatars
+        // repaint the moment they land.
+        self.worker.is_some() || self.images_pending()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1068,6 +1105,7 @@ impl Widget for TubeApp {
         let streaming = self.online
             && matches!(&self.model.route, Route::Watch(id) if self.playing_id.as_deref() == Some(id.as_str()));
         streaming
+            || self.images_pending()
             || self
                 .root_child
                 .as_ref()
