@@ -16,7 +16,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
@@ -30,17 +30,22 @@ use crate::model::{self, ThemeSpec};
 pub struct PreviewPane {
     theme: Theme,
     spec: Option<ThemeSpec>,
+    /// The typeface the specimen text is shaped in — derived from the
+    /// selected spec's font so changing the font family re-renders the
+    /// preview immediately, not just the font-name caption.
+    font_choice: FontChoice,
     rect: Rect,
 }
 
 impl PreviewPane {
     pub fn new() -> Self {
-        Self { theme: Theme::dark(), spec: None, rect: Rect::ZERO }
+        Self { theme: Theme::dark(), spec: None, font_choice: FontChoice::SansSerif, rect: Rect::ZERO }
     }
 
     /// Rebuild the live theme from the selected spec.
     pub fn set_spec(&mut self, spec: &ThemeSpec) {
         self.theme = spec.to_theme();
+        self.font_choice = model::font_choice(&spec.font);
         self.spec = Some(spec.clone());
     }
 
@@ -129,12 +134,13 @@ impl Widget for PreviewPane {
             draw::text_w(tr, scene, t, label, 11.0, th.text_dim, cx, y, TextWeight::Semibold);
         };
 
-        // 3. Typography.
+        // 3. Typography — the specimen is shaped in the theme's chosen font
+        //    family (via `font_choice`) so a font change re-renders here live.
         section(tr, scene, y, "TYPOGRAPHY", th);
         y += 18.0;
-        draw::text_w(tr, scene, t, "The quick brown fox", 24.0, th.text_primary, cx, y, TextWeight::Bold);
+        draw::text_font(tr, scene, t, "The quick brown fox", 24.0, th.text_primary, cx, y, TextWeight::Bold, &self.font_choice);
         y += 32.0;
-        draw::text(tr, scene, t, &format!("Aa Bb Cc · 0123456789 · {}", self.font()), 13.0, th.text_dim, cx, y);
+        draw::text_font(tr, scene, t, &format!("Aa Bb Cc · 0123456789 · {}", self.font()), 13.0, th.text_dim, cx, y, TextWeight::Regular, &self.font_choice);
         y += 22.0 + gap;
 
         // 4. Buttons.
@@ -274,6 +280,33 @@ impl Widget for PreviewPane {
 
     #[allow(clippy::too_many_arguments)]
     fn handle_event(&mut self, _e: &WindowEvent, _s: f64, _m: &winit::event::Modifiers, _state: &mut AutoCommit, _p: &ObjId, _h: &mut bool, _f: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::seed_custom;
+
+    #[test]
+    fn font_family_change_reshapes_the_previewed_specimen() {
+        // The preview's specimen is drawn in `font_choice`; `set_spec` must
+        // recompute it from the spec's font so a font-family change updates the
+        // rendered typeface immediately (not just the font-name caption).
+        let mut p = PreviewPane::new();
+        let mut spec = seed_custom();
+
+        spec.font = "Inter".to_string();
+        p.set_spec(&spec);
+        assert_eq!(p.font_choice, FontChoice::Named("Inter".to_string()));
+
+        spec.font = "JetBrains Mono".to_string();
+        p.set_spec(&spec);
+        assert_eq!(p.font_choice, FontChoice::Monospace, "mono font re-shapes the specimen");
+
+        spec.font = "Source Serif".to_string();
+        p.set_spec(&spec);
+        assert_eq!(p.font_choice, FontChoice::Serif, "serif font re-shapes the specimen");
+    }
 }
 
 impl PreviewPane {
