@@ -127,15 +127,35 @@ impl Sampler {
                 .unwrap_or_else(|| "—".to_string());
             let threads = p.tasks().map(|t| t.len()).unwrap_or(1).max(1);
             let mem = p.memory();
+            // Full command line (argv joined); fall back to the bare name when
+            // the kernel exposes no argv (kernel threads, zombies).
+            let cmd = {
+                let joined = p
+                    .cmd()
+                    .iter()
+                    .map(|a| a.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if joined.trim().is_empty() {
+                    format!("[{name}]")
+                } else {
+                    joined
+                }
+            };
+            let pid_u32 = pid.as_u32();
             procs.push(ProcessInfo {
-                pid: pid.as_u32(),
+                pid: pid_u32,
                 ppid: p.parent().map(|pp| pp.as_u32()),
                 name,
                 user,
                 cpu: p.cpu_usage(),
                 mem_bytes: mem,
+                virt_bytes: p.virtual_memory(),
                 threads,
                 status: p.status().to_string(),
+                cmd,
+                run_secs: p.run_time(),
+                open_files: count_open_files(pid_u32),
                 // Kernel worker threads have no resident memory.
                 kernel: mem == 0,
             });
@@ -166,6 +186,21 @@ impl Default for Sampler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Count a process's open file descriptors by listing `/proc/<pid>/fd`.
+/// `None` when the platform doesn't expose it or the directory can't be read
+/// (permission denied, the process just exited) — never a fabricated zero.
+#[cfg(target_os = "linux")]
+fn count_open_files(pid: u32) -> Option<usize> {
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()
+        .map(|it| it.filter(|e| e.is_ok()).count())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn count_open_files(_pid: u32) -> Option<usize> {
+    None
 }
 
 #[cfg(test)]
