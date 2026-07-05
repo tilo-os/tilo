@@ -1,5 +1,6 @@
 use ui::{App, State};
-use ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text};
+use ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text, Table};
+use ui::widget::table;
 use ui::state::RemoteCursor;
 use ui::i18n::I18nManager;
 use vello::peniko::Color;
@@ -21,6 +22,30 @@ fn main() {
         let text_id = state.doc.put_object(&state.root, "text_1", automerge::ObjType::Text).unwrap();
         let _ = state.doc.splice_text(&text_id, 0, 0, "Hello Gallery!");
         let _ = state.doc.put(&state.root, "request_theme_cycle", false);
+
+        // Editable table demo. The gallery Column hands every child the same
+        // `root` path, so the table's model lives directly under `root`; the
+        // keys it owns (`rows`/`cols`/`cells`/…) don't collide with the
+        // widgets above.
+        let grid = &state.root.clone();
+        for _ in 0..3 {
+            table::insert_column(&mut state.doc, grid, usize::MAX);
+        }
+        for _ in 0..4 {
+            table::insert_row(&mut state.doc, grid, usize::MAX);
+        }
+        table::set_header(&mut state.doc, grid, true);
+        let rows = [
+            ["Task", "Owner", "Done"],
+            ["Design", "Ada", "yes"],
+            ["Build", "Grace", "no"],
+            ["Ship", "Linus", "no"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                table::set_cell_text(&mut state.doc, grid, r, c, cell);
+            }
+        }
     }
     
     // Add a fake remote user cursor
@@ -41,6 +66,7 @@ fn main() {
             .push(Box::new(Checkbox::new("chk_1", "check_1")))
             .push(Box::new(Slider::new("sld_1", "slider_1")))
             .push(Box::new(TextInput::new(vec![]).with_id("txt_1").with_on_change_path("text_1")))
+            .push(Box::new(Table::new("gallery_table")))
     );
     
     // 4. Run the Application
