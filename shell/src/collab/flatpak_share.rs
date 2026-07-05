@@ -43,9 +43,9 @@
 //!   a session. `SharedFlatpakSession::start` does not modify the
 //!   sandbox itself.
 //! - **Keyboard injection**: `State::apply_remote_input` handles
-//!   `PointerMotion` + `PointerButton` on the receive side, but the
-//!   `Key` variant is deliberately a no-op — the follow-up is tracked
-//!   in `docs/superpowers/plans/2026-04-30-nirios-logical-bugs.md`.
+//!   the full `RemoteInput` set (pointer motion + button + key) —
+//!   this module doesn't touch input routing, it just streams the
+//!   surface bytes out.
 //!
 //! # Public API
 //!
