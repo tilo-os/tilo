@@ -35,6 +35,8 @@ use crate::backend::{
 use crate::doc::{self, LiveTrack};
 use crate::icon::{self, Icon};
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
+use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
+use crate::portal::{self, CoverOutcome};
 use crate::model::{fmt_duration, Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track};
 use crate::seed;
 use crate::source::Source;
@@ -90,6 +92,11 @@ enum Action {
     /// to a button on a narrower bar).
     ToggleVolumePopover,
     ToggleDownload(String),
+    /// Keep every track in the given list offline ("Download all" on a playlist
+    /// or Liked Songs). Already-cached tracks are left as-is.
+    DownloadAll(Vec<String>),
+    /// Open the native file portal to pick a cover image for this playlist.
+    PickPlaylistCover(String),
     /// Append a track to the end of the play queue.
     AddToQueue(String),
     /// Insert a track right after the current track ("Play next").
@@ -184,11 +191,18 @@ pub struct MusicApp {
     /// Count of in-flight stream resolutions (keeps redraws flowing until the
     /// resolved URL lands and can be handed to the audio engine).
     resolve_in_flight: usize,
-    /// The resolved audio stream's `(container, bitrate_bps)` for the current
-    /// track, set when a real stream lands and handed to the audio engine. The
-    /// now-playing bar shows a "Streaming …" indicator from this **only while
-    /// the pipeline is genuinely playing** (never on a fake timer).
-    stream_info: Option<(String, u32)>,
+
+    /// MPRIS media-control service (media keys + the desktop media controls).
+    /// A no-op stub until [`Self::enable_mpris`] brings it up on the live
+    /// binary; inert in `--shots`/tests and without the `audio` feature.
+    mpris: MprisHandle,
+    /// Last player state published to MPRIS, so `publish_mpris` only pushes real
+    /// changes (the handle itself also dedups).
+    mpris_last: Option<PlayerSnapshot>,
+
+    /// A playlist-cover file-portal pick in flight: the receiver the frame loop
+    /// drains, plus the playlist it targets. `None` when no picker is open.
+    cover_pick: Option<portal::CoverChannel>,
 
     seeded: bool,
     /// Whether the initial playback snapshot has been adopted from the
@@ -391,7 +405,9 @@ impl MusicApp {
             live_search_pending: None,
             live_results: None,
             resolve_in_flight: 0,
-            stream_info: None,
+            mpris: MprisHandle::disabled(),
+            mpris_last: None,
+            cover_pick: None,
             seeded: false,
             playback_loaded: false,
             bound_track: None,
@@ -573,12 +589,25 @@ impl MusicApp {
     /// another device) appear without disturbing local playback.
     fn reload_library(&mut self, state: &AutoCommit) {
         self.lib = doc::load_library(state);
+        self.sync_playlist_covers();
+    }
+
+    /// Mirror each playlist's persisted cover URL into the image cache so a
+    /// cover set in a prior session (or by a peer) renders. Cheap: a handful of
+    /// playlists, and the image store dedups fetches by URL.
+    fn sync_playlist_covers(&mut self) {
+        for pl in &self.lib.playlists {
+            if !pl.cover.is_empty() {
+                self.art_urls.insert(pl.id.clone(), pl.cover.clone());
+            }
+        }
     }
 
     /// Adopt the full snapshot (library + playback) from the document. Used
     /// for the initial load and by tests.
     fn reload(&mut self, state: &AutoCommit) {
         self.lib = doc::load_library(state);
+        self.sync_playlist_covers();
         self.pb = doc::load_playback(state);
         self.bound_track = self.pb.current.clone();
         self.playhead_ms = self.pb.position_ms as f64;
@@ -599,20 +628,6 @@ impl MusicApp {
             .unwrap_or(0)
     }
 
-    /// The "Streaming <container> · <kbps>" indicator for the now-playing bar,
-    /// present ONLY while a real audio pipeline is genuinely playing the
-    /// resolved stream. `None` on the silent stub, while a stream is still
-    /// resolving/buffering, when paused, or with no live stream — so the
-    /// indicator never fakes playback.
-    fn streaming_indicator(&self) -> Option<String> {
-        let (fmt, bitrate) = self.stream_info.as_ref()?;
-        if self.audio.is_playing_real() {
-            Some(format!("Streaming {fmt} \u{00b7} {} kbps", bitrate / 1000))
-        } else {
-            None
-        }
-    }
-
     /// The best cover-art id for a track: the track's own recorded cover when
     /// present, else its album's cover. Album-track hits frequently omit a
     /// per-track thumbnail (only the album carries one), so the now-playing bar
@@ -624,6 +639,138 @@ impl MusicApp {
             album_id.to_string()
         } else {
             track_id.to_string()
+        }
+    }
+
+    // ---- MPRIS media control ---------------------------------------------
+
+    /// Bring up the MPRIS D-Bus service (media keys + the desktop media
+    /// controls). Called only from the live-binary entry (`app_root`). Safe
+    /// everywhere: without the `audio` feature or a session bus it installs the
+    /// inert stub, so no code path branches on whether MPRIS is present.
+    pub fn enable_mpris(&mut self) {
+        let snap = self.mpris_snapshot();
+        self.mpris = MprisHandle::spawn(snap.clone());
+        self.mpris_last = Some(snap);
+    }
+
+    /// Build the MPRIS snapshot from the current playback + library state.
+    fn mpris_snapshot(&self) -> PlayerSnapshot {
+        let status = match &self.pb.current {
+            None => PlaybackStatus::Stopped,
+            Some(_) if self.pb.playing => PlaybackStatus::Playing,
+            Some(_) => PlaybackStatus::Paused,
+        };
+        let mut snap = PlayerSnapshot {
+            status,
+            volume: (self.pb.volume as f64 / 100.0).clamp(0.0, 1.0),
+            position_us: (self.playhead_ms.max(0.0) * 1000.0) as i64,
+            can_next: self.pb.queue_index + 1 < self.pb.queue.len(),
+            // "Previous" restarts the track past a few seconds in, else steps back.
+            can_prev: self.pb.queue_index > 0 || self.playhead_ms > 3000.0,
+            ..PlayerSnapshot::default()
+        };
+        if let Some(id) = self.pb.current.clone() {
+            if let Some(t) = self.lib.track(&id) {
+                snap.track_id = id.clone();
+                snap.title = t.title.clone();
+                snap.artist = self.lib.artist_name(&t.artist_id).to_string();
+                snap.album = self.lib.album_title(&t.album_id).to_string();
+                snap.length_us = t.duration_ms() as i64 * 1000;
+                let cover = self.best_cover_id(&id, &t.album_id);
+                if let Some(url) = self.art_urls.get(&cover) {
+                    snap.art_url = url.clone();
+                }
+            }
+            snap.can_play = !self.pb.playing;
+            snap.can_pause = self.pb.playing;
+            snap.can_seek = snap.length_us > 0;
+        }
+        snap
+    }
+
+    /// Push the latest player state to MPRIS. Deduped inside the handle, so this
+    /// is cheap to call every frame.
+    fn publish_mpris(&mut self) {
+        if !self.mpris.is_active() {
+            return;
+        }
+        let snap = self.mpris_snapshot();
+        self.mpris.publish(snap);
+    }
+
+    /// Drain external MPRIS control commands (media keys, the desktop media
+    /// widget, `playerctl`) and dispatch each through the normal `Action`
+    /// pipeline — external and in-app controls share one code path.
+    fn drain_mpris(&mut self, state: &mut AutoCommit) {
+        for cmd in self.mpris.drain_commands() {
+            match cmd {
+                MprisCommand::Play => {
+                    if !self.pb.playing {
+                        self.dispatch(Action::TogglePlay, state);
+                    }
+                }
+                MprisCommand::Pause | MprisCommand::Stop => {
+                    if self.pb.playing {
+                        self.dispatch(Action::TogglePlay, state);
+                    }
+                }
+                MprisCommand::PlayPause => self.dispatch(Action::TogglePlay, state),
+                MprisCommand::Next => self.dispatch(Action::Next, state),
+                MprisCommand::Previous => self.dispatch(Action::Prev, state),
+                MprisCommand::Seek(us) => {
+                    let dur = self.current_duration_ms() as f64;
+                    if dur > 0.0 {
+                        let target = (self.playhead_ms + us as f64 / 1000.0).clamp(0.0, dur);
+                        self.dispatch(Action::SeekFrac(target / dur), state);
+                    }
+                }
+                MprisCommand::SetPosition(us) => {
+                    let dur = self.current_duration_ms() as f64;
+                    if dur > 0.0 {
+                        let target = (us as f64 / 1000.0).clamp(0.0, dur);
+                        self.dispatch(Action::SeekFrac(target / dur), state);
+                    }
+                }
+                MprisCommand::SetVolume(v) => {
+                    self.dispatch(Action::VolumeFrac(v.clamp(0.0, 1.0)), state);
+                }
+                // No compositor surface to raise/quit from the app side yet.
+                MprisCommand::Raise | MprisCommand::Quit => {}
+            }
+        }
+    }
+
+    /// Apply a completed playlist-cover pick from the file portal (if any
+    /// arrived this frame): persist the chosen image path onto the playlist and
+    /// record it for the cover image cache, or toast a failure.
+    fn drain_cover_pick(&mut self, state: &mut AutoCommit) {
+        let Some(rx) = &self.cover_pick else { return };
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.cover_pick = None;
+                return;
+            }
+        };
+        self.cover_pick = None;
+        match outcome {
+            CoverOutcome::Chosen { playlist_id, path } => {
+                // Store as a `file://` URL so the image cache (shared with http
+                // covers) can fetch it off disk.
+                let url = format!("file://{}", path.display());
+                doc::set_playlist_cover(state, &playlist_id, &url);
+                self.reload_library(state);
+                // Overwrite (not `or_insert`) so re-picking a cover replaces the
+                // old one in the image cache.
+                self.art_urls.insert(playlist_id, url);
+                self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
+            }
+            CoverOutcome::Cancelled => {}
+            CoverOutcome::Failed(reason) => {
+                self.toast = Some((format!("Couldn\u{2019}t set cover: {reason}"), Instant::now()));
+            }
         }
     }
 
@@ -985,6 +1132,33 @@ impl MusicApp {
                     Instant::now(),
                 ));
             }
+            Action::DownloadAll(ids) => {
+                // Keep every not-yet-cached track offline in one gesture. Tracks
+                // already cached stay as-is (idempotent).
+                let mut added = 0usize;
+                for id in &ids {
+                    if self.lib.cache_state(id) != CacheState::Cached {
+                        doc::set_cache(state, id, CacheState::Cached);
+                        added += 1;
+                    }
+                }
+                self.lib = doc::load_library(state);
+                self.toast = Some((
+                    if added == 0 {
+                        "Already saved for offline".to_string()
+                    } else {
+                        format!("Saving {added} songs for offline")
+                    },
+                    Instant::now(),
+                ));
+            }
+            Action::PickPlaylistCover(playlist_id) => {
+                // Route through the host's XDG file-chooser portal (never an
+                // in-app picker). The pick is async; the frame loop drains the
+                // outcome and applies the cover.
+                self.cover_pick = Some(portal::request_cover(playlist_id));
+                self.toast = Some(("Choose a cover image\u{2026}".to_string(), Instant::now()));
+            }
             Action::AddToQueue(id) => {
                 self.pb.queue.push(id.clone());
                 let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
@@ -1150,9 +1324,6 @@ impl MusicApp {
     /// builds without the `live` feature) fall back to the legacy Piped
     /// resolver, or stay silent with the local playhead advancing offline.
     fn start_stream(&mut self, track_id: String) {
-        // A new stream is resolving: drop the previous stream's indicator so it
-        // doesn't linger over the wrong track.
-        self.stream_info = None;
         let Some(t) = self.lib.track(&track_id) else { return };
         let yt_id = t.yt_id.clone();
 
@@ -1283,7 +1454,6 @@ impl MusicApp {
                         if self.pb.playing {
                             self.audio.play();
                         }
-                        self.stream_info = Some((stream.format.clone(), stream.bitrate));
                         self.toast = Some((
                             format!(
                                 "Streaming {} \u{00b7} {} kbps",
@@ -2053,15 +2223,40 @@ fn hit_to_live(hit: &TrackHit) -> LiveTrack {
     }
 }
 
+/// Read a **local** cover image (a `file://…` URL or an absolute path) off disk,
+/// so a playlist cover the user picked via the file portal renders in every
+/// build — including the hermetic offline / `--shots` path — without any
+/// network. `None` for non-local URLs (handled by the HTTP fetcher) or an
+/// unreadable / absurdly-large file.
+fn read_local_image(url: &str) -> Option<Vec<u8>> {
+    let path = if let Some(rest) = url.strip_prefix("file://") {
+        // `file:///abs/path` → `/abs/path`; tolerate a missing host segment.
+        std::path::PathBuf::from(rest)
+    } else if url.starts_with('/') {
+        std::path::PathBuf::from(url)
+    } else {
+        return None;
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    Some(bytes)
+}
+
 /// The transport the [`ImageStore`] uses to fetch cover bytes. Real HTTP under
 /// the `live` build (a shared blocking `reqwest` client with a connection
-/// pool); a no-op otherwise, so non-network builds never open a socket and the
-/// hermetic `--shots` path stays offline.
+/// pool); a local-file loader otherwise, so a picked playlist cover still
+/// renders and the hermetic `--shots` path never opens a socket.
 #[cfg(feature = "live")]
 fn image_fetcher() -> ui::Fetcher {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     Arc::new(|url: &str| {
+        // Local covers (the portal-picked playlist image) load straight off disk.
+        if let Some(bytes) = read_local_image(url) {
+            return Some(bytes);
+        }
         let client = CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(12))
@@ -2084,7 +2279,8 @@ fn image_fetcher() -> ui::Fetcher {
 
 #[cfg(not(feature = "live"))]
 fn image_fetcher() -> ui::Fetcher {
-    Arc::new(|_url: &str| None)
+    // No HTTP stack, but a locally-picked playlist cover still renders offline.
+    Arc::new(|url: &str| read_local_image(url))
 }
 
 mod render;
@@ -3026,19 +3222,6 @@ mod tests {
         let theme = Theme::dark();
         let mut scene = Scene::new();
         app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-    }
-
-    #[test]
-    fn streaming_indicator_never_fakes_playback() {
-        let (mut app, _doc) = app_with_doc();
-        app.stream_info = Some(("m4a".into(), 128_000));
-        // The default build links the silent audio stub, so the pipeline is not
-        // really playing → the "Streaming …" indicator must stay hidden (it may
-        // never imply audio the engine isn't producing).
-        assert!(
-            app.streaming_indicator().is_none(),
-            "no streaming indicator without a genuinely-playing pipeline"
-        );
     }
 
     #[test]

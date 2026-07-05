@@ -178,6 +178,7 @@ fn write_playlist(doc: &mut AutoCommit, playlists: &ObjId, index: usize, p: &Pla
     let _ = doc.put(&m, "id", p.id.as_str());
     let _ = doc.put(&m, "name", p.name.as_str());
     let _ = doc.put(&m, "description", p.description.as_str());
+    let _ = doc.put(&m, "cover", p.cover.as_str());
     let list = doc.put_object(&m, "tracks", ObjType::List).expect("pl tracks");
     for (i, tid) in p.track_ids.iter().enumerate() {
         let _ = doc.insert(&list, i, tid.as_str());
@@ -424,9 +425,17 @@ pub fn create_playlist(doc: &mut AutoCommit, name: &str) -> String {
         doc,
         &playlists,
         idx,
-        &Playlist { id: id.clone(), name: name.into(), description: String::new(), track_ids: vec![] },
+        &Playlist { id: id.clone(), name: name.into(), description: String::new(), track_ids: vec![], cover: String::new() },
     );
     id
+}
+
+/// Set (or clear) a playlist's cover image URL (`file://…` from the picker, or
+/// any http(s) URL). No-op if the playlist is unknown.
+pub fn set_playlist_cover(doc: &mut AutoCommit, playlist_id: &str, cover: &str) {
+    if let Some(pm) = find_playlist_obj(doc, playlist_id) {
+        let _ = doc.put(&pm, "cover", cover);
+    }
 }
 
 /// Read the entire library out of the document.
@@ -498,6 +507,7 @@ pub fn load_library(doc: &AutoCommit) -> Library {
                     name: get_str(doc, &pm, "name").unwrap_or_default(),
                     description: get_str(doc, &pm, "description").unwrap_or_default(),
                     track_ids: tracks,
+                    cover: get_str(doc, &pm, "cover").unwrap_or_default(),
                 });
             }
         }

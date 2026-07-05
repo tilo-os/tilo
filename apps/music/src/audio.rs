@@ -7,13 +7,39 @@
 //! surface is identical either way, so the app can drive playback without
 //! caring which backend is linked.
 //!
+//! ## Real audio out — routing to a real sink, never a `fakesink`
+//!
+//! `playbin` is given an **explicit audio sink chain** —
+//! `audioconvert ! audioresample ! level ! autoaudiosink` — so the decoded
+//! PCM is converted to whatever the system sink wants and handed to
+//! `autoaudiosink`, which auto-plugs the real desktop sink
+//! (`pipewiresink` / `pulsesink` / `alsasink`). This is the audible path.
+//!
+//! Crucially the engine can **prove** audio is genuinely flowing rather than
+//! merely that the pipeline reached `PLAYING`: a buffer pad-probe on the sink's
+//! input counts every decoded PCM buffer that actually reaches the sink
+//! ([`AudioEngine::frames_rendered`]), and [`AudioEngine::actual_audio_sink_name`]
+//! reports which concrete sink `autoaudiosink` selected — so a test can assert
+//! it is a real audio sink and **not** a `fakesink`. A previous test proved
+//! decode/timing against a `fakesink`, which never exercises a real sink and so
+//! cannot prove *audible* output; that shortcut is gone.
+//!
 //! ffmpeg / ALSA / PulseAudio crates are deliberately **not** used —
 //! GStreamer's `playbin` already negotiates decode + the system sink.
 //!
-//! The transport state the UI reads back — position, duration and *whether the
-//! pipeline actually reached `PLAYING`* — is queried from the live pipeline, so
-//! the now-playing indicator and the progress counter reflect **real** decoded
-//! playback rather than a simulated timer.
+//! ## System dependency (host + OS image)
+//!
+//! Audible output needs, in the runtime environment:
+//!   * a GStreamer **audio sink** plugin — `gstreamer1-plugin-pipewire`
+//!     (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
+//!     running PipeWire/Pulse server. Without one, `autoaudiosink` silently
+//!     falls back to `fakesink` and the user hears nothing.
+//!   * an **AAC / Opus decoder** for the streams YouTube Music serves —
+//!     `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
+//!     `gstreamer1-plugins-bad-free` (`faad`). `gstreamer1-plugins-base` +
+//!     `-good` alone can fetch (`souphttpsrc`) and demux (`qtdemux`) but cannot
+//!     decode AAC, so playback is silent. This is the qOS-image dependency the
+//!     Containerfile must install alongside the PipeWire sink.
 
 /// A handle to the audio backend. Cheap to construct; owns the pipeline
 /// when the `audio` feature is enabled.
@@ -27,6 +53,15 @@ pub struct AudioEngine {
 #[cfg(feature = "audio")]
 struct Inner {
     playbin: gstreamer::Element,
+    /// The `autoaudiosink` at the tail of our explicit sink chain, when it was
+    /// built. `autoaudiosink` auto-plugs the concrete real sink
+    /// (`pipewiresink`/`pulsesink`/`alsasink`) at READY; introspecting its child
+    /// proves the live path renders to a real sink and never a `fakesink`.
+    sink: Option<gstreamer::Element>,
+    /// Decoded PCM buffers that have actually reached the audio sink, counted by
+    /// a pad probe. Non-zero ⇒ audio is genuinely flowing to the sink (real
+    /// output), not merely that the pipeline reported `PLAYING`.
+    frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[cfg(not(feature = "audio"))]
@@ -45,22 +80,19 @@ impl AudioEngine {
                 if let Ok(playbin) =
                     gstreamer::ElementFactory::make("playbin").build()
                 {
-                    // Headless CI / the audio-pipeline test set this so playback
-                    // is exercised end-to-end (state → PLAYING, real position)
-                    // against a clock-synced `fakesink`, without needing a real
-                    // sound card. Production leaves it unset so `playbin`
-                    // auto-plugs the default system sink.
-                    if std::env::var("QOS_MUSIC_FAKESINK").is_ok() {
-                        if let Ok(fake) = gstreamer::ElementFactory::make("fakesink")
-                            .property("sync", true)
-                            .build()
-                        {
-                            use gstreamer::prelude::*;
-                            playbin.set_property("audio-sink", &fake);
-                        }
-                    }
+                    use gstreamer::prelude::*;
+                    let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                    // Route audio through an explicit **real** sink chain, so the
+                    // output is audible and verifiable. `autoaudiosink` selects
+                    // the concrete system sink (pipewire/pulse/alsa); the `level`
+                    // element and the pad probe let us confirm real buffers flow.
+                    let sink = build_audio_sink(&playbin, &frames);
+                    // Defensive: never leave the transport muted, and start at a
+                    // sane volume so "no sound" is never a stuck property.
+                    playbin.set_property("mute", false);
+                    playbin.set_property("volume", 0.8f64);
                     return Self {
-                        inner: Inner { playbin },
+                        inner: Inner { playbin, sink, frames },
                         current_uri: None,
                         volume: 0.8,
                     };
@@ -73,6 +105,8 @@ impl AudioEngine {
                 playbin: gstreamer::ElementFactory::make("playbin")
                     .build()
                     .expect("playbin"),
+                sink: None,
+                frames: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
             #[cfg(not(feature = "audio"))]
             inner: Inner { playing: false },
@@ -90,7 +124,9 @@ impl AudioEngine {
             // Fully reset the pipeline before re-pointing it, so a fast skip
             // never leaves the previous stream decoding underneath the new one.
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            self.inner.frames.store(0, std::sync::atomic::Ordering::Relaxed);
             self.inner.playbin.set_property("uri", uri);
+            self.inner.playbin.set_property("mute", false);
             self.inner
                 .playbin
                 .set_property("volume", self.volume as f64);
@@ -213,9 +249,8 @@ impl AudioEngine {
     }
 
     /// Whether the real pipeline has actually reached (or is heading to) the
-    /// `PLAYING` state. The now-playing indicator reads this so it only shows
-    /// "Streaming …" when audio is genuinely decoding, never on a fake timer.
-    /// Always `false` for the silent stub.
+    /// `PLAYING` state. The now-playing indicator reads this so it only reflects
+    /// genuine playback, never a fake timer. Always `false` for the silent stub.
     pub fn is_playing_real(&self) -> bool {
         #[cfg(feature = "audio")]
         {
@@ -229,6 +264,58 @@ impl AudioEngine {
         #[cfg(not(feature = "audio"))]
         {
             false
+        }
+    }
+
+    /// Number of decoded PCM buffers that have actually reached the audio sink.
+    /// Non-zero proves audio is *rendering* to the sink — real audible output,
+    /// not just a pipeline that reported `PLAYING`. Always `0` for the stub.
+    pub fn frames_rendered(&self) -> u64 {
+        #[cfg(feature = "audio")]
+        {
+            self.inner.frames.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            0
+        }
+    }
+
+    /// Factory name of the concrete audio sink `autoaudiosink` plugged
+    /// (`pipewiresink` / `pulsesink` / `alsasink`), once it has resolved one
+    /// (at READY+). `None` before then, without the `audio` feature, or if no
+    /// explicit sink chain was built. Used to prove the live path renders to a
+    /// **real** sink and never a `fakesink` — and to diagnose silence (a
+    /// `fakesink` here means no real sink plugin is installed).
+    pub fn actual_audio_sink_name(&self) -> Option<String> {
+        #[cfg(feature = "audio")]
+        {
+            use gstreamer::prelude::*;
+            let sink = self.inner.sink.as_ref()?;
+            // `autoaudiosink` is a bin that owns the concrete sink as its child;
+            // reach it via the `ChildProxy` interface (stable across versions).
+            let proxy = sink.dynamic_cast_ref::<gstreamer::ChildProxy>()?;
+            if proxy.children_count() == 0 {
+                return None;
+            }
+            let child = proxy.child_by_index(0)?;
+            let elem = child.downcast::<gstreamer::Element>().ok()?;
+            elem.factory().map(|f| f.name().to_string())
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            None
+        }
+    }
+
+    /// Whether the concrete plugged audio sink is a **real** audio sink (not a
+    /// `fakesink` fallback). `None` until the sink resolves. A real audio sink
+    /// is a `GstAudioBaseSink` subclass; `fakesink` is not, so this cleanly
+    /// distinguishes "audible" from "silently dropped".
+    pub fn audio_sink_is_real(&self) -> Option<bool> {
+        match self.actual_audio_sink_name() {
+            Some(name) => Some(name != "fakesink" && !name.contains("fakesink")),
+            None => None,
         }
     }
 
@@ -265,6 +352,41 @@ impl AudioEngine {
     }
 }
 
+/// Build the explicit real audio sink chain and install it on `playbin`,
+/// returning the tail `autoaudiosink` element for introspection. A buffer
+/// pad-probe on the sink's input increments `frames` for every decoded PCM
+/// buffer that reaches the sink — the proof that audio is genuinely rendered.
+///
+/// If any element is missing we return `None` and leave `playbin` to auto-plug
+/// its own sink, so audio still works (just without the verification hooks).
+#[cfg(feature = "audio")]
+fn build_audio_sink(
+    playbin: &gstreamer::Element,
+    frames: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Option<gstreamer::Element> {
+    use gstreamer::prelude::*;
+    // `ghost_unlinked_pads=true` auto-exposes the audioconvert sink pad so
+    // playbin can feed decoded audio into the chain (same idiom as the video
+    // sink bin in `apps/tube`). `autoaudiosink` plugs the real system sink.
+    let bin = gstreamer::parse::bin_from_description(
+        "audioconvert ! audioresample ! level name=qos_level post-messages=true ! \
+         autoaudiosink name=qos_audiosink sync=true",
+        true,
+    )
+    .ok()?;
+    let sink = bin.by_name("qos_audiosink")?;
+    // Count decoded PCM buffers arriving at the real sink.
+    if let Some(pad) = sink.static_pad("sink") {
+        let frames = frames.clone();
+        pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+            frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            gstreamer::PadProbeReturn::Ok
+        });
+    }
+    playbin.set_property("audio-sink", &bin);
+    Some(sink)
+}
+
 impl Default for AudioEngine {
     fn default() -> Self {
         Self::new()
@@ -288,7 +410,6 @@ mod tests {
         let mut e = AudioEngine::new();
         e.load("https://example.test/audio.m4a");
         e.set_volume(0.5);
-        e.play();
         assert_eq!(e.current_uri(), Some("https://example.test/audio.m4a"));
         assert!((e.volume() - 0.5).abs() < 1e-6);
     }
@@ -298,63 +419,89 @@ mod tests {
         assert_eq!(AudioEngine::is_live(), cfg!(feature = "audio"));
     }
 
-    /// Real end-to-end proof (under `--features audio`): a locally-generated
-    /// WAV is fed to the `playbin`, which must reach `PLAYING` and report a
-    /// **real, advancing** playhead decoded to a clock-synced sink. Uses a
-    /// `fakesink` (via `QOS_MUSIC_FAKESINK`) so no sound card is needed; if the
-    /// environment lacks the file/WAV plugins the decode can't run, so we skip
-    /// rather than assert a decode the box can't perform (mirrors `--probe`).
+    /// Whether a running PipeWire/Pulse audio server is reachable, so the real
+    /// sink can actually open a device. Without one, `autoaudiosink` can't reach
+    /// `PLAYING` — the test then skips honestly rather than pretending, and
+    /// never substitutes a `fakesink` to force a green.
+    #[cfg(feature = "audio")]
+    fn have_audio_server() -> bool {
+        let run = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+        run.map(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
+            .unwrap_or(false)
+            || std::env::var_os("PULSE_SERVER").is_some()
+    }
+
+    /// **Real audible-output proof** (under `--features audio`): a locally
+    /// generated WAV is decoded by `playbin` and rendered through the real
+    /// `autoaudiosink` sink chain — NOT a `fakesink`. Asserts:
+    ///   * the pipeline reaches `PLAYING`,
+    ///   * decoded PCM buffers actually reach the sink (`frames_rendered > 0`) —
+    ///     i.e. the audio branch negotiated caps and buffers flow, and
+    ///   * the concrete sink `autoaudiosink` plugged is a **real** audio sink
+    ///     (`pulsesink`/`pipewiresink`/`alsasink`), never a `fakesink`.
+    ///
+    /// Skips honestly if the environment lacks the WAV decode plugins or a
+    /// running audio server (no sound card in CI) — it never falls back to a
+    /// `fakesink` to manufacture a pass.
     #[cfg(feature = "audio")]
     #[test]
-    fn pipeline_reaches_playing_and_reports_real_position() {
-        use gstreamer::prelude::*;
+    fn real_sink_renders_audio_and_is_not_fakesink() {
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
-        // The decode graph playbin needs for a local WAV.
-        let have_plugins = ["filesrc", "wavparse", "fakesink"]
+        // The decode graph playbin needs for a local WAV, plus the real sink.
+        let need = ["filesrc", "wavparse", "audioconvert", "audioresample", "autoaudiosink"];
+        let have_plugins = need
             .iter()
             .all(|n| gstreamer::ElementFactory::find(n).is_some());
         if !have_plugins {
-            eprintln!("[audio test] skipped — missing filesrc/wavparse/fakesink plugins");
+            eprintln!("[audio test] skipped — missing decode/sink plugins {need:?}");
+            return;
+        }
+        if !have_audio_server() {
+            eprintln!("[audio test] skipped — no PipeWire/Pulse server (no sound card here)");
             return;
         }
 
-        // Write ~2s of 16-bit-mono PCM sine (44.1 kHz) as a real WAV.
-        let path = std::env::temp_dir().join(format!("qos-music-test-{}.wav", std::process::id()));
-        std::fs::write(&path, sine_wav(2, 44_100)).expect("write test wav");
+        // Write ~1s of quiet 16-bit-mono PCM sine (44.1 kHz) as a real WAV.
+        let path = std::env::temp_dir().join(format!("qos-music-audio-{}.wav", std::process::id()));
+        std::fs::write(&path, sine_wav(1, 44_100)).expect("write test wav");
         let uri = format!("file://{}", path.display());
 
-        // Force the deterministic fakesink and play the generated file.
-        unsafe { std::env::set_var("QOS_MUSIC_FAKESINK", "1") };
         let mut engine = AudioEngine::new();
-        engine.set_volume(0.6);
+        engine.set_volume(0.05); // audible path, but keep the test quiet
         engine.load(&uri);
         engine.play();
 
         let reached = engine.wait_until_playing(std::time::Duration::from_secs(5));
-        assert!(reached, "pipeline reached PLAYING for a real decoded stream");
+        assert!(reached, "real sink pipeline reached PLAYING for a decoded stream");
         assert!(engine.is_playing_real(), "engine reports real PLAYING state");
 
-        // The clock-synced sink advances the real playhead. Poll a short while.
-        let mut pos = 0u64;
-        for _ in 0..60 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if let Some(p) = engine.position_ms() {
-                pos = pos.max(p);
-            }
-            if pos > 0 {
+        // Poll until decoded PCM buffers actually reach the real sink. This is
+        // the audible-output proof a fakesink test could never give.
+        let mut frames = 0u64;
+        for _ in 0..80 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            frames = engine.frames_rendered();
+            if frames > 0 {
                 break;
             }
         }
-        assert!(pos > 0, "pipeline reports a real, advancing position (got {pos}ms)");
+        assert!(frames > 0, "decoded PCM buffers reached the real audio sink");
 
-        // Duration of the generated file is known once prerolled (~2000ms).
-        if let Some(d) = engine.duration_ms() {
-            assert!(d >= 1500, "decoded duration reflects the ~2s source (got {d}ms)");
-        }
+        // The concrete sink autoaudiosink plugged must be a real audio sink,
+        // never a fakesink fallback (which would mean silence in the field).
+        let sink_name = engine
+            .actual_audio_sink_name()
+            .expect("autoaudiosink resolved a concrete sink");
+        assert_ne!(sink_name, "fakesink", "real audio sink, not a fakesink");
+        assert_eq!(
+            engine.audio_sink_is_real(),
+            Some(true),
+            "plugged sink {sink_name} is a real audio sink"
+        );
+        eprintln!("[audio test] rendered {frames} buffers to real sink `{sink_name}`");
 
         engine.stop();
         let _ = std::fs::remove_file(&path);
-        unsafe { std::env::remove_var("QOS_MUSIC_FAKESINK") };
     }
 
     /// Build a minimal PCM WAV: `secs` seconds of a 220 Hz sine, 16-bit mono.

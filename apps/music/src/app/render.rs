@@ -131,6 +131,13 @@ impl Widget for MusicApp {
         } else {
             self.reload_library(state);
         }
+        // External media control (media keys / desktop widget) and a completed
+        // file-portal cover pick both mutate the document, so they run here
+        // where the CRDT handle is available; then publish the fresh state to
+        // the desktop's media controls.
+        self.drain_mpris(state);
+        self.drain_cover_pick(state);
+        self.publish_mpris();
     }
 
     fn build_layout(
@@ -952,7 +959,7 @@ impl MusicApp {
             View::Songs => {
                 let ids: Vec<String> = self.lib.tracks_sorted().iter().map(|tk| tk.id.clone()).collect();
                 let rows = self.gather_tracks(&ids);
-                self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true)
+                self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None)
             }
             View::Albums => {
                 let albums = self.gather_albums(None);
@@ -1033,7 +1040,7 @@ impl MusicApp {
         y = self.section_label(scene, t, tr, c, body, y, "Top tracks");
         let ids: Vec<String> = self.lib.top_tracks(6).iter().map(|tk| tk.id.clone()).collect();
         let rows = self.gather_tracks(&ids);
-        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true);
+        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, None);
         y
     }
 
@@ -1250,6 +1257,12 @@ impl MusicApp {
     // ---- track table ------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
+    /// The unified track-row table used by album, Liked Songs, Downloads **and**
+    /// playlist detail — so every list shares one row look: the now-playing
+    /// equalizer, like + download controls, and duration. Passing
+    /// `playlist = Some(id)` additionally binds the right-click menu to that
+    /// playlist and shows reorder (up/down) + remove affordances on hover.
+    #[allow(clippy::too_many_arguments)]
     fn draw_track_table(
         &mut self,
         scene: &mut Scene,
@@ -1262,6 +1275,7 @@ impl MusicApp {
         queue: &[String],
         show_album: bool,
         number_col: bool,
+        playlist: Option<&str>,
     ) -> f64 {
         let pad = 28.0;
         let left = body.x0 + pad;
@@ -1270,16 +1284,29 @@ impl MusicApp {
         let dur_x = right - 56.0;
         let dl_x = right - 96.0;
         let album_x = (right - 320.0).max(left + 360.0);
+        let n = rows.len();
+        // Playlist reorder/remove cluster, tucked in the gap left of the like
+        // control (only drawn on hover, below).
+        let like_x = dl_x - 34.0;
+        let pl_rm_x = like_x - 34.0;
+        let pl_dn_x = pl_rm_x - 28.0;
+        let pl_up_x = pl_dn_x - 28.0;
 
         for (i, tk) in rows.iter().enumerate() {
             let rr = Rect::new(left, y, right, y + row_h);
             let is_current = self.pb.current.as_deref() == Some(tk.id.as_str());
             let hovered = self.body_hit(rr, Action::Play { queue: queue.to_vec(), index: i });
-            // Right-click anywhere on the row opens its context menu.
+            // Right-click anywhere on the row opens its context menu (bound to
+            // this playlist when we're in a playlist, so "Remove from playlist"
+            // targets the right list).
             if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
                 self.push_row_menu(
                     rr,
-                    Action::OpenTrackMenu { track: tk.id.clone(), in_playlist: None, queue_index: None },
+                    Action::OpenTrackMenu {
+                        track: tk.id.clone(),
+                        in_playlist: playlist.map(str::to_string),
+                        queue_index: None,
+                    },
                 );
             }
             if hovered {
@@ -1317,8 +1344,26 @@ impl MusicApp {
                     draw_text(tr, scene, t, &al, album_x, vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
                 }
 
+                // Playlist reorder (up/down) + remove, on hover only.
+                if let Some(pl) = playlist {
+                    if hovered {
+                        if i > 0 {
+                            let uc = Point::new(pl_up_x, y + row_h / 2.0);
+                            let uh = self.push_hit(square_around(uc, 24.0), Action::MovePlaylistItem { playlist: pl.to_string(), from: i, to: i - 1 });
+                            draw_chevron(scene, t, uc, true, if uh { c.text } else { c.dim });
+                        }
+                        if i + 1 < n {
+                            let dc = Point::new(pl_dn_x, y + row_h / 2.0);
+                            let dh = self.push_hit(square_around(dc, 24.0), Action::MovePlaylistItem { playlist: pl.to_string(), from: i, to: i + 1 });
+                            draw_chevron(scene, t, dc, false, if dh { c.text } else { c.dim });
+                        }
+                        let rc = Point::new(pl_rm_x, y + row_h / 2.0);
+                        let rh = self.push_hit(square_around(rc, 24.0), Action::RemoveFromPlaylist { playlist: pl.to_string(), track: tk.id.clone() });
+                        draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
+                    }
+                }
+
                 // Like toggle (heart) just left of the download control.
-                let like_x = dl_x - 34.0;
                 let liked = self.lib.is_liked(&tk.id);
                 let like_rect = Rect::new(like_x - 14.0, y + row_h / 2.0 - 14.0, like_x + 14.0, y + row_h / 2.0 + 14.0);
                 let like_hover = self.push_hit(like_rect, Action::ToggleLike(tk.id.clone()));
@@ -1370,81 +1415,6 @@ impl MusicApp {
     /// and a right-click opens the track context menu in this playlist's
     /// context.
     #[allow(clippy::too_many_arguments)]
-    fn draw_playlist_tracks(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &Palette,
-        body: Rect,
-        mut y: f64,
-        rows: &[TrackDisp],
-        ids: &[String],
-        playlist_id: &str,
-    ) -> f64 {
-        let pad = 28.0;
-        let left = body.x0 + pad;
-        let right = body.x1 - pad;
-        let row_h = 52.0;
-        let n = rows.len();
-        // Right-side control cluster: up, down, remove, then duration.
-        let dur_x = right - 48.0;
-        let rm_x = dur_x - 34.0;
-        let dn_x = rm_x - 30.0;
-        let up_x = dn_x - 30.0;
-
-        if n == 0 {
-            draw_text(tr, scene, t, "This playlist is empty. Right-click a song \u{2192} Add to playlist\u{2026}", left, y + 6.0, 13.0, c.dim, TextWeight::Regular, None);
-            return y + 40.0;
-        }
-
-        for (i, tk) in rows.iter().enumerate() {
-            let rr = Rect::new(left, y, right, y + row_h);
-            let is_current = self.pb.current.as_deref() == Some(tk.id.as_str());
-            let hovered = self.body_hit(rr, Action::Play { queue: ids.to_vec(), index: i });
-            // Right-click → context menu in this playlist.
-            self.push_row_menu(
-                rr,
-                Action::OpenTrackMenu { track: tk.id.clone(), in_playlist: Some(playlist_id.to_string()), queue_index: None },
-            );
-            if hovered {
-                fill_rrect(scene, t, rr, 8.0, c.white5);
-            }
-            if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
-                let num = format!("{}", i + 1);
-                draw_text(tr, scene, t, &num, left + 8.0, vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
-                let title_col = if is_current { c.accent } else { c.text };
-                let title = elide(tr, &tk.title, 14.0, TextWeight::Medium, up_x - left - 60.0);
-                draw_text(tr, scene, t, &title, left + 36.0, y + 9.0, 14.0, title_col, TextWeight::Medium, None);
-                let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, up_x - left - 60.0);
-                draw_text(tr, scene, t, &artist, left + 36.0, y + 28.0, 12.0, c.dim, TextWeight::Regular, None);
-
-                if hovered {
-                    // Move up (disabled visually on the first row).
-                    if i > 0 {
-                        let uc = Point::new(up_x, y + row_h / 2.0);
-                        let uh = self.push_hit(square_around(uc, 26.0), Action::MovePlaylistItem { playlist: playlist_id.to_string(), from: i, to: i - 1 });
-                        draw_chevron(scene, t, uc, true, if uh { c.text } else { c.dim });
-                    }
-                    if i + 1 < n {
-                        let dc = Point::new(dn_x, y + row_h / 2.0);
-                        let dh = self.push_hit(square_around(dc, 26.0), Action::MovePlaylistItem { playlist: playlist_id.to_string(), from: i, to: i + 1 });
-                        draw_chevron(scene, t, dc, false, if dh { c.text } else { c.dim });
-                    }
-                    let rc = Point::new(rm_x, y + row_h / 2.0);
-                    let rh = self.push_hit(square_around(rc, 26.0), Action::RemoveFromPlaylist { playlist: playlist_id.to_string(), track: tk.id.clone() });
-                    draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
-                }
-
-                let dur = fmt_duration(tk.dur as u64);
-                let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
-                draw_text(tr, scene, t, &dur, dur_x + (40.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
-            }
-            y += row_h;
-        }
-        y
-    }
-
     // ---- detail pages -----------------------------------------------------
 
     fn draw_detail_header(
@@ -1536,7 +1506,7 @@ impl MusicApp {
         let saved = self.lib.is_album_saved(id);
         let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ALBUM", &title, &subtitle, ids.clone(), false, Some((id.to_string(), saved)));
         let rows = self.gather_tracks(&ids);
-        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true)
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, None)
     }
 
     /// Album detail rendered straight from a real [`AlbumPage`].
@@ -1547,7 +1517,7 @@ impl MusicApp {
         let saved = self.lib.is_album_saved(&page.id);
         let y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ALBUM", &page.title, &subtitle, ids.clone(), false, Some((page.id.clone(), saved)));
         let rows = self.gather_tracks(&ids);
-        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true)
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, None)
     }
 
     /// A shimmering **skeleton** shown while a real album/artist page loads —
@@ -1629,7 +1599,7 @@ impl MusicApp {
 
         let mut y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
         let rows = self.gather_tracks(&top_ids);
-        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true);
+        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true, None);
         y += 12.0;
         y = self.section_label(scene, t, tr, c, body, y, "Albums");
         self.draw_album_grid(scene, t, tr, c, body, y, &albums)
@@ -1654,7 +1624,7 @@ impl MusicApp {
 
         y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
         let rows = self.gather_tracks(&top_ids);
-        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true);
+        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true, None);
         y += 12.0;
         if !page.albums.is_empty() {
             y = self.section_label(scene, t, tr, c, body, y, "Albums");
@@ -1686,22 +1656,42 @@ impl MusicApp {
         let subtitle = format!("{} · {} songs · {}", desc, ids.len(), fmt_duration(total as u64));
         let mut y = self.draw_detail_header(scene, t, tr, c, body, y, id, "PLAYLIST", &name, &subtitle, ids.clone(), false, None);
 
-        // Playlist management row: rename + delete (below the play/shuffle row).
+        // Playlist management row: an outlined pill per action.
         let pad = 28.0;
-        let mx = body.x0 + pad;
-        let ren = Rect::new(mx, y - 8.0, mx + 96.0, y + 24.0);
-        let rh = self.push_hit(ren, Action::BeginRenamePlaylist(id.to_string()));
-        scene.stroke(&Stroke::new(1.0), t, if rh { c.text } else { c.border }, None, &rrect(ren, 16.0));
-        draw_text(tr, scene, t, "Rename", ren.x0 + 18.0, vy(ren.y0, 32.0, 13.0), 13.0, if rh { c.text } else { c.dim }, TextWeight::Medium, None);
-        let del = Rect::new(ren.x1 + 10.0, y - 8.0, ren.x1 + 10.0 + 90.0, y + 24.0);
-        let dh = self.push_hit(del, Action::DeletePlaylist(id.to_string()));
-        scene.stroke(&Stroke::new(1.0), t, if dh { c.accent } else { c.border }, None, &rrect(del, 16.0));
-        draw_text(tr, scene, t, "Delete", del.x0 + 18.0, vy(del.y0, 32.0, 13.0), 13.0, if dh { c.accent } else { c.dim }, TextWeight::Medium, None);
+        let py = y - 8.0;
+        let mut mx = body.x0 + pad;
+        for (label, w, action, danger) in [
+            ("Download all", 128.0, Action::DownloadAll(ids.clone()), false),
+            ("Set cover\u{2026}", 104.0, Action::PickPlaylistCover(id.to_string()), false),
+            ("Rename", 88.0, Action::BeginRenamePlaylist(id.to_string()), false),
+            ("Delete", 84.0, Action::DeletePlaylist(id.to_string()), true),
+        ] {
+            let r = Rect::new(mx, py, mx + w, py + 32.0);
+            let hov = self.push_hit(r, action);
+            let ink = if hov {
+                if danger { c.accent } else { c.text }
+            } else {
+                c.dim
+            };
+            let stroke = if hov {
+                if danger { c.accent } else { c.text }
+            } else {
+                c.border
+            };
+            scene.stroke(&Stroke::new(1.0), t, stroke, None, &rrect(r, 16.0));
+            draw_text(tr, scene, t, label, r.x0 + 16.0, vy(r.y0, 32.0, 13.0), 13.0, ink, TextWeight::Medium, None);
+            mx = r.x1 + 10.0;
+        }
         y += 36.0;
 
+        if ids.is_empty() {
+            draw_text(tr, scene, t, "This playlist is empty. Right-click a song \u{2192} Add to playlist\u{2026}", body.x0 + pad, y + 6.0, 13.0, c.dim, TextWeight::Regular, None);
+            return y + 40.0;
+        }
         let rows = self.gather_tracks(&ids);
-        // Playlist rows carry remove + reorder affordances bound to this id.
-        self.draw_playlist_tracks(scene, t, tr, c, body, y, &rows, &ids, id)
+        // Unified row look (equalizer + like + download + duration); the playlist
+        // context adds reorder/remove affordances and binds the row menu.
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, Some(id))
     }
 
     // ---- queue ------------------------------------------------------------
@@ -1815,7 +1805,7 @@ impl MusicApp {
             return y + 40.0;
         }
         let rows = self.gather_tracks(&ids);
-        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, false)
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, false, None)
     }
 
     // ---- liked songs ------------------------------------------------------
@@ -1849,8 +1839,15 @@ impl MusicApp {
             draw_text(tr, scene, t, "No liked songs yet. Tap the heart on any track.", body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
             return y + 40.0;
         }
+        // Download-all pill (keep every liked song offline in one gesture).
+        let dl = Rect::new(body.x0 + pad, y - 4.0, body.x0 + pad + 128.0, y + 28.0);
+        let dlh = self.push_hit(dl, Action::DownloadAll(ids.clone()));
+        scene.stroke(&Stroke::new(1.0), t, if dlh { c.text } else { c.border }, None, &rrect(dl, 16.0));
+        icon::draw(scene, t, Icon::Download, Point::new(dl.x0 + 20.0, dl.center().y), 15.0, if dlh { c.text } else { c.dim });
+        draw_text(tr, scene, t, "Download all", dl.x0 + 36.0, vy(dl.y0, 32.0, 13.0), 13.0, if dlh { c.text } else { c.dim }, TextWeight::Medium, None);
+        y += 44.0;
         let rows = self.gather_tracks(&ids);
-        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true)
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None)
     }
 
     // ---- lyrics -----------------------------------------------------------
@@ -2015,7 +2012,7 @@ impl MusicApp {
             let label = if self.backend_live { "Songs \u{00b7} YouTube Music" } else { "Songs \u{00b7} streaming" };
             y = self.section_label(scene, t, tr, c, body, y + 8.0, label);
             let rows = self.gather_tracks(&live_ids);
-            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &live_ids, true, true);
+            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &live_ids, true, true, None);
             y += 8.0;
         } else if searching {
             y += 8.0;
@@ -2048,7 +2045,7 @@ impl MusicApp {
             y = self.section_label(scene, t, tr, c, body, y, "Songs");
             let ids = res.tracks.clone();
             let rows = self.gather_tracks(&ids);
-            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true);
+            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None);
         }
         y
     }
@@ -2088,14 +2085,6 @@ impl MusicApp {
             draw_text(tr, scene, t, &title, tx, r.y0 + 26.0, 14.0, c.text, TextWeight::Semibold, None);
             let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, maxw);
             draw_text(tr, scene, t, &artist, tx, r.y0 + 48.0, 12.0, c.dim, TextWeight::Regular, None);
-            // Real-playback indicator: only shown while the GStreamer pipeline
-            // is genuinely decoding the resolved stream (never a fake timer).
-            if let Some(ind) = self.streaming_indicator() {
-                let dot = Point::new(tx + 3.0, r.y0 + 66.0);
-                scene.fill(Fill::NonZero, t, c.accent, None, &Circle::new(dot, 2.5));
-                let ind = elide(tr, &ind, 10.5, TextWeight::Medium, maxw - 12.0);
-                draw_text(tr, scene, t, &ind, tx + 12.0, r.y0 + 60.0, 10.5, c.accent, TextWeight::Medium, None);
-            }
 
             // Heart / like toggle next to the song name.
             let liked = self.lib.is_liked(&tk.id);
