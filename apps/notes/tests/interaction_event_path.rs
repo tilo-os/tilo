@@ -421,14 +421,14 @@ fn disclosure_triangle_click_toggles_child_visibility() {
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
 
-    // Collapsed by default: only the `welcome` row is visible.
+    // Creating a child reveals it (its branch expands), so both rows show.
     assert!(app.sidebar_row_center_for_test(0).is_some());
     assert!(
-        app.sidebar_row_center_for_test(1).is_none(),
-        "child must be hidden while the branch is collapsed"
+        app.sidebar_row_center_for_test(1).is_some(),
+        "the newly-created child is revealed under its parent"
     );
 
-    // Click the disclosure triangle (leftmost glyph of row 0).
+    // Click the disclosure triangle (leftmost glyph of row 0) to COLLAPSE.
     let row0 = app.sidebar_row_center_for_test(0).unwrap();
     let no_mods = Modifiers::default();
     dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(8.0, row0.y));
@@ -436,18 +436,18 @@ fn disclosure_triangle_click_toggles_child_visibility() {
     // Re-settle so the re-flattened rows lay out.
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
     assert!(
-        app.sidebar_row_center_for_test(1).is_some(),
-        "expanding must reveal the child row through the event path"
+        app.sidebar_row_center_for_test(1).is_none(),
+        "collapsing must hide the child row through the event path"
     );
 
-    // Collapse again → the child row disappears.
+    // Click again → the child row reappears.
     let row0 = app.sidebar_row_center_for_test(0).unwrap();
     dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(8.0, row0.y));
     dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
     let _ = settle_layout(&mut app, &mut state, 1200, 800);
     assert!(
-        app.sidebar_row_center_for_test(1).is_none(),
-        "collapsing must hide the child row again"
+        app.sidebar_row_center_for_test(1).is_some(),
+        "expanding must reveal the child row again"
     );
 }
 
