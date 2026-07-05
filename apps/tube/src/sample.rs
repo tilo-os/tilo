@@ -54,6 +54,8 @@ fn video(
         description: description.into(),
         likes,
         seed: id.into(),
+        // Offline sample: no real thumbnail URL, so the seed gradient shows.
+        thumbnail_url: String::new(),
         category: category.into(),
         dearrow_thumb: dearrow.is_some(),
         sponsor,
@@ -71,6 +73,8 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
         verified,
         description: desc.into(),
         seed: id.into(),
+        avatar_url: String::new(),
+        banner_url: String::new(),
     }
 }
 

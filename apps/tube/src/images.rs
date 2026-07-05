@@ -1,0 +1,69 @@
+//! Real image loading for video thumbnails, channel avatars and banners.
+//!
+//! Tube's cards/avatars/banners used to be procedural gradients only — there
+//! was no image pipeline at all. This wires the toolkit's [`ui::ImageStore`]
+//! (async fetch + decode + GPU-image cache, keyed by URL) to a blocking
+//! `reqwest` transport so the real i.ytimg.com / yt3.googleusercontent.com
+//! images yt-dlp reports are fetched, decoded and painted. Until a URL's image
+//! is ready — and always on the hermetic `--shots`/offline path — the caller
+//! shows the seed gradient / initials fallback.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use ui::{Fetcher, ImageStore};
+use vello::peniko::ImageData as PenikoImage;
+
+/// A blocking-`reqwest` transport for the [`ImageStore`]. Runs on the store's
+/// background threads, so it may block on I/O. A browser-ish User-Agent avoids
+/// the occasional 403 the image CDNs return to unknown clients.
+pub fn image_fetcher() -> Fetcher {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("reqwest image client");
+    Arc::new(move |url: &str| {
+        client
+            .get(url)
+            .send()
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .bytes()
+            .ok()
+            .map(|b| b.to_vec())
+    })
+}
+
+/// Build an [`ImageStore`] backed by the real network fetcher.
+pub fn image_store() -> ImageStore {
+    ImageStore::new(image_fetcher())
+}
+
+/// A cheap, `Copy` handle the screen builders thread down to the image-bearing
+/// widgets. `None` on the hermetic offline / `--shots` path, so every lookup
+/// returns `None` and the procedural gradient / initials fallback shows.
+#[derive(Clone, Copy)]
+pub struct Imgs<'a>(pub Option<&'a ImageStore>);
+
+impl<'a> Imgs<'a> {
+    /// The hermetic no-store handle (offline / `--shots`).
+    pub fn none() -> Self {
+        Imgs(None)
+    }
+
+    /// The decoded image for `url`, or `None` while loading / failed / offline.
+    /// Kicks off an async load the first time a URL is seen.
+    pub fn get(&self, url: &str) -> Option<PenikoImage> {
+        match self.0 {
+            Some(store) if !url.is_empty() => store.get(url),
+            _ => None,
+        }
+    }
+
+    /// In-flight image loads, so the app can keep redrawing until they settle.
+    pub fn pending(&self) -> usize {
+        self.0.map(|s| s.pending()).unwrap_or(0)
+    }
+}

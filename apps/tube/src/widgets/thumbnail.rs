@@ -15,7 +15,7 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill, Gradient};
+use vello::peniko::{Color, Fill, Gradient, ImageData as PenikoImage};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -32,6 +32,10 @@ pub struct Thumbnail {
     live: bool,
     progress: Option<f32>,
     hero: bool,
+    /// Real decoded thumbnail image (from the [`ui::ImageStore`]). When present
+    /// it's painted cover-fit in place of the seed gradient; the chrome (pills,
+    /// progress, badges) still overlays it.
+    image: Option<PenikoImage>,
     rect: Rect,
 }
 
@@ -45,8 +49,15 @@ impl Thumbnail {
             live: false,
             progress: None,
             hero: false,
+            image: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Supply a real decoded thumbnail image (or `None` to keep the gradient).
+    pub fn image(mut self, image: Option<PenikoImage>) -> Self {
+        self.image = image;
+        self
     }
 
     pub fn height(mut self, h: f32) -> Self {
@@ -104,58 +115,59 @@ impl Thumbnail {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let (top, bottom) = seed_gradient(&self.seed);
         let radius = 12.0;
         let shape = RoundedRect::from_rect(self.rect, radius);
-        let grad = Gradient::new_linear(
-            (self.rect.x0, self.rect.y0),
-            (self.rect.x1, self.rect.y1),
-        )
-        .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
-        scene.fill(Fill::NonZero, transform, &grad, None, &shape);
 
-        // A faint geometric motif so the tile doesn't read as a flat
-        // swatch: two offset translucent circles.
-        let glass = Color::from_rgba8(255, 255, 255, 18);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            glass,
-            None,
-            &Circle::new(
-                Point::new(self.rect.x1 - 30.0, self.rect.y0 + 26.0),
-                40.0,
-            ),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgba8(0, 0, 0, 24),
-            None,
-            &Circle::new(
-                Point::new(self.rect.x0 + 24.0, self.rect.y1 - 18.0),
-                52.0,
-            ),
-        );
+        if let Some(img) = &self.image {
+            // Real thumbnail: paint the decoded image cover-fit, clipped to the
+            // rounded tile (no gradient, no play glyph — like a YouTube card).
+            ui::image_store::paint_image_cover(scene, transform, self.rect, img, radius);
+        } else {
+            // No image yet (loading / offline / sample): the deterministic
+            // seed gradient + a faint geometric motif + a centre play glyph.
+            let (top, bottom) = seed_gradient(&self.seed);
+            let grad = Gradient::new_linear(
+                (self.rect.x0, self.rect.y0),
+                (self.rect.x1, self.rect.y1),
+            )
+            .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
+            scene.fill(Fill::NonZero, transform, &grad, None, &shape);
 
-        // Center play glyph.
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        let r = if self.hero { 36.0 } else { 22.0 };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgba8(0, 0, 0, 110),
-            None,
-            &Circle::new(Point::new(cx, cy), r),
-        );
-        let mut tri = BezPath::new();
-        let t = r * 0.5;
-        tri.move_to((cx - t * 0.5, cy - t));
-        tri.line_to((cx - t * 0.5, cy + t));
-        tri.line_to((cx + t, cy));
-        tri.close_path();
-        scene.fill(Fill::NonZero, transform, Color::WHITE, None, &tri);
+            let glass = Color::from_rgba8(255, 255, 255, 18);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                glass,
+                None,
+                &Circle::new(Point::new(self.rect.x1 - 30.0, self.rect.y0 + 26.0), 40.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::from_rgba8(0, 0, 0, 24),
+                None,
+                &Circle::new(Point::new(self.rect.x0 + 24.0, self.rect.y1 - 18.0), 52.0),
+            );
+
+            // Center play glyph.
+            let cx = self.rect.center().x;
+            let cy = self.rect.center().y;
+            let r = if self.hero { 36.0 } else { 22.0 };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::from_rgba8(0, 0, 0, 110),
+                None,
+                &Circle::new(Point::new(cx, cy), r),
+            );
+            let mut tri = BezPath::new();
+            let t = r * 0.5;
+            tri.move_to((cx - t * 0.5, cy - t));
+            tri.line_to((cx - t * 0.5, cy + t));
+            tri.line_to((cx + t, cy));
+            tri.close_path();
+            scene.fill(Fill::NonZero, transform, Color::WHITE, None, &tri);
+        }
 
         // Duration / LIVE pill, bottom-right.
         if self.live {
@@ -298,5 +310,54 @@ impl Widget for Thumbnail {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
+    use vello_encoding::DrawTag;
+
+    fn tiny_image() -> PenikoImage {
+        // 2×2 opaque RGBA.
+        let blob = Blob::new(Arc::new(vec![255u8; 2 * 2 * 4]));
+        PenikoImage {
+            data: blob,
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        }
+    }
+
+    fn paint_count_images(thumb: &mut Thumbnail) -> usize {
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut scene = Scene::new();
+        thumb.rect = Rect::new(0.0, 0.0, 300.0, 169.0);
+        thumb.paint(&mut scene, Affine::IDENTITY, &mut tr);
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::IMAGE)
+            .count()
+    }
+
+    /// A thumbnail with a real decoded image paints an IMAGE draw command —
+    /// proof the fetched thumbnail actually reaches the scene (not the gradient).
+    #[test]
+    fn thumbnail_with_image_emits_an_image_draw() {
+        let mut t = Thumbnail::new("seed", 120).image(Some(tiny_image()));
+        assert!(paint_count_images(&mut t) >= 1, "expected an IMAGE draw for a real thumbnail");
+    }
+
+    /// Without an image the thumbnail paints the gradient poster (no IMAGE draw),
+    /// so the hermetic `--shots` path is unchanged.
+    #[test]
+    fn thumbnail_without_image_paints_gradient_not_image() {
+        let mut t = Thumbnail::new("seed", 120);
+        assert_eq!(paint_count_images(&mut t), 0, "no image → gradient poster, no IMAGE draw");
     }
 }
