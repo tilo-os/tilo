@@ -72,6 +72,11 @@ jobs:
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=pr
+            # workflow_dispatch off a non-main branch — without this, the metadata
+            # step emits zero tags and the push fails "tag is needed". Derives a
+            # "<branch>-<sha>" tag so a manual dispatch from a feature branch still
+            # produces a discoverable image without polluting the `latest` channel.
+            type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
 
       # Build the multi-stage bootc image. Context is the repo root so the
       # builder stage can COPY the whole workspace; the
