@@ -33,6 +33,17 @@
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
+# ---- Custom kernel repo ----------------------------------------------------
+# Same "OCI image with /repo" shape as the frozen RPM repo (see
+# os/Containerfile.rpms), but its content is a rebuilt Fedora kernel with
+# our config fragment applied (static storage/net/USB/HID + PREEMPT +
+# HZ=1000 + THP=always + trimmed debuginfo).  Built by
+# .forgejo/workflows/build-kernel.yml and pinned by digest via
+# os/kernel-snapshot.env — the runtime stage below swaps kernel-core for
+# qos-kernel-core out of it.
+ARG KERNEL_RPMS_REF
+FROM ${KERNEL_RPMS_REF} AS kernel-rpms
+
 
 # ---- Stage 1: builder ------------------------------------------------------
 # Base pinned by digest (security plan §9 — reproducibility + supply chain: a
@@ -515,6 +526,46 @@ RUN for u in \
 # firewalld isn't running at build time, so edit the permanent config offline.
 RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
     firewall-offline-cmd --zone=FedoraWorkstation --add-service=mdns
+
+# ---------------------------------------------------------------------------
+# Custom qOS kernel: swap Fedora's kernel-core for our tuned qos-kernel-core.
+# ---------------------------------------------------------------------------
+# The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
+# build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
+#   * links the storage/net/USB/HID boot-path drivers statically, so the
+#     kernel can mount the root FS without an initramfs stage, and
+#   * tunes for interactive throughput (PREEMPT + HZ=1000 + THP=always +
+#     SCHED_MC), and
+#   * drops DEBUG_INFO so the RPM doesn't carry ~800 MB of debuginfo.
+#
+# Because the qos-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
+# we mount it alongside the frozen repo, write a two-repo dnf config on
+# the fly, and swap kernel-core → qos-kernel-core.  --nogpgcheck: our
+# in-house RPMs aren't signed by Fedora's key; provenance for the whole
+# image is verified via cosign against code.podesta.ai/qos/qos-kernel
+# (see os/etc/containers/policy.json).
+#
+# Because the qos-kernel package ships every boot-path driver in-kernel,
+# also disable initramfs generation: systemd's kernel-install reads
+# /etc/kernel/install.conf and skips initrd creation when
+# `initrd_generator=none`.  Verified post-install by the absence of
+# /boot/initramfs-*.img.
+COPY os/etc/kernel/install.conf /etc/kernel/install.conf
+RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
+    --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
+    set -eux; \
+    mkdir -p /etc/qos-swap.d; \
+    printf '[frozen]\nname=frozen\nbaseurl=file:///frozen-repo\ngpgcheck=0\nenabled=1\n' \
+        > /etc/qos-swap.d/frozen.repo; \
+    printf '[qos-kernel]\nname=qos-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
+        > /etc/qos-swap.d/qos-kernel.repo; \
+    dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck \
+        kernel-core qos-kernel-core; \
+    rm -rf /etc/qos-swap.d; \
+    # If any initramfs was produced by the swap's %post scripts, drop it —
+    # we boot without one.
+    rm -f /boot/initramfs-*.img; \
+    dnf clean all
 
 # Validate
 RUN bootc container lint
