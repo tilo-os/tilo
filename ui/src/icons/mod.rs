@@ -107,6 +107,15 @@ pub enum Icon {
     Trash,
     /// Horizontal "…" overflow / more-actions affordance.
     MoreHorizontal,
+    // --- Mail set (folders / actions) ---
+    Inbox,
+    Send,
+    Reply,
+    Mail,
+    Paperclip,
+    Calendar,
+    Ban,
+    Download,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -514,6 +523,49 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             circle_path(19.0, 12.0, 1.0),
             circle_path(5.0, 12.0, 1.0),
         ],
+        // --- Mail set — lucide v0.546.0 ---
+        // Inbox: tray divider + body outline.
+        Icon::Inbox => vec![
+            path_from_d("M22 12h-6l-2 3h-4l-2-3H2"),
+            path_from_d("M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"),
+        ],
+        // Send: paper-plane — outer triangle + inner fold line.
+        Icon::Send => vec![
+            path_from_d("M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"),
+            path_from_d("m21.854 2.147-10.94 10.939"),
+        ],
+        // Reply: return arrow.
+        Icon::Reply => vec![
+            path_from_d("M20 18v-2a4 4 0 0 0-4-4H4"),
+            path_from_d("m9 17-5-5 5-5"),
+        ],
+        // Mail: envelope body rect + flap fold.
+        Icon::Mail => vec![
+            rect_path(2.0, 4.0, 20.0, 16.0, 2.0),
+            path_from_d("m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"),
+        ],
+        // Paperclip: single hook path.
+        Icon::Paperclip => vec![path_from_d(
+            "M13.234 20.252 21 12.3a4.75 4.75 0 0 0-6.72-6.71l-8.94 8.94a2.375 2.375 0 0 0 3.36 3.36l7.09-7.09a1.188 1.188 0 0 0-1.68-1.68L7.5 15.7",
+        )],
+        // Calendar: two hanger ticks + body + header rule.
+        Icon::Calendar => vec![
+            path_from_d("M8 2v4"),
+            path_from_d("M16 2v4"),
+            rect_path(3.0, 4.0, 18.0, 18.0, 2.0),
+            path_from_d("M3 10h18"),
+        ],
+        // Ban: ring + diagonal bar (no-entry / junk).
+        Icon::Ban => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("m4.9 4.9 14.2 14.2"),
+        ],
+        // Download: stem + arrowhead + tray.
+        Icon::Download => vec![
+            path_from_d("M12 15V3"),
+            path_from_d("m7 10 5 5 5-5"),
+            path_from_d("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"),
+        ],
     }
 }
 
@@ -813,6 +865,34 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::Folder).len(), 1, "folder = 1 outline");
         assert_eq!(icon_subpaths(Icon::ChevronRight).len(), 1, "chevron-right = 1 path");
         assert_eq!(icon_subpaths(Icon::MoreHorizontal).len(), 3, "more = 3 dots");
+    }
+
+    /// The mail glyph set must transcribe into non-empty subpaths so the
+    /// mail sidebar / reader / attachment chrome never ships a blank square.
+    #[test]
+    fn mail_icons_produce_non_empty_subpaths() {
+        for icon in [
+            Icon::Inbox,
+            Icon::Send,
+            Icon::Reply,
+            Icon::Mail,
+            Icon::Paperclip,
+            Icon::Calendar,
+            Icon::Ban,
+            Icon::Download,
+        ] {
+            let sub = icon_subpaths(icon);
+            assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
+            for p in &sub {
+                assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+            }
+        }
+        assert_eq!(icon_subpaths(Icon::Inbox).len(), 2, "inbox = tray + body");
+        assert_eq!(icon_subpaths(Icon::Reply).len(), 2, "reply = arm + arrow");
+        assert_eq!(icon_subpaths(Icon::Mail).len(), 2, "mail = body + flap");
+        assert_eq!(icon_subpaths(Icon::Calendar).len(), 4, "calendar = 2 ticks + body + rule");
+        assert_eq!(icon_subpaths(Icon::Ban).len(), 2, "ban = ring + bar");
+        assert_eq!(icon_subpaths(Icon::Download).len(), 3, "download = stem + head + tray");
     }
 
     #[test]

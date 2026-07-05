@@ -70,6 +70,7 @@ pub fn sample_mailbox() -> Mailbox {
         smtp_port: 465,
         smtp_tls: true,
         username: "you@qos.example".into(),
+        auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
     let mut mb = Mailbox::new(account);
@@ -282,6 +283,7 @@ pub fn sample_account_store() -> AccountStore {
         smtp_port: 465,
         smtp_tls: true,
         username: "you@qos.example".into(),
+        auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
     let work = AccountConfig {
@@ -294,6 +296,7 @@ pub fn sample_account_store() -> AccountStore {
         smtp_port: 587,
         smtp_tls: true,
         username: "you@hooli.example".into(),
+        auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
     let mut a0 = Account::new(personal);

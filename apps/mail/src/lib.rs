@@ -30,16 +30,19 @@
 
 pub mod account;
 pub mod app;
+pub mod autoconfig;
 pub mod compose;
 pub mod doc;
 pub mod draw;
 pub mod engine;
 pub mod model;
+pub mod oauth;
 pub mod pane;
 pub mod sample;
 pub mod state;
 pub mod transport;
 pub mod util;
+pub mod validate;
 pub mod wysiwyg;
 
 pub use app::MailApp;
@@ -59,7 +62,7 @@ pub fn shot_viewport(scenario: &str) -> (u32, u32) {
         "narrow" | "narrow_detail" | "narrow_drawer" => (560, 860),
         "mid" => (1000, 720),
         "compose" => (1180, 820),
-        "setup" => (1100, 780),
+        "setup" | "setup_add" | "setup_oauth" | "firstrun" => (1100, 780),
         _ => (1280, 800),
     }
 }
@@ -68,12 +71,22 @@ pub fn shot_viewport(scenario: &str) -> (u32, u32) {
 /// bundled sample corpus so a single offscreen frame shows the feature. The
 /// sample corpus is hermetic — used only here and in tests, never at runtime.
 pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
+    // The first-run scenario has NO account configured, so it builds the empty
+    // app (which shows the onboarding screen) rather than the sample corpus.
+    if scenario == "firstrun" {
+        return Box::new(MailApp::new_first_run());
+    }
     let mut app = MailApp::new_sample();
     match scenario {
         "compose" => app.prime_compose_shot(),
         "narrow_detail" => app.prime_detail_shot(),
         "narrow_drawer" => app.prime_drawer_shot(),
         "setup" => app.prime_setup_shot(),
+        // The add-account variant opens a blank setup sheet (no editing target)
+        // so the shot shows the "Add account" flow with autofilled server
+        // fields rather than an existing account's values.
+        "setup_add" => app.prime_setup_add_shot(),
+        "setup_oauth" => app.prime_setup_oauth_shot(),
         _ => {}
     }
     Box::new(app)
