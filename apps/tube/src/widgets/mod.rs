@@ -8,12 +8,14 @@
 
 pub mod controls;
 pub mod flex;
+pub mod image_box;
 pub mod seek_bar;
 pub mod thumbnail;
 pub mod video_surface;
 
 pub use controls::{Icon, IconKind, Switch};
 pub use flex::{Align, Axis, Flex, IntoElement, Justify, Len, Surface};
+pub use image_box::ImageBox;
 pub use seek_bar::SeekBar;
 pub use thumbnail::Thumbnail;
 pub use video_surface::VideoSurface;

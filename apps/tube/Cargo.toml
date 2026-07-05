@@ -68,6 +68,21 @@ snow = { version = "0.9", optional = true }
 flate2 = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 
+# --- GStreamer decode/playback — off by default -----------------------------
+# Real video playback (VP9 / AV1 / H.264 + audio, adaptive) through GStreamer:
+# a `playbin` whose video is diverted through `videoconvert ! appsink` so the
+# UI paints decoded RGBA frames (the same appsink→RGBA idiom `apps/camera` and
+# `apps/music` use). Pinned to 0.24 to reuse the versions the workspace already
+# locks (see `apps/camera`), so no fresh resolution and the offline build stays
+# hermetic. The stream URL is resolved by yt-dlp; GStreamer's `uridecodebin`
+# picks the decoder, so this replaces the openh264-only decode path (which is
+# retained behind the `live` path only as a legacy fallback). Gated behind
+# `media` so the default build (and every `--shots`/test run) never links the
+# gstreamer-1.0 dev stack.
+gstreamer = { version = "0.24", optional = true }
+gstreamer-app = { version = "0.24", optional = true }
+gstreamer-video = { version = "0.24", optional = true }
+
 [dev-dependencies]
 # Encoding-level assertions in the video-surface test: prove a decoded frame
 # actually emits an IMAGE draw command into the scene (mirrors ui's own
@@ -76,9 +91,16 @@ vello_encoding = "0.9"
 
 [features]
 default = []
-# Real YouTube data via rustypipe + a tokio runtime owned by the live backend.
-# `--features live` must check-compile; it is never part of the shots path.
+# Real YouTube data. The live backend shells out to **yt-dlp** (the
+# community-maintained extractor) for search / video / channel / streams and
+# keeps `rustypipe` compiled as a fallback source. `--features live` must
+# check-compile; it is never part of the shots path.
 live = ["dep:rustypipe", "dep:tokio"]
+# Real video decode + playback through GStreamer (replaces the openh264-only
+# path). Pulls in gstreamer + gstreamer-app + gstreamer-video. Compiles the
+# `backend::gst_playback` module; the default build keeps only the hermetic
+# poster path, so nothing here can touch the `--shots`/test screenshot.
+media = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
 # the live `GrayjaySyncTransport`; the default build keeps only the deterministic
 # `StubTransport`, so nothing here can touch the hermetic path.
