@@ -162,67 +162,84 @@ impl Widget for Btn {
     fn is_focusable(&self) -> bool { self.enabled }
 }
 
-/// A gallery card showing a theme's mini swatch + name + base tag.
-/// Click selects the theme via the command bus.
-pub struct ThemeCard {
+/// Height of one sidebar theme row (logical px). Mirrors weather's
+/// saved-place chip height so the two apps' sidebars read the same.
+pub const ROW_H: f32 = 58.0;
+
+/// A sidebar row for one theme — a small palette swatch, the theme's name
+/// and a `Preset · Dark` tag, styled like weather's saved-place chip.
+/// Selectable (click emits `select:<id>`); the currently *applied* theme is
+/// badged "Active". The name of the selected custom theme is drawn by the
+/// gallery's inline [`ui::widget::TextInput`] instead of here (suppressed
+/// via [`ThemeRow::update`]).
+pub struct ThemeRow {
     id: String,
     name: String,
     builtin: bool,
     dark_base: bool,
+    /// [base, raised, accent, success, warning, danger].
     swatch: [Rgb; 6],
     selected: bool,
+    /// This row is the applied OS theme.
+    active: bool,
+    /// The gallery is drawing an inline name editor over this row, so the
+    /// row must not paint its own static name.
+    suppress_name: bool,
     rect: Rect,
     hover: bool,
 }
 
-impl ThemeCard {
+impl ThemeRow {
     pub fn from_spec(spec: &ThemeSpec, selected: bool) -> Self {
         Self {
             id: spec.id.clone(),
             name: spec.name.clone(),
             builtin: spec.builtin,
             dark_base: spec.dark_base,
-            swatch: [
-                spec.surface_base,
-                spec.surface_raised,
-                spec.accent,
-                spec.success,
-                spec.warning,
-                spec.danger,
-            ],
+            swatch: Self::swatch_of(spec),
             selected,
+            active: false,
+            suppress_name: false,
             rect: Rect::ZERO,
             hover: false,
         }
     }
 
-    pub fn id(&self) -> &str { &self.id }
+    fn swatch_of(spec: &ThemeSpec) -> [Rgb; 6] {
+        [spec.surface_base, spec.surface_raised, spec.accent, spec.success, spec.warning, spec.danger]
+    }
 
-    /// Refresh visual fields in place (preserves hover / rect so the
-    /// gallery can push fresh state every frame without flicker).
-    pub fn update(&mut self, spec: &ThemeSpec, selected: bool) {
+    pub fn id(&self) -> &str { &self.id }
+    pub fn is_custom(&self) -> bool { !self.builtin }
+    pub fn get_rect(&self) -> Rect { self.rect }
+
+    /// Refresh visual fields in place (preserves hover / rect so the gallery
+    /// can push fresh state every frame without flicker).
+    pub fn update(&mut self, spec: &ThemeSpec, selected: bool, active: bool, suppress_name: bool) {
         self.name = spec.name.clone();
         self.builtin = spec.builtin;
         self.dark_base = spec.dark_base;
-        self.swatch = [
-            spec.surface_base,
-            spec.surface_raised,
-            spec.accent,
-            spec.success,
-            spec.warning,
-            spec.danger,
-        ];
+        self.swatch = Self::swatch_of(spec);
         self.selected = selected;
+        self.active = active;
+        self.suppress_name = suppress_name;
+    }
+
+    /// The name-text region of the row, in scene coords — where the gallery
+    /// overlays its inline editor for the selected custom theme.
+    pub fn name_rect(&self) -> Rect {
+        let tx = self.rect.x0 + 62.0;
+        Rect::new(tx, self.rect.y0 + 9.0, self.rect.x1 - 12.0, self.rect.y0 + 33.0)
     }
 }
 
-impl Widget for ThemeCard {
+impl Widget for ThemeRow {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::length(64.0) },
+                size: Size { width: Dimension::percent(1.0), height: Dimension::length(ROW_H) },
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -243,41 +260,52 @@ impl Widget for ThemeCard {
 
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
         let radius = theme.radius_standard.min(12.0);
+        // Row background: selected → accent-tinted; else hover / raised —
+        // the same tiering weather's saved-place chip uses.
         let bg = if self.selected {
-            lighten(theme.bg_primary, 0.05)
+            lerp(theme.bg_app, theme.accent_primary, 0.18)
         } else if self.hover {
             theme.bg_hover
         } else {
             theme.bg_primary
         };
         draw::fill_rrect(scene, t, self.rect, radius, bg);
-        let border = if self.selected { theme.accent_primary } else { theme.border_standard };
-        draw::stroke_rrect(scene, t, self.rect, radius, border, if self.selected { 2.0 } else { 1.0 });
+        let (border, bw) = if self.selected {
+            (theme.accent_primary, 1.5)
+        } else {
+            (theme.border_standard.multiply_alpha(0.6), 1.0)
+        };
+        draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
 
-        // Mini swatch — a rounded preview tile with stacked colour bands.
-        let pad = 10.0;
-        let sw = Rect::new(self.rect.x0 + pad, self.rect.y0 + pad, self.rect.x0 + pad + 44.0, self.rect.y1 - pad);
-        draw::fill_rrect(scene, t, sw, 6.0, model::color(self.swatch[0]));
-        // raised inset
-        let inset = Rect::new(sw.x0 + 5.0, sw.y0 + 5.0, sw.x1 - 5.0, sw.y0 + (sw.height() * 0.45));
+        // Palette swatch: a compact tile of the theme's base surface with a
+        // raised inset and a row of accent + semantic dots.
+        let sw = Rect::new(self.rect.x0 + 11.0, self.rect.y0 + 9.0, self.rect.x0 + 51.0, self.rect.y1 - 9.0);
+        draw::fill_rrect(scene, t, sw, 7.0, model::color(self.swatch[0]));
+        draw::stroke_rrect(scene, t, sw, 7.0, theme.border_standard.multiply_alpha(0.5), 1.0);
+        let inset = Rect::new(sw.x0 + 5.0, sw.y0 + 5.0, sw.x1 - 5.0, sw.y0 + sw.height() * 0.42);
         draw::fill_rrect(scene, t, inset, 4.0, model::color(self.swatch[1]));
-        // accent + semantic dots
-        let dot_y = sw.y1 - 9.0;
+        let dot_y = sw.y1 - 8.5;
         for (i, c) in self.swatch[2..].iter().enumerate() {
-            draw::circle(scene, t, Point::new(sw.x0 + 8.0 + i as f64 * 9.0, dot_y), 3.2, model::color(*c));
+            draw::circle(scene, t, Point::new(sw.x0 + 8.0 + i as f64 * 8.6, dot_y), 3.0, model::color(*c));
         }
 
-        // Name + tag.
-        let tx = sw.x1 + 12.0;
-        draw::text_w(tr, scene, t, &self.name, 14.0, theme.text_primary, tx, self.rect.y0 + 14.0, TextWeight::Semibold);
+        // Name (unless the gallery's inline editor covers it) + tag.
+        let tx = sw.x1 + 11.0;
+        if !self.suppress_name {
+            draw::text_w(tr, scene, t, &self.name, 14.0, theme.text_primary, tx, self.rect.y0 + 11.0, TextWeight::Semibold);
+        }
         let tag = if self.builtin { "Preset" } else { "Custom" };
         let base = if self.dark_base { "Dark" } else { "Light" };
-        draw::text(tr, scene, t, &format!("{tag} · {base}"), 11.0, theme.text_dim, tx, self.rect.y0 + 36.0);
+        draw::text(tr, scene, t, &format!("{tag} · {base}"), 11.0, theme.text_dim, tx, self.rect.y0 + 33.0);
 
-        if self.selected {
-            // active check-dot on the right edge
-            let c = Point::new(self.rect.x1 - 16.0, self.rect.center().y);
-            draw::circle(scene, t, c, 5.0, theme.accent_primary);
+        // Applied-theme badge on the right edge.
+        if self.active {
+            let lab = "Active";
+            let (w, _) = tr.measure(lab, 10.0, None);
+            let pw = w as f64 + 16.0;
+            let pill = Rect::new(self.rect.x1 - pw - 10.0, self.rect.center().y - 9.0, self.rect.x1 - 10.0, self.rect.center().y + 9.0);
+            draw::fill_rrect(scene, t, pill, 9.0, theme.accent_primary);
+            draw::text_center(tr, scene, t, lab, 10.0, on_accent(theme), pill.x0, pill.x1, pill.y0, pill.y1, TextWeight::Bold);
         }
     }
 
@@ -303,7 +331,7 @@ impl Widget for ThemeCard {
         }
     }
 
-    fn name(&self) -> &str { "ThemeCard" }
+    fn name(&self) -> &str { "ThemeRow" }
     fn get_rect(&self) -> Rect { self.rect }
     fn is_focusable(&self) -> bool { true }
     fn test_id(&self) -> Option<&str> { Some(&self.id) }
@@ -323,4 +351,9 @@ pub fn on_accent(theme: &Theme) -> Color {
 pub fn lighten(c: Color, t: f32) -> Color {
     let rgb = [c.r(), c.g(), c.b()];
     model::color(model::mix(rgb, [255, 255, 255], t))
+}
+
+/// Linearly mix colour `a` toward `b` by `t` (0..1).
+pub fn lerp(a: Color, b: Color, t: f32) -> Color {
+    model::color(model::mix([a.r(), a.g(), a.b()], [b.r(), b.g(), b.b()], t))
 }

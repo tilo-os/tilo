@@ -33,6 +33,14 @@ pub const KEY_COMMAND: &str = "command";
 pub const KEY_ED_RADIUS: &str = "ed_radius";
 pub const KEY_ED_SPACING: &str = "ed_spacing";
 pub const KEY_ED_FONT: &str = "ed_font";
+/// Inline sidebar name-edit scratch (scalar Str). The gallery's name
+/// [`ui::widget::TextInput`] writes the in-progress name here; the app
+/// reconciles it into the selected custom theme's `name`.
+pub const KEY_ED_NAME: &str = "ed_name";
+/// Id of the currently *applied* OS theme (distinct from the selected
+/// theme being edited). Seeded from the shared theme store on first run and
+/// updated by the Apply action; the sidebar highlights this row.
+pub const KEY_ACTIVE: &str = "active";
 pub const KEY_EXPORT: &str = "export";
 
 /// Read a string scalar at `key`, or `None`.
