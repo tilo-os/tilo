@@ -20,7 +20,18 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 use uuid::Uuid;
 
-use crate::model::{AnnoKind, Annotation, HiColor, Progress, ReadFont, ReadTheme, Settings};
+use crate::model::{
+    default_fonts, default_schemes, AnnoKind, Annotation, ColorScheme, FontEntry, FontKind,
+    HiColor, Progress, ReadTheme, Settings,
+};
+
+/// Pack an sRGB triple into a single int for the CRDT.
+fn pack_rgb(c: [u8; 3]) -> i64 {
+    ((c[0] as i64) << 16) | ((c[1] as i64) << 8) | (c[2] as i64)
+}
+fn unpack_rgb(v: i64) -> [u8; 3] {
+    [((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8]
+}
 
 /// Stateless namespace of document helpers.
 pub struct BooksDoc;
@@ -66,6 +77,16 @@ impl BooksDoc {
         }
     }
 
+    fn scalar_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
+        match doc.get(obj, key) {
+            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                ScalarValue::Boolean(b) => Some(*b),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn scalar_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
         match doc.get(obj, key) {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
@@ -86,8 +107,9 @@ impl BooksDoc {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "font_scale", s.font_scale as f64);
         let _ = doc.put(&m, "line_spacing", s.line_spacing as f64);
-        let _ = doc.put(&m, "font", s.font.as_str());
+        let _ = doc.put(&m, "font_id", s.font_id.as_str());
         let _ = doc.put(&m, "theme", s.theme.as_str());
+        let _ = doc.put(&m, "scheme_id", s.scheme_id.as_str());
     }
 
     pub fn read_settings(doc: &AutoCommit) -> Settings {
@@ -102,13 +124,137 @@ impl BooksDoc {
         if let Some(v) = Self::scalar_f64(doc, &m, "line_spacing") {
             s.line_spacing = (v as f32).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "font") {
-            s.font = ReadFont::from_str(&v);
+        if let Some(v) = Self::scalar_str(doc, &m, "font_id") {
+            s.font_id = v;
         }
         if let Some(v) = Self::scalar_str(doc, &m, "theme") {
             s.theme = ReadTheme::from_str(&v);
         }
+        if let Some(v) = Self::scalar_str(doc, &m, "scheme_id") {
+            s.scheme_id = v;
+        }
         s
+    }
+
+    // --- font registry -----------------------------------------------------
+
+    /// Read the registered fonts. When none are stored (a fresh library) the
+    /// built-in [`default_fonts`] set is returned without writing, so the
+    /// document stays clean until the user actually edits the registry.
+    pub fn read_fonts(doc: &AutoCommit) -> Vec<FontEntry> {
+        let list = match doc.get(&ROOT, "fonts") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => return default_fonts(),
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                continue;
+            };
+            let id = Self::scalar_str(doc, &e, "id").unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            out.push(FontEntry {
+                kind: FontKind::from_code(
+                    &Self::scalar_str(doc, &e, "kind").unwrap_or_else(|| "default".into()),
+                ),
+                name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
+                size_mult: Self::scalar_f64(doc, &e, "size_mult")
+                    .map(|v| (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX))
+                    .unwrap_or(1.0),
+                shown: Self::scalar_bool(doc, &e, "shown").unwrap_or(true),
+                id,
+            });
+        }
+        if out.is_empty() { default_fonts() } else { out }
+    }
+
+    /// Replace the whole font registry (the manager edits the list wholesale).
+    pub fn write_fonts(doc: &mut AutoCommit, fonts: &[FontEntry]) {
+        let list = doc
+            .put_object(&ROOT, "fonts", ObjType::List)
+            .expect("put_object list never fails");
+        for (i, f) in fonts.iter().enumerate() {
+            let e = doc
+                .insert_object(&list, i, ObjType::Map)
+                .expect("insert_object map never fails");
+            let _ = doc.put(&e, "id", f.id.as_str());
+            let _ = doc.put(&e, "kind", f.kind.as_code());
+            let _ = doc.put(&e, "name", f.name.as_str());
+            let _ = doc.put(&e, "size_mult", f.size_mult as f64);
+            let _ = doc.put(&e, "shown", f.shown);
+        }
+    }
+
+    /// The registry-wide default font id (used when a book has no explicit
+    /// per-reader selection). Empty string means "the first registered font".
+    pub fn read_default_font(doc: &AutoCommit) -> String {
+        match doc.get(&ROOT, "settings") {
+            Ok(Some((Value::Object(ObjType::Map), m))) => {
+                Self::scalar_str(doc, &m, "default_font").unwrap_or_default()
+            }
+            _ => String::new(),
+        }
+    }
+
+    pub fn write_default_font(doc: &mut AutoCommit, id: &str) {
+        let m = Self::root_map(doc, "settings");
+        let _ = doc.put(&m, "default_font", id);
+    }
+
+    // --- colour schemes ----------------------------------------------------
+
+    /// Read the registered colour schemes, falling back to the built-ins when
+    /// none are stored (kept out of the document until the user edits them).
+    pub fn read_schemes(doc: &AutoCommit) -> Vec<ColorScheme> {
+        let list = match doc.get(&ROOT, "schemes") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => return default_schemes(),
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                continue;
+            };
+            let id = Self::scalar_str(doc, &e, "id").unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let page = unpack_rgb(Self::scalar_i64(doc, &e, "page").unwrap_or(0));
+            out.push(ColorScheme {
+                name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
+                page,
+                ink: unpack_rgb(Self::scalar_i64(doc, &e, "ink").unwrap_or(0)),
+                accent: unpack_rgb(Self::scalar_i64(doc, &e, "accent").unwrap_or(0)),
+                dark: Self::scalar_bool(doc, &e, "dark")
+                    .unwrap_or_else(|| crate::model::luminance(page) < 0.5),
+                enabled: Self::scalar_bool(doc, &e, "enabled").unwrap_or(true),
+                builtin: Self::scalar_bool(doc, &e, "builtin").unwrap_or(false),
+                id,
+            });
+        }
+        if out.is_empty() { default_schemes() } else { out }
+    }
+
+    /// Replace the whole scheme registry (the manager edits it wholesale).
+    pub fn write_schemes(doc: &mut AutoCommit, schemes: &[ColorScheme]) {
+        let list = doc
+            .put_object(&ROOT, "schemes", ObjType::List)
+            .expect("put_object list never fails");
+        for (i, s) in schemes.iter().enumerate() {
+            let e = doc
+                .insert_object(&list, i, ObjType::Map)
+                .expect("insert_object map never fails");
+            let _ = doc.put(&e, "id", s.id.as_str());
+            let _ = doc.put(&e, "name", s.name.as_str());
+            let _ = doc.put(&e, "page", pack_rgb(s.page));
+            let _ = doc.put(&e, "ink", pack_rgb(s.ink));
+            let _ = doc.put(&e, "accent", pack_rgb(s.accent));
+            let _ = doc.put(&e, "dark", s.dark);
+            let _ = doc.put(&e, "enabled", s.enabled);
+            let _ = doc.put(&e, "builtin", s.builtin);
+        }
     }
 
     // --- progress ----------------------------------------------------------
@@ -223,14 +369,43 @@ mod tests {
         let mut s = Settings::default();
         s.font_scale = 1.3;
         s.line_spacing = 1.45;
-        s.font = ReadFont::Sans;
+        s.font_id = "serif".into();
         s.theme = ReadTheme::Dark;
+        s.scheme_id = "midnight".into();
         BooksDoc::write_settings(&mut doc, &s);
         let back = BooksDoc::read_settings(&doc);
         assert!((back.font_scale - 1.3).abs() < 0.001);
         assert!((back.line_spacing - 1.45).abs() < 0.001);
-        assert_eq!(back.font, ReadFont::Sans);
+        assert_eq!(back.font_id, "serif");
         assert_eq!(back.theme, ReadTheme::Dark);
+        assert_eq!(back.scheme_id, "midnight");
+    }
+
+    #[test]
+    fn fonts_registry_defaults_and_round_trips() {
+        let mut doc = AutoCommit::new();
+        // No stored registry -> the built-in defaults, without writing.
+        let defaults = BooksDoc::read_fonts(&doc);
+        assert!(defaults.iter().any(|f| f.kind == FontKind::Serif));
+
+        // A custom registry (rename + hide + a named face) round-trips exactly.
+        let mut custom = default_fonts();
+        custom[0].name = "Book".into();
+        custom[1].shown = false;
+        custom.push(FontEntry::new(
+            "u1",
+            FontKind::Named("Literata".into()),
+            "Literata",
+            1.1,
+            true,
+        ));
+        BooksDoc::write_fonts(&mut doc, &custom);
+        let back = BooksDoc::read_fonts(&doc);
+        assert_eq!(back.len(), custom.len());
+        assert_eq!(back[0].name, "Book");
+        assert!(!back[1].shown);
+        assert_eq!(back.last().unwrap().kind, FontKind::Named("Literata".into()));
+        assert!((back.last().unwrap().size_mult - 1.1).abs() < 0.001);
     }
 
     #[test]
@@ -244,6 +419,23 @@ mod tests {
         assert!((back.fraction - 0.42).abs() < 0.001);
         // Unknown book -> default.
         assert_eq!(BooksDoc::read_progress(&doc, "nope"), Progress::default());
+    }
+
+    #[test]
+    fn schemes_registry_round_trips_with_a_custom_scheme() {
+        let mut doc = AutoCommit::new();
+        assert_eq!(BooksDoc::read_schemes(&doc).len(), default_schemes().len());
+        let mut schemes = default_schemes();
+        schemes[0].enabled = false; // disable a built-in
+        schemes.push(ColorScheme::from_bg("u1", "Ocean", [0x0A, 0x22, 0x33]));
+        BooksDoc::write_schemes(&mut doc, &schemes);
+        let back = BooksDoc::read_schemes(&doc);
+        assert_eq!(back.len(), schemes.len());
+        assert!(!back[0].enabled, "disabled state round-trips");
+        let custom = back.last().unwrap();
+        assert_eq!(custom.name, "Ocean");
+        assert_eq!(custom.page, [0x0A, 0x22, 0x33]);
+        assert!(custom.dark && !custom.builtin);
     }
 
     #[test]
