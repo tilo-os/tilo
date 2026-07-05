@@ -231,6 +231,7 @@ impl MailDoc {
         ui::doc::put_if_changed(doc, &acc, "smtp_port", cfg.smtp_port as i64);
         ui::doc::put_if_changed(doc, &acc, "smtp_tls", cfg.smtp_tls);
         ui::doc::put_if_changed(doc, &acc, "username", cfg.username.as_str());
+        ui::doc::put_if_changed(doc, &acc, "auth", cfg.auth.as_key());
     }
 
     pub fn load_account(doc: &AutoCommit) -> Option<AccountConfig> {
@@ -248,6 +249,9 @@ impl MailDoc {
             smtp_port: Self::read_i64(doc, &acc, "smtp_port").unwrap_or(465) as u16,
             smtp_tls: Self::read_bool(doc, &acc, "smtp_tls").unwrap_or(true),
             username: Self::read_str(doc, &acc, "username").unwrap_or_default(),
+            auth: Self::read_str(doc, &acc, "auth")
+                .map(|s| crate::model::AuthMethod::from_key(&s))
+                .unwrap_or_default(),
             password: String::new(),
         })
     }
