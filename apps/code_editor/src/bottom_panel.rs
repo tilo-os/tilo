@@ -31,6 +31,8 @@ pub enum PanelTab {
 /// Severity of a diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
+    /// A hard error (LSP severity 1). Rendered in the danger colour.
+    Error,
     Warning,
     Info,
     Hint,
@@ -54,6 +56,13 @@ pub struct BottomPanel {
     last_cursor: Point,
     /// Set true when the user clicks a tab — read+cleared by the app.
     tab_changed: bool,
+    /// When true, the Terminal tab's body is owned by an embedded live
+    /// `TerminalWidget` the app draws over this panel's content rect, so the
+    /// panel leaves that region blank instead of rendering the static fallback.
+    has_live_terminal: bool,
+    /// Optional note shown in the Terminal body when no live terminal is
+    /// present (e.g. "shell unavailable"). Falls back to the static log.
+    terminal_note: Option<String>,
     dirty: bool,
 }
 
@@ -67,6 +76,8 @@ impl BottomPanel {
             tab_rects: Vec::new(),
             last_cursor: Point::ZERO,
             tab_changed: false,
+            has_live_terminal: false,
+            terminal_note: None,
             dirty: true,
         }
     }
@@ -81,6 +92,33 @@ impl BottomPanel {
     pub fn set_terminal(&mut self, lines: Vec<String>) {
         self.terminal = lines;
         self.dirty = true;
+    }
+
+    /// Mark whether a live embedded terminal owns the Terminal tab body.
+    pub fn set_has_live_terminal(&mut self, live: bool) {
+        if self.has_live_terminal != live {
+            self.has_live_terminal = live;
+            self.dirty = true;
+        }
+    }
+
+    /// Set (or clear) the note shown when there is no live terminal.
+    pub fn set_terminal_note(&mut self, note: Option<String>) {
+        if self.terminal_note != note {
+            self.terminal_note = note;
+            self.dirty = true;
+        }
+    }
+
+    /// The currently-visible dock tab.
+    pub fn active_tab(&self) -> PanelTab {
+        self.tab
+    }
+
+    /// The content region below the tab strip — where the embedded terminal is
+    /// placed and drawn.
+    pub fn content_rect(&self) -> Rect {
+        Rect::new(self.rect.x0, self.rect.y0 + TAB_H, self.rect.x1, self.rect.y1)
     }
 
     pub fn problem_count(&self) -> usize {
@@ -213,6 +251,7 @@ impl Widget for BottomPanel {
                             break;
                         }
                         let (glyph, sev_color) = match d.severity {
+                            Severity::Error => ("\u{2716}", c.semantic.danger),
                             Severity::Warning => ("\u{26A0}", c.semantic.warning),
                             Severity::Info => ("\u{2139}", c.semantic.info),
                             Severity::Hint => ("\u{2022}", c.text_dim),
@@ -246,23 +285,38 @@ impl Widget for BottomPanel {
                 }
             }
             PanelTab::Terminal => {
-                let mut y = content_y0;
-                for line in &self.terminal {
-                    if y > self.rect.y1 - ROW_H {
-                        break;
-                    }
-                    text_renderer.draw_text_styled(
+                if self.has_live_terminal {
+                    // The embedded `TerminalWidget` renders the body over
+                    // `content_rect()`; leave it to the app so we don't paint
+                    // stale text underneath the live grid.
+                } else if let Some(note) = &self.terminal_note {
+                    text_renderer.draw_text(
                         scene,
-                        line,
-                        12.5,
-                        c.neutral[8],
-                        transform * Affine::translate((self.rect.x0 + 14.0, y)),
-                        None,
-                        TextWeight::Regular,
-                        false,
-                        true,
+                        note,
+                        13.0,
+                        c.text_dim,
+                        transform * Affine::translate((self.rect.x0 + 14.0, content_y0)),
+                        Some((self.rect.width() - 28.0) as f32),
                     );
-                    y += ROW_H;
+                } else {
+                    let mut y = content_y0;
+                    for line in &self.terminal {
+                        if y > self.rect.y1 - ROW_H {
+                            break;
+                        }
+                        text_renderer.draw_text_styled(
+                            scene,
+                            line,
+                            12.5,
+                            c.neutral[8],
+                            transform * Affine::translate((self.rect.x0 + 14.0, y)),
+                            None,
+                            TextWeight::Regular,
+                            false,
+                            true,
+                        );
+                        y += ROW_H;
+                    }
                 }
             }
         }
