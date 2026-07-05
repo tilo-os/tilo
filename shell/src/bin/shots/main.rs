@@ -451,7 +451,14 @@ fn main() {
     // this early is that the FontSystem build and the scratch Vello
     // render both overlap with argv parsing / driver bring-up. Disabled
     // with QOS_STARTUP_WARM=off.
-    let _warmup_handle = ui::warmup::spawn_warmup(false);
+    // FontSystem-only warmup by default (~90 ms cold-start win vs no
+    // warmup, measured on the shots harness). Vello scratch-render
+    // opt-in via QOS_STARTUP_WARM_VELLO=1 — see the compositor's main
+    // for the rationale.
+    let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
+        .ok()
+        .is_some_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "off" | "false" | "no"));
+    let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
     let args = match Args::parse() {
         Ok(a) => a,
