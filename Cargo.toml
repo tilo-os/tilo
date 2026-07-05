@@ -94,3 +94,26 @@ members = [
     "crates/session/installer",
 ]
 resolver = "2"
+
+# Aggressive release profile. Fat LTO across the workspace + a single
+# codegen unit unlock cross-crate inlining — meaningful for the shell
+# because most of the hot path (widget draw → wgpu submit, CRDT apply,
+# encode/decode) crosses crate boundaries. panic=abort drops the
+# unwinding tables + landing pads (a compositor can't meaningfully
+# recover from a panic, and abort strips a real chunk of binary size).
+# strip=symbols removes the symbol table without touching perf.
+# debug=line-tables-only is deliberately kept — cheap on disk, needed
+# for perf/BOLT flamegraphs to attribute samples to lines.
+#
+# `[profile.dev]` is intentionally NOT overridden. Local iteration
+# stays at cargo defaults so the inner loop is fast; these settings
+# only fire under `--release`.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+overflow-checks = false
+debug = "line-tables-only"
+incremental = false
