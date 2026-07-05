@@ -407,6 +407,7 @@ pub mod page_palette;   pub use page_palette::PageJumpPalette;
 mod dropdown;    pub use dropdown::Dropdown;
 pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
 pub mod scrollbar; pub use scrollbar::{Scrollbar, ScrollMetrics, PressOutcome};
+pub mod drag; pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
 mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
