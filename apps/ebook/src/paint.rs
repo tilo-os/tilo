@@ -187,6 +187,51 @@ pub fn bookmark(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64, 
     }
 }
 
+/// A trash-can glyph — the "delete this" affordance. Lid + bin body with two
+/// vertical ribs, drawn as strokes so it stays crisp at any size.
+pub fn trash(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
+    let (x, y, s) = box_of(rect, 0.26);
+    // Lid (top rule) with a small handle notch above it.
+    let lid_y = y + s * 0.20;
+    line(scene, t, Point::new(x + s * 0.08, lid_y), Point::new(x + s * 0.92, lid_y), color, w);
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(x + s * 0.36, lid_y),
+            Point::new(x + s * 0.40, y + s * 0.06),
+            Point::new(x + s * 0.60, y + s * 0.06),
+            Point::new(x + s * 0.64, lid_y),
+        ],
+        color,
+        w,
+    );
+    // Bin body: two slightly-tapered sides + a base.
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(x + s * 0.18, lid_y),
+            Point::new(x + s * 0.26, y + s * 0.94),
+            Point::new(x + s * 0.74, y + s * 0.94),
+            Point::new(x + s * 0.82, lid_y),
+        ],
+        color,
+        w,
+    );
+    // Ribs.
+    for fx in [0.40_f64, 0.60] {
+        line(
+            scene,
+            t,
+            Point::new(x + s * fx, lid_y + s * 0.10),
+            Point::new(x + s * fx, y + s * 0.84),
+            color,
+            w * 0.85,
+        );
+    }
+}
+
 /// A small pencil glyph — the "this text is editable" affordance.
 pub fn pencil(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.28);

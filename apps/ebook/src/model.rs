@@ -268,12 +268,22 @@ pub struct Annotation {
     pub color: HiColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,
+    /// The logical annotation this row belongs to. A highlight over a range that
+    /// spans several paragraphs is stored as one [`AnnoKind::Highlight`] row per
+    /// spanned block; they all share one `group` so the reader treats them as a
+    /// single mark (one click, one delete). Comments on that highlight are
+    /// [`AnnoKind::Note`] rows carrying the **same** `group`, which is how a
+    /// range can hold more than one comment. A standalone bookmark or note is its
+    /// own group (`group == id`).
+    #[serde(default = "Uuid::new_v4")]
+    pub group: Uuid,
 }
 
 impl Annotation {
     pub fn new(doc_id: &str, kind: AnnoKind, chapter: usize, block: usize) -> Self {
+        let id = Uuid::new_v4();
         Self {
-            id: Uuid::new_v4(),
+            id,
             doc_id: doc_id.to_string(),
             kind,
             chapter,
@@ -284,6 +294,7 @@ impl Annotation {
             note: String::new(),
             color: HiColor::Yellow,
             created: now_ms(),
+            group: id,
         }
     }
 
@@ -297,6 +308,12 @@ impl Annotation {
     }
     pub fn with_note(mut self, n: impl Into<String>) -> Self {
         self.note = n.into();
+        self
+    }
+    /// Bind this row to a logical annotation group (a multi-block highlight and
+    /// its comments all share one group).
+    pub fn with_group(mut self, g: Uuid) -> Self {
+        self.group = g;
         self
     }
 }
