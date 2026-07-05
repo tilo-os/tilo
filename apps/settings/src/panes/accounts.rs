@@ -35,8 +35,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::accounts::{
-    AccountConfig, AccountDirectory, AccountKind, AccountView, DavStore, MailAccount, MailStore,
-    NextcloudStore,
+    AccountConfig, AccountDirectory, AccountKind, AccountView, DavStore, NextcloudStore,
 };
 use crate::widgets::{card, card_with_action, caption, rows, setting_row, El};
 
@@ -49,6 +48,7 @@ pub const FORM_CANCEL_KEY: &str = "settings.accounts.form.cancel";
 pub const FORM_NAME_KEY: &str = "accounts.form.name";
 pub const FORM_EMAIL_KEY: &str = "accounts.form.email";
 pub const FORM_USER_KEY: &str = "accounts.form.username";
+pub const FORM_PASSWORD_KEY: &str = "accounts.form.password";
 
 /// Per-account Remove key.
 fn remove_key(id: &str) -> String {
@@ -138,10 +138,10 @@ impl AccountsPane {
                     .with_size(12.0),
                 ),
                 caption(&format!(
-                    "Email accounts: {}",
-                    MailStore::path()
+                    "Accounts store: {}",
+                    accounts::store_path()
                         .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "~/.config/qos/mail/accounts.json".into())
+                        .unwrap_or_else(|| "~/.config/qos/accounts/store.json".into())
                 )),
             ]),
         ));
@@ -245,6 +245,7 @@ impl AccountsPane {
             .with_font_size(13.0);
         let password = TextInput::new(Vec::new())
             .with_id("accounts.form.password")
+            .with_on_change_path(FORM_PASSWORD_KEY)
             .with_secret(true)
             .with_placeholder("Password")
             .with_font_size(13.0);
@@ -290,7 +291,13 @@ impl AccountsPane {
 
     /// Persist a new mail account from the form fields. Returns whether an
     /// account was actually added (an empty address is a no-op).
-    fn save_mail_account(&mut self, name: String, email: String, username: String) -> bool {
+    fn save_mail_account(
+        &mut self,
+        name: String,
+        email: String,
+        username: String,
+        password: String,
+    ) -> bool {
         if email.trim().is_empty() {
             return false;
         }
@@ -303,11 +310,29 @@ impl AccountsPane {
         // Fills IMAP/SMTP hosts + username/display-name defaults from the
         // address, exactly as Mail's own add flow does.
         config.autofill_from_email();
-        let mut store = MailStore::load();
-        store.accounts.push(MailAccount::new(config));
-        if let Err(e) = store.save() {
+        // Persist the connection settings into the shared canonical store (the
+        // same store Mail reads). The `#[serde(skip)]` password never reaches
+        // this JSON — it goes to the encrypted vault, keyed by the account id.
+        let mut shared = accounts::AccountStore::load();
+        let id = accounts::AccountId::from(config.email.clone());
+        let mut stored = accounts::Account::new(id.clone(), "email");
+        stored.display_name = if config.display_name.is_empty() {
+            config.email.clone()
+        } else {
+            config.display_name.clone()
+        };
+        stored.set_config(&config);
+        shared.upsert(stored);
+        if let Err(e) = shared.save() {
             warn!(target: "qos::settings", op = "mail_store_save", error = %e, "failed to persist new mail account");
             return false;
+        }
+        // Seal the password in the vault so Mail can log in — the credential
+        // now persists, encrypted, instead of being dropped on the floor.
+        if !password.trim().is_empty() {
+            let mut vault = accounts::SecretVault::open();
+            vault.put(&id, &accounts::Secret::password(password.trim().to_string()));
+            vault.save();
         }
         true
     }
@@ -315,15 +340,18 @@ impl AccountsPane {
     /// Remove an account of `kind` by id from its owning store, persisting.
     fn remove_account(&mut self, kind: AccountKind, id: &str) {
         let res = match kind {
-            AccountKind::Mail => {
-                let mut s = MailStore::load();
-                s.remove(id);
-                s.save().map(|_| ())
-            }
-            AccountKind::CalDav => {
-                let mut s = DavStore::load_from(DavStore::calendar_path());
-                s.accounts.retain(|a| a.id != id);
-                s.save_to(DavStore::calendar_path()).map(|_| ())
+            // Email + CalDAV live in the shared canonical store; remove from it
+            // (and drop any sealed credential) so the removal is real.
+            AccountKind::Mail | AccountKind::CalDav => {
+                let account_id = accounts::AccountId::from(id.to_string());
+                let mut shared = accounts::AccountStore::load();
+                shared.remove(&account_id);
+                let saved = shared.save();
+                let mut vault = accounts::SecretVault::open();
+                if vault.remove(&account_id) {
+                    vault.save();
+                }
+                saved.map(|_| ())
             }
             AccountKind::WebDav => {
                 let mut s = DavStore::load_from(DavStore::files_path());
@@ -377,7 +405,8 @@ impl Widget for AccountsPane {
             let name = read_str(state, root, FORM_NAME_KEY).unwrap_or_default();
             let email = read_str(state, root, FORM_EMAIL_KEY).unwrap_or_default();
             let user = read_str(state, root, FORM_USER_KEY).unwrap_or_default();
-            if self.save_mail_account(name, email, user) {
+            let password = read_str(state, root, FORM_PASSWORD_KEY).unwrap_or_default();
+            if self.save_mail_account(name, email, user, password) {
                 self.form_open = false;
                 clear_form(state, root);
                 self.reload();
@@ -561,7 +590,7 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 
 /// Blank the form's bound text keys so a reopened form starts empty.
 fn clear_form(state: &mut AutoCommit, root: &ObjId) {
-    for key in [FORM_NAME_KEY, FORM_EMAIL_KEY, FORM_USER_KEY] {
+    for key in [FORM_NAME_KEY, FORM_EMAIL_KEY, FORM_USER_KEY, FORM_PASSWORD_KEY] {
         let _ = state.put(root, key, "");
     }
 }
@@ -633,6 +662,6 @@ mod tests {
         // Guard: saving a blank address must not create an account (and must
         // not touch disk). We assert the pure guard directly.
         let mut pane = AccountsPane::from_dir(AccountDirectory::default(), false);
-        assert!(!pane.save_mail_account("Nobody".into(), "  ".into(), "".into()));
+        assert!(!pane.save_mail_account("Nobody".into(), "  ".into(), "".into(), "".into()));
     }
 }

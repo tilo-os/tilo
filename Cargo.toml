@@ -7,6 +7,7 @@ exclude = ["crates/doc/qdoc-codec-markdown-wasm"]
 members = [
     "crates/system/swipe",
     "crates/system/tts",
+    "crates/system/accounts",
     "crates/doc/qdoc",
     "crates/text/spellcheck",
     "crates/doc/qdoc-pdf",

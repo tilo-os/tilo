@@ -1263,22 +1263,11 @@ fn draft_from_message(m: &Message) -> Draft {
     }
 }
 
-/// Load the shared account store from disk (`~/.config/qos/mail/accounts.json`),
-/// or an empty store when it isn't there yet.
+/// Load the account list from the shared canonical store
+/// (`$XDG_CONFIG_HOME/qos/accounts/`), hydrating each password from the
+/// encrypted vault. An empty store when nothing is configured yet.
 fn load_account_store() -> AccountStore {
-    let raw_path = AccountStore::SETTINGS_PATH;
-    let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
-        match std::env::var("HOME") {
-            Ok(home) => format!("{home}/{rest}"),
-            Err(_) => return AccountStore::new(),
-        }
-    } else {
-        raw_path.to_string()
-    };
-    std::fs::read_to_string(&expanded)
-        .ok()
-        .and_then(|s| AccountStore::from_json(&s))
-        .unwrap_or_else(AccountStore::new)
+    AccountStore::load()
 }
 
 /// The shared image store used for sender avatars.
