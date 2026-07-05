@@ -8,21 +8,24 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh_base::EndpointAddr;
+use iroh_base::{EndpointAddr, PublicKey};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
 
 use qos_user_identity::{DeviceCert, RevocationList};
 
-use crate::auth::{self, Hello, HelloAck2};
-use crate::config::RelayConfig;
+use crate::auth::{self, Hello, HelloAck2, PeerRole};
+use crate::client::RelayClient;
+use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
-use crate::peer::{WorkspaceRegistry, run_peer};
+use crate::peer::{WorkspaceRegistry, now_ns, run_peer};
 use crate::policy::TrustPolicy;
 use crate::store::load_or_create_iroh_secret;
-use crate::transport::{ALPN, MAX_FRAME_BYTES};
+use crate::transport::{ALPN, Envelope, MAX_FRAME_BYTES};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
 /// Failure modes for `Relay::start`.
@@ -45,7 +48,8 @@ pub enum RelayError {
     Identity(String),
 }
 
-/// A running relay. Dropping the handle stops the daemon.
+/// A running relay. Dropping the handle stops the daemon (and every
+/// federation dial task with it).
 pub struct Relay {
     /// Iroh endpoint the daemon accepts on.
     pub endpoint: Endpoint,
@@ -56,13 +60,24 @@ pub struct Relay {
     /// Metrics — cheap counters.
     metrics: Arc<Metrics>,
     /// Own cert (device cert, cap `can_act_as_host`).
-    #[allow(dead_code)]
     own_cert: DeviceCert,
     /// Own device signing key.
-    #[allow(dead_code)]
     own_signing_key: ed25519_dalek::SigningKey,
     /// Own user pubkey — the one this relay chains to.
     own_user_public_key: [u8; 32],
+    /// Federation dial tasks — one per known peer relay. Aborted
+    /// (per-handle) when the `Relay` drops.
+    peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
+}
+
+/// A tokio `JoinHandle` that aborts on drop — used so that dropping
+/// `Relay` tears down every outbound peer-relay reconnect task.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Cheap clone-able handle for admin/observer callers.
@@ -136,6 +151,27 @@ impl Relay {
             .accept(ALPN, handler)
             .spawn();
 
+        // Spawn one reconnect-with-backoff task per configured peer
+        // relay. Each task dials via `RelayClient::connect` (same code
+        // path any client uses), exchanges `PeerRelayHello`, subscribes
+        // to the intersection, then feeds inbound Deltas into the
+        // local `WorkspaceRuntime::fanout_delta` — no new fan-out.
+        let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        for peer_cfg in cfg.peer_relays.iter().cloned() {
+            let task = spawn_peer_relay_dial(
+                peer_cfg,
+                endpoint.clone(),
+                identity.user_public_key,
+                identity.device_cert.clone(),
+                identity.device_signing_key.clone(),
+                identity.revocations.clone(),
+                workspaces.clone(),
+                metrics.clone(),
+            );
+            peer_relay_tasks.lock().unwrap().push(AbortOnDrop(task));
+        }
+
         Ok(Self {
             endpoint,
             _router: router,
@@ -144,7 +180,45 @@ impl Relay {
             own_cert: identity.device_cert,
             own_signing_key: identity.device_signing_key,
             own_user_public_key: identity.user_public_key,
+            peer_relay_tasks,
         })
+    }
+
+    /// Add a peer relay after startup — used by tests + the eventual
+    /// admin CLI. Same reconnect-with-backoff loop as the config-time
+    /// path.
+    pub fn add_peer_relay(&self, peer: PeerRelayConfig) {
+        let node_id = match parse_iroh_node_id(&peer.iroh_node_id) {
+            Some(id) => id,
+            None => {
+                tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
+                return;
+            }
+        };
+        self.add_peer_relay_at(EndpointAddr::new(node_id), peer.label, peer.priority);
+    }
+
+    /// Add a peer relay with a fully-resolved endpoint address —
+    /// same dial loop, but skips iroh discovery. Useful for tests
+    /// that already know the target's iroh addresses, and for
+    /// pinned-address deployments.
+    pub fn add_peer_relay_at(&self, addr: EndpointAddr, label: String, priority: i32) {
+        let task = spawn_peer_relay_dial_at(
+            addr,
+            label,
+            priority,
+            self.endpoint.clone(),
+            self.own_user_public_key,
+            self.own_cert.clone(),
+            self.own_signing_key.clone(),
+            RevocationList::new(),
+            self.workspaces.clone(),
+            self.metrics.clone(),
+        );
+        self.peer_relay_tasks
+            .lock()
+            .unwrap()
+            .push(AbortOnDrop(task));
     }
 
     /// Cheap external handle.
@@ -304,4 +378,246 @@ pub async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<(), std::
         send.write_all(data).await?;
     }
     Ok(())
+}
+
+/// Spawn the outbound reconnect-with-backoff task for one peer
+/// relay identified by its config entry. Parses the iroh id and
+/// hands off to [`spawn_peer_relay_dial_at`].
+fn spawn_peer_relay_dial(
+    peer_cfg: PeerRelayConfig,
+    endpoint: Endpoint,
+    own_user_pk: [u8; 32],
+    own_cert: DeviceCert,
+    own_sk: ed25519_dalek::SigningKey,
+    revocations: RevocationList,
+    workspaces: WorkspaceRegistry,
+    metrics: Arc<Metrics>,
+) -> JoinHandle<()> {
+    let node_id = parse_iroh_node_id(&peer_cfg.iroh_node_id);
+    let label = peer_cfg.label.clone();
+    let priority = peer_cfg.priority;
+    tokio::spawn(async move {
+        let node_id = match node_id {
+            Some(id) => id,
+            None => {
+                tracing::warn!(?peer_cfg.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
+                return;
+            }
+        };
+        let addr = EndpointAddr::new(node_id);
+        peer_relay_dial_loop(
+            addr, label, priority, endpoint, own_user_pk, own_cert, own_sk,
+            revocations, workspaces, metrics,
+        )
+        .await;
+    })
+}
+
+/// Spawn the outbound reconnect-with-backoff task for one peer
+/// relay, with a fully-resolved endpoint address. The task loops
+/// forever (until the returned join handle is aborted) — reconnect
+/// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
+/// holds a `RelayClient` session and mirrors every inbound Delta
+/// into the local workspace runtime via the SAME `fanout_delta`
+/// device peers use — that's the reuse: no separate federation
+/// delivery path.
+#[allow(clippy::too_many_arguments)]
+fn spawn_peer_relay_dial_at(
+    addr: EndpointAddr,
+    label: String,
+    priority: i32,
+    endpoint: Endpoint,
+    own_user_pk: [u8; 32],
+    own_cert: DeviceCert,
+    own_sk: ed25519_dalek::SigningKey,
+    revocations: RevocationList,
+    workspaces: WorkspaceRegistry,
+    metrics: Arc<Metrics>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        peer_relay_dial_loop(
+            addr, label, priority, endpoint, own_user_pk, own_cert, own_sk,
+            revocations, workspaces, metrics,
+        )
+        .await;
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn peer_relay_dial_loop(
+    addr: EndpointAddr,
+    label: String,
+    _priority: i32,
+    endpoint: Endpoint,
+    own_user_pk: [u8; 32],
+    own_cert: DeviceCert,
+    own_sk: ed25519_dalek::SigningKey,
+    revocations: RevocationList,
+    workspaces: WorkspaceRegistry,
+    _metrics: Arc<Metrics>,
+) {
+    let mut backoff_ms: u64 = 1_000;
+    loop {
+        let ep = endpoint.clone();
+        match RelayClient::connect(
+            ep,
+            addr.clone(),
+            own_user_pk,
+            own_cert.clone(),
+            own_sk.clone(),
+            revocations.clone(),
+        )
+        .await
+        {
+            Ok(client) => {
+                tracing::info!(%label, "peer relay federated");
+                backoff_ms = 1_000;
+                if let Err(e) = run_peer_relay_session(&client, &workspaces).await {
+                    tracing::debug!(%label, "peer relay session ended: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::debug!(%label, "peer relay dial failed: {e}");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+        backoff_ms = (backoff_ms * 2).min(60_000);
+    }
+}
+
+/// One iteration of the federated peer-relay session. Sends a
+/// `PeerRelayHello` with the workspaces we host, waits for the
+/// peer's `PeerRelayHello`, `Subscribe`s to the intersection, then
+/// drains inbound Deltas + Presence into the LOCAL workspace
+/// runtime via `fanout_delta` / `fanout_presence` — the very same
+/// entry points a device peer's incoming envelope hits.
+async fn run_peer_relay_session(
+    client: &RelayClient,
+    workspaces: &WorkspaceRegistry,
+) -> Result<(), String> {
+    // 1. Advertise what we host.
+    let hosted_local: Vec<u64> = {
+        let map = workspaces.lock().await;
+        map.keys().copied().collect()
+    };
+    client
+        .send(Envelope::PeerRelayHello {
+            hosted_workspaces: hosted_local.clone(),
+        })
+        .map_err(|_| "outbound closed".to_string())?;
+
+    // 2. Wait for the peer's PeerRelayHello, then subscribe to
+    //    the intersection.
+    let mut intersection: Vec<u64> = Vec::new();
+    let mut hello_seen = false;
+    // Bounded wait for the hello — do a few short recv polls.
+    for _ in 0..25 {
+        let env = tokio::time::timeout(Duration::from_millis(200), client.recv()).await;
+        match env {
+            Ok(Some(Envelope::PeerRelayHello { hosted_workspaces })) => {
+                let local: std::collections::HashSet<u64> = hosted_local.iter().copied().collect();
+                for id in hosted_workspaces {
+                    if local.contains(&id) {
+                        intersection.push(id);
+                    }
+                }
+                hello_seen = true;
+                break;
+            }
+            Ok(Some(other)) => {
+                // Not the hello we wanted; buffer nothing — plain
+                // devices should not talk on this session. Just log.
+                tracing::debug!("peer-relay session got unexpected pre-hello envelope: {other:?}");
+            }
+            Ok(None) => return Err("connection closed pre-hello".into()),
+            Err(_) => {} // timeout; keep waiting a bit
+        }
+    }
+    if !hello_seen {
+        return Err("peer relay never sent PeerRelayHello".into());
+    }
+
+    // 3. Subscribe to each intersection workspace. This is a plain
+    //    `Subscribe` envelope — the accepter side's `handle_envelope`
+    //    registers us as a subscriber-with-role-PeerRelay (because
+    //    our own cert has `can_act_as_host = true`, that role was
+    //    stamped at handshake time).
+    for id in &intersection {
+        client
+            .send(Envelope::Subscribe { workspace_id: *id })
+            .map_err(|_| "outbound closed on subscribe".to_string())?;
+    }
+
+    // 4. Drain inbound envelopes for the life of this connection.
+    //    For each Delta / Presence we receive, look up the workspace
+    //    runtime and fan it out LOCALLY. `PeerRole::PeerRelay` is
+    //    passed so the same one-line filter suppresses re-echo to
+    //    any other peer relays we might federate with.
+    loop {
+        let env = match client.recv().await {
+            Some(e) => e,
+            None => return Ok(()), // clean EOF
+        };
+        match &env {
+            Envelope::Delta {
+                workspace_id,
+                author_device_public_key,
+                delta,
+                ..
+            } => {
+                let ws = {
+                    let map = workspaces.lock().await;
+                    map.get(workspace_id).cloned()
+                };
+                if let Some(ws) = ws {
+                    let mut wr = ws.lock().await;
+                    let raw = delta.clone();
+                    let seq = now_ns();
+                    let author = *author_device_public_key;
+                    let _ = wr.fanout_delta(
+                        &author,
+                        PeerRole::PeerRelay,
+                        env.clone(),
+                        &raw,
+                        seq,
+                    );
+                }
+            }
+            Envelope::Presence { workspace_id, .. } => {
+                let ws = {
+                    let map = workspaces.lock().await;
+                    map.get(workspace_id).cloned()
+                };
+                if let Some(ws) = ws {
+                    // Presence has no persistent author field on the
+                    // wire; use zero as a sentinel — presence fanout
+                    // only compares to subscriber pubkeys and the
+                    // "don't echo to peer relays" filter.
+                    ws.lock()
+                        .await
+                        .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, env.clone());
+                }
+            }
+            Envelope::Ready { .. } => {}
+            Envelope::NotAuthorised { workspace_id, reason } => {
+                tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
+            }
+            Envelope::Ping => {
+                let _ = client.send(Envelope::Pong);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Parse the hex-encoded iroh node id string into an iroh
+/// `PublicKey`. Accepts upper/lowercase.
+fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
+    let bytes = hex::decode(hex_id).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    PublicKey::from_bytes(&arr).ok()
 }
