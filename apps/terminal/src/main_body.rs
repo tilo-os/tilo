@@ -260,6 +260,99 @@ impl TerminalWidget {
     /// palette). Test-only.
     pub fn last_bg_default(&self) -> Color { self.last_bg_default }
 
+    /// Drain queued PTY bytes and replay them through the vte parser into the
+    /// CRDT grid. Shared by both `Widget::update` (for hosts that pump it, e.g.
+    /// the compositor's tile host) and `Widget::sync` (for the plain `ui::App`
+    /// loop, which never calls `update`). Returns whether any bytes were
+    /// processed this call.
+    fn pump(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        self.init_crdt(state, root);
+
+        // Clamp cursors in case of resize.
+        self.cursor_x = self.cursor_x.min(self.width.saturating_sub(1));
+        self.cursor_y = self.cursor_y.min(self.height.saturating_sub(1));
+
+        let mut pty_activity = false;
+        while let Ok(bytes) = self.output_rx.try_recv() {
+            pty_activity = true;
+            let mut performer = TerminalPerformer {
+                state,
+                grid_id: self.grid_id.clone().unwrap(),
+                cursor_id: self.cursor_id.clone().unwrap(),
+                line_ids: &mut self.line_ids,
+                width: self.width,
+                height: self.height,
+                cursor_x: self.cursor_x,
+                cursor_y: self.cursor_y,
+                current_attr: self.current_attr,
+                pending_wrap: self.pending_wrap,
+            };
+            // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
+            self.parser.advance(&mut performer, &bytes);
+            self.cursor_x = performer.cursor_x;
+            self.cursor_y = performer.cursor_y;
+            self.current_attr = performer.current_attr;
+            self.pending_wrap = performer.pending_wrap;
+        }
+        pty_activity
+    }
+
+    /// Place the terminal at an explicit `rect` and reflow the grid + PTY to
+    /// match. This is the embedding entry point: a host widget (e.g. the code
+    /// editor's terminal panel) that owns the terminal outside a Taffy leaf
+    /// calls this instead of `apply_layout` to give it a region to render in.
+    pub fn place_at(&mut self, rect: Rect) {
+        self.set_geometry(rect);
+    }
+
+    /// Write raw bytes to the PTY's stdin — the same path a keystroke takes,
+    /// exposed so an embedding host (or a headless screenshot scenario) can
+    /// drive the shell programmatically (e.g. run a command for a demo frame).
+    pub fn write_input(&mut self, bytes: &[u8]) {
+        if let Ok(mut w) = self.pty_write.lock() {
+            let _ = w.write_all(bytes);
+            let _ = w.flush();
+        }
+    }
+
+    /// Assign `rect` and, if the cell grid dimensions changed, reflow the
+    /// CRDT-backed grid and resize the PTY so the shell sees the new size.
+    fn set_geometry(&mut self, rect: Rect) {
+        self.rect = rect;
+
+        let new_width = (rect.width() / self.char_w.max(1.0)).floor() as usize;
+        let new_height = (rect.height() / self.char_h.max(1.0)).floor() as usize;
+
+        // Cap the CRDT-backed grid at a sensible terminal size. The init pass
+        // splices `self.height * self.width` characters into a fresh automerge
+        // doc; each char is its own column op, and automerge's column-data
+        // insert is O(doc_size), so a full-screen embed (186 × 219 ≈ 40 700
+        // chars) freezes the process for tens of seconds while the doc
+        // compacts. The visible region can be larger than the CRDT grid —
+        // overflow rows render empty until the grid is made sparse/lazy.
+        let new_width = new_width.min(200);
+        let new_height = new_height.min(80);
+        if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height) {
+            let history_offset = self.line_ids.len().saturating_sub(self.height);
+            let absolute_y = history_offset + self.cursor_y;
+
+            let new_history_offset = self.line_ids.len().saturating_sub(new_height);
+            let new_cursor_y = absolute_y.saturating_sub(new_history_offset).min(new_height.saturating_sub(1));
+
+            self.cursor_y = new_cursor_y;
+            self.cursor_x = self.cursor_x.min(new_width.saturating_sub(1));
+
+            self.width = new_width;
+            self.height = new_height;
+            let _ = self.pty_master.lock().unwrap().resize(PtySize {
+                rows: self.height as u16,
+                cols: self.width as u16,
+                pixel_width: rect.width() as u16,
+                pixel_height: rect.height() as u16,
+            });
+        }
+    }
+
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.grid_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
@@ -331,6 +424,15 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // Drain any bytes the PTY reader thread has queued and replay them
+        // through the vte parser *here*, before reading the grid back out.
+        // The plain `ui::App` event loop only ever calls `sync` (never
+        // `update`), so if the pty were only pumped from `update` the live
+        // terminal would never advance. Pumping from `sync` — combined with
+        // `needs_animation_frame` keeping the loop ticking — is what makes a
+        // standalone or embedded terminal actually show output.
+        self.pump(state, root);
+
         let current_heads = state.get_heads();
         if !self.last_sync_heads.is_empty() && current_heads == self.last_sync_heads {
             return;
@@ -376,35 +478,16 @@ impl Widget for TerminalWidget {
     }
 
     fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
-        self.init_crdt(state, root);
-        
-        // Clamp cursors in case of resize
-        self.cursor_x = self.cursor_x.min(self.width.saturating_sub(1));
-        self.cursor_y = self.cursor_y.min(self.height.saturating_sub(1));
+        self.pump(state, root)
+    }
 
-        let mut pty_activity = false;
-        while let Ok(bytes) = self.output_rx.try_recv() {
-            pty_activity = true;
-            let mut performer = TerminalPerformer {
-                state,
-                grid_id: self.grid_id.clone().unwrap(),
-                cursor_id: self.cursor_id.clone().unwrap(),
-                line_ids: &mut self.line_ids,
-                width: self.width,
-                height: self.height,
-                cursor_x: self.cursor_x,
-                cursor_y: self.cursor_y,
-                current_attr: self.current_attr,
-                pending_wrap: self.pending_wrap,
-            };
-            // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
-            self.parser.advance(&mut performer, &bytes);
-            self.cursor_x = performer.cursor_x;
-            self.cursor_y = performer.cursor_y;
-            self.current_attr = performer.current_attr;
-            self.pending_wrap = performer.pending_wrap;
-        }
-        pty_activity
+    /// A live PTY may produce output at any time, but the reader thread has no
+    /// handle to the winit event loop to wake it. Reporting that we always want
+    /// another frame keeps `ui::App` ticking at ~60 Hz (its `about_to_wait`
+    /// bounded `WaitUntil`) so `sync` re-runs and drains the PTY promptly. A
+    /// host that embeds the terminal gates this behind its own visibility check.
+    fn needs_animation_frame(&self) -> bool {
+        true
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
@@ -418,47 +501,13 @@ impl Widget for TerminalWidget {
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
+        let rect = Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        
-        let new_width = (layout.size.width as f64 / self.char_w.max(1.0)).floor() as usize;
-        let new_height = (layout.size.height as f64 / self.char_h.max(1.0)).floor() as usize;
-        
-        // Cap the CRDT-backed grid at a sensible terminal size. The
-        // init pass splices `self.height * self.width` characters into
-        // a fresh automerge doc; each char is its own column op, and
-        // automerge's column-data insert is O(doc_size), so a
-        // full-screen-embed (186 × 219 ≈ 40 700 chars) freezes the
-        // process for tens of seconds while the doc compacts. The
-        // user-visible region can be larger than the CRDT grid —
-        // overflow rows simply render empty until a deeper rework
-        // makes the grid sparse / lazy. Defaults match a generous
-        // terminal: 200 cols × 80 rows.
-        let new_width = new_width.min(200);
-        let new_height = new_height.min(80);
-        if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height) {
-            let history_offset = self.line_ids.len().saturating_sub(self.height);
-            let absolute_y = history_offset + self.cursor_y;
-            
-            let new_history_offset = self.line_ids.len().saturating_sub(new_height);
-            let new_cursor_y = absolute_y.saturating_sub(new_history_offset).min(new_height.saturating_sub(1));
-            
-            self.cursor_y = new_cursor_y;
-            self.cursor_x = self.cursor_x.min(new_width.saturating_sub(1));
-
-            self.width = new_width;
-            self.height = new_height;
-            let _ = self.pty_master.lock().unwrap().resize(PtySize {
-                rows: self.height as u16,
-                cols: self.width as u16,
-                pixel_width: layout.size.width as u16,
-                pixel_height: layout.size.height as u16,
-            });
-        }
+        self.set_geometry(rect);
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &ui::presence::PresenceCtx) {
