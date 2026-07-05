@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::model::{
     default_fonts, default_schemes, AnnoKind, Annotation, ColorScheme, FontEntry, FontKind,
-    HiColor, Progress, ReadTheme, Settings,
+    HiColor, LibraryPrefs, LibrarySort, Progress, ReadTheme, Settings,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
@@ -203,6 +203,30 @@ impl BooksDoc {
         let _ = doc.put(&m, "default_font", id);
     }
 
+    // --- library shelf preferences ----------------------------------------
+
+    /// Read the shelf's sort order + hide-read flag (defaults when unset).
+    pub fn read_library_prefs(doc: &AutoCommit) -> LibraryPrefs {
+        let mut p = LibraryPrefs::default();
+        let m = match doc.get(&ROOT, "settings") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return p,
+        };
+        if let Some(v) = Self::scalar_str(doc, &m, "library_sort") {
+            p.sort = LibrarySort::from_str(&v);
+        }
+        if let Some(v) = Self::scalar_bool(doc, &m, "library_hide_read") {
+            p.hide_read = v;
+        }
+        p
+    }
+
+    pub fn write_library_prefs(doc: &mut AutoCommit, p: &LibraryPrefs) {
+        let m = Self::root_map(doc, "settings");
+        let _ = doc.put(&m, "library_sort", p.sort.as_str());
+        let _ = doc.put(&m, "library_hide_read", p.hide_read);
+    }
+
     // --- colour schemes ----------------------------------------------------
 
     /// Read the registered colour schemes, falling back to the built-ins when
@@ -265,6 +289,10 @@ impl BooksDoc {
         let _ = doc.put(&entry, "chapter", p.chapter as i64);
         let _ = doc.put(&entry, "page", p.page as i64);
         let _ = doc.put(&entry, "fraction", p.fraction as f64);
+        // Preserve a previously recorded open time; only advance it (0 = never).
+        if p.opened > 0 {
+            let _ = doc.put(&entry, "opened", p.opened as i64);
+        }
     }
 
     pub fn read_progress(doc: &AutoCommit, book_id: &str) -> Progress {
@@ -280,6 +308,7 @@ impl BooksDoc {
             chapter: Self::scalar_i64(doc, &entry, "chapter").unwrap_or(0).max(0) as usize,
             page: Self::scalar_i64(doc, &entry, "page").unwrap_or(0).max(0) as usize,
             fraction: Self::scalar_f64(doc, &entry, "fraction").unwrap_or(0.0) as f32,
+            opened: Self::scalar_i64(doc, &entry, "opened").unwrap_or(0).max(0) as u64,
         }
     }
 
@@ -411,14 +440,24 @@ mod tests {
     #[test]
     fn progress_round_trip() {
         let mut doc = AutoCommit::new();
-        let p = Progress { chapter: 2, page: 5, fraction: 0.42 };
+        let p = Progress { chapter: 2, page: 5, fraction: 0.42, opened: 1720000000000 };
         BooksDoc::write_progress(&mut doc, "book:x", &p);
         let back = BooksDoc::read_progress(&doc, "book:x");
         assert_eq!(back.chapter, 2);
         assert_eq!(back.page, 5);
         assert!((back.fraction - 0.42).abs() < 0.001);
+        assert_eq!(back.opened, 1720000000000, "open time persists for recent-sort");
         // Unknown book -> default.
         assert_eq!(BooksDoc::read_progress(&doc, "nope"), Progress::default());
+    }
+
+    #[test]
+    fn library_prefs_round_trip() {
+        let mut doc = AutoCommit::new();
+        assert_eq!(BooksDoc::read_library_prefs(&doc), LibraryPrefs::default());
+        let p = LibraryPrefs { sort: LibrarySort::Recent, hide_read: true };
+        BooksDoc::write_library_prefs(&mut doc, &p);
+        assert_eq!(BooksDoc::read_library_prefs(&doc), p);
     }
 
     #[test]

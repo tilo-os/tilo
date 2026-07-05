@@ -206,6 +206,47 @@ pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
     i
 }
 
+// --- char-indexed variants -------------------------------------------------
+//
+// The boundary walkers above index bytes; a reflowable reader works in *char*
+// offsets into a block's canonical text (a line-run carries `char_start` /
+// `char_len`, not byte spans). These thin wrappers convert char↔byte around the
+// byte-based walkers so the same word/char semantics drive keyboard selection
+// extension and double-click word selection in a char-indexed document.
+
+fn char_to_byte(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len())
+}
+
+fn byte_to_char(text: &str, byte_idx: usize) -> usize {
+    text[..byte_idx.min(text.len())].chars().count()
+}
+
+/// Char index of the previous word boundary at or before `char_idx` — the
+/// char-indexed mirror of [`prev_word_boundary`]. Used to extend a reader
+/// selection leftward by a whole word (Shift+Ctrl+Left).
+pub fn prev_word_boundary_chars(text: &str, char_idx: usize) -> usize {
+    byte_to_char(text, prev_word_boundary(text, char_to_byte(text, char_idx)))
+}
+
+/// Char index of the next word boundary at or after `char_idx` — the
+/// char-indexed mirror of [`next_word_boundary`]. Used to extend a reader
+/// selection rightward by a whole word (Shift+Ctrl+Right).
+pub fn next_word_boundary_chars(text: &str, char_idx: usize) -> usize {
+    byte_to_char(text, next_word_boundary(text, char_to_byte(text, char_idx)))
+}
+
+/// Char range `(start, end)` of the word containing `char_idx` — the
+/// char-indexed mirror of [`word_boundaries`]. Drives double-click word
+/// selection in a reflowable reader.
+pub fn word_boundaries_chars(text: &str, char_idx: usize) -> (usize, usize) {
+    let (s, e) = word_boundaries(text, char_to_byte(text, char_idx));
+    (byte_to_char(text, s), byte_to_char(text, e))
+}
+
 /// Lazy global clipboard handle. `arboard::Clipboard::new()` can be
 /// slow on Wayland the first time (sets up the data-control device),
 /// so we cache one handle process-wide and lock it per access. Kept
@@ -389,5 +430,27 @@ mod tests {
         // Empty string.
         assert_eq!(prev_word_boundary("", 0), 0);
         assert_eq!(next_word_boundary("", 0), 0);
+    }
+
+    #[test]
+    fn char_word_boundaries_snap_to_the_word() {
+        let s = "alpha beta gamma";
+        // A char index inside "beta" (chars 6..10) snaps to the word's char span.
+        assert_eq!(word_boundaries_chars(s, 7), (6, 10));
+        // Forward walker lands at the *start* of the next word (standard word-wise
+        // motion); back walker lands at the start of the current/previous word.
+        assert_eq!(next_word_boundary_chars(s, 0), 6); // start of "beta"
+        assert_eq!(next_word_boundary_chars(s, 6), 11); // start of "gamma"
+        assert_eq!(prev_word_boundary_chars(s, 10), 6); // start of "beta"
+    }
+
+    #[test]
+    fn char_boundaries_are_utf8_clean() {
+        // Multibyte chars: indices returned are *char* indices, not bytes.
+        let s = "café złto";
+        // "café" is chars 0..4 ('c','a','f','é'); index 2 lands inside it.
+        assert_eq!(word_boundaries_chars(s, 2), (0, 4));
+        // The next word "złto" is chars 5..9.
+        assert_eq!(word_boundaries_chars(s, 6), (5, 9));
     }
 }
