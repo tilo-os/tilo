@@ -173,6 +173,12 @@ pub struct TypstApp {
     /// Screenshot-only: on the next layout pass, drop the caret at the end of
     /// the source and scroll it into view. Never set by the live event loop.
     demo_scroll_caret_end: bool,
+    /// Screenshot-only: on the next layout pass, zoom the preview in and scroll
+    /// it so the capture proves cursor-zoom + scroll-when-zoomed.
+    demo_preview_zoom: bool,
+    /// Screenshot-only: on the next layout pass, select a run of preview text so
+    /// the capture proves rendered-text selection.
+    demo_preview_select: bool,
 
     // --- layout rects (filled by apply_layout) ---
     rect: Rect,
@@ -187,7 +193,13 @@ pub struct TypstApp {
     mouse: Point,
     dragging_divider: bool,
     dragging_editor: bool,
+    /// A preview interaction (text-selection drag or scrollbar drag) is live, so
+    /// subsequent moves route back to the preview.
+    dragging_preview: bool,
     divider_hover: bool,
+    /// Set when a pointer *move* changed something visible (hover, live drag)
+    /// so `needs_redraw` asks the host to repaint — moves are otherwise gated.
+    dirty: bool,
     /// Cached toolbar hit regions from the last draw.
     toolbar_hits: Vec<(TbAction, Rect)>,
     /// Cached overflow-menu hit regions from the last draw (compact layout).
@@ -259,6 +271,8 @@ impl TypstApp {
             compact_view: CompactPane::Editor,
             menu_open: false,
             demo_scroll_caret_end: false,
+            demo_preview_zoom: false,
+            demo_preview_select: false,
             rect: Rect::ZERO,
             toolbar_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
@@ -269,7 +283,9 @@ impl TypstApp {
             mouse: Point::ZERO,
             dragging_divider: false,
             dragging_editor: false,
+            dragging_preview: false,
             divider_hover: false,
+            dirty: true,
             toolbar_hits: Vec::new(),
             menu_hits: Vec::new(),
             flash: None,
@@ -300,6 +316,8 @@ impl TypstApp {
                     d.source = ERROR_DEMO.to_string();
                 }
             }
+            "preview-zoom" => self.demo_preview_zoom = true,
+            "select" => self.demo_preview_select = true,
             _ => {}
         }
     }
@@ -379,7 +397,7 @@ impl TypstApp {
         self.elapsed_ms = out.elapsed_ms;
         self.err_count = out.error_count();
         self.warn_count = out.warning_count();
-        self.preview.set_pages(&out.pages);
+        self.preview.set_pages_with_text(&out.pages, &out.page_text);
         if out.pages.is_empty() {
             self.preview
                 .set_placeholder(Some("Compilation failed — see the Problems panel.".into()));
@@ -640,6 +658,17 @@ impl TypstApp {
             self.editor.caret = src.chars().count();
             self.editor.anchor = self.editor.caret;
             self.editor.ensure_visible(&src);
+        }
+
+        // Screenshot harness only: now that the preview has a real rect + pages,
+        // arrange the zoom/scroll/selection the capture is meant to show.
+        if self.demo_preview_zoom && self.preview.page_count() > 0 {
+            self.demo_preview_zoom = false;
+            self.preview.demo_set_view(1.9, 0.42);
+        }
+        if self.demo_preview_select && self.preview.page_count() > 0 {
+            self.demo_preview_select = false;
+            self.preview.demo_select_fraction(0.0, 0.03);
         }
     }
 
@@ -1272,14 +1301,18 @@ impl Widget for TypstApp {
         if self.compact {
             match self.compact_view {
                 CompactPane::Editor => {
-                    self.editor
-                        .draw(scene, t, tr, theme, &self.source_cache, &self.tokens);
+                    self.editor.draw(
+                        scene, t, tr, theme,
+                        &self.source_cache, &self.tokens, self.diagnostics.diags(),
+                    );
                 }
                 CompactPane::Preview => self.preview.draw(scene, t, tr, theme),
             }
         } else {
-            self.editor
-                .draw(scene, t, tr, theme, &self.source_cache, &self.tokens);
+            self.editor.draw(
+                scene, t, tr, theme,
+                &self.source_cache, &self.tokens, self.diagnostics.diags(),
+            );
             self.preview.draw(scene, t, tr, theme);
             self.draw_divider(scene, t, theme);
         }
@@ -1293,6 +1326,10 @@ impl Widget for TypstApp {
         if self.compact && self.menu_open {
             self.draw_menu(scene, t, tr, theme);
         }
+
+        // This frame reflects the latest interaction state; clear the move-dirty
+        // flag so idle hover doesn't spin the render loop.
+        self.dirty = false;
     }
 
     fn draw_with_presence(
@@ -1381,7 +1418,29 @@ impl Widget for TypstApp {
                             *handled = true;
                             return;
                         }
-                        // a/c/x/v fall through to the editor's own clipboard
+                        "c" => {
+                            // When the rendered preview holds focus, Ctrl+C
+                            // copies the selected document text; otherwise fall
+                            // through to the editor's own clipboard.
+                            if !self.editor.focused {
+                                if let Some(txt) = self.preview.selected_text() {
+                                    ui::clipboard_copy(&txt);
+                                    self.set_flash("Copied selection".into());
+                                }
+                                *handled = true;
+                                return;
+                            }
+                        }
+                        "a" => {
+                            // Select-all in the preview when it holds focus.
+                            if !self.editor.focused {
+                                self.preview.select_all();
+                                self.dirty = true;
+                                *handled = true;
+                                return;
+                            }
+                        }
+                        // remaining a/c/x/v fall through to the editor's clipboard
                         _ => {}
                     }
                 }
@@ -1400,18 +1459,45 @@ impl Widget for TypstApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.mouse = p;
-                self.divider_hover = self.divider_rect.inflate(2.0, 0.0).contains(p);
+                let prev_hover = self.divider_hover;
+                self.divider_hover =
+                    !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p);
+                if self.divider_hover != prev_hover {
+                    self.dirty = true;
+                }
                 if self.dragging_divider {
                     let content_w = self.rect.width().max(1.0);
                     self.split_ratio =
                         ((p.x - self.rect.x0) / content_w).clamp(0.18, 0.82);
+                    self.dirty = true;
                     *handled = true;
                 } else if self.dragging_editor {
                     let text = doc.text(&src_id).unwrap_or_default();
                     self.editor.on_mouse_drag(p, &text);
+                    self.dirty = true;
                     *handled = true;
-                } else if self.show_diagnostics {
-                    self.diagnostics.on_mouse_move(p);
+                } else if self.dragging_preview {
+                    self.preview.on_mouse_drag(p);
+                    self.dirty = true;
+                    *handled = true;
+                } else {
+                    // Hover feedback: inline-diagnostic tooltip over the source,
+                    // scrollbar-thumb brighten over the preview, row highlight in
+                    // the Problems panel.
+                    let over_editor = self.editor_rect.area() > 0.0 && self.editor_rect.contains(p);
+                    if self.editor.on_mouse_move(over_editor.then_some(p)) {
+                        self.dirty = true;
+                    }
+                    if self.preview_rect.area() > 0.0
+                        && self.preview_rect.contains(p)
+                        && self.preview.on_mouse_move(p)
+                    {
+                        self.dirty = true;
+                    }
+                    if self.show_diagnostics && self.diag_rect.contains(p) {
+                        self.diagnostics.on_mouse_move(p);
+                        self.dirty = true;
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1471,7 +1557,12 @@ impl Widget for TypstApp {
                 }
                 if self.preview_rect.contains(p) {
                     self.editor.focused = false;
-                    self.preview.on_mouse_down(p);
+                    self.editor.on_mouse_move(None);
+                    let shift = modifiers.state().shift_key();
+                    if self.preview.on_mouse_down(p, shift) {
+                        self.dragging_preview = true;
+                    }
+                    self.dirty = true;
                     *handled = true;
                 }
             }
@@ -1482,29 +1573,39 @@ impl Widget for TypstApp {
             } => {
                 self.dragging_divider = false;
                 self.dragging_editor = false;
+                self.dragging_preview = false;
+                self.preview.on_mouse_up();
+                self.dirty = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let (mut dx, mut dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => {
-                        (-(*x as f64) * 48.0, -(*y as f64) * 48.0)
-                    }
-                    MouseScrollDelta::PixelDelta(pp) => (-pp.x, -pp.y),
-                };
-                // Shift turns a vertical wheel into horizontal scroll — the
-                // usual convention for a mouse with no horizontal axis.
-                if modifiers.state().shift_key() && dx == 0.0 {
-                    dx = dy;
-                    dy = 0.0;
-                }
                 let p = self.mouse;
-                if self.editor_rect.contains(p) {
-                    let text = doc.text(&src_id).unwrap_or_default();
-                    self.editor.scroll_by(dx as f32, dy as f32, &text);
-                } else if self.show_diagnostics && self.diag_rect.contains(p) {
-                    self.diagnostics.scroll_by(dy);
-                } else if self.preview_rect.contains(p) {
-                    self.preview.scroll_by(dy);
+                // The preview owns its own wheel mapping via the shared viewport
+                // kernel: Ctrl/Cmd+wheel = cursor-anchored zoom, plain wheel =
+                // scroll/pan (incl. a tilt wheel when the page is tall).
+                if self.preview_rect.area() > 0.0 && self.preview_rect.contains(p) {
+                    self.preview
+                        .on_wheel(delta, &modifiers.state(), p, scale_factor);
+                } else {
+                    let (mut dx, mut dy) = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => {
+                            (-(*x as f64) * 48.0, -(*y as f64) * 48.0)
+                        }
+                        MouseScrollDelta::PixelDelta(pp) => (-pp.x, -pp.y),
+                    };
+                    // Shift turns a vertical wheel into horizontal scroll — the
+                    // usual convention for a mouse with no horizontal axis.
+                    if modifiers.state().shift_key() && dx == 0.0 {
+                        dx = dy;
+                        dy = 0.0;
+                    }
+                    if self.editor_rect.contains(p) {
+                        let text = doc.text(&src_id).unwrap_or_default();
+                        self.editor.scroll_by(dx as f32, dy as f32, &text);
+                    } else if self.show_diagnostics && self.diag_rect.contains(p) {
+                        self.diagnostics.scroll_by(dy);
+                    }
                 }
+                self.dirty = true;
                 *handled = true;
             }
             _ => {}
@@ -1524,6 +1625,14 @@ impl Widget for TypstApp {
         // a compile is in flight (so `draw` can consume its result), or a
         // transient toast is still fading.
         self.editor.wants_animation() || self.compiling() || self.flash_text().is_some()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // Pointer *moves* are only repainted when `needs_redraw` is true (the
+        // host gates them to avoid hover spam). A live drag or a hover change
+        // sets `dirty`, so divider drags, preview text-selection, and inline
+        // diagnostic tooltips all repaint smoothly.
+        self.dirty
     }
 }
 
