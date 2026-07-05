@@ -27,6 +27,9 @@
 # job), never live Fedora mirrors — so the same source rebuilds the same image
 # regardless of when. RPMS_REF (code.sandbox.example/qos/rpms@sha256:...) comes from
 # os/rpms-snapshot.env via the build scripts.
+# ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
+# new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
+# match for argument". The snapshot's package list is derived from this file.
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
