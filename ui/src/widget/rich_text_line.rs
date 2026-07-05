@@ -60,6 +60,14 @@ pub enum LineSignal {
     /// User pressed Down while the caret was on the last visual line.
     /// Parent moves focus down.
     ArrowDown,
+    /// User pressed Ctrl+Shift+Up. `caret` is the caret byte at the
+    /// moment the key was pressed. Instead of moving focus, the parent
+    /// extends the selection up across the block boundary, covering the
+    /// text between the selection anchor and the previous block.
+    SelectBlockUp { caret: usize },
+    /// User pressed Ctrl+Shift+Down. Mirror of [`SelectBlockUp`] — the
+    /// parent extends the selection down into the next block.
+    SelectBlockDown { caret: usize },
     /// User typed `[[` while focused. Parent opens a [`LinkPopover`]
     /// anchored at the caret. The `[[` characters DO fall through to
     /// the inner input — the parent's commit-link logic strips them
@@ -757,12 +765,28 @@ impl Widget for RichTextLine {
                         }
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        self.signal = Some(LineSignal::ArrowUp);
+                        let m = modifiers.state();
+                        // Ctrl+Shift+Up extends the selection across the
+                        // block boundary rather than moving the caret.
+                        self.signal = if m.control_key() && m.shift_key() {
+                            Some(LineSignal::SelectBlockUp {
+                                caret: self.inner.cursor_pos(),
+                            })
+                        } else {
+                            Some(LineSignal::ArrowUp)
+                        };
                         *handled = true;
                         return;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        self.signal = Some(LineSignal::ArrowDown);
+                        let m = modifiers.state();
+                        self.signal = if m.control_key() && m.shift_key() {
+                            Some(LineSignal::SelectBlockDown {
+                                caret: self.inner.cursor_pos(),
+                            })
+                        } else {
+                            Some(LineSignal::ArrowDown)
+                        };
                         *handled = true;
                         return;
                     }
