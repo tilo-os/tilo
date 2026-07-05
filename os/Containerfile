@@ -109,7 +109,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && cp os/Cargo.lock.pinned Cargo.lock \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
-        -p runtime-bundle -p launcher \
+        -p runtime-bundle -p launcher -p qos-power \
     && mkdir -p /out \
     && cp target/release/shell \
           target/release/fs \
@@ -119,6 +119,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
           target/release/qos-launcher \
+          target/release/qos-power \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
@@ -280,9 +281,10 @@ COPY --from=builder /out/qos-installer /usr/bin/qos-installer
 # `verify` or extend the bundle from a running system.
 COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
 COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
+COPY --from=builder /out/qos-power /usr/bin/qos-power
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter /usr/bin/qos-installer \
-              /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle
+              /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle /usr/bin/qos-power
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
@@ -347,6 +349,7 @@ COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registr
 
 # First-boot setup service
 COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
+COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-power.service
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -438,7 +441,8 @@ RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
     systemctl enable power-profiles-daemon.service && \
-    systemctl enable systemd-homed.service
+    systemctl enable systemd-homed.service && \
+    systemctl enable qos-power.service
 
 # §11 hardening services: hidepid remount + the boot security self-check.
 RUN systemctl enable qos-hidepid.service && \
