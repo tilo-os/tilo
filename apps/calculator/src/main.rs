@@ -38,10 +38,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The headless screenshot shows the lived-in demo state; the live loop
         // (below) boots empty via `app_root`. `QOS_CALC_EMPTY` lets a shot
         // capture that real empty-launch state for verification.
-        let root = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
+        let root: Box<dyn Widget> = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
             calculator::app_root()
         } else {
-            calculator::app_root_offline()
+            // Shots-only overrides so one binary can capture every state:
+            //   QOS_CALC_MODE=calc|2d|3d      — which screen to render
+            //   QOS_CALC_HISTORY=open|closed  — force the history sidebar state
+            let mut app = calculator::CalculatorApp::seeded();
+            match std::env::var("QOS_CALC_MODE").ok().as_deref() {
+                Some("2d") | Some("graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
+                Some("3d") | Some("graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
+                _ => {}
+            }
+            match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
+                Some("open") => app.shots_set_history_open(true),
+                Some("closed") | Some("collapsed") => app.shots_set_history_open(false),
+                _ => {}
+            }
+            Box::new(app)
         };
         render_shot_to_png(root, shots_viewport(), &out)?;
         return Ok(());

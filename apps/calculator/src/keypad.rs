@@ -14,6 +14,7 @@
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{SidebarDrawer, SidebarSide};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -54,17 +55,12 @@ pub struct CalcScreen {
     history_view: Rect,
     history_content_h: f64,
     /// The history panel's outer rect this frame (docked column or overlay
-    /// drawer), and whether it is currently shown.
+    /// drawer). Derived from the shared [`SidebarDrawer`].
     sidebar_rect: Rect,
-    sidebar_open: bool,
-    /// Whether the sidebar is floating over the keypad (vs. docked beside it).
-    sidebar_overlay: bool,
-    /// Scrim region behind an open overlay drawer; a click here dismisses it.
-    scrim_rect: Rect,
-    /// Whether the user has explicitly toggled the sidebar this session. Until
-    /// they do, the open/closed default tracks the breakpoint (docked-open
-    /// when wide, collapsed when narrow) so resizing feels natural.
-    user_toggled: bool,
+    /// The shared collapsible sidebar-drawer that owns the docked-vs-overlay
+    /// decision, the eased reveal, the scrim, and the user-toggle memory. The
+    /// history is a standard right-anchored sidebar.
+    drawer: SidebarDrawer,
 }
 
 impl Default for CalcScreen {
@@ -86,10 +82,11 @@ impl Default for CalcScreen {
             history_view: Rect::ZERO,
             history_content_h: 0.0,
             sidebar_rect: Rect::ZERO,
-            sidebar_open: true,
-            sidebar_overlay: false,
-            scrim_rect: Rect::ZERO,
-            user_toggled: false,
+            drawer: SidebarDrawer::new()
+                .side(SidebarSide::Right)
+                .breakpoint(SIDEBAR_DOCK_MIN_W)
+                .docked_width(SIDEBAR_W_MIN)
+                .overlay_width(SIDEBAR_OVERLAY_W),
         }
     }
 }
@@ -132,7 +129,7 @@ impl CalcScreen {
     /// sidebar is currently shown.
     #[doc(hidden)]
     pub fn clear_history_center(&self) -> Option<Point> {
-        (self.sidebar_open && self.clear_hist_rect != Rect::ZERO)
+        (self.drawer.is_open() && self.clear_hist_rect != Rect::ZERO)
             .then(|| self.clear_hist_rect.center())
     }
 
@@ -149,39 +146,46 @@ impl CalcScreen {
         }
     }
 
-    /// Resolve the sidebar mode (docked vs. overlay) and whether it's shown,
-    /// from the body width and any explicit user toggle. Returns the keypad's
-    /// usable width (the body minus a docked sidebar).
+    /// Resolve the sidebar mode (docked vs. overlay) and whether it's shown via
+    /// the shared [`SidebarDrawer`], returning the keypad's usable width (the
+    /// body minus a docked sidebar). The docked / overlay widths are reconfigured
+    /// per-frame so the docked column stays a fraction of the body.
     fn resolve_sidebar(&mut self, area: Rect, pad: f64) -> f64 {
-        let can_dock = area.width() >= SIDEBAR_DOCK_MIN_W;
-        self.sidebar_overlay = !can_dock;
+        // Docked width tracks the body (a fraction, clamped); overlay width is a
+        // fixed drawer that never eats the whole narrow window.
+        self.drawer
+            .set_docked_width((area.width() * SIDEBAR_W_FRAC).clamp(SIDEBAR_W_MIN, SIDEBAR_W_MAX));
+        self.drawer
+            .set_overlay_width(SIDEBAR_OVERLAY_W.min((area.width() - 40.0).max(120.0)));
 
-        // Default open-state tracks the breakpoint until the user overrides it:
-        // docked layouts default open, narrow (overlay) layouts default closed
-        // so a small window is never forced to give up keypad space.
-        if !self.user_toggled {
-            self.sidebar_open = can_dock;
-        } else if can_dock {
-            // Re-widening past the dock threshold re-docks; an overlay that was
-            // left open stays open as a docked column, which reads naturally.
-        }
+        let content = self.drawer.resolve(area);
+        // The panel's drawn rect (docked column or overlay drawer). Driven by
+        // the eased reveal so BOTH opening and collapsing slide; zero once fully
+        // hidden so `layout_history` skips it.
+        self.sidebar_rect = if self.drawer.reveal() > 0.001 && self.drawer.sidebar_rect().width() > 0.5 {
+            self.drawer.sidebar_rect()
+        } else {
+            Rect::ZERO
+        };
 
-        if can_dock && self.sidebar_open {
-            let w = (area.width() * SIDEBAR_W_FRAC).clamp(SIDEBAR_W_MIN, SIDEBAR_W_MAX);
-            self.sidebar_rect = Rect::new(area.x1 - w, area.y0, area.x1, area.y1);
-            area.width() - w - pad
+        if self.drawer.is_docked() {
+            // Keypad gets the (eased) content column beside the docked history.
+            (content.width() - pad).max(0.0)
         } else {
             // Overlay (or collapsed): keypad gets the whole body width.
-            if self.sidebar_overlay && self.sidebar_open {
-                let w = SIDEBAR_OVERLAY_W.min(area.width() - 40.0);
-                self.sidebar_rect = Rect::new(area.x1 - w, area.y0, area.x1, area.y1);
-                self.scrim_rect = Rect::new(area.x0, area.y0, area.x1 - w, area.y1);
-            } else {
-                self.sidebar_rect = Rect::ZERO;
-                self.scrim_rect = Rect::ZERO;
-            }
-            area.width() - pad * 2.0
+            (area.width() - pad * 2.0).max(0.0)
         }
+    }
+
+    /// Advance the drawer's eased reveal one frame (draw path only).
+    pub fn tick_drawer(&mut self, reduce_motion: bool) {
+        self.drawer.tick(reduce_motion);
+    }
+
+    /// Whether the history drawer is mid-slide (drives the app's animation
+    /// frame pump).
+    pub fn drawer_animating(&self) -> bool {
+        self.drawer.is_animating()
     }
 
     /// Recompute all geometry for the given body `area`. Called at the top of
@@ -193,15 +197,18 @@ impl CalcScreen {
 
         // Left column = display + memory bar + keypad. Its right edge is the
         // body minus a docked sidebar (overlay/collapsed → full width).
-        let left_x1 = if self.sidebar_overlay || !self.sidebar_open {
-            area.x1 - pad
+        let left_x1 = if self.drawer.is_docked() {
+            // Docked: the keypad column ends at the (eased) content edge, so the
+            // history slide reflows the keypad both opening and collapsing.
+            self.drawer.content_rect().x1 - pad
         } else {
-            self.sidebar_rect.x0 - pad
+            area.x1 - pad
         };
         let left = Rect::new(area.x0 + pad, area.y0 + pad, left_x1, area.y1 - pad);
 
-        // Header row above the display holds the sidebar toggle on the right.
-        let toggle_w = 132.0;
+        // Header row above the display holds the standard sidebar-toggle
+        // affordance on the right (a compact icon pill from the primitive).
+        let toggle_w = 46.0;
         let toggle_h = 28.0;
         self.toggle_rect = Rect::new(left.x1 - toggle_w, left.y0, left.x1, left.y0 + toggle_h);
         let header_h = toggle_h + 8.0;
@@ -244,7 +251,10 @@ impl CalcScreen {
 
     fn layout_history(&mut self, model: &CalcModel) {
         self.history_rects.clear();
-        if !self.sidebar_open || self.sidebar_rect == Rect::ZERO {
+        // Lay the rows out whenever the panel has any width (so a sliding open
+        // OR close still shows content); clicks are gated on `is_open` in the
+        // hit-testers, not here.
+        if self.sidebar_rect == Rect::ZERO {
             self.history_view = Rect::ZERO;
             return;
         }
@@ -277,14 +287,19 @@ impl CalcScreen {
         model: &CalcModel,
         area: Rect,
     ) {
+        // Advance the drawer's eased reveal once per frame (draw path only) so
+        // the docked column / overlay flap slides instead of snapping.
+        self.drawer.tick(theme.reduce_motion);
         self.layout(area, model);
         let c = &theme.tokens.colors;
         let pad = 16.0;
 
-        let left_x1 = if self.sidebar_overlay || !self.sidebar_open {
-            area.x1 - pad
+        let left_x1 = if self.drawer.is_docked() {
+            // Docked: the keypad column ends at the (eased) content edge, so the
+            // history slide reflows the keypad both opening and collapsing.
+            self.drawer.content_rect().x1 - pad
         } else {
-            self.sidebar_rect.x0 - pad
+            area.x1 - pad
         };
         let left = Rect::new(area.x0 + pad, area.y0 + pad, left_x1, area.y1 - pad);
         let header_h = 36.0;
@@ -359,26 +374,22 @@ impl CalcScreen {
         }
 
         // ---- History sidebar ----------------------------------------------
-        // Overlay mode draws a dismiss scrim over the keypad first, then the
-        // drawer floats on top; docked mode just paints the column in place.
-        if self.sidebar_open && self.sidebar_rect != Rect::ZERO {
-            if self.sidebar_overlay {
-                draw::fill_rect(scene, t, self.scrim_rect, draw::with_alpha(Color::BLACK, 110));
-            }
+        // Overlay mode draws the drawer's dimming scrim over the keypad first,
+        // then the drawer floats on top; docked mode just paints the column in
+        // place. Both the scrim and its fade are owned by the primitive.
+        if self.drawer.is_overlay() {
+            self.drawer.draw_scrim(scene, t);
+        }
+        // Paint whenever the panel has any width (reveal > 0), so the history
+        // slides both opening and collapsing rather than blinking out.
+        if self.sidebar_rect != Rect::ZERO {
             self.draw_history(scene, t, tr, theme, model);
         }
     }
 
-    fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let r = self.toggle_rect;
-        let on = self.sidebar_open;
-        let fill = if on { draw::mix(c.surfaces.raised, c.accent[5], 0.18) } else { c.neutral[2] };
-        draw::fill_rrect(scene, t, r, 8.0, fill);
-        draw::stroke_rrect(scene, t, r, 8.0, if on { c.accent[5] } else { c.border_standard }, 1.0);
-        let label = if on { "Hide history" } else { "Show history" };
-        let col = if on { c.accent[6] } else { c.text_dim };
-        draw::text_in(scene, tr, t, r, label, 12.0, col, Align::Center, TextWeight::Semibold);
+    /// Draw the standard sidebar-toggle affordance owned by the primitive.
+    fn draw_toggle(&self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+        self.drawer.draw_toggle(scene, t, theme, self.toggle_rect, false);
     }
 
     fn draw_history(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel) {
@@ -387,9 +398,10 @@ impl CalcScreen {
 
         // A docked column blends with the base; a floating drawer reads as a
         // raised surface with its own left edge + shadow-ish border.
-        let panel_bg = if self.sidebar_overlay { c.surfaces.raised } else { c.surfaces.base };
+        let overlay = self.drawer.is_overlay();
+        let panel_bg = if overlay { c.surfaces.raised } else { c.surfaces.base };
         draw::fill_rect(scene, t, right, panel_bg);
-        draw::line(scene, t, Point::new(right.x0, right.y0), Point::new(right.x0, right.y1), c.border_standard, if self.sidebar_overlay { 1.5 } else { 1.0 });
+        draw::line(scene, t, Point::new(right.x0, right.y0), Point::new(right.x0, right.y1), c.border_standard, if overlay { 1.5 } else { 1.0 });
 
         let header = Rect::new(right.x0 + 16.0, right.y0, right.x1 - 16.0, right.y0 + 48.0);
         draw::text_in(scene, tr, t, header, "History", 16.0, c.text_primary, Align::Left, TextWeight::Semibold);
@@ -453,20 +465,20 @@ impl CalcScreen {
     pub fn key_at(&self, p: Point) -> Option<usize> {
         // An open overlay drawer captures clicks over it (so a key behind the
         // scrim isn't pressed through the drawer).
-        if self.sidebar_open && self.sidebar_overlay && self.sidebar_rect.contains(p) {
+        if self.drawer.is_overlay() && self.drawer.sidebar_contains(p) {
             return None;
         }
         self.key_rects.iter().position(|r| r.contains(p))
     }
     pub fn mem_at(&self, p: Point) -> Option<usize> {
-        if self.sidebar_open && self.sidebar_overlay && self.sidebar_rect.contains(p) {
+        if self.drawer.is_overlay() && self.drawer.sidebar_contains(p) {
             return None;
         }
         self.mem_rects.iter().position(|r| r.contains(p))
     }
     /// History index under `p`, if the click hit a row inside the viewport.
     pub fn history_at(&self, p: Point) -> Option<usize> {
-        if !self.sidebar_open || !self.history_view.contains(p) {
+        if !self.drawer.is_open() || !self.history_view.contains(p) {
             return None;
         }
         self.history_rects
@@ -475,33 +487,35 @@ impl CalcScreen {
             .map(|(i, _)| *i)
     }
     pub fn clear_history_at(&self, p: Point) -> bool {
-        self.sidebar_open && self.clear_hist_rect.contains(p)
+        self.drawer.is_open() && self.clear_hist_rect.contains(p)
     }
     pub fn history_viewport(&self) -> Rect {
-        if self.sidebar_open { self.history_view } else { Rect::ZERO }
+        if self.drawer.is_open() { self.history_view } else { Rect::ZERO }
     }
 
-    /// Whether `p` hit the show/hide-history toggle pill.
+    /// Whether `p` hit the standard sidebar-toggle affordance.
     pub fn toggle_at(&self, p: Point) -> bool {
         self.toggle_rect.contains(p)
     }
     /// Whether `p` landed on the dismiss scrim of an open overlay drawer.
     pub fn scrim_at(&self, p: Point) -> bool {
-        self.sidebar_open && self.sidebar_overlay && self.scrim_rect.contains(p)
+        self.drawer.scrim_contains(p)
     }
-    /// Flip the sidebar open/closed and remember that the user chose this, so
-    /// the breakpoint default no longer overrides them.
+    /// Flip the sidebar open/closed. The primitive remembers the explicit
+    /// choice so the breakpoint default no longer overrides it.
     pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
-        self.user_toggled = true;
+        self.drawer.toggle();
     }
-    /// Force the overlay drawer shut (e.g. a scrim tap). Records the override.
+    /// Force the overlay drawer shut (e.g. a scrim tap).
     pub fn close_sidebar(&mut self) {
-        self.sidebar_open = false;
-        self.user_toggled = true;
+        self.drawer.close();
+    }
+    /// Snap the drawer open/closed with no animation (deterministic `--shots`).
+    pub fn snap_sidebar(&mut self, open: bool) {
+        self.drawer.snap(open);
     }
     pub fn sidebar_open(&self) -> bool {
-        self.sidebar_open
+        self.drawer.is_open()
     }
 }
 
@@ -542,8 +556,13 @@ mod tests {
         let m = CalcModel::seeded();
         s.layout(body(1200.0), &m);
         assert!(s.sidebar_open(), "wide window should default to history shown");
-        assert!(!s.sidebar_overlay, "wide window should dock, not overlay");
+        assert!(s.drawer.is_docked(), "wide window should dock, not overlay");
         assert!(s.sidebar_rect.width() > 0.0);
+        // Docked on the RIGHT: the history column hugs the right edge.
+        assert!(
+            (s.sidebar_rect.x1 - body(1200.0).x1).abs() < 0.5,
+            "history docks on the right edge"
+        );
     }
 
     #[test]
@@ -552,7 +571,7 @@ mod tests {
         let m = CalcModel::seeded();
         s.layout(body(520.0), &m);
         assert!(!s.sidebar_open(), "narrow window must NOT force the sidebar open");
-        assert!(s.sidebar_overlay, "narrow window uses the overlay drawer mode");
+        assert!(s.drawer.is_overlay(), "narrow window uses the overlay drawer mode");
         assert_eq!(s.history_viewport(), Rect::ZERO, "collapsed → no history viewport");
     }
 
@@ -561,14 +580,15 @@ mod tests {
         let mut s = CalcScreen::default();
         let m = CalcModel::seeded();
         s.layout(body(520.0), &m);
-        // user taps "Show history"
+        // user taps the toggle to open the drawer (snap to settle deterministically)
         s.toggle_sidebar();
+        s.snap_sidebar(true);
         s.layout(body(520.0), &m);
         assert!(s.sidebar_open());
-        assert!(s.sidebar_overlay, "still an overlay at this width");
-        assert!(s.scrim_rect.width() > 0.0, "overlay must lay down a dismiss scrim");
-        // a scrim tap dismisses it
-        let scrim_pt = Point::new(s.scrim_rect.x0 + 10.0, s.scrim_rect.center().y);
+        assert!(s.drawer.is_overlay(), "still an overlay at this width");
+        assert!(s.drawer.scrim_rect().width() > 0.0, "overlay must lay down a dismiss scrim");
+        // a scrim tap (left of the right-anchored drawer) dismisses it
+        let scrim_pt = Point::new(body(520.0).x0 + 10.0, s.drawer.scrim_rect().center().y);
         assert!(s.scrim_at(scrim_pt));
         s.close_sidebar();
         s.layout(body(520.0), &m);
@@ -581,6 +601,7 @@ mod tests {
         let m = CalcModel::seeded();
         s.layout(body(520.0), &m);
         s.toggle_sidebar();
+        s.snap_sidebar(true);
         s.layout(body(520.0), &m);
         // a point inside the drawer is not a keypad/mem press
         let over = Point::new(s.sidebar_rect.center().x, s.sidebar_rect.center().y);
