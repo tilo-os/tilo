@@ -414,6 +414,7 @@ mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
 pub mod command_palette;
 pub mod context_menu;     pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
+pub mod table;         pub use table::Table;
 pub mod icon_grid;     pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
 pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
