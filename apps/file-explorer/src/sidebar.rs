@@ -7,26 +7,33 @@
 //! the same Favorites/System tier chrome as the TypeScript mockup.
 
 use std::path::{Path, PathBuf};
+use ui::icons::Icon;
 
 /// Fixed sidebar width in logical pixels, mirroring the original iced app
 /// (AUDIT.md S3).
 pub const SIDEBAR_WIDTH_PX: f32 = 180.0;
 
-/// One tier in the sidebar. The `title` is rendered as an uppercase-ish
-/// 10 px label above the tier; `entries` are the clickable shortcut
-/// rows within the tier.
+/// One clickable shortcut row: a themed vector [`Icon`], its label, and the
+/// path it navigates to. Icons are drawn in Vello from the shared toolkit
+/// set — no font glyphs, so nothing renders as tofu.
+pub type Shortcut = (Icon, String, PathBuf);
+
+/// One tier in the sidebar. The `title` is rendered as a small section
+/// label above the tier; `entries` are the clickable shortcut rows within
+/// the tier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarTier {
     pub title: &'static str,
-    pub entries: Vec<(String, PathBuf)>,
+    pub entries: Vec<Shortcut>,
 }
 
 /// Returns the sidebar structured as Favorites + System tiers, matching
 /// `nirios-concept/src/components/apps/FilesApp.tsx` (lines 94/127).
 ///
 /// - **Favorites**: Home, Documents, Downloads, Pictures, Music, Videos
-///   (populated from `$HOME` when available).
-/// - **System**: `/` (OS disk).
+///   (populated from `$HOME` when available), each with a distinctive
+///   vector glyph.
+/// - **System**: `/` (OS disk), a hard-drive glyph.
 ///
 /// Present even when `home` is `None` so the UI always renders at least
 /// the System tier.
@@ -36,18 +43,18 @@ pub fn build_tiers(home: Option<&Path>) -> Vec<SidebarTier> {
         tiers.push(SidebarTier {
             title: "Favorites",
             entries: vec![
-                ("󰋜 Home".into(), home.to_path_buf()),
-                ("󰉋 Documents".into(), home.join("Documents")),
-                ("󰉋 Downloads".into(), home.join("Downloads")),
-                ("󰉋 Pictures".into(), home.join("Pictures")),
-                ("󰉋 Music".into(), home.join("Music")),
-                ("󰉋 Videos".into(), home.join("Videos")),
+                (Icon::Home, "Home".into(), home.to_path_buf()),
+                (Icon::FileText, "Documents".into(), home.join("Documents")),
+                (Icon::CloudDownload, "Downloads".into(), home.join("Downloads")),
+                (Icon::Image, "Pictures".into(), home.join("Pictures")),
+                (Icon::Music, "Music".into(), home.join("Music")),
+                (Icon::Film, "Videos".into(), home.join("Videos")),
             ],
         });
     }
     tiers.push(SidebarTier {
         title: "System",
-        entries: vec![("󰋊 Root".into(), PathBuf::from("/"))],
+        entries: vec![(Icon::HardDrive, "Root".into(), PathBuf::from("/"))],
     });
     tiers
 }
@@ -55,7 +62,7 @@ pub fn build_tiers(home: Option<&Path>) -> Vec<SidebarTier> {
 /// Flat shortcut list — Favorites' entries followed by System's. Kept as a
 /// convenience for callers that still need a linear index (e.g.
 /// hit-testing against `files.sidebar.<N>` ids).
-pub fn build_shortcuts(home: Option<&Path>) -> Vec<(String, PathBuf)> {
+pub fn build_shortcuts(home: Option<&Path>) -> Vec<Shortcut> {
     build_tiers(home)
         .into_iter()
         .flat_map(|t| t.entries.into_iter())
@@ -65,10 +72,10 @@ pub fn build_shortcuts(home: Option<&Path>) -> Vec<(String, PathBuf)> {
 /// Returns the index of the shortcut whose path equals `current`, if any.
 /// Used by list rendering to mark the active shortcut (AUDIT.md S2).
 pub fn active_shortcut_index(
-    shortcuts: &[(String, PathBuf)],
+    shortcuts: &[Shortcut],
     current: &Path,
 ) -> Option<usize> {
-    shortcuts.iter().position(|(_, p)| p == current)
+    shortcuts.iter().position(|(_, _, p)| p == current)
 }
 
 #[cfg(test)]
@@ -98,20 +105,26 @@ mod tests {
         let labels: Vec<&str> = tiers[0]
             .entries
             .iter()
-            .map(|(l, _)| l.as_str())
+            .map(|(_, l, _)| l.as_str())
             .collect();
         // The concept lists Home first followed by the xdg-user-dirs in
         // Documents→Videos order; keep the parity strict so a visual
-        // diff against the mockup stays aligned.
+        // diff against the mockup stays aligned. Labels are clean text —
+        // the glyph is a themed vector [`Icon`], not a font codepoint.
         assert_eq!(
             labels,
+            vec!["Home", "Documents", "Downloads", "Pictures", "Music", "Videos"]
+        );
+        let icons: Vec<Icon> = tiers[0].entries.iter().map(|(i, _, _)| *i).collect();
+        assert_eq!(
+            icons,
             vec![
-                "󰋜 Home",
-                "󰉋 Documents",
-                "󰉋 Downloads",
-                "󰉋 Pictures",
-                "󰉋 Music",
-                "󰉋 Videos",
+                Icon::Home,
+                Icon::FileText,
+                Icon::CloudDownload,
+                Icon::Image,
+                Icon::Music,
+                Icon::Film,
             ]
         );
     }
@@ -122,7 +135,9 @@ mod tests {
         let sys = &tiers[0];
         assert_eq!(sys.title, "System");
         assert_eq!(sys.entries.len(), 1);
-        assert_eq!(sys.entries[0].1, PathBuf::from("/"));
+        assert_eq!(sys.entries[0].0, Icon::HardDrive);
+        assert_eq!(sys.entries[0].1, "Root");
+        assert_eq!(sys.entries[0].2, PathBuf::from("/"));
     }
 
     #[test]

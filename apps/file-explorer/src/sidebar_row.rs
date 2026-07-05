@@ -13,6 +13,7 @@
 //! `c.activeAppId === app.id` filter, which scopes to the app instance.
 
 use ui::ColorCompat;
+use ui::icons::{draw_icon, Icon, LUCIDE_DEFAULT_STROKE_PX};
 use ui::permissions::AppKind;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -63,6 +64,8 @@ pub struct SidebarFolderRow {
     /// without rebuilding the composition.
     #[allow(dead_code)]
     id: String,
+    /// Leading vector glyph, drawn in Vello to the left of the label.
+    icon: Icon,
     label: String,
     path: PathBuf,
     active: bool,
@@ -74,9 +77,10 @@ pub struct SidebarFolderRow {
 }
 
 impl SidebarFolderRow {
-    pub fn new(id: &str, label: &str, path: PathBuf) -> Self {
+    pub fn new(id: &str, icon: Icon, label: &str, path: PathBuf) -> Self {
         Self {
             id: id.to_string(),
+            icon,
             label: label.to_string(),
             path,
             active: false,
@@ -164,8 +168,29 @@ impl Widget for SidebarFolderRow {
         };
         let alpha = if self.active { 0xf0 } else { 0x8c };
         let text_color = Color::from_rgba8(tr, tg, tb, alpha);
+
+        // Leading vector glyph, vertically centred. Active rows tint the
+        // icon with the accent so the current location reads at a glance;
+        // inactive rows match the (dimmed) label colour.
+        let icon_px = 16.0_f64;
+        let icon_x = self.rect.x0 + 10.0;
+        let icon_y = self.rect.center().y - icon_px / 2.0;
+        let icon_color = if self.active {
+            theme.tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX]
+        } else {
+            text_color
+        };
+        draw_icon(
+            scene,
+            transform,
+            Rect::new(icon_x, icon_y, icon_x + icon_px, icon_y + icon_px),
+            self.icon,
+            icon_color,
+            LUCIDE_DEFAULT_STROKE_PX,
+        );
+
         let (_tw, th) = text_renderer.measure(&self.label, text_size, None);
-        let text_x = self.rect.x0 + 8.0;
+        let text_x = icon_x + icon_px + 8.0;
         let text_y = self.rect.y0 + (self.rect.height() - th as f64) / 2.0;
         text_renderer.draw_text(
             scene,
@@ -305,19 +330,19 @@ mod tests {
     fn dot_count_on_row_matches_helper_capped() {
         let path = PathBuf::from("/tmp/ws");
         let ctx = ctx_with(&path, &["alice", "bob", "charlie", "dave"]);
-        let row = SidebarFolderRow::new("files.sidebar.0", "Home", path);
+        let row = SidebarFolderRow::new("files.sidebar.0", Icon::Home, "Home", path);
         assert_eq!(row.dot_count(&ctx), PRESENCE_CAP);
     }
 
     #[test]
     fn dot_count_zero_when_no_peers() {
-        let row = SidebarFolderRow::new("files.sidebar.0", "Home", PathBuf::from("/tmp/ws"));
+        let row = SidebarFolderRow::new("files.sidebar.0", Icon::Home, "Home", PathBuf::from("/tmp/ws"));
         assert_eq!(row.dot_count(&PresenceCtx::empty()), 0);
     }
 
     #[test]
     fn row_keeps_id_for_hit_testing() {
-        let row = SidebarFolderRow::new("files.sidebar.4", "Music", PathBuf::from("/tmp/music"));
+        let row = SidebarFolderRow::new("files.sidebar.4", Icon::Music, "Music", PathBuf::from("/tmp/music"));
         assert_eq!(row.id, "files.sidebar.4");
     }
 }

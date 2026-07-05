@@ -29,8 +29,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = FileExplorerWidget::new();
-        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let mut widget = FileExplorerWidget::new();
+        // Optional `--path <dir>` starts the shot in a specific directory
+        // (e.g. to capture a deep breadcrumb trail), else the default
+        // cold-start location is used.
+        if let Some(p) = parse_path_arg(&args) {
+            widget.navigate(p);
+        }
+        render_shot_to_png(Box::new(widget), viewport, &out)?;
         return Ok(());
     }
 
@@ -50,6 +57,40 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
             return iter.next().map(std::path::PathBuf::from);
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
+            return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Returns `Some((w, h))` if `--size WxH` (or `--size=WxH`) appears in
+/// `args`, otherwise `None`. Lets a caller render the same offscreen frame
+/// at different viewport sizes (e.g. a normal 1280×800 and a narrow width)
+/// without a rebuild.
+fn parse_size_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let spec = loop {
+        let arg = iter.next()?;
+        if arg == "--size" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--size=") {
+            break rest.to_string();
+        }
+    };
+    let (w, h) = spec.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Returns `Some(dir)` if `--path <dir>` (or `--path=<dir>`) appears in
+/// `args`, otherwise `None`. Only meaningful alongside `--shots`.
+fn parse_path_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--path" {
+            return iter.next().map(std::path::PathBuf::from);
+        }
+        if let Some(rest) = arg.strip_prefix("--path=") {
             return Some(std::path::PathBuf::from(rest));
         }
     }
