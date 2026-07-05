@@ -1424,11 +1424,13 @@ mod tests {
         let _grand = ws.create_page(Some(child));
         let mut tree = NoteTreeView::new();
         tree.sync_from_workspace(&ws);
-        // Only the root is visible by default — branches start collapsed.
-        assert_eq!(tree.visible_row_count(), 1);
-        tree.expanded.insert(root);
+        // Branches with children auto-expand on first render, so the full
+        // nesting is on screen (root -> child -> grandchild).
+        assert_eq!(tree.visible_row_count(), 3);
+        // Collapsing the root hides all its descendants (only the root remains).
+        tree.expanded.remove(&root);
         tree.sync_from_workspace(&ws);
-        assert_eq!(tree.visible_row_count(), 2);
+        assert_eq!(tree.visible_row_count(), 1);
     }
 
     #[test]
