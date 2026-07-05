@@ -71,20 +71,27 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+    Justify,
 }
 
 impl TextAlign {
+    /// Every alignment, in the order the inspector's segmented control shows
+    /// them (left · center · right · justify).
+    pub const ALL: [TextAlign; 4] =
+        [TextAlign::Left, TextAlign::Center, TextAlign::Right, TextAlign::Justify];
     pub fn as_str(self) -> &'static str {
         match self {
             TextAlign::Left => "left",
             TextAlign::Center => "center",
             TextAlign::Right => "right",
+            TextAlign::Justify => "justify",
         }
     }
     pub fn from_str(s: &str) -> TextAlign {
         match s {
             "center" => TextAlign::Center,
             "right" => TextAlign::Right,
+            "justify" => TextAlign::Justify,
             _ => TextAlign::Left,
         }
     }
@@ -92,7 +99,8 @@ impl TextAlign {
         match self {
             TextAlign::Left => TextAlign::Center,
             TextAlign::Center => TextAlign::Right,
-            TextAlign::Right => TextAlign::Left,
+            TextAlign::Right => TextAlign::Justify,
+            TextAlign::Justify => TextAlign::Left,
         }
     }
     pub fn glyph(self) -> &'static str {
@@ -100,11 +108,12 @@ impl TextAlign {
             TextAlign::Left => "Left",
             TextAlign::Center => "Center",
             TextAlign::Right => "Right",
+            TextAlign::Justify => "Justify",
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Element {
     pub id: Id,
     pub kind: ElementKind,
@@ -306,7 +315,7 @@ impl Background {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Slide {
     pub id: Id,
     pub layout: Layout,
@@ -411,7 +420,7 @@ impl PaletteKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Deck {
     pub title: String,
     pub palette: PaletteKind,
@@ -479,7 +488,20 @@ impl Palette {
 
     /// Resolve a colour *role* string to a concrete colour. Returns `None`
     /// for `"none"` so callers can skip the fill/stroke entirely.
+    ///
+    /// Two kinds of value are accepted: a named theme *role* (`"accent"`,
+    /// `"surface"`, …), resolved against the live palette so the deck tracks
+    /// the OS theme; or a literal `#RRGGBB` / `#RRGGBBAA` hex chosen with the
+    /// inspector colour picker, which resolves to that exact colour regardless
+    /// of theme. Hex is what lets a user pick an arbitrary fill and what a
+    /// LibreOffice `.odp` round-trips faithfully.
     pub fn resolve_role(&self, role: &str) -> Option<Color> {
+        if role == "none" {
+            return None;
+        }
+        if role.starts_with('#') {
+            return parse_hex(role).or(Some(self.accent));
+        }
         Some(match role {
             "none" => return None,
             "accent" => self.accent,
@@ -534,6 +556,24 @@ pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", 
 
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// Parse a `#RRGGBB` or `#RRGGBBAA` hex string into a concrete colour.
+/// Returns `None` for anything that isn't a well-formed hex literal.
+pub fn parse_hex(s: &str) -> Option<Color> {
+    let h = s.strip_prefix('#').unwrap_or(s);
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    match h.len() {
+        6 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, 255)),
+        8 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
+        _ => None,
+    }
+}
+
+/// Format a colour as a `#RRGGBB` hex string (opaque). Used to store a
+/// picker-chosen fill/stroke in the deck and to emit `.odp` fill colours.
+pub fn color_to_hex(c: Color) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
 }
 
 /// Linear blend `a*(1-t) + b*t` in straight RGB.

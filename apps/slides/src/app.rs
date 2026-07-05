@@ -24,7 +24,10 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget, DEFAULT_BREAKPOINT};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::{
+    ColorPicker, FlapState, NumberInput, SplitLayout, TextInput, Widget, DEFAULT_BREAKPOINT,
+};
 use ui::ColorCompat;
 
 use crate::assets::ImageStore;
@@ -182,10 +185,11 @@ enum Hit {
     MoveSlideDown,
     SetFill(String),
     SetStroke(String),
-    FontDelta(f64),
+    /// Open the embeddable colour picker popover for the selected element's fill.
+    OpenFillPicker,
     ToggleBold,
     ToggleItalic,
-    CycleAlign,
+    SetAlign(TextAlign),
     BringFront,
     SendBack,
     DuplicateElement,
@@ -244,6 +248,23 @@ enum ButtonKind {
     },
     /// Three-line "hamburger" that summons the collapsed slide rail.
     Hamburger,
+    /// One cell of a connected segmented control (e.g. text alignment). The
+    /// `pos` decides which outer corners round so the group reads as a single
+    /// pill split into cells.
+    Segment {
+        label: String,
+        active: bool,
+        pos: SegPos,
+    },
+}
+
+/// Where a [`ButtonKind::Segment`] sits in its group, controlling corner
+/// rounding so only the outer ends are rounded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SegPos {
+    First,
+    Mid,
+    Last,
 }
 
 #[derive(Clone)]
@@ -252,6 +273,17 @@ struct UiButton {
     kind: ButtonKind,
     hit: Hit,
 }
+
+/// Rects the inspector reserves for widgets it doesn't draw as `UiButton`s
+/// (the font-size [`NumberInput`], the speaker-notes box).
+struct InspectorRects {
+    notes: Option<Rect>,
+    font_input: Option<Rect>,
+}
+
+/// Default size of the fill colour-picker popover, in logical px.
+const FILL_PICKER_W: f64 = 260.0;
+const FILL_PICKER_H: f64 = 220.0;
 
 /// Thumbnail-list metrics for the slide rail (see [`SlidesApp::rail_metrics`]).
 struct RailMetrics {
@@ -298,6 +330,11 @@ struct Chrome {
     /// `(track, thumb)` rects of the rail scrollbar when the list overflows.
     rail_scrollbar: Option<(Rect, Rect)>,
     notes_box: Option<Rect>,
+    /// Where the font-size [`NumberInput`] sits (only when a text element is
+    /// selected). Positioned + drawn by the widget itself, not as a `UiButton`.
+    font_input_rect: Option<Rect>,
+    /// Where the fill [`ColorPicker`] popover sits (only while it's open).
+    fill_picker_rect: Option<Rect>,
     /// Background panel of the open toolbar overflow menu (`None` when closed
     /// or when every insert tool already fits on the toolbar).
     menu_bg: Option<Rect>,
@@ -365,6 +402,11 @@ pub struct SlidesApp {
 
     last_mouse: Point,
     drag: Drag,
+    /// Last left-press on a canvas element: `(id, when, where)`. A second press
+    /// on the same element within the double-click window enters text edit; a
+    /// single press just selects and arms a move, so a selected element drags on
+    /// the very first grab.
+    last_click: Option<(Id, std::time::Instant, Point)>,
     needs_commit: bool,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
@@ -424,6 +466,44 @@ pub struct SlidesApp {
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
     /// `None` when idle. Per-peer/transient (not CRDT).
     portal_rx: Option<portal::PortalChannel>,
+    /// An in-flight host file open/save for `.odp` documents. Same worker-thread
+    /// + channel contract as [`Self::portal_rx`]; `save` carries the deck bytes
+    /// to write once the user names a destination.
+    doc_portal_rx: Option<portal::DocPortalChannel>,
+
+    /// Right-click context menu (element / slide actions) — the shared
+    /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
+    /// maps each menu row index (separators included, as `None`) to the action
+    /// it performs when chosen.
+    ctx_menu: ContextMenu,
+    ctx_hits: Vec<Option<Hit>>,
+    /// Font-size field for the selected text element — the shared
+    /// [`ui::widget::NumberInput`] (click-to-type + steppers), positioned into
+    /// the inspector's TYPE row and driven directly.
+    font_input: NumberInput,
+    /// Embeddable fill colour picker ([`ui::widget::ColorPicker`]), shown as a
+    /// popover over the inspector when the user picks a custom fill.
+    fill_picker: ColorPicker,
+    fill_picker_open: bool,
+    /// Inline deck-title editor — the shared single-line [`ui::widget::TextInput`]
+    /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
+    /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
+    title_input: TextInput,
+    /// Set when the popover opens so the next `draw` (which has the theme, hence
+    /// can resolve a colour *role* to a concrete colour) seeds the picker with
+    /// the selected element's current fill.
+    fill_picker_needs_init: bool,
+    /// `--shots`-only: open a context menu on the first drawn frame (once the
+    /// layout rect is known) so a headless capture can show it. Never set on a
+    /// live launch.
+    demo_menu: Option<DemoMenu>,
+}
+
+/// Which context menu a `--shots` scenario should pop open for its capture.
+#[derive(Clone, Copy)]
+enum DemoMenu {
+    Element,
+    Slide,
 }
 
 /// One shaped audience slide, kept across present-mode frames so the speaker
@@ -517,6 +597,7 @@ impl SlidesApp {
             presenter_view: false,
             last_mouse: Point::ZERO,
             drag: Drag::None,
+            last_click: None,
             needs_commit: false,
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
@@ -531,6 +612,22 @@ impl SlidesApp {
             overview_scroll: 0.0,
             toolbar_menu_open: false,
             portal_rx: None,
+            doc_portal_rx: None,
+            ctx_menu: ContextMenu::new(),
+            ctx_hits: Vec::new(),
+            font_input: NumberInput::new(40.0)
+                .with_range(8.0, 160.0)
+                .with_step(2.0)
+                .with_suffix("pt")
+                .with_id("slides-font-size"),
+            fill_picker: ColorPicker::new(vello::peniko::Color::from_rgba8(90, 96, 240, 255)),
+            fill_picker_open: false,
+            fill_picker_needs_init: false,
+            title_input: TextInput::local()
+                .with_plain_chrome()
+                .with_font_size(17.0)
+                .with_id("slides-title"),
+            demo_menu: None,
         }
     }
 
@@ -569,6 +666,9 @@ impl SlidesApp {
             "rename" => {
                 self.cur_slide = 1;
                 self.begin_title_edit();
+                // Show a live selection so the capture proves the TextInput's
+                // real text selection (double-click word / Shift+Arrow / drag).
+                self.title_input.set_selection(0, 9);
                 self.bootstrapped = true;
             }
             // The speaker-notes editor focused, with the caret shown in the
@@ -654,6 +754,37 @@ impl SlidesApp {
             "narrow_closed" => self.rail_flap.close(),
             // Narrow layout with the inspector flap summoned open.
             "inspector" => self.inspector_flap.open(),
+            // Right-click context menus (opened on the first drawn frame once
+            // the layout rect is known — see `draw`).
+            "element_menu" => {
+                self.cur_slide = 1;
+                self.sel = self
+                    .deck
+                    .slides
+                    .get(1)
+                    .and_then(|s| s.elements.first().map(|e| e.id.clone()));
+                self.demo_menu = Some(DemoMenu::Element);
+                self.bootstrapped = true;
+            }
+            "slide_menu" => {
+                self.cur_slide = 1;
+                self.sel = None;
+                self.demo_menu = Some(DemoMenu::Slide);
+                self.bootstrapped = true;
+            }
+            // The inspector with the font-size NumberInput (text selected) and
+            // the fill ColorPicker popover open — the two adopted primitives.
+            "inspector_widgets" => {
+                self.cur_slide = 1;
+                self.sel = self
+                    .deck
+                    .slides
+                    .get(1)
+                    .and_then(|s| s.elements.iter().find(|e| e.kind == ElementKind::Text).map(|e| e.id.clone()));
+                self.fill_picker_open = true;
+                self.fill_picker_needs_init = true;
+                self.bootstrapped = true;
+            }
             // "edit" (and anything unknown) keeps the default editor screen.
             _ => {}
         }
@@ -987,10 +1118,11 @@ impl SlidesApp {
         let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
         let title_max = (tools_x - 12.0 - title_x).max(60.0);
         let title_pos = Point::new(title_x, toolbar.y0 + 11.0);
-        // While renaming, show the full (un-elided) title so the caret can sit
-        // anywhere in it; otherwise elide so it never runs under the tools.
+        // While renaming, the inline TextInput draws the title (with selection +
+        // caret), so the static label is blanked; otherwise elide it so it never
+        // runs under the tools.
         let title_text = if self.editing_title {
-            self.deck.title.clone()
+            String::new()
         } else {
             elide(&self.deck.title, 17.0, title_max)
         };
@@ -1107,7 +1239,20 @@ impl SlidesApp {
         buttons.push(mk(2.0, "Del", true, Hit::DeleteSlide));
 
         // Inspector ---------------------------------------------------------
-        let notes_box = self.build_inspector(inspector, &mut buttons, &mut labels);
+        let insp_rects = self.build_inspector(inspector, &mut buttons, &mut labels);
+        let notes_box = insp_rects.notes;
+        let font_input_rect = insp_rects.font_input;
+        // Fill picker popover, anchored inside the inspector, clamped on-screen.
+        let fill_picker_rect = if self.fill_picker_open {
+            // Leave ~64px of slack on the right: the picker's hex field extends
+            // past its preview swatch, so a flush-right anchor would clip it.
+            let x = (inspector.x0 + 12.0).min(r.x1 - FILL_PICKER_W - 64.0).max(r.x0 + 8.0);
+            // Sit below the top property controls, above the notes box.
+            let y = (inspector.y0 + 300.0).min(r.y1 - FILL_PICKER_H - 8.0).max(body_top + 8.0);
+            Some(Rect::new(x, y, x + FILL_PICKER_W, y + FILL_PICKER_H))
+        } else {
+            None
+        };
 
         Chrome {
             toolbar,
@@ -1125,6 +1270,8 @@ impl SlidesApp {
             rail_viewport: m.viewport,
             rail_scrollbar,
             notes_box,
+            font_input_rect,
+            fill_picker_rect,
             menu_bg,
             menu_buttons,
             layout,
@@ -1246,7 +1393,8 @@ impl SlidesApp {
         inspector: Rect,
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
-    ) -> Option<Rect> {
+    ) -> InspectorRects {
+        let mut font_input_rect: Option<Rect> = None;
         let pad = 16.0;
         let x0 = inspector.x0 + pad;
         let x1 = inspector.x1 - pad;
@@ -1274,10 +1422,27 @@ impl SlidesApp {
             });
             y += 30.0;
 
-            // Fill swatches.
+            // Fill swatches (theme presets) plus a Custom… button that opens
+            // the embeddable colour picker for an arbitrary fill.
             header(labels, &mut y, "FILL");
             y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
-            y += 10.0;
+            y += 8.0;
+            let custom = Rect::new(x0, y, x1, y + 26.0);
+            buttons.push(UiButton {
+                rect: custom,
+                kind: ButtonKind::Text {
+                    // Show the active colour role / hex on the button.
+                    label: if el.fill.starts_with('#') {
+                        format!("Custom  ·  {}", el.fill)
+                    } else {
+                        "Custom colour…".into()
+                    },
+                    active: el.fill.starts_with('#'),
+                    danger: false,
+                },
+                hit: Hit::OpenFillPicker,
+            });
+            y += 26.0 + 10.0;
 
             // Stroke swatches.
             header(labels, &mut y, "STROKE");
@@ -1287,18 +1452,9 @@ impl SlidesApp {
             if el.kind == ElementKind::Text {
                 header(labels, &mut y, "TYPE");
                 let bh = 30.0;
-                let minus = Rect::new(x0, y, x0 + 40.0, y + bh);
-                let plus = Rect::new(x0 + 46.0, y, x0 + 86.0, y + bh);
-                buttons.push(UiButton {
-                    rect: minus,
-                    kind: ButtonKind::Text { label: "A−".into(), active: false, danger: false },
-                    hit: Hit::FontDelta(-4.0),
-                });
-                buttons.push(UiButton {
-                    rect: plus,
-                    kind: ButtonKind::Text { label: "A+".into(), active: false, danger: false },
-                    hit: Hit::FontDelta(4.0),
-                });
+                // The font size is a click-to-type NumberInput (with ± steppers)
+                // — the widget draws itself, so we only reserve its rect here.
+                font_input_rect = Some(Rect::new(x0, y, x0 + 136.0, y + bh));
                 let bold = Rect::new(x1 - 36.0, y, x1, y + bh);
                 buttons.push(UiButton {
                     rect: bold,
@@ -1311,24 +1467,33 @@ impl SlidesApp {
                     kind: ButtonKind::Text { label: "I".into(), active: el.italic, danger: false },
                     hit: Hit::ToggleItalic,
                 });
-                labels.push(Label {
-                    pos: Point::new(x0 + 96.0, y + 8.0),
-                    text: format!("{} pt", el.font_size as i64),
-                    font: 13.0,
-                    color: LabelColor::Primary,
-                    weight: TextWeight::Regular,
-                });
-                y += bh + 8.0;
-                let align = Rect::new(x0, y, x1, y + bh);
-                buttons.push(UiButton {
-                    rect: align,
-                    kind: ButtonKind::Text {
-                        label: format!("Align  ·  {}", el.align.glyph()),
-                        active: false,
-                        danger: false,
-                    },
-                    hit: Hit::CycleAlign,
-                });
+                y += bh + 10.0;
+                header(labels, &mut y, "ALIGN");
+                // A proper segmented control: left · center · right · justify,
+                // the current alignment highlighted. Replaces the old single
+                // button that only cycled through the options blind.
+                let n = TextAlign::ALL.len();
+                let seg_w = inner_w / n as f64;
+                for (i, a) in TextAlign::ALL.iter().enumerate() {
+                    let sx = x0 + i as f64 * seg_w;
+                    let ex = if i + 1 == n { x1 } else { x0 + (i as f64 + 1.0) * seg_w };
+                    let pos = if i == 0 {
+                        SegPos::First
+                    } else if i + 1 == n {
+                        SegPos::Last
+                    } else {
+                        SegPos::Mid
+                    };
+                    buttons.push(UiButton {
+                        rect: Rect::new(sx, y, ex, y + bh),
+                        kind: ButtonKind::Segment {
+                            label: a.glyph().to_string(),
+                            active: *a == el.align,
+                            pos,
+                        },
+                        hit: Hit::SetAlign(*a),
+                    });
+                }
                 y += bh + 14.0;
             }
 
@@ -1418,7 +1583,7 @@ impl SlidesApp {
             kind: ButtonKind::Text { label: String::new(), active: false, danger: false },
             hit: Hit::EditNotes,
         });
-        Some(nb)
+        InspectorRects { notes: Some(nb), font_input: font_input_rect }
     }
 
     fn swatch_grid(
@@ -1615,6 +1780,15 @@ impl SlidesApp {
                 }
             }
             Hit::SetFill(role) => self.set_sel_str(doc, "fill", &role),
+            Hit::OpenFillPicker => {
+                // Only meaningful with an element selected. The next `draw`
+                // seeds the picker with the element's current fill (it has the
+                // theme to resolve a colour role).
+                if self.sel.is_some() {
+                    self.fill_picker_open = true;
+                    self.fill_picker_needs_init = true;
+                }
+            }
             Hit::SetStroke(role) => {
                 self.set_sel_str(doc, "stroke", &role);
                 // Give a freshly-stroked shape a sensible default width.
@@ -1622,12 +1796,6 @@ impl SlidesApp {
                     if role != "none" && el.stroke_width < 1.0 {
                         self.set_sel_f64(doc, "stroke_width", 4.0);
                     }
-                }
-            }
-            Hit::FontDelta(d) => {
-                if let Some(el) = self.selected_element() {
-                    let v = (el.font_size + d).clamp(8.0, 160.0);
-                    self.set_sel_f64(doc, "font_size", v);
                 }
             }
             Hit::ToggleBold => {
@@ -1642,12 +1810,7 @@ impl SlidesApp {
                     self.set_sel_bool(doc, "italic", v);
                 }
             }
-            Hit::CycleAlign => {
-                if let Some(el) = self.selected_element() {
-                    let v = el.align.next();
-                    self.set_sel_str(doc, "align", v.as_str());
-                }
-            }
+            Hit::SetAlign(a) => self.set_sel_str(doc, "align", a.as_str()),
             Hit::BringFront => self.restack(doc, true),
             Hit::SendBack => self.restack(doc, false),
             Hit::DuplicateElement => self.duplicate_element(doc),
@@ -1778,6 +1941,77 @@ impl SlidesApp {
             return;
         }
         self.portal_rx = Some(portal::request_open());
+    }
+
+    /// Ask the host to pick a `.odp` presentation to open (Ctrl+O). The chosen
+    /// file is read and decoded when the request drains in
+    /// [`Self::drain_doc_portal`]. One request at a time.
+    fn request_odp_open(&mut self) {
+        if self.doc_portal_rx.is_some() {
+            return;
+        }
+        self.doc_portal_rx = Some(portal::request_open_document());
+    }
+
+    /// Ask the host where to save the current deck as a `.odp` (Ctrl+S).
+    fn request_odp_save(&mut self) {
+        if self.doc_portal_rx.is_some() {
+            return;
+        }
+        let name = format!("{}.odp", sanitize_filename(&self.deck.title));
+        self.doc_portal_rx = Some(portal::request_save_document(&name));
+    }
+
+    /// Drain a completed `.odp` open/save request, loading or writing the deck.
+    /// Called once per frame from [`Widget::sync`].
+    fn drain_doc_portal(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.doc_portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.doc_portal_rx = None;
+                match outcome {
+                    portal::DocOutcome::Open(path) => {
+                        self.load_odp(doc, &path);
+                    }
+                    portal::DocOutcome::Save(path) => {
+                        self.save_odp(&path);
+                    }
+                    portal::DocOutcome::Cancelled | portal::DocOutcome::Failed(_) => {}
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.doc_portal_rx = None;
+            }
+        }
+    }
+
+    /// Load a `.odp` from disk, replacing the deck in the shared document so
+    /// undo/redo and collaboration see the whole swap as one change.
+    fn load_odp(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
+        let Ok(bytes) = std::fs::read(path) else { return false };
+        let Ok(deck) = crate::odp::read_odp(&bytes) else { return false };
+        SlidesDoc::seed(doc, &deck);
+        self.deck = deck;
+        self.deck_rev = self.deck_rev.wrapping_add(1);
+        self.cur_slide = 0;
+        self.sel = None;
+        self.editing_text = false;
+        self.editing_notes = false;
+        self.present_cache = None;
+        self.mark();
+        self.reload(doc);
+        true
+    }
+
+    /// Serialise the current deck to a `.odp` at `path` (adding the extension
+    /// if the host didn't).
+    fn save_odp(&self, path: &std::path::Path) -> bool {
+        let path = ensure_odp_ext(path);
+        match crate::odp::write_odp(&self.deck) {
+            Ok(bytes) => std::fs::write(&path, bytes).is_ok(),
+            Err(_) => false,
+        }
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -2110,13 +2344,96 @@ impl SlidesApp {
         }
     }
 
-    /// Start renaming the deck title inline (caret at the end).
+    /// Start renaming the deck title inline via the shared [`TextInput`] (caret
+    /// at the end, ready for full selection editing).
     fn begin_title_edit(&mut self) {
         self.editing_title = true;
         self.editing_text = false;
         self.editing_notes = false;
         self.sel = None;
         self.title_caret = self.deck.title.chars().count();
+        self.title_input.set_text(&self.deck.title);
+        // `set_text` clamps but doesn't advance the caret, so park it at the end.
+        self.title_input.set_cursor_pos(self.deck.title.len());
+        Widget::set_focus(&mut self.title_input, true);
+    }
+
+    /// Commit the inline title rename: flush any pending edit to the CRDT and
+    /// blur the field.
+    fn commit_title_edit(&mut self, doc: &mut AutoCommit) {
+        if let Some(t) = self.title_input.take_dirty() {
+            SlidesDoc::set_title(doc, &t);
+        }
+        self.editing_title = false;
+        Widget::set_focus(&mut self.title_input, false);
+        self.mark();
+        self.reload(doc);
+    }
+
+    /// The rect the inline title editor occupies in the toolbar.
+    fn title_input_rect(&self, chrome: &Chrome) -> Rect {
+        Rect::new(
+            chrome.title_pos.x,
+            chrome.title_pos.y - 3.0,
+            chrome.title_rect.x1,
+            chrome.title_pos.y + 23.0,
+        )
+    }
+
+    /// Route an event to the inline title [`TextInput`] while renaming. Returns
+    /// `true` if the event was consumed. Enter / Esc commit; a press outside the
+    /// field commits and falls through so the click still acts.
+    #[allow(clippy::too_many_arguments)]
+    fn route_title_edit(
+        &mut self,
+        event: &WindowEvent,
+        sf: f64,
+        mods: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.editing_title {
+            return false;
+        }
+        let chrome = self.compute_chrome();
+        let rect = self.title_input_rect(&chrome);
+        self.title_input.apply_layout_external(rect);
+
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+            }
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                ..
+            } if matches!(logical_key, Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape)) => {
+                self.commit_title_edit(state);
+                return true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !rect.inflate(4.0, 8.0).contains(self.last_mouse) => {
+                // Click away commits, then falls through so the click still acts.
+                self.commit_title_edit(state);
+                return false;
+            }
+            _ => {}
+        }
+        let mut h = false;
+        self.title_input
+            .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+        // Live-splice each edit into the CRDT title (the mirror is refreshed on
+        // commit; while editing, the field is the source of truth).
+        if let Some(t) = self.title_input.take_dirty() {
+            SlidesDoc::set_title(state, &t);
+            self.mark();
+        }
+        true
     }
 
     /// The char-index caret of whatever text is being edited.
@@ -2284,31 +2601,12 @@ impl SlidesApp {
             }
         }
 
-        // Inline title rename: an accent underline under the title line plus a
-        // caret, so the toolbar title reads as an editable field while renaming.
+        // Inline title rename: an accent underline reads the toolbar title as an
+        // editable field; the shared TextInput (drawn in `Widget::draw`) paints
+        // the text, caret and selection.
         if self.editing_title {
             let underline_y = chrome.title_pos.y + 22.0;
             stroke_line(scene, t, chrome.title_pos.x, underline_y, chrome.title_rect.x1, underline_y, pal.accent);
-            let er = Rect::new(
-                chrome.title_pos.x,
-                chrome.title_pos.y,
-                chrome.title_rect.x1,
-                chrome.title_pos.y + 20.0,
-            );
-            self.draw_caret_in_box(
-                scene,
-                t,
-                tr,
-                pal.accent,
-                &self.deck.title,
-                self.title_caret,
-                er,
-                17.0,
-                TextWeight::Bold,
-                false,
-                TextAlign::Left,
-                false,
-            );
         }
 
         // Scrim behind an open overlay flap, dimming the editor body.
@@ -2390,6 +2688,85 @@ impl SlidesApp {
                 self.draw_button(scene, t, tr, theme, &pal, b);
             }
         }
+    }
+
+    /// Position the inspector's embedded `ui` widgets (font-size field, fill
+    /// picker) from `chrome` so both `draw` and `handle_event` hit-test them.
+    fn position_inspector_widgets(&mut self, chrome: &Chrome) {
+        if let Some(rect) = chrome.font_input_rect {
+            // Reflect the element's size unless the user is mid-edit (so typing
+            // isn't clobbered by the CRDT mirror).
+            if !self.font_input.is_editing() {
+                let fs = self.selected_element().map(|e| e.font_size).unwrap_or(40.0);
+                self.font_input.set_value(fs);
+            }
+            self.font_input.apply_layout_external(rect);
+        }
+        if let Some(rect) = chrome.fill_picker_rect {
+            self.fill_picker.apply_layout_external(rect);
+        }
+    }
+
+    /// Draw the inspector's embedded widgets on top of the editor chrome: the
+    /// font-size [`NumberInput`] and, when open, the fill [`ColorPicker`]
+    /// popover (with its own panel + shadow).
+    fn draw_inspector_widgets(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        chrome: &Chrome,
+    ) {
+        self.position_inspector_widgets(chrome);
+        if chrome.font_input_rect.is_some() {
+            self.font_input.draw(scene, t, tr, theme, presence);
+        }
+        if let Some(rect) = chrome.fill_picker_rect {
+            // Seed the picker with the element's current fill on the first frame
+            // it's open (now that we hold the theme to resolve a colour role).
+            if self.fill_picker_needs_init {
+                let pal = self.palette(theme);
+                let col = self
+                    .selected_element()
+                    .and_then(|e| pal.resolve_role(&e.fill))
+                    .unwrap_or(pal.accent);
+                self.fill_picker.set_color(col);
+                self.fill_picker_needs_init = false;
+            }
+            let c = &theme.tokens.colors;
+            let panel = rect.inflate(12.0, 16.0);
+            let shadow = panel + vello::kurbo::Vec2::new(0.0, 5.0);
+            chrome::fill_rrect(scene, t, shadow.inflate(2.0, 2.0), 14.0, render::with_alpha(Color::BLACK, 100));
+            chrome::fill_rrect(scene, t, panel, 12.0, c.surfaces.raised);
+            chrome::stroke_rrect(scene, t, panel, 12.0, render::with_alpha(c.text_primary, 48), 1.0);
+            tr.draw_text_weighted(
+                scene,
+                "FILL COLOUR",
+                11.0,
+                c.text_dim,
+                t * Affine::translate((rect.x0, panel.y0 + 8.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            self.fill_picker.draw(scene, t, tr, theme, presence);
+        }
+    }
+
+    /// Draw the inline title [`TextInput`] over the toolbar while renaming.
+    fn draw_title_input(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        chrome: &Chrome,
+    ) {
+        let rect = self.title_input_rect(chrome);
+        self.title_input.apply_layout_external(rect);
+        self.title_input.draw(scene, t, tr, theme, presence);
     }
 
     fn draw_label(
@@ -2507,6 +2884,29 @@ impl SlidesApp {
                     chrome::text_vcenter(scene, t, tr, kind.label(), b.rect, dot.x1 + 6.0, 12.0, c.text_primary, TextWeight::Semibold);
                     scene.pop_layer();
                 }
+            }
+            ButtonKind::Segment { label, active, pos } => {
+                let (bg, fg) = if *active {
+                    (pal.accent, Color::WHITE)
+                } else {
+                    (c.surfaces.base, c.text_primary)
+                };
+                // Round only the outer corners so the row reads as one pill.
+                let r = 8.0;
+                let shape = match pos {
+                    SegPos::First => vello::kurbo::RoundedRect::new(
+                        b.rect.x0, b.rect.y0, b.rect.x1, b.rect.y1,
+                        (r, 0.0, 0.0, r),
+                    ),
+                    SegPos::Last => vello::kurbo::RoundedRect::new(
+                        b.rect.x0, b.rect.y0, b.rect.x1, b.rect.y1,
+                        (0.0, r, r, 0.0),
+                    ),
+                    SegPos::Mid => vello::kurbo::RoundedRect::from_rect(b.rect, 0.0),
+                };
+                scene.fill(Fill::NonZero, t, bg, None, &shape);
+                scene.stroke(&Stroke::new(1.0), t, render::with_alpha(c.text_primary, 26), None, &shape);
+                chrome::text_centered(scene, t, tr, label, b.rect, 12.5, fg, TextWeight::Semibold);
             }
             ButtonKind::Hamburger => {
                 let active = self.rail_open();
@@ -2633,7 +3033,7 @@ impl SlidesApp {
         let (lw, _) = tr.measure_styled(&cur_line, font_px, Some(wrap_w), weight, italic, false);
         let (pw, _) = tr.measure_styled(&prefix, font_px, None, weight, italic, false);
         let line_x = match align {
-            TextAlign::Left => er.x0,
+            TextAlign::Left | TextAlign::Justify => er.x0,
             TextAlign::Center => er.x0 + (er.width() - lw as f64) / 2.0,
             TextAlign::Right => er.x1 - lw as f64,
         };
@@ -3395,6 +3795,29 @@ impl SlidesApp {
     }
 }
 
+/// Make `title` safe as a filename stem: keep alphanumerics, dash and
+/// underscore, fold everything else to `_`, and never return empty.
+fn sanitize_filename(title: &str) -> String {
+    let s: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() { "presentation".into() } else { s }
+}
+
+/// Ensure `path` ends in `.odp` (the host Save dialog may drop the extension).
+fn ensure_odp_ext(path: &std::path::Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) if ext.eq_ignore_ascii_case("odp") => path.to_path_buf(),
+        _ => {
+            let mut p = path.as_os_str().to_os_string();
+            p.push(".odp");
+            PathBuf::from(p)
+        }
+    }
+}
+
 fn mix_panel(a: Color, b: Color) -> Color {
     Color::from_rgba8(
         ((a.r() as u16 + b.r() as u16) / 2) as u8,
@@ -3578,6 +4001,8 @@ impl Widget for SlidesApp {
         }
         // Fold in a completed host image-open, if the portal worker finished.
         self.drain_portal(state);
+        // Fold in a completed `.odp` open/save.
+        self.drain_doc_portal(state);
         self.reload(state);
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
@@ -3631,7 +4056,7 @@ impl Widget for SlidesApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         if self.rect.width() < 2.0 {
             return;
@@ -3668,10 +4093,36 @@ impl Widget for SlidesApp {
             }
             Mode::Present => {}
         }
+        // `--shots`-only: pop a context menu now that the layout rect is known.
+        if let Some(kind) = self.demo_menu.take() {
+            let chrome = self.compute_chrome();
+            match kind {
+                DemoMenu::Element => {
+                    let p = self
+                        .selected_element()
+                        .map(|el| render::element_dest(chrome.slide_dest, chrome.scale, el).center())
+                        .unwrap_or_else(|| chrome.slide_dest.center());
+                    self.open_element_menu(p);
+                }
+                DemoMenu::Slide => {
+                    let p = chrome
+                        .thumbs
+                        .iter()
+                        .find(|(i, _)| *i == self.cur_slide)
+                        .map(|(_, r)| r.center())
+                        .unwrap_or_else(|| Point::new(120.0, 220.0));
+                    self.open_slide_menu(p);
+                }
+            }
+        }
         match self.mode {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
                 self.draw_editor(scene, transform, text_renderer, theme, &chrome);
+                self.draw_inspector_widgets(scene, transform, text_renderer, theme, presence, &chrome);
+                if self.editing_title {
+                    self.draw_title_input(scene, transform, text_renderer, theme, presence, &chrome);
+                }
             }
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
@@ -3682,6 +4133,8 @@ impl Widget for SlidesApp {
         if self.help_overlay_visible() {
             self.draw_help(scene, transform, text_renderer, theme);
         }
+        // Right-click context menu floats above everything else.
+        self.ctx_menu.draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3745,6 +4198,39 @@ impl Widget for SlidesApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // A right-press (re)opens a context menu — handled before the modal
+        // routing so it works even while another menu is already up.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = event
+        {
+            self.on_right_press(state, self.last_mouse, handled);
+            return;
+        }
+        // While a context menu is open it is modal: every other event goes to it.
+        if self.route_context_menu(
+            event, scale_factor, modifiers, state, _path, _focus_target, _node_id, _taffy,
+        ) {
+            *handled = true;
+            return;
+        }
+        // The inline title editor owns input while renaming.
+        if self.route_title_edit(
+            event, scale_factor, modifiers, state, _path, _focus_target, _node_id, _taffy,
+        ) {
+            *handled = true;
+            return;
+        }
+        // The inspector's embedded widgets (font-size field, fill picker) get
+        // first refusal on events over them.
+        if self.route_inspector_widgets(
+            event, scale_factor, modifiers, state, _path, _focus_target, _node_id, _taffy,
+        ) {
+            *handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -4150,18 +4636,42 @@ impl SlidesApp {
         }
         match picked {
             Some(id) => {
-                let was_selected = self.sel.as_deref() == Some(id.as_str());
-                self.sel = Some(id.clone());
-                self.editing_notes = false;
                 let is_text = self
-                    .selected_element()
+                    .slide()
+                    .and_then(|sl| sl.element(&id))
                     .map(|e| e.kind == ElementKind::Text)
                     .unwrap_or(false);
-                if was_selected && is_text {
-                    // Second click on a selected text box → edit.
+                // Double-click = same element, pressed again quickly and near
+                // the first press.
+                let double = self
+                    .last_click
+                    .as_ref()
+                    .map(|(cid, t, cp)| {
+                        cid == &id
+                            && t.elapsed().as_millis() < 400
+                            && cp.distance(p) < 6.0
+                    })
+                    .unwrap_or(false);
+                self.last_click = Some((id.clone(), std::time::Instant::now(), p));
+                self.editing_notes = false;
+
+                // Already editing this exact text box → a click inside it stays
+                // in edit (never starts a drag), so typing/selection continues.
+                if self.editing_text && self.sel.as_deref() == Some(id.as_str()) {
+                    *handled = true;
+                    return;
+                }
+
+                self.sel = Some(id.clone());
+                if double && is_text {
+                    // A deliberate double-click opens the text for editing.
                     self.editing_text = true;
                     self.caret = self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0);
                 } else {
+                    // Single press: select AND arm a move so a selected element
+                    // can be dragged on the very first grab (the reported bug was
+                    // that a second click on a selected box entered edit instead
+                    // of letting you move it).
                     self.editing_text = false;
                     let el = self.selected_element().cloned().unwrap();
                     self.drag = Drag::Move {
@@ -4176,10 +4686,280 @@ impl SlidesApp {
             None => {
                 self.sel = None;
                 self.editing_text = false;
+                self.last_click = None;
                 *handled = true;
             }
         }
         let _ = doc;
+    }
+
+    /// Hit-test the canvas elements front-to-back at screen point `p`.
+    fn element_at(&self, chrome: &Chrome, p: Point) -> Option<Id> {
+        let dest = chrome.slide_dest;
+        let s = chrome.scale;
+        let slide = self.slide()?;
+        let mut z: Vec<&Element> = slide.elements.iter().collect();
+        z.sort_by_key(|e| -e.z);
+        for el in z {
+            if render::element_dest(dest, s, el).inflate(2.0, 2.0).contains(p) {
+                return Some(el.id.clone());
+            }
+        }
+        None
+    }
+
+    /// Right-click opens a context menu — on a canvas element (front / back /
+    /// duplicate / delete) or a slide thumbnail (new / duplicate / move /
+    /// delete). The target is selected first so the menu's actions (which act
+    /// on the current selection / slide) hit the intended object.
+    fn on_right_press(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
+        *handled = true;
+        self.ctx_menu.close();
+        self.ctx_hits.clear();
+        if self.mode != Mode::Edit {
+            return;
+        }
+        let chrome = self.compute_chrome();
+        // A slide thumbnail (only when it's actually in the visible viewport).
+        if chrome.rail_viewport.contains(p) {
+            for (i, rect) in &chrome.thumbs {
+                if rect.contains(p) {
+                    self.apply_hit(doc, Hit::SelectSlide(*i));
+                    self.open_slide_menu(p);
+                    return;
+                }
+            }
+        }
+        // A canvas element.
+        if chrome.slide_dest.contains(p) {
+            if let Some(id) = self.element_at(&chrome, p) {
+                self.sel = Some(id);
+                self.editing_text = false;
+                self.editing_notes = false;
+                self.open_element_menu(p);
+            }
+        }
+    }
+
+    /// Build + open the context menu at `p`, mapping each row to the action it
+    /// performs. `None` rows are separators. Clamps the 220px-wide menu so it
+    /// stays fully on-screen.
+    fn open_menu_at(&mut self, p: Point, rows: &[Option<(&str, Hit)>]) {
+        let mut menu = ContextMenu::new();
+        let mut hits: Vec<Option<Hit>> = Vec::new();
+        for row in rows {
+            match row {
+                Some((label, hit)) => {
+                    menu.push(MenuItem::action((*label).to_string(), || {}));
+                    hits.push(Some(hit.clone()));
+                }
+                None => {
+                    menu.push(MenuItem::separator());
+                    hits.push(None);
+                }
+            }
+        }
+        let x = (p.x.min(self.rect.x1 - 228.0)).max(self.rect.x0 + 4.0);
+        menu.open_at([x as f32, p.y as f32]);
+        let h = menu.get_rect().height();
+        let y = (p.y.min(self.rect.y1 - 6.0 - h)).max(self.rect.y0 + 4.0);
+        menu.open_at([x as f32, y as f32]);
+        self.ctx_menu = menu;
+        self.ctx_hits = hits;
+    }
+
+    fn open_element_menu(&mut self, p: Point) {
+        self.open_menu_at(
+            p,
+            &[
+                Some(("Bring to front", Hit::BringFront)),
+                Some(("Send to back", Hit::SendBack)),
+                None,
+                Some(("Duplicate", Hit::DuplicateElement)),
+                Some(("Delete", Hit::DeleteElement)),
+            ],
+        );
+    }
+
+    fn open_slide_menu(&mut self, p: Point) {
+        self.open_menu_at(
+            p,
+            &[
+                Some(("New slide", Hit::NewSlide)),
+                Some(("Duplicate slide", Hit::DuplicateSlide)),
+                None,
+                Some(("Move up", Hit::MoveSlideUp)),
+                Some(("Move down", Hit::MoveSlideDown)),
+                None,
+                Some(("Delete slide", Hit::DeleteSlide)),
+            ],
+        );
+    }
+
+    /// Forward an event to the open context menu and apply any chosen action.
+    /// Returns `true` if a menu was open (and thus consumed the event).
+    fn route_context_menu(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.ctx_menu.is_open() {
+            return false;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        let mut menu_handled = false;
+        self.ctx_menu.handle_event(
+            event, scale_factor, modifiers, state, path, &mut menu_handled, focus_target, node_id,
+            taffy,
+        );
+        if let Some(idx) = self.ctx_menu.take_selection() {
+            if let Some(Some(hit)) = self.ctx_hits.get(idx).cloned() {
+                self.apply_hit(state, hit);
+            }
+        }
+        true
+    }
+
+    /// Forward events to the inspector's embedded `ui` widgets (font-size field
+    /// + fill picker) and fold any change into the CRDT. Returns `true` when the
+    /// event was consumed (so `handle_event` should stop). The picker popover is
+    /// modal while open; the font field only claims presses on its own rect and
+    /// keystrokes while focused.
+    #[allow(clippy::too_many_arguments)]
+    fn route_inspector_widgets(
+        &mut self,
+        event: &WindowEvent,
+        sf: f64,
+        mods: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if self.mode != Mode::Edit || self.drag.active() {
+            return false;
+        }
+        let text_selected = self
+            .selected_element()
+            .map(|e| e.kind == ElementKind::Text)
+            .unwrap_or(false);
+        if !self.fill_picker_open && !text_selected {
+            return false;
+        }
+        let chrome = self.compute_chrome();
+        self.position_inspector_widgets(&chrome);
+
+        // --- Fill picker popover: modal while open. ---
+        if self.fill_picker_open {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+            }
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                let panel = self.fill_picker.get_rect().inflate(12.0, 16.0);
+                if !panel.contains(self.last_mouse) {
+                    Widget::set_focus(&mut self.fill_picker, false);
+                    self.fill_picker_open = false;
+                    return true;
+                }
+            }
+            let mut h = false;
+            self.fill_picker
+                .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                if self.fill_picker.get_rect().contains(self.last_mouse) {
+                    Widget::set_focus(&mut self.fill_picker, true);
+                }
+            }
+            if let Some(col) = self.fill_picker.take_changed() {
+                self.set_sel_str(state, "fill", &crate::model::color_to_hex(col));
+            }
+            return true;
+        }
+
+        // --- Font-size NumberInput. ---
+        if chrome.font_input_rect.is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                let mut h = false;
+                self.font_input
+                    .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+                if let Some(v) = self.font_input.take_changed() {
+                    self.set_sel_f64(state, "font_size", v);
+                }
+                // Don't consume — canvas hover still wants the move.
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.font_input.get_rect().contains(self.last_mouse) {
+                    let mut h = false;
+                    self.font_input
+                        .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+                    Widget::set_focus(&mut self.font_input, true);
+                    if let Some(v) = self.font_input.take_changed() {
+                        self.set_sel_f64(state, "font_size", v);
+                    }
+                    true
+                } else if self.font_input.is_focused() {
+                    // Press elsewhere commits + blurs, then falls through so the
+                    // press can still hit whatever it landed on.
+                    Widget::set_focus(&mut self.font_input, false);
+                    if let Some(v) = self.font_input.take_changed() {
+                        self.set_sel_f64(state, "font_size", v);
+                    }
+                    false
+                } else {
+                    false
+                }
+            }
+            WindowEvent::KeyboardInput { .. } if self.font_input.is_focused() => {
+                // Esc blurs the field (commit); everything else edits it.
+                if let WindowEvent::KeyboardInput {
+                    event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+                    ..
+                } = event
+                {
+                    Widget::set_focus(&mut self.font_input, false);
+                    if let Some(v) = self.font_input.take_changed() {
+                        self.set_sel_f64(state, "font_size", v);
+                    }
+                    return true;
+                }
+                let mut h = false;
+                self.font_input
+                    .handle_event(event, sf, mods, state, path, &mut h, focus_target, node_id, taffy);
+                if let Some(v) = self.font_input.take_changed() {
+                    self.set_sel_f64(state, "font_size", v);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn on_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
@@ -4537,6 +5317,18 @@ impl SlidesApp {
             }
             Key::Character(c) => {
                 let lc = c.to_lowercase();
+                // Ctrl+S / Ctrl+O — save / open a LibreOffice `.odp` via the
+                // host file chooser.
+                if ctrl && lc == "s" {
+                    self.request_odp_save();
+                    *handled = true;
+                    return;
+                }
+                if ctrl && lc == "o" {
+                    self.request_odp_open();
+                    *handled = true;
+                    return;
+                }
                 if ctrl && lc == "d" {
                     self.duplicate_element(doc);
                     self.reload(doc);
@@ -5520,6 +6312,270 @@ mod tests {
         );
     }
 
+    // === selection drag + double-click-to-edit ============================
+
+    /// The screen-space centre of the (single) selected element.
+    fn sel_center(app: &SlidesApp) -> Point {
+        let chrome = app.compute_chrome();
+        let el = app.selected_element().unwrap().clone();
+        crate::render::element_dest(chrome.slide_dest, chrome.scale, &el).center()
+    }
+
+    /// Regression for the "move-on-first-click" bug: an already-selected element
+    /// must arm a move on the very first press (not swallow it into text-edit),
+    /// and dragging must actually move it.
+    #[test]
+    fn selected_element_drags_on_first_grab() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        app.sel = Some(id.clone());
+
+        let p = sel_center(&app);
+        let mut handled = false;
+        app.last_mouse = p;
+        app.on_press(&mut doc, p, &mut handled);
+        assert!(handled, "the press on the selected element is handled");
+        assert!(app.drag.active(), "a single grab of a selected element arms a move");
+        assert!(!app.editing_text, "a single grab must NOT enter text edit");
+
+        // Drag right and release — the element actually moves.
+        app.drag_move(Point::new(p.x + 60.0, p.y));
+        let mut h2 = false;
+        app.on_release(&mut doc, &mut h2);
+        let x = loaded(&doc).slides[0].element(&id).unwrap().x;
+        assert!(x > 100.5, "the element moved right on first grab (x = {x})");
+    }
+
+    /// A deliberate double-click on a selected text box enters edit mode (the
+    /// opt-in gesture, now that a single grab moves it).
+    #[test]
+    fn double_click_text_box_enters_edit() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        app.sel = Some(id.clone());
+        let p = sel_center(&app);
+
+        // First click + release: selects, arms then releases a (zero-length) move.
+        let mut h = false;
+        app.last_mouse = p;
+        app.on_press(&mut doc, p, &mut h);
+        app.on_release(&mut doc, &mut h);
+        assert!(!app.editing_text, "one click selects, does not edit");
+
+        // Second click at the same spot, immediately after → double-click → edit.
+        app.on_press(&mut doc, p, &mut h);
+        assert!(app.editing_text, "double-click opens the text box for editing");
+        assert!(!app.drag.active(), "entering edit does not arm a drag");
+    }
+
+    // === .odp open / save through the app =================================
+
+    #[test]
+    fn app_saves_and_reloads_an_odp() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        let path = std::env::temp_dir().join("slides-app-odp-roundtrip.odp");
+        assert!(app.save_odp(&path), "deck saves to .odp");
+
+        let mut app2 = SlidesApp::new();
+        let mut doc2 = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc2, &app2.deck);
+        app2.reload(&doc2);
+        assert!(app2.load_odp(&mut doc2, &path), "the saved .odp loads back");
+        assert_eq!(app2.deck, app.deck, "open(save(deck)) is the same deck");
+        assert_eq!(loaded(&doc2).slides.len(), app.deck.slides.len(), "the load landed in the CRDT");
+    }
+
+    #[test]
+    fn draining_an_open_outcome_loads_the_deck() {
+        let deck = crate::model::seed_deck();
+        let bytes = crate::odp::write_odp(&deck).unwrap();
+        let path = std::env::temp_dir().join("slides-drain-open.odp");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+        app.doc_portal_rx = Some(crate::portal::inject_doc_for_test(
+            crate::portal::DocOutcome::Open(path),
+        ));
+        app.drain_doc_portal(&mut doc);
+        assert!(app.doc_portal_rx.is_none(), "a resolved request clears the channel");
+        assert_eq!(app.deck.slides.len(), deck.slides.len(), "the opened deck replaced the starter");
+    }
+
+    #[test]
+    fn ensure_odp_ext_appends_when_missing() {
+        assert_eq!(
+            super::ensure_odp_ext(std::path::Path::new("/x/talk")).to_str().unwrap(),
+            "/x/talk.odp"
+        );
+        assert_eq!(
+            super::ensure_odp_ext(std::path::Path::new("/x/talk.odp")).to_str().unwrap(),
+            "/x/talk.odp"
+        );
+    }
+
+    // === right-click context menus ========================================
+
+    /// Right-clicking a canvas element selects it and opens the element menu
+    /// whose rows map to the reorder / duplicate / delete actions.
+    #[test]
+    fn right_click_element_opens_menu_and_actions_apply() {
+        let mut s = Slide::new(Layout::Blank);
+        let a = s.add(Element::shape(ElementKind::Rect, 100.0, 100.0, 300.0, 200.0));
+        let b = s.add(Element::shape(ElementKind::Ellipse, 500.0, 300.0, 200.0, 200.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+
+        // Right-click element `a`.
+        let chrome = app.compute_chrome();
+        let ea = app.slide().unwrap().element(&a).unwrap().clone();
+        let p = crate::render::element_dest(chrome.slide_dest, chrome.scale, &ea).center();
+        let mut h = false;
+        app.last_mouse = p;
+        app.on_right_press(&mut doc, p, &mut h);
+        assert!(app.ctx_menu.is_open(), "right-click opens the element menu");
+        assert_eq!(app.sel.as_deref(), Some(a.as_str()), "the clicked element is selected");
+
+        // Row 0 = Bring to front. Choosing it raises `a` above `b`.
+        app.ctx_menu.click_item(0);
+        if let Some(idx) = app.ctx_menu.take_selection() {
+            if let Some(Some(hit)) = app.ctx_hits.get(idx).cloned() {
+                app.apply_hit(&mut doc, hit);
+            }
+        }
+        let za = loaded(&doc).slides[0].element(&a).unwrap().z;
+        let zb = loaded(&doc).slides[0].element(&b).unwrap().z;
+        assert!(za > zb, "Bring to front raised the element ({za} vs {zb})");
+        assert!(!app.ctx_menu.is_open(), "choosing a row closes the menu");
+    }
+
+    /// Right-clicking a slide thumbnail selects that slide and opens the slide
+    /// menu; the Delete row removes it.
+    #[test]
+    fn right_click_thumbnail_opens_slide_menu() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        app.reload(&doc);
+        sized(&mut app, 1280.0, 800.0);
+
+        let chrome = app.compute_chrome();
+        let (idx, rect) = chrome.thumbs[2];
+        let p = rect.center();
+        let mut h = false;
+        app.last_mouse = p;
+        app.on_right_press(&mut doc, p, &mut h);
+        assert!(app.ctx_menu.is_open(), "right-click on a thumbnail opens the slide menu");
+        assert_eq!(app.cur_slide, idx, "the right-clicked slide becomes current");
+
+        // The last row is Delete slide.
+        let before = loaded(&doc).slides.len();
+        let del = app.ctx_hits.len() - 1;
+        app.ctx_menu.click_item(del);
+        if let Some(sel) = app.ctx_menu.take_selection() {
+            if let Some(Some(hit)) = app.ctx_hits.get(sel).cloned() {
+                app.apply_hit(&mut doc, hit);
+            }
+        }
+        assert_eq!(loaded(&doc).slides.len(), before - 1, "Delete slide removed one");
+    }
+
+    // === embedded inspector widgets (NumberInput / ColorPicker) ===========
+
+    fn app_dispatch(app: &mut SlidesApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus = None;
+        let root = automerge::ROOT;
+        app.handle_event(ev, 1.0, &Modifiers::default(), doc, &root, &mut handled, &mut focus, node, &taffy);
+    }
+    fn cursor_ev(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn left_press_ev() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn key_event(logical: Key, text: Option<&str>) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = text.map(winit::keyboard::SmolStr::new);
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn char_ev(s: &str) -> WindowEvent {
+        key_event(Key::Character(s.into()), Some(s))
+    }
+    fn named_ev(k: NamedKey) -> WindowEvent {
+        key_event(Key::Named(k), None)
+    }
+
+    /// The font-size NumberInput's + stepper raises the size through the real
+    /// event path (item: adopt the shared NumberInput for font size).
+    #[test]
+    fn font_size_number_input_steps_and_writes_through() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 140.0, 40.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        app.sel = Some(id.clone());
+
+        let chrome = app.compute_chrome();
+        app.position_inspector_widgets(&chrome);
+        let fr = chrome.font_input_rect.expect("a text selection shows the font-size field");
+        let h = fr.height();
+        let plus = Point::new(fr.x1 - h / 2.0, fr.center().y);
+        app_dispatch(&mut app, &mut doc, &cursor_ev(plus));
+        app_dispatch(&mut app, &mut doc, &left_press_ev());
+        let fs = loaded(&doc).slides[0].element(&id).unwrap().font_size;
+        assert_eq!(fs, 42.0, "the + stepper raised the font size by the step (2)");
+    }
+
+    /// The embeddable ColorPicker writes a concrete hex fill through the real
+    /// event path (item: integrate the ColorPicker for the inspector fill).
+    #[test]
+    fn fill_color_picker_writes_a_hex_fill() {
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::shape(ElementKind::Rect, 100.0, 100.0, 300.0, 200.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        app.sel = Some(id.clone());
+
+        app.apply_hit(&mut doc, Hit::OpenFillPicker);
+        assert!(app.fill_picker_open, "the Custom colour button opens the picker");
+        let chrome = app.compute_chrome();
+        app.position_inspector_widgets(&chrome);
+        // Type a hex into the picker; one forwarded event flushes it through.
+        app.fill_picker.set_hex_text_for_test("#FF8800");
+        let c = app.fill_picker.get_rect().center();
+        app_dispatch(&mut app, &mut doc, &cursor_ev(c));
+        let fill = loaded(&doc).slides[0].element(&id).unwrap().fill.clone();
+        assert_eq!(fill, "#FF8800", "the picker wrote a concrete hex fill");
+    }
+
     // === write-through + interaction coverage =============================
 
     /// A one-slide deck seeded into a shared doc; `slide` becomes slide 0 and
@@ -5574,16 +6630,33 @@ mod tests {
         app.last_mouse = p;
         app.on_press(&mut doc, p, &mut handled);
         assert!(handled && app.editing_title, "clicking the title enters inline rename");
-        assert_eq!(app.title_caret, title0.chars().count(), "caret opens at the end");
 
-        // Typed characters splice into the CRDT title (not a local-only buffer).
-        assert!(keyc(&mut app, &mut doc, "!"));
-        assert!(keyc(&mut app, &mut doc, "?"), "'?' types into the title, not the help overlay");
-        assert!(!app.show_help, "'?' while renaming must not open help");
+        // Typing routes through the shared TextInput (the live handle_event
+        // path) and splices into the CRDT title.
+        app_dispatch(&mut app, &mut doc, &char_ev("!"));
+        app_dispatch(&mut app, &mut doc, &char_ev("?"));
+        assert!(!app.show_help, "'?' while renaming types into the title, not the help overlay");
         // Enter commits the rename.
-        assert!(keyn(&mut app, &mut doc, NamedKey::Enter));
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
         assert!(!app.editing_title, "Enter commits the rename");
         assert_eq!(loaded(&doc).title, format!("{title0}!?"), "the rename persisted to the CRDT");
+    }
+
+    /// The inline title editor is the shared TextInput, so it supports real
+    /// selection — Ctrl+A selects the whole title, then typing replaces it.
+    #[test]
+    fn title_input_supports_select_all_and_replace() {
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
+        app.begin_title_edit();
+        // Select all + confirm the field reports a full-span selection.
+        app.title_input.select_all();
+        let sel = app.title_input.selection_range_public();
+        assert!(sel.is_some(), "Ctrl+A selects the whole title in the TextInput");
+        // Typing over the selection replaces the entire title.
+        app_dispatch(&mut app, &mut doc, &char_ev("X"));
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
+        assert_eq!(loaded(&doc).title, "X", "typing over the selection replaced the title");
     }
 
     #[test]
@@ -5591,21 +6664,20 @@ mod tests {
         let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
         sized(&mut app, 1280.0, 800.0);
         app.begin_title_edit();
-        // Backspace deletes the last title char through the CRDT.
+        // Backspace deletes the last title char through the TextInput → CRDT.
         let title0 = app.deck.title.clone();
-        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
         let mut expect: String = title0.clone();
         expect.pop();
         assert_eq!(loaded(&doc).title, expect, "backspace spliced one char out of the title");
 
         // Add a char, then click away from the title → commits (leaves editing).
-        assert!(keyc(&mut app, &mut doc, "Z"));
+        app_dispatch(&mut app, &mut doc, &char_ev("Z"));
         let chrome = app.compute_chrome();
         let away = Point::new(chrome.slide_dest.center().x, chrome.slide_dest.center().y);
         assert!(!chrome.title_rect.contains(away));
-        let mut handled = false;
-        app.last_mouse = away;
-        app.on_press(&mut doc, away, &mut handled);
+        app_dispatch(&mut app, &mut doc, &cursor_ev(away));
+        app_dispatch(&mut app, &mut doc, &left_press_ev());
         assert!(!app.editing_title, "a click away commits the rename");
         assert_eq!(loaded(&doc).title, format!("{expect}Z"), "the edit persisted");
     }
@@ -5823,7 +6895,9 @@ mod tests {
         assert_eq!(after_stroke.stroke, "text");
         assert!(after_stroke.stroke_width >= 1.0, "a freshly stroked element gets a default width");
 
-        app.apply_hit(&mut doc, Hit::FontDelta(6.0));
+        // Font size now writes through the NumberInput's commit path
+        // (`set_sel_f64`), exercised directly here.
+        app.set_sel_f64(&mut doc, "font_size", el0.font_size + 6.0);
         assert!((loaded(&doc).slides[0].element(&id).unwrap().font_size - (el0.font_size + 6.0)).abs() < 0.001);
 
         app.apply_hit(&mut doc, Hit::ToggleBold);
@@ -5831,8 +6905,10 @@ mod tests {
         app.apply_hit(&mut doc, Hit::ToggleItalic);
         assert!(loaded(&doc).slides[0].element(&id).unwrap().italic);
 
-        app.apply_hit(&mut doc, Hit::CycleAlign);
+        app.apply_hit(&mut doc, Hit::SetAlign(TextAlign::Center));
         assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().align, TextAlign::Center);
+        app.apply_hit(&mut doc, Hit::SetAlign(TextAlign::Justify));
+        assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().align, TextAlign::Justify);
 
         app.apply_hit(&mut doc, Hit::BringFront);
         let zf = loaded(&doc).slides[0].element(&id).unwrap().z;
