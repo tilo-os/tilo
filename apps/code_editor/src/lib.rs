@@ -17,6 +17,7 @@ mod editor_view;
 mod file_tree;
 mod highlight;
 mod lint;
+mod lsp;
 mod model;
 mod sample_project;
 mod status_bar;
