@@ -35,7 +35,7 @@ jobs:
             libseat-devel libinput-devel systemd-devel libdrm-devel \
             mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
             pipewire-devel \
-            ffmpeg-devel libva-devel \
+            ffmpeg-free-devel libva-devel \
             openssl-devel sqlite-devel zlib-ng-compat-devel \
             fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
             nasm \
