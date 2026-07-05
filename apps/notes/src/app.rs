@@ -658,6 +658,33 @@ impl NotesApp {
                 // local page's meta) and to disk via `persist()` below.
                 self.workspace.move_sibling(id, delta);
             }
+            OutEvent::Reparent { id, new_parent, before } => {
+                // Drag-drop reorder / re-parent. The new `parent` + `order`
+                // propagate to the shared doc on the next `sync` and to
+                // disk via `persist()` below. `move_to` rejects cycles.
+                self.workspace.move_to(id, new_parent, before);
+            }
+            OutEvent::Duplicate(id) => {
+                self.flush_main_panel_edit();
+                if let Some((new_root, mapping)) = self.workspace.duplicate_page(id) {
+                    // Copy each source page's body onto its fresh copy id so
+                    // the duplicated subtree has independent content on disk.
+                    for (old, new) in &mapping {
+                        let body =
+                            storage::read_page_body(&self.root, *old).unwrap_or_default();
+                        if let Err(e) = storage::write_page_body(&self.root, *new, &body) {
+                            tracing::error!(error = %e, page = %new, "notes: duplicate body write failed");
+                        }
+                    }
+                    self.workspace.set_selected(Some(new_root));
+                    if let Some(meta) = self.workspace.get(new_root) {
+                        let title = meta.title.clone();
+                        let body =
+                            storage::read_page_body(&self.root, new_root).unwrap_or_default();
+                        self.load_page_with_resolver(new_root, title, body);
+                    }
+                }
+            }
         }
         // After every event refresh the link pages so the popovers
         // see fresh titles.
@@ -849,6 +876,31 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_new_page_btn_center_for_test(&self) -> Point {
         self.sidebar.new_page_btn_center_for_test()
+    }
+
+    /// Test hook: whether a live page-tree drag is in flight.
+    #[doc(hidden)]
+    pub fn sidebar_drag_active_for_test(&self) -> bool {
+        self.sidebar.drag_active_for_test()
+    }
+
+    /// Test hook: the live reflow shift for sidebar row `idx` (non-zero
+    /// while the list reflows to open the drop gap).
+    #[doc(hidden)]
+    pub fn sidebar_row_shift_for_test(&self, idx: usize) -> f64 {
+        self.sidebar.row_shift_for_test(idx)
+    }
+
+    /// Test hook: whether the sidebar's right-click context menu is open.
+    #[doc(hidden)]
+    pub fn sidebar_menu_open_for_test(&self) -> bool {
+        self.sidebar.context_menu_open_for_test()
+    }
+
+    /// Test hook: whether the editor's `/` block menu is visible.
+    #[doc(hidden)]
+    pub fn editor_slash_menu_visible_for_test(&self) -> bool {
+        self.main.editor().slash_menu_visible()
     }
 
     /// Test hook: drop the editor's keyboard focus so global single-key
@@ -1503,9 +1555,20 @@ impl Widget for NotesApp {
             }
         }
 
+        // Modal focus capture: while the editor's `/` block menu (or the
+        // `[[` link popover) is open, keyboard nav belongs to it — not the
+        // page list behind it; symmetrically, while the sidebar's
+        // right-click menu is open, keyboard nav belongs to the menu, not
+        // the editor. Mouse events still reach both panes (a click only
+        // ever hits one pane's rect), so we only gate keyboard routing.
+        let is_keyboard = matches!(event, WindowEvent::KeyboardInput { .. });
+        let editor_menu_open = self.main.editor().slash_menu_visible()
+            || self.main.editor().link_popover().is_visible();
+        let sidebar_menu_open = self.sidebar.menu_is_open();
+
         // Route to the inline sidebar only when it's actually on screen
         // (wide mode). In narrow mode the drawer block above owns it.
-        if !self.built_narrow {
+        if !self.built_narrow && !(editor_menu_open && is_keyboard) {
             if let Some(n) = self.sidebar_node {
                 self.sidebar.handle_event(
                     event,
@@ -1522,18 +1585,20 @@ impl Widget for NotesApp {
             // Drain any commands the sidebar produced.
             self.drain_sidebar_events();
         }
-        if let Some(n) = self.main_node {
-            self.main.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+        if !(sidebar_menu_open && is_keyboard) {
+            if let Some(n) = self.main_node {
+                self.main.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
         }
         // After every event, observe the editor's dirty flag and
         // request a debounced save if the user just edited.

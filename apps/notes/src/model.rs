@@ -196,6 +196,149 @@ impl Workspace {
         true
     }
 
+    /// True when `maybe_ancestor` is `id` itself or one of its
+    /// ancestors. Used to reject re-parenting a page under its own
+    /// descendant (which would create a cycle in the tree).
+    pub fn is_ancestor(&self, maybe_ancestor: PageId, id: PageId) -> bool {
+        let mut cur = Some(id);
+        let mut hops = 0;
+        while let Some(c) = cur {
+            if c == maybe_ancestor {
+                return true;
+            }
+            if hops > 4096 {
+                break; // corrupt cycle guard
+            }
+            cur = self.get(c).and_then(|p| p.parent);
+            hops += 1;
+        }
+        false
+    }
+
+    /// Move `id` under `new_parent` (None = root), positioned
+    /// immediately before sibling `before` among the new parent's
+    /// children — or appended when `before` is `None`. Backs the
+    /// sidebar's drag-to-reorder + re-parent drop.
+    ///
+    /// Returns `false` (a no-op) when `id` doesn't exist or the move
+    /// would create a cycle (`new_parent` is `id` or a descendant of
+    /// `id`). Both the old and new sibling groups are re-densified so
+    /// `order` stays contiguous.
+    pub fn move_to(
+        &mut self,
+        id: PageId,
+        new_parent: Option<PageId>,
+        before: Option<PageId>,
+    ) -> bool {
+        if self.get(id).is_none() {
+            return false;
+        }
+        // Cycle guard: a page can't become a child of itself or of one
+        // of its own descendants.
+        if let Some(np) = new_parent {
+            if np == id || self.is_ancestor(id, np) {
+                return false;
+            }
+        }
+        let old_parent = self.get(id).and_then(|p| p.parent);
+        // Target sibling order (by id), with `id` removed so we can slot
+        // it back in at the requested position.
+        let mut siblings: Vec<PageId> = self
+            .children_of(new_parent)
+            .iter()
+            .map(|p| p.id)
+            .filter(|s| *s != id)
+            .collect();
+        let insert_at = match before {
+            Some(b) if b != id => {
+                siblings.iter().position(|s| *s == b).unwrap_or(siblings.len())
+            }
+            _ => siblings.len(),
+        };
+        siblings.insert(insert_at, id);
+        // Commit the new parent, then rewrite the whole group's order.
+        if let Some(p) = self.get_mut(id) {
+            p.parent = new_parent;
+        }
+        for (i, sid) in siblings.iter().enumerate() {
+            if let Some(p) = self.get_mut(*sid) {
+                p.order = i as u32;
+            }
+        }
+        // If the page left a different group, re-densify the one it left.
+        if old_parent != new_parent {
+            self.renumber_siblings(old_parent);
+        }
+        true
+    }
+
+    /// Deep-copy `id` and its entire subtree, inserting the copy as the
+    /// next sibling right after `id`. Every copied page gets a fresh
+    /// `PageId`; the subtree's internal parent links are rewired to the
+    /// copies so the duplicate is fully independent.
+    ///
+    /// Returns `(new_root, mapping)` where `mapping` pairs each source
+    /// page id with its fresh copy id — the storage layer walks it to
+    /// duplicate the `{uuid}.md` body files. `None` when `id` is unknown.
+    pub fn duplicate_page(&mut self, id: PageId) -> Option<(PageId, Vec<(PageId, PageId)>)> {
+        let src = self.get(id)?.clone();
+        // Visit the subtree parents-before-children so a child's rewired
+        // parent id already exists in the map.
+        let mut order_list: Vec<PageId> = Vec::new();
+        let mut stack = vec![id];
+        while let Some(cur) = stack.pop() {
+            order_list.push(cur);
+            for child in self.children_of(Some(cur)) {
+                stack.push(child.id);
+            }
+        }
+        let mut map: HashMap<PageId, PageId> = HashMap::new();
+        let mut mapping: Vec<(PageId, PageId)> = Vec::with_capacity(order_list.len());
+        for old in &order_list {
+            let new = Uuid::new_v4();
+            map.insert(*old, new);
+            mapping.push((*old, new));
+        }
+        let new_root = map[&id];
+        // The sibling `id` currently sits before in its group — insert the
+        // copy right after it (before the sibling that follows `id`).
+        let after_sibling = {
+            let group: Vec<PageId> =
+                self.children_of(src.parent).iter().map(|p| p.id).collect();
+            group
+                .iter()
+                .position(|s| *s == id)
+                .and_then(|pos| group.get(pos + 1).copied())
+        };
+        // Materialise every cloned meta, then append them in one pass.
+        let mut new_metas: Vec<PageMeta> = Vec::with_capacity(order_list.len());
+        for old in &order_list {
+            let meta = self.get(*old).expect("subtree page exists");
+            let new_id = map[old];
+            let new_parent = if *old == id {
+                src.parent
+            } else {
+                meta.parent.map(|p| map.get(&p).copied().unwrap_or(p))
+            };
+            let title = if *old == id {
+                format!("{} copy", meta.title)
+            } else {
+                meta.title.clone()
+            };
+            new_metas.push(PageMeta {
+                id: new_id,
+                title,
+                parent: new_parent,
+                order: meta.order,
+            });
+        }
+        self.data.pages.extend(new_metas);
+        // Position the copy immediately after the source among its
+        // siblings (move_to also re-densifies the group's order).
+        self.move_to(new_root, src.parent, after_sibling);
+        Some((new_root, mapping))
+    }
+
     /// Re-densify `order` on the children of `parent`. Stable: keeps
     /// the existing relative order, just rewrites the values as 0, 1,
     /// 2, ... so the contract "siblings have contiguous order from 0"
@@ -382,6 +525,83 @@ mod tests {
         assert_eq!(kids, vec![y, x]);
         let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
         assert_eq!(roots, vec![root, sib]);
+        w.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn move_to_reorders_within_a_sibling_group() {
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        let b = w.create_page(None);
+        let c = w.create_page(None);
+        // Move `c` to before `a` → [c, a, b].
+        assert!(w.move_to(c, None, Some(a)));
+        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![c, a, b]);
+        w.check_invariants().unwrap();
+        // Append `c` to the end (before = None) → [a, b, c].
+        assert!(w.move_to(c, None, None));
+        let ids: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![a, b, c]);
+        w.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn move_to_reparents_page_as_child() {
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        let b = w.create_page(None);
+        // Re-parent `b` under `a`.
+        assert!(w.move_to(b, Some(a), None));
+        assert_eq!(w.get(b).unwrap().parent, Some(a));
+        assert_eq!(w.children_of(None).len(), 1, "b left the root group");
+        let kids: Vec<_> = w.children_of(Some(a)).iter().map(|p| p.id).collect();
+        assert_eq!(kids, vec![b]);
+        w.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn move_to_rejects_cycles() {
+        let mut w = Workspace::new();
+        let root = w.create_page(None);
+        let child = w.create_page(Some(root));
+        // Can't move `root` under its own descendant.
+        assert!(!w.move_to(root, Some(child), None));
+        // Can't move a page under itself.
+        assert!(!w.move_to(root, Some(root), None));
+        assert_eq!(w.get(root).unwrap().parent, None);
+        w.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn duplicate_page_deep_copies_subtree_after_source() {
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        w.rename(a, "Projects");
+        let child = w.create_page(Some(a));
+        w.rename(child, "Launch");
+        let grand = w.create_page(Some(child));
+        w.rename(grand, "Tasks");
+        let sib = w.create_page(None);
+        w.rename(sib, "Inbox");
+
+        let (new_root, mapping) = w.duplicate_page(a).expect("duplicate");
+        // Fresh ids for every node in the subtree (root + child + grand).
+        assert_eq!(mapping.len(), 3);
+        assert!(mapping.iter().all(|(old, new)| old != new));
+        // The copy sits right after the source among root siblings.
+        let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
+        assert_eq!(roots, vec![a, new_root, sib], "copy lands after the source");
+        // Copy carries a " copy" title and an independent subtree.
+        assert_eq!(w.get(new_root).unwrap().title, "Projects copy");
+        let copy_children = w.children_of(Some(new_root));
+        assert_eq!(copy_children.len(), 1);
+        assert_eq!(copy_children[0].title, "Launch");
+        let copy_grand = w.children_of(Some(copy_children[0].id));
+        assert_eq!(copy_grand.len(), 1);
+        assert_eq!(copy_grand[0].title, "Tasks");
+        // Original subtree is untouched (still 3 originals + 3 copies + sib).
+        assert_eq!(w.children_of(Some(a)).len(), 1);
         w.check_invariants().unwrap();
     }
 

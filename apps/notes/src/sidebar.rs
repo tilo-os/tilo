@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -33,6 +33,8 @@ use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::drag::{DragController, ListMetrics};
 use ui::widget::TextInput;
 
 use crate::model::{PageId, Workspace};
@@ -74,6 +76,45 @@ pub enum OutEvent {
     /// Reorder `id` among its siblings: `delta < 0` moves it earlier,
     /// `delta > 0` later. Backs the Alt-↑ / Alt-↓ reorder shortcut.
     Move { id: PageId, delta: i32 },
+    /// Re-parent / reorder `id` to be a child of `new_parent` (None =
+    /// root), inserted immediately before sibling `before` (None =
+    /// append to the group). Backs the drag-to-reorder + re-parent drop.
+    Reparent {
+        id: PageId,
+        new_parent: Option<PageId>,
+        before: Option<PageId>,
+    },
+    /// Deep-copy `id` and its subtree, placing the copy right after it.
+    /// Backs the context menu's "Duplicate".
+    Duplicate(PageId),
+}
+
+/// The action a context-menu row triggers. Kept in a parallel vector to
+/// the menu's items so the `take_selection()` index maps back to intent.
+#[derive(Clone, Copy, Debug)]
+enum RowAction {
+    Delete,
+    Duplicate,
+    NewChild,
+    Rename,
+}
+
+/// The resolved outcome of the current drag position — what a drop here
+/// would do, plus the geometry the drop feedback paints.
+enum DropPlan {
+    /// Re-parent onto row `row` (append as the target page's last child).
+    Onto { row: usize, page: PageId },
+    /// Sibling insertion: the dragged page lands at flat index `to`
+    /// (the primitive's live target), resolving to (`parent`, `before`).
+    /// The caret paints at `to`, indented to `depth`.
+    Seam {
+        to: usize,
+        depth: usize,
+        parent: Option<PageId>,
+        before: Option<PageId>,
+    },
+    /// Dropped outside the droppable area — cancel, no change.
+    Cancel,
 }
 
 /// What the sidebar is doing this frame: idle, or actively renaming
@@ -121,6 +162,15 @@ pub struct NoteTreeView {
     /// flips this on. Worth optimising later when we have profiler
     /// evidence that the sidebar is a hotspot.
     dirty: bool,
+    /// Drag-to-reorder controller (shared toolkit primitive). Drives the
+    /// floating ghost, the live reflow gap, and the insertion index; the
+    /// model is only mutated on drop (or not at all on cancel).
+    drag: DragController<PageId>,
+    /// Right-click context menu on a page row.
+    menu: ContextMenu,
+    /// The page the open context menu targets. Its rows map back to
+    /// intent by fixed index (see `apply_menu_selection`).
+    menu_target: Option<PageId>,
 }
 
 struct RowEntry {
@@ -128,6 +178,7 @@ struct RowEntry {
     title: String,
     depth: usize,
     has_children: bool,
+    parent: Option<PageId>,
 }
 
 struct ClickRecord {
@@ -154,6 +205,9 @@ impl NoteTreeView {
             pending_events: Vec::new(),
             rows_dirty: false,
             dirty: true,
+            drag: DragController::vertical(),
+            menu: ContextMenu::new(),
+            menu_target: None,
         }
     }
 
@@ -203,6 +257,7 @@ impl NoteTreeView {
             title: page.title.clone(),
             depth,
             has_children,
+            parent: page.parent,
         });
         if self.expanded.contains(&id) {
             for child in children {
@@ -245,6 +300,185 @@ impl NoteTreeView {
             }
             self.dirty = true;
         }
+    }
+
+    // ---- drag-to-reorder + re-parent ---------------------------------
+
+    /// Uniform geometry of the visible row list along the drag axis, for
+    /// the toolkit's [`DragController`]. Rows are contiguous
+    /// (`ROW_HEIGHT` pitch, no gap) starting just below the header.
+    fn list_metrics(&self) -> ListMetrics {
+        ListMetrics::uniform(
+            self.rect.y0 + HEADER_HEIGHT,
+            ROW_HEIGHT,
+            0.0,
+            self.flat_rows.len(),
+        )
+    }
+
+    /// The row index whose *middle band* the cursor is over, when that
+    /// row is a valid re-parent target (not the dragged row and not one
+    /// of its descendants). Dropping here nests the dragged page as that
+    /// row's child.
+    fn onto_target(&self, pt: Point) -> Option<usize> {
+        let from = self.drag.from_index()?;
+        if pt.x < self.rect.x0 || pt.x > self.rect.x1 {
+            return None;
+        }
+        let n = self.flat_rows.len();
+        let list_top = self.rect.y0 + HEADER_HEIGHT;
+        let rel = pt.y - list_top;
+        if rel < 0.0 {
+            return None;
+        }
+        let raw = (rel / ROW_HEIGHT).floor() as usize;
+        if raw >= n {
+            return None;
+        }
+        let frac = (rel / ROW_HEIGHT) - raw as f64;
+        if raw == from || self.is_descendant_of_dragged(raw, from) {
+            return None;
+        }
+        // Central 40% band reads as "into this page"; the top/bottom
+        // quarters read as "between rows".
+        if (0.30..=0.70).contains(&frac) {
+            Some(raw)
+        } else {
+            None
+        }
+    }
+
+    /// True when flat row `row` is `from` itself or nested under it —
+    /// i.e. dropping into it would fold the dragged subtree into its own
+    /// branch. Walks the visible rows' parent links.
+    fn is_descendant_of_dragged(&self, row: usize, from: usize) -> bool {
+        let dragged = self.flat_rows[from].id;
+        let mut cur = Some(self.flat_rows[row].id);
+        let mut hops = 0;
+        while let Some(c) = cur {
+            if c == dragged {
+                return true;
+            }
+            if hops > 4096 {
+                break;
+            }
+            cur = self.flat_rows.iter().find(|r| r.id == c).and_then(|r| r.parent);
+            hops += 1;
+        }
+        false
+    }
+
+    /// Resolve the primitive's live target index `to` (the seam the ghost
+    /// would drop into) to a `(parent, before, depth)` sibling insertion,
+    /// derived from the rows either side of the seam with the dragged row
+    /// removed.
+    fn seam_target(&self, to: usize, from: usize) -> (Option<PageId>, Option<PageId>, usize) {
+        let reduced: Vec<&RowEntry> = self
+            .flat_rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != from)
+            .map(|(_, r)| r)
+            .collect();
+        let above = if to == 0 { None } else { reduced.get(to - 1).copied() };
+        let below = reduced.get(to).copied();
+        match (above, below) {
+            // Insert as a sibling of the row just below the seam, before
+            // it. When `below` is deeper than `above` (right after an
+            // expanded parent) this nests the page as that parent's first
+            // child — a valid "drop into a page".
+            (_, Some(b)) => (b.parent, Some(b.id), b.depth),
+            // Past the last row: append to the last row's own group.
+            (Some(a), None) => (a.parent, None, a.depth),
+            (None, None) => (None, None, 0),
+        }
+    }
+
+    /// What a drop at the current cursor would do (feedback + commit share
+    /// this single source of truth). `Cancel` when the pointer has left
+    /// the droppable area.
+    fn drop_plan(&self, pt: Point) -> DropPlan {
+        let Some(from) = self.drag.from_index() else {
+            return DropPlan::Cancel;
+        };
+        let n = self.flat_rows.len();
+        if n == 0 {
+            return DropPlan::Cancel;
+        }
+        // Dropped clear of the sidebar column → cancel.
+        if pt.x < self.rect.x0 - 40.0 || pt.x > self.rect.x1 + 40.0 {
+            return DropPlan::Cancel;
+        }
+        let list_top = self.rect.y0 + HEADER_HEIGHT;
+        let list_bottom = list_top + n as f64 * ROW_HEIGHT;
+        if pt.y < list_top - ROW_HEIGHT || pt.y > list_bottom + ROW_HEIGHT {
+            return DropPlan::Cancel;
+        }
+        if let Some(row) = self.onto_target(pt) {
+            return DropPlan::Onto { row, page: self.flat_rows[row].id };
+        }
+        let to = self.drag.insertion().unwrap_or(from);
+        let (parent, before, depth) = self.seam_target(to, from);
+        DropPlan::Seam { to, depth, parent, before }
+    }
+
+    // ---- context menu ------------------------------------------------
+
+    /// Open the right-click context menu for `page` at `at`, seeding its
+    /// action rows (Delete, Duplicate, New child, Rename).
+    fn open_context_menu(&mut self, page: PageId, at: Point) {
+        self.menu_target = Some(page);
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("New child", || {}));
+        menu.push(MenuItem::action("Rename", || {}));
+        menu.push(MenuItem::action("Duplicate", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Delete", || {}));
+        // The separator sits between "Duplicate" and "Delete"; keep the
+        // action list aligned to the *action* rows only (see the index
+        // remap in `apply_menu_selection`).
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.menu = menu;
+        self.dirty = true;
+    }
+
+    /// Map the menu's selected item index (which counts separators) back
+    /// to a [`RowAction`] and enqueue the matching command.
+    fn apply_menu_selection(&mut self, item_index: usize) {
+        let Some(page) = self.menu_target else { return };
+        // Menu rows: 0 New child, 1 Rename, 2 Duplicate, 3 Separator,
+        // 4 Delete. The separator (index 3) maps to no action.
+        let action = match item_index {
+            0 => Some(RowAction::NewChild),
+            1 => Some(RowAction::Rename),
+            2 => Some(RowAction::Duplicate),
+            4 => Some(RowAction::Delete),
+            _ => None,
+        };
+        let Some(action) = action else { return };
+        match action {
+            RowAction::NewChild => {
+                self.pending_events
+                    .push(OutEvent::CreateChild { parent: Some(page) });
+                // Reveal the new child by expanding the parent.
+                self.expanded.insert(page);
+                self.rows_dirty = true;
+            }
+            RowAction::Rename => {
+                if let Some(idx) = self.row_index_of(page) {
+                    let title = self.flat_rows[idx].title.clone();
+                    self.begin_rename(page, &title);
+                }
+            }
+            RowAction::Duplicate => {
+                self.pending_events.push(OutEvent::Duplicate(page));
+            }
+            RowAction::Delete => {
+                self.pending_events.push(OutEvent::Delete(page));
+            }
+        }
+        self.menu_target = None;
+        self.dirty = true;
     }
 }
 
@@ -392,14 +626,49 @@ impl Widget for NoteTreeView {
             None,
         );
 
+        // Drag feedback: keep the reflow gap pinned to the cursor, then
+        // resolve what a drop here would do so the rows reflow and the
+        // drop indicator match the eventual commit.
+        let metrics = self.list_metrics();
+        let drag_active = self.drag.is_active();
+        if drag_active {
+            self.drag.sync_insertion(&metrics);
+        }
+        let from_idx = self.drag.from_index();
+        let plan = if drag_active {
+            self.last_cursor.map(|p| self.drop_plan(p))
+        } else {
+            None
+        };
+        let seam_mode = matches!(plan, Some(DropPlan::Seam { .. }));
+
         for (i, row) in self.flat_rows.iter().enumerate() {
             // `row_rects` is rebuilt in `apply_layout`; a collab-driven
             // `sync` can grow `flat_rows` a frame before the relayout
             // lands, so guard rather than index out of bounds. The row
             // appears next frame once layout catches up.
-            let Some(&row_rect) = self.row_rects.get(i) else {
+            let Some(&base_rect) = self.row_rects.get(i) else {
                 break;
             };
+            // The dragged row paints as the floating ghost instead of in
+            // place.
+            if drag_active && Some(i) == from_idx {
+                continue;
+            }
+            // In seam mode the toolkit's reflow slides each other row to
+            // open the gap at the drop target; onto / no-drop modes leave
+            // rows put.
+            let shift = if seam_mode {
+                self.drag.item_shift(i, &metrics)
+            } else {
+                0.0
+            };
+            let row_rect = Rect::new(
+                base_rect.x0,
+                base_rect.y0 + shift,
+                base_rect.x1,
+                base_rect.y1 + shift,
+            );
             if self.selected == Some(row.id) {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -457,9 +726,86 @@ impl Widget for NoteTreeView {
             }
         }
 
+        // Drop indicator.
+        match &plan {
+            Some(DropPlan::Onto { row, .. }) => {
+                // Re-parent: outline the target page so it reads as "drop
+                // in here".
+                if let Some(&rr) = self.row_rects.get(*row) {
+                    let shape = RoundedRect::from_rect(rr.inset(-1.0), tokens.radii.sm as f64);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme.accent_primary.with_alpha_factor(0.20),
+                        None,
+                        &shape,
+                    );
+                    scene.stroke(
+                        &Stroke::new(1.5),
+                        transform,
+                        theme.accent_primary,
+                        None,
+                        &shape,
+                    );
+                }
+            }
+            Some(DropPlan::Seam { to, depth, .. }) => {
+                // Reorder: an accent caret between rows, indented to the
+                // depth the page would land at (so nesting is visible).
+                let y = metrics.slot_lead(*to);
+                let x0 = self.rect.x0 + (*depth as f64) * INDENT_PX + 6.0;
+                let caret = RoundedRect::new(x0, y - 1.5, self.rect.x1 - 6.0, y + 1.5, 1.5);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.accent_primary,
+                    None,
+                    &caret,
+                );
+            }
+            _ => {}
+        }
+
         // Paint the embedded rename editor *over* the row.
         if let Some(r) = &mut self.rename {
             r.input.draw(scene, transform, text_renderer, theme, presence);
+        }
+
+        // Floating ghost: a half-transparent copy of the dragged row
+        // following the cursor at its grab offset, drawn above the
+        // reflowing list.
+        if drag_active {
+            if let (Some(fi), Some(ghost)) =
+                (from_idx, self.drag.ghost_rect(self.rect.x0, self.rect.x1, &metrics))
+            {
+                if let Some(row) = self.flat_rows.get(fi) {
+                    let shape = RoundedRect::from_rect(ghost, tokens.radii.sm as f64);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.surfaces.overlay.with_alpha_factor(0.85),
+                        None,
+                        &shape,
+                    );
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        theme.accent_primary.with_alpha_factor(0.7),
+                        None,
+                        &shape,
+                    );
+                    let label_x = ghost.x0 + GLYPH_WIDTH;
+                    let text_y = ghost.y0 + (ROW_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
+                    text_renderer.draw_text(
+                        scene,
+                        &row.title,
+                        ROW_TEXT_SIZE,
+                        tokens.colors.text_primary,
+                        transform * Affine::translate((label_x, text_y)),
+                        Some((ghost.x1 - label_x - 4.0) as f32),
+                    );
+                }
+            }
         }
 
         // Focus ring around the whole sidebar when the panel itself
@@ -474,6 +820,9 @@ impl Widget for NoteTreeView {
                 &self.rect,
             );
         }
+
+        // Context menu paints last so it sits above every row.
+        self.menu.draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -489,6 +838,52 @@ impl Widget for NoteTreeView {
         taffy: &TaffyTree<()>,
     ) {
         self.last_modifiers = modifiers.state();
+
+        // While the right-click context menu is open it captures input:
+        // route the event to it, then apply whatever the user chose. It
+        // dismisses itself on Escape or a click outside its rect.
+        if self.menu.is_open() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor =
+                    Some(Point::new(position.x / scale_factor, position.y / scale_factor));
+            }
+            let mut menu_handled = false;
+            let mut ft = *focus_target;
+            self.menu.handle_event(
+                event, scale_factor, modifiers, state, path, &mut menu_handled, &mut ft,
+                node_id, taffy,
+            );
+            if let Some(idx) = self.menu.take_selection() {
+                self.apply_menu_selection(idx);
+            }
+            if menu_handled || !self.menu.is_open() {
+                self.dirty = true;
+            }
+            if menu_handled {
+                *handled = true;
+                return;
+            }
+        }
+
+        // Escape aborts an in-flight drag, snapping the list back to its
+        // original order (the model is only mutated on a real drop).
+        if self.drag.is_pending() {
+            if let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+            {
+                self.drag.cancel();
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+        }
 
         // Route everything to the active rename editor first — it
         // owns focus while open. Enter / Escape are handled by us
@@ -551,6 +946,87 @@ impl Widget for NoteTreeView {
                 if hover != self.new_page_btn_hover {
                     self.new_page_btn_hover = hover;
                     self.dirty = true;
+                }
+                // Feed the drag controller: it promotes to a live reorder
+                // past the threshold and re-pins the reflow gap to the
+                // cursor. Redraw every move while a drag is latched so the
+                // floating ghost tracks the pointer.
+                if self.drag.is_pending() {
+                    let metrics = self.list_metrics();
+                    self.drag.pointer_moved(pt, &metrics);
+                    self.dirty = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.drag.is_pending() {
+                    let active = self.drag.is_active();
+                    let dragged = self.drag.dragged_id().copied();
+                    let pt = self.last_cursor.unwrap_or(Point::ZERO);
+                    let plan = if active {
+                        self.drop_plan(pt)
+                    } else {
+                        DropPlan::Cancel
+                    };
+                    // Clear the session first — the model is mutated only
+                    // through the event we enqueue below, so a cancel is a
+                    // no-op by construction.
+                    self.drag.cancel();
+                    if let (true, Some(id)) = (active, dragged) {
+                        match plan {
+                            DropPlan::Onto { page, .. } => {
+                                self.pending_events.push(OutEvent::Reparent {
+                                    id,
+                                    new_parent: Some(page),
+                                    before: None,
+                                });
+                                // Reveal the moved page under its new parent.
+                                self.expanded.insert(page);
+                                self.rows_dirty = true;
+                                *handled = true;
+                            }
+                            DropPlan::Seam { parent, before, .. } => {
+                                self.pending_events.push(OutEvent::Reparent {
+                                    id,
+                                    new_parent: parent,
+                                    before,
+                                });
+                                *handled = true;
+                            }
+                            DropPlan::Cancel => {}
+                        }
+                    }
+                    self.dirty = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let Some(pt) = self.last_cursor else { return };
+                if !self.rect.contains(pt) {
+                    return;
+                }
+                // Open the context menu on whichever row was right-clicked.
+                for i in 0..self.flat_rows.len() {
+                    let Some(&row_rect) = self.row_rects.get(i) else {
+                        break;
+                    };
+                    if row_rect.contains(pt) {
+                        let page = self.flat_rows[i].id;
+                        // Right-click also selects, matching every file tree.
+                        self.selected = Some(page);
+                        self.pending_events.push(OutEvent::Select(page));
+                        self.is_focused = true;
+                        *focus_target = Some(node_id);
+                        self.open_context_menu(page, pt);
+                        *handled = true;
+                        return;
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -623,6 +1099,13 @@ impl Widget for NoteTreeView {
                     self.pending_events.push(OutEvent::Select(row_id));
                     self.is_focused = true;
                     *focus_target = Some(node_id);
+                    // Arm a drag on this row. It only promotes to a live
+                    // reorder once the pointer clears the threshold; a
+                    // release without movement stays a plain click (the
+                    // select above already happened).
+                    let metrics = self.list_metrics();
+                    let grab = pt.y - metrics.slot_lead(i);
+                    self.drag.begin(row_id, i, grab, pt);
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -751,6 +1234,13 @@ impl Widget for NoteTreeView {
         self.is_focused
     }
 
+    /// A latched drag (or an open context menu) wants to keep receiving
+    /// pointer events even when the cursor leaves the sidebar rect, so the
+    /// ghost keeps tracking and the drop still resolves.
+    fn wants_pointer_capture(&self) -> bool {
+        self.drag.wants_capture() || self.menu.is_open()
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -763,6 +1253,13 @@ impl Widget for NoteTreeView {
 impl NoteTreeView {
     fn row_index_of(&self, id: PageId) -> Option<usize> {
         self.flat_rows.iter().position(|r| r.id == id)
+    }
+
+    /// Whether the right-click context menu is currently open. Read by
+    /// the parent app so it can route keyboard nav to the menu (and away
+    /// from the page list / editor) while it's up.
+    pub fn menu_is_open(&self) -> bool {
+        self.menu.is_open()
     }
 
     /// Used by tests + the parent: how many rows the tree exposes
@@ -784,6 +1281,26 @@ impl NoteTreeView {
     #[doc(hidden)]
     pub fn new_page_btn_center_for_test(&self) -> Point {
         self.new_page_btn_rect.center()
+    }
+
+    /// Test hook: whether a live drag (past the threshold) is in flight.
+    #[doc(hidden)]
+    pub fn drag_active_for_test(&self) -> bool {
+        self.drag.is_active()
+    }
+
+    /// Test hook: the live reflow shift the toolkit computes for row
+    /// `idx` this frame — non-zero means the list is visibly reflowing to
+    /// open the drop gap.
+    #[doc(hidden)]
+    pub fn row_shift_for_test(&self, idx: usize) -> f64 {
+        self.drag.item_shift(idx, &self.list_metrics())
+    }
+
+    /// Test hook: whether the right-click context menu is open.
+    #[doc(hidden)]
+    pub fn context_menu_open_for_test(&self) -> bool {
+        self.menu.is_open()
     }
 }
 
