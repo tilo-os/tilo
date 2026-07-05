@@ -75,3 +75,22 @@ independence + Rust-native + already-integrated, but isn't production-serious ye
 Recommendation captured in chat; see the discussion for the two-track proposal
 (Servo as the endgame; a serious interim engine chosen by which goal is sacrificed
 short-term).
+
+## Functional status (2026-07-05 code audit)
+
+Read from the code, not screenshots. Dominant pattern: real engine/read path,
+stubbed or absent write/action/connect path (a wiring job, not a rebuild).
+
+- **real**: notes, sheets, file-explorer, calculator, contacts, pdf_viewer
+  (fallback-text only), typst_editor, browser (engine), feeds, ebook, totp,
+  weather, maps, monitor, api_tester, logs, git_client, containers, permissions
+  (authoring), software_store, camera (feature-gated).
+- **partial** (real engine, stubbed write/action/connect): word-processor,
+  terminal, slides (no save), video_editor (no decode/export), music (default
+  silent), calendar (no delete), chat (calls stubbed), disks, snippets, themes,
+  firewall, vpn, imager (fake write), hex_editor (no save), db_client (demo DB),
+  diffmerge (no save), code_editor, osk, settings.
+- **shell** (no real backend): mail (no IMAP/SMTP), remote, backups, tube default.
+
+**Focus-gap priority:** mail engine → slides .odp save → calendar delete →
+browser ad-block → pdf pdfium text → video decode/export → chat calls → tube live.
