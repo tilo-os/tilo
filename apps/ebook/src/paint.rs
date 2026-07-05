@@ -92,6 +92,34 @@ pub fn chevron_right(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: 
     );
 }
 
+/// A horizontal three-dot "more/overflow" glyph.
+pub fn dots(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
+    let (x, y, s) = box_of(rect, 0.3);
+    let cy = y + s / 2.0;
+    let r = (s * 0.09).max(1.2);
+    for i in 0..3 {
+        let cx = x + s * (0.12 + 0.38 * i as f64);
+        circle(scene, t, Point::new(cx, cy), r, color);
+    }
+}
+
+/// A downward chevron (dropdown affordance).
+pub fn chevron_down(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
+    let (x, y, s) = box_of(rect, 0.3);
+    let cy = y + s * 0.38;
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(x + s * 0.18, cy),
+            Point::new(x + s * 0.5, cy + s * 0.32),
+            Point::new(x + s * 0.82, cy),
+        ],
+        color,
+        w,
+    );
+}
+
 pub fn plus(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.3);
     line(scene, t, Point::new(x, y + s / 2.0), Point::new(x + s, y + s / 2.0), color, w);
@@ -157,6 +185,41 @@ pub fn bookmark(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64, 
     } else {
         scene.stroke(&rstroke(w), t, color, None, &p);
     }
+}
+
+/// A small pencil glyph — the "this text is editable" affordance.
+pub fn pencil(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
+    let (x, y, s) = box_of(rect, 0.28);
+    // Shaft from lower-left to upper-right.
+    line(
+        scene,
+        t,
+        Point::new(x + s * 0.12, y + s * 0.88),
+        Point::new(x + s * 0.74, y + s * 0.26),
+        color,
+        w,
+    );
+    // Nib.
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(x + s * 0.12, y + s * 0.88),
+            Point::new(x + s * 0.06, y + s * 0.94),
+            Point::new(x + s * 0.28, y + s * 0.82),
+        ],
+        color,
+        w,
+    );
+    // Eraser end.
+    line(
+        scene,
+        t,
+        Point::new(x + s * 0.74, y + s * 0.26),
+        Point::new(x + s * 0.9, y + s * 0.42),
+        color,
+        w,
+    );
 }
 
 /// A small star/sparkle used as a decorative cover mark.

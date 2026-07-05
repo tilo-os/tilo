@@ -34,7 +34,7 @@ use vello::peniko::{
     ImageFormat as ImageFmt,
 };
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -122,7 +122,7 @@ struct Hit {
 
 /// A position in the current chapter's flow: a block index and a character
 /// offset into that block's canonical text ([`crate::paginate::LaidBlock::text`]).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct DocPos {
     block: usize,
     ch: usize,
@@ -196,8 +196,11 @@ enum Action {
     /// Select a registered font by id (quick-settings font pill).
     SetFont(String),
     SetReadTheme(ReadTheme),
+    /// Apply/toggle/replace a highlight colour over the current text selection.
     SetColor(HiColor),
-    SelectBlock(usize),
+    /// Begin typing a numeric value directly (text size / line spacing / a
+    /// font's size multiplier) — the value display becomes a small text field.
+    BeginEditValue(NumField),
     AddNote,
     /// Finish composing the current on-page note.
     FinishNote,
@@ -221,15 +224,25 @@ enum Action {
     DeleteScheme(String),
     EditScheme(String),
     CloseSchemeEditor,
-    /// Advance one colour slot (0=page,1=ink,2=accent) of a scheme through the
-    /// editor's colour ramp.
-    CycleSchemeColor(String, usize),
-    /// Create a new scheme derived from a single background colour.
-    NewSchemeFromBg([u8; 3]),
+    /// Open the colour picker to create a new scheme from a chosen background.
+    NewSchemeViaPicker,
+    /// Open the colour picker on one colour slot (0=page,1=ink,2=accent) of a
+    /// scheme. Every scheme colour is edited through the same picker.
+    PickSchemeColor(String, usize),
+    /// Commit the colour picker's chosen colour and close it.
+    PickerDone,
+    /// Dismiss the colour picker without applying an in-flight change.
+    PickerCancel,
+    /// Snap the picker to a hue-wheel primary (palette chips) — a fast path to a
+    /// pure hue alongside the SV square / hue strip.
+    PickerSwatch([u8; 3]),
     BeginRenameScheme(String),
 
     // --- settings screen: fonts ------------------------------------------
     SetDefaultFont(String),
+    /// Open/close the default-font dropdown at the top of the fonts manager.
+    ToggleDefaultFontMenu,
+    /// Enable/disable a font (whether it appears in the quick settings picker).
     ToggleFontShown(String),
     FontMultInc(String),
     FontMultDec(String),
@@ -238,6 +251,59 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
+
+    // --- library shelf ---------------------------------------------------
+    ToggleSortMenu,
+    SetSort(crate::model::LibrarySort),
+    ToggleHideRead,
+}
+
+/// A numeric field the user can type a value into (in addition to +/− steppers).
+#[derive(Clone, PartialEq, Eq)]
+enum NumField {
+    FontScale,
+    LineSpacing,
+    FontMult(String),
+}
+
+/// What the colour picker is editing.
+#[derive(Clone, PartialEq, Eq)]
+enum PickTarget {
+    /// Create a brand-new scheme from the chosen background colour on Done.
+    NewScheme,
+    /// Live-edit one colour slot (0=page,1=ink,2=accent) of an existing scheme.
+    Slot(String, usize),
+}
+
+/// Which sub-control of the colour picker a drag is currently steering.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickPart {
+    /// The saturation × value square.
+    Sv,
+    /// The vertical hue strip.
+    Hue,
+}
+
+/// Live colour-picker state. Colours are edited in HSV (so hue survives dragging
+/// value to black) and committed back as an sRGB triple. The one reusable picker
+/// used everywhere a colour is chosen in the reader.
+#[derive(Clone)]
+struct ColorPick {
+    target: PickTarget,
+    /// Current hue in degrees (preserved across value/sat drags on greys).
+    hue: f32,
+    sat: f32,
+    val: f32,
+}
+
+impl ColorPick {
+    fn from_rgb(target: PickTarget, rgb: [u8; 3]) -> Self {
+        let (h, s, v) = crate::model::rgb_to_hsv(rgb);
+        Self { target, hue: h, sat: s, val: v }
+    }
+    fn rgb(&self) -> [u8; 3] {
+        crate::model::hsv_to_rgb(self.hue, self.sat, self.val)
+    }
 }
 
 /// Icon glyphs the chrome draws (each maps to a `paint::*` vector helper).
@@ -251,6 +317,10 @@ enum Ico {
     Next,
     PlusI,
     MinusI,
+    /// A horizontal three-dot "more" glyph (opens the full settings screen).
+    Dots,
+    /// A downward chevron (dropdown affordance).
+    ChevDown,
 }
 
 pub struct BooksApp {
@@ -274,9 +344,17 @@ pub struct BooksApp {
     /// Annotations rail — a secondary inspector. Summoned on demand even when
     /// docked, and floats as an overlay flap below [`NOTES_BREAKPOINT`].
     notes_flap: FlapState,
+    /// The block a live text selection is anchored in — a render convenience for
+    /// positioning the floating toolbar/composer near the passage. Derived from
+    /// [`Self::sel`]; never a standalone "paragraph selection" any more.
     selected_block: Option<usize>,
-    /// Arbitrary drag text selection spanning paragraphs/pages, if any.
+    /// Arbitrary drag text selection spanning paragraphs/pages, if any. Text
+    /// selection is now the *only* annotation mechanism.
     sel: Option<TextSel>,
+    /// Timestamp + position of the last page press, for double-click (word
+    /// selection) detection.
+    last_click: Option<std::time::Instant>,
+    last_click_pos: Point,
     /// Whether the left button is currently down (for drag selection).
     mouse_down: bool,
     /// Screen point where the current press began.
@@ -287,6 +365,9 @@ pub struct BooksApp {
     dragging_sel: bool,
     /// Per-frame run geometry for pointer→DocPos hit-testing (rebuilt in draw).
     sel_runs: Vec<SelRun>,
+    /// Per-frame continuous highlight band rects (rebuilt in draw). Lets tests
+    /// assert a band fills the gaps between words on the real draw path.
+    hi_bands: Vec<Rect>,
     /// After a drag auto-advances a page, extend the selection head to the new
     /// page's end (`Some(true)`) or start (`Some(false)`) once it's laid out.
     pending_sel_edge: Option<bool>,
@@ -304,9 +385,13 @@ pub struct BooksApp {
     /// column count + row heights are known, and read back by the wheel handler
     /// (which runs before the next layout) to clamp the offset.
     shelf_max_scroll: f64,
-    /// Keyboard-focused book on the shelf. Arrow keys move it, Enter/Space
-    /// opens it — so the library is reachable without a pointer.
+    /// Keyboard-focused book on the shelf — a position within [`Self::shelf_order`]
+    /// (the filtered + sorted display order), not a raw library index.
     shelf_cursor: usize,
+    /// Original library indices in the shelf's current display order (after the
+    /// sort + hide-read filter). Rebuilt each `draw_library`; the keyboard nav
+    /// and OpenBook map a display position back to the real book through it.
+    shelf_order: Vec<usize>,
     /// Last-known column count of the shelf grid, computed in `draw_library` and
     /// read back by the keyboard handler so up/down move by a whole row.
     shelf_cols: usize,
@@ -347,6 +432,20 @@ pub struct BooksApp {
     settings_tab: SettingsTab,
     /// An in-progress inline rename, if any.
     renaming: Option<Rename>,
+    /// An in-progress click-to-type numeric edit (value + live buffer), if any.
+    num_edit: Option<(NumField, String)>,
+    /// The colour picker, when open. Editing any scheme colour routes here.
+    picker: Option<ColorPick>,
+    /// Which picker sub-control a drag currently steers.
+    pick_drag: Option<PickPart>,
+    /// Picker sub-control geometry, recorded in draw for drag hit-testing.
+    pick_sv: Rect,
+    pick_hue: Rect,
+    /// Whether the default-font dropdown (fonts manager) is open.
+    default_font_menu: bool,
+    /// Persisted shelf preferences (sort order + hide-read) and the sort menu.
+    library_prefs: crate::model::LibraryPrefs,
+    sort_menu: bool,
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
     /// Whether the "add a system font" family picker is open.
@@ -359,6 +458,8 @@ pub struct BooksApp {
     settings_max_scroll: f64,
     shelf_fraction: HashMap<String, f32>,
     shelf_annos: HashMap<String, usize>,
+    /// Last-opened timestamp per book (for the "recently opened" shelf sort).
+    shelf_opened: HashMap<String, u64>,
     last_persisted: Option<(usize, usize)>,
     cur_page_count: usize,
     seeded: bool,
@@ -414,11 +515,14 @@ impl BooksApp {
             notes_flap: FlapState::open_when_docked(),
             selected_block: None,
             sel: None,
+            last_click: None,
+            last_click_pos: Point::ZERO,
             mouse_down: false,
             press_pos: Point::ZERO,
             press_doc: None,
             dragging_sel: false,
             sel_runs: Vec::new(),
+            hi_bands: Vec::new(),
             pending_sel_edge: None,
             reader_body: (0.0, 0.0),
             page_first_doc: None,
@@ -427,6 +531,7 @@ impl BooksApp {
             shelf_scroll: 0.0,
             shelf_max_scroll: 0.0,
             shelf_cursor: 0,
+            shelf_order: Vec::new(),
             shelf_cols: 1,
             scroll_to_cursor: false,
             turn_accum: 0.0,
@@ -444,6 +549,14 @@ impl BooksApp {
             annotations: Vec::new(),
             settings_tab: SettingsTab::Fonts,
             renaming: None,
+            num_edit: None,
+            picker: None,
+            pick_drag: None,
+            pick_sv: Rect::ZERO,
+            pick_hue: Rect::ZERO,
+            default_font_menu: false,
+            library_prefs: crate::model::LibraryPrefs::default(),
+            sort_menu: false,
             editing_scheme: None,
             font_picker: false,
             picker_scroll: 0.0,
@@ -452,6 +565,7 @@ impl BooksApp {
             settings_max_scroll: 0.0,
             shelf_fraction: HashMap::new(),
             shelf_annos: HashMap::new(),
+            shelf_opened: HashMap::new(),
             last_persisted: None,
             cur_page_count: 1,
             seeded: false,
@@ -619,11 +733,35 @@ impl BooksApp {
                 self.shot_schemes = Some(sc);
                 self.editing_scheme = Some("scheme1".into());
             }
+            "picker" => {
+                // The colour picker open on a custom scheme's page colour.
+                self.view = View::Settings;
+                self.settings_tab = SettingsTab::Colours;
+                let mut sc = default_schemes();
+                sc.push(ColorScheme::from_bg("scheme1", "Midnight", [0x1A, 0x22, 0x33]));
+                self.shot_schemes = Some(sc);
+                self.picker = Some(ColorPick::from_rgb(PickTarget::Slot("scheme1".into(), 0), [0x1A, 0x22, 0x33]));
+            }
             "select" => {
-                // A selected paragraph so the shot exercises the floating
+                // A live text selection so the shot exercises the floating
                 // selection toolbar (swatches + Note) over the page.
+                self.demo = false;
                 self.view = View::Reader;
+                self.sel = Some(TextSel {
+                    anchor: DocPos { block: 2, ch: 0 },
+                    head: DocPos { block: 2, ch: 64 },
+                });
                 self.selected_block = Some(2);
+            }
+            "highlight" => {
+                // A committed continuous highlight plus a live selection, to show
+                // the gapless band + the colour toggle affordance in one frame.
+                self.view = View::Reader;
+                self.sel = Some(TextSel {
+                    anchor: DocPos { block: 1, ch: 4 },
+                    head: DocPos { block: 1, ch: 58 },
+                });
+                self.selected_block = Some(1);
             }
             "select-drag" => {
                 // An arbitrary cross-paragraph selection so the shot shows real
@@ -703,14 +841,26 @@ impl BooksApp {
         // A bookmark on the opening block.
         let bm = Annotation::new(&id, AnnoKind::Bookmark, 0, 0).with_excerpt(excerpt(0));
         BooksDoc::upsert_annotation(doc, &bm);
-        // Two coloured highlights on early paragraphs.
-        let h1 = Annotation::new(&id, AnnoKind::Highlight, 0, 1)
+        // Two *ranged* coloured highlights on early paragraphs — continuous
+        // bands over a real char span (spaces filled), the way a live selection
+        // highlight looks. The end snaps to a word boundary so the demo band
+        // never cuts mid-word.
+        let snap_end = |i: usize, target: usize| -> usize {
+            let chars: Vec<char> = ch0.block_text(i).chars().collect();
+            let hi = target.min(chars.len());
+            chars[..hi].iter().rposition(|&c| c == ' ').unwrap_or(hi)
+        };
+        let mut h1 = Annotation::new(&id, AnnoKind::Highlight, 0, 1)
             .with_color(HiColor::Yellow)
             .with_excerpt(excerpt(1));
+        h1.start = 0;
+        h1.end = snap_end(1, 70);
         BooksDoc::upsert_annotation(doc, &h1);
-        let h2 = Annotation::new(&id, AnnoKind::Highlight, 0, 3)
+        let mut h2 = Annotation::new(&id, AnnoKind::Highlight, 0, 3)
             .with_color(HiColor::Green)
             .with_excerpt(excerpt(3));
+        h2.start = 0;
+        h2.end = snap_end(3, 58);
         BooksDoc::upsert_annotation(doc, &h2);
         // A note with real, typed text.
         let mut note = Annotation::new(&id, AnnoKind::Note, 0, 2)
@@ -739,6 +889,7 @@ impl BooksApp {
             self.layout = None; // a font attribute (family/size) may have changed
         }
         self.schemes = BooksDoc::read_schemes(doc);
+        self.library_prefs = BooksDoc::read_library_prefs(doc);
 
         let ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
         let cur_id = ids.get(self.book_idx).cloned().unwrap_or_default();
@@ -747,9 +898,11 @@ impl BooksApp {
         let all = BooksDoc::list_annotations(doc);
         self.shelf_fraction.clear();
         self.shelf_annos.clear();
+        self.shelf_opened.clear();
         for id in &ids {
             let p = BooksDoc::read_progress(doc, id);
             self.shelf_fraction.insert(id.clone(), p.fraction);
+            self.shelf_opened.insert(id.clone(), p.opened);
             let c = all.iter().filter(|a| &a.doc_id == id).count();
             self.shelf_annos.insert(id.clone(), c);
         }
@@ -778,6 +931,8 @@ impl BooksApp {
                 chapter: self.chapter,
                 page: self.page,
                 fraction,
+                // 0 ⇒ write_progress leaves the recorded open time untouched.
+                opened: 0,
             },
         );
         self.last_persisted = Some((self.chapter, self.page));
@@ -793,11 +948,14 @@ impl BooksApp {
                 self.book_idx = i.min(self.library.len().saturating_sub(1));
                 self.view = View::Reader;
                 let id = self.library[self.book_idx].id.clone();
-                let p = BooksDoc::read_progress(doc, &id);
+                let mut p = BooksDoc::read_progress(doc, &id);
                 let nchap = self.num_chapters().saturating_sub(1);
                 self.chapter = p.chapter.min(nchap);
                 self.page = p.page;
-                self.selected_block = None;
+                // Stamp the open time so the shelf's "recently opened" sort works.
+                p.opened = now_ms();
+                BooksDoc::write_progress(doc, &id, &p);
+                self.clear_selection();
                 self.composing = None;
                 self.layout = None;
                 self.last_persisted = None;
@@ -890,41 +1048,30 @@ impl BooksApp {
             }),
             Action::SetColor(c) => {
                 self.hi_color = c;
-                // A drag selection highlights its exact range across paragraphs;
-                // otherwise a selected block highlights whole.
+                // Highlighting is selection-only now: a selection's exact range
+                // is marked continuously across paragraphs. Picking the same
+                // colour again clears it; a different colour replaces it.
                 if let Some(sel) = self.sel.filter(|s| !s.is_empty()) {
-                    self.add_highlight_range(doc, sel, c);
+                    self.apply_or_toggle_highlight(doc, sel, c);
                     self.clear_selection();
-                } else if let Some(b) = self.selected_block {
-                    self.add_highlight(doc, b, c);
                 }
             }
-            Action::SelectBlock(b) => {
-                self.selected_block = if self.selected_block == Some(b) {
-                    None
-                } else {
-                    Some(b)
-                };
+            Action::BeginEditValue(field) => {
+                self.commit_rename(doc);
+                // Start with an empty buffer so typing replaces the value rather
+                // than appending to the current one.
+                self.num_edit = Some((field, String::new()));
             }
             Action::AddNote => {
-                // Anchor a note to the selection (spanning paragraphs) or, if no
-                // drag selection, to the selected block. The note is composed in
-                // an on-page overlay near the passage, not a separate screen.
-                let anchor = self
-                    .sel
-                    .filter(|s| !s.is_empty())
-                    .map(|s| {
-                        let (start, end) = s.ordered();
-                        (start.block, start.ch, end.ch.max(start.ch))
-                    })
-                    .or_else(|| self.selected_block.map(|b| (b, 0, 0)));
+                // A note anchors to the live text selection; the composer floats
+                // on-page near the passage rather than on a separate screen.
+                let anchor = self.sel.filter(|s| !s.is_empty()).map(|s| {
+                    let (start, end) = s.ordered();
+                    (start.block, start.ch, end.ch.max(start.ch))
+                });
                 if let Some((block, start, end)) = anchor {
                     let id = self.book_id();
-                    let excerpt = if self.sel.map_or(false, |s| !s.is_empty()) {
-                        self.selection_excerpt()
-                    } else {
-                        self.block_excerpt(block)
-                    };
+                    let excerpt = self.selection_excerpt();
                     let mut a = Annotation::new(&id, AnnoKind::Note, self.chapter, block)
                         .with_color(self.hi_color)
                         .with_excerpt(excerpt);
@@ -947,7 +1094,7 @@ impl BooksApp {
                 if let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() {
                     self.chapter = a.chapter.min(self.num_chapters().saturating_sub(1));
                     self.pending_jump_block = Some(a.block);
-                    self.selected_block = Some(a.block);
+                    self.clear_selection();
                     self.layout = None;
                 }
             }
@@ -976,7 +1123,10 @@ impl BooksApp {
             Action::OpenSettings => {
                 self.view = View::Settings;
                 self.type_popover = false;
+                self.num_edit = None;
                 self.font_picker = false;
+                self.picker = None;
+                self.default_font_menu = false;
                 self.editing_scheme = None;
                 self.renaming = None;
                 self.settings_scroll = 0.0;
@@ -984,11 +1134,15 @@ impl BooksApp {
             Action::CloseSettings => {
                 self.commit_rename(doc);
                 self.font_picker = false;
+                self.picker = None;
+                self.default_font_menu = false;
                 self.editing_scheme = None;
                 self.view = if self.library.is_empty() { View::Library } else { View::Reader };
             }
             Action::SetSettingsTab(tab) => {
                 self.commit_rename(doc);
+                self.default_font_menu = false;
+                self.picker = None;
                 self.settings_tab = tab;
                 self.settings_scroll = 0.0;
             }
@@ -1042,24 +1196,39 @@ impl BooksApp {
                 self.commit_rename(doc);
                 self.editing_scheme = None;
             }
-            Action::CycleSchemeColor(id, slot) => {
-                let mut sc = self.schemes.clone();
-                if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
-                    let cur = s.slots()[slot].1;
-                    s.set_slot(slot, next_ramp_color(cur));
-                }
-                BooksDoc::write_schemes(doc, &sc);
+            Action::NewSchemeViaPicker => {
+                // Open the colour picker to choose a background; the scheme is
+                // derived + created when the picker is committed.
+                self.commit_rename(doc);
+                self.picker = Some(ColorPick::from_rgb(PickTarget::NewScheme, [0x1B, 0x18, 0x16]));
+                self.pick_drag = None;
             }
-            Action::NewSchemeFromBg(bg) => {
-                let mut sc = self.schemes.clone();
-                let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
-                let new_id = Self::fresh_id("scheme", &ids);
-                let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), bg);
-                sc.push(scheme);
-                BooksDoc::write_schemes(doc, &sc);
-                self.editing_scheme = Some(new_id.clone());
-                self.bump_setting(doc, |st| st.scheme_id = new_id);
+            Action::PickSchemeColor(id, slot) => {
+                // Edit any scheme colour through the same picker.
+                self.commit_rename(doc);
+                let cur = self
+                    .schemes
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.slots()[slot].1)
+                    .unwrap_or([0x80, 0x80, 0x80]);
+                self.picker = Some(ColorPick::from_rgb(PickTarget::Slot(id, slot), cur));
+                self.pick_drag = None;
+            }
+            Action::PickerSwatch(rgb) => {
+                if let Some(p) = self.picker.as_mut() {
+                    let (h, s, v) = crate::model::rgb_to_hsv(rgb);
+                    p.hue = h;
+                    p.sat = s;
+                    p.val = v;
+                    let t = p.target.clone();
+                    self.apply_live_pick(doc, &t);
+                }
+            }
+            Action::PickerDone => self.commit_picker(doc),
+            Action::PickerCancel => {
+                self.picker = None;
+                self.pick_drag = None;
             }
             Action::BeginRenameScheme(id) => {
                 self.commit_rename(doc);
@@ -1073,7 +1242,13 @@ impl BooksApp {
             }
 
             // --- settings screen: fonts ----------------------------------
-            Action::SetDefaultFont(id) => BooksDoc::write_default_font(doc, &id),
+            Action::SetDefaultFont(id) => {
+                BooksDoc::write_default_font(doc, &id);
+                self.default_font_menu = false;
+            }
+            Action::ToggleDefaultFontMenu => {
+                self.default_font_menu = !self.default_font_menu;
+            }
             Action::ToggleFontShown(id) => {
                 let mut f = self.fonts.clone();
                 if let Some(e) = f.iter_mut().find(|e| e.id == id) {
@@ -1133,6 +1308,90 @@ impl BooksApp {
                     .map(|e| e.name.clone())
                     .unwrap_or_default();
                 self.renaming = Some(Rename { target: RenameTarget::Font(id), buf: name });
+            }
+
+            // --- library shelf -------------------------------------------
+            Action::ToggleSortMenu => self.sort_menu = !self.sort_menu,
+            Action::SetSort(sort) => {
+                let mut p = self.library_prefs;
+                p.sort = sort;
+                self.library_prefs = p;
+                BooksDoc::write_library_prefs(doc, &p);
+                self.sort_menu = false;
+            }
+            Action::ToggleHideRead => {
+                let mut p = self.library_prefs;
+                p.hide_read = !p.hide_read;
+                self.library_prefs = p;
+                BooksDoc::write_library_prefs(doc, &p);
+            }
+        }
+    }
+
+    /// Apply the picker's live colour to its target (called on every drag). For
+    /// a slot, this live-edits the scheme so the manager previews the change;
+    /// for a new scheme, nothing is written until [`Self::commit_picker`].
+    fn apply_live_pick(&mut self, doc: &mut AutoCommit, target: &PickTarget) {
+        let Some(p) = self.picker.as_ref() else { return };
+        let rgb = p.rgb();
+        if let PickTarget::Slot(id, slot) = target {
+            let mut sc = self.schemes.clone();
+            if let Some(s) = sc.iter_mut().find(|s| &s.id == id && !s.builtin) {
+                s.set_slot(*slot, rgb);
+                BooksDoc::write_schemes(doc, &sc);
+            }
+        }
+    }
+
+    /// Steer the picker from a pointer position within the SV square or hue
+    /// strip, then apply the resulting colour live.
+    fn apply_pick_drag(&mut self, p: Point, doc: &mut AutoCommit) {
+        let Some(part) = self.pick_drag else { return };
+        let (sv, hue) = (self.pick_sv, self.pick_hue);
+        let target = match self.picker.as_ref() {
+            Some(pk) => pk.target.clone(),
+            None => return,
+        };
+        if let Some(pk) = self.picker.as_mut() {
+            match part {
+                PickPart::Sv => {
+                    let sx = ((p.x - sv.x0) / sv.width().max(1.0)).clamp(0.0, 1.0) as f32;
+                    let sy = ((p.y - sv.y0) / sv.height().max(1.0)).clamp(0.0, 1.0) as f32;
+                    pk.sat = sx;
+                    pk.val = 1.0 - sy;
+                }
+                PickPart::Hue => {
+                    let hy = ((p.y - hue.y0) / hue.height().max(1.0)).clamp(0.0, 1.0) as f32;
+                    pk.hue = hy * 360.0;
+                }
+            }
+        }
+        self.apply_live_pick(doc, &target);
+    }
+
+    /// Commit the colour picker: create the new scheme (for a from-background
+    /// pick) or finalise the slot edit, then close.
+    fn commit_picker(&mut self, doc: &mut AutoCommit) {
+        let Some(p) = self.picker.take() else { return };
+        self.pick_drag = None;
+        let rgb = p.rgb();
+        match p.target {
+            PickTarget::NewScheme => {
+                let mut sc = self.schemes.clone();
+                let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
+                let new_id = Self::fresh_id("scheme", &ids);
+                let n = sc.iter().filter(|s| !s.builtin).count() + 1;
+                sc.push(ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), rgb));
+                BooksDoc::write_schemes(doc, &sc);
+                self.editing_scheme = Some(new_id.clone());
+                self.bump_setting(doc, |st| st.scheme_id = new_id);
+            }
+            PickTarget::Slot(id, slot) => {
+                let mut sc = self.schemes.clone();
+                if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
+                    s.set_slot(slot, rgb);
+                }
+                BooksDoc::write_schemes(doc, &sc);
             }
         }
     }
@@ -1284,13 +1543,43 @@ impl BooksApp {
         self.layout = None;
     }
 
-    fn add_highlight(&mut self, doc: &mut AutoCommit, block: usize, color: HiColor) {
-        let id = self.book_id();
-        let excerpt = self.block_excerpt(block);
-        let a = Annotation::new(&id, AnnoKind::Highlight, self.chapter, block)
-            .with_color(color)
-            .with_excerpt(excerpt);
-        BooksDoc::upsert_annotation(doc, &a);
+    /// Highlighting semantics over a text selection: applying a colour marks the
+    /// range; picking the **same** colour again clears it; a **different** colour
+    /// replaces it. Colours never layer — any highlight the selection overlaps is
+    /// removed first, then the new one is added unless it exactly toggled off.
+    fn apply_or_toggle_highlight(&mut self, doc: &mut AutoCommit, sel: TextSel, color: HiColor) {
+        let (start, end) = sel.ordered();
+        // Snapshot block char lengths so the layout borrow ends before mutating.
+        let clens: HashMap<usize, usize> = match self.layout.as_ref() {
+            Some(l) => l.blocks.iter().map(|b| (b.index, b.char_len)).collect(),
+            None => return,
+        };
+        let overlapping: Vec<(Uuid, HiColor)> = self
+            .annotations
+            .iter()
+            .filter_map(|a| {
+                if a.kind != AnnoKind::Highlight
+                    || a.chapter != self.chapter
+                    || a.start >= a.end
+                    || a.block < start.block
+                    || a.block > end.block
+                {
+                    return None;
+                }
+                let clen = *clens.get(&a.block).unwrap_or(&0);
+                let lo = (if a.block == start.block { start.ch } else { 0 }).min(clen);
+                let hi = (if a.block == end.block { end.ch } else { clen }).min(clen);
+                (a.start < hi && a.end > lo).then_some((a.id, a.color))
+            })
+            .collect();
+        // Same colour over exactly what's already there ⇒ toggle it off.
+        let toggling_off = !overlapping.is_empty() && overlapping.iter().all(|(_, c)| *c == color);
+        for (id, _) in &overlapping {
+            BooksDoc::remove_annotation(doc, *id);
+        }
+        if !toggling_off {
+            self.add_highlight_range(doc, sel, color);
+        }
     }
 
     /// Highlight an arbitrary text selection: one ranged highlight per block the
@@ -1404,6 +1693,111 @@ impl BooksApp {
         })?;
         let ch = if p.x < nearest.x0 { nearest.cs } else { nearest.cs + nearest.cl };
         Some(DocPos { block: nearest.block, ch })
+    }
+
+    /// Select the whole word under `dp` (double-click). Uses the shared
+    /// char-indexed word walker on the block's canonical text.
+    fn select_word_at(&mut self, dp: DocPos) {
+        let Some(layout) = self.layout.as_ref() else { return };
+        let Some(b) = layout.blocks.iter().find(|b| b.index == dp.block) else {
+            return;
+        };
+        let (s, e) = ui::word_boundaries_chars(&b.text, dp.ch.min(b.char_len));
+        if e > s {
+            self.sel = Some(TextSel {
+                anchor: DocPos { block: dp.block, ch: s },
+                head: DocPos { block: dp.block, ch: e },
+            });
+            self.selected_block = Some(dp.block);
+            self.dragging_sel = false;
+        }
+    }
+
+    /// Char length of a laid-out block (0 for separators / unknown).
+    fn block_char_len(&self, block: usize) -> usize {
+        self.layout
+            .as_ref()
+            .and_then(|l| l.blocks.iter().find(|b| b.index == block))
+            .map(|b| b.char_len)
+            .unwrap_or(0)
+    }
+
+    fn doc_next_char(&self, p: DocPos) -> DocPos {
+        if p.ch < self.block_char_len(p.block) {
+            return DocPos { block: p.block, ch: p.ch + 1 };
+        }
+        if let Some(l) = self.layout.as_ref() {
+            if let Some(nb) = l.blocks.iter().find(|b| b.index > p.block && b.char_len > 0) {
+                return DocPos { block: nb.index, ch: 0 };
+            }
+        }
+        p
+    }
+
+    fn doc_prev_char(&self, p: DocPos) -> DocPos {
+        if p.ch > 0 {
+            return DocPos { block: p.block, ch: p.ch - 1 };
+        }
+        if let Some(l) = self.layout.as_ref() {
+            if let Some(pb) = l.blocks.iter().rev().find(|b| b.index < p.block && b.char_len > 0) {
+                return DocPos { block: pb.index, ch: pb.char_len };
+            }
+        }
+        p
+    }
+
+    fn doc_next_word(&self, p: DocPos) -> DocPos {
+        if let Some(l) = self.layout.as_ref() {
+            if let Some(b) = l.blocks.iter().find(|b| b.index == p.block) {
+                let nb = ui::next_word_boundary_chars(&b.text, p.ch);
+                if nb > p.ch {
+                    return DocPos { block: p.block, ch: nb };
+                }
+            }
+            if let Some(next) = l.blocks.iter().find(|b| b.index > p.block && b.char_len > 0) {
+                let nb = ui::next_word_boundary_chars(&next.text, 0);
+                return DocPos { block: next.index, ch: nb };
+            }
+        }
+        p
+    }
+
+    fn doc_prev_word(&self, p: DocPos) -> DocPos {
+        if let Some(l) = self.layout.as_ref() {
+            if let Some(b) = l.blocks.iter().find(|b| b.index == p.block) {
+                let pb = ui::prev_word_boundary_chars(&b.text, p.ch);
+                if pb < p.ch {
+                    return DocPos { block: p.block, ch: pb };
+                }
+            }
+            if let Some(prev) = l.blocks.iter().rev().find(|b| b.index < p.block && b.char_len > 0) {
+                let pb = ui::prev_word_boundary_chars(&prev.text, prev.char_len);
+                return DocPos { block: prev.index, ch: pb };
+            }
+        }
+        p
+    }
+
+    /// Extend the selection head one character (or one word) in a direction.
+    /// Starts a fresh selection at the top of the page when none is live, so
+    /// Shift+Arrow always has an anchor to grow from. Returns `true` (consumed).
+    fn extend_sel(&mut self, forward: bool, word: bool) -> bool {
+        let base = self.sel.unwrap_or_else(|| {
+            let p = self
+                .page_first_doc
+                .unwrap_or(DocPos { block: self.page_top_block, ch: 0 });
+            TextSel { anchor: p, head: p }
+        });
+        let new_head = match (forward, word) {
+            (true, false) => self.doc_next_char(base.head),
+            (false, false) => self.doc_prev_char(base.head),
+            (true, true) => self.doc_next_word(base.head),
+            (false, true) => self.doc_prev_word(base.head),
+        };
+        let sel = TextSel { anchor: base.anchor, head: new_head };
+        self.sel = Some(sel);
+        self.selected_block = Some(sel.ordered().0.block);
+        true
     }
 
     fn toggle_bookmark(&mut self, doc: &mut AutoCommit) {
@@ -1613,6 +2007,13 @@ impl Widget for BooksApp {
                 if p != self.cursor {
                     self.cursor = p;
                     self.dirty = true; // hover feedback
+                    // Colour-picker drag: steer the SV square / hue strip.
+                    if self.mouse_down && self.pick_drag.is_some() {
+                        self.apply_pick_drag(p, doc);
+                        self.refresh_from_doc(doc);
+                        *handled = true;
+                        return;
+                    }
                     // Drag text selection: once the press has moved far enough,
                     // the head follows the pointer and the selection spans
                     // whatever paragraphs it covers. Dragging into the top/bottom
@@ -1659,23 +2060,59 @@ impl Widget for BooksApp {
                     .rev()
                     .find(|h| h.rect.contains(self.cursor))
                     .cloned();
-                // A press on page text starts a potential drag selection.
                 self.mouse_down = true;
                 self.dragging_sel = false;
                 self.press_pos = self.cursor;
-                let on_page = self.view == View::Reader
-                    && top.as_ref().map_or(true, |h| matches!(h.action, Action::SelectBlock(_)));
+
+                // Colour-picker SV/hue press begins a drag and steers immediately,
+                // taking priority over the panel's tap-swallow.
+                if self.picker.is_some() {
+                    let part = if self.pick_sv.contains(self.cursor) {
+                        Some(PickPart::Sv)
+                    } else if self.pick_hue.contains(self.cursor) {
+                        Some(PickPart::Hue)
+                    } else {
+                        None
+                    };
+                    if let Some(part) = part {
+                        self.pick_drag = Some(part);
+                        self.apply_pick_drag(self.cursor, doc);
+                        self.refresh_from_doc(doc);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+
+                // A press on page text (nothing else on top) either extends a
+                // word selection (double-click) or starts a fresh drag selection.
+                let on_page = self.view == View::Reader && top.is_none();
+                let now = std::time::Instant::now();
+                let is_dbl = on_page
+                    && self
+                        .last_click
+                        .map_or(false, |t| now.duration_since(t).as_millis() < 450)
+                    && (self.cursor - self.last_click_pos).hypot() < 6.0;
                 self.press_doc = if on_page { self.hit_doc_pos(self.cursor) } else { None };
                 if on_page {
-                    self.sel = None; // fresh press clears any prior selection
-                    if top.is_none() {
+                    if is_dbl {
+                        if let Some(dp) = self.press_doc {
+                            self.select_word_at(dp);
+                        }
+                    } else {
+                        self.sel = None; // fresh press clears any prior selection
                         self.selected_block = None;
                     }
                 }
+                self.last_click = Some(now);
+                self.last_click_pos = self.cursor;
                 if let Some(h) = top {
                     self.dispatch(h.action, doc);
                     self.refresh_from_doc(doc);
                     self.persist_progress(doc);
+                    self.dirty = true;
+                    *handled = true;
+                } else if on_page && is_dbl {
                     self.dirty = true;
                     *handled = true;
                 }
@@ -1686,6 +2123,10 @@ impl Widget for BooksApp {
                 ..
             } => {
                 self.mouse_down = false;
+                if self.pick_drag.take().is_some() {
+                    self.dirty = true;
+                    *handled = true;
+                }
                 if self.dragging_sel {
                     self.dragging_sel = false;
                     if let Some(s) = self.sel {
@@ -1701,7 +2142,7 @@ impl Widget for BooksApp {
             WindowEvent::KeyboardInput { event: ke, .. }
                 if ke.state == ElementState::Pressed =>
             {
-                if self.handle_key(&ke.logical_key, doc) {
+                if self.handle_key(&ke.logical_key, _modifiers.state(), doc) {
                     self.refresh_from_doc(doc);
                     self.persist_progress(doc);
                     self.dirty = true;
@@ -1772,7 +2213,9 @@ impl BooksApp {
     /// resolved); Enter/Space opens the focused book. Returns `true` when the
     /// key was consumed. Without this the shelf was pointer-only.
     fn handle_library_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
-        let n = self.library.len();
+        // Navigation is over the shelf's display order (filtered + sorted),
+        // resolved by the last `draw_library`.
+        let n = self.shelf_order.len();
         if n == 0 {
             return false;
         }
@@ -1811,16 +2254,73 @@ impl BooksApp {
                 true
             }
             Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
-                self.dispatch(Action::OpenBook(cursor), doc);
+                let orig = self.shelf_order.get(cursor).copied().unwrap_or(0);
+                self.dispatch(Action::OpenBook(orig), doc);
                 true
             }
             _ => false,
         }
     }
 
+    /// Commit the click-to-type numeric edit (parsing + clamping into the
+    /// field's range). A blank/invalid buffer leaves the value unchanged.
+    fn commit_num_edit(&mut self, doc: &mut AutoCommit) {
+        let Some((field, buf)) = self.num_edit.take() else { return };
+        let Ok(v) = buf.trim().parse::<f32>() else { return };
+        match field {
+            NumField::FontScale => {
+                let scale = (v / 100.0).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
+                self.bump_setting(doc, |s| s.font_scale = scale);
+            }
+            NumField::LineSpacing => {
+                let ls = v.clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
+                self.bump_setting(doc, |s| s.line_spacing = ls);
+            }
+            NumField::FontMult(id) => {
+                let m = v.clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX);
+                let mut f = self.fonts.clone();
+                if let Some(e) = f.iter_mut().find(|e| e.id == id) {
+                    e.size_mult = m;
+                }
+                BooksDoc::write_fonts(doc, &f);
+            }
+        }
+    }
+
     /// Keyboard handling. Returns `true` if the key was consumed (so the App's
     /// focus-navigation fallback doesn't also steal the arrows).
-    fn handle_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
+        // A click-to-type numeric edit captures typing first (digits + dot).
+        if self.num_edit.is_some() {
+            match key {
+                Key::Named(NamedKey::Enter) => {
+                    self.commit_num_edit(doc);
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.num_edit = None;
+                    return true;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some((_, b)) = &mut self.num_edit {
+                        b.pop();
+                    }
+                    return true;
+                }
+                Key::Character(c) => {
+                    if c.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
+                        if let Some((_, b)) = &mut self.num_edit {
+                            if b.len() < 6 {
+                                b.push_str(c);
+                            }
+                        }
+                    }
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
         // An inline rename (settings screen) captures typing first.
         if self.renaming.is_some() {
             match key {
@@ -1858,8 +2358,13 @@ impl BooksApp {
         // back overlays, then leaves); no reader/library shortcuts apply there.
         if self.view == View::Settings {
             if let Key::Named(NamedKey::Escape) = key {
-                if self.font_picker {
+                if self.picker.is_some() {
+                    self.picker = None;
+                    self.pick_drag = None;
+                } else if self.font_picker {
                     self.font_picker = false;
+                } else if self.default_font_menu {
+                    self.default_font_menu = false;
                 } else if self.editing_scheme.is_some() {
                     self.editing_scheme = None;
                 } else {
@@ -1894,13 +2399,29 @@ impl BooksApp {
         }
 
         match key {
-            Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::PageUp) => {
+            // Shift extends the selection by a character (Ctrl+Shift by a word);
+            // otherwise the arrows turn pages.
+            Key::Named(NamedKey::ArrowLeft) => {
+                if mods.shift_key() {
+                    self.extend_sel(false, mods.control_key())
+                } else {
+                    self.dispatch(Action::PrevPage, doc);
+                    true
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if mods.shift_key() {
+                    self.extend_sel(true, mods.control_key())
+                } else {
+                    self.dispatch(Action::NextPage, doc);
+                    true
+                }
+            }
+            Key::Named(NamedKey::PageUp) => {
                 self.dispatch(Action::PrevPage, doc);
                 true
             }
-            Key::Named(NamedKey::ArrowRight)
-            | Key::Named(NamedKey::PageDown)
-            | Key::Named(NamedKey::Space) => {
+            Key::Named(NamedKey::PageDown) | Key::Named(NamedKey::Space) => {
                 self.dispatch(Action::NextPage, doc);
                 true
             }
@@ -1945,7 +2466,10 @@ impl BooksApp {
                     "1" => Some(Action::SetReadTheme(ReadTheme::Light)),
                     "2" => Some(Action::SetReadTheme(ReadTheme::Sepia)),
                     "3" => Some(Action::SetReadTheme(ReadTheme::Dark)),
-                    "h" | "H" => self.selected_block.map(|_| Action::SetColor(self.hi_color)),
+                    "h" | "H" => self
+                        .sel
+                        .filter(|s| !s.is_empty())
+                        .map(|_| Action::SetColor(self.hi_color)),
                     "m" | "M" => Some(Action::AddNote),
                     _ => None,
                 };
@@ -2103,9 +2627,82 @@ impl BooksApp {
             Ico::Bookmark(filled) => paint::bookmark(scene, t, inner, icon_col, w, filled),
             Ico::PlusI => paint::plus(scene, t, inner, icon_col, w),
             Ico::MinusI => paint::minus(scene, t, inner, icon_col, w),
+            Ico::Dots => paint::dots(scene, t, inner, icon_col),
+            Ico::ChevDown => paint::chevron_down(scene, t, inner, icon_col, w),
         }
         self.push_hit(rect, action);
         s
+    }
+
+    /// A toggle switch (track + knob). `w`/`h` are the track size. Pushes a hit
+    /// for `action` and returns the track rect.
+    #[allow(clippy::too_many_arguments)]
+    fn switch(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        on: bool,
+        action: Action,
+    ) {
+        let track = Rect::new(x, y, x + w, y + h);
+        let bg = if on { theme.accent_primary } else { c.neutral[3] };
+        paint::fill_round(scene, t, track, h / 2.0, bg);
+        let kr = h / 2.0 - 2.5;
+        let kx = if on { x + w - h / 2.0 } else { x + h / 2.0 };
+        paint::circle(scene, t, Point::new(kx, y + h / 2.0), kr, Color::from_rgb8(250, 250, 252));
+        self.push_hit(track, action);
+    }
+
+    /// A compact −/value/＋ size control whose value is click-to-type. Lays out
+    /// right-to-left from `right_x`; returns the left edge it consumed so a row
+    /// can align the next control. Used by the fonts manager so every row's size
+    /// control sits at the same x regardless of a trailing delete button.
+    #[allow(clippy::too_many_arguments)]
+    fn size_stepper(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        right_x: f64,
+        cy: f64,
+        value: &str,
+        field: NumField,
+        dec: Action,
+        inc: Action,
+    ) -> f64 {
+        let btn = 28.0;
+        let vslot_w = 52.0;
+        let by = cy - btn / 2.0;
+        let plus_x = right_x - btn;
+        self.icon_button(scene, t, theme, plus_x, by, btn, Ico::PlusI, false, inc);
+        let vx = plus_x - vslot_w;
+        let editing = matches!(&self.num_edit, Some((f, _)) if f == &field);
+        let disp = if editing {
+            format!("{}\u{2502}", self.num_edit.as_ref().map(|(_, b)| b.as_str()).unwrap_or(""))
+        } else {
+            value.to_string()
+        };
+        let vslot = Rect::new(vx, cy - 13.0, vx + vslot_w, cy + 13.0);
+        if editing {
+            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
+            paint::stroke_round(scene, t, vslot, 6.0, theme.border_focus, 1.4);
+        } else if self.is_hover(vslot) {
+            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
+        }
+        let (vw, _) = tr.measure_weighted(&disp, 12.5, None, TextWeight::Medium);
+        tr.draw_text_weighted(scene, &disp, 12.5, c.text_primary, t * Affine::translate((vx + (vslot_w - vw as f64) / 2.0, cy - 7.0)), None, TextWeight::Medium);
+        self.push_hit(vslot, Action::BeginEditValue(field));
+        let minus_x = vx - btn;
+        self.icon_button(scene, t, theme, minus_x, by, btn, Ico::MinusI, false, dec);
+        minus_x
     }
 
     /// A text pill (used for segmented controls + tags). Returns its width.
@@ -2184,9 +2781,9 @@ impl BooksApp {
         tr.draw_text_weighted(
             scene,
             "Library",
-            21.0,
+            20.0,
             c.text_primary,
-            t * Affine::translate((r.x0 + 28.0, r.y0 + 15.0)),
+            t * Affine::translate((r.x0 + 28.0, r.y0 + 9.0)),
             None,
             TextWeight::Bold,
         );
@@ -2194,15 +2791,37 @@ impl BooksApp {
             1 => "1 book".to_string(),
             n => format!("{n} books"),
         };
-        let (sw, _) = tr.measure(&sub, 13.0, None);
-        tr.draw_text(
-            scene,
-            &sub,
-            13.0,
-            c.text_dim,
-            t * Affine::translate((r.x1 - 28.0 - sw as f64, r.y0 + 19.0)),
-            None,
-        );
+        tr.draw_text(scene, &sub, 12.0, c.text_dim, t * Affine::translate((r.x0 + 29.0, r.y0 + 32.0)), None);
+
+        // --- shelf controls (sort + hide-read), right of the top bar ------
+        let mut sort_btn = Rect::ZERO;
+        if !lib.is_empty() {
+            let cy = r.y0 + (TOP_BAR - 30.0) / 2.0;
+            let mut rx = r.x1 - 24.0;
+            // Sort dropdown.
+            let sort_label = format!("Sort · {}", self.library_prefs.sort.label());
+            let (slw, _) = tr.measure_weighted(&sort_label, 13.0, None, TextWeight::Medium);
+            let sb_w = slw as f64 + 26.0 + 20.0;
+            rx -= sb_w;
+            let sbtn = Rect::new(rx, cy, rx + sb_w, cy + 30.0);
+            let shover = self.sort_menu || self.is_hover(sbtn);
+            paint::fill_round(scene, t, sbtn, 15.0, if shover { theme.bg_hover } else { c.surfaces.overlay });
+            paint::stroke_round(scene, t, sbtn, 15.0, if self.sort_menu { theme.border_focus } else { c.border_standard }, 1.0);
+            tr.draw_text_weighted(scene, &sort_label, 13.0, c.text_primary, t * Affine::translate((rx + 13.0, cy + 8.0)), None, TextWeight::Medium);
+            paint::chevron_down(scene, t, Rect::new(rx + sb_w - 26.0, cy + 3.0, rx + sb_w - 4.0, cy + 27.0), c.text_dim, 1.7);
+            self.push_hit(sbtn, Action::ToggleSortMenu);
+            sort_btn = sbtn;
+            rx -= 18.0;
+            // Hide-read toggle + label.
+            let tog_w = 40.0;
+            let tog_h = 22.0;
+            rx -= tog_w;
+            self.switch(scene, t, theme, &c, rx, cy + (30.0 - tog_h) / 2.0, tog_w, tog_h, self.library_prefs.hide_read, Action::ToggleHideRead);
+            let hl = "Hide read";
+            let (hlw, _) = tr.measure_weighted(hl, 13.0, None, TextWeight::Medium);
+            rx -= 8.0 + hlw as f64;
+            tr.draw_text_weighted(scene, hl, 13.0, c.text_dim, t * Affine::translate((rx, cy + 8.0)), None, TextWeight::Medium);
+        }
 
         // --- empty shelf --------------------------------------------------
         if lib.is_empty() {
@@ -2262,6 +2881,27 @@ impl BooksApp {
             return;
         }
 
+        // --- filter + sort the display order ------------------------------
+        let order = self.shelf_display_order(&lib);
+        self.shelf_order = order.clone();
+
+        // Everything hidden by the "hide read" filter.
+        if order.is_empty() {
+            let cx = (r.x0 + r.x1) / 2.0;
+            let cy = (r.y0 + TOP_BAR + r.y1) / 2.0;
+            let head = "All books are finished";
+            let (hw, _) = tr.measure_weighted(head, 18.0, None, TextWeight::Semibold);
+            tr.draw_text_weighted(scene, head, 18.0, c.text_primary, t * Affine::translate((cx - hw as f64 / 2.0, cy - 20.0)), None, TextWeight::Semibold);
+            let hint = "Turn off \u{201C}Hide read\u{201D} to see them again.";
+            let (tw2, _) = tr.measure(hint, 13.0, None);
+            tr.draw_text(scene, hint, 13.0, c.text_dim, t * Affine::translate((cx - tw2 as f64 / 2.0, cy + 8.0)), None);
+            if self.sort_menu {
+                self.draw_sort_menu(scene, t, tr, theme, &c, sort_btn);
+            }
+            self.library = lib;
+            return;
+        }
+
         // --- grid ---------------------------------------------------------
         let margin = 40.0;
         let gap = 28.0;
@@ -2272,14 +2912,14 @@ impl BooksApp {
         let cols = (avail / (card_w + gap)).floor().max(1.0) as usize;
         // Publish the column count so keyboard up/down can step a whole row.
         self.shelf_cols = cols;
-        self.shelf_cursor = self.shelf_cursor.min(lib.len().saturating_sub(1));
+        self.shelf_cursor = self.shelf_cursor.min(order.len().saturating_sub(1));
         let grid_w = cols as f64 * card_w + (cols as f64 - 1.0) * gap;
         let start_x = r.x0 + (r.width() - grid_w) / 2.0;
         let start_y = r.y0 + TOP_BAR + 36.0;
 
         // The shelf can hold more books than fit, so it scrolls. Work out the
         // total content height and clamp the offset to what's reachable.
-        let rows = lib.len().div_ceil(cols);
+        let rows = order.len().div_ceil(cols);
         let row_pitch = card_h + gap;
         let content_h = if rows == 0 {
             0.0
@@ -2309,7 +2949,8 @@ impl BooksApp {
         // rather than over it, then offset every card by the scroll.
         let body = Rect::new(r.x0, r.y0 + TOP_BAR + 1.0, r.x1, r.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
-        for (i, book) in lib.iter().enumerate() {
+        for (i, &orig) in order.iter().enumerate() {
+            let Some(book) = lib.get(orig) else { continue };
             let col = i % cols;
             let row = i / cols;
             let x = start_x + col as f64 * (card_w + gap);
@@ -2319,7 +2960,7 @@ impl BooksApp {
                 continue;
             }
             let focused = i == self.shelf_cursor;
-            self.draw_book_card(scene, t, tr, theme, book, i, x, y, card_w, cover_h, focused);
+            self.draw_book_card(scene, t, tr, theme, book, orig, x, y, card_w, cover_h, focused);
         }
         scene.pop_layer();
 
@@ -2336,7 +2977,65 @@ impl BooksApp {
             paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
         }
 
+        // Sort dropdown menu floats above the shelf.
+        if self.sort_menu {
+            self.draw_sort_menu(scene, t, tr, theme, &c, sort_btn);
+        }
+
         self.library = lib;
+    }
+
+    /// The filtered + sorted display order of the shelf: original library
+    /// indices, hiding finished books when requested and ordered by the chosen
+    /// key (ties broken by title so the order is stable).
+    fn shelf_display_order(&self, lib: &[Book]) -> Vec<usize> {
+        use crate::model::LibrarySort;
+        let frac = |i: usize| self.shelf_fraction.get(&lib[i].id).copied().unwrap_or(0.0);
+        let opened = |i: usize| self.shelf_opened.get(&lib[i].id).copied().unwrap_or(0);
+        let title = |i: usize| lib[i].title.to_lowercase();
+        let mut idx: Vec<usize> = (0..lib.len())
+            .filter(|&i| !self.library_prefs.hide_read || frac(i) < 0.985)
+            .collect();
+        match self.library_prefs.sort {
+            LibrarySort::Title => idx.sort_by(|&a, &b| title(a).cmp(&title(b))),
+            LibrarySort::Author => idx.sort_by(|&a, &b| {
+                lib[a].author.to_lowercase().cmp(&lib[b].author.to_lowercase()).then(title(a).cmp(&title(b)))
+            }),
+            LibrarySort::Recent => idx.sort_by(|&a, &b| opened(b).cmp(&opened(a)).then(title(a).cmp(&title(b)))),
+            LibrarySort::Progress => idx.sort_by(|&a, &b| {
+                frac(b).partial_cmp(&frac(a)).unwrap_or(std::cmp::Ordering::Equal).then(title(a).cmp(&title(b)))
+            }),
+        }
+        idx
+    }
+
+    /// The sort-order dropdown menu, anchored under the sort button.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_sort_menu(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, c: &ui::tokens::colors::Colors, anchor: Rect) {
+        use crate::model::LibrarySort;
+        let w = 190.0_f64.max(anchor.width());
+        let row_h = 34.0;
+        let x0 = (anchor.x1 - w).max(self.rect.x0 + 8.0);
+        let top = anchor.y1 + 6.0;
+        let menu = Rect::new(x0, top, x0 + w, top + LibrarySort::ALL.len() as f64 * row_h + 8.0);
+        let shadow = Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0);
+        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
+        paint::fill_round(scene, t, menu, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        paint::stroke_round(scene, t, menu, theme.tokens.radii.lg as f64, c.border_standard, 1.0);
+        self.push_hit(menu, Action::Swallow);
+        let mut my = top + 4.0;
+        for s in LibrarySort::ALL {
+            let row = Rect::new(x0 + 6.0, my, x0 + w - 6.0, my + row_h - 4.0);
+            let sel = self.library_prefs.sort == s;
+            if sel {
+                paint::fill_round(scene, t, row, 8.0, theme.accent_primary.with_alpha_factor(0.16));
+            } else if self.is_hover(row) {
+                paint::fill_round(scene, t, row, 8.0, theme.bg_hover);
+            }
+            tr.draw_text_weighted(scene, s.label(), 13.0, if sel { theme.accent_primary } else { c.text_primary }, t * Affine::translate((x0 + 16.0, my + 8.0)), None, if sel { TextWeight::Semibold } else { TextWeight::Medium });
+            self.push_hit(row, Action::SetSort(s));
+            my += row_h;
+        }
     }
 
     /// Resolve a book's decoded cover into a cached, GPU-ready image handle.
@@ -2392,18 +3091,24 @@ impl BooksApp {
             // Faint inner edge to seat the art against the shelf.
             paint::stroke_round(scene, t, cover, 12.0, Color::from_rgba8(0, 0, 0, 40), 1.0);
         } else {
+            // A designed book cover: a tinted board with a soft top sheen and a
+            // darker foot for depth, the title set in a serif display face, a
+            // hairline rule, and the author along the base — reads as real cover
+            // art rather than a flat placeholder.
             let (spine, ink) = cover_colors(theme, book.cover_tint);
             paint::fill_round(scene, t, cover, 12.0, spine);
-            // a darker foot for depth
-            let foot = Rect::new(x, y + cover_h * 0.72, x + w, y + cover_h);
-            paint::fill_round(scene, t, foot, 12.0, Color::from_rgba8(0, 0, 0, 38));
+            // Top sheen (a faint light band) + darker foot, layered for depth.
+            let sheen = Rect::new(x, y, x + w, y + cover_h * 0.34);
+            paint::fill_round(scene, t, sheen, 12.0, Color::from_rgba8(255, 255, 255, 16));
+            let foot = Rect::new(x, y + cover_h * 0.70, x + w, y + cover_h);
+            paint::fill_round(scene, t, foot, 12.0, Color::from_rgba8(0, 0, 0, 46));
 
             // subject pill + spark.
             if !book.subject.is_empty() {
                 let psize = 11.0;
                 let (pw, _) = tr.measure(&book.subject, psize, None);
                 let pill = Rect::new(x + 16.0, y + 16.0, x + 16.0 + pw as f64 + 18.0, y + 16.0 + 20.0);
-                paint::fill_round(scene, t, pill, 10.0, ink.with_alpha_factor(0.16));
+                paint::fill_round(scene, t, pill, 10.0, ink.with_alpha_factor(0.18));
                 tr.draw_text(
                     scene,
                     &book.subject,
@@ -2415,23 +3120,34 @@ impl BooksApp {
             }
             paint::spark(scene, t, Point::new(x + w - 26.0, y + 26.0), 7.0, ink.with_alpha_factor(0.8), 1.6);
 
-            // title (wrapped) + author.
+            // Title in a serif display face (a book-cover convention), wrapped.
             let title_w = w - 32.0;
-            tr.draw_text_weighted(
+            tr.draw_text_font(
                 scene,
                 &book.title,
-                19.0,
+                20.0,
                 ink,
-                t * Affine::translate((x + 16.0, y + cover_h * 0.40)),
+                t * Affine::translate((x + 18.0, y + cover_h * 0.38)),
                 Some(title_w as f32),
                 TextWeight::Bold,
+                false,
+                &FontChoice::Serif,
+            );
+            // Hairline rule above the author.
+            paint::line(
+                scene,
+                t,
+                Point::new(x + 18.0, y + cover_h - 42.0),
+                Point::new(x + 18.0 + 34.0, y + cover_h - 42.0),
+                ink.with_alpha_factor(0.7),
+                1.4,
             );
             tr.draw_text(
                 scene,
                 &book.author,
                 13.0,
-                ink.with_alpha_factor(0.82),
-                t * Affine::translate((x + 16.0, y + cover_h - 30.0)),
+                ink.with_alpha_factor(0.86),
+                t * Affine::translate((x + 18.0, y + cover_h - 30.0)),
                 Some(title_w as f32),
             );
         }
@@ -2660,38 +3376,11 @@ impl BooksApp {
             let by0 = content_y + (visible.first().unwrap().y - page_start) as f64 - 3.0;
             let by1 = content_y + (visible.last().unwrap().y - page_start) as f64 + b.line_height as f64;
 
-            // selected-block outline (only for a plain block tap; a drag text
-            // selection renders as bands instead, painted in the selection pass)
-            let sel_active = self.sel.map_or(false, |s| !s.is_empty());
-            if self.selected_block == Some(b.index) && !sel_active {
-                let sel = Rect::new(
-                    content_x + b.indent as f64 - 8.0,
-                    by0 - 2.0,
-                    content_x + content_w as f64 + 6.0,
-                    by1 + 2.0,
-                );
-                paint::fill_round(scene, t, sel, 6.0, palette.accent.with_alpha_factor(0.10));
-                paint::stroke_round(scene, t, sel, 6.0, palette.accent.with_alpha_factor(0.55), 1.2);
-                sel_anchor = Some(by0);
-            }
-
+            // Note + bookmark margins (behind the glyphs). Highlights — now
+            // always ranged — are painted as continuous bands in the selection
+            // pass below, filling the spaces between words.
             for a in annos.iter().filter(|a| a.chapter == chapter && a.block == b.index) {
                 match a.kind {
-                    // A whole-block highlight (start==end) fills each line; a
-                    // *ranged* highlight is painted precisely in the selection
-                    // pass, so skip it here.
-                    AnnoKind::Highlight if a.start >= a.end => {
-                        for l in &visible {
-                            let ly = content_y + (l.y - page_start) as f64;
-                            let band = Rect::new(
-                                content_x + b.indent as f64 - 4.0,
-                                ly - 1.0,
-                                content_x + content_w as f64,
-                                ly + b.line_height as f64 - 2.0,
-                            );
-                            paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
-                        }
-                    }
                     AnnoKind::Highlight => {}
                     AnnoKind::Note => {
                         // faint band + accent left bar + margin glyph
@@ -2715,14 +3404,6 @@ impl BooksApp {
                     }
                 }
             }
-
-            // whole-block click target (select for annotation)
-            if !matches!(b.kind, LayoutKind::Separator) {
-                self.push_hit(
-                    Rect::new(content_x - 8.0, by0, content_x + content_w as f64 + 8.0, by1),
-                    Action::SelectBlock(b.index),
-                );
-            }
         }
 
         // ---- selection pass: run geometry + selection / ranged-highlight
@@ -2730,6 +3411,7 @@ impl BooksApp {
         // hit-testing and records the page's first/last doc position. ------
         self.reader_body = (body_y0, body_y1);
         self.sel_runs.clear();
+        self.hi_bands.clear();
         self.page_first_doc = None;
         self.page_last_doc = None;
         let sel_ord = self.sel.filter(|s| !s.is_empty()).map(|s| s.ordered());
@@ -2742,14 +3424,20 @@ impl BooksApp {
                 continue;
             }
             let indent = b.indent as f64;
+            // Highlights that touch this block, in creation order.
+            let block_ranged: Vec<&Annotation> =
+                ranged.iter().copied().filter(|a| a.block == b.index).collect();
             for l in &b.lines {
                 if l.y < page_start - 0.5 || l.y >= page_end {
                     continue;
                 }
                 let ly = content_y + (l.y - page_start) as f64;
                 let lh = b.line_height as f64;
-                // Per-line selection band extent.
+                // Per-line selection band extent + one continuous span per
+                // highlight — accumulated across runs so the band fills the
+                // spaces *between* words rather than only the glyphs.
                 let mut sel_band: Option<(f64, f64)> = None;
+                let mut hi_span: Vec<Option<(f64, f64)>> = vec![None; block_ranged.len()];
                 for run in &l.runs {
                     let weight = if run.bold { TextWeight::Bold } else { TextWeight::Regular };
                     let fam = if run.mono || base_mono { FontChoice::Monospace } else { base_family.clone() };
@@ -2762,6 +3450,12 @@ impl BooksApp {
                     }
                     self.page_last_doc = Some(DocPos { block: b.index, ch: run.char_start + run.char_len });
                     let run_end = run.char_start + run.char_len;
+                    let grow = |acc: &mut Option<(f64, f64)>, bx0: f64, bx1: f64| {
+                        *acc = Some(match *acc {
+                            Some((a, b2)) => (a.min(bx0), b2.max(bx1)),
+                            None => (bx0, bx1),
+                        });
+                    };
                     // Selection sub-range within this run.
                     if let Some((s, e)) = sel_ord {
                         if b.index >= s.block && b.index <= e.block {
@@ -2769,30 +3463,35 @@ impl BooksApp {
                             let hi = if b.index == e.block { e.ch.min(run_end) } else { run_end };
                             if lo < hi {
                                 let (bx0, bx1) = run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
-                                sel_band = Some(match sel_band {
-                                    Some((a, b2)) => (a.min(bx0), b2.max(bx1)),
-                                    None => (bx0, bx1),
-                                });
+                                grow(&mut sel_band, bx0, bx1);
                                 if sel_anchor.is_none() {
                                     sel_anchor = Some(ly);
                                 }
                             }
                         }
                     }
-                    // Ranged highlight bands (precise, per run).
-                    for a in ranged.iter().filter(|a| a.block == b.index) {
+                    // Accumulate each highlight's covered x-span on this line.
+                    for (i, a) in block_ranged.iter().enumerate() {
                         let lo = a.start.max(run.char_start);
                         let hi = a.end.min(run_end);
                         if lo < hi {
                             let (bx0, bx1) = run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
-                            let band = Rect::new(bx0 - 1.0, ly - 1.0, bx1 + 1.0, ly + lh - 2.0);
-                            paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
+                            grow(&mut hi_span[i], bx0, bx1);
                         }
                     }
                 }
+                // One continuous highlight band per annotation (fills word gaps).
+                for (i, a) in block_ranged.iter().enumerate() {
+                    if let Some((mnx, mxx)) = hi_span[i] {
+                        let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
+                        paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
+                        self.hi_bands.push(band);
+                    }
+                }
+                // Live selection band drawn on top of any committed highlight.
                 if let Some((mnx, mxx)) = sel_band {
                     let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
-                    paint::fill_round(scene, t, band, 3.0, palette.accent.with_alpha_factor(0.28));
+                    paint::fill_round(scene, t, band, 3.0, palette.accent.with_alpha_factor(0.30));
                 }
             }
         }
@@ -2941,7 +3640,8 @@ impl BooksApp {
     ) {
         // Hide the picker while a note is being composed (the composer takes
         // over) or when there's no active selection/block.
-        if self.view != View::Reader || self.selected_block.is_none() || self.composing.is_some() {
+        let has_sel = self.sel.map_or(false, |s| !s.is_empty());
+        if self.view != View::Reader || !has_sel || self.composing.is_some() {
             return;
         }
         let r = self.rect;
@@ -3383,13 +4083,13 @@ impl BooksApp {
             .collect();
         let scheme_rows = wrap_row_count(&scheme_widths, inner_w, pill_gap);
 
+        let header_h = 30.0;
         let steppers_h = row_h + 10.0 + row_h;
         let type_h =
             16.0 + font_rows as f64 * pill_h + font_rows.saturating_sub(1) as f64 * pill_gap;
         let page_h =
             16.0 + scheme_rows as f64 * pill_h + scheme_rows.saturating_sub(1) as f64 * pill_gap;
-        let manage_h = 16.0 + pill_h;
-        let panel_h = pad * 2.0 + steppers_h + 22.0 + type_h + 22.0 + page_h + 16.0 + manage_h;
+        let panel_h = pad * 2.0 + header_h + steppers_h + 22.0 + type_h + 22.0 + page_h;
 
         let bar_top = r.y1 - BOTTOM_BAR;
         let px1 = r.x1 - 18.0;
@@ -3406,13 +4106,20 @@ impl BooksApp {
         let ix1 = px1 - pad;
         let mut y = py0 + pad;
 
-        // Text size stepper.
+        // Header: "Display" + a small ⋯ button that opens the full manager (the
+        // old text button was replaced by this quiet overflow affordance).
+        tr.draw_text_weighted(scene, "Display", 13.5, c.text_primary, t * Affine::translate((ix0, y + 4.0)), None, TextWeight::Semibold);
+        let dots_s = 26.0;
+        self.icon_button(scene, t, theme, ix1 - dots_s, y - 2.0, dots_s, Ico::Dots, false, Action::OpenSettings);
+        y += header_h;
+
+        // Text size stepper (value is click-to-type as well as +/− steppable).
         let fs = format!("{}%", (self.settings.font_scale * 100.0).round() as i32);
-        self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Text size", &fs, Action::FontDec, Action::FontInc);
+        self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Text size", &fs, NumField::FontScale, Action::FontDec, Action::FontInc);
         y += row_h + 10.0;
         // Line spacing stepper.
         let ls = format!("{:.1}", self.settings.line_spacing);
-        self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Line spacing", &ls, Action::SpacingDec, Action::SpacingInc);
+        self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Line spacing", &ls, NumField::LineSpacing, Action::SpacingDec, Action::SpacingInc);
         y += row_h + 22.0;
 
         // Typeface — one pill per shown font, wrapping within the panel.
@@ -3443,27 +4150,12 @@ impl BooksApp {
             self.pill(scene, t, tr, theme, sx, y, pill_h, &p.label, 12.5, p.active, Some(action));
             sx += w + pill_gap;
         }
-        y += pill_h + 16.0;
-
-        // A quiet link into the full font + colour-scheme managers.
-        let manage = "Manage fonts & colours…";
-        let (mw, _) = tr.measure_weighted(manage, 12.0, None, TextWeight::Medium);
-        let mrect = Rect::new(ix0, y, ix0 + mw as f64 + 22.0, y + pill_h);
-        let mhover = self.is_hover(mrect);
-        paint::fill_round(scene, t, mrect, pill_h / 2.0, if mhover { theme.bg_hover } else { c.surfaces.overlay });
-        tr.draw_text_weighted(
-            scene,
-            manage,
-            12.0,
-            c.text_primary,
-            t * Affine::translate((ix0 + 12.0, y + (pill_h - 12.0) / 2.0)),
-            None,
-            TextWeight::Medium,
-        );
-        self.push_hit(mrect, Action::OpenSettings);
+        let _ = y;
     }
 
-    /// A labelled −/value/＋ stepper row used inside the reading popover.
+    /// A labelled −/value/＋ stepper row used inside the reading popover. The
+    /// value itself is a click-to-type field: tapping it (via `field`) starts a
+    /// numeric edit, in addition to the ± steppers.
     #[allow(clippy::too_many_arguments)]
     fn stepper_row(
         &mut self,
@@ -3478,6 +4170,7 @@ impl BooksApp {
         h: f64,
         label: &str,
         value: &str,
+        field: NumField,
         dec: Action,
         inc: Action,
     ) {
@@ -3492,19 +4185,37 @@ impl BooksApp {
         );
         let btn = h;
         let plus_x = x1 - btn;
-        let (vw, _) = tr.measure_weighted(value, 13.0, None, TextWeight::Medium);
-        let value_slot = 46.0_f64;
+        let value_slot = 54.0_f64;
         let minus_x = plus_x - value_slot - btn;
         self.icon_button(scene, t, theme, minus_x, y, btn, Ico::MinusI, false, dec);
+
+        // The value slot: an editable field. When this field is being typed,
+        // show the live buffer with a caret and a focus ring; otherwise the
+        // value, with a hover cue so it reads as tappable.
+        let editing = matches!(&self.num_edit, Some((f, _)) if f == &field);
+        let disp = if editing {
+            format!("{}\u{2502}", self.num_edit.as_ref().map(|(_, b)| b.as_str()).unwrap_or(""))
+        } else {
+            value.to_string()
+        };
+        let vslot = Rect::new(minus_x + btn, y + 2.0, minus_x + btn + value_slot, y + h - 2.0);
+        if editing {
+            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
+            paint::stroke_round(scene, t, vslot, 6.0, theme.border_focus, 1.4);
+        } else if self.is_hover(vslot) {
+            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
+        }
+        let (vw, _) = tr.measure_weighted(&disp, 13.0, None, TextWeight::Medium);
         tr.draw_text_weighted(
             scene,
-            value,
+            &disp,
             13.0,
             c.text_primary,
             t * Affine::translate((minus_x + btn + (value_slot - vw as f64) / 2.0, y + (h - 13.0) / 2.0)),
             None,
             TextWeight::Medium,
         );
+        self.push_hit(vslot, Action::BeginEditValue(field));
         self.icon_button(scene, t, theme, plus_x, y, btn, Ico::PlusI, false, inc);
     }
 
@@ -3614,10 +4325,10 @@ impl BooksApp {
         paint::fill_round(scene, t, badge, 9.0, c.surfaces.overlay);
         tr.draw_text(scene, &count, 11.0, c.text_dim, t * Affine::translate((x0 + 118.0, y0 + 17.0)), None);
 
-        // action row: "Add note" on the selected block
+        // action row: "Add note" on the live text selection
         let add_y = y0 + 42.0;
-        let has_sel = self.selected_block.is_some();
-        let add_label = if has_sel { "+ Note on selection" } else { "Select a paragraph to annotate" };
+        let has_sel = self.sel.map_or(false, |s| !s.is_empty());
+        let add_label = if has_sel { "+ Note on selection" } else { "Select text to annotate" };
         let add_rect = Rect::new(x0 + 16.0, add_y, panel_x1 - 16.0, add_y + 30.0);
         let hover = has_sel && self.is_hover(add_rect);
         paint::fill_round(
@@ -3778,17 +4489,46 @@ impl BooksApp {
         self.icon_button(scene, t, theme, r.x0 + 14.0, cy, s, Ico::Back, false, Action::CloseSettings);
         tr.draw_text_weighted(scene, "Settings", 21.0, c.text_primary, t * Affine::translate((r.x0 + 60.0, r.y0 + 15.0)), None, TextWeight::Bold);
 
-        // Tab switch.
-        let tabs_y = r.y0 + TOP_BAR + 14.0;
-        let mut tx = r.x0 + 24.0;
-        for (tab, label) in [(SettingsTab::Fonts, "Fonts"), (SettingsTab::Colours, "Colours")] {
+        // Proper tabs (an underline-indicator tab bar, not pill buttons).
+        let tabs_y = r.y0 + TOP_BAR + 10.0;
+        let tab_h = 38.0;
+        let mut tx = r.x0 + 26.0;
+        for (tab, label) in [(SettingsTab::Fonts, "Fonts"), (SettingsTab::Colours, "Colour schemes")] {
             let active = self.settings_tab == tab;
-            let action = if active { Action::Swallow } else { Action::SetSettingsTab(tab) };
-            tx += self.pill(scene, t, tr, theme, tx, tabs_y, 32.0, label, 13.5, active, Some(action)) + 10.0;
+            let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            let tab_rect = Rect::new(tx, tabs_y, tx + lw as f64 + 24.0, tabs_y + tab_h);
+            let hover = self.is_hover(tab_rect);
+            let col = if active || hover { c.text_primary } else { c.text_dim };
+            tr.draw_text_weighted(
+                scene,
+                label,
+                14.0,
+                col,
+                t * Affine::translate((tx + 12.0, tabs_y + 11.0)),
+                None,
+                if active { TextWeight::Semibold } else { TextWeight::Medium },
+            );
+            if active {
+                let ind = Rect::new(tx + 8.0, tabs_y + tab_h - 3.0, tx + lw as f64 + 16.0, tabs_y + tab_h);
+                paint::fill_round(scene, t, ind, 1.5, theme.accent_primary);
+            }
+            if !active {
+                self.push_hit(tab_rect, Action::SetSettingsTab(tab));
+            }
+            tx += lw as f64 + 24.0 + 6.0;
         }
+        // Divider under the whole tab bar.
+        paint::line(
+            scene,
+            t,
+            Point::new(r.x0, tabs_y + tab_h),
+            Point::new(r.x1, tabs_y + tab_h),
+            c.border_standard,
+            1.0,
+        );
 
         // Scrollable body.
-        let content_top = tabs_y + 32.0 + 16.0;
+        let content_top = tabs_y + tab_h + 18.0;
         let body = Rect::new(r.x0, content_top, r.x1, r.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
         let col_w = (r.width() - 96.0).min(760.0).max(280.0);
@@ -3811,6 +4551,10 @@ impl BooksApp {
         if self.font_picker {
             self.draw_font_picker(scene, t, tr, theme, &c);
         }
+        // The colour picker floats above everything when open.
+        if self.picker.is_some() {
+            self.draw_color_picker(scene, t, tr, theme, &c);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3826,77 +4570,86 @@ impl BooksApp {
         mut y: f64,
     ) -> f64 {
         let radii_md = theme.tokens.radii.md as f64;
-        tr.draw_text_weighted(scene, "READING FONTS", 11.0, c.text_dim, t * Affine::translate((x, y)), None, TextWeight::Semibold);
-        y += 20.0;
-        tr.draw_text(scene, "Pick the default, tune each face's size, and choose which appear in the quick settings.", 12.5, c.text_dim, t * Affine::translate((x, y)), Some(w as f32));
-        y += 30.0;
-
         let fonts = self.fonts.clone();
         let default_id = if self.default_font_id.is_empty() {
             fonts.first().map(|f| f.id.clone()).unwrap_or_default()
         } else {
             self.default_font_id.clone()
         };
+
+        // --- default font: a labelled dropdown at the top --------------------
+        tr.draw_text_weighted(scene, "DEFAULT FONT", 11.0, c.text_dim, t * Affine::translate((x, y)), None, TextWeight::Semibold);
+        y += 20.0;
+        let dd_h = 46.0;
+        let dd = Rect::new(x, y, x + w, y + dd_h);
+        paint::fill_round(scene, t, dd, radii_md, c.surfaces.raised);
+        paint::stroke_round(scene, t, dd, radii_md, if self.default_font_menu { theme.border_focus } else { c.border_standard }, 1.0);
+        let cur = fonts.iter().find(|f| f.id == default_id);
+        if let Some(f) = cur {
+            // Draw the current default's name in its own face.
+            tr.draw_text_font(scene, &f.name, 16.0, c.text_primary, t * Affine::translate((x + 16.0, y + dd_h / 2.0 - 10.0)), None, TextWeight::Semibold, false, &font_choice(&f.kind));
+        }
+        self.icon_button(scene, t, theme, x + w - 34.0, y + dd_h / 2.0 - 14.0, 28.0, Ico::ChevDown, false, Action::ToggleDefaultFontMenu);
+        self.push_hit(dd, Action::ToggleDefaultFontMenu);
+        let dd_bottom = y + dd_h;
+        y += dd_h + 26.0;
+
+        // --- the font list ---------------------------------------------------
+        tr.draw_text_weighted(scene, "READING FONTS", 11.0, c.text_dim, t * Affine::translate((x, y)), None, TextWeight::Semibold);
+        y += 18.0;
+        tr.draw_text(scene, "Each row previews its own face — tap a name to rename, toggle whether it appears in the quick settings, and tune its size.", 12.5, c.text_dim, t * Affine::translate((x, y)), Some(w as f32));
+        y += 34.0;
+
         for f in &fonts {
             let row_h = 64.0;
+            let cy = y + row_h / 2.0;
             let card = Rect::new(x, y, x + w, y + row_h);
             paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
 
-            // Default radio.
-            let rc = Point::new(x + 26.0, y + row_h / 2.0);
-            let is_def = f.id == default_id;
-            let ring = Rect::new(rc.x - 8.0, rc.y - 8.0, rc.x + 8.0, rc.y + 8.0);
-            if is_def {
-                paint::circle(scene, t, rc, 8.0, theme.accent_primary);
-                paint::circle(scene, t, rc, 3.4, Color::from_rgb8(248, 248, 252));
-            } else {
-                paint::stroke_round(scene, t, ring, 8.0, c.border_standard, 1.4);
-            }
-            self.push_hit(Rect::new(x + 8.0, y, x + 46.0, y + row_h), Action::SetDefaultFont(f.id.clone()));
-
-            // Name (tap to rename) + kind sub-label.
-            let name_x = x + 52.0;
+            // Name rendered in its own face + a pencil affordance (tap to rename).
+            let name_x = x + 20.0;
             let renaming_this = matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
             let name_disp = if renaming_this {
                 format!("{}\u{2502}", self.renaming.as_ref().map(|r| r.buf.as_str()).unwrap_or(""))
             } else {
                 f.name.clone()
             };
-            tr.draw_text_weighted(scene, &name_disp, 15.0, c.text_primary, t * Affine::translate((name_x, y + 13.0)), None, TextWeight::Semibold);
+            let fam = font_choice(&f.kind);
+            tr.draw_text_font(scene, &name_disp, 16.0, c.text_primary, t * Affine::translate((name_x, y + 12.0)), None, TextWeight::Semibold, false, &fam);
+            let (nw, _) = tr.measure_font(&name_disp, 16.0, None, TextWeight::Semibold, false, &fam);
+            let pencil = Rect::new(name_x + nw as f64 + 6.0, y + 12.0, name_x + nw as f64 + 26.0, y + 32.0);
+            paint::pencil(scene, t, pencil, c.text_dim.with_alpha_factor(if renaming_this { 0.9 } else { 0.5 }), 1.3);
             let kind = match &f.kind {
                 FontKind::Default => "Default face".to_string(),
-                FontKind::Serif => "Serif".to_string(),
+                FontKind::Serif => "Serif book face".to_string(),
                 FontKind::Mono => "Monospace".to_string(),
                 FontKind::Named(n) => format!("System · {n}"),
             };
-            tr.draw_text(scene, &kind, 12.0, c.text_dim, t * Affine::translate((name_x, y + 36.0)), None);
-            self.push_hit(Rect::new(name_x, y + 8.0, x + w - 280.0, y + 34.0), Action::BeginRenameFont(f.id.clone()));
+            tr.draw_text(scene, &kind, 12.0, c.text_dim, t * Affine::translate((name_x, y + 38.0)), None);
+            self.push_hit(Rect::new(name_x, y + 8.0, name_x + nw as f64 + 30.0, y + 34.0), Action::BeginRenameFont(f.id.clone()));
 
-            // Right cluster: shown toggle, size stepper, remove (custom only).
-            let mut rx = x + w - 16.0;
+            // Right cluster, laid out right-to-left with a fixed delete column so
+            // every row's size control lines up (built-ins reserve the column but
+            // draw nothing in it).
+            let del_col = x + w - 16.0 - 24.0;
             if matches!(f.kind, FontKind::Named(_)) {
-                rx -= 24.0;
-                let del = Rect::new(rx, y + row_h / 2.0 - 12.0, rx + 24.0, y + row_h / 2.0 + 12.0);
-                let col = if self.is_hover(del) { c.text_primary } else { c.text_dim.with_alpha_factor(0.6) };
+                let del = Rect::new(del_col, cy - 12.0, del_col + 24.0, cy + 12.0);
+                let col = if self.is_hover(del) { c.semantic.danger } else { c.text_dim.with_alpha_factor(0.6) };
                 paint::close(scene, t, del, col, 1.4);
                 self.push_hit(del, Action::RemoveFont(f.id.clone()));
-                rx -= 10.0;
             }
-            let btn = 28.0;
-            let by = y + row_h / 2.0 - btn / 2.0;
-            rx -= btn;
-            self.icon_button(scene, t, theme, rx, by, btn, Ico::PlusI, false, Action::FontMultInc(f.id.clone()));
+            let size_right = del_col - 12.0;
             let mult = format!("{:.2}×", f.size_mult);
-            let (vw, _) = tr.measure_weighted(&mult, 12.5, None, TextWeight::Medium);
-            rx -= 6.0 + vw as f64;
-            tr.draw_text_weighted(scene, &mult, 12.5, c.text_primary, t * Affine::translate((rx, y + row_h / 2.0 - 7.0)), None, TextWeight::Medium);
-            rx -= 6.0 + btn;
-            self.icon_button(scene, t, theme, rx, by, btn, Ico::MinusI, false, Action::FontMultDec(f.id.clone()));
-            rx -= 12.0;
-            let label = if f.shown { "In quick settings" } else { "Hidden" };
-            let tw = tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0 as f64 + 24.0;
-            rx -= tw;
-            self.pill(scene, t, tr, theme, rx, y + row_h / 2.0 - 13.0, 26.0, label, 12.0, f.shown, Some(Action::ToggleFontShown(f.id.clone())));
+            let left = self.size_stepper(
+                scene, t, tr, theme, c, size_right, cy, &mult,
+                NumField::FontMult(f.id.clone()),
+                Action::FontMultDec(f.id.clone()), Action::FontMultInc(f.id.clone()),
+            );
+            // Enable/disable toggle (= whether it appears in quick settings).
+            let tog_w = 40.0;
+            let tog_h = 22.0;
+            let tog_x = left - 16.0 - tog_w;
+            self.switch(scene, t, theme, c, tog_x, cy - tog_h / 2.0, tog_w, tog_h, f.shown, Action::ToggleFontShown(f.id.clone()));
 
             y += row_h + 10.0;
         }
@@ -3909,7 +4662,51 @@ impl BooksApp {
         paint::stroke_round(scene, t, arect, 18.0, c.border_standard, 1.0);
         tr.draw_text_weighted(scene, add, 13.0, c.text_primary, t * Affine::translate((x + 16.0, y + 11.0)), None, TextWeight::Medium);
         self.push_hit(arect, Action::OpenFontPicker);
-        y + 36.0 + 8.0
+        y += 36.0 + 8.0;
+
+        // The default-font dropdown menu (drawn last so it floats over the rows).
+        if self.default_font_menu {
+            self.draw_default_font_menu(scene, t, tr, theme, c, x, w, dd_bottom + 4.0, &fonts, &default_id);
+        }
+        y
+    }
+
+    /// The default-font dropdown list, floating under the dropdown control.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_default_font_menu(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        x: f64,
+        w: f64,
+        top: f64,
+        fonts: &[FontEntry],
+        default_id: &str,
+    ) {
+        let row_h = 40.0;
+        let menu_h = fonts.len() as f64 * row_h + 8.0;
+        let menu = Rect::new(x, top, x + w, top + menu_h);
+        let shadow = Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0);
+        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
+        paint::fill_round(scene, t, menu, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        paint::stroke_round(scene, t, menu, theme.tokens.radii.lg as f64, c.border_standard, 1.0);
+        self.push_hit(menu, Action::Swallow);
+        let mut my = top + 4.0;
+        for f in fonts {
+            let row = Rect::new(x + 6.0, my, x + w - 6.0, my + row_h - 4.0);
+            let sel = f.id == default_id;
+            if sel {
+                paint::fill_round(scene, t, row, 8.0, theme.accent_primary.with_alpha_factor(0.16));
+            } else if self.is_hover(row) {
+                paint::fill_round(scene, t, row, 8.0, theme.bg_hover);
+            }
+            tr.draw_text_font(scene, &f.name, 15.0, if sel { theme.accent_primary } else { c.text_primary }, t * Affine::translate((x + 18.0, my + 9.0)), None, TextWeight::Medium, false, &font_choice(&f.kind));
+            self.push_hit(row, Action::SetDefaultFont(f.id.clone()));
+            my += row_h;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3927,27 +4724,25 @@ impl BooksApp {
         let radii_md = theme.tokens.radii.md as f64;
         tr.draw_text_weighted(scene, "COLOUR SCHEMES", 11.0, c.text_dim, t * Affine::translate((x, y)), None, TextWeight::Semibold);
         y += 20.0;
-        tr.draw_text(scene, "Duplicate a preset or build one from a background colour, then tune each colour. Disabled schemes are hidden from the quick settings.", 12.5, c.text_dim, t * Affine::translate((x, y)), Some(w as f32));
-        y += 42.0;
+        tr.draw_text(scene, "A scheme's colours are all edited through the colour picker. Toggle a scheme off to hide it from the quick settings.", 12.5, c.text_dim, t * Affine::translate((x, y)), Some(w as f32));
+        y += 40.0;
 
-        // New from a background colour.
-        tr.draw_text_weighted(scene, "NEW FROM A COLOUR", 10.0, c.text_dim, t * Affine::translate((x, y)), None, TextWeight::Semibold);
-        y += 16.0;
-        let sw = 34.0;
-        let mut sx = x;
-        for bg in BG_SWATCHES {
-            let sr = Rect::new(sx, y, sx + sw, y + sw);
-            paint::fill_round(scene, t, sr, 8.0, Color::from_rgb8(bg[0], bg[1], bg[2]));
-            let hov = self.is_hover(sr);
-            paint::stroke_round(scene, t, sr, 8.0, if hov { theme.border_focus } else { c.border_standard }, if hov { 2.0 } else { 1.0 });
-            self.push_hit(sr, Action::NewSchemeFromBg(bg));
-            sx += sw + 10.0;
-        }
-        y += sw + 24.0;
+        // A single button opens the colour picker to choose a background; the
+        // scheme is then derived from it (replaces the old swatch row).
+        let new_label = "＋  New scheme from a colour…";
+        let nw = tr.measure_weighted(new_label, 13.0, None, TextWeight::Semibold).0 as f64 + 34.0;
+        let nrect = Rect::new(x, y, x + nw, y + 40.0);
+        let nhover = self.is_hover(nrect);
+        paint::fill_round(scene, t, nrect, 20.0, if nhover { theme.accent_primary } else { theme.accent_primary.with_alpha_factor(0.16) });
+        let ncol = if nhover { Color::from_rgb8(248, 248, 252) } else { theme.accent_primary };
+        tr.draw_text_weighted(scene, new_label, 13.0, ncol, t * Affine::translate((x + 17.0, y + 13.0)), None, TextWeight::Semibold);
+        self.push_hit(nrect, Action::NewSchemeViaPicker);
+        y += 40.0 + 24.0;
 
         let schemes = self.schemes.clone();
         for s in &schemes {
-            let row_h = 66.0;
+            let row_h = 68.0;
+            let cy = y + row_h / 2.0;
             let card = Rect::new(x, y, x + w, y + row_h);
             let selected = if s.builtin {
                 self.settings.scheme_id.is_empty() && self.settings.theme == ReadTheme::from_str(&s.id)
@@ -3959,60 +4754,74 @@ impl BooksApp {
                 paint::stroke_round(scene, t, card, radii_md, theme.accent_primary, 1.6);
             }
 
-            // Swatches (page / ink / accent).
-            let mut swx = x + 18.0;
-            for col in [s.page, s.ink, s.accent] {
-                let srr = Rect::new(swx, y + row_h / 2.0 - 11.0, swx + 22.0, y + row_h / 2.0 + 11.0);
-                paint::fill_round(scene, t, srr, 5.0, Color::from_rgb8(col[0], col[1], col[2]));
-                paint::stroke_round(scene, t, srr, 5.0, c.border_standard, 1.0);
-                swx += 26.0;
-            }
+            // Swatches (page / ink / accent). For a custom scheme each swatch
+            // opens the colour picker on that slot; a built-in's swatches just
+            // apply the scheme.
             let use_action = if s.builtin {
                 Action::SetReadTheme(ReadTheme::from_str(&s.id))
             } else {
                 Action::SetScheme(s.id.clone())
             };
-            self.push_hit(Rect::new(x + 8.0, y + 6.0, swx + 4.0, y + row_h - 6.0), use_action.clone());
+            let mut swx = x + 18.0;
+            for (slot, col) in [s.page, s.ink, s.accent].into_iter().enumerate() {
+                let srr = Rect::new(swx, cy - 12.0, swx + 24.0, cy + 12.0);
+                paint::fill_round(scene, t, srr, 6.0, Color::from_rgb8(col[0], col[1], col[2]));
+                let edith = !s.builtin && self.is_hover(srr);
+                paint::stroke_round(scene, t, srr, 6.0, if edith { theme.border_focus } else { c.border_standard }, if edith { 2.0 } else { 1.0 });
+                if !s.builtin {
+                    self.push_hit(srr, Action::PickSchemeColor(s.id.clone(), slot));
+                }
+                swx += 30.0;
+            }
 
             // Name + status.
-            let name_x = swx + 14.0;
+            let name_x = swx + 16.0;
             let renaming_this = matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(s.id.clone()));
             let name_disp = if renaming_this {
                 format!("{}\u{2502}", self.renaming.as_ref().map(|r| r.buf.as_str()).unwrap_or(""))
             } else {
                 s.name.clone()
             };
-            tr.draw_text_weighted(scene, &name_disp, 15.0, c.text_primary, t * Affine::translate((name_x, y + 13.0)), None, TextWeight::Semibold);
+            tr.draw_text_weighted(scene, &name_disp, 15.0, c.text_primary, t * Affine::translate((name_x, y + 14.0)), None, TextWeight::Semibold);
             let sub = if s.builtin { "Built-in" } else if selected { "In use" } else { "Custom" };
-            tr.draw_text(scene, sub, 12.0, c.text_dim, t * Affine::translate((name_x, y + 36.0)), None);
-            if s.builtin {
-                self.push_hit(Rect::new(name_x, y + 6.0, x + w - 300.0, y + row_h - 6.0), use_action);
-            } else {
-                self.push_hit(Rect::new(name_x, y + 6.0, x + w - 300.0, y + 34.0), Action::BeginRenameScheme(s.id.clone()));
-            }
+            tr.draw_text(scene, sub, 12.0, if selected { theme.accent_primary } else { c.text_dim }, t * Affine::translate((name_x, y + 38.0)), None);
 
-            // Right cluster: enable, Duplicate, Edit(custom), Delete(custom).
-            let mut rx = x + w - 16.0;
+            // Right cluster, laid out right-to-left: enable switch, then the
+            // actions (Duplicate / Edit / delete).
+            let mut rx = x + w - 18.0;
+            let tog_w = 40.0;
+            let tog_h = 22.0;
+            rx -= tog_w;
+            self.switch(scene, t, theme, c, rx, cy - tog_h / 2.0, tog_w, tog_h, s.enabled, Action::ToggleSchemeEnabled(s.id.clone()));
+            rx -= 16.0;
             if !s.builtin {
                 rx -= 24.0;
-                let del = Rect::new(rx, y + row_h / 2.0 - 12.0, rx + 24.0, y + row_h / 2.0 + 12.0);
-                let col = if self.is_hover(del) { c.text_primary } else { c.text_dim.with_alpha_factor(0.6) };
-                paint::close(scene, t, del, col, 1.4);
+                let del = Rect::new(rx, cy - 12.0, rx + 24.0, cy + 12.0);
+                let dcolh = if self.is_hover(del) { c.semantic.danger } else { c.text_dim.with_alpha_factor(0.6) };
+                paint::close(scene, t, del, dcolh, 1.4);
                 self.push_hit(del, Action::DeleteScheme(s.id.clone()));
-                rx -= 10.0;
+                rx -= 8.0;
                 let ew = tr.measure_weighted("Edit", 12.0, None, TextWeight::Medium).0 as f64 + 24.0;
                 rx -= ew;
-                self.pill(scene, t, tr, theme, rx, y + row_h / 2.0 - 13.0, 26.0, "Edit", 12.0, false, Some(Action::EditScheme(s.id.clone())));
+                self.pill(scene, t, tr, theme, rx, cy - 13.0, 26.0, "Edit", 12.0, false, Some(Action::EditScheme(s.id.clone())));
                 rx -= 8.0;
             }
             let dw = tr.measure_weighted("Duplicate", 12.0, None, TextWeight::Medium).0 as f64 + 24.0;
             rx -= dw;
-            self.pill(scene, t, tr, theme, rx, y + row_h / 2.0 - 13.0, 26.0, "Duplicate", 12.0, false, Some(Action::DuplicateScheme(s.id.clone())));
-            rx -= 8.0;
-            let tl = if s.enabled { "Enabled" } else { "Disabled" };
-            let tw = tr.measure_weighted(tl, 12.0, None, TextWeight::Medium).0 as f64 + 24.0;
-            rx -= tw;
-            self.pill(scene, t, tr, theme, rx, y + row_h / 2.0 - 13.0, 26.0, tl, 12.0, s.enabled, Some(Action::ToggleSchemeEnabled(s.id.clone())));
+            self.pill(scene, t, tr, theme, rx, cy - 13.0, 26.0, "Duplicate", 12.0, false, Some(Action::DuplicateScheme(s.id.clone())));
+
+            // Name click: rename (custom) / apply (built-in), bounded before the
+            // right cluster.
+            let name_end = rx - 12.0;
+            if name_end > name_x {
+                if s.builtin {
+                    self.push_hit(Rect::new(name_x, y + 8.0, name_end, y + row_h - 8.0), use_action);
+                } else {
+                    self.push_hit(Rect::new(name_x, y + 8.0, name_end, y + 34.0), Action::BeginRenameScheme(s.id.clone()));
+                    // Below the name, the sub-label area applies the scheme.
+                    self.push_hit(Rect::new(name_x, y + 34.0, name_end, y + row_h - 8.0), use_action);
+                }
+            }
 
             y += row_h + 10.0;
         }
@@ -4051,7 +4860,7 @@ impl BooksApp {
         self.push_hit(Rect::new(ix0, y - 2.0, ix1 - 60.0, y + 26.0), Action::BeginRenameScheme(id.clone()));
         y += 40.0;
 
-        tr.draw_text_weighted(scene, "COLOURS · tap a swatch to change", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
+        tr.draw_text_weighted(scene, "COLOURS · tap a swatch to open the picker", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
         y += 18.0;
         let slots = scheme.slots();
         let slot_w = (ix1 - ix0 - 2.0 * 16.0) / 3.0;
@@ -4059,8 +4868,9 @@ impl BooksApp {
         for (i, (label, col)) in slots.iter().enumerate() {
             let sr = Rect::new(sxx, y, sxx + slot_w, y + 60.0);
             paint::fill_round(scene, t, sr, 10.0, Color::from_rgb8(col[0], col[1], col[2]));
-            paint::stroke_round(scene, t, sr, 10.0, c.border_standard, 1.0);
-            self.push_hit(sr, Action::CycleSchemeColor(id.clone(), i));
+            let hov = self.is_hover(sr);
+            paint::stroke_round(scene, t, sr, 10.0, if hov { theme.border_focus } else { c.border_standard }, if hov { 2.0 } else { 1.0 });
+            self.push_hit(sr, Action::PickSchemeColor(id.clone(), i));
             let (lw, _) = tr.measure(label, 12.0, None);
             tr.draw_text(scene, label, 12.0, c.text_dim, t * Affine::translate((sxx + (slot_w - lw as f64) / 2.0, y + 68.0)), None);
             sxx += slot_w + 16.0;
@@ -4084,6 +4894,127 @@ impl BooksApp {
         paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
         tr.draw_text_weighted(scene, "Done", 13.0, Color::from_rgb8(248, 248, 252), t * Affine::translate((ix1 - done_w + 20.0, y + 9.0)), None, TextWeight::Semibold);
         self.push_hit(drect, Action::CloseSchemeEditor);
+    }
+
+    /// The reusable colour picker: an HSV square + hue strip + quick palette,
+    /// with a live preview and hex readout. Every scheme colour (and each new
+    /// scheme's background) is chosen here. Records the SV/hue rects so the
+    /// event layer can steer a drag.
+    fn draw_color_picker(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, c: &ui::tokens::colors::Colors) {
+        let Some(pick) = self.picker.clone() else { return };
+        let r = self.rect;
+        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(0.45);
+        scene.fill(Fill::NonZero, t, scrim, None, &r);
+        // Tap-away cancels.
+        self.push_hit(r, Action::PickerCancel);
+
+        let pw = 372.0_f64.min(r.width() - 40.0);
+        let ph = 396.0_f64.min(r.height() - 40.0);
+        let px0 = r.x0 + (r.width() - pw) / 2.0;
+        let py0 = r.y0 + (r.height() - ph) / 2.0;
+        let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
+        paint::fill_round(scene, t, panel, theme.tokens.radii.lg as f64, c.surfaces.raised);
+        paint::stroke_round(scene, t, panel, theme.tokens.radii.lg as f64, c.border_standard, 1.0);
+        self.push_hit(panel, Action::Swallow);
+
+        let ix0 = px0 + 20.0;
+        let ix1 = px0 + pw - 20.0;
+        let title = match &pick.target {
+            PickTarget::NewScheme => "New scheme — pick a background",
+            PickTarget::Slot(_, 0) => "Page colour",
+            PickTarget::Slot(_, 1) => "Text colour",
+            _ => "Accent colour",
+        };
+        tr.draw_text_weighted(scene, title, 15.0, c.text_primary, t * Affine::translate((ix0, py0 + 16.0)), None, TextWeight::Bold);
+
+        // --- SV square + hue strip ------------------------------------------
+        let top = py0 + 46.0;
+        let sv_size = 190.0;
+        let hue_w = 22.0;
+        let sv = Rect::new(ix0, top, ix0 + sv_size, top + sv_size);
+        let hue = Rect::new(ix1 - hue_w, top, ix1, top + sv_size);
+        self.pick_sv = sv;
+        self.pick_hue = hue;
+
+        // SV square: a grid of cells sampling hsv(hue, s, v). Cheap enough for a
+        // one-frame modal and keeps the picker self-contained (no gradient rig).
+        let (cols, rows) = (20usize, 20usize);
+        let cw = sv_size / cols as f64;
+        let chh = sv_size / rows as f64;
+        for gy in 0..rows {
+            for gx in 0..cols {
+                let s = (gx as f32 + 0.5) / cols as f32;
+                let v = 1.0 - (gy as f32 + 0.5) / rows as f32;
+                let rgb = crate::model::hsv_to_rgb(pick.hue, s, v);
+                let cell = Rect::new(
+                    sv.x0 + gx as f64 * cw,
+                    sv.y0 + gy as f64 * chh,
+                    sv.x0 + gx as f64 * cw + cw + 0.8,
+                    sv.y0 + gy as f64 * chh + chh + 0.8,
+                );
+                paint::fill_rect(scene, t, cell, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
+            }
+        }
+        paint::stroke_round(scene, t, sv, 6.0, c.border_standard, 1.0);
+        // SV cursor.
+        let cur = Point::new(sv.x0 + pick.sat as f64 * sv_size, sv.y0 + (1.0 - pick.val) as f64 * sv_size);
+        paint::circle(scene, t, cur, 7.0, Color::from_rgba8(255, 255, 255, 230));
+        let ring = Rect::new(cur.x - 6.0, cur.y - 6.0, cur.x + 6.0, cur.y + 6.0);
+        paint::stroke_round(scene, t, ring, 6.0, Color::from_rgba8(0, 0, 0, 180), 1.5);
+
+        // Hue strip.
+        let bands = 48usize;
+        let bh = sv_size / bands as f64;
+        for i in 0..bands {
+            let h = i as f32 / bands as f32 * 360.0;
+            let rgb = crate::model::hsv_to_rgb(h, 1.0, 1.0);
+            let by = hue.y0 + i as f64 * bh;
+            paint::fill_rect(scene, t, Rect::new(hue.x0, by, hue.x1, by + bh + 0.8), Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
+        }
+        paint::stroke_round(scene, t, hue, 4.0, c.border_standard, 1.0);
+        let hy = hue.y0 + (pick.hue / 360.0) as f64 * sv_size;
+        let hmark = Rect::new(hue.x0 - 3.0, hy - 3.0, hue.x1 + 3.0, hy + 3.0);
+        paint::stroke_round(scene, t, hmark, 3.0, Color::from_rgb8(250, 250, 252), 2.0);
+
+        // --- preview + hex ---------------------------------------------------
+        let rgb = pick.rgb();
+        let prev_y = top + sv_size + 16.0;
+        let sw = Rect::new(ix0, prev_y, ix0 + 54.0, prev_y + 34.0);
+        paint::fill_round(scene, t, sw, 8.0, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
+        paint::stroke_round(scene, t, sw, 8.0, c.border_standard, 1.0);
+        tr.draw_text_weighted(scene, &crate::model::hex_string(rgb), 15.0, c.text_primary, t * Affine::translate((ix0 + 66.0, prev_y + 9.0)), None, TextWeight::Semibold);
+
+        // --- quick palette chips --------------------------------------------
+        let chips: [[u8; 3]; 10] = [
+            [0xEF, 0x44, 0x44], [0xF5, 0x9E, 0x0B], [0xFA, 0xCC, 0x15], [0x10, 0xB9, 0x81],
+            [0x3B, 0x82, 0xF6], [0xA7, 0x8B, 0xFA], [0xF6, 0xEC, 0xD8], [0xFC, 0xFC, 0xFA],
+            [0x2A, 0x2A, 0x2E], [0x14, 0x18, 0x22],
+        ];
+        let chip_y = prev_y + 46.0;
+        let chip = 26.0;
+        let cgap = (ix1 - ix0 - chips.len() as f64 * chip) / (chips.len() as f64 - 1.0);
+        let mut cx = ix0;
+        for col in chips {
+            let cr = Rect::new(cx, chip_y, cx + chip, chip_y + chip);
+            paint::fill_round(scene, t, cr, 6.0, Color::from_rgb8(col[0], col[1], col[2]));
+            let hov = self.is_hover(cr);
+            paint::stroke_round(scene, t, cr, 6.0, if hov { theme.border_focus } else { c.border_standard }, if hov { 2.0 } else { 1.0 });
+            self.push_hit(cr, Action::PickerSwatch(col));
+            cx += chip + cgap;
+        }
+
+        // --- Cancel / Done ---------------------------------------------------
+        let btn_y = py0 + ph - 46.0;
+        let done_w = tr.measure_weighted("Done", 13.0, None, TextWeight::Semibold).0 as f64 + 44.0;
+        let drect = Rect::new(ix1 - done_w, btn_y, ix1, btn_y + 34.0);
+        paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
+        tr.draw_text_weighted(scene, "Done", 13.0, Color::from_rgb8(248, 248, 252), t * Affine::translate((ix1 - done_w + 22.0, btn_y + 9.0)), None, TextWeight::Semibold);
+        self.push_hit(drect, Action::PickerDone);
+        let can_w = tr.measure_weighted("Cancel", 13.0, None, TextWeight::Medium).0 as f64 + 30.0;
+        let crect = Rect::new(ix1 - done_w - 10.0 - can_w, btn_y, ix1 - done_w - 10.0, btn_y + 34.0);
+        paint::fill_round(scene, t, crect, 17.0, c.surfaces.overlay);
+        tr.draw_text_weighted(scene, "Cancel", 13.0, c.text_primary, t * Affine::translate((crect.x0 + 15.0, btn_y + 9.0)), None, TextWeight::Medium);
+        self.push_hit(crect, Action::PickerCancel);
     }
 
     fn draw_font_picker(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, c: &ui::tokens::colors::Colors) {
@@ -4132,59 +5063,6 @@ impl BooksApp {
         self.picker_scroll = self.picker_scroll.clamp(0.0, self.picker_max_scroll);
     }
 }
-
-/// A curated colour ramp the scheme editor cycles a colour slot through. Spans
-/// papers, inks, and accent hues so tapping a slot walks a useful set.
-const COLOR_RAMP: [[u8; 3]; 16] = [
-    [0xFC, 0xFC, 0xFA], // near-white
-    [0xF6, 0xEC, 0xD8], // cream
-    [0xEC, 0xE7, 0xDA], // warm grey
-    [0xD8, 0xE6, 0xDC], // sage
-    [0x22, 0x20, 0x1E], // near-black
-    [0x1D, 0x1B, 0x18], // warm charcoal
-    [0x14, 0x18, 0x22], // navy-black
-    [0x20, 0x18, 0x22], // plum-black
-    [0xE9, 0xE3, 0xD7], // warm off-white
-    [0x8A, 0x76, 0x59], // muted brown
-    [0x3B, 0x82, 0xF6], // blue
-    [0x0E, 0xA5, 0xE9], // sky
-    [0x10, 0xB9, 0x81], // emerald
-    [0xF5, 0x9E, 0x0B], // amber
-    [0xEF, 0x44, 0x44], // red
-    [0xA7, 0x8B, 0xFA], // violet
-];
-
-/// Squared RGB distance between two colours.
-fn color_dist(a: [u8; 3], b: [u8; 3]) -> i32 {
-    let d = |i: usize| (a[i] as i32 - b[i] as i32);
-    d(0) * d(0) + d(1) * d(1) + d(2) * d(2)
-}
-
-/// Advance a colour to the next entry in [`COLOR_RAMP`], starting from whichever
-/// ramp entry is nearest the current colour. Lets the editor "edit" any slot by
-/// tapping through the ramp even when the current colour is a derived one.
-fn next_ramp_color(cur: [u8; 3]) -> [u8; 3] {
-    let idx = COLOR_RAMP
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, c)| color_dist(**c, cur))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    COLOR_RAMP[(idx + 1) % COLOR_RAMP.len()]
-}
-
-/// Background colours offered by "New from a colour" — a spread of paper and
-/// dark-mode bases from which a whole scheme is auto-derived.
-const BG_SWATCHES: [[u8; 3]; 8] = [
-    [0xFB, 0xF7, 0xEE], // ivory
-    [0xF6, 0xEC, 0xD8], // sepia
-    [0xEA, 0xEE, 0xF2], // cool paper
-    [0xE7, 0xEF, 0xE7], // mint paper
-    [0x22, 0x24, 0x2C], // slate
-    [0x1B, 0x18, 0x16], // warm dark
-    [0x15, 0x1A, 0x24], // midnight
-    [0x1E, 0x16, 0x22], // aubergine
-];
 
 /// Sub-pixel x-span `[x_lo, x_hi]` of chars `[lo, hi)` within a run laid out at
 /// `x0` with measured width `w`, using proportional placement within the run.
@@ -4468,6 +5346,32 @@ mod interaction_tests {
     fn key_named(app: &mut BooksApp, doc: &mut AutoCommit, named: NamedKey) -> bool {
         feed(app, doc, named_press(named))
     }
+    /// Feed a key with explicit modifiers (Shift/Ctrl selection extension).
+    fn key_named_mods(app: &mut BooksApp, doc: &mut AutoCommit, named: NamedKey, state: ModifiersState) -> bool {
+        let mods = Modifiers::from(state);
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&named_press(named), 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+
+    /// A point at the centre of the first laid-out word on the current page.
+    fn page_point(app: &BooksApp) -> Point {
+        let r = &app.sel_runs[0];
+        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+    }
+
+    /// A real double-click (two rapid presses at the same point).
+    fn dbl_click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) {
+        ptr_move(app, doc, p);
+        ptr_down(app, doc);
+        ptr_up(app, doc);
+        ptr_down(app, doc);
+        ptr_up(app, doc);
+    }
 
     #[test]
     fn wheel_turns_pages_in_the_reader() {
@@ -4554,30 +5458,64 @@ mod interaction_tests {
     }
 
     #[test]
-    fn scheme_manager_new_from_bg_creates_selects_and_edits() {
+    fn scheme_manager_new_via_picker_creates_selects_and_edits() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 860.0);
         let before = BooksDoc::read_schemes(&doc).len();
-        // Tap a background swatch to derive a whole new scheme.
-        let bg = find_hit(&app, |a| matches!(a, Action::NewSchemeFromBg(_))).expect("a bg swatch");
-        assert!(click(&mut app, &mut doc, bg), "new-from-bg handled");
+        // The single "New scheme" button opens the colour picker (no scheme yet).
+        let newbtn = find_hit(&app, |a| matches!(a, Action::NewSchemeViaPicker)).expect("a New scheme button");
+        assert!(click(&mut app, &mut doc, newbtn), "new-via-picker handled");
+        assert!(app.picker.is_some(), "the colour picker opened");
+        assert_eq!(BooksDoc::read_schemes(&doc).len(), before, "no scheme until the picker commits");
+        // Commit the picker -> a scheme is derived from the chosen background,
+        // selected, and opened in the editor.
+        frame(&mut app, &mut doc, 1200.0, 860.0);
+        let done = find_hit(&app, |a| matches!(a, Action::PickerDone)).expect("a Done button");
+        assert!(click(&mut app, &mut doc, done), "picker done handled");
         let schemes = BooksDoc::read_schemes(&doc);
-        assert_eq!(schemes.len(), before + 1, "a custom scheme was created");
+        assert_eq!(schemes.len(), before + 1, "a custom scheme was created on commit");
         let custom = schemes.iter().find(|s| !s.builtin).expect("a custom scheme exists");
-        // It becomes the selected scheme and opens in the editor.
         assert_eq!(BooksDoc::read_settings(&doc).scheme_id, custom.id, "new scheme is selected");
         assert_eq!(app.editing_scheme.as_deref(), Some(custom.id.as_str()), "editor opened on it");
+    }
 
-        // Duplicating it yields a second custom scheme (schemes ARE duplicable).
-        app.editing_scheme = None;
-        frame(&mut app, &mut doc, 1200.0, 860.0);
-        let dup = find_hit(&app, |a| matches!(a, Action::DuplicateScheme(_))).expect("a duplicate button");
-        click(&mut app, &mut doc, dup);
-        let after = BooksDoc::read_schemes(&doc);
-        assert!(after.iter().filter(|s| !s.builtin).count() >= 2, "duplicate added another custom scheme");
+    #[test]
+    fn color_picker_returns_a_colour_applied_to_a_scheme() {
+        // A custom scheme's page colour, edited through the picker, changes.
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let mut schemes = default_schemes();
+        schemes.push(ColorScheme::from_bg("scheme_x", "Test", [0x30, 0x30, 0x30]));
+        BooksDoc::write_schemes(&mut doc, &schemes);
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Colours;
+        frame(&mut app, &mut doc, 1200.0, 900.0);
+        let before = BooksDoc::read_schemes(&doc)
+            .into_iter()
+            .find(|s| s.id == "scheme_x")
+            .unwrap()
+            .page;
+        // Tap the custom scheme's page swatch to open the picker on that slot.
+        let sw = find_hit(&app, |a| matches!(a, Action::PickSchemeColor(id, slot) if id == "scheme_x" && *slot == 0))
+            .expect("the page swatch opens the picker");
+        assert!(click(&mut app, &mut doc, sw), "picker opened on the page slot");
+        assert!(app.picker.is_some());
+        // Drag on the SV square: a press + move within it applies a new colour.
+        frame(&mut app, &mut doc, 1200.0, 900.0);
+        let sv = app.pick_sv;
+        ptr_move(&mut app, &mut doc, Point::new(sv.x0 + sv.width() * 0.8, sv.y0 + sv.height() * 0.2));
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, Point::new(sv.x0 + sv.width() * 0.75, sv.y0 + sv.height() * 0.25));
+        ptr_up(&mut app, &mut doc);
+        let after = BooksDoc::read_schemes(&doc)
+            .into_iter()
+            .find(|s| s.id == "scheme_x")
+            .unwrap()
+            .page;
+        assert_ne!(after, before, "the picker applied a new page colour to the scheme");
     }
 
     #[test]
@@ -4587,15 +5525,20 @@ mod interaction_tests {
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        // Hide the Serif font from quick settings.
+        // Disable the Serif font (its enable toggle = whether it shows in quick
+        // settings).
         let hide = find_hit(&app, |a| matches!(a, Action::ToggleFontShown(id) if id.as_str() == "serif"))
-            .expect("serif shown toggle");
+            .expect("serif enable toggle");
         assert!(click(&mut app, &mut doc, hide), "toggle handled");
         frame(&mut app, &mut doc, 1200.0, 820.0);
         assert!(!app.shown_fonts().iter().any(|f| f.id == "serif"), "serif no longer in quick settings");
-        // Make Mono the registry default.
+        // Make Mono the registry default via the default-font dropdown.
+        let dd = find_hit(&app, |a| matches!(a, Action::ToggleDefaultFontMenu)).expect("default dropdown");
+        assert!(click(&mut app, &mut doc, dd), "dropdown opened");
+        assert!(app.default_font_menu, "default-font menu is open");
+        frame(&mut app, &mut doc, 1200.0, 820.0);
         let def = find_hit(&app, |a| matches!(a, Action::SetDefaultFont(id) if id.as_str() == "mono"))
-            .expect("mono default radio");
+            .expect("mono row in the dropdown");
         assert!(click(&mut app, &mut doc, def), "default handled");
         assert_eq!(BooksDoc::read_default_font(&doc), "mono", "default persisted");
         // With no explicit selection, the active font follows the default.
@@ -4749,22 +5692,112 @@ mod interaction_tests {
     }
 
     #[test]
-    fn selecting_a_paragraph_then_a_swatch_writes_a_highlight() {
+    fn double_click_selects_a_word_then_a_swatch_writes_a_ranged_highlight() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let before = BooksDoc::list_annotations(&doc).len();
-        // Select a paragraph via its page hit.
-        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
-        assert!(click(&mut app, &mut doc, block), "select handled");
-        assert!(app.selected_block.is_some());
-        // The selection HUD now offers colour swatches — click one to highlight.
+        // Double-click a word: the selection is exactly that word's char span.
+        let p = page_point(&app);
+        let word_run = app.sel_runs[0];
+        dbl_click(&mut app, &mut doc, p);
+        let sel = app.sel.expect("double-click made a selection");
+        let (s, e) = sel.ordered();
+        assert_eq!(s.block, word_run.block);
+        assert_eq!(s.ch, word_run.cs, "selection starts at the word start");
+        assert_eq!(e.ch, word_run.cs + word_run.cl, "selection ends at the word end");
+        // The selection HUD offers colour swatches — click one to highlight.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(_))).expect("a swatch");
         assert!(click(&mut app, &mut doc, swatch), "swatch handled");
         let after = BooksDoc::list_annotations(&doc);
         assert_eq!(after.len(), before + 1, "one highlight added");
-        assert!(after.iter().any(|a| a.kind == AnnoKind::Highlight));
+        let hl = after.iter().find(|a| a.kind == AnnoKind::Highlight).unwrap();
+        assert!(hl.start < hl.end, "the highlight carries a real char range (ranged, not whole-block)");
+    }
+
+    #[test]
+    fn continuous_highlight_band_fills_the_gap_between_words() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Find two adjacent runs (words) on the same line with a visible gap.
+        let runs = app.sel_runs.clone();
+        let (a, b) = runs
+            .windows(2)
+            .map(|w| (w[0], w[1]))
+            .find(|(a, b)| a.block == b.block && (a.y0 - b.y0).abs() < 0.5 && b.x0 > a.x1 + 1.0)
+            .expect("two adjacent words with a gap");
+        // A highlight covering both words (a real ranged annotation on the page).
+        let book_id = app.book_id();
+        let mut hl = Annotation::new(&book_id, AnnoKind::Highlight, app.chapter, a.block)
+            .with_color(HiColor::Yellow);
+        hl.start = a.cs;
+        hl.end = b.cs + b.cl;
+        BooksDoc::upsert_annotation(&mut doc, &hl);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // The gap midpoint between the two words must be inside a drawn band —
+        // proving the band is continuous, not per-glyph.
+        let gap_mid = Point::new((a.x1 + b.x0) / 2.0, (a.y0 + a.y1) / 2.0);
+        assert!(
+            app.hi_bands.iter().any(|band| band.contains(gap_mid)),
+            "a continuous highlight band covers the inter-word gap"
+        );
+    }
+
+    #[test]
+    fn highlight_colour_toggles_off_and_replaces() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let count = |d: &AutoCommit| {
+            BooksDoc::list_annotations(d).into_iter().filter(|a| a.kind == AnnoKind::Highlight).count()
+        };
+        let color_of = |d: &AutoCommit| {
+            BooksDoc::list_annotations(d).into_iter().find(|a| a.kind == AnnoKind::Highlight).map(|a| a.color)
+        };
+        // Select a word, then apply yellow.
+        let p = page_point(&app);
+        dbl_click(&mut app, &mut doc, p);
+        app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
+        app.refresh_from_doc(&doc);
+        assert_eq!(count(&doc), 1);
+        assert_eq!(color_of(&doc), Some(HiColor::Yellow));
+
+        // Re-select the same word; picking a DIFFERENT colour replaces it.
+        dbl_click(&mut app, &mut doc, p);
+        app.dispatch(Action::SetColor(HiColor::Green), &mut doc);
+        app.refresh_from_doc(&doc);
+        assert_eq!(count(&doc), 1, "different colour replaces (never layers)");
+        assert_eq!(color_of(&doc), Some(HiColor::Green));
+
+        // Re-select the same word; picking the SAME colour toggles it off.
+        dbl_click(&mut app, &mut doc, p);
+        app.dispatch(Action::SetColor(HiColor::Green), &mut doc);
+        app.refresh_from_doc(&doc);
+        assert_eq!(count(&doc), 0, "same colour again removes the highlight");
+    }
+
+    #[test]
+    fn shift_and_ctrl_shift_arrows_extend_selection() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Seed a collapsed selection at the start of the first word.
+        let r0 = app.sel_runs[0];
+        let start = DocPos { block: r0.block, ch: r0.cs };
+        app.sel = Some(TextSel { anchor: start, head: start });
+        // Shift+Right extends by one character.
+        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowRight, ModifiersState::SHIFT));
+        assert_eq!(app.sel.unwrap().head, DocPos { block: r0.block, ch: r0.cs + 1 }, "char extend");
+        // Shift+Left contracts back by one character.
+        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::SHIFT));
+        assert_eq!(app.sel.unwrap().head, start, "char contract");
+        // Ctrl+Shift+Right jumps to the next word boundary.
+        let expect_word = app.doc_next_word(start);
+        assert!(expect_word.ch > start.ch, "there is a next word boundary to reach");
+        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowRight, ModifiersState::SHIFT | ModifiersState::CONTROL));
+        assert_eq!(app.sel.unwrap().head, expect_word, "word extend");
     }
 
     #[test]
@@ -4832,10 +5865,12 @@ mod interaction_tests {
         assert!(key_named(&mut app, &mut doc, NamedKey::Home));
         assert_eq!(app.shelf_cursor, 0, "Home -> first book");
 
-        // Enter opens the focused book into the reader.
+        // Enter opens the focused book (mapping the display position back to the
+        // real library index through the sorted display order).
+        let expected = app.shelf_order[app.shelf_cursor];
         assert!(key_named(&mut app, &mut doc, NamedKey::Enter), "enter consumed");
         assert_eq!(app.view, View::Reader, "enter opened the focused book");
-        assert_eq!(app.book_idx, 0, "opened the focused (first) book");
+        assert_eq!(app.book_idx, expected, "opened the focused book (via display order)");
     }
 
     #[test]
@@ -4882,9 +5917,9 @@ mod interaction_tests {
         let mut doc = AutoCommit::new();
         // Wide window so the annotations rail is docked-open.
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        // Create one highlight via select + swatch.
-        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
-        click(&mut app, &mut doc, block);
+        // Create one highlight via double-click word + swatch.
+        let __p = page_point(&app);
+        dbl_click(&mut app, &mut doc, __p);
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(_))).expect("a swatch");
         click(&mut app, &mut doc, swatch);
@@ -4930,9 +5965,9 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        // Select a paragraph, then start a note with the 'm' shortcut.
-        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
-        click(&mut app, &mut doc, block);
+        // Select a word, then start a note with the 'm' shortcut.
+        let __p = page_point(&app);
+        dbl_click(&mut app, &mut doc, __p);
         assert!(key_char(&mut app, &mut doc, "m"), "'m' started a note");
         let nid = app.composing.expect("a note is now being composed");
 
@@ -4960,8 +5995,8 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        let block = find_hit(&app, |a| matches!(a, Action::SelectBlock(_))).expect("a block");
-        click(&mut app, &mut doc, block);
+        let __p = page_point(&app);
+        dbl_click(&mut app, &mut doc, __p);
         key_char(&mut app, &mut doc, "m");
         key_char(&mut app, &mut doc, "x");
         key_named(&mut app, &mut doc, NamedKey::Enter);
@@ -4992,11 +6027,11 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
         // Pretend we've navigated away, then jump from the annotation card.
-        app.selected_block = None;
+        app.chapter = app.num_chapters().saturating_sub(1);
         let jump = find_hit(&app, |ac| matches!(ac, Action::JumpTo(_))).expect("annotation card");
         assert!(click(&mut app, &mut doc, jump), "jump handled");
         assert_eq!(app.chapter, 0, "jumped to the annotation's chapter");
-        assert_eq!(app.selected_block, Some(target), "jumped to the annotation's block");
+        assert_eq!(app.pending_jump_block, Some(target), "jump targets the annotation's block");
         // The deferred page resolution runs on the next settled frame.
         frame(&mut app, &mut doc, 1280.0, 800.0);
         assert!(app.pending_jump_block.is_none(), "pending jump was consumed by layout");
@@ -5169,5 +6204,74 @@ mod interaction_tests {
         reopened.book_idx = 1;
         frame(&mut reopened, &mut doc, 1000.0, 700.0);
         assert_eq!(reopened.chapter, reached, "reopen restored the saved chapter");
+    }
+
+    #[test]
+    fn type_popover_value_is_click_to_type() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
+        click(&mut app, &mut doc, aa);
+        // Tap the text-size value to type a number directly.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let val = find_hit(&app, |a| matches!(a, Action::BeginEditValue(NumField::FontScale)))
+            .expect("the text-size value is a click-to-type field");
+        assert!(click(&mut app, &mut doc, val), "value tap handled");
+        assert!(matches!(app.num_edit, Some((NumField::FontScale, _))), "editing the size field");
+        for ch in ["1", "5", "0"] {
+            assert!(key_char(&mut app, &mut doc, ch), "digit consumed");
+        }
+        assert!(key_named(&mut app, &mut doc, NamedKey::Enter), "enter committed");
+        let fs = BooksDoc::read_settings(&doc).font_scale;
+        assert!((fs - 1.5).abs() < 0.001, "typed 150% -> font_scale 1.5, got {fs}");
+
+        // Line spacing is click-to-type too.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let ls_val = find_hit(&app, |a| matches!(a, Action::BeginEditValue(NumField::LineSpacing)))
+            .expect("line-spacing value is click-to-type");
+        click(&mut app, &mut doc, ls_val);
+        for ch in ["1", ".", "4"] {
+            key_char(&mut app, &mut doc, ch);
+        }
+        key_named(&mut app, &mut doc, NamedKey::Enter);
+        let ls = BooksDoc::read_settings(&doc).line_spacing;
+        assert!((ls - 1.4).abs() < 0.001, "typed 1.4 -> line_spacing 1.4, got {ls}");
+    }
+
+    #[test]
+    fn shelf_hide_read_filters_and_sort_orders() {
+        use crate::model::{LibraryPrefs, LibrarySort, Progress};
+        let mut app = app_with_sample();
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        let ids: Vec<String> = app.library.iter().map(|b| b.id.clone()).collect();
+        assert!(ids.len() >= 3, "sample shelf has several books");
+        // Mark the first book as finished; give the others open times.
+        BooksDoc::write_progress(&mut doc, &ids[0], &Progress { chapter: 9, page: 9, fraction: 1.0, opened: 100 });
+        BooksDoc::write_progress(&mut doc, &ids[1], &Progress { fraction: 0.3, opened: 500, ..Default::default() });
+        BooksDoc::write_progress(&mut doc, &ids[2], &Progress { fraction: 0.6, opened: 300, ..Default::default() });
+
+        // Hide-read on: the finished book drops out of the display order.
+        BooksDoc::write_library_prefs(&mut doc, &LibraryPrefs { sort: LibrarySort::Title, hide_read: true });
+        frame(&mut app, &mut doc, 1200.0, 820.0);
+        assert!(!app.shelf_order.contains(&0), "finished book hidden");
+        assert_eq!(app.shelf_order.len(), ids.len() - 1, "one book filtered out");
+
+        // Sort by recently opened (hide-read off): most-recent first.
+        BooksDoc::write_library_prefs(&mut doc, &LibraryPrefs { sort: LibrarySort::Recent, hide_read: false });
+        frame(&mut app, &mut doc, 1200.0, 820.0);
+        assert_eq!(app.shelf_order.first().copied(), Some(1), "book 1 (opened=500) is most recent");
+
+        // Sort by progress: furthest-read first.
+        BooksDoc::write_library_prefs(&mut doc, &LibraryPrefs { sort: LibrarySort::Progress, hide_read: false });
+        frame(&mut app, &mut doc, 1200.0, 820.0);
+        assert_eq!(app.shelf_order.first().copied(), Some(0), "book 0 (fraction=1.0) is furthest read");
+
+        // The sort control + hide-read toggle are reachable in the shelf chrome.
+        let sort = find_hit(&app, |a| matches!(a, Action::ToggleSortMenu));
+        assert!(sort.is_some(), "a sort control is present");
+        let hide = find_hit(&app, |a| matches!(a, Action::ToggleHideRead));
+        assert!(hide.is_some(), "a hide-read toggle is present");
     }
 }

@@ -468,6 +468,69 @@ fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
     (h, s, l)
 }
 
+/// Standard HSV → sRGB. `h` in degrees (any range; wrapped), `s`/`v` in 0..1.
+/// The colour picker edits in HSV so hue stays stable while dragging value on
+/// the achromatic axis; this is the conversion it commits back through.
+pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
+    let h = ((h % 360.0) + 360.0) % 360.0 / 60.0;
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    let i = h.floor() as i32;
+    let f = h - i as f32;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+    let (r, g, b) = match i.rem_euclid(6) {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    [
+        (r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+/// Inverse of [`hsv_to_rgb`]. Returns `(h_degrees, s, v)`; hue is 0 on the
+/// achromatic axis (callers editing a grey preserve their prior hue).
+pub fn rgb_to_hsv(c: [u8; 3]) -> (f32, f32, f32) {
+    let (r, g, b) = (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let v = max;
+    let s = if max <= f32::EPSILON { 0.0 } else { d / max };
+    let h = if d <= f32::EPSILON {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / d).rem_euclid(6.0))
+    } else if max == g {
+        60.0 * (((b - r) / d) + 2.0)
+    } else {
+        60.0 * (((r - g) / d) + 4.0)
+    };
+    (((h % 360.0) + 360.0) % 360.0, s, v)
+}
+
+/// Parse a `#RRGGBB` / `RRGGBB` hex string into an sRGB triple.
+pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(s, 16).ok()?;
+    Some([((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8])
+}
+
+/// `#RRGGBB` hex string for an sRGB triple.
+pub fn hex_string(c: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+}
+
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
     let h = ((h % 360.0) + 360.0) % 360.0;
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
@@ -583,10 +646,13 @@ pub fn default_schemes() -> Vec<ColorScheme> {
             builtin: true,
         },
         ColorScheme {
+            // A warm-*neutral* charcoal — deliberately close to grey so it never
+            // reads as sepia/brown, but with a hair of warmth (R ≥ B) so it stays
+            // comfortable for long reading rather than a clinical blue-black.
             id: "dark".into(),
             name: "Dark".into(),
-            page: [0x1D, 0x1B, 0x18],
-            ink: [0xE9, 0xE3, 0xD7],
+            page: [0x1E, 0x1D, 0x1C],
+            ink: [0xE7, 0xE5, 0xE1],
             accent: [0x8A, 0xB4, 0xF8],
             dark: true,
             enabled: true,
@@ -651,6 +717,78 @@ pub struct Progress {
     pub page: usize,
     /// 0.0..=1.0 fraction through the whole book, for the shelf bar.
     pub fraction: f32,
+    /// ms-since-epoch this book was last opened, for the "recently opened"
+    /// shelf sort. 0 means never opened.
+    pub opened: u64,
+}
+
+impl Progress {
+    /// A book counts as "read" once the reader is essentially at the end — used
+    /// by the shelf's "hide read books" filter.
+    pub fn is_read(&self) -> bool {
+        self.fraction >= 0.985
+    }
+}
+
+// ===========================================================================
+// Library shelf preferences
+// ===========================================================================
+
+/// How the library shelf orders its books. Persisted so the shelf keeps the
+/// reader's chosen ordering across sessions and collaborators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibrarySort {
+    Title,
+    Author,
+    /// Most-recently-opened first.
+    Recent,
+    /// Furthest-read first.
+    Progress,
+}
+
+impl LibrarySort {
+    pub const ALL: [LibrarySort; 4] =
+        [LibrarySort::Title, LibrarySort::Author, LibrarySort::Recent, LibrarySort::Progress];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibrarySort::Title => "Title",
+            LibrarySort::Author => "Author",
+            LibrarySort::Recent => "Recently opened",
+            LibrarySort::Progress => "Progress",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LibrarySort::Title => "title",
+            LibrarySort::Author => "author",
+            LibrarySort::Recent => "recent",
+            LibrarySort::Progress => "progress",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "author" => LibrarySort::Author,
+            "recent" => LibrarySort::Recent,
+            "progress" => LibrarySort::Progress,
+            _ => LibrarySort::Title,
+        }
+    }
+}
+
+/// Persisted shelf preferences: the sort order and whether finished books are
+/// hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryPrefs {
+    pub sort: LibrarySort,
+    pub hide_read: bool,
+}
+
+impl Default for LibraryPrefs {
+    fn default() -> Self {
+        Self { sort: LibrarySort::Title, hide_read: false }
+    }
 }
 
 #[cfg(test)]
@@ -746,6 +884,56 @@ mod tests {
         // Derived tones are genuine blends, never equal to an endpoint.
         assert_ne!(edge, page);
         assert_ne!(dim, ink);
+    }
+
+    #[test]
+    fn hsv_round_trips_through_rgb() {
+        for c in [[0xFA, 0xCC, 0x15], [0x34, 0xD3, 0x99], [0x3B, 0x82, 0xF6], [0x10, 0x10, 0x12]] {
+            let (h, s, v) = rgb_to_hsv(c);
+            let back = hsv_to_rgb(h, s, v);
+            for i in 0..3 {
+                assert!((c[i] as i32 - back[i] as i32).abs() <= 1, "channel {i}: {c:?} -> {back:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn hsv_value_axis_controls_lightness() {
+        // Full value is bright; zero value is black, hue preserved on the way.
+        assert_eq!(hsv_to_rgb(210.0, 0.6, 0.0), [0, 0, 0]);
+        let bright = hsv_to_rgb(210.0, 0.6, 1.0);
+        assert!(bright.iter().any(|&c| c > 200), "high value is a bright colour");
+    }
+
+    #[test]
+    fn hex_parses_and_formats_round_trip() {
+        assert_eq!(parse_hex("#3B82F6"), Some([0x3B, 0x82, 0xF6]));
+        assert_eq!(parse_hex("3b82f6"), Some([0x3B, 0x82, 0xF6]));
+        assert_eq!(parse_hex("nope"), None);
+        assert_eq!(parse_hex("#12345"), None);
+        assert_eq!(hex_string([0x3B, 0x82, 0xF6]), "#3B82F6");
+    }
+
+    #[test]
+    fn library_sort_round_trips() {
+        for s in LibrarySort::ALL {
+            assert_eq!(LibrarySort::from_str(s.as_str()), s);
+        }
+    }
+
+    #[test]
+    fn progress_is_read_at_the_end() {
+        assert!(!Progress { fraction: 0.5, ..Default::default() }.is_read());
+        assert!(Progress { fraction: 1.0, ..Default::default() }.is_read());
+    }
+
+    #[test]
+    fn dark_scheme_is_neutral_not_brown() {
+        let dark = default_schemes().into_iter().find(|s| s.id == "dark").unwrap();
+        // Warm (red ≥ blue) but only barely — a genuine charcoal, not a sepia.
+        assert!(dark.page[0] >= dark.page[2], "kept faintly warm");
+        assert!(dark.page[0] - dark.page[2] <= 6, "not a brown/sepia paper");
+        assert!(luminance(dark.page) < 0.2, "still a dark page");
     }
 
     #[test]
