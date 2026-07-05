@@ -1606,25 +1606,31 @@ impl Widget for DisksApp {
         // Drain a completed background action (the root widget's `update` is
         // not pumped by the runtime, so we poll here — `sync` runs every frame
         // while `needs_animation_frame` holds).
+        let mut result = None;
+        let mut clear = false;
         if let Some(rx) = &self.action_rx {
             match rx.try_recv() {
                 Ok(res) => {
-                    self.status = res.text.clone();
-                    DisksDoc::set_status(state, &res.text);
-                    // A mount/format/unmount changed the on-disk topology.
-                    if res.refresh && self.live {
-                        if let Some(topo) = crate::probe::probe() {
-                            DisksDoc::write_topology(state, &topo);
-                        }
-                    }
-                    self.action_rx = None;
-                    self.dirty = true;
+                    result = Some(res);
+                    clear = true;
                 }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.action_rx = None;
-                }
+                Err(mpsc::TryRecvError::Disconnected) => clear = true,
                 Err(mpsc::TryRecvError::Empty) => {}
             }
+        }
+        if let Some(res) = result {
+            self.status = res.text.clone();
+            DisksDoc::set_status(state, &res.text);
+            // A mount/format/unmount/eject changed the on-disk topology.
+            if res.refresh && self.live {
+                if let Some(topo) = crate::probe::probe() {
+                    DisksDoc::write_topology(state, &topo);
+                }
+            }
+            self.dirty = true;
+        }
+        if clear {
+            self.action_rx = None;
         }
     }
 
