@@ -97,6 +97,7 @@ vello = "0.9"
 # across compositor / portal / peer-sync (one source of truth, no diverging clones).
 # Already a transitive via wgpu — pinning here is one-line and keeps Cargo
 # collapsed to a single copy in the workspace lock.
+qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 parking_lot = "0.12.5"
 # Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
 # host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the

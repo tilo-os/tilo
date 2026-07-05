@@ -93,6 +93,7 @@ members = [
     "apps/weather",
     "crates/session/greeter",
     "crates/session/qos-power",
+    "crates/system/qos-startup-metrics",
     "crates/session/installer",
 ]
 resolver = "2"

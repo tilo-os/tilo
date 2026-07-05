@@ -156,11 +156,14 @@ pub fn run_with_full_options(opts: HostedOptions) {
         None
     };
 
+    qos_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
     let (host, _chrome) =
         build_nirios_overlay_host_with_handle(tree_handle.clone(), enable_peer_sync);
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
+    qos_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);
+    qos_startup_metrics::mark("hosted-app-new-done");
     // Seed per-tab presence from the tree's collaborator roster so
     // tab-pill presence dots render on first draw. Network-driven
     // presence updates later rewrite the same keys via the collab
@@ -362,11 +365,13 @@ pub fn run_with_full_options(opts: HostedOptions) {
     {
         if let Some(path) = std::env::var_os("QOS_TEST_CONTROL") {
             let socket_path = std::path::PathBuf::from(path);
+            qos_startup_metrics::mark("hosted-event-loop-enter");
             app.run_with_setup(move |proxy| {
                 crate::compositor::hosted_test_control::spawn(socket_path, proxy);
             });
             return;
         }
     }
+    qos_startup_metrics::mark("hosted-event-loop-enter");
     app.run();
 }

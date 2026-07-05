@@ -16,6 +16,7 @@ default = ["legacy-broker"]
 legacy-broker = []
 
 [dependencies]
+qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # runtime-collab is the qOS collab-broker Cap'n Proto SDK.
 # `CollaborationManager` now delegates to it via a shovel thread; the
 # legacy Unix-socket JSON dialect stays available behind the
