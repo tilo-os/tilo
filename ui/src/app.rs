@@ -355,7 +355,7 @@ impl App {
             // fields they depend on (base_theme, a11y, text_scale) exist.
             last_frame_size: None,
             theme: Theme::dark(),
-            debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
+            debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
             focusable_order: Vec::new(),
             autofocus_first: false,
