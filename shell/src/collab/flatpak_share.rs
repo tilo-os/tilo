@@ -337,6 +337,15 @@ pub struct SharedFlatpakSession {
     ///
     /// `None` (the default) means "no override" and the config wins.
     color_override: Arc<Mutex<Option<(Colorimetry, Option<Hdr10Metadata>)>>>,
+    /// True when the workspace's config declared HDR but no HEVC hardware
+    /// was available at start — the session fell back to an SDR H.264
+    /// encoder and the stream_start_msg tags SDR colorimetry so the wire
+    /// label matches the actual bytes. A client-attached HDR color-
+    /// management description would tag the wire HDR, but the encoded
+    /// bytes stay 8-bit — receivers on this session should read the
+    /// bit_depth field, not just the colorimetry, before deciding how
+    /// to composite.
+    hdr_requested_but_unavailable: bool,
 }
 
 impl SharedFlatpakSession {
@@ -408,15 +417,26 @@ impl SharedFlatpakSession {
         } else {
             config.max_bitrate_kbps.max(sdr_floor)
         };
-        let init = match config.hdr {
-            None => EncoderInit::sdr_h264(
+        // If the workspace requested HDR but the runtime probe fell all
+        // the way through to openh264 (no HEVC hardware anywhere), keep
+        // the session usable rather than failing to start: build an SDR
+        // encoder and clear the effective HDR knobs. The wire label +
+        // colorimetry the receiver sees now match reality — no silent
+        // HDR-labelled 8-bit stream. A client-attached color-management
+        // description can still override up or down from here via
+        // `set_color_override`, which affects only the stream-start
+        // labelling (the underlying encoder cadence stays SDR).
+        let hdr_requested_but_unavailable =
+            config.hdr.is_some() && chosen == EncoderKind::Openh264;
+        let init = match (config.hdr, hdr_requested_but_unavailable) {
+            (None, _) | (Some(_), true) => EncoderInit::sdr_h264(
                 width,
                 height,
                 effective_fps,
                 effective_bitrate_kbps,
                 1,
             ),
-            Some(hdr_cfg) => EncoderInit::hdr10_hevc(
+            (Some(hdr_cfg), false) => EncoderInit::hdr10_hevc(
                 width,
                 height,
                 effective_fps,
@@ -467,6 +487,7 @@ impl SharedFlatpakSession {
             active: Arc::new(AtomicBool::new(true)),
             stream_sender: Arc::new(SurfaceStreamSender::new(surface_id, host_user_id)),
             color_override: Arc::new(Mutex::new(None)),
+            hdr_requested_but_unavailable,
         })
     }
 
@@ -595,14 +616,17 @@ impl SharedFlatpakSession {
                 if is_hdr { 10u8 } else { 8u8 },
             )
         } else {
-            match self.config.hdr {
-                None => (
+            // Honour `hdr_requested_but_unavailable`: the config asked
+            // for HDR but the runtime encoder is SDR, so the wire has to
+            // match the actual bytes going out.
+            match (self.config.hdr, self.hdr_requested_but_unavailable) {
+                (None, _) | (Some(_), true) => (
                     super::encoder::Codec::H264.wire_label().to_string(),
                     Some(crate::collab::colorimetry::Colorimetry::sdr_bt709()),
                     None,
                     8u8,
                 ),
-                Some(hdr_cfg) => (
+                (Some(hdr_cfg), false) => (
                     super::encoder::Codec::HevcMain10.wire_label().to_string(),
                     Some(hdr_cfg.colorimetry()),
                     Some(hdr_cfg.metadata),
