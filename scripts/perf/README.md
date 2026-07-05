@@ -16,6 +16,14 @@ executable stand-alone; the higher-level flow is described below.
   kernel timestamp on the reach line into a JSON `{state, boot_ms}`
   blob. Powers the guest down cleanly.
 
+- `qemu-install-boot-verify.sh [--disk PATH]` — assert the bootloader
+  on the produced qcow2's ESP is systemd-boot (not GRUB) and that the
+  disk boots to `multi-user.target`. Reads the ESP with `qemu-img
+  convert` + `sfdisk` + mtools (no NBD, no host mount) so it runs
+  rootless everywhere; then boots a throwaway backing-file snapshot
+  under OVMF and emits `boot_ms` in the same units as
+  `qemu-boot-measure.sh`. Emits JSON on stdout for CI.
+
 - `compare.sh <base.json> <cur.json>` — diff two runs (either output
   format) and print a percentage-change table.
 
