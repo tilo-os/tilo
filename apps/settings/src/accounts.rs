@@ -434,11 +434,15 @@ pub struct AccountDirectory {
 }
 
 impl AccountDirectory {
-    /// Load every store from disk. Missing files are empty stores.
+    /// Load every store. Email and CalDAV accounts come from the shared
+    /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
+    /// Calendar read, so the shapes can no longer drift apart. WebDAV (files)
+    /// and Nextcloud keep their own stores for now. Missing stores are empty.
     pub fn load() -> Self {
+        let shared = accounts::AccountStore::load();
         Self {
-            mail: MailStore::load(),
-            calendar: DavStore::load_from(DavStore::calendar_path()),
+            mail: mail_store_from_shared(&shared),
+            calendar: caldav_store_from_shared(&shared),
             files: DavStore::load_from(DavStore::files_path()),
             nextcloud: NextcloudStore::load(),
         }
@@ -537,6 +541,71 @@ fn default_true() -> bool {
 }
 fn default_version() -> u32 {
     1
+}
+
+// ---------------------------------------------------------------------------
+// Bridges onto the shared canonical store.
+//
+// Email and CalDAV accounts live in the one `accounts::AccountStore`. These
+// project a filtered view of it back into the in-memory `MailStore` / `DavStore`
+// shapes the pane already renders, so the pane code and its tests are unchanged
+// while the on-disk store is now the shared one.
+// ---------------------------------------------------------------------------
+
+/// The shared-store type id for email accounts (Mail contributes these).
+const MAIL_TYPE: &str = "email";
+/// The shared-store type id for CalDAV accounts (Calendar contributes these).
+const CALDAV_TYPE: &str = "caldav";
+
+/// Project the shared store's email accounts into a [`MailStore`].
+fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
+    let ty = accounts::AccountTypeId::from(MAIL_TYPE);
+    let accounts: Vec<MailAccount> = shared
+        .list(&ty)
+        .into_iter()
+        .filter_map(|a| {
+            // The opaque config deserialises into the same `AccountConfig`
+            // shape; unknown fields (Mail's `auth`, the sidebar `collapsed`)
+            // are ignored.
+            let config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
+            Some(MailAccount { id: a.id.to_string(), config, collapsed: false, tint: a.tint })
+        })
+        .collect();
+    let active = shared
+        .active_id(&ty)
+        .and_then(|id| accounts.iter().position(|m| m.id == id.as_str()))
+        .unwrap_or(0);
+    MailStore { accounts, active }
+}
+
+/// Project the shared store's CalDAV accounts into a [`DavStore`] (the shape
+/// the pane renders for the Calendar kind).
+fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
+    let ty = accounts::AccountTypeId::from(CALDAV_TYPE);
+    let accounts = shared
+        .list(&ty)
+        .into_iter()
+        .map(|a| DavAccount {
+            id: a.id.to_string(),
+            label: a.display_name.clone(),
+            base_url: a
+                .config
+                .get("server_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            username: a
+                .config
+                .get("username")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            enabled: a.enabled,
+            tint: a.tint,
+            password: String::new(),
+        })
+        .collect();
+    DavStore { version: 1, accounts }
 }
 
 /// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.

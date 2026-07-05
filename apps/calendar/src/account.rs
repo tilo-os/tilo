@@ -1,30 +1,31 @@
-//! Calendar accounts and the shared, serialisable store the OS Settings app
-//! reads and writes.
+//! Calendar's view of the shared multi-account store.
 //!
-//! ## Why a separate store
-//! In qOS, account *management* (adding, editing, removing calendar accounts,
+//! ## One shared store, one vault
+//! Account *management* (adding, editing, removing calendar accounts,
 //! entering credentials) lives in the **Settings app**, not in the Calendar —
 //! the same way display, network, and Bluetooth settings do, and the same way
-//! the Mail app consumes its own account store. To make that split real rather
-//! than aspirational, the account list is modelled as a plain,
-//! `serde`-serialisable [`AccountStore`] that both apps read and write:
+//! the Mail app consumes its accounts. The canonical store is the shared
+//! [`accounts`] crate: a single JSON document under
+//! `$XDG_CONFIG_HOME/qos/accounts/` holding every account of every type, with
+//! credentials sealed in the encrypted [`accounts::SecretVault`], never in the
+//! plaintext store.
 //!
-//! * **Settings** owns the lifecycle: it loads the store, presents the
-//!   add/edit UI (CalDAV server URL, username), persists credentials to the OS
-//!   secret store, discovers each account's calendar collections, and writes
-//!   the store back.
-//! * **Calendar** loads the same store, lists each account's calendars in its
-//!   sidebar, and drives CalDAV sync per calendar (see [`crate::caldav`]).
-//!
-//! The on-disk seam is a single JSON document at [`AccountStore::SETTINGS_PATH`];
-//! [`AccountStore::to_json`] / [`AccountStore::from_json`] are the read/write
-//! entry points both apps share. Credentials are deliberately **not** serialised
-//! here (see [`CalDavConfig`]'s note) — Settings stores those in the OS secret
-//! store and injects them at connect time.
+//! Historically Calendar and Settings each declared their own store *shape*
+//! and disagreed (Settings persisted a `DavAccount` layout, Calendar expected
+//! `CalendarAccount`), so an account added in one was invisible to the other.
+//! Reading and writing the one shared store resolves that by construction —
+//! both sides now (de)serialise the same [`accounts::Account`], with the
+//! CalDAV settings carried in its opaque `config`.
 
+use std::path::Path;
+
+use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault};
 use serde::{Deserialize, Serialize};
 
 use crate::model::Palette;
+
+/// The account-type id Calendar contributes to the shared store.
+pub const TYPE_ID: &str = "caldav";
 
 /// CalDAV connection + identity settings — exactly what the setup form
 /// collects and the sync layer consumes.
@@ -38,9 +39,9 @@ pub struct CalDavConfig {
     pub server_url: String,
     /// Login name for the CalDAV server (often the email address).
     pub username: String,
-    /// Stored only in memory in this slice; a real deployment pushes this to
-    /// the OS secret store. Never written to the shared settings JSON (the
-    /// Settings app injects it at connect time) — hence `serde(skip)`.
+    /// Held only in memory here and hydrated from the [`accounts::SecretVault`]
+    /// on load; the sync layer uses it at connect time. Never written to the
+    /// plaintext store (hence `serde(skip)`) — it lives only in the vault.
     #[serde(skip)]
     pub password: String,
 }
@@ -169,34 +170,60 @@ impl CalendarAccount {
             "New account"
         }
     }
+
+    /// The opaque, secret-free config payload persisted into a shared
+    /// [`StoredAccount`]. The `#[serde(skip)]` password keeps the credential
+    /// out of this JSON; it lives only in the vault.
+    fn to_stored(&self) -> StoredAccount {
+        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
+        stored.display_name = self.label().to_string();
+        stored.set_config(&StoredConfig {
+            config: self.config.clone(),
+            calendars: self.calendars.clone(),
+            collapsed: self.collapsed,
+        });
+        stored
+    }
+
+    /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
+    /// password back from `vault`.
+    fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
+        let payload = stored.config_as::<StoredConfig>()?;
+        let mut config = payload.config;
+        if let Some(secret) = vault.get(&stored.id) {
+            config.password = secret.password;
+        }
+        Some(Self {
+            id: stored.id.to_string(),
+            config,
+            calendars: payload.calendars,
+            collapsed: payload.collapsed,
+        })
+    }
 }
 
-/// The shared, serialisable account list. This is the contract surface between
-/// Calendar and the Settings app.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The opaque config payload a [`CalendarAccount`] serialises into a shared
+/// [`StoredAccount`]: the CalDAV settings (password skipped), the discovered
+/// calendars, and the sidebar collapse state.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredConfig {
+    #[serde(flatten)]
+    config: CalDavConfig,
+    #[serde(default)]
+    calendars: Vec<RemoteCalendar>,
+    #[serde(default)]
+    collapsed: bool,
+}
+
+/// Calendar's in-memory account list, projected from the shared store.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountStore {
     pub accounts: Vec<CalendarAccount>,
 }
 
 impl AccountStore {
-    /// The canonical on-disk location Settings writes and Calendar reads. Lives
-    /// under the user's config root (projected through the qOS FUSE layer in a
-    /// real deployment). Kept as an associated const so both apps reference the
-    /// same path symbol rather than a stray string literal.
-    pub const SETTINGS_PATH: &'static str = "~/.config/qos/calendar/accounts.json";
-
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Serialise the store for the Settings seam.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    /// Read a store written by Settings (or a previous Calendar session).
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -228,16 +255,49 @@ impl AccountStore {
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
 
-    /// Load the store the OS Settings app maintains. Returns `None` if no store
-    /// exists yet (a fresh machine with no accounts configured), in which case
-    /// the app runs purely on local + sample data.
-    ///
-    /// `SETTINGS_PATH` is a `~`-relative path resolved against `$HOME`; the
-    /// real path is projected through the qOS FUSE config root.
+    /// Load the CalDAV accounts the OS Settings app maintains from the shared
+    /// canonical store, hydrating each password from the secret vault. Returns
+    /// `None` only when no config root is discoverable; an empty store
+    /// otherwise, so the app runs on local + sample data.
     pub fn load_from_settings() -> Option<Self> {
-        let path = expand_home(Self::SETTINGS_PATH)?;
-        let raw = std::fs::read_to_string(path).ok()?;
-        Self::from_json(&raw)
+        let root = accounts::config_root()?;
+        Some(Self::load_from_settings_in(&root))
+    }
+
+    /// Load under an explicit config root — the seam tests use.
+    pub fn load_from_settings_in(config_root: &Path) -> Self {
+        Self::from_shared(&SharedStore::load_in(config_root), &SecretVault::open_in(config_root))
+    }
+
+    fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
+        let ty = AccountTypeId::from(TYPE_ID);
+        let accounts = shared
+            .list(&ty)
+            .into_iter()
+            .filter_map(|stored| CalendarAccount::from_stored(stored, vault))
+            .collect();
+        Self { accounts }
+    }
+
+    /// Write these accounts into the shared store + vault under an explicit
+    /// config root, preserving accounts of other types already there. The
+    /// write half of the seam (Settings owns the lifecycle; this exists so the
+    /// round-trip is testable).
+    pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
+        let mut shared = SharedStore::load_in(config_root);
+        let mut vault = SecretVault::open_in(config_root);
+        for acct in &self.accounts {
+            let id = AccountId::from(acct.id.clone());
+            shared.upsert(acct.to_stored());
+            if acct.config.password.is_empty() {
+                vault.remove(&id);
+            } else {
+                vault.put(&id, &accounts::Secret::password(acct.config.password.clone()));
+            }
+        }
+        shared.save_in(config_root)?;
+        vault.save();
+        Ok(())
     }
 
     /// A representative offline store so `--shots` shows real CalDAV accounts in
@@ -300,17 +360,6 @@ impl AccountStore {
     }
 }
 
-/// Resolve a leading `~` against `$HOME`. Returns `None` if `$HOME` is unset and
-/// the path needs it.
-fn expand_home(path: &str) -> Option<std::path::PathBuf> {
-    if let Some(rest) = path.strip_prefix("~/") {
-        let home = std::env::var_os("HOME")?;
-        Some(std::path::Path::new(&home).join(rest))
-    } else {
-        Some(std::path::PathBuf::from(path))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,15 +373,31 @@ mod tests {
         }
     }
 
+    fn temp_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("qos-cal-accounts-{}", uuid::Uuid::new_v4()))
+    }
+
     #[test]
-    fn store_round_trips_through_json() {
+    fn shared_store_round_trips_accounts_and_calendars() {
+        let root = temp_root();
         let mut store = AccountStore::new();
-        store.upsert(CalendarAccount::new(cfg("A", "a@x.example")));
-        store.upsert(CalendarAccount::new(cfg("B", "b@y.example")));
-        let json = store.to_json();
-        let back = AccountStore::from_json(&json).expect("valid json");
+        let mut a = CalendarAccount::new(cfg("Work", "a@x.example"));
+        a.calendars.push(RemoteCalendar {
+            id: "work/team".into(),
+            name: "Team".into(),
+            color: 1,
+            visible: true,
+        });
+        store.upsert(a);
+        store.upsert(CalendarAccount::new(cfg("Home", "b@y.example")));
+        store.persist_in(&root).expect("persist");
+
+        let back = AccountStore::load_from_settings_in(&root);
         assert_eq!(back.len(), 2);
         assert_eq!(back.accounts[0].config.username, "a@x.example");
+        assert_eq!(back.accounts[0].calendars.len(), 1);
+        assert_eq!(back.accounts[0].calendars[0].name, "Team");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -347,15 +412,21 @@ mod tests {
     }
 
     #[test]
-    fn credentials_are_not_serialised() {
+    fn password_persists_to_the_vault_not_the_store_json() {
+        let root = temp_root();
         let mut c = cfg("A", "a@x.example");
         c.password = "hunter2".into();
-        let store = AccountStore { accounts: vec![CalendarAccount::new(c)] };
-        let json = store.to_json();
-        assert!(
-            !json.contains("hunter2"),
-            "passwords must not be written to the shared settings store"
-        );
+        let mut store = AccountStore::new();
+        store.upsert(CalendarAccount::new(c));
+        store.persist_in(&root).expect("persist");
+
+        let store_json =
+            std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
+        assert!(!store_json.contains("hunter2"), "password must not reach the shared store JSON");
+
+        let back = AccountStore::load_from_settings_in(&root);
+        assert_eq!(back.accounts[0].config.password, "hunter2", "password rehydrates from the vault");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
