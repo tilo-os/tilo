@@ -1,0 +1,225 @@
+//! Store-and-forward across a relay outage.
+//!
+//! Relay1 up, relay2 briefly down. A device on relay1 publishes
+//! several deltas → relay1 enqueues them for relay2 in the SAME
+//! pending path (`workspaces/<id>/pending/<hex(device_pubkey)>/`)
+//! device peers use. When relay2 restarts and re-federates, its
+//! subscribe drains the queue in order.
+//!
+//! To simulate "restart" cleanly, relay2's state_root and device
+//! identity persist across the drop/re-`Relay::start` cycle. Its
+//! iroh secret is `load_or_create_iroh_secret` — same file → same
+//! iroh node id. Its device cert is built by the test.
+
+mod common;
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use ed25519_dalek::SigningKey;
+use qos_relay::daemon::{Relay, RelayIdentity};
+use qos_relay::{Envelope, RelayClient, RelayConfig, WorkspaceBinding};
+use qos_user_identity::{
+    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, sign_device_cert,
+};
+
+use common::{TestUser, client_endpoint, spawn_relay};
+
+/// Build a fresh signing key + signed cert with `can_act_as_host`.
+/// Returns the cert AND the signing key so callers can re-use them
+/// across a simulated restart.
+fn make_relay_device(user: &TestUser, label: &str) -> (SigningKey, DeviceCert) {
+    let (sk, dev) = DeviceIdentity::generate(label, 100);
+    let mut cert = DeviceCert {
+        user_public_key: user.user_pk,
+        device_public_key: dev.public_key,
+        device_label: dev.label,
+        capabilities: DeviceCapabilities::host(),
+        issued_at_ns: 200,
+        expires_at_ns: None,
+        signature: [0u8; 64],
+    };
+    sign_device_cert(&mut cert, &user.user_sk).unwrap();
+    (sk, cert)
+}
+
+async fn start_relay_at(
+    user: &TestUser,
+    sk: SigningKey,
+    cert: DeviceCert,
+    state_root: PathBuf,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+) -> Relay {
+    std::fs::create_dir_all(&state_root).unwrap();
+    let mut cfg = RelayConfig {
+        state_root: state_root.clone(),
+        ..Default::default()
+    };
+    for id in workspaces {
+        cfg.workspaces.push(WorkspaceBinding { id: *id, pin: true });
+    }
+    let identity = RelayIdentity {
+        user_public_key: user.user_pk,
+        device_signing_key: sk,
+        device_cert: cert,
+        revocations: RevocationList::new(),
+    };
+    let relay = Relay::start(cfg, identity).await.unwrap();
+    for id in workspaces {
+        relay
+            .set_workspace_membership(*id, true, members.to_vec(), state_root.clone())
+            .await
+            .unwrap();
+    }
+    relay
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
+    let user = TestUser::fresh("Alice");
+    let p1 = user.enrol("laptop", DeviceCapabilities::primary());
+    let p2 = user.enrol("phone", DeviceCapabilities::member());
+    let members = vec![p1.device_pubkey(), p2.device_pubkey()];
+
+    let relay1 = spawn_relay(
+        &user,
+        user.enrol("r1", DeviceCapabilities::host()),
+        &[11],
+        &members,
+    )
+    .await;
+
+    // Stable identity + state root for relay2 across the outage.
+    let (r2_sk, r2_cert) = make_relay_device(&user, "r2");
+    let r2_pubkey = r2_cert.device_public_key;
+    let r2_tmp = tempfile::tempdir().unwrap();
+    let r2_state_root = r2_tmp.path().to_path_buf();
+
+    // Round 1: relay2 up briefly so relay1 learns its device pubkey
+    // via PeerRelayHello.
+    let r2_first = start_relay_at(
+        &user,
+        r2_sk.clone(),
+        r2_cert.clone(),
+        r2_state_root.clone(),
+        &[11],
+        &members,
+    )
+    .await;
+    // Peer-relay r1 ← r2 dial primes relay1's `known_peer_relays`.
+    r2_first.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
+    // Wait for the handshake + hello exchange to complete.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    drop(r2_first);
+    // Give relay1 a moment to observe the subscription drop.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Round 2: p1 publishes three deltas via relay1 while relay2
+    // is down. Relay1's fanout enqueues for the (known) r2 pubkey.
+    let ep = client_endpoint().await;
+    let c1 = RelayClient::connect(
+        ep,
+        relay1.relay.node_addr(),
+        user.user_pk,
+        p1.cert.clone(),
+        p1.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    c1.send(Envelope::Subscribe { workspace_id: 11 }).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(3), c1.recv())
+        .await
+        .expect("p1 Ready");
+
+    for (i, tag) in ["one", "two", "three"].iter().enumerate() {
+        c1.send(Envelope::Delta {
+            workspace_id: 11,
+            author_device_public_key: p1.device_pubkey(),
+            authored_at_ns: (i as u64) + 1,
+            delta: tag.as_bytes().to_vec(),
+            signature: [1u8; 64],
+        })
+        .unwrap();
+    }
+
+    // Confirm the three deltas landed in the pending dir for r2's
+    // device pubkey — same store path as offline device peers.
+    let hex_r2 = hex::encode(r2_pubkey);
+    let pending_dir = relay1
+        .state_root
+        .join("workspaces")
+        .join("11")
+        .join("pending")
+        .join(&hex_r2);
+    let mut queued = 0;
+    for _ in 0..50 {
+        queued = if pending_dir.exists() {
+            std::fs::read_dir(&pending_dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                .count()
+        } else {
+            0
+        };
+        if queued >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(queued, 3, "3 deltas should queue for offline peer relay");
+
+    // Round 3: relay2 restarts with the SAME device cert AND the
+    // SAME state root → same device pubkey, same iroh secret →
+    // same iroh node id (load_or_create_iroh_secret persists the
+    // file). Its subscribe drains the queue.
+    let r2_restart = start_relay_at(
+        &user,
+        r2_sk,
+        r2_cert,
+        r2_state_root.clone(),
+        &[11],
+        &members,
+    )
+    .await;
+    r2_restart.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
+
+    // p2 → r2_restart. Once relay2 subscribes upstream to relay1
+    // (which happens inside its peer-relay dial task), relay1
+    // drains the queue → relay2 fans out to p2.
+    let ep_p2 = client_endpoint().await;
+    let c2 = RelayClient::connect(
+        ep_p2,
+        r2_restart.node_addr(),
+        user.user_pk,
+        p2.cert.clone(),
+        p2.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    c2.send(Envelope::Subscribe { workspace_id: 11 }).unwrap();
+
+    let mut got: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..15 {
+        let env = tokio::time::timeout(Duration::from_secs(4), c2.recv()).await;
+        match env {
+            Ok(Some(Envelope::Delta { delta, workspace_id: 11, .. })) => got.push(delta),
+            Ok(Some(_)) => {} // Ready / other, ignore
+            _ => break,
+        }
+        if got.len() >= 3 {
+            break;
+        }
+    }
+    assert_eq!(
+        got,
+        vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()],
+        "queued deltas must drain in order after relay2 reconnects",
+    );
+
+    drop(r2_restart);
+    drop(r2_tmp);
+}
