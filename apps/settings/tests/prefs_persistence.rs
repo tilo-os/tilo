@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use automerge::transaction::Transactable;
 use automerge::AutoCommit;
-use settings::accounts::{AccountDirectory, AccountKind, MailStore};
+use settings::accounts::{AccountDirectory, AccountKind};
 use settings::prefs::SystemPrefs;
 use ui::widget::Widget;
 
@@ -117,9 +117,10 @@ fn updates_channel_persists_to_disk() {
     );
 }
 
-/// The External Accounts pane's Add flow writes a real account into the same
-/// `mail/accounts.json` Mail reads, and Remove deletes it — the full
-/// load/edit/save path through the pane, not just the store unit test.
+/// The External Accounts pane's Add flow writes a real account into the shared
+/// canonical accounts store (the same store Mail reads), and Remove deletes it
+/// — the full load/edit/save path through the pane, not just the store unit
+/// test.
 #[test]
 fn accounts_add_and_remove_round_trip_through_the_pane() {
     let _g = ENV_LOCK.lock().unwrap();
@@ -138,28 +139,54 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     pane.sync(&mut doc, &root);
     let _ = doc.put(&root, settings::panes::accounts::FORM_NAME_KEY, "Test User");
     let _ = doc.put(&root, settings::panes::accounts::FORM_EMAIL_KEY, "test@gmail.com");
+    let _ = doc.put(&root, settings::panes::accounts::FORM_USER_KEY, "test@gmail.com");
+    let _ = doc.put(&root, settings::panes::accounts::FORM_PASSWORD_KEY, "s3cret-pw");
     let _ = doc.put(&root, settings::panes::accounts::FORM_SAVE_KEY, true);
     pane.sync(&mut doc, &root);
 
-    // The account is now in the on-disk store Mail loads, auto-configured.
-    let store = MailStore::load();
-    assert_eq!(store.accounts.len(), 1, "Add persisted a real account");
-    assert_eq!(store.accounts[0].config.email, "test@gmail.com");
-    assert_eq!(
-        store.accounts[0].config.imap_host, "imap.gmail.com",
-        "IMAP host was auto-configured from the address"
+    // The account is now in the shared on-disk store Mail loads, auto-configured.
+    let dir = AccountDirectory::load();
+    let views = dir.views_of(AccountKind::Mail);
+    assert_eq!(views.len(), 1, "Add persisted a real account to the shared store");
+    assert_eq!(views[0].id, "test@gmail.com");
+    assert!(
+        views[0].summary.contains("imap.gmail.com"),
+        "IMAP host was auto-configured from the address, got summary {:?}",
+        views[0].summary
     );
-    let id = store.accounts[0].id.clone();
+    let id = views[0].id.clone();
+
+    // The password persisted to the encrypted vault (not the plaintext store)…
+    let account_id = accounts::AccountId::from(id.clone());
+    assert_eq!(
+        accounts::SecretVault::open().get(&account_id).map(|s| s.password),
+        Some("s3cret-pw".to_string()),
+        "the password was sealed in the vault, keyed by account id"
+    );
+    // …and never leaked into the plaintext account store on disk.
+    let store_json = std::fs::read_to_string(
+        accounts::store_path().expect("a config root under the temp XDG_CONFIG_HOME"),
+    )
+    .expect("the shared store was written");
+    assert!(
+        !store_json.contains("s3cret-pw"),
+        "the password must not appear in the plaintext store JSON"
+    );
 
     // Now Remove it via the trash button's key.
     let remove_key = format!("settings.accounts.remove.{id}");
     let _ = doc.put(&root, remove_key.as_str(), true);
     pane.sync(&mut doc, &root);
 
+    // The directory now reports empty for the Email kind — the account is gone
+    // from the shared store on disk.
     assert!(
-        MailStore::load().accounts.is_empty(),
-        "Remove deleted the account from disk"
+        AccountDirectory::load().views_of(AccountKind::Mail).is_empty(),
+        "Remove deleted the account from the shared store on disk"
     );
-    // And the directory now reports empty for the Email kind.
-    assert!(AccountDirectory::load().views_of(AccountKind::Mail).is_empty());
+    // …and its sealed credential was dropped from the vault too.
+    assert!(
+        accounts::SecretVault::open().get(&account_id).is_none(),
+        "Remove also purged the account's vault secret"
+    );
 }

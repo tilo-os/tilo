@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The shared multi-account store + encrypted secret vault. Calendar reads its
+# CalDAV accounts from here (Settings owns the write lifecycle); credentials
+# are sealed in the vault, never in the plaintext store. Reading the one
+# shared store is what keeps Calendar and Settings from disagreeing on shape.
+accounts = { path = "../../crates/system/accounts" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
