@@ -18,19 +18,64 @@
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::gesture::{DragSelect, Granularity};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_selection::{
+    clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
+    word_boundaries_chars,
+};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::bottom_panel::Severity;
 use crate::doc::EditorDoc;
 use crate::highlight::{Highlighter, Span};
+use crate::lsp::{severity_from_lsp, CompletionItem, LspDiagnostic};
 use crate::model::Language;
+
+/// A language-server request the editor wants the app to make on its behalf,
+/// carrying the primary caret's position implicitly (the app reads it). Set by
+/// a keybind, drained by the app after routing the event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LspAsk {
+    Completion,
+    Hover,
+    Definition,
+}
+
+/// A compact glyph hinting at a completion item's `CompletionItemKind`
+/// (LSP-numbered). Falls back to a neutral dot for kinds we don't specialise.
+fn completion_kind_glyph(kind: Option<u8>) -> &'static str {
+    match kind {
+        Some(2) | Some(3) => "\u{0192}", // Method / Function — ƒ
+        Some(5) | Some(10) => "\u{25C8}", // Field / Property — ◈
+        Some(6) => "\u{25CB}",           // Variable — ○
+        Some(7) | Some(8) => "\u{25A0}", // Class / Interface — ■
+        Some(9) => "\u{25A3}",           // Module — ▣
+        Some(14) => "\u{2726}",          // Keyword — ✦
+        Some(21) => "\u{25C6}",          // Constant — ◆
+        _ => "\u{2022}",                 // • default
+    }
+}
+
+/// An inline diagnostic projected into the editor's line/column space (0-based),
+/// drawn as a coloured squiggle under the offending span.
+#[derive(Clone, Debug)]
+struct InlineDiag {
+    line: usize,
+    start_col: usize,
+    /// Exclusive end column on `line`; `usize::MAX` means "to end of line" (the
+    /// diagnostic spanned multiple lines).
+    end_col: usize,
+    severity: Severity,
+    message: String,
+}
 
 /// Monospace cell metrics. The editor advances a fixed cell width per column;
 /// for the bundled monospace font at this size that tracks the glyph advance
@@ -98,6 +143,33 @@ pub struct EditorView {
     /// Last known cursor position in logical pixels, updated on CursorMoved so
     /// click handlers can hit-test without threading the position through.
     last_cursor: Point,
+    /// Shared press→move→release selection gesture (the toolkit's click ladder:
+    /// single→char, double→word, triple→line, shift→extend). Owns the
+    /// multi-click timing so the editor doesn't re-derive it.
+    drag: DragSelect,
+    /// The flat char-index span the current drag was anchored on. For a
+    /// word/line drag this is the whole word/line clicked; the drag extends
+    /// from whichever end is opposite the pointer so the original span stays
+    /// covered — same rule as `TextInput`'s `drag_anchor_span`.
+    drag_anchor: (usize, usize),
+
+    // ---- LSP surface ----
+    /// Inline diagnostics for the active buffer (from the language server),
+    /// drawn as squiggles and used for the Problems panel.
+    diagnostics: Vec<InlineDiag>,
+    /// The completion popup's candidates. Non-empty + `completion_active` draws
+    /// the popup and captures navigation keys.
+    completions: Vec<CompletionItem>,
+    completion_index: usize,
+    completion_active: bool,
+    /// The word start (line, col) the completion should replace when accepted —
+    /// the identifier prefix under the caret at request time.
+    completion_anchor: (usize, usize),
+    /// A hover tooltip's text, drawn near the caret until dismissed.
+    hover_text: Option<String>,
+    /// A pending language-server request the app should perform (set by a
+    /// keybind, drained by the app).
+    lsp_ask: Option<LspAsk>,
 }
 
 impl EditorView {
@@ -117,6 +189,15 @@ impl EditorView {
             cached_text: String::new(),
             indent_width: 4,
             last_cursor: Point::ZERO,
+            drag: DragSelect::new(),
+            drag_anchor: (0, 0),
+            diagnostics: Vec::new(),
+            completions: Vec::new(),
+            completion_index: 0,
+            completion_active: false,
+            completion_anchor: (0, 0),
+            hover_text: None,
+            lsp_ask: None,
         }
     }
 
@@ -241,6 +322,262 @@ impl EditorView {
             idx += self.lines[l].chars().count() + 1; // +1 for the '\n'
         }
         idx + col
+    }
+
+    /// Inverse of [`char_index`]: map a flat char index into the buffer back to
+    /// a `(line, col)` position. Used to convert the byte/char offsets the
+    /// shared `ui::text_selection` word-boundary walkers return into the
+    /// editor's line/column caret model.
+    fn pos_from_flat(&self, mut idx: usize) -> (usize, usize) {
+        for (l, line) in self.lines.iter().enumerate() {
+            let len = line.chars().count();
+            if idx <= len {
+                return (l, idx);
+            }
+            idx -= len + 1; // consume the line's chars plus its trailing '\n'
+        }
+        let last = self.lines.len().saturating_sub(1);
+        (last, self.lines[last].chars().count())
+    }
+
+    /// The primary caret's ordered selection as flat char indices, or `None`.
+    fn primary_flat_selection(&self) -> Option<(usize, usize)> {
+        let (s, e) = self.carets[0].selection()?;
+        Some((self.char_index(s.0, s.1), self.char_index(e.0, e.1)))
+    }
+
+    /// The text covered by the primary caret's selection, sliced out of the
+    /// flat buffer (`cached_text`). `None` when nothing is selected.
+    fn selected_text(&self) -> Option<String> {
+        let (s, e) = self.primary_flat_selection()?;
+        if s >= e {
+            return None;
+        }
+        Some(self.cached_text.chars().skip(s).take(e - s).collect())
+    }
+
+    /// Move the primary caret to a flat char index, collapsing multi-carets.
+    /// `extend` keeps (or promotes) the selection anchor; otherwise the
+    /// selection collapses.
+    fn set_primary_flat(&mut self, target: usize, extend: bool) {
+        self.carets.truncate(1);
+        let (cl, cc) = (self.carets[0].line, self.carets[0].col);
+        let (nl, nc) = self.pos_from_flat(target);
+        let c = &mut self.carets[0];
+        if extend {
+            if c.anchor.is_none() {
+                c.anchor = Some((cl, cc));
+            }
+        } else {
+            c.anchor = None;
+        }
+        c.line = nl;
+        c.col = nc;
+        self.scroll_to_caret();
+    }
+
+    /// Word-wise caret motion (Ctrl+Left / Ctrl+Right, and their shift-extend
+    /// variants), delegating the boundary walk to the shared
+    /// `ui::text_selection` char-indexed helpers so the editor uses exactly the
+    /// same word semantics as `TextInput`.
+    fn word_move(&mut self, forward: bool, extend: bool) {
+        let flat = self.char_index(self.carets[0].line, self.carets[0].col);
+        let target = if forward {
+            next_word_boundary_chars(&self.cached_text, flat)
+        } else {
+            prev_word_boundary_chars(&self.cached_text, flat)
+        };
+        self.set_primary_flat(target, extend);
+    }
+
+    /// Select the whole word under `(line, col)` via the shared
+    /// `word_boundaries_chars` helper (double-click). Returns the flat span so
+    /// a following drag can extend from it.
+    fn select_word_at(&mut self, line: usize, col: usize) -> (usize, usize) {
+        self.carets.truncate(1);
+        let flat = self.char_index(line, col);
+        let (ws, we) = word_boundaries_chars(&self.cached_text, flat);
+        let (al, ac) = self.pos_from_flat(ws);
+        let (cl, cc) = self.pos_from_flat(we);
+        self.carets[0] = Caret {
+            line: cl,
+            col: cc,
+            anchor: if ws == we { None } else { Some((al, ac)) },
+        };
+        self.dirty = true;
+        (ws, we)
+    }
+
+    /// Select the whole line `line` (triple-click). Returns the flat span.
+    fn select_line_at(&mut self, line: usize) -> (usize, usize) {
+        self.carets.truncate(1);
+        let len = self.lines[line].chars().count();
+        self.carets[0] = Caret { line, col: len, anchor: Some((line, 0)) };
+        self.dirty = true;
+        (self.char_index(line, 0), self.char_index(line, len))
+    }
+
+    /// Set the primary selection from an anchor+cursor pair of flat indices,
+    /// collapsing to a bare caret when the two coincide.
+    fn set_primary_range(&mut self, anchor: usize, cursor: usize) {
+        self.carets.truncate(1);
+        let (al, ac) = self.pos_from_flat(anchor);
+        let (cl, cc) = self.pos_from_flat(cursor);
+        self.carets[0] = Caret {
+            line: cl,
+            col: cc,
+            anchor: if anchor == cursor { None } else { Some((al, ac)) },
+        };
+        self.dirty = true;
+    }
+
+    /// Copy the primary selection to the system clipboard (no-op when empty).
+    fn copy_selection(&self) {
+        if let Some(t) = self.selected_text() {
+            clipboard_copy(&t);
+        }
+    }
+
+    /// Cut: copy the primary selection, then delete it through the CRDT.
+    fn cut_selection(&mut self, doc: &mut AutoCommit) {
+        if let Some(t) = self.selected_text() {
+            clipboard_copy(&t);
+            // `backspace` deletes an active selection wholesale.
+            self.backspace(doc);
+        }
+    }
+
+    /// Paste clipboard text at the caret, replacing any selection.
+    fn paste_clipboard(&mut self, doc: &mut AutoCommit) {
+        if let Some(t) = clipboard_paste() {
+            if !t.is_empty() {
+                self.insert(doc, &t);
+            }
+        }
+    }
+
+    // ---- language-server surface -----------------------------------------
+
+    /// Replace the editor's inline diagnostics from a fresh LSP set.
+    pub fn set_diagnostics(&mut self, diags: &[LspDiagnostic]) {
+        self.diagnostics = diags
+            .iter()
+            .map(|d| InlineDiag {
+                line: d.range.start.line as usize,
+                start_col: d.range.start.character as usize,
+                end_col: if d.range.end.line == d.range.start.line {
+                    d.range.end.character as usize
+                } else {
+                    usize::MAX // multi-line: squiggle to end of the start line
+                },
+                severity: severity_from_lsp(d.severity),
+                message: d.message.clone(),
+            })
+            .collect();
+        self.dirty = true;
+    }
+
+    /// Show a completion popup for `items` (hidden when empty). The anchor is
+    /// the identifier prefix under the caret, which accepting will replace.
+    pub fn show_completions(&mut self, items: Vec<CompletionItem>) {
+        if items.is_empty() {
+            self.hide_completions();
+            return;
+        }
+        let (line, col) = self.primary_caret();
+        let flat = self.char_index(line, col);
+        let start = prev_word_boundary_chars(&self.cached_text, flat).min(flat);
+        // Only treat it as a word-prefix if the run start..caret is a word.
+        self.completion_anchor = self.pos_from_flat(start);
+        self.completions = items;
+        self.completion_index = 0;
+        self.completion_active = true;
+        self.dirty = true;
+    }
+
+    /// Dismiss the completion popup.
+    pub fn hide_completions(&mut self) {
+        if self.completion_active {
+            self.dirty = true;
+        }
+        self.completion_active = false;
+        self.completions.clear();
+    }
+
+    /// Whether the completion popup is currently capturing navigation keys.
+    pub fn completion_active(&self) -> bool {
+        self.completion_active && !self.completions.is_empty()
+    }
+
+    /// Accept the highlighted completion: replace the identifier prefix under
+    /// the caret with the item's insert text, splicing through the CRDT.
+    fn accept_completion(&mut self, doc: &mut AutoCommit) {
+        if !self.completion_active() {
+            return;
+        }
+        let item = self.completions[self.completion_index].clone();
+        let (line, col) = self.primary_caret();
+        // Replace [completion_anchor, caret) with the insert text.
+        self.carets = vec![Caret {
+            line,
+            col,
+            anchor: Some(self.completion_anchor),
+        }];
+        self.insert(doc, &item.insert_text);
+        self.hide_completions();
+    }
+
+    /// Set (or clear) the hover tooltip text.
+    pub fn set_hover(&mut self, text: Option<String>) {
+        self.hover_text = text;
+        self.dirty = true;
+    }
+
+    /// The message of the diagnostic whose span contains `(line, col)`, if any.
+    /// Powers an instant, server-free hover when the caret sits on a squiggle.
+    fn diagnostic_message_at(&self, line: usize, col: usize) -> Option<String> {
+        self.diagnostics.iter().find_map(|d| {
+            if d.line != line {
+                return None;
+            }
+            let end = if d.end_col == usize::MAX { usize::MAX } else { d.end_col };
+            if col >= d.start_col && col <= end {
+                Some(d.message.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Move the primary caret to an absolute (line, col), clamped to the buffer.
+    pub fn move_caret_to(&mut self, line: usize, col: usize) {
+        self.carets = vec![Caret::at(line, col)];
+        self.clamp_carets();
+        self.scroll_to_caret();
+        self.dirty = true;
+    }
+
+    /// Drain a pending language-server request the user triggered by a keybind.
+    pub fn take_lsp_ask(&mut self) -> Option<LspAsk> {
+        self.lsp_ask.take()
+    }
+
+    /// Set the primary selection to span `anchor..cursor` in (line, col) space.
+    /// Used by the headless `--shots` scenarios to stage a visible selection.
+    pub fn set_selection_lc(&mut self, anchor: (usize, usize), cursor: (usize, usize)) {
+        self.carets = vec![Caret {
+            line: cursor.0,
+            col: cursor.1,
+            anchor: Some(anchor),
+        }];
+        self.clamp_carets();
+        self.scroll_to_caret();
+        self.dirty = true;
+    }
+
+    /// The buffer's line count — used by shots scenarios to pick a valid line.
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
     }
 
     /// The width of the gutter (line-number column) for the current line count.
@@ -406,6 +743,17 @@ impl EditorView {
         // Collapse multi-carets to primary on plain arrow (matches editor UX).
         if !extend {
             self.carets.truncate(1);
+        }
+        // A plain horizontal arrow with a live selection collapses to the
+        // selection edge instead of moving one character past it — every
+        // native editor does this, and so does `TextInput`.
+        if dx != 0 && dy == 0 && !extend {
+            if let Some((s, e)) = self.carets[0].selection() {
+                let target = if dx < 0 { s } else { e };
+                self.carets[0] = Caret::at(target.0, target.1);
+                self.scroll_to_caret();
+                return;
+            }
         }
         let c = &mut self.carets[0];
         if extend && c.anchor.is_none() {
@@ -743,6 +1091,51 @@ impl Widget for EditorView {
             }
         }
 
+        // Inline diagnostics: a coloured wavy underline under each offending
+        // span (from the language server).
+        for d in &self.diagnostics {
+            if d.line < first_line || d.line >= first_line + n_visible {
+                continue;
+            }
+            let y = self.rect.y0 + (d.line as f64 - self.scroll_y) * LINE_HEIGHT;
+            if y > self.rect.y1 {
+                continue;
+            }
+            let line_len = self.lines.get(d.line).map(|l| l.chars().count()).unwrap_or(0);
+            let start_col = d.start_col.min(line_len);
+            let end_col = if d.end_col == usize::MAX {
+                line_len
+            } else {
+                d.end_col.min(line_len)
+            }
+            .max(start_col + 1);
+            let x_left = (code_x0 + start_col as f64 * self.cell_w - self.scroll_x)
+                .max(self.rect.x0 + gutter_w);
+            let x_right = code_x0 + end_col as f64 * self.cell_w - self.scroll_x;
+            if x_right <= x_left {
+                continue;
+            }
+            let sy = y + LINE_HEIGHT - 3.0;
+            let color = match d.severity {
+                Severity::Error => c.semantic.danger,
+                Severity::Warning => c.semantic.warning,
+                Severity::Info => c.semantic.info,
+                Severity::Hint => c.text_dim,
+            };
+            // Zigzag underline — a couple of px amplitude reads as a squiggle.
+            let mut path = BezPath::new();
+            let mut x = x_left;
+            path.move_to((x, sy));
+            let mut up = true;
+            while x < x_right {
+                let nx = (x + 3.0).min(x_right);
+                path.line_to((nx, if up { sy - 1.6 } else { sy + 1.6 }));
+                x = nx;
+                up = !up;
+            }
+            scene.stroke(&Stroke::new(1.2), transform, color, None, &path);
+        }
+
         // Carets (drawn last, on top). Blink-free for screenshot determinism.
         if self.is_focused {
             for caret in &self.carets {
@@ -774,6 +1167,127 @@ impl Widget for EditorView {
             Point::new(self.rect.x0, self.rect.y1),
         );
         scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &border);
+
+        // Caret pixel, reused by the completion popup + hover tooltip.
+        let (caret_line, caret_col) = self.primary_caret();
+        let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
+        let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * LINE_HEIGHT;
+
+        // Completion popup — a floating list anchored under the caret.
+        if self.completion_active() {
+            const ROW_H: f64 = 20.0;
+            let max_rows = 8usize;
+            let total = self.completions.len();
+            let shown = total.min(max_rows);
+            // Scroll the window so the selected row stays visible.
+            let offset = if self.completion_index >= max_rows {
+                self.completion_index - max_rows + 1
+            } else {
+                0
+            };
+            let width = 340.0_f64.min(self.rect.width() - (gutter_w + 20.0));
+            let height = shown as f64 * ROW_H + 8.0;
+            let px = caret_x
+                .min(self.rect.x1 - width - 8.0)
+                .max(self.rect.x0 + gutter_w + 2.0);
+            let py = (caret_top + LINE_HEIGHT + 2.0)
+                .min(self.rect.y1 - height - 4.0)
+                .max(self.rect.y0);
+            let popup = Rect::new(px, py, px + width, py + height);
+            let shape = RoundedRect::from_rect(popup, 6.0);
+            scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
+            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);
+
+            for row in 0..shown {
+                let idx = offset + row;
+                let Some(item) = self.completions.get(idx) else {
+                    break;
+                };
+                let ry = py + 4.0 + row as f64 * ROW_H;
+                if idx == self.completion_index {
+                    let hl = Rect::new(px + 2.0, ry, px + width - 2.0, ry + ROW_H);
+                    scene.fill(Fill::NonZero, transform, c.accent[5].multiply_alpha(0.30), None, &hl);
+                }
+                // Kind glyph (compact hint at the identifier's type).
+                let glyph = completion_kind_glyph(item.kind);
+                text_renderer.draw_text_styled(
+                    scene,
+                    glyph,
+                    FONT_SIZE,
+                    c.accent[6],
+                    transform * Affine::translate((px + 8.0, ry + 3.0)),
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    true,
+                );
+                text_renderer.draw_text_styled(
+                    scene,
+                    &item.label,
+                    FONT_SIZE,
+                    c.text_primary,
+                    transform * Affine::translate((px + 26.0, ry + 3.0)),
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    true,
+                );
+                if let Some(detail) = &item.detail {
+                    let (lw, _) = text_renderer.measure_styled(
+                        &item.label,
+                        FONT_SIZE,
+                        None,
+                        TextWeight::Regular,
+                        false,
+                        true,
+                    );
+                    text_renderer.draw_text_styled(
+                        scene,
+                        detail,
+                        FONT_SIZE - 1.0,
+                        c.text_dim,
+                        transform * Affine::translate((px + 34.0 + lw as f64, ry + 3.5)),
+                        Some((width - 40.0 - lw as f64) as f32),
+                        TextWeight::Regular,
+                        false,
+                        true,
+                    );
+                }
+            }
+        }
+
+        // Hover tooltip — a small box near the caret with the server's text.
+        if let Some(hover) = self.hover_text.clone() {
+            let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
+            let (tw, _) = text_renderer.measure(&first, FONT_SIZE, None);
+            let width = (tw as f64 + 20.0).min(self.rect.width() - (gutter_w + 20.0));
+            let lines = first.lines().count().max(1);
+            let height = lines as f64 * (FONT_SIZE as f64 + 4.0) + 12.0;
+            let px = caret_x
+                .min(self.rect.x1 - width - 8.0)
+                .max(self.rect.x0 + gutter_w + 2.0);
+            // Prefer above the caret; drop below if there's no room.
+            let py = if caret_top - height - 4.0 >= self.rect.y0 {
+                caret_top - height - 4.0
+            } else {
+                caret_top + LINE_HEIGHT + 2.0
+            };
+            let box_rect = Rect::new(px, py, px + width, py + height);
+            let shape = RoundedRect::from_rect(box_rect, 6.0);
+            scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
+            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);
+            for (i, line) in first.lines().enumerate() {
+                text_renderer.draw_text(
+                    scene,
+                    line,
+                    FONT_SIZE,
+                    c.text_primary,
+                    transform
+                        * Affine::translate((px + 10.0, py + 6.0 + i as f64 * (FONT_SIZE as f64 + 4.0))),
+                    Some((width - 20.0) as f32),
+                );
+            }
+        }
     }
 
     fn handle_event(
@@ -800,20 +1314,83 @@ impl Widget for EditorView {
             } => {
                 if self.rect.contains(self.last_cursor) {
                     let (line, col) = self.point_to_caret(self.last_cursor);
-                    if mods.control_key() || mods.super_key() {
-                        // Ctrl/Cmd-click adds a caret.
+                    let shift = mods.shift_key();
+                    // Ctrl/Cmd-click (without shift) adds a caret for
+                    // multi-cursor editing and does not start a drag-select.
+                    if (mods.control_key() || mods.super_key()) && !shift {
                         self.carets.push(Caret::at(line, col));
                     } else {
-                        self.carets = vec![Caret::at(line, col)];
+                        // The shared click ladder resolves single/double/triple
+                        // and shift-extend; we map its granularity to a
+                        // char/word/line selection anchored for the drag.
+                        let intent = self.drag.press(self.last_cursor, shift);
+                        self.drag_anchor = match intent.granularity {
+                            Granularity::Word => self.select_word_at(line, col),
+                            Granularity::Line => self.select_line_at(line),
+                            Granularity::Char => {
+                                let flat = self.char_index(line, col);
+                                if intent.extend {
+                                    // Shift-click: keep the existing anchor (or
+                                    // promote the current caret) and extend.
+                                    let (al, ac) = self.carets[0]
+                                        .anchor
+                                        .unwrap_or((self.carets[0].line, self.carets[0].col));
+                                    let anchor = self.char_index(al, ac);
+                                    self.set_primary_range(anchor, flat);
+                                    (anchor, anchor)
+                                } else {
+                                    self.carets = vec![Caret::at(line, col)];
+                                    (flat, flat)
+                                }
+                            }
+                        };
                     }
                     self.is_focused = true;
                     self.dirty = true;
                     *handled = true;
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.drag.release() {
+                    *handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / scale_factor, position.y / scale_factor);
+                // While dragging, extend the selection to the pointer at the
+                // gesture's granularity — char follows the caret; word/line snap
+                // so the original span the press selected stays covered.
+                if let Some(gran) = self.drag.drag() {
+                    let (line, col) = self.point_to_caret(self.last_cursor);
+                    let q = self.char_index(line, col);
+                    let (anchor, cursor) = match gran {
+                        Granularity::Char => (self.drag_anchor.0, q),
+                        Granularity::Word => {
+                            let (ws, we) = word_boundaries_chars(&self.cached_text, q);
+                            if q < self.drag_anchor.0 {
+                                (self.drag_anchor.1, ws)
+                            } else {
+                                (self.drag_anchor.0, we)
+                            }
+                        }
+                        Granularity::Line => {
+                            let len = self.lines[line].chars().count();
+                            let (ls, le) = (self.char_index(line, 0), self.char_index(line, len));
+                            if q < self.drag_anchor.0 {
+                                (self.drag_anchor.1, ls)
+                            } else {
+                                (self.drag_anchor.0, le)
+                            }
+                        }
+                    };
+                    self.set_primary_range(anchor, cursor);
+                    *handled = true;
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.rect.contains(self.last_cursor) {
@@ -839,13 +1416,80 @@ impl Widget for EditorView {
             } => {
                 let ctrl = mods.control_key() || mods.super_key();
                 let shift = mods.shift_key();
+
+                // Any keypress dismisses a stale hover tooltip.
+                if self.hover_text.is_some() {
+                    self.hover_text = None;
+                    self.dirty = true;
+                }
+
+                // While the completion popup is open it captures navigation
+                // keys; anything else dismisses it and falls through to editing.
+                if self.completion_active() {
+                    match logical_key {
+                        Key::Named(NamedKey::ArrowDown) => {
+                            let n = self.completions.len();
+                            self.completion_index = (self.completion_index + 1) % n;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            let n = self.completions.len();
+                            self.completion_index = (self.completion_index + n - 1) % n;
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
+                            self.accept_completion(state);
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.hide_completions();
+                            *handled = true;
+                            return;
+                        }
+                        _ => self.hide_completions(),
+                    }
+                }
+
+                // Language-server request triggers.
+                if let Key::Named(NamedKey::F12) = logical_key {
+                    self.lsp_ask = Some(LspAsk::Definition);
+                    *handled = true;
+                    return;
+                }
+                if let Key::Named(NamedKey::F1) = logical_key {
+                    // Instant, server-free hover: if the caret sits on a
+                    // diagnostic, show its message immediately. Also ask the LSP
+                    // for a richer hover (which supersedes this when it arrives).
+                    let (cl, cc) = self.primary_caret();
+                    if let Some(msg) = self.diagnostic_message_at(cl, cc) {
+                        self.set_hover(Some(msg));
+                    }
+                    self.lsp_ask = Some(LspAsk::Hover);
+                    *handled = true;
+                    return;
+                }
+
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
-                        self.move_caret(-1, 0, shift);
+                        // Ctrl+Left jumps a word; +Shift extends by a word.
+                        if ctrl {
+                            self.word_move(false, shift);
+                        } else {
+                            self.move_caret(-1, 0, shift);
+                        }
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        self.move_caret(1, 0, shift);
+                        if ctrl {
+                            self.word_move(true, shift);
+                        } else {
+                            self.move_caret(1, 0, shift);
+                        }
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
@@ -899,13 +1543,30 @@ impl Widget for EditorView {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Space) => {
-                        self.insert(state, " ");
+                        // Ctrl+Space asks the app to fetch completions here.
+                        if ctrl {
+                            self.lsp_ask = Some(LspAsk::Completion);
+                        } else {
+                            self.insert(state, " ");
+                        }
                         *handled = true;
                     }
                     Key::Character(s) if ctrl => {
                         match s.to_lowercase().as_str() {
                             "a" => {
                                 self.select_all();
+                                *handled = true;
+                            }
+                            "c" => {
+                                self.copy_selection();
+                                *handled = true;
+                            }
+                            "x" => {
+                                self.cut_selection(state);
+                                *handled = true;
+                            }
+                            "v" => {
+                                self.paste_clipboard(state);
                                 *handled = true;
                             }
                             "d" => {
@@ -1000,6 +1661,48 @@ impl EditorView {
     pub fn text_for_test(&self) -> String {
         self.cached_text.clone()
     }
+
+    /// Test hook: force geometry (rect + measured cell width) so pointer
+    /// hit-testing (`point_to_caret`) resolves without a real draw pass.
+    #[cfg(test)]
+    pub fn force_geometry(&mut self, rect: Rect, cell_w: f64) {
+        self.rect = rect;
+        self.cell_w = cell_w;
+    }
+
+    /// Test hook: the logical pixel that `point_to_caret` maps back to
+    /// `(line, col)` — the inverse of hit-testing, so mouse tests can aim at a
+    /// known caret cell. Assumes `scroll == 0` (the test default).
+    #[cfg(test)]
+    pub fn pixel_for_test(&self, line: usize, col: usize) -> Point {
+        let x = self.rect.x0 + self.gutter_width() + CODE_PAD_LEFT + col as f64 * self.cell_w;
+        let y = self.rect.y0 + (line as f64 - self.scroll_y) * LINE_HEIGHT + 1.0;
+        Point::new(x, y)
+    }
+
+    /// Test hook: the primary caret's ordered selection endpoints, or `None`.
+    #[cfg(test)]
+    pub fn selection_for_test(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.carets[0].selection()
+    }
+
+    /// Test hook: the primary selection's text (production `selected_text`).
+    #[cfg(test)]
+    pub fn selected_text_for_test(&self) -> Option<String> {
+        self.selected_text()
+    }
+
+    /// Test hook: word-wise caret motion on the production path.
+    #[cfg(test)]
+    pub fn word_move_for_test(&mut self, forward: bool, extend: bool) {
+        self.word_move(forward, extend);
+    }
+
+    /// Test hook: cut the primary selection through the CRDT.
+    #[cfg(test)]
+    pub fn cut_for_test(&mut self, doc: &mut AutoCommit) {
+        self.cut_selection(doc);
+    }
 }
 
 #[cfg(test)]
@@ -1064,5 +1767,233 @@ mod tests {
         // Caret column counts characters, not bytes (é is 2 bytes).
         assert_eq!(ev.primary_caret(), (0, 5));
         assert_eq!(ev.text_for_test(), "héllo");
+    }
+
+    // ---- selection via the real winit event path -------------------------
+    //
+    // These drive `Widget::handle_event` with synthetic winit events so the
+    // assertions exercise the production selection code (the shared
+    // `ui::gesture::DragSelect` ladder + `ui::text_selection` boundary walkers),
+    // not a test-only shortcut.
+
+    use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+
+    fn fake_device_id() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn geom_editor(seed: &str) -> (EditorView, AutoCommit) {
+        let (mut ev, doc) = bound_editor(seed);
+        // 800x600 viewport, 8px monospace cells — matches the draw-time metric
+        // closely enough for deterministic hit-testing.
+        ev.force_geometry(Rect::new(0.0, 0.0, 800.0, 600.0), 8.0);
+        (ev, doc)
+    }
+
+    fn mods(ctrl: bool, shift: bool) -> Modifiers {
+        let mut s = ModifiersState::empty();
+        if ctrl {
+            s |= ModifiersState::CONTROL;
+        }
+        if shift {
+            s |= ModifiersState::SHIFT;
+        }
+        s.into()
+    }
+
+    fn move_to(ev: &mut EditorView, doc: &mut AutoCommit, p: Point) {
+        let m = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = TaffyTree::<()>::new();
+        let node = NodeId::new(0);
+        let win_ev = WindowEvent::CursorMoved {
+            device_id: fake_device_id(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
+        ev.handle_event(&win_ev, 1.0, &m, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
+        let m = mods(false, shift);
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = TaffyTree::<()>::new();
+        let node = NodeId::new(0);
+        let win_ev = WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: if pressed { ElementState::Pressed } else { ElementState::Released },
+            button: MouseButton::Left,
+        };
+        ev.handle_event(&win_ev, 1.0, &m, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
+        let m = mods(ctrl, shift);
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = TaffyTree::<()>::new();
+        let node = NodeId::new(0);
+        let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
+        ke.logical_key = k;
+        ke.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ke.location = winit::keyboard::KeyLocation::Standard;
+        ke.state = ElementState::Pressed;
+        ke.repeat = false;
+        ke.text = None;
+        let win_ev = WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ke,
+            is_synthetic: false,
+        };
+        ev.handle_event(&win_ev, 1.0, &m, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let (mut ev, mut doc) = geom_editor("hello world");
+        // Two presses at the same point within the multi-click window → word.
+        let p = ev.pixel_for_test(0, 8); // inside "world"
+        move_to(&mut ev, &mut doc, p);
+        left(&mut ev, &mut doc, true, false);
+        left(&mut ev, &mut doc, true, false);
+        assert_eq!(ev.selection_for_test(), Some(((0, 6), (0, 11))));
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn triple_click_selects_line() {
+        let (mut ev, mut doc) = geom_editor("hello world\nsecond line");
+        let p = ev.pixel_for_test(0, 3);
+        move_to(&mut ev, &mut doc, p);
+        left(&mut ev, &mut doc, true, false);
+        left(&mut ev, &mut doc, true, false);
+        left(&mut ev, &mut doc, true, false);
+        assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 11))));
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn drag_selects_char_range() {
+        let (mut ev, mut doc) = geom_editor("hello world");
+        let (p0, p5) = (ev.pixel_for_test(0, 0), ev.pixel_for_test(0, 5));
+        move_to(&mut ev, &mut doc, p0);
+        left(&mut ev, &mut doc, true, false); // press at col 0
+        // Drag to col 5 (end of "hello").
+        move_to(&mut ev, &mut doc, p5);
+        assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 5))));
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello"));
+        left(&mut ev, &mut doc, false, false); // release keeps selection
+        assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 5))));
+    }
+
+    #[test]
+    fn drag_across_lines_selects_multiline() {
+        let (mut ev, mut doc) = geom_editor("abc\ndef");
+        let (p01, p12) = (ev.pixel_for_test(0, 1), ev.pixel_for_test(1, 2));
+        move_to(&mut ev, &mut doc, p01);
+        left(&mut ev, &mut doc, true, false);
+        move_to(&mut ev, &mut doc, p12);
+        assert_eq!(ev.selection_for_test(), Some(((0, 1), (1, 2))));
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("bc\nde"));
+    }
+
+    #[test]
+    fn shift_arrow_extends_by_char() {
+        let (mut ev, mut doc) = geom_editor("hello");
+        ev.set_caret_for_test(0, 0);
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 1))));
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 2))));
+    }
+
+    #[test]
+    fn ctrl_arrow_moves_by_word() {
+        let (mut ev, mut doc) = geom_editor("foo bar baz");
+        ev.set_caret_for_test(0, 0);
+        // Word-forward lands at the start of the next word.
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), true, false);
+        assert_eq!(ev.primary_caret(), (0, 4));
+        assert_eq!(ev.selection_for_test(), None, "ctrl (no shift) does not select");
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), true, false);
+        assert_eq!(ev.primary_caret(), (0, 8));
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowLeft), true, false);
+        assert_eq!(ev.primary_caret(), (0, 4));
+    }
+
+    #[test]
+    fn ctrl_shift_arrow_extends_by_word() {
+        let (mut ev, mut doc) = geom_editor("foo bar baz");
+        ev.set_caret_for_test(0, 0);
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), true, true);
+        assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 4))));
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("foo "));
+    }
+
+    #[test]
+    fn word_move_uses_shared_boundaries_across_lines() {
+        // Word-forward at end of a line steps onto the next line's first word —
+        // proving the flat-index conversion round-trips through the shared
+        // char-indexed boundary helper.
+        let (mut ev, _doc) = geom_editor("foo\nbar");
+        ev.set_caret_for_test(0, 3); // end of "foo"
+        ev.word_move_for_test(true, false);
+        assert_eq!(ev.primary_caret(), (1, 0));
+    }
+
+    #[test]
+    fn plain_arrow_collapses_selection_to_edge() {
+        let (mut ev, mut doc) = geom_editor("hello");
+        ev.set_caret_for_test(0, 1);
+        // Build a selection (0,1)..(0,4).
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        assert_eq!(ev.selection_for_test(), Some(((0, 1), (0, 4))));
+        // Plain Left collapses to the left edge, not one char before it.
+        key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowLeft), false, false);
+        assert_eq!(ev.selection_for_test(), None);
+        assert_eq!(ev.primary_caret(), (0, 1));
+    }
+
+    #[test]
+    fn ctrl_x_cuts_selection_through_crdt() {
+        // Cut deletes the selected range via the CRDT (clipboard write is a
+        // silent no-op in the headless test env, so we assert on the buffer).
+        let (mut ev, mut doc) = geom_editor("hello world");
+        ev.set_caret_for_test(0, 0);
+        // Select "hello " (0,0)..(0,6) with word+char extends.
+        for _ in 0..6 {
+            key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        }
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello "));
+        ev.cut_for_test(&mut doc);
+        assert_eq!(ev.text_for_test(), "world");
+        assert_eq!(ev.selection_for_test(), None);
+    }
+
+    #[test]
+    fn clipboard_copy_paste_round_trips_when_available() {
+        // Only meaningful where arboard has a backend (a Wayland/X11 session).
+        // Probe with a sentinel; if it doesn't round-trip, skip cleanly — the
+        // clipboard helper is silent on absence (headless CI).
+        ui::text_selection::clipboard_copy("__qos_probe__");
+        if ui::text_selection::clipboard_paste().as_deref() != Some("__qos_probe__") {
+            eprintln!("clipboard_copy_paste_round_trips: no clipboard backend, skipping");
+            return;
+        }
+        let (mut ev, mut doc) = geom_editor("hello world");
+        ev.set_caret_for_test(0, 0);
+        for _ in 0..5 {
+            key(&mut ev, &mut doc, Key::Named(NamedKey::ArrowRight), false, true);
+        }
+        // Ctrl+C copies "hello".
+        key(&mut ev, &mut doc, Key::Character("c".into()), true, false);
+        // Move to end and Ctrl+V pastes it.
+        ev.set_caret_for_test(0, 11);
+        key(&mut ev, &mut doc, Key::Character("v".into()), true, false);
+        assert_eq!(ev.text_for_test(), "hello worldhello");
     }
 }

@@ -29,9 +29,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // default desktop viewport so the same binary can capture the narrow
         // (overlay-sidebar) responsive layout. `--sidebar-open` snaps the flap
         // open so a narrow shot shows the summoned sidebar + scrim rather than
-        // the closed default a fresh narrow window opens to.
+        // the closed default a fresh narrow window opens to. `--scenario NAME`
+        // stages a specific view (terminal / selection / completion).
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let open_sidebar = args.iter().any(|a| a == "--sidebar-open");
+        let scenario = parse_scenario_arg(&args);
         let mut app = code_editor::CodeApp::new();
         // Seed the width up front so this single offscreen frame resolves the
         // responsive layout (docked vs. overlay) correctly — `build_layout`
@@ -40,7 +42,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if open_sidebar {
             app.shots_snap_sidebar(true);
         }
-        render_shot_to_png(Box::new(app), viewport, &out)?;
+        render_scenario_to_png(app, viewport, &out, scenario.as_deref())?;
         return Ok(());
     }
 
@@ -80,12 +82,29 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
-fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+/// Parse `--scenario NAME` (terminal / selection / completion).
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Render one offscreen frame of the `CodeApp`, optionally staging a scenario
+/// first. Mirrors `ui::App`'s cycle (sync → build_layout → compute_layout →
+/// apply_layout → draw); for the `terminal` scenario it also drives the live
+/// PTY and pumps `sync` a few times so real shell output lands in the frame.
+fn render_scenario_to_png(
+    mut app: code_editor::CodeApp,
     viewport: (u32, u32),
     out: &std::path::Path,
+    scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
@@ -96,9 +115,16 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    // Pre-sync staging: opening the terminal must happen before the first sync
+    // so its grid is initialised and pumped from the start.
+    if scenario == Some("terminal") {
+        app.shots_open_terminal();
+    }
+
+    app.sync(&mut state.doc, &state.root);
+
+    let child = app.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -128,17 +154,43 @@ fn render_shot_to_png(
             },
         )?;
     }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    app.apply_layout(&taffy, child, Point::ORIGIN);
 
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
+    // A helper that runs a full draw pass into a fresh scene.
+    let draw = |app: &mut code_editor::CodeApp, tr: &mut TextRenderer| {
+        let mut scene = Scene::new();
+        app.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            tr,
+            &theme,
+            &presence,
+            &permission,
+        );
+        scene
+    };
+
+    // Post-layout staging.
+    match scenario {
+        Some("terminal") => {
+            // One draw settles the terminal's cell metrics + placement, then we
+            // drive the real shell and pump `sync` to collect its output.
+            let _ = draw(&mut app, &mut text_renderer);
+            app.shots_terminal_input(
+                "echo 'qOS embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
+                 echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n",
+            );
+            for _ in 0..24 {
+                app.sync(&mut state.doc, &state.root);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+        }
+        Some("selection") => app.shots_select_words(),
+        Some("completion") => app.shots_completion_demo(&state.doc),
+        _ => {}
+    }
+
+    let scene = draw(&mut app, &mut text_renderer);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The IDE's terminal panel embeds the real system terminal as a widget, rather
+# than shipping a second, weaker terminal implementation.
+terminal = { path = "../terminal" }
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

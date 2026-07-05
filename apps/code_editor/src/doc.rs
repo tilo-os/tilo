@@ -69,6 +69,19 @@ impl EditorDoc {
         Self::buffer_text(doc, node).and_then(|t| doc.text(&t).ok())
     }
 
+    /// Get-or-create the Map that scopes the embedded terminal's CRDT state.
+    /// The `TerminalWidget` stores its grid + cursor under whatever object it's
+    /// handed as "root"; giving it a dedicated sub-map keeps its keys
+    /// (`terminal_grid`, `cursor`) out of the editor's own root namespace.
+    pub fn terminal_root(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "terminal_panel") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "terminal_panel", ObjType::Map)
+                .expect("put_object terminal_panel on root never fails"),
+        }
+    }
+
     /// Splice into a buffer's Text at a character index. `delete` characters
     /// are removed, then `insert` is inserted. Indices are in *characters*
     /// (Automerge Text is char-addressed), matching the editor's caret model.
