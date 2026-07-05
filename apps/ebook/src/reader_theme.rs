@@ -76,18 +76,18 @@ impl ReaderPalette {
                 dark: false,
             },
             ReadTheme::Dark => {
-                // A warm, near-neutral dark paper — deliberately NOT derived
-                // from the OS surface tokens, which skew cool/blue. Reading for
-                // long stretches on a blue-black page is fatiguing; this is a
-                // soft warm charcoal with a faintly warm off-white ink, the
-                // dark-reading tint people actually reach for.
+                // A warm-*neutral* charcoal paper — deliberately NOT derived from
+                // the OS surface tokens (which skew cool/blue) and pulled back
+                // from the old brown/sepia cast. The channels sit close together
+                // so it reads as a true charcoal, with just a hair of warmth
+                // (R ≥ B) so long reading stays comfortable rather than clinical.
                 ReaderPalette {
-                    page: Color::from_rgb8(0x1D, 0x1B, 0x18),
-                    page_edge: Color::from_rgb8(0x30, 0x2B, 0x25),
-                    ink: Color::from_rgb8(0xE9, 0xE3, 0xD7),
-                    ink_dim: Color::from_rgb8(0x9C, 0x93, 0x84),
-                    rule: Color::from_rgb8(0x3A, 0x34, 0x2C),
-                    code_bg: Color::from_rgb8(0x2A, 0x26, 0x20),
+                    page: Color::from_rgb8(0x1E, 0x1D, 0x1C),
+                    page_edge: Color::from_rgb8(0x33, 0x31, 0x2F),
+                    ink: Color::from_rgb8(0xE7, 0xE5, 0xE1),
+                    ink_dim: Color::from_rgb8(0x9A, 0x97, 0x92),
+                    rule: Color::from_rgb8(0x38, 0x36, 0x33),
+                    code_bg: Color::from_rgb8(0x2A, 0x28, 0x26),
                     accent: theme.accent_primary,
                     dark: true,
                 }

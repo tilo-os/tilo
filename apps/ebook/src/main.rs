@@ -33,7 +33,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
+        // `--size` is an alias for `--viewport` (both accept `WIDTHxHEIGHT`).
         let viewport = parse_value_arg(&args, "--viewport")
+            .or_else(|| parse_value_arg(&args, "--size"))
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         render_shot_to_png(ebook::app_root_for_shot(&scenario), viewport, &out)?;
