@@ -81,7 +81,9 @@ What has to land before we ship. Owner in **bold**.
 See [[Reading list]] for sources.
 
 ```sh
+git checkout -b release/v1.0
 git tag -a v1.0 -m \"release\"
+git push origin v1.0 --tags
 ```
 ",
         ),
@@ -307,6 +309,29 @@ fn drive_scenario(
             if let Some(row) = app.sidebar_row_center_for_test(1) {
                 send(app, &cursor(row.x, row.y));
                 send(app, &mouse(ElementState::Pressed, MouseButton::Right));
+            }
+        }
+        Some("rename") => {
+            // Double-click a page row to open the in-place rename field —
+            // plain-chrome, sitting exactly over the row's label.
+            if let Some(row) = app.sidebar_row_center_for_test(1) {
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            }
+        }
+        Some("rename_commit") => {
+            // Open the rename field, edit it, then click well outside it —
+            // focus-out commits the edit and closes the field.
+            if let Some(row) = app.sidebar_row_center_for_test(1) {
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+                send(app, &char_key(" v2"));
+                send(app, &cursor(900.0, 400.0));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
             }
         }
         Some("slash") => {

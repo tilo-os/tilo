@@ -26,7 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::text_selection::{
     clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
     prev_char_boundary, prev_word_boundary, word_boundaries,
@@ -179,6 +179,11 @@ pub struct TextInput {
     /// Empty string (the default) disables the placeholder entirely, so
     /// existing callers are unaffected.
     placeholder: String,
+    /// When true the text is shaped + drawn in the system monospace face.
+    /// Both the per-char measurement (`char_x_positions`) and the draw call
+    /// switch to `Family::Monospace`, so the caret/selection stay aligned.
+    /// Default `false`; code-block cells opt in so code reads as code.
+    mono: bool,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -220,6 +225,7 @@ impl TextInput {
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             placeholder: String::new(),
+            mono: false,
         }
     }
 
@@ -288,6 +294,33 @@ impl TextInput {
     /// Mutate the plain-chrome flag after construction.
     pub fn set_plain_chrome(&mut self, plain: bool) {
         self.plain = plain;
+    }
+
+    /// Builder-style: shape + draw the text in the system monospace face.
+    /// Used by code-block cells so code reads as code.
+    pub fn with_mono(mut self) -> Self {
+        self.mono = true;
+        self
+    }
+
+    /// Mutate the monospace flag after construction.
+    pub fn set_mono(&mut self, mono: bool) {
+        self.mono = mono;
+    }
+
+    /// True iff this input renders its text in the monospace face.
+    pub fn is_mono(&self) -> bool {
+        self.mono
+    }
+
+    /// Measure `s` with the family the draw path will use (mono when
+    /// `self.mono`), so `char_x_positions` and the drawn glyphs agree.
+    fn measure_str(&self, tr: &mut TextRenderer, s: &str, size: f32) -> (f32, f32) {
+        if self.mono {
+            tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
+        } else {
+            tr.measure(s, size, None)
+        }
     }
 
     /// Construct a TextInput that owns its own string with no CRDT
@@ -952,10 +985,10 @@ impl Widget for TextInput {
         self.char_x_positions.clear();
         self.char_x_positions.resize(self.text.len() + 1, 0.0);
         for (byte_idx, _) in self.text.char_indices() {
-            let (w, _) = text_renderer.measure(&self.display_prefix(byte_idx), text_size, None);
+            let (w, _) = self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
             self.char_x_positions[byte_idx] = w as f64;
         }
-        let (total_w, _) = text_renderer.measure(&display, text_size, None);
+        let (total_w, _) = self.measure_str(text_renderer, &display, text_size);
         self.char_x_positions[self.text.len()] = total_w as f64;
 
         // Caret + scroll math.
@@ -1017,13 +1050,16 @@ impl Widget for TextInput {
                 None,
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_text_styled(
             scene,
             &display,
             text_size,
             text_color,
             transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y)),
             None,
+            TextWeight::Regular,
+            false,
+            self.mono,
         );
 
         if self.is_focused && !self.disabled {
