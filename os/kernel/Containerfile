@@ -158,6 +158,11 @@ RUN set -eux; \
         [ -f "$f" ] && sed -i -E \
             -e 's/(Name:[[:space:]]*)kernel([[:space:]]|$)/\1qos-kernel\2/g' \
             -e 's/(Provides:[[:space:]]*)kernel([[:space:]]|=|$)/\1qos-kernel\2/g' \
+            -e 's/(%package[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
+            -e 's/(%description[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
+            -e 's/(%files[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
+            -e 's/(%post[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
+            -e 's/(%preun[[:space:]]+-n[[:space:]]+)kernel/\1qos-kernel/g' \
             "$f" || true; \
     done; \
     # Sanity check: at least one file was patched.  If neither exists the
