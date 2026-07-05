@@ -18,6 +18,10 @@ ui = { path = "../../ui" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+# The shared multi-account store + encrypted secret vault. Settings reads and
+# writes email + CalDAV accounts through this one canonical store, so it and
+# the Mail / Calendar apps can no longer disagree on the on-disk shape.
+accounts = { path = "../../crates/system/accounts" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
@@ -37,3 +41,6 @@ dirs = "6.0"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+# The persistence tests read the shared account store + vault back to prove
+# the pane wrote through them.
+accounts = { path = "../../crates/system/accounts" }
