@@ -18,11 +18,35 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       # Single source of truth: base image + package set both come from
-      # os/Containerfile, so the snapshot can never drift from what's installed.
-      - name: Derive base image + package set from os/Containerfile
+      # os/Containerfile — for the base — and from the union of every
+      # dnf-install line across the OS Containerfiles (main image + host
+      # bootc + standalone relay OCI). Keeping the snapshot the same for
+      # every image guarantees whatever we FROM-mount the frozen repo at
+      # finds every package it wants.
+      - name: Derive base image + package set from Containerfiles
         run: |
           echo "BASE=$(awk '/^FROM .*fedora-bootc.* AS builder/{print $2; exit}' os/Containerfile)" >> "$GITHUB_ENV"
-          pkgs=$(awk '/dnf install -y/{blk=$0; while(blk ~ /\\[[:space:]]*$/){getline nx; sub(/\\[[:space:]]*$/,"",blk); blk=blk" "nx} sub(/.*dnf install -y/,"",blk); sub(/&&.*/,"",blk); n=split(blk,a," "); for(i=1;i<=n;i++) if(a[i] ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/) print a[i]}' os/Containerfile | sort -u | tr '\n' ' ')
+          # Enumerate all Containerfiles we snapshot for.
+          FILES=(
+            os/Containerfile
+            os/Containerfile.host
+            os/containers/qos-relay/Containerfile
+          )
+          pkgs=$(awk '
+            /(dnf|microdnf) install -y/ {
+              blk=$0
+              while (blk ~ /\\[[:space:]]*$/) { getline nx; sub(/\\[[:space:]]*$/,"",blk); blk=blk" "nx }
+              # Strip everything up to and including the install verb.
+              sub(/.*install -y/,"",blk)
+              sub(/&&.*/,"",blk)
+              n=split(blk,a," ")
+              for (i=1;i<=n;i++) {
+                # Skip flags and empty tokens; keep only bare package names.
+                if (a[i] ~ /^-/) continue
+                if (a[i] ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/) print a[i]
+              }
+            }
+          ' "${FILES[@]}" | sort -u | tr '\n' ' ')
           echo "PACKAGES=$pkgs" >> "$GITHUB_ENV"
           echo "packages: $pkgs"
 

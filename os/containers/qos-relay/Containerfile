@@ -21,10 +21,17 @@
 # `.forgejo/workflows/qos-relay.yaml` (companion to the OS image job).
 # ============================================================================
 
+# ---- Frozen RPM repo (cross-time reproducibility) --------------------------
+# Digest-pinned snapshot shared with the desktop + host bootc images. RPMS_REF
+# comes from os/rpms-snapshot.env — see os/dev/build-image.sh and the
+# .forgejo/workflows/qos-relay.yaml build.
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
 # ---- Stage 1: builder --------------------------------------------------------
 FROM quay.io/fedora/fedora-bootc:44 AS builder
 
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
@@ -42,8 +49,12 @@ RUN cargo build --release -p qos-relay --bins
 FROM quay.io/fedora/fedora-minimal:44
 
 # Runtime deps: openssl for iroh's TLS side; ca-certificates for the
-# hosted iroh relay endpoints.
-RUN microdnf install -y ca-certificates && microdnf clean all
+# hosted iroh relay endpoints. microdnf accepts the same --setopt+
+# --disablerepo/--enablerepo flags as dnf5 (which it wraps).
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
+        ca-certificates \
+    && microdnf clean all
 
 COPY --from=builder /build/target/release/qos-relay /usr/bin/qos-relay
 COPY --from=builder /build/target/release/qos-relay-admin /usr/bin/qos-relay-admin

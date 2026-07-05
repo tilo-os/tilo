@@ -37,13 +37,29 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.REGISTRY_TOKEN }}
 
+      # Login is required on every build now (build-only or push): the
+      # Containerfile FROMs the private frozen RPM repo, which needs
+      # registry auth to pull.
       - name: Log in to the code.podesta.ai registry
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         uses: docker/login-action@v3
         with:
           registry: code.podesta.ai
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Load the pinned RPMS_REF
+        run: |
+          if [ ! -f os/rpms-snapshot.env ]; then
+            echo "::error::os/rpms-snapshot.env missing — run the snapshot-rpms workflow first"
+            exit 1
+          fi
+          . os/rpms-snapshot.env
+          if [ -z "${RPMS_REF:-}" ]; then
+            echo "::error::RPMS_REF not set in os/rpms-snapshot.env"
+            exit 1
+          fi
+          echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
+          echo "rpms=$RPMS_REF"
 
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -72,6 +88,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            RPMS_REF=${{ env.RPMS_REF }}
           provenance: false
 
       # Optional cosign signing — reuses the same key as the OS image
