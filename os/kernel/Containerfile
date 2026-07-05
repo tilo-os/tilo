@@ -52,8 +52,9 @@ FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac8
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         kernel-devel kernel-headers \
         rpm-build make gcc bc flex bison \
-        openssl-devel elfutils-libelf-devel dwarves \
-        perl-generators python3 python3-devel python3-rpm-macros \
+        openssl-devel elfutils-libelf-devel elfutils-devel dwarves \
+        perl perl-generators rsync \
+        python3 python3-devel python3-rpm-macros \
         gzip xz cpio git which findutils \
     && dnf clean all
 
