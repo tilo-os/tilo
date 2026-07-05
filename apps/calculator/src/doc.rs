@@ -11,10 +11,11 @@
 //! ├── "expr"     (Text)  collaborative expression line
 //! ├── "ans"      (F64)
 //! ├── "memory"   (F64)
-//! ├── "surface"  (Str)   z = f(x, y)
-//! ├── "active"   (Int)
+//! ├── "active"   (Int)   active 2D function row
+//! ├── "active_surface" (Int)  active 3D surface row
 //! ├── "history"  (List<Map { expr, result }>)
-//! ├── "funcs"    (List<Map { expr, visible }>)
+//! ├── "funcs"    (List<Map { expr, visible }>)   2D y = f(x) curves
+//! ├── "surfaces" (List<Map { expr, visible }>)   3D z = f(x, y) surfaces
 //! ├── "view2d"   (Map { cx, cy, scale })
 //! └── "view3d"   (Map { yaw, pitch, zoom })
 //! ```
@@ -116,11 +117,11 @@ fn history_matches(doc: &AutoCommit, hist: &[HistoryEntry]) -> bool {
 /// object — collaborative editing / multi-cursor become possible and a keystroke
 /// no longer rewrites the whole list (the old wholesale delete+reinsert both
 /// broke character-level merge and churned the document each keystroke).
-fn store_funcs(doc: &mut AutoCommit, funcs: &[PlotFn]) {
-    let lid = match doc.get(&ROOT, "funcs") {
+fn store_funcs(doc: &mut AutoCommit, key: &str, funcs: &[PlotFn]) {
+    let lid = match doc.get(&ROOT, key) {
         Ok(Some((Value::Object(ObjType::List), id))) => id,
         _ => doc
-            .put_object(&ROOT, "funcs", ObjType::List)
+            .put_object(&ROOT, key, ObjType::List)
             .expect("put_object funcs list"),
     };
     let cur = doc.length(&lid);
@@ -145,6 +146,23 @@ fn store_funcs(doc: &mut AutoCommit, funcs: &[PlotFn]) {
         put_text_diffed(doc, &row, "expr", &f.expr);
         put_if_changed(doc, &row, "visible", f.visible);
     }
+}
+
+/// Read a `List<Map { expr, visible }>` (either `funcs` or `surfaces`) back
+/// into a `Vec<PlotFn>`.
+fn load_fn_list(doc: &AutoCommit, key: &str) -> Vec<PlotFn> {
+    let mut out = Vec::new();
+    if let Ok(Some((Value::Object(ObjType::List), lid))) = doc.get(&ROOT, key) {
+        for i in 0..doc.length(&lid) {
+            if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&lid, i) {
+                out.push(PlotFn {
+                    expr: get_str(doc, &row, "expr").unwrap_or_default(),
+                    visible: get_bool(doc, &row, "visible").unwrap_or(true),
+                });
+            }
+        }
+    }
+    out
 }
 
 fn put_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
@@ -181,10 +199,8 @@ pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
     put_text_diffed(doc, &ROOT, "expr", &m.expr);
     put_f64_if_changed(doc, &ROOT, "ans", m.ans);
     put_f64_if_changed(doc, &ROOT, "memory", m.memory);
-    // The surface formula is a diff-spliced Text (CRDT-backed, character-level
-    // merge) just like the calculator `expr`, not a wholesale-rewritten string.
-    put_text_diffed(doc, &ROOT, "surface", m.surface.as_str());
     put_if_changed(doc, &ROOT, "active", m.active_fn as i64);
+    put_if_changed(doc, &ROOT, "active_surface", m.active_surface as i64);
 
     // history / funcs: only rewrite when the list actually differs. Rewriting a
     // list wholesale on every keystroke (even unchanged) permanently grew the
@@ -199,7 +215,11 @@ pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
         }
     }
 
-    store_funcs(doc, &m.funcs);
+    // 2D curves and 3D surfaces are both diff-spliced `Text`-per-row lists, so
+    // a per-character edit to any formula is a bounded CRDT op (collaborative
+    // editing / multi-cursor) rather than a wholesale list rewrite.
+    store_funcs(doc, "funcs", &m.funcs);
+    store_funcs(doc, "surfaces", &m.surfaces);
 
     let v2 = put_map(doc, &ROOT, "view2d");
     put_f64_if_changed(doc, &v2, "cx", m.view2d.cx);
@@ -223,8 +243,8 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
     m.expr = get_str(doc, &ROOT, "expr").unwrap_or_default();
     m.ans = get_f64(doc, &ROOT, "ans").unwrap_or(0.0);
     m.memory = get_f64(doc, &ROOT, "memory").unwrap_or(0.0);
-    m.surface = get_str(doc, &ROOT, "surface").unwrap_or_else(|| m.surface.clone());
     m.active_fn = get_f64(doc, &ROOT, "active").unwrap_or(0.0) as usize;
+    m.active_surface = get_f64(doc, &ROOT, "active_surface").unwrap_or(0.0) as usize;
 
     if let Ok(Some((Value::Object(ObjType::List), hist))) = doc.get(&ROOT, "history") {
         m.history.clear();
@@ -238,17 +258,8 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
         }
     }
 
-    if let Ok(Some((Value::Object(ObjType::List), funcs))) = doc.get(&ROOT, "funcs") {
-        m.funcs.clear();
-        for i in 0..doc.length(&funcs) {
-            if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&funcs, i) {
-                m.funcs.push(PlotFn {
-                    expr: get_str(doc, &row, "expr").unwrap_or_default(),
-                    visible: get_bool(doc, &row, "visible").unwrap_or(true),
-                });
-            }
-        }
-    }
+    m.funcs = load_fn_list(doc, "funcs");
+    m.surfaces = load_fn_list(doc, "surfaces");
 
     if let Some(v2) = map_at(doc, &ROOT, "view2d") {
         m.view2d = View2d {
@@ -268,6 +279,9 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
     if m.active_fn >= m.funcs.len() {
         m.active_fn = 0;
     }
+    if m.active_surface >= m.surfaces.len() {
+        m.active_surface = 0;
+    }
     Some(m)
 }
 
@@ -284,6 +298,8 @@ mod tests {
         assert_eq!(loaded.mode, m.mode);
         assert_eq!(loaded.expr, m.expr);
         assert_eq!(loaded.funcs.len(), m.funcs.len());
+        assert_eq!(loaded.surfaces.len(), m.surfaces.len());
+        assert_eq!(loaded.surfaces, m.surfaces, "surfaces round-trip byte-identically");
         assert_eq!(loaded.history.len(), m.history.len());
         assert_eq!(loaded.memory, m.memory);
         assert!((loaded.view2d.scale - m.view2d.scale).abs() < 1e-9);
@@ -339,26 +355,25 @@ mod tests {
 
     #[test]
     fn func_expr_and_surface_are_crdt_text_objects() {
-        // The graph formulas are character-level CRDT `Text`, not plain `Str` —
-        // this is what makes collaborative editing / multi-cursor possible.
+        // Every graph formula — 2D curve OR 3D surface — is a character-level
+        // CRDT `Text`, not a plain `Str`, which is what makes collaborative
+        // editing / multi-cursor possible.
         let mut doc = AutoCommit::new();
         let m = CalcModel::seeded();
         store(&mut doc, &m);
-        assert!(
-            matches!(doc.get(&ROOT, "surface"), Ok(Some((Value::Object(ObjType::Text), _)))),
-            "surface must be a CRDT Text object"
-        );
-        let Ok(Some((Value::Object(ObjType::List), lid))) = doc.get(&ROOT, "funcs") else {
-            panic!("funcs list missing");
-        };
-        let row = match doc.get(&lid, 0) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => panic!("func row 0 missing"),
-        };
-        assert!(
-            matches!(doc.get(&row, "expr"), Ok(Some((Value::Object(ObjType::Text), _)))),
-            "each func's expr must be a CRDT Text object"
-        );
+        for key in ["funcs", "surfaces"] {
+            let Ok(Some((Value::Object(ObjType::List), lid))) = doc.get(&ROOT, key) else {
+                panic!("{key} list missing");
+            };
+            let row = match doc.get(&lid, 0) {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => panic!("{key} row 0 missing"),
+            };
+            assert!(
+                matches!(doc.get(&row, "expr"), Ok(Some((Value::Object(ObjType::Text), _)))),
+                "each {key} row's expr must be a CRDT Text object"
+            );
+        }
     }
 
     #[test]
