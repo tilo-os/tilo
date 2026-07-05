@@ -2103,7 +2103,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // after the event loop has processed the initial configure
                 // and wired the seat, rather than inline in `resumed`.
                 if self.render.is_none() {
+                    qos_startup_metrics::mark("first-redraw-init-render-start");
                     self.init_render(&window);
+                    qos_startup_metrics::mark("first-redraw-init-render-done");
+                } else {
+                    // Every subsequent redraw hits the "first-paint"
+                    // mark only the first time — subsequent frames are
+                    // uninteresting for the cold-start measurement.
+                    // A boolean guard is cheaper than a lock; the mark
+                    // itself is a no-op past the first call because the
+                    // metrics module records every push and downstream
+                    // consumers just look at the first occurrence.
+                    qos_startup_metrics::mark("first-paint");
                 }
                 let Some(render) = self.render.as_mut() else {
                     return;
