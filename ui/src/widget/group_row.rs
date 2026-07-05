@@ -176,6 +176,22 @@ pub struct GroupRow {
     /// scroll_x`, so the leading_inset moves with `scroll_x` just
     /// like every other point in canvas space.
     leading_inset: f64,
+    /// **Transient fullscreen override** (id of the group promoted to occupy
+    /// the whole output, e.g. a slideshow that requested
+    /// `xdg_toplevel.set_fullscreen`). Set by the shell each frame from the
+    /// compositor's live fullscreen state — NOT persisted, NOT part of the
+    /// `WorkspaceTree`. When `Some(id)` and this row contains that group, the
+    /// row collapses to that single group at full area exactly like a
+    /// [`WindowGroup::maximized`] group, but the shell additionally suppresses
+    /// the top bar / sidebar so the promotion covers the entire output. When
+    /// the id belongs to a *different* strip, [`Self::hidden`] is set instead.
+    /// Cleared (both back to their defaults) restores the exact prior layout.
+    fullscreen_group: Option<u64>,
+    /// **Transient full-output suppression.** Set by the shell on every strip
+    /// row that does NOT own the current fullscreen group, so the fullscreen
+    /// surface is the only thing painted over the output. `build_layout`
+    /// collapses the whole row to `Display::None` while set. Not persisted.
+    hidden: bool,
 }
 
 impl GroupRow {
@@ -197,7 +213,43 @@ impl GroupRow {
             pending_cross_strip_detach: None,
             scroll_dirty: false,
             leading_inset: 0.0,
+            fullscreen_group: None,
+            hidden: false,
         }
+    }
+
+    /// Index of the group this row should promote to full-output, if the
+    /// current fullscreen group id belongs to this row. Fullscreen takes
+    /// precedence over an in-row `maximized` flag (both drive the same
+    /// collapse-siblings layout branch, but a live fullscreen request wins).
+    fn fullscreen_idx(&self) -> Option<usize> {
+        let id = self.fullscreen_group?;
+        self.groups.iter().position(|g| g.id == id)
+    }
+
+    /// Set (or clear) the transient fullscreen override + full-output
+    /// suppression for this strip row. Driven by the shell each frame from the
+    /// compositor's live fullscreen state:
+    ///   * `fullscreen_group = Some(id)` where `id` is one of *this* row's
+    ///     groups → promote it to the whole output (siblings + handles hidden);
+    ///   * `hidden = true` → this strip owns no part of the fullscreen surface,
+    ///     so collapse the entire row away.
+    /// Passing `(None, false)` (the reset) restores the row's normal tiling
+    /// layout exactly. Marks the row structurally dirty on a real change so the
+    /// host rebuilds the taffy tree and the collapse/restore takes effect.
+    pub fn set_fullscreen(&mut self, fullscreen_group: Option<u64>, hidden: bool) {
+        if self.fullscreen_group != fullscreen_group || self.hidden != hidden {
+            self.fullscreen_group = fullscreen_group;
+            self.hidden = hidden;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Whether this row is currently promoting one of its groups to occupy the
+    /// full output. Read by the shell so it knows to suppress the top bar /
+    /// sidebar and by tests asserting the enter/exit override.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen_idx().is_some()
     }
 
     /// Reserve a canvas-x gutter to the left of the first group. The
@@ -755,7 +807,14 @@ impl Widget for GroupRow {
         // first one wins; the rest are hidden alongside the non-
         // maximized siblings. Same observable outcome as the click-
         // toggle flow where only one is ever true at a time.
-        let maximized_idx = self.groups.iter().position(|g| g.maximized);
+        // A transient fullscreen promotion (a group that requested
+        // `xdg_toplevel.set_fullscreen`) drives the SAME collapse-siblings
+        // layout as a persisted `maximized` flag, and wins over it — a live
+        // present-mode request outranks a stale maximize. `promoted_idx` is
+        // whichever group owns the row; the rest collapse to `Display::None`.
+        let maximized_idx = self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized));
         // Resize the handle pool to match the inter-group gap count
         // (`max(0, N-1)`). Handles are structurally tied to gaps
         // between adjacent groups, so a group insert/remove drives
@@ -832,6 +891,16 @@ impl Widget for GroupRow {
             if let Some(max_i) = maximized_idx {
                 if i != max_i {
                     style.display = Display::None;
+                } else {
+                    // Ensure the promoted group absorbs the whole row. A
+                    // `maximized` group already carries this grow style from
+                    // `WindowGroup::build_layout`, but a *fullscreen*-promoted
+                    // group (whose own `maximized` flag is false) does not —
+                    // set it here so both promotion paths reach the same
+                    // full-row outcome.
+                    style.size.width = Dimension::auto();
+                    style.flex_grow = 1.0e6;
+                    style.flex_basis = Dimension::length(0.0);
                 }
             }
             taffy.set_style(node, style).unwrap();
@@ -853,7 +922,11 @@ impl Widget for GroupRow {
         let node = taffy
             .new_with_children(
                 Style {
-                    display: Display::Flex,
+                    // A strip that owns no part of the current fullscreen
+                    // surface collapses away entirely, so the promoted group
+                    // in another strip is the only thing painted over the
+                    // output. Reset to `Flex` restores the row exactly.
+                    display: if self.hidden { Display::None } else { Display::Flex },
                     flex_direction: FlexDirection::Row,
                     size: Size {
                         width: Dimension::percent(1.0),
@@ -956,8 +1029,16 @@ impl Widget for GroupRow {
         // edge); as scroll_x grows the whole canvas pans left in
         // lock-step with the wheel-disc's own `-scroll_x` shift in
         // `ShellOverlayHost::apply_layout`.
+        // A fullscreen-promoted group covers the whole output: the sidebar
+        // wheel is suppressed, so its leading gutter is dropped and any prior
+        // pan is ignored, pinning the group flush at `rect.x0`.
+        let (origin_inset, origin_scroll) = if self.is_fullscreen() {
+            (0.0, 0.0)
+        } else {
+            (self.leading_inset, self.scroll_x)
+        };
         let child_origin = Point::new(
-            self.rect.x0 + self.leading_inset - self.scroll_x,
+            self.rect.x0 + origin_inset - origin_scroll,
             self.rect.y0,
         );
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
@@ -1027,7 +1108,12 @@ impl Widget for GroupRow {
         // origin — visible as ghost artwork bleeding behind the
         // maximized tile. Skipping the per-sibling draw keeps the row
         // looking like the concept's `width: 100vw` fixed overlay.
-        let maximized_idx = self.groups.iter().position(|g| g.maximized);
+        //
+        // A transient fullscreen promotion collapses siblings the same way,
+        // and wins over a stale `maximized` flag — same as `build_layout`.
+        let maximized_idx = self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized));
         if let Some(max_i) = maximized_idx {
             if let Some(g) = self.groups.get_mut(max_i) {
                 g.draw(scene, transform, tr, theme, presence);
@@ -3673,5 +3759,151 @@ mod tests {
             2,
             "handle nodes must be rebuilt on un-maximize (2 gaps → 2 handles)",
         );
+    }
+
+    /// Shared relayout helper for the fullscreen tests: rebuilds the taffy
+    /// tree + runs a full layout pass at a fixed 2000×600 viewport, exactly
+    /// like `unmaximize_restores_siblings_and_handles`.
+    fn relayout_row(row: &mut GroupRow) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        use taffy::AvailableSpace;
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                taffy::Size {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+    }
+
+    /// A transient fullscreen promotion collapses siblings and absorbs the
+    /// row's full width — the same layout outcome as `maximized`, but driven
+    /// by the compositor's live fullscreen state (`set_fullscreen`) rather than
+    /// the persisted flag, and without any group carrying `maximized`.
+    #[test]
+    fn fullscreen_group_collapses_siblings_and_absorbs_row() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        assert!(!row.is_fullscreen());
+        // Promote the middle group (id 200) to fullscreen — no `maximized`
+        // flag is set on any group.
+        row.set_fullscreen(Some(200), false);
+        assert!(row.groups.iter().all(|g| !g.maximized), "no persisted maximize");
+        relayout_row(&mut row);
+
+        assert!(row.is_fullscreen(), "row reports it owns the fullscreen group");
+        // Siblings collapse to zero rendered width.
+        assert!(
+            row.groups[0].get_rect().width() <= 0.5,
+            "left sibling collapses under fullscreen; got {}",
+            row.groups[0].get_rect().width(),
+        );
+        assert!(
+            row.groups[2].get_rect().width() <= 0.5,
+            "right sibling collapses under fullscreen; got {}",
+            row.groups[2].get_rect().width(),
+        );
+        // Promoted group absorbs the full row width and pins flush at x0 (the
+        // wheel gutter is dropped because the sidebar is suppressed).
+        let r1 = row.groups[1].get_rect();
+        assert!(
+            (r1.width() - row.rect.width()).abs() < 1.0,
+            "fullscreen group absorbs the row width; got {} vs {}",
+            r1.width(),
+            row.rect.width(),
+        );
+        assert!(
+            (r1.x0 - row.rect.x0).abs() < 1.0,
+            "fullscreen group pins flush-left with no wheel gutter; got x0 {} vs {}",
+            r1.x0,
+            row.rect.x0,
+        );
+        assert_eq!(row.handle_node_ids.len(), 0, "no resize handles under fullscreen");
+    }
+
+    /// Exiting fullscreen restores the EXACT prior tiling layout — every
+    /// sibling rect returns to its pre-fullscreen geometry and the resize
+    /// handles are rebuilt. This is the compositor-visible "restores exactly
+    /// on exit" invariant, proven at the widget layer.
+    #[test]
+    fn exiting_fullscreen_restores_prior_layout_exactly() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        // Snapshot the settled tiling geometry before any promotion.
+        let before: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        let handles_before = row.handle_node_ids.len();
+        assert_eq!(handles_before, 2);
+
+        // Enter fullscreen, then exit.
+        row.set_fullscreen(Some(300), false);
+        relayout_row(&mut row);
+        assert!(row.is_fullscreen());
+        row.set_fullscreen(None, false);
+        relayout_row(&mut row);
+
+        assert!(!row.is_fullscreen(), "exit clears the fullscreen promotion");
+        let after: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            assert!(
+                (b.x0 - a.x0).abs() < 0.5
+                    && (b.x1 - a.x1).abs() < 0.5
+                    && (b.width() - a.width()).abs() < 0.5,
+                "group {i} rect must restore exactly: before {b:?} after {a:?}",
+            );
+        }
+        assert_eq!(
+            row.handle_node_ids.len(),
+            2,
+            "resize handles rebuilt on fullscreen exit",
+        );
+    }
+
+    /// A strip that owns no part of the fullscreen surface is hidden outright
+    /// (its whole row collapses to zero area), and un-hiding restores it.
+    #[test]
+    fn hidden_row_collapses_and_restores() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let before: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        assert!(before.iter().all(|r| r.width() > 0.0));
+
+        row.set_fullscreen(None, true);
+        relayout_row(&mut row);
+        // Under a Display::None row, every child collapses to zero area.
+        for (i, g) in row.groups.iter().enumerate() {
+            let r = g.get_rect();
+            assert!(
+                r.width() <= 0.5 && r.height() <= 0.5,
+                "group {i} in a hidden strip must collapse; got {r:?}",
+            );
+        }
+
+        row.set_fullscreen(None, false);
+        relayout_row(&mut row);
+        let after: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            assert!(
+                (b.width() - a.width()).abs() < 0.5,
+                "group {i} width restores after un-hide: before {} after {}",
+                b.width(),
+                a.width(),
+            );
+        }
     }
 }

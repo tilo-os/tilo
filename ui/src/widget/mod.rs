@@ -182,6 +182,30 @@ pub trait Widget {
     /// first field of the new step is typeable without a click.
     fn take_focus_reset(&mut self) -> bool { false }
 
+    // --- Fullscreen / presentation contract ---
+    /// The ROOT widget's desired OS-fullscreen state, polled once per frame by
+    /// [`crate::app::App`]. `Some(true)` asks the host to promote the surface
+    /// to a borderless full-output window; `Some(false)` asks to restore the
+    /// normal windowed/tiled state; `None` (the default) means "no opinion" —
+    /// the App leaves the current fullscreen state untouched.
+    ///
+    /// **Level-triggered, not edge-triggered.** The App compares this against
+    /// the live window state each frame and only issues a winit
+    /// `set_fullscreen` when they differ, so returning a steady `Some(true)`
+    /// for the whole duration of (say) a slideshow is correct and idempotent.
+    /// Only the root widget is consulted. Any app can opt in — a presentation
+    /// app, a video player, a photo viewer — by overriding this to reflect its
+    /// own "immersive" state.
+    fn fullscreen_intent(&self) -> Option<bool> { None }
+
+    /// Notification from the host that the *actual* OS-fullscreen state changed
+    /// (the compositor granted fullscreen, or exited it). Called on the root
+    /// widget only, on the rising/falling edge. Lets an app react to a
+    /// *compositor-initiated* exit — e.g. a global un-fullscreen keybind, or
+    /// the window losing its fullscreen grant — by leaving its presentation
+    /// layout even though the app itself never asked. Default no-op.
+    fn on_fullscreen_changed(&mut self, _active: bool) {}
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).

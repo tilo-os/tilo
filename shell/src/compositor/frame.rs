@@ -134,6 +134,11 @@ impl FrameBuilder {
     /// rebuilt first so the new structure participates in layout. This
     /// mirrors `App::handle_window_event`'s post-event sweep.
     pub fn relayout(&mut self) {
+        // Apply the compositor's live fullscreen state to the strip rows first.
+        // This flags the owning row structurally dirty on a real change, so the
+        // `take_structure_dirty` check below rebuilds the taffy tree and the
+        // full-output collapse (or its restore) takes effect this frame.
+        self.host.sync_fullscreen_from_chrome();
         if self.host.take_structure_dirty() {
             self.rebuild_layout_tree();
         }
@@ -203,6 +208,22 @@ impl FrameBuilder {
     /// Read-only handle to the chrome cell.
     pub fn chrome(&self) -> std::cell::Ref<'_, ChromeState> {
         self.chrome.borrow()
+    }
+
+    /// Promote a window group to full-output (a surface that requested
+    /// `xdg_toplevel.set_fullscreen`), or clear the fullscreen state with
+    /// `None`. The compositor calls this from its `XdgShellHandler`
+    /// fullscreen/unfullscreen path each time the request set changes; the next
+    /// `relayout` collapses the layout to that group (top bar + sidebar + other
+    /// strips suppressed) and a later `None` restores the exact prior tiling.
+    pub fn set_fullscreen(&mut self, group: Option<u64>) {
+        self.with_chrome(|st| st.set_fullscreen_group(group));
+    }
+
+    /// The group currently promoted to full-output, or `None` in the normal
+    /// tiled state. Exposed for the compositor + tests.
+    pub fn fullscreen_group(&self) -> Option<u64> {
+        self.chrome().fullscreen_group()
     }
 
     /// Cloneable handle to the shared chrome cell.
@@ -431,6 +452,142 @@ mod tests {
         fb.relayout();
         let scene = fb.paint();
         assert!(!scene.encoding().is_empty());
+    }
+
+    /// Look up a widget's rect in a `widget_registry` snapshot by its *last*
+    /// path segment (`.../TopBarChrome[0]` → `TopBarChrome`). The registry
+    /// keys are full paths, so an exact-key lookup on a nested widget would
+    /// miss; this matches the leaf name (with any `[idx]` suffix stripped).
+    /// The widgets asserted on here (top bar, the single active strip row) are
+    /// unique in the rendered tree, so the first match is deterministic.
+    #[cfg(test)]
+    fn rect_named(
+        reg: &HashMap<String, vello::kurbo::Rect>,
+        name: &str,
+    ) -> vello::kurbo::Rect {
+        reg.iter()
+            .find(|(k, _)| {
+                let seg = k.rsplit('/').next().unwrap_or(k);
+                let leaf = match seg.find('[') {
+                    Some(i) => &seg[..i],
+                    None => seg,
+                };
+                leaf == name
+            })
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| {
+                panic!(
+                    "widget `{name}` not found in registry; keys: {:?}",
+                    reg.keys().collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// A group promoted to fullscreen absorbs the whole output — the top bar
+    /// collapses and the strip's rect rises to the top of the output and spans
+    /// its width — and clearing it restores the exact prior layout. This is the
+    /// compositor-scene half of the "fullscreen enters / exits and restores the
+    /// tiling" contract, driven through the real `FrameBuilder::set_fullscreen`
+    /// → `ChromeState` → overlay-host path.
+    #[test]
+    fn set_fullscreen_promotes_group_and_restores_on_exit() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+
+        // A group that actually exists in the rendered tree.
+        let gid = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.active_workspace()
+                .expect("bootstrap tree has an active workspace")
+                .strips[0]
+                .window_groups[0]
+                .id
+        };
+
+        let before = fb.widget_registry();
+        let topbar_before = rect_named(&before, "TopBarChrome");
+        let row_before = rect_named(&before, "GroupRow");
+        assert!(topbar_before.height() > 10.0, "top bar visible before fullscreen");
+
+        // Enter fullscreen on that group.
+        fb.set_fullscreen(Some(gid));
+        assert_eq!(fb.fullscreen_group(), Some(gid));
+        let _ = fb.paint_settled();
+        assert!(fb.chrome().is_fullscreen());
+
+        let during = fb.widget_registry();
+        let topbar_fs = rect_named(&during, "TopBarChrome");
+        let row_fs = rect_named(&during, "GroupRow");
+        assert!(
+            topbar_fs.height() <= 0.5,
+            "top bar collapses under fullscreen; got height {}",
+            topbar_fs.height(),
+        );
+        assert!(
+            row_fs.y0 < row_before.y0 - 20.0,
+            "the strip rises to the top once the bar is gone; before y0 {} during {}",
+            row_before.y0,
+            row_fs.y0,
+        );
+        assert!(
+            row_fs.width() >= fb.viewport().0 - 1.0,
+            "fullscreen strip spans the output width; got {} vs {}",
+            row_fs.width(),
+            fb.viewport().0,
+        );
+
+        // Exit — the layout restores exactly.
+        fb.set_fullscreen(None);
+        assert_eq!(fb.fullscreen_group(), None);
+        let _ = fb.paint_settled();
+        assert!(!fb.chrome().is_fullscreen());
+
+        let after = fb.widget_registry();
+        let topbar_after = rect_named(&after, "TopBarChrome");
+        let row_after = rect_named(&after, "GroupRow");
+        assert!(
+            (topbar_after.height() - topbar_before.height()).abs() < 0.5,
+            "top bar height restores: before {} after {}",
+            topbar_before.height(),
+            topbar_after.height(),
+        );
+        assert!(
+            (row_after.y0 - row_before.y0).abs() < 0.5
+                && (row_after.x0 - row_before.x0).abs() < 0.5
+                && (row_after.width() - row_before.width()).abs() < 0.5,
+            "strip row rect restores exactly: before {row_before:?} after {row_after:?}",
+        );
+    }
+
+    /// A fullscreen id that the rendered tree does NOT host must be a safe
+    /// no-op — it must not blank the shell by hiding every strip. (The live
+    /// client tree and the rendered tree are not yet unified.)
+    #[test]
+    fn set_fullscreen_with_unknown_group_does_not_blank_shell() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        let before = fb.widget_registry();
+        let row_before = rect_named(&before, "GroupRow");
+
+        // An id that cannot exist in the tree.
+        fb.set_fullscreen(Some(u64::MAX));
+        let _ = fb.paint_settled();
+
+        let during = fb.widget_registry();
+        let row_during = rect_named(&during, "GroupRow");
+        let topbar_during = rect_named(&during, "TopBarChrome");
+        assert!(
+            row_during.width() > 0.0 && row_during.height() > 0.0,
+            "an unknown fullscreen id must not collapse the shell; got {row_during:?}",
+        );
+        // Geometry matches the normal (non-fullscreen) layout — no promotion,
+        // no chrome suppression.
+        assert!((row_during.width() - row_before.width()).abs() < 0.5);
+        assert!(
+            topbar_during.height() > 10.0,
+            "top bar stays visible for an unknown fullscreen id",
+        );
     }
 
     /// D-2 perf-fix contract: `widget_registry` is idempotent — two

@@ -259,6 +259,15 @@ pub struct ChromeState {
     /// lock-suppression: while `true`, the notification stack withholds
     /// app names / summaries / bodies and shows only a count.
     session_locked: bool,
+    /// **Transient fullscreen surface** — the id of the window group that has
+    /// requested `xdg_toplevel.set_fullscreen` and is currently promoted to
+    /// occupy the whole output. `None` in the normal tiled state. NOT
+    /// persisted (a live presentation must never survive a reboot) — the
+    /// compositor sets it from its live fullscreen state each frame via
+    /// [`Self::set_fullscreen_group`]. The top bar reads it to suppress
+    /// itself; the overlay host reads it to promote the group and hide the
+    /// sidebar + other strips. Clearing it restores the exact prior layout.
+    fullscreen_group: Option<u64>,
 }
 
 impl ChromeState {
@@ -291,7 +300,31 @@ impl ChromeState {
             notifications: Vec::new(),
             notification_bridge: None,
             session_locked: false,
+            fullscreen_group: None,
         }))
+    }
+
+    /// The window group currently promoted to full-output (a surface that
+    /// requested `xdg_toplevel.set_fullscreen`), or `None` in the normal tiled
+    /// state.
+    pub fn fullscreen_group(&self) -> Option<u64> {
+        self.fullscreen_group
+    }
+
+    /// Whether any surface currently holds the output fullscreen.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen_group.is_some()
+    }
+
+    /// Set (or clear) the transient fullscreen surface and bump the revision so
+    /// the top bar / overlay host re-sync their fullscreen presentation on the
+    /// next frame. Idempotent — a no-op when the value is unchanged, so it's
+    /// cheap to call every frame from the compositor's fullscreen reconcile.
+    pub fn set_fullscreen_group(&mut self, group: Option<u64>) {
+        if self.fullscreen_group != group {
+            self.fullscreen_group = group;
+            self.bump();
+        }
     }
 
     /// Read-guard accessor for the shared workspace tree. The returned
