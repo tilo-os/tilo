@@ -160,6 +160,9 @@ pub struct Grid {
     point_drag_start: Addr,
     /// Whether a point-mode drag is in progress (a held click after pointing).
     point_selecting: bool,
+    /// "Formula view": when on, cells that hold a raw input show that raw text
+    /// (formulas verbatim) instead of their computed / formatted value.
+    show_formulas: bool,
     dirty: bool,
 }
 
@@ -188,6 +191,7 @@ impl Grid {
             point_anchor: None,
             point_drag_start: (0, 0),
             point_selecting: false,
+            show_formulas: false,
             dirty: true,
         };
         g.rebuild_geom();
@@ -242,6 +246,19 @@ impl Grid {
             self.rebuild_geom();
         }
         self.dirty = true;
+    }
+
+    /// Toggle "formula view" (show raw formulas instead of results). Returns
+    /// the new state so the caller can surface it in a status line.
+    pub fn toggle_formula_view(&mut self) -> bool {
+        self.show_formulas = !self.show_formulas;
+        self.dirty = true;
+        self.show_formulas
+    }
+
+    /// Whether formula view is currently on.
+    pub fn formula_view(&self) -> bool {
+        self.show_formulas
     }
 
     pub fn dirty(&self) -> bool {
@@ -1352,6 +1369,24 @@ impl Grid {
                 if let Some(e) = &self.edit {
                     if e.addr == (c, r) {
                         continue;
+                    }
+                }
+                // Formula view: show the raw input verbatim (formulas as
+                // typed), left-aligned in the accent colour so it reads as
+                // "source" rather than a result.
+                if self.show_formulas {
+                    if let Some(raw) = self.raw.get(&(c, r)) {
+                        if !raw.is_empty() {
+                            let color = if raw.starts_with('=') {
+                                colors.accent[5]
+                            } else {
+                                colors.text_primary
+                            };
+                            self.draw_cell_text(
+                                scene, transform, tr, raw, text_size, color, cell, false,
+                            );
+                            continue;
+                        }
                     }
                 }
                 if let Some(val) = self.values.get(&(c, r)) {

@@ -48,7 +48,9 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
-pub use widget::command_palette::{CommandEntry, CommandPalette};
+pub use widget::command_palette::{
+    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode,
+};
 // Phase 1 (Audit timeline) widgets + their shared types. The
 // `collab_types::OpClass` / `ArtifactKind` re-exports flow through
 // these widgets, so callers can build a `HistoryEntry` without taking

@@ -26,6 +26,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::Widget;
 use ui::ColorCompat;
 
@@ -237,6 +238,9 @@ pub struct SheetsApp {
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
     clipboard: Option<ClipboardGrid>,
+    /// The Ctrl+K command palette overlay. Seeded with the app's action set
+    /// each time it opens; closed by default.
+    palette: CommandPalette,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -316,6 +320,7 @@ impl SheetsApp {
             saved_heads: Vec::new(),
             cache: None,
             clipboard: None,
+            palette: CommandPalette::commands(),
         }
     }
 
@@ -388,6 +393,12 @@ impl SheetsApp {
         self.grid.begin_edit_in_place();
         self.grid.set_edit_caret(5, false); // just before "B2:D2"
         self.grid.set_edit_caret(10, true); // select "B2:D2"
+    }
+
+    /// Shots hook: open the Ctrl+K command palette so the captured frame shows
+    /// the action list with labels + descriptions.
+    pub fn shots_open_command_palette(&mut self) {
+        self.open_command_palette();
     }
 
     /// The document's effective locale (per-doc overrides over global).
@@ -1006,6 +1017,233 @@ impl SheetsApp {
         SheetsDoc::set_doc_settings(doc, &self.doc_settings);
         self.needs_commit = true;
         self.reload(doc);
+    }
+
+    // --- command palette ----------------------------------------------------
+
+    /// Seed the Ctrl+K command palette with the current action set and open it.
+    /// Rebuilt each time so argument prefills (e.g. the active cell reference)
+    /// stay current. Every entry is wired to a real mutation in
+    /// [`dispatch_command`]; nothing here is a stub.
+    fn open_command_palette(&mut self) {
+        // Close any other overlay so the palette owns the surface.
+        self.open_menu = OpenMenu::None;
+        self.settings_panel = SettingsPanel::None;
+        self.tab_menu_target = None;
+        self.name_box_edit = None;
+        self.tab_rename = None;
+
+        let active_ref = {
+            let (c, r) = self.grid.active();
+            crate::model::addr_to_a1(c, r)
+        };
+        let formula_view_label = if self.grid.formula_view() {
+            "Hide formulas"
+        } else {
+            "Show formulas"
+        };
+
+        self.palette.clear();
+        let entries = [
+            CommandEntry::new("goto", "Go to cell\u{2026}")
+                .description("Jump to and select a cell by its reference")
+                .with_argument("Go to cell", "e.g. B12")
+                .with_argument_prefill(active_ref),
+            CommandEntry::new("sum_selection", "Sum selection")
+                .description("Write =SUM() totals in the row below the selection")
+                .keybinding("Alt+="),
+            CommandEntry::new("autosum", "AutoSum column")
+                .description("Sum the run of numbers directly above the active cell"),
+            CommandEntry::new("fill_down", "Fill down")
+                .description("Copy the top row of the selection down over its rows")
+                .keybinding("Ctrl+D"),
+            CommandEntry::new("fill_right", "Fill right")
+                .description("Copy the left column of the selection across its columns")
+                .keybinding("Ctrl+R"),
+            CommandEntry::new("insert_row", "Insert row above")
+                .description("Insert a blank row above the selection, shifting cells down"),
+            CommandEntry::new("delete_row", "Delete row")
+                .description("Delete the active row, shifting the rows below it up"),
+            CommandEntry::new("insert_col", "Insert column left")
+                .description("Insert a blank column left of the selection, shifting cells right"),
+            CommandEntry::new("delete_col", "Delete column")
+                .description("Delete the active column, shifting the columns after it left"),
+            CommandEntry::new("formula_view", formula_view_label)
+                .description("Toggle between formula source and computed results"),
+            CommandEntry::new("format_currency", "Format as currency")
+                .description("Apply the document currency format to the selection"),
+            CommandEntry::new("format_percent", "Format as percent")
+                .description("Show the selected numbers as percentages"),
+            CommandEntry::new("clear_format", "Clear formatting")
+                .description("Reset the selection to the General format"),
+            CommandEntry::new("export_csv", "Export CSV")
+                .description("Write the active sheet to a .csv file"),
+            CommandEntry::new("export_xlsx", "Export Excel (.xlsx)")
+                .description("Write the workbook to an .xlsx spreadsheet file"),
+            CommandEntry::new("new_sheet", "New sheet")
+                .description("Add a fresh blank sheet to the workbook"),
+        ];
+        for e in entries {
+            self.palette.push(e);
+        }
+        self.palette.open();
+        self.dirty = true;
+    }
+
+    /// Run the action the palette emitted, dispatching by id. `argument`
+    /// carries the free-text a `with_argument` entry collected (e.g. the cell
+    /// reference for "Go to cell").
+    fn dispatch_command(&mut self, doc: &mut AutoCommit, id: &str, argument: Option<String>) {
+        match id {
+            "goto" => self.go_to_cell(argument.as_deref().unwrap_or("")),
+            "sum_selection" => self.sum_selection(doc),
+            "autosum" => self.auto_sum(doc),
+            "fill_down" => self.fill_down(doc),
+            "fill_right" => self.fill_right(doc),
+            "insert_row" => self.insert_row(doc),
+            "delete_row" => self.delete_row(doc),
+            "insert_col" => self.insert_column(doc),
+            "delete_col" => self.delete_column(doc),
+            "formula_view" => {
+                let on = self.grid.toggle_formula_view();
+                self.status = if on {
+                    "Showing formulas".into()
+                } else {
+                    "Showing results".into()
+                };
+            }
+            "format_currency" => {
+                let cur = self.default_currency();
+                self.apply_format(doc, CellFormat::Currency(cur));
+            }
+            "format_percent" => self.apply_format(doc, CellFormat::Percent),
+            "clear_format" => self.clear_format(doc),
+            "export_csv" => self.export_csv(doc),
+            "export_xlsx" => self.export_xlsx(doc),
+            "new_sheet" => self.add_sheet(doc),
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    /// "Go to cell": parse an A1 reference (or `A1:C3` range top-left) and jump
+    /// the selection there, scrolling it into view.
+    fn go_to_cell(&mut self, arg: &str) {
+        let token = arg.trim().split([':', ' ']).next().unwrap_or("").trim();
+        if let Some(addr) = a1_to_addr(token) {
+            self.grid.select_only(addr);
+            self.status = format!("Jumped to {}", token.to_uppercase());
+        } else {
+            self.status = format!("'{}' is not a valid cell reference", arg.trim());
+        }
+    }
+
+    /// "Sum selection": write a `=SUM(col_top:col_bottom)` total for each column
+    /// of the selection into the row directly below it, then select that row.
+    fn sum_selection(&mut self, doc: &mut AutoCommit) {
+        let mut out = Vec::new();
+        self.grid.flush_edit(&mut out);
+        self.apply_cmds(doc, out);
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let target_r = r1 + 1;
+        for c in c0..=c1 {
+            let formula = format!(
+                "=SUM({}:{})",
+                crate::model::addr_to_a1(c, r0),
+                crate::model::addr_to_a1(c, r1),
+            );
+            SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, target_r), &formula);
+        }
+        self.needs_commit = true;
+        self.reload(doc);
+        self.grid.select_range_public((c0, target_r), (c1, target_r));
+        self.status = format!("Summed selection into row {}", target_r + 1);
+    }
+
+    /// Rebuild the active sheet's cells through `map`: each populated address
+    /// moves to `map(addr)`, or is dropped when `map` returns `None`. Used by
+    /// the row/column insert + delete commands. Contents move verbatim; the
+    /// old cells are cleared before the new ones are written so overlaps are
+    /// handled correctly.
+    fn restructure_cells(&mut self, doc: &mut AutoCommit, map: impl Fn(Addr) -> Option<Addr>) {
+        let cur = self.default_currency();
+        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
+        let mut new_raw: HashMap<Addr, String> = HashMap::new();
+        let mut new_fmt: HashMap<Addr, CellFormat> = HashMap::new();
+        for (addr, raw) in &snap.raw {
+            if let Some(dst) = map(*addr) {
+                new_raw.insert(dst, raw.clone());
+            }
+        }
+        for (addr, fmt) in &snap.fmt {
+            if let Some(dst) = map(*addr) {
+                new_fmt.insert(dst, *fmt);
+            }
+        }
+        // Clear every previously-populated cell first.
+        let mut old: std::collections::HashSet<Addr> = std::collections::HashSet::new();
+        old.extend(snap.raw.keys().copied());
+        old.extend(snap.fmt.keys().copied());
+        for addr in old {
+            SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
+            SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+        }
+        for (addr, raw) in &new_raw {
+            SheetsDoc::set_cell_raw(doc, self.active_sheet, *addr, raw);
+        }
+        for (addr, fmt) in &new_fmt {
+            SheetsDoc::set_cell_format(doc, self.active_sheet, *addr, *fmt);
+        }
+        self.needs_commit = true;
+        self.reload(doc);
+    }
+
+    fn insert_row(&mut self, doc: &mut AutoCommit) {
+        let r0 = self.grid.active().1;
+        self.restructure_cells(doc, |(c, r)| {
+            Some((c, if r >= r0 { r + 1 } else { r }))
+        });
+        self.status = format!("Inserted row {}", r0 + 1);
+    }
+
+    fn delete_row(&mut self, doc: &mut AutoCommit) {
+        let r0 = self.grid.active().1;
+        self.restructure_cells(doc, |(c, r)| {
+            if r == r0 {
+                None
+            } else if r > r0 {
+                Some((c, r - 1))
+            } else {
+                Some((c, r))
+            }
+        });
+        self.status = format!("Deleted row {}", r0 + 1);
+    }
+
+    fn insert_column(&mut self, doc: &mut AutoCommit) {
+        let c0 = self.grid.active().0;
+        self.restructure_cells(doc, |(c, r)| {
+            Some((if c >= c0 { c + 1 } else { c }, r))
+        });
+        self.status = format!("Inserted column {}", crate::model::addr_to_a1(c0, 0)
+            .trim_end_matches(|ch: char| ch.is_ascii_digit())
+            .to_string());
+    }
+
+    fn delete_column(&mut self, doc: &mut AutoCommit) {
+        let c0 = self.grid.active().0;
+        self.restructure_cells(doc, |(c, r)| {
+            if c == c0 {
+                None
+            } else if c > c0 {
+                Some((c - 1, r))
+            } else {
+                Some((c, r))
+            }
+        });
+        self.status = format!("Deleted column {}", crate::model::addr_to_a1(c0, 0)
+            .trim_end_matches(|ch: char| ch.is_ascii_digit())
+            .to_string());
     }
 
     // --- layout -------------------------------------------------------------
@@ -2335,6 +2573,19 @@ impl Widget for SheetsApp {
         self.draw_settings_panel(scene, transform, text_renderer, theme);
         self.draw_tab_menu(scene, transform, text_renderer, theme);
         self.draw_tab_rename(scene, transform, text_renderer, theme);
+
+        // The command palette floats above everything else, behind a scrim.
+        if self.palette.is_open() {
+            let scrim = Color::from_rgba8(0, 0, 0, 110);
+            scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
+            let (pw, ph) = self.palette.desired_size();
+            let x0 = self.rect.center().x - pw / 2.0;
+            let y0 = self.rect.y0 + (self.rect.height() * 0.12).max(24.0);
+            self.palette
+                .set_rect(Rect::new(x0, y0, x0 + pw, y0 + ph));
+            self.palette
+                .draw(scene, transform, text_renderer, theme, _presence);
+        }
     }
 
     fn draw_with_presence(
@@ -2368,6 +2619,23 @@ impl Widget for SheetsApp {
                 ..
             } => {
                 let p = self.last_mouse;
+
+                // The command palette is modal while open: a click on a row
+                // runs it, a click elsewhere dismisses it.
+                if self.palette.is_open() {
+                    if let Some(i) = self.palette.row_at(p) {
+                        self.palette.set_cursor(i);
+                        self.palette.activate_selected(state, _path);
+                        if let Some(outcome) = self.palette.take_outcome() {
+                            self.dispatch_command(state, &outcome.id, outcome.argument);
+                        }
+                    } else if !Widget::get_rect(&self.palette).contains(p) {
+                        self.palette.close();
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
 
                 // An active inline rename is modal: a click outside its field
                 // commits it (Excel behaviour).
@@ -2602,6 +2870,43 @@ impl Widget for SheetsApp {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
+                // The command palette, while open, owns the keyboard: arrows,
+                // Enter, Esc and typing are consumed by it and never reach the
+                // grid behind. On Enter it emits an outcome we dispatch here.
+                if self.palette.is_open() {
+                    self.palette.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        _path,
+                        handled,
+                        _focus_target,
+                        _node_id,
+                        _taffy,
+                    );
+                    if let Some(outcome) = self.palette.take_outcome() {
+                        self.dispatch_command(state, &outcome.id, outcome.argument);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                // Ctrl+K opens the command palette.
+                if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+                    let ctrl =
+                        modifiers.state().control_key() || modifiers.state().super_key();
+                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing() {
+                        if let winit::keyboard::Key::Character(c) = &ke.logical_key {
+                            if c.as_str().eq_ignore_ascii_case("k") {
+                                self.open_command_palette();
+                                *handled = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // The Name box owns the keyboard while a Go-To entry is open.
                 if self.name_box_edit.is_some() {
                     if let WindowEvent::KeyboardInput { event: ke, .. } = event {
@@ -3963,5 +4268,188 @@ mod tests {
     #[test]
     fn ods_export_then_import_roundtrips() {
         export_then_import_roundtrip("ods", SheetsApp::export_ods, SheetsApp::import_ods);
+    }
+
+    // -----------------------------------------------------------------------
+    // Command palette (Ctrl+K) integration
+    // -----------------------------------------------------------------------
+
+    /// A `Modifiers` value with Control held.
+    fn ctrl_mods() -> Modifiers {
+        let mut s = winit::keyboard::ModifiersState::empty();
+        s.set(winit::keyboard::ModifiersState::CONTROL, true);
+        Modifiers::from(s)
+    }
+
+    /// Synthesise a pressed `WindowEvent::KeyboardInput` (winit keeps
+    /// `KeyEventExtra` private, so we zero-init like the toolkit's own tests).
+    fn key_event(logical: winit::keyboard::Key) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn char_event(s: &str) -> WindowEvent {
+        key_event(winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)))
+    }
+
+    fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {
+        key_event(winit::keyboard::Key::Named(k))
+    }
+
+    /// Drive one event through the real `handle_event` path; returns whether the
+    /// app consumed it.
+    fn feed(app: &mut SheetsApp, doc: &mut AutoCommit, ev: WindowEvent, mods: &Modifiers) -> bool {
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.handle_event(
+            &ev, 1.0, mods, doc, &root, &mut handled, &mut focus, node, &taffy,
+        );
+        handled
+    }
+
+    #[test]
+    fn ctrl_k_opens_the_command_palette() {
+        let (mut app, mut doc) = seeded_app();
+        assert!(!app.palette.is_open());
+        let handled = feed(&mut app, &mut doc, char_event("k"), &ctrl_mods());
+        assert!(handled, "Ctrl+K must be consumed");
+        assert!(app.palette.is_open(), "Ctrl+K must open the palette");
+        // The first action is the argument-taking "Go to cell".
+        assert_eq!(app.palette.selected_id(), Some("goto"));
+    }
+
+    #[test]
+    fn open_palette_captures_arrows_instead_of_moving_the_grid() {
+        let (mut app, mut doc) = seeded_app();
+        let start = app.grid.active(); // E2 = (4, 1)
+        app.open_command_palette();
+        assert_eq!(app.palette.selected_id(), Some("goto"));
+
+        // ArrowDown is consumed by the palette and advances its highlight — the
+        // grid selection behind it must NOT move.
+        let handled = feed(&mut app, &mut doc, named_event(winit::keyboard::NamedKey::ArrowDown), &Modifiers::default());
+        assert!(handled, "the palette must consume ArrowDown");
+        assert_eq!(app.palette.selected_id(), Some("sum_selection"), "highlight advanced");
+        assert_eq!(app.grid.active(), start, "the grid selection must not move");
+
+        // ArrowUp back to the top, still captured.
+        let handled = feed(&mut app, &mut doc, named_event(winit::keyboard::NamedKey::ArrowUp), &Modifiers::default());
+        assert!(handled);
+        assert_eq!(app.palette.selected_id(), Some("goto"));
+        assert_eq!(app.grid.active(), start);
+    }
+
+    #[test]
+    fn palette_go_to_cell_jumps_the_selection() {
+        let (mut app, mut doc) = seeded_app();
+        assert_ne!(app.grid.active(), (1, 11));
+        app.open_command_palette();
+        // Enter opens the argument step, pre-seeded (and fully selected) with
+        // the active cell reference.
+        feed(&mut app, &mut doc, named_event(winit::keyboard::NamedKey::Enter), &Modifiers::default());
+        assert!(app.palette.in_argument_mode());
+        // Type a new reference — replaces the selected prefill.
+        for ch in ["B", "1", "2"] {
+            assert!(feed(&mut app, &mut doc, char_event(ch), &Modifiers::default()));
+        }
+        assert_eq!(app.palette.argument_buffer(), Some("B12"));
+        // Confirm → jumps the selection and closes the palette.
+        feed(&mut app, &mut doc, named_event(winit::keyboard::NamedKey::Enter), &Modifiers::default());
+        assert!(!app.palette.is_open(), "running a command closes the palette");
+        assert_eq!(app.grid.active(), (1, 11), "selection jumped to B12");
+    }
+
+    #[test]
+    fn command_go_to_cell_reports_invalid_reference() {
+        let (mut app, _doc) = seeded_app();
+        app.go_to_cell("not-a-ref");
+        assert!(app.status.contains("not a valid"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn command_sum_selection_writes_totals_below() {
+        let (mut app, mut doc) = seeded_app();
+        // Budget!B2:B6 — a column of numbers.
+        app.grid.select_range_public((1, 1), (1, 5));
+        app.dispatch_command(&mut doc, "sum_selection", None);
+        // A SUM total lands in B7 (the row directly below the selection).
+        let raw = SheetsDoc::cell_raw(&mut doc, 0, (1, 6));
+        assert_eq!(raw, "=SUM(B2:B6)", "sum total written below the selection");
+        // It computes to the real column sum.
+        assert!(matches!(value_at(&app, (1, 6)), Some(CellValue::Number(_))));
+    }
+
+    #[test]
+    fn command_insert_and_delete_row_shift_cells() {
+        let (mut app, mut doc) = seeded_app();
+        // The Budget header "Category" sits at A1; its January value is at B2.
+        let b2 = SheetsDoc::cell_raw(&mut doc, 0, (1, 1));
+        assert!(!b2.is_empty());
+        // Insert a row above row 1 (active is E2 → row index 1).
+        app.grid.select_only((0, 0)); // A1 → insert above row 0
+        app.dispatch_command(&mut doc, "insert_row", None);
+        // Everything shifted down one: the old A1 header is now at A2.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "", "row 0 is now blank");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "Category", "header shifted to A2");
+
+        // Delete that blank top row again → header returns to A1.
+        app.grid.select_only((0, 0));
+        app.dispatch_command(&mut doc, "delete_row", None);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Category", "header back at A1");
+    }
+
+    #[test]
+    fn command_insert_column_shifts_right() {
+        let (mut app, mut doc) = seeded_app();
+        let a1 = SheetsDoc::cell_raw(&mut doc, 0, (0, 0));
+        assert_eq!(a1, "Category");
+        app.grid.select_only((0, 0)); // insert left of column A
+        app.dispatch_command(&mut doc, "insert_col", None);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "", "column A is now blank");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 0)), "Category", "header shifted to B1");
+    }
+
+    #[test]
+    fn command_toggle_formula_view() {
+        let (mut app, mut doc) = seeded_app();
+        assert!(!app.grid.formula_view());
+        app.dispatch_command(&mut doc, "formula_view", None);
+        assert!(app.grid.formula_view(), "formula view turned on");
+        app.dispatch_command(&mut doc, "formula_view", None);
+        assert!(!app.grid.formula_view(), "formula view toggled back off");
+    }
+
+    #[test]
+    fn command_format_percent_applies_to_selection() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((1, 1)); // B2
+        app.dispatch_command(&mut doc, "format_percent", None);
+        // The stored format for B2 is now Percent.
+        let cur = app.default_currency();
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, cur);
+        assert_eq!(snap.fmt.get(&(1, 1)), Some(&CellFormat::Percent));
+    }
+
+    #[test]
+    fn command_new_sheet_adds_a_sheet() {
+        let (mut app, mut doc) = seeded_app();
+        let before = SheetsDoc::sheet_count(&mut doc);
+        app.dispatch_command(&mut doc, "new_sheet", None);
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
     }
 }
