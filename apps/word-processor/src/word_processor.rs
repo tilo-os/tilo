@@ -529,6 +529,116 @@ impl WordProcessor {
         }
     }
 
+    /// Delete a **custom** paragraph style: remove it from the document's style
+    /// container and clear the `style` attr of every block that referenced it (so
+    /// those blocks fall back to their kind-derived default). Built-in styles are
+    /// never deletable — the call is a no-op and returns `false`. Returns `true`
+    /// when the style existed and was removed.
+    pub fn delete_style(&mut self, state: &mut AutoCommit, style_id: &str) -> bool {
+        if StyleSheet::is_builtin(style_id) {
+            return false;
+        }
+        let Some(containers) = self.containers.clone() else {
+            return false;
+        };
+        if !qdoc::model::style_ids(state, &containers).iter().any(|s| s == style_id) {
+            return false;
+        }
+        // Blocks that explicitly reference the doomed style must lose the ref so
+        // they render against the built-in default instead of a dangling id.
+        let orphans: Vec<String> = qdoc::model::materialize(state, &containers)
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.attrs.get("style"), Some(qdoc::AttrVal::Str(s)) if s == style_id))
+            .map(|b| b.id.clone())
+            .collect();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for id in &orphans {
+                dm.set_attr(id, "style", "");
+            }
+            dm.remove_style(style_id);
+        }
+        true
+    }
+
+    /// Duplicate the paragraph style `style_id` under a fresh `customN` id,
+    /// naming it "`<name>` copy", and persist it into the document's style
+    /// container. Returns the new style id (or `None` if the source is unknown).
+    /// The caller decides whether to also apply it to the caret block.
+    pub fn duplicate_style(&mut self, state: &mut AutoCommit, style_id: &str) -> Option<String> {
+        let mut sheet = self.stylesheet(state);
+        let mut props = sheet.styles.get(style_id)?.clone();
+        let new_id = sheet.fresh_custom_id();
+        props.name = format!("{} copy", props.name);
+        sheet.styles.insert(new_id.clone(), props);
+        self.set_stylesheet(state, &sheet);
+        Some(new_id)
+    }
+
+    /// The caret's block id when it is an `image` block (i.e. an image is
+    /// "selected"), else `None`. Drives the panel's image-inspector affordances
+    /// (resize / flip) and the on-page selection handles.
+    pub fn selected_image_block(&self, state: &AutoCommit) -> Option<String> {
+        let c = self.containers.as_ref()?;
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == self.caret.block && b.kind == "image")
+            .map(|b| b.id.clone())
+    }
+
+    /// Set the explicit display size (px) of an `image` block, recording `width`
+    /// and `height` attrs the renderer/exporter honour. Values are floored to a
+    /// sane minimum so an image can never be scaled to nothing.
+    pub fn set_image_size(&mut self, state: &mut AutoCommit, block_id: &str, width: f64, height: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let w = width.round().clamp(16.0, 4000.0) as i64;
+        let h = height.round().clamp(16.0, 4000.0) as i64;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block_id, "width", w);
+            dm.set_attr(block_id, "height", h);
+        }
+    }
+
+    /// Toggle a mirror flip on an `image` block: `horizontal` flips the
+    /// `flip_h` attr (mirror left↔right), otherwise the `flip_v` attr (mirror
+    /// top↔bottom). Returns the new flip state for that axis.
+    pub fn flip_image(&mut self, state: &mut AutoCommit, block_id: &str, horizontal: bool) -> bool {
+        let Some(containers) = self.containers.clone() else {
+            return false;
+        };
+        let key = if horizontal { "flip_h" } else { "flip_v" };
+        let cur = qdoc::model::materialize(state, &containers)
+            .blocks
+            .iter()
+            .find(|b| b.id == block_id)
+            .map(|b| matches!(b.attrs.get(key), Some(qdoc::AttrVal::Bool(true))))
+            .unwrap_or(false);
+        let next = !cur;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block_id, key, next);
+        }
+        next
+    }
+
+    /// The explicit `(width, height)` display size of an `image` block, if both
+    /// attrs are set. Lets the panel seed its resize field from the live doc.
+    pub fn image_size(&self, state: &AutoCommit, block_id: &str) -> Option<(f64, f64)> {
+        let c = self.containers.as_ref()?;
+        let b = qdoc::model::materialize(state, c).blocks.into_iter().find(|b| b.id == block_id)?;
+        let num = |k: &str| match b.attrs.get(k) {
+            Some(qdoc::AttrVal::Int(n)) if *n > 0 => Some(*n as f64),
+            Some(qdoc::AttrVal::Float(f)) if *f > 0.0 => Some(*f),
+            _ => None,
+        };
+        Some((num("width")?, num("height")?))
+    }
+
     /// marks + paragraph styles.
     pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
         self.delete_selection(state);
