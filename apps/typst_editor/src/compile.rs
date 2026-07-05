@@ -14,11 +14,12 @@ use std::sync::Arc;
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime};
-use typst::layout::PagedDocument;
+use typst::layout::{Frame, FrameItem, PagedDocument, Point as TypstPoint, Transform};
 use typst::syntax::{FileId, Source, VirtualPath};
-use typst::text::{Font, FontBook};
+use typst::text::{Font, FontBook, TextItem};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
+use vello::kurbo::{Affine, Point};
 
 /// Severity of a flattened diagnostic — decoupled from `typst::Severity` so
 /// downstream widgets need no typst dependency.
@@ -34,10 +35,17 @@ pub enum DiagKind {
 pub struct Diagnostic {
     pub kind: DiagKind,
     pub message: String,
-    /// 1-based line number in the main source, if resolvable.
+    /// 1-based line number of the span start in the main source, if resolvable.
     pub line: Option<usize>,
-    /// 1-based column (in chars), if resolvable.
+    /// 1-based column (in chars) of the span start, if resolvable.
     pub col: Option<usize>,
+    /// 1-based line number of the span end (inclusive of the marked range), if
+    /// resolvable. Equals `line` for a single-line span.
+    pub end_line: Option<usize>,
+    /// 1-based column (in chars) just past the last marked character, if
+    /// resolvable. Always `>= col` on the same line so the inline squiggle has
+    /// a positive width.
+    pub end_col: Option<usize>,
     pub hints: Vec<String>,
 }
 
@@ -46,14 +54,43 @@ pub struct Diagnostic {
 #[derive(Clone)]
 pub struct PageImage {
     pub rgba: Arc<[u8]>,
+    /// Bitmap size in pixels (intrinsic to `pixel_per_pt`).
     pub width: u32,
     pub height: u32,
+    /// Page size in typographic points — the resolution-independent unit the
+    /// preview lays pages out in, so zoom scales display without re-rendering.
+    pub width_pt: f64,
+    pub height_pt: f64,
+}
+
+/// A run of shaped text on a page, in **page points**, carrying one selectable
+/// cell per glyph so the preview can hit-test a drag to a character boundary
+/// and copy the covered text. Extracted from the compiled `typst` frame — the
+/// same layout the raster is rendered from — so positions line up exactly.
+#[derive(Clone, Debug)]
+pub struct TextRun {
+    /// Top / bottom of the run's line box in page points (y grows downward).
+    pub top: f64,
+    pub bottom: f64,
+    pub cells: Vec<TextCell>,
+}
+
+/// One selectable glyph cell within a [`TextRun`], in page points.
+#[derive(Clone, Debug)]
+pub struct TextCell {
+    pub x0: f64,
+    pub x1: f64,
+    /// The source characters this glyph renders (may be empty for a ligature
+    /// continuation, or several chars for a combined glyph).
+    pub text: String,
 }
 
 /// The full result of one compile pass.
 #[derive(Clone)]
 pub struct CompileOutput {
     pub pages: Vec<PageImage>,
+    /// Extracted selectable text, one entry per page (parallel to `pages`).
+    pub page_text: Vec<Vec<TextRun>>,
     pub diagnostics: Vec<Diagnostic>,
     /// Wall-clock compile+render time in milliseconds.
     pub elapsed_ms: u128,
@@ -159,20 +196,26 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
     let warnings = result.warnings;
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let (pages, ok) = match result.output {
+    let (pages, page_text, ok) = match result.output {
         Ok(document) => {
             let mut imgs = Vec::with_capacity(document.pages.len());
+            let mut texts = Vec::with_capacity(document.pages.len());
             for page in &document.pages {
                 let pixmap = typst_render::render(page, pixel_per_pt);
-                imgs.push(pixmap_to_rgba(&pixmap));
+                let size = page.frame.size();
+                let mut img = pixmap_to_rgba(&pixmap);
+                img.width_pt = size.x.to_pt();
+                img.height_pt = size.y.to_pt();
+                imgs.push(img);
+                texts.push(extract_page_text(&page.frame));
             }
-            (imgs, true)
+            (imgs, texts, true)
         }
         Err(errors) => {
             for d in &errors {
                 diagnostics.push(flatten(&world, d));
             }
-            (Vec::new(), false)
+            (Vec::new(), Vec::new(), false)
         }
     };
 
@@ -187,10 +230,91 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
 
     CompileOutput {
         pages,
+        page_text,
         diagnostics,
         elapsed_ms: started.elapsed().as_millis(),
         ok,
     }
+}
+
+/// Walk a compiled page frame and pull out every run of shaped text with its
+/// per-glyph geometry, in page points. Nested groups are followed with their
+/// transform composed in, so text placed inside `#align`, `#box`, tables, etc.
+/// still lands at the right spot.
+fn extract_page_text(frame: &Frame) -> Vec<TextRun> {
+    let mut runs = Vec::new();
+    walk_frame(frame, Affine::IDENTITY, &mut runs);
+    runs
+}
+
+fn walk_frame(frame: &Frame, cur: Affine, out: &mut Vec<TextRun>) {
+    for (pos, item) in frame.items() {
+        match item {
+            FrameItem::Group(group) => {
+                let child = cur
+                    * Affine::translate((pos.x.to_pt(), pos.y.to_pt()))
+                    * transform_to_affine(&group.transform);
+                walk_frame(&group.frame, child, out);
+            }
+            FrameItem::Text(text) => {
+                if let Some(run) = build_run(*pos, text, cur) {
+                    out.push(run);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A typst affine transform → a kurbo one (same row-major layout typst-render
+/// uses to feed tiny-skia, so geometry matches the raster).
+fn transform_to_affine(t: &Transform) -> Affine {
+    Affine::new([
+        t.sx.get(),
+        t.ky.get(),
+        t.kx.get(),
+        t.sy.get(),
+        t.tx.to_pt(),
+        t.ty.to_pt(),
+    ])
+}
+
+/// Build a [`TextRun`] for one shaped `TextItem` placed at `pos` inside a frame
+/// whose local→page transform is `cur`. Glyph advances accumulate along the
+/// baseline; the line box comes from the font's ascender/descender so cells on
+/// adjacent lines don't vertically overlap. Rotation/shear is not modelled
+/// (documents lay text axis-aligned); the x/y scale of `cur` is honoured.
+fn build_run(pos: TypstPoint, item: &TextItem, cur: Affine) -> Option<TextRun> {
+    if item.glyphs.is_empty() {
+        return None;
+    }
+    let size = item.size;
+    let metrics = item.font.metrics();
+    let ascent = metrics.ascender.at(size).to_pt();
+    let descent = metrics.descender.at(size).to_pt(); // negative (below baseline)
+
+    let coeffs = cur.as_coeffs();
+    let sx = coeffs[0].hypot(coeffs[1]).max(1e-6); // |x-basis| of `cur`
+    let sy = coeffs[2].hypot(coeffs[3]).max(1e-6); // |y-basis| of `cur`
+    let origin = cur * Point::new(pos.x.to_pt(), pos.y.to_pt());
+
+    let mut cells = Vec::with_capacity(item.glyphs.len());
+    let mut cum = 0.0f64;
+    for g in &item.glyphs {
+        let adv = g.x_advance.at(size).to_pt();
+        let x0 = origin.x + cum * sx;
+        let x1 = origin.x + (cum + adv) * sx;
+        cum += adv;
+        let range = g.range.start as usize..g.range.end as usize;
+        let text = item.text.get(range).unwrap_or("").to_string();
+        cells.push(TextCell { x0, x1, text });
+    }
+
+    Some(TextRun {
+        top: origin.y - ascent * sy,
+        bottom: origin.y - descent * sy,
+        cells,
+    })
 }
 
 /// Flatten a `typst` diagnostic into our plain struct, resolving the span to a
@@ -200,24 +324,37 @@ fn flatten(world: &TypstWorld, d: &SourceDiagnostic) -> Diagnostic {
         Severity::Error => DiagKind::Error,
         Severity::Warning => DiagKind::Warning,
     };
-    let (line, col) = world
-        .main
-        .range(d.span)
-        .map(|r| byte_to_line_col(world.main.text(), r.start))
-        .map(|(l, c)| (Some(l), Some(c)))
-        .unwrap_or((None, None));
+    let text = world.main.text();
+    let (line, col, end_line, end_col) = match world.main.range(d.span) {
+        Some(r) => {
+            let (sl, sc) = byte_to_line_col(text, r.start);
+            // Mark at least one column so a zero-width span (e.g. an insertion
+            // point) still gets a visible squiggle.
+            let end = r.end.max(r.start + 1);
+            let (el, ec) = byte_to_line_col(text, end);
+            (Some(sl), Some(sc), Some(el), Some(ec))
+        }
+        None => (None, None, None, None),
+    };
     Diagnostic {
         kind,
         message: d.message.to_string(),
         line,
         col,
+        end_line,
+        end_col,
         hints: d.hints.iter().map(|h| h.to_string()).collect(),
     }
 }
 
-/// Convert a byte offset into a (1-based line, 1-based column) pair.
+/// Convert a byte offset into a (1-based line, 1-based column) pair. The offset
+/// is floored to the nearest char boundary first so a span end that lands
+/// inside a multi-byte code point never slices mid-character.
 fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
-    let byte = byte.min(text.len());
+    let mut byte = byte.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
     let before = &text[..byte];
     let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
     let col = before.rsplit('\n').next().map(|s| s.chars().count()).unwrap_or(0) + 1;
@@ -247,5 +384,66 @@ fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
         rgba: Arc::from(out),
         width: w,
         height: h,
+        // Filled in by the caller from the page frame; a sane default keeps the
+        // aspect correct if ever constructed without a frame.
+        width_pt: w as f64,
+        height_pt: h as f64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A clean compile renders a page, records its point size, and extracts
+    /// selectable glyph cells whose left-to-right x positions increase — the
+    /// geometry the preview's text selection hit-tests against.
+    #[test]
+    fn compile_extracts_positioned_text() {
+        let parts = WorldParts::new();
+        let out = compile_source(&parts, "= Hello\n\nSome body text here.\n", 2.0);
+        assert!(out.ok, "clean source compiles");
+        assert_eq!(out.error_count(), 0);
+        assert!(!out.pages.is_empty(), "produced a page");
+        assert!(out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0, "point size set");
+
+        let cells: usize = out
+            .page_text
+            .iter()
+            .flat_map(|p| p.iter())
+            .map(|r| r.cells.len())
+            .sum();
+        assert!(cells > 0, "extracted glyph cells for the text layer");
+
+        // Within any run, glyph cells advance left-to-right.
+        for run in out.page_text.iter().flat_map(|p| p.iter()) {
+            for w in run.cells.windows(2) {
+                assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+            }
+            assert!(run.bottom > run.top, "run line box has positive height");
+        }
+    }
+
+    /// A reference to an undefined variable is surfaced as an error with a
+    /// resolvable span whose end column is strictly past the start.
+    #[test]
+    fn error_carries_resolvable_span() {
+        let parts = WorldParts::new();
+        let out = compile_source(&parts, "Text #missing_var more.\n", 2.0);
+        assert!(out.error_count() >= 1, "unknown variable is an error");
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.kind == DiagKind::Error)
+            .expect("an error diagnostic");
+        assert!(d.line.is_some() && d.col.is_some(), "start resolved");
+        assert!(d.end_line.is_some() && d.end_col.is_some(), "end resolved");
+        assert!(
+            d.end_col.unwrap() > d.col.unwrap(),
+            "span has positive width: {:?}..{:?}",
+            d.col,
+            d.end_col
+        );
+        assert_eq!(d.line, Some(1), "on the first line");
     }
 }
