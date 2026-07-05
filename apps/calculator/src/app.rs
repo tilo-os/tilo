@@ -156,7 +156,7 @@ impl CalculatorApp {
         match self.model.mode {
             Mode::Calc => self.calc.layout(self.body, &self.model),
             Mode::Graph2d => self.g2.layout(self.body, &self.model),
-            Mode::Graph3d => self.g3.layout(self.body),
+            Mode::Graph3d => self.g3.layout(self.body, &self.model),
         }
     }
 
@@ -164,15 +164,16 @@ impl CalculatorApp {
         if self.model.mode != m {
             self.model.mode = m;
             // Give a freshly-entered graph mode something to edit rather than a
-            // blank void: an empty `y =` row for 2D, the starter surface for 3D.
-            // These are editor affordances (empty/example), not restored data.
+            // blank void: an empty `y =` row for 2D, an example `z =` surface
+            // for 3D. These are editor affordances, not restored data.
             match m {
                 Mode::Graph2d if self.model.funcs.is_empty() => {
                     self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
                     self.model.active_fn = 0;
                 }
-                Mode::Graph3d if self.model.surface.trim().is_empty() => {
-                    self.model.surface = model::DEFAULT_SURFACE.to_string();
+                Mode::Graph3d if self.model.surfaces.is_empty() => {
+                    self.model.surfaces.push(PlotFn { expr: model::DEFAULT_SURFACE.to_string(), visible: true });
+                    self.model.active_surface = 0;
                 }
                 _ => {}
             }
@@ -262,24 +263,46 @@ impl CalculatorApp {
         match self.model.mode {
             Mode::Calc => self.on_press_calc(p),
             Mode::Graph2d => self.on_press_g2(p, double),
-            Mode::Graph3d => {
-                if self.g3.toggle_at(p) {
-                    self.g3.toggle_panel();
-                } else if self.g3.scrim_at(p) {
-                    self.g3.close_panel();
-                } else if self.g3.expr_contains(p) {
-                    self.g3.sync_field(&self.model);
-                    self.g3.field_mut().on_press_cached(p, double);
-                    self.field_dragging = true;
-                    self.model_dirty = true;
-                } else if self.g3.overlay_captures(p) {
-                    // A press inside the drawer that isn't the field/chip: consume
-                    // it so it doesn't fall through to an orbit drag.
-                } else if self.g3.canvas_contains(p) {
-                    self.dragging = true;
-                    self.drag_last = p;
-                }
+            Mode::Graph3d => self.on_press_g3(p, double),
+        }
+    }
+
+    fn on_press_g3(&mut self, p: Point, double: bool) {
+        // Overlay-drawer chrome takes priority over the canvas underneath.
+        if self.g3.toggle_at(p) {
+            self.g3.toggle_panel();
+            return;
+        }
+        if self.g3.scrim_at(p) {
+            self.g3.close_panel();
+            return;
+        }
+        if self.g3.add_at(p) {
+            self.model.surfaces.push(PlotFn { expr: String::new(), visible: true });
+            self.model.active_surface = self.model.surfaces.len() - 1;
+            self.model_dirty = true;
+        } else if let Some(i) = self.g3.vis_at(p) {
+            if let Some(f) = self.model.surfaces.get_mut(i) {
+                f.visible = !f.visible;
+                self.model_dirty = true;
             }
+        } else if let Some(i) = self.g3.field_at(p) {
+            self.model.active_surface = i;
+            self.g3.sync_fields(&self.model);
+            if let Some(field) = self.g3.active_field_mut(i) {
+                field.on_press_cached(p, double);
+                self.field_dragging = true;
+            }
+            self.model_dirty = true;
+        } else if let Some(i) = self.g3.row_at(p) {
+            self.model.active_surface = i;
+            self.model_dirty = true;
+        } else if self.g3.overlay_captures(p) {
+            // Press inside an open drawer (not a widget): consume it so it
+            // doesn't fall through to the canvas as an orbit.
+        } else if self.g3.canvas_contains(p) {
+            self.dragging = true;
+            self.drag_last = p;
         }
     }
 
@@ -372,7 +395,10 @@ impl CalculatorApp {
                 }
             }
             Mode::Graph3d => {
-                self.g3.field_mut().on_drag_cached(p);
+                let a = self.model.active_surface;
+                if let Some(field) = self.g3.active_field_mut(a) {
+                    field.on_drag_cached(p);
+                }
             }
             Mode::Calc => {}
         }
@@ -409,9 +435,11 @@ impl CalculatorApp {
                 }
             }
             Mode::Graph3d => {
-                if self.g3.expr_contains(self.mouse) {
-                    self.g3.sync_field(&self.model);
-                    self.g3.field_mut().scroll_by(-step * 24.0, -step * 24.0);
+                if let Some(i) = self.g3.field_at(self.mouse) {
+                    self.g3.sync_fields(&self.model);
+                    if let Some(f) = self.g3.active_field_mut(i) {
+                        f.scroll_by(-step * 24.0, -step * 24.0);
+                    }
                     return;
                 }
             }
@@ -487,12 +515,28 @@ impl CalculatorApp {
         }
 
         match key {
-            WKey::Named(NamedKey::Enter) => {
-                if self.model.mode == Mode::Calc {
+            WKey::Named(NamedKey::Enter) => match self.model.mode {
+                // In Calc mode Enter evaluates the expression (`=`).
+                Mode::Calc => {
                     model::apply_key(&mut self.model, &model::Key::Equals);
                     self.model_dirty = true;
                 }
-            }
+                // In a graph mode Enter commits the current row and starts a new
+                // empty function/surface, focusing it — the Desmos-style "next
+                // expression" gesture. The active-row field already round-trips
+                // its edit into the model on each keystroke, so the row is
+                // committed; here we just append and focus the fresh row.
+                Mode::Graph2d => {
+                    self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
+                    self.model.active_fn = self.model.funcs.len() - 1;
+                    self.model_dirty = true;
+                }
+                Mode::Graph3d => {
+                    self.model.surfaces.push(PlotFn { expr: String::new(), visible: true });
+                    self.model.active_surface = self.model.surfaces.len() - 1;
+                    self.model_dirty = true;
+                }
+            },
             WKey::Named(NamedKey::Backspace) => {
                 if self.model.mode == Mode::Calc {
                     model::apply_key(&mut self.model, &model::Key::Backspace);
@@ -544,16 +588,23 @@ impl CalculatorApp {
         true
     }
 
-    /// Route a key to the Graph 3D surface field.
+    /// Route a key to the active Graph 3D surface field. Returns whether the
+    /// key was consumed by the field.
     fn on_key_g3(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
-        self.g3.sync_field(&self.model);
-        let field = self.g3.field_mut();
+        self.g3.sync_fields(&self.model);
+        let a = self.model.active_surface;
+        let Some(field) = self.g3.active_field_mut(a) else {
+            return false;
+        };
         if !field_handles(key, modifiers) {
             return false;
         }
         let changed = field.handle_key(key, modifiers);
         if changed {
-            self.model.surface = field.current_linear();
+            let linear = field.current_linear();
+            if let Some(f) = self.model.surfaces.get_mut(a) {
+                f.expr = linear;
+            }
             self.model_dirty = true;
         }
         true
@@ -741,7 +792,7 @@ impl Widget for CalculatorApp {
         if !remote.is_empty() {
             match self.model.mode {
                 Mode::Graph2d => self.g2.draw_remote_carets(scene, t, self.model.active_fn, &remote),
-                Mode::Graph3d => self.g3.draw_remote_carets(scene, t, &remote),
+                Mode::Graph3d => self.g3.draw_remote_carets(scene, t, self.model.active_surface, &remote),
                 Mode::Calc => {}
             }
         }
@@ -788,7 +839,9 @@ impl Widget for CalculatorApp {
                     Mode::Graph2d => {
                         self.g2.hovered_row = self.g2.row_at(p);
                     }
-                    Mode::Graph3d => {}
+                    Mode::Graph3d => {
+                        self.g3.hovered_row = self.g3.row_at(p);
+                    }
                 }
                 if self.field_dragging {
                     self.on_field_drag(p);
@@ -807,7 +860,7 @@ impl Widget for CalculatorApp {
                 self.dragging = false;
                 self.field_dragging = false;
                 self.g2.release_fields();
-                self.g3.field_mut().on_release();
+                self.g3.release_fields();
                 self.calc.pressed_key = None;
                 *handled = true;
             }
@@ -907,7 +960,8 @@ mod tests {
         assert_eq!(app.model.funcs.len(), 1, "Graph 2D seeds one empty row");
         assert!(app.model.funcs[0].expr.is_empty());
         app.set_mode(Mode::Graph3d);
-        assert!(!app.model.surface.trim().is_empty(), "Graph 3D seeds a starter surface");
+        assert_eq!(app.model.surfaces.len(), 1, "Graph 3D seeds one starter surface");
+        assert!(!app.model.surfaces[0].expr.trim().is_empty(), "Graph 3D starter is a non-empty example surface");
     }
 
     #[test]
@@ -1013,11 +1067,44 @@ mod tests {
     fn backspace_in_graph3d_field_edits_surface() {
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph3d);
-        app.model.surface = "x+y".into();
-        // on_key_g3 resyncs the field to the surface before editing.
+        app.model.surfaces = vec![PlotFn { expr: "x+y".into(), visible: true }];
+        app.model.active_surface = 0;
+        // on_key_g3 resyncs the active field to the surface before editing.
         let none = winit::event::Modifiers::default();
         app.on_key(&WKey::Named(NamedKey::Backspace), &none);
-        assert_eq!(app.model.surface, "x+");
+        assert_eq!(app.model.surfaces[0].expr, "x+");
+    }
+
+    #[test]
+    fn enter_in_graph2d_adds_and_focuses_a_new_function() {
+        // Real key path: after editing a function, Enter appends a fresh empty
+        // row and focuses it (the "next expression" gesture).
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph2d);
+        app.model.funcs = vec![PlotFn { expr: String::new(), visible: true }];
+        app.model.active_fn = 0;
+        let none = winit::event::Modifiers::default();
+        for ch in ["s", "i", "n", "(", "x", ")"] {
+            app.on_key(&WKey::Character(ch.into()), &none);
+        }
+        assert_eq!(app.model.funcs[0].expr, "sin(x)");
+        app.on_key(&WKey::Named(NamedKey::Enter), &none);
+        assert_eq!(app.model.funcs.len(), 2, "Enter must add a new function row");
+        assert_eq!(app.model.active_fn, 1, "the new row must be focused");
+        assert!(app.model.funcs[1].expr.is_empty(), "the new row starts empty");
+        assert_eq!(app.model.funcs[0].expr, "sin(x)", "the edited row is preserved");
+    }
+
+    #[test]
+    fn enter_in_graph3d_adds_and_focuses_a_new_surface() {
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph3d); // seeds one starter surface
+        let start = app.model.surfaces.len();
+        let none = winit::event::Modifiers::default();
+        app.on_key(&WKey::Named(NamedKey::Enter), &none);
+        assert_eq!(app.model.surfaces.len(), start + 1, "Enter must add a new surface row");
+        assert_eq!(app.model.active_surface, app.model.surfaces.len() - 1, "the new surface is focused");
+        assert!(app.model.surfaces.last().unwrap().expr.is_empty(), "the new surface starts empty");
     }
 
     /// Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
@@ -1080,10 +1167,14 @@ mod tests {
         // Mutate the document out-of-band, then re-sync.
         app.model.mode = Mode::Graph3d; // (only to prove sync overwrites it)
         let mut edited = crate::doc::load(&state.doc).expect("seeded");
-        edited.surface = "x*y+1".into();
+        edited.surfaces = vec![PlotFn { expr: "x*y+1".into(), visible: true }];
         crate::doc::store(&mut state.doc, &edited);
         app.sync(&mut state.doc, &state.root);
-        assert_eq!(app.model.surface, "x*y+1", "sync must adopt the external CRDT surface edit");
+        assert_eq!(
+            app.model.surfaces.first().map(|f| f.expr.as_str()),
+            Some("x*y+1"),
+            "sync must adopt the external CRDT surface edit"
+        );
     }
 
     // -- pointer-path harness: drive the REAL production handle_event route -----

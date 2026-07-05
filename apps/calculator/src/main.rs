@@ -48,7 +48,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, calculator::app_root());
+    #[allow(unused_mut)]
+    let mut app = ui::App::new(state, calculator::app_root());
+    // Widget-debug overlays (bounds outline + widget-name labels) are a
+    // development aid only. The toolkit's `App` turns them on from the
+    // `QUICK_UI_DEBUG` env var alone, so a var inherited from the launching
+    // environment would leak the overlay into a shipped calculator. Force it
+    // off in release builds so a plain run is always clean; debug builds keep
+    // the env-driven toggle for development.
+    #[cfg(not(debug_assertions))]
+    {
+        app.debug_mode = false;
+    }
     app.run();
     Ok(())
 }
