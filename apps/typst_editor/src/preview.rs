@@ -1,33 +1,88 @@
 //! The rendered-document preview pane.
 //!
-//! Shows the compiled pages stacked vertically with a zoom control and, when
-//! the document has more than one page, a clickable thumbnail strip. Page
-//! bitmaps come from [`crate::compile::PageImage`] and are painted through the
-//! toolkit's [`ui::widget::Image`] (via its `paint_at`, which positions the
-//! image without a taffy pass).
+//! Shows the compiled pages stacked vertically with cursor-anchored zoom, pan,
+//! scrollbars, and — when the document has more than one page — a clickable
+//! thumbnail strip. Zoom/pan is delegated to the toolkit's shared
+//! [`ui::widget::ViewportState`] (the same kernel the PDF, ebook, and maps
+//! viewers use), so the interaction is consistent across the OS: Ctrl+wheel
+//! zooms toward the cursor, a plain wheel scrolls, and the content stays
+//! reachable when it overflows the pane.
+//!
+//! The pane also carries a **text layer**: `typst`'s compiled frames expose the
+//! placed glyphs with positions, so a drag over the rendered page selects the
+//! covered text (mapped back through the same content→screen transform) and
+//! Ctrl+C copies it. Selection is glyph-precise horizontally and line-precise
+//! vertically.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
+use winit::event::MouseScrollDelta;
+use winit::keyboard::ModifiersState;
 
+use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Image, ImageFit};
+use ui::widget::{Image, ImageFit, SmallContentAlign, ViewportState};
 
-use crate::compile::PageImage;
+use crate::compile::{PageImage, TextRun};
 
 const THUMB_STRIP_W: f64 = 104.0;
-const PAGE_GAP: f64 = 24.0;
-const PAGE_MARGIN: f64 = 28.0;
 const THUMB_GAP: f64 = 14.0;
+/// Vertical gap between stacked pages, in **content** (page-point) units, so it
+/// scales with zoom exactly like the pages.
+const PAGE_GAP_PT: f64 = 20.0;
+/// Screen-px padding the viewport reserves around the page stack.
+const VIEW_PAD: f64 = 22.0;
+
+/// A page's placement within the content-space page stack (all in page points).
+#[derive(Clone, Copy)]
+struct PageBox {
+    /// Horizontal offset of the page's left edge inside the content box
+    /// (centres narrower pages). Page points.
+    x_off: f64,
+    /// Top of the page inside the content box. Page points.
+    top: f64,
+    w_pt: f64,
+    h_pt: f64,
+}
+
+/// One selectable glyph cell, resolved into **content space** so hit-testing
+/// and highlight drawing both go through the viewport transform.
+#[derive(Clone)]
+struct Cell {
+    rect: Rect,
+    /// A stable key for the visual line the cell sits on (page + quantised
+    /// baseline), used to insert newlines when copying across lines.
+    line_key: (usize, i64),
+    text: String,
+}
 
 pub struct PreviewPane {
     rect: Rect,
+    /// Shared zoom/pan kernel; its rect is the main viewport (pane minus the
+    /// thumbnail strip).
+    viewport: ViewportState,
     images: Vec<Image>,
-    /// Intrinsic page sizes in px (width, height) parallel to `images`.
-    sizes: Vec<(u32, u32)>,
-    zoom: f64,
-    scroll_y: f64,
+    /// Intrinsic page sizes in px (width, height) — for thumbnail aspect.
+    sizes_px: Vec<(u32, u32)>,
+    /// Page placement in the content-space stack (page points).
+    boxes: Vec<PageBox>,
+    /// Content-space dimensions of the whole page stack (page points).
+    content_w: f64,
+    content_h: f64,
+    /// Selectable glyph cells in reading order (content space).
+    cells: Vec<Cell>,
+    /// Active selection as a `[anchor, cursor)` pair of cell-boundary indices
+    /// over `0..=cells.len()`. `anchor == cursor` means nothing is selected.
+    sel_anchor: usize,
+    sel_cursor: usize,
+    /// A text-selection drag is in progress.
+    selecting: bool,
+    /// A scrollbar thumb drag is in progress.
+    dragging_bar: bool,
+    /// Whether "fit width" is the active zoom intent (vs. a pinned custom zoom).
+    fit_width: bool,
     /// Page index considered "current" (top-most visible) — drives the
     /// thumbnail highlight and the status bar.
     current: usize,
@@ -39,10 +94,21 @@ impl Default for PreviewPane {
     fn default() -> Self {
         Self {
             rect: Rect::ZERO,
+            viewport: ViewportState::new()
+                .with_padding(VIEW_PAD)
+                .with_zoom_bounds(0.1, 8.0)
+                .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             images: Vec::new(),
-            sizes: Vec::new(),
-            zoom: 1.0,
-            scroll_y: 0.0,
+            sizes_px: Vec::new(),
+            boxes: Vec::new(),
+            content_w: 0.0,
+            content_h: 0.0,
+            cells: Vec::new(),
+            sel_anchor: 0,
+            sel_cursor: 0,
+            selecting: false,
+            dragging_bar: false,
+            fit_width: true,
             current: 0,
             placeholder: Some("Compiling…".into()),
         }
@@ -56,23 +122,83 @@ impl PreviewPane {
 
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
+        self.viewport.set_rect(self.main_rect());
+        // Re-apply the fit-width intent so a resize keeps the page spanning the
+        // pane; a pinned custom zoom is left untouched.
+        if self.fit_width {
+            self.viewport.set_zoom(self.viewport.fit_width_zoom());
+        }
+        self.recompute_current();
     }
 
     pub fn set_pages(&mut self, pages: &[PageImage]) {
+        self.set_pages_with_text(pages, &[]);
+    }
+
+    /// Install freshly compiled pages together with their extracted text layer.
+    /// `page_text` is parallel to `pages` (empty when the compile failed).
+    pub fn set_pages_with_text(&mut self, pages: &[PageImage], page_text: &[Vec<TextRun>]) {
         self.images = pages
             .iter()
             .map(|p| Image::from_rgba(p.rgba.clone(), p.width, p.height).with_fit(ImageFit::Fill))
             .collect();
-        self.sizes = pages.iter().map(|p| (p.width, p.height)).collect();
+        self.sizes_px = pages.iter().map(|p| (p.width, p.height)).collect();
         self.placeholder = if pages.is_empty() {
             Some("No pages".into())
         } else {
             None
         };
-        let max = self.max_scroll();
-        if self.scroll_y > max {
-            self.scroll_y = max;
+
+        // Build the content-space page stack in page points.
+        let content_w = pages
+            .iter()
+            .map(|p| p.width_pt)
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        let mut boxes = Vec::with_capacity(pages.len());
+        let mut y = 0.0f64;
+        for p in pages {
+            let x_off = ((content_w - p.width_pt) / 2.0).max(0.0);
+            boxes.push(PageBox { x_off, top: y, w_pt: p.width_pt, h_pt: p.height_pt });
+            y += p.height_pt + PAGE_GAP_PT;
         }
+        let content_h = (y - PAGE_GAP_PT).max(0.0);
+        self.boxes = boxes;
+        self.content_w = content_w;
+        self.content_h = content_h;
+        self.viewport.set_content_size(content_w, content_h);
+
+        // Flatten the per-page runs into content-space cells in reading order.
+        self.rebuild_cells(page_text);
+        self.clear_selection();
+
+        // Keep the fit-width intent honoured now that the content size changed.
+        if self.fit_width {
+            self.viewport.set_zoom(self.viewport.fit_width_zoom());
+        }
+        self.recompute_current();
+    }
+
+    fn rebuild_cells(&mut self, page_text: &[Vec<TextRun>]) {
+        let mut cells = Vec::new();
+        for (pi, runs) in page_text.iter().enumerate() {
+            let Some(pb) = self.boxes.get(pi).copied() else {
+                continue;
+            };
+            for run in runs {
+                let cy0 = pb.top + run.top;
+                let cy1 = pb.top + run.bottom;
+                let line_key = (pi, ((pb.top + run.top) * 2.0).round() as i64);
+                for c in &run.cells {
+                    cells.push(Cell {
+                        rect: Rect::new(pb.x_off + c.x0, cy0, pb.x_off + c.x1, cy1),
+                        line_key,
+                        text: c.text.clone(),
+                    });
+                }
+            }
+        }
+        self.cells = cells;
     }
 
     pub fn set_placeholder(&mut self, text: Option<String>) {
@@ -89,27 +215,36 @@ impl PreviewPane {
         self.current
     }
 
+    /// Display zoom relative to fit-width, so the toolbar/status read "100 %"
+    /// when a page spans the pane — the UX the welcome document advertises.
     pub fn zoom(&self) -> f64 {
-        self.zoom
+        let fw = self.viewport.fit_width_zoom();
+        if fw > 0.0 { self.viewport.zoom() / fw } else { 1.0 }
     }
 
     pub fn zoom_in(&mut self) {
-        self.zoom = (self.zoom * 1.25).min(4.0);
+        self.fit_width = false;
+        self.viewport.zoom_by(1.25);
+        self.recompute_current();
     }
 
     pub fn zoom_out(&mut self) {
-        self.zoom = (self.zoom / 1.25).max(0.25);
+        self.fit_width = false;
+        self.viewport.zoom_by(1.0 / 1.25);
+        self.recompute_current();
     }
 
     pub fn fit_width(&mut self) {
-        self.zoom = 1.0;
+        self.fit_width = true;
+        self.viewport.set_zoom(self.viewport.fit_width_zoom());
+        self.recompute_current();
     }
 
     fn has_thumbs(&self) -> bool {
         self.images.len() > 1
     }
 
-    /// The main (non-thumbnail) viewport.
+    /// The main (non-thumbnail) viewport rect.
     fn main_rect(&self) -> Rect {
         if self.has_thumbs() {
             Rect::new(self.rect.x0 + THUMB_STRIP_W, self.rect.y0, self.rect.x1, self.rect.y1)
@@ -118,94 +253,289 @@ impl PreviewPane {
         }
     }
 
-    /// Display width of a page at the current zoom (fit-to-width × zoom).
-    fn page_display_width(&self) -> f64 {
-        let avail = (self.main_rect().width() - 2.0 * PAGE_MARGIN).max(40.0);
-        // Use the first page's aspect as the fit basis; "fit width" maps the
-        // page to the available width at zoom 1.0.
-        avail * self.zoom
+    fn thumb_strip(&self) -> Rect {
+        Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + THUMB_STRIP_W, self.rect.y1)
     }
 
-    fn page_display_size(&self, i: usize) -> (f64, f64) {
-        let (w, h) = self.sizes.get(i).copied().unwrap_or((1, 1));
-        let dw = self.page_display_width();
-        let dh = dw * (h.max(1) as f64) / (w.max(1) as f64);
-        (dw, dh)
-    }
+    // ----- scrolling / zoom input ----------------------------------------
 
-    fn content_height(&self) -> f64 {
-        let mut y = PAGE_MARGIN;
-        for i in 0..self.images.len() {
-            let (_, dh) = self.page_display_size(i);
-            y += dh + PAGE_GAP;
-        }
-        y + PAGE_MARGIN - PAGE_GAP
-    }
-
-    fn max_scroll(&self) -> f64 {
-        (self.content_height() - self.rect.height()).max(0.0)
-    }
-
+    /// Plain wheel scroll (kept for callers that only have a vertical delta —
+    /// e.g. keyboard PageDown mapping). Positive `dy` scrolls down.
     pub fn scroll_by(&mut self, dy: f64) {
-        self.scroll_y = (self.scroll_y + dy).clamp(0.0, self.max_scroll());
+        self.viewport.pan_by(0.0, dy);
+        self.recompute_current();
+    }
+
+    /// Reduce a mouse-wheel event: Ctrl/Cmd → cursor-anchored zoom; Shift →
+    /// horizontal pan; otherwise vertical pan. A tilt (horizontal) wheel is
+    /// folded into the vertical pan when the page can't scroll sideways, so a
+    /// tall zoomed page still scrolls no matter which wheel axis fires.
+    pub fn on_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        mods: &ModifiersState,
+        cursor: Point,
+        scale_factor: f64,
+    ) {
+        let (raw_x, raw_y) = wheel_px(delta, scale_factor);
+        let ctrl = mods.control_key() || mods.super_key();
+        if ctrl {
+            self.fit_width = false;
+            let factor = if raw_y >= 0.0 {
+                1.0 + raw_y / 240.0
+            } else {
+                1.0 / (1.0 - raw_y / 240.0)
+            };
+            self.viewport.zoom_at(factor, cursor);
+        } else if mods.shift_key() && self.viewport.overflows_x() {
+            self.viewport.pan_by(-raw_y, 0.0);
+        } else if self.viewport.overflows_x() {
+            self.viewport.pan_by(-raw_x, -raw_y);
+        } else {
+            // Nothing to scroll horizontally: route any tilt component into the
+            // vertical pan so a secondary wheel still moves a tall page.
+            self.viewport.pan_by(0.0, -raw_y - raw_x);
+        }
         self.recompute_current();
     }
 
     fn recompute_current(&mut self) {
-        // The current page is whichever page's top is nearest above the
-        // viewport's vertical centre.
-        let mid = self.scroll_y + self.rect.height() * 0.35;
-        let mut y = PAGE_MARGIN;
-        let mut cur = 0;
-        for i in 0..self.images.len() {
-            let (_, dh) = self.page_display_size(i);
-            if y <= mid {
-                cur = i;
-            }
-            y += dh + PAGE_GAP;
+        if self.boxes.is_empty() {
+            self.current = 0;
+            return;
         }
-        self.current = cur;
+        let main = self.viewport.rect();
+        let top_content = self
+            .viewport
+            .screen_to_content(Point::new(main.x0, main.y0))
+            .y;
+        let mut best = 0usize;
+        let mut best_d = f64::MAX;
+        for (i, b) in self.boxes.iter().enumerate() {
+            let d = (b.top - top_content).abs();
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        self.current = best;
     }
 
-    /// Scroll so page `i` sits at the top of the viewport.
+    /// Scroll so page `i` sits near the top of the viewport.
     pub fn scroll_to_page(&mut self, i: usize) {
-        let mut y = PAGE_MARGIN;
-        for k in 0..i.min(self.images.len()) {
-            let (_, dh) = self.page_display_size(k);
-            y += dh + PAGE_GAP;
-        }
-        self.scroll_y = (y - PAGE_MARGIN).clamp(0.0, self.max_scroll());
+        let Some(b) = self.boxes.get(i).copied() else {
+            return;
+        };
+        let target_y = b.top * self.viewport.zoom();
+        self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
         self.current = i.min(self.images.len().saturating_sub(1));
     }
 
-    /// Handle a click; returns true if it hit a thumbnail (and jumped).
-    pub fn on_mouse_down(&mut self, p: Point) -> bool {
-        if !self.has_thumbs() {
+    // ----- pointer -------------------------------------------------------
+
+    /// Handle a left-press. Returns `true` when the app should route subsequent
+    /// moves back here as a drag (a scrollbar thumb drag or a text selection).
+    pub fn on_mouse_down(&mut self, p: Point, shift: bool) -> bool {
+        // Thumbnail strip: jump to the clicked page (not a drag).
+        if self.has_thumbs() && self.thumb_strip().contains(p) {
+            self.thumb_click(p);
             return false;
         }
-        let strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + THUMB_STRIP_W, self.rect.y1);
-        if !strip.contains(p) {
-            return false;
+        // Scrollbars win over the text layer beneath them.
+        if self.viewport.press_scrollbar(p) {
+            self.dragging_bar = true;
+            return true;
         }
-        // Walk thumbnail layout to find which one was clicked.
-        let mut y = self.rect.y0 + THUMB_GAP;
+        // Begin / extend a text selection.
+        if let Some(b) = self.boundary_at(p) {
+            if shift {
+                self.sel_cursor = b;
+            } else {
+                self.sel_anchor = b;
+                self.sel_cursor = b;
+            }
+            self.selecting = true;
+            return true;
+        }
+        false
+    }
+
+    pub fn on_mouse_drag(&mut self, p: Point) {
+        if self.dragging_bar {
+            self.viewport.drag_scrollbar(p);
+            self.recompute_current();
+            return;
+        }
+        if self.selecting {
+            if let Some(b) = self.boundary_at(p) {
+                self.sel_cursor = b;
+            }
+        }
+    }
+
+    pub fn on_mouse_up(&mut self) {
+        if self.dragging_bar {
+            self.viewport.release_scrollbar();
+            self.dragging_bar = false;
+        }
+        self.selecting = false;
+    }
+
+    /// Hover feedback for the scrollbar thumbs. Returns whether anything
+    /// changed (so the host can schedule a redraw).
+    pub fn on_mouse_move(&mut self, p: Point) -> bool {
+        self.viewport.update_scrollbar_hover(p)
+    }
+
+    /// Map a screen point to the nearest selectable cell boundary. Clamps to
+    /// the nearest line when the pointer is in the margin. `None` only when the
+    /// page carries no selectable text at all.
+    fn boundary_at(&self, p: Point) -> Option<usize> {
+        if self.cells.is_empty() {
+            return None;
+        }
+        let cp = self.viewport.screen_to_content(p);
+
+        // Cells whose vertical band contains the point (the line under it).
+        let mut line: Vec<usize> = (0..self.cells.len())
+            .filter(|&i| cp.y >= self.cells[i].rect.y0 && cp.y <= self.cells[i].rect.y1)
+            .collect();
+
+        if line.is_empty() {
+            // No line under the pointer: snap to the vertically nearest cell,
+            // then take every cell sharing that cell's visual line.
+            let mut nearest = 0usize;
+            let mut best = f64::MAX;
+            for (i, c) in self.cells.iter().enumerate() {
+                let cy = (c.rect.y0 + c.rect.y1) * 0.5;
+                let d = (cy - cp.y).abs();
+                if d < best {
+                    best = d;
+                    nearest = i;
+                }
+            }
+            let key = self.cells[nearest].line_key;
+            line = (0..self.cells.len())
+                .filter(|&i| self.cells[i].line_key == key)
+                .collect();
+        }
+
+        line.sort_by(|&a, &b| {
+            self.cells[a]
+                .rect
+                .x0
+                .partial_cmp(&self.cells[b].rect.x0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Left of the line → start; right of it → end.
+        let first = *line.first().unwrap();
+        if cp.x <= self.cells[first].rect.x0 {
+            return Some(first);
+        }
+        let last = *line.last().unwrap();
+        if cp.x >= self.cells[last].rect.x1 {
+            return Some(last + 1);
+        }
+        for &i in &line {
+            let r = self.cells[i].rect;
+            if cp.x < r.x0 {
+                return Some(i);
+            }
+            if cp.x <= r.x1 {
+                let mid = (r.x0 + r.x1) * 0.5;
+                return Some(if cp.x < mid { i } else { i + 1 });
+            }
+        }
+        Some(last + 1)
+    }
+
+    fn thumb_click(&mut self, p: Point) {
         let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
+        let mut y = self.rect.y0 + THUMB_GAP;
         for i in 0..self.images.len() {
-            let (pw, ph) = self.sizes[i];
+            let (pw, ph) = self.sizes_px[i];
             let th = tw * (ph.max(1) as f64) / (pw.max(1) as f64);
             let r = Rect::new(self.rect.x0 + THUMB_GAP, y, self.rect.x0 + THUMB_GAP + tw, y + th);
             if r.contains(p) {
                 self.scroll_to_page(i);
-                return true;
+                return;
             }
-            y += th + THUMB_GAP + 16.0; // + label row
+            y += th + THUMB_GAP + 16.0;
         }
-        true // consumed the click in the strip regardless
     }
+
+    // ----- selection API used by the app --------------------------------
+
+    pub fn has_selection(&self) -> bool {
+        self.sel_anchor != self.sel_cursor
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel_anchor = 0;
+        self.sel_cursor = 0;
+        self.selecting = false;
+    }
+
+    pub fn select_all(&mut self) {
+        self.sel_anchor = 0;
+        self.sel_cursor = self.cells.len();
+    }
+
+    /// The selected text, with a newline inserted at every visual line break.
+    /// `None` when nothing is selected.
+    pub fn selected_text(&self) -> Option<String> {
+        if !self.has_selection() {
+            return None;
+        }
+        let lo = self.sel_anchor.min(self.sel_cursor);
+        let hi = self.sel_anchor.max(self.sel_cursor).min(self.cells.len());
+        if lo >= hi {
+            return None;
+        }
+        let mut out = String::new();
+        let mut prev_key: Option<(usize, i64)> = None;
+        for cell in &self.cells[lo..hi] {
+            if let Some(k) = prev_key {
+                if k != cell.line_key {
+                    out.push('\n');
+                }
+            }
+            out.push_str(&cell.text);
+            prev_key = Some(cell.line_key);
+        }
+        Some(out)
+    }
+
+    // ----- screenshot-only arrangement ----------------------------------
+
+    /// Zoom the preview to `display_zoom`× fit-width and scroll to `scroll_frac`
+    /// of the way down. Used only by the offscreen `--shots` renderer.
+    pub fn demo_set_view(&mut self, display_zoom: f64, scroll_frac: f64) {
+        self.fit_width = false;
+        let fw = self.viewport.fit_width_zoom();
+        self.viewport.set_zoom(fw * display_zoom);
+        let max = self.viewport.max_scroll_y();
+        self.viewport
+            .set_scroll(self.viewport.scroll_x(), max * scroll_frac.clamp(0.0, 1.0));
+        self.recompute_current();
+    }
+
+    /// Select the cells between two fractions of the reading-order text. Used
+    /// only by the offscreen `--shots` renderer.
+    pub fn demo_select_fraction(&mut self, lo: f64, hi: f64) {
+        let n = self.cells.len();
+        if n == 0 {
+            return;
+        }
+        self.sel_anchor = ((n as f64) * lo.clamp(0.0, 1.0)) as usize;
+        self.sel_cursor = (((n as f64) * hi.clamp(0.0, 1.0)) as usize).max(self.sel_anchor + 1).min(n);
+    }
+
+    // ----- drawing -------------------------------------------------------
 
     pub fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        // Pane background.
         scene.fill(Fill::NonZero, transform, c.neutral[1], None, &self.rect);
 
         if self.images.is_empty() {
@@ -221,46 +551,91 @@ impl PreviewPane {
 
     fn draw_main(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let main = self.main_rect();
+        let main = self.viewport.rect();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &main);
 
-        let mut y = main.y0 + PAGE_MARGIN - self.scroll_y;
-        for i in 0..self.images.len() {
-            let (dw, dh) = self.page_display_size(i);
-            let x = main.x0 + (main.width() - dw) * 0.5;
-            let page_rect = Rect::new(x, y, x + dw, y + dh);
+        for (i, b) in self.boxes.iter().enumerate() {
+            let tl = self.viewport.content_point_to_screen(Point::new(b.x_off, b.top));
+            let br = self
+                .viewport
+                .content_point_to_screen(Point::new(b.x_off + b.w_pt, b.top + b.h_pt));
+            let page_rect = Rect::new(tl.x, tl.y, br.x, br.y);
 
             // Cull pages outside the viewport.
-            if page_rect.y1 >= main.y0 && page_rect.y0 <= main.y1 {
-                // Drop shadow (offset behind the page).
-                let shadow = Rect::new(x + 3.0, y + 4.0, x + dw + 3.0, y + dh + 4.0);
-                scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shadow);
-                // Paper.
-                self.images[i].paint_at(scene, transform, page_rect);
-                // Border.
-                scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &page_rect);
-
-                // Page number caption under the page.
-                let label = format!("Page {} of {}", i + 1, self.images.len());
-                let ly = y + dh + 6.0;
-                tr.draw_text(
-                    scene,
-                    &label,
-                    11.0,
-                    c.text_dim,
-                    transform * Affine::translate((x, ly)),
-                    None,
-                );
+            if page_rect.y1 < main.y0 || page_rect.y0 > main.y1 {
+                continue;
             }
-            y += dh + PAGE_GAP;
+            // Drop shadow behind the page.
+            let shadow = page_rect + vello::kurbo::Vec2::new(3.0, 4.0);
+            scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shadow);
+            // Paper.
+            self.images[i].paint_at(scene, transform, page_rect);
+            // Border.
+            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &page_rect);
+
+            // Page caption under the page.
+            let label = format!("Page {} of {}", i + 1, self.images.len());
+            tr.draw_text(
+                scene,
+                &label,
+                11.0,
+                c.text_dim,
+                transform * Affine::translate((page_rect.x0, page_rect.y1 + 6.0)),
+                None,
+            );
         }
 
+        self.draw_selection(scene, transform, theme, main);
+
         scene.pop_layer();
+
+        // Scrollbars paint on top, outside the page clip.
+        self.viewport.draw_scrollbars(scene, transform, theme);
+    }
+
+    /// Paint the selection as translucent bands, merging adjacent selected
+    /// cells on the same line into one rect so it reads as a continuous
+    /// highlight.
+    fn draw_selection(&self, scene: &mut Scene, transform: Affine, theme: &Theme, main: Rect) {
+        if !self.has_selection() {
+            return;
+        }
+        let lo = self.sel_anchor.min(self.sel_cursor);
+        let hi = self.sel_anchor.max(self.sel_cursor).min(self.cells.len());
+        let fill = selection_color(theme);
+
+        let mut run: Option<((usize, i64), Rect)> = None;
+        let flush = |scene: &mut Scene, band: Rect, vp: &ViewportState| {
+            let tl = vp.content_point_to_screen(Point::new(band.x0, band.y0));
+            let br = vp.content_point_to_screen(Point::new(band.x1, band.y1));
+            let r = Rect::new(tl.x, tl.y, br.x, br.y);
+            if r.y1 >= main.y0 && r.y0 <= main.y1 {
+                scene.fill(Fill::NonZero, transform, fill, None, &r);
+            }
+        };
+        for cell in &self.cells[lo..hi] {
+            match &mut run {
+                Some((key, band)) if *key == cell.line_key => {
+                    band.x1 = band.x1.max(cell.rect.x1);
+                    band.y0 = band.y0.min(cell.rect.y0);
+                    band.y1 = band.y1.max(cell.rect.y1);
+                }
+                _ => {
+                    if let Some((_, band)) = run.take() {
+                        flush(scene, band, &self.viewport);
+                    }
+                    run = Some((cell.line_key, cell.rect));
+                }
+            }
+        }
+        if let Some((_, band)) = run.take() {
+            flush(scene, band, &self.viewport);
+        }
     }
 
     fn draw_thumbs(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + THUMB_STRIP_W, self.rect.y1);
+        let strip = self.thumb_strip();
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &strip);
         scene.stroke(
             &Stroke::new(1.0),
@@ -277,11 +652,10 @@ impl PreviewPane {
         let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
         let mut y = self.rect.y0 + THUMB_GAP;
         for i in 0..self.images.len() {
-            let (pw, ph) = self.sizes[i];
+            let (pw, ph) = self.sizes_px[i];
             let th = tw * (ph.max(1) as f64) / (pw.max(1) as f64);
             let r = Rect::new(self.rect.x0 + THUMB_GAP, y, self.rect.x0 + THUMB_GAP + tw, y + th);
 
-            // Selection ring for the current page.
             if i == self.current {
                 let ring = r.inflate(3.0, 3.0);
                 scene.stroke(&Stroke::new(2.0), transform, theme.accent_primary, None, &ring);
@@ -318,5 +692,149 @@ impl PreviewPane {
             transform * Affine::translate((x.max(self.rect.x0 + 12.0), y)),
             None,
         );
+    }
+}
+
+/// Normalise a wheel delta into logical pixels per axis (matching the shared
+/// viewport kernel's own scaling so wheel feel is identical across apps).
+fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+        MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
+    }
+}
+
+/// A translucent accent used for the selection highlight over the page.
+fn selection_color(theme: &Theme) -> Color {
+    let a = theme.accent_primary;
+    Color::from_rgba8(a.r(), a.g(), a.b(), 90)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::{PageImage, TextCell, TextRun};
+    use std::sync::Arc;
+    use winit::keyboard::ModifiersState;
+
+    fn page(w_pt: f64, h_pt: f64) -> PageImage {
+        let (pw, ph) = (w_pt.max(1.0) as u32, h_pt.max(1.0) as u32);
+        PageImage {
+            rgba: Arc::from(vec![255u8; (pw * ph * 4) as usize]),
+            width: pw,
+            height: ph,
+            width_pt: w_pt,
+            height_pt: h_pt,
+        }
+    }
+
+    /// One page-point-space line of `chars` starting at `x0`, each cell `cw`
+    /// wide, baseline box `[y, y+12]`.
+    fn line_run(y: f64, chars: &str, x0: f64, cw: f64) -> TextRun {
+        let mut cells = Vec::new();
+        let mut x = x0;
+        for ch in chars.chars() {
+            cells.push(TextCell { x0: x, x1: x + cw, text: ch.to_string() });
+            x += cw;
+        }
+        TextRun { top: y, bottom: y + 12.0, cells }
+    }
+
+    /// A 200×800pt single-page preview in a 400×300 pane with one text line.
+    fn pane() -> PreviewPane {
+        let mut p = PreviewPane::new();
+        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        let pages = vec![page(200.0, 800.0)];
+        let runs = vec![line_run(40.0, "Hello world", 20.0, 8.0)];
+        p.set_pages_with_text(&pages, &[runs]);
+        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        p
+    }
+
+    #[test]
+    fn ctrl_wheel_zooms_toward_cursor() {
+        let mut p = pane();
+        let z0 = p.viewport.zoom();
+        let center = p.viewport.rect().center();
+        // Ctrl + wheel-up zooms in.
+        p.on_wheel(
+            &MouseScrollDelta::LineDelta(0.0, 1.0),
+            &ModifiersState::CONTROL,
+            center,
+            1.0,
+        );
+        assert!(p.viewport.zoom() > z0, "ctrl+wheel-up zooms in");
+        assert!(!p.fit_width, "an explicit zoom drops the fit-width intent");
+    }
+
+    #[test]
+    fn plain_wheel_scrolls_when_zoomed_tall() {
+        let mut p = pane();
+        // Even at fit-width a 200×800pt page overflows the 300px pane vertically.
+        assert!(p.viewport.overflows_y(), "tall page overflows vertically");
+        p.demo_set_view(1.6, 0.3);
+        let y0 = p.viewport.scroll_y();
+        // Plain wheel-down pans further down.
+        p.on_wheel(
+            &MouseScrollDelta::LineDelta(0.0, -1.0),
+            &ModifiersState::empty(),
+            p.viewport.rect().center(),
+            1.0,
+        );
+        assert!(p.viewport.scroll_y() > y0, "plain wheel scrolls the zoomed page down");
+    }
+
+    #[test]
+    fn tilt_wheel_scrolls_vertically_when_no_horizontal_overflow() {
+        let mut p = pane();
+        // Fit-width: nothing to scroll sideways, but the page is tall.
+        assert!(!p.viewport.overflows_x());
+        assert!(p.viewport.overflows_y());
+        p.demo_set_view(1.0, 0.3); // move off the top so a scroll can register
+        let y0 = p.viewport.scroll_y();
+        // A tilt (horizontal) wheel is folded into vertical panning.
+        p.on_wheel(
+            &MouseScrollDelta::LineDelta(1.0, 0.0),
+            &ModifiersState::empty(),
+            p.viewport.rect().center(),
+            1.0,
+        );
+        assert_ne!(p.viewport.scroll_y(), y0, "tilt wheel moves a tall page vertically");
+    }
+
+    #[test]
+    fn drag_selects_text_and_copies() {
+        let mut p = pane();
+        // Press at the first glyph, drag to just before the space (5 chars in).
+        let start = p.viewport.content_point_to_screen(Point::new(21.0, 46.0));
+        let end = p.viewport.content_point_to_screen(Point::new(20.0 + 8.0 * 5.0 + 1.0, 46.0));
+        assert!(p.on_mouse_down(start, false), "a text press begins a selection drag");
+        p.on_mouse_drag(end);
+        assert!(p.has_selection(), "the drag produced a selection");
+        assert_eq!(p.selected_text().as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn select_all_covers_every_cell_and_copies_with_line_break() {
+        let mut p = PreviewPane::new();
+        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        let pages = vec![page(200.0, 400.0)];
+        let runs = vec![line_run(40.0, "ab", 20.0, 8.0), line_run(80.0, "cd", 20.0, 8.0)];
+        p.set_pages_with_text(&pages, &[runs]);
+        p.select_all();
+        assert_eq!(p.selected_text().as_deref(), Some("ab\ncd"), "line break between runs");
+    }
+
+    #[test]
+    fn switching_pages_via_thumb_scrolls() {
+        let mut p = PreviewPane::new();
+        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        let pages = vec![page(200.0, 260.0), page(200.0, 260.0), page(200.0, 260.0)];
+        p.set_pages_with_text(&pages, &[vec![], vec![], vec![]]);
+        p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert!(p.has_thumbs());
+        p.scroll_to_page(2);
+        assert_eq!(p.current_page(), 2);
+        assert!(p.viewport.scroll_y() > 0.0, "jumping to a later page scrolls down");
     }
 }
