@@ -724,6 +724,14 @@ impl TextInput {
         }
     }
 
+    /// Public select-all: span the whole field (anchor at 0, caret at end).
+    /// No-op when empty. Used by wrapper widgets that want "focus selects
+    /// the value" semantics — e.g. [`NumberInput`](crate::widget::NumberInput)
+    /// selects its number on focus so the first keystroke replaces it.
+    pub fn select_all(&mut self) {
+        self.do_select_all();
+    }
+
     /// Build (and open) the right-click context menu at `pos`.
     ///
     /// If nothing is selected, the word under the click is selected first
@@ -2127,5 +2135,245 @@ mod tests {
         assert!(
             (text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01
         );
+    }
+
+    // ---- selection on the production `handle_event` path --------------------
+    //
+    // The word-boundary helpers are unit-tested above; these prove the
+    // *widget* wires them up correctly — every behaviour is driven through
+    // `handle_event`, never by poking private fields, so a regression in the
+    // event routing (not just the helper) is caught.
+
+    /// Build a `Modifiers` with the requested ctrl / shift state.
+    fn mods(ctrl: bool, shift: bool) -> Modifiers {
+        use winit::keyboard::ModifiersState;
+        let mut s = ModifiersState::empty();
+        if ctrl {
+            s |= ModifiersState::CONTROL;
+        }
+        if shift {
+            s |= ModifiersState::SHIFT;
+        }
+        Modifiers::from(s)
+    }
+
+    /// A `WindowEvent::KeyboardInput` for a named key (arrows, Home/End).
+    fn named_key_event(k: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn mouse_move(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn left_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Drive one event through `handle_event`, returning whether it was
+    /// consumed. Uses a throwaway taffy node — the input embeds no children.
+    fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: &Modifiers) -> bool {
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        ti.handle_event(
+            ev, 1.0, m, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+        );
+        handled
+    }
+
+    /// Run one `draw` so `char_x_positions` is populated (mouse hit-testing
+    /// needs it). Unfocused, so `scroll_x` stays 0 and click math is simple.
+    fn draw_to_populate(ti: &mut TextInput) {
+        let theme = Theme::dark();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Logical x that resolves (via `cursor_from_x`) to byte `b`. Mirrors the
+    /// handler's own `padding_x = 10.0` and assumes `scroll_x == 0`.
+    fn x_for_byte(ti: &TextInput, b: usize) -> f64 {
+        ti.rect.x0 + 10.0 + ti.char_x_positions()[b]
+    }
+
+    /// Shift + Arrow extends the selection one character at a time.
+    #[test]
+    fn shift_arrow_extends_selection_by_char() {
+        let mut ti = TextInput::local().with_initial_value("abcdef");
+        ti.set_focus(true);
+        ti.set_cursor_pos(3);
+        let mut doc = AutoCommit::new();
+
+        assert!(drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(false, true)));
+        assert_eq!(ti.selection_range(), Some((3, 4)), "shift+Right extends by one char");
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(false, true));
+        assert_eq!(ti.selection_range(), Some((3, 5)));
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowLeft), &mods(false, true));
+        assert_eq!(ti.selection_range(), Some((3, 4)), "shift+Left shrinks it back");
+    }
+
+    /// Ctrl + Arrow moves the caret a whole word without selecting.
+    #[test]
+    fn ctrl_arrow_moves_caret_by_word() {
+        let mut ti = TextInput::local().with_initial_value("hello world foo");
+        ti.set_focus(true);
+        ti.set_cursor_pos(0);
+        let mut doc = AutoCommit::new();
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, false));
+        assert_eq!(ti.cursor_pos(), 6, "ctrl+Right jumps to start of the next word");
+        assert_eq!(ti.selection_range(), None, "no shift → no selection");
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, false));
+        assert_eq!(ti.cursor_pos(), 12, "ctrl+Right again → start of 'foo'");
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowLeft), &mods(true, false));
+        assert_eq!(ti.cursor_pos(), 6, "ctrl+Left walks back a word");
+    }
+
+    /// Shift + Ctrl + Arrow extends the selection by whole words.
+    #[test]
+    fn shift_ctrl_arrow_extends_selection_by_word() {
+        let mut ti = TextInput::local().with_initial_value("hello world foo");
+        ti.set_focus(true);
+        ti.set_cursor_pos(0);
+        let mut doc = AutoCommit::new();
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, true));
+        assert_eq!(ti.selection_range(), Some((0, 6)), "shift+ctrl+Right selects the first word span");
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(true, true));
+        assert_eq!(ti.selection_range(), Some((0, 12)), "extends by another word");
+    }
+
+    /// Home / End (and their shift variants) move / extend to the line ends.
+    #[test]
+    fn home_end_move_and_extend() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.set_focus(true);
+        ti.set_cursor_pos(5);
+        let mut doc = AutoCommit::new();
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::End), &mods(false, false));
+        assert_eq!(ti.cursor_pos(), 11, "End → end of field");
+        assert_eq!(ti.selection_range(), None);
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Home), &mods(false, false));
+        assert_eq!(ti.cursor_pos(), 0, "Home → start of field");
+
+        // Shift+End from the start selects the whole line.
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::End), &mods(false, true));
+        assert_eq!(ti.selection_range(), Some((0, 11)), "shift+End selects to line end");
+        // Shift+Home from the end selects the whole line too.
+        ti.set_cursor_pos(11);
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Home), &mods(false, true));
+        assert_eq!(ti.selection_range(), Some((0, 11)), "shift+Home selects to line start");
+    }
+
+    /// Ctrl + A selects the whole field, and Ctrl + X then cuts the selection
+    /// (both via the real key path).
+    #[test]
+    fn ctrl_a_selects_all_and_ctrl_x_cuts() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        drive(&mut ti, &mut doc, &char_key_event("a"), &mods(true, false));
+        assert_eq!(ti.selection_range(), Some((0, 11)), "ctrl+A selects everything");
+
+        drive(&mut ti, &mut doc, &char_key_event("x"), &mods(true, false));
+        assert_eq!(ti.value(), "", "ctrl+X cuts the selection");
+        assert_eq!(ti.selection_range(), None, "selection collapsed after cut");
+    }
+
+    /// Typing over a selection replaces it — the insert path respects the
+    /// live selection when driven through `handle_event`.
+    #[test]
+    fn typing_replaces_selection_via_handle_event() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        drive(&mut ti, &mut doc, &char_key_event("a"), &mods(true, false)); // select all
+        drive(&mut ti, &mut doc, &char_key_event("Z"), &mods(false, false)); // type over it
+        assert_eq!(ti.value(), "Z", "typing over a full selection replaces it");
+    }
+
+    /// Double-click selects the word under the pointer, via the real mouse
+    /// event ladder (move → press → release → press).
+    #[test]
+    fn double_click_selects_word_via_handle_event() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let mut doc = AutoCommit::new();
+
+        let bx = x_for_byte(&ti, 8); // inside "world" (bytes 6..11)
+        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), &mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
+        drive(&mut ti, &mut doc, &left_release(), &mods(false, false));
+        // Second press within the multi-click interval → double click.
+        drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
+
+        assert_eq!(ti.selection_range(), Some((6, 11)), "double-click selected the word");
+        assert_eq!(ti.selected_str(), Some("world"));
+    }
+
+    /// A press-drag selects a character range that tracks the pointer.
+    #[test]
+    fn drag_selects_range_via_handle_event() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let mut doc = AutoCommit::new();
+
+        let x_start = x_for_byte(&ti, 2);
+        let x_end = x_for_byte(&ti, 9);
+        drive(&mut ti, &mut doc, &mouse_move(x_start, 20.0), &mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
+        assert!(ti.is_dragging(), "press starts a drag");
+        drive(&mut ti, &mut doc, &mouse_move(x_end, 20.0), &mods(false, false));
+        assert_eq!(ti.selection_range(), Some((2, 9)), "drag selected the swept range");
+        drive(&mut ti, &mut doc, &left_release(), &mods(false, false));
+        assert!(!ti.is_dragging(), "release ends the drag");
+    }
+
+    /// Triple-click selects the whole field.
+    #[test]
+    fn triple_click_selects_all_via_handle_event() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let mut doc = AutoCommit::new();
+
+        let bx = x_for_byte(&ti, 8);
+        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), &mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
+        assert_eq!(ti.selection_range(), Some((0, 11)), "triple-click selects the whole field");
     }
 }
