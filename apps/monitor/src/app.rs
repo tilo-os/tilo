@@ -12,7 +12,7 @@
 //! cached in [`Hit`] and consulted by `handle_event` on the next input —
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -29,11 +29,12 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::popover::Popover;
 use ui::widget::Widget;
 
 use crate::charts::{self, with_alpha, Series};
 use crate::layout;
-use crate::model::{fmt_bytes, fmt_rate, fmt_uptime, MonitorModel, ProcessInfo};
+use crate::model::{fmt_bytes, fmt_rate, fmt_uptime, MonitorModel, ProcessInfo, Ring};
 use crate::prefs::Prefs;
 use crate::responsive::{ProcPane, ProcPush};
 use crate::sampler::{Sampler, StopKind};
@@ -124,6 +125,36 @@ const CONTEXT_MENU_PAD: f64 = 6.0;
 /// is always true), so the toast clears itself without any further input.
 const TOAST_MS: u64 = 2200;
 
+/// Refresh cadences offered by the interval control, smallest → largest. A
+/// quick click on the pill cycles through them; a long-press opens a popover
+/// listing them all. Kept in one place so the pill label, the cycle order and
+/// the popover options stay in lock-step.
+const INTERVAL_OPTIONS: [u64; 5] = [1000, 1500, 2000, 3000, 5000];
+
+/// Press-and-hold duration on the interval pill that opens the option popover
+/// instead of cycling. A release before this fires the plain click-to-cycle.
+const LONG_PRESS_MS: u128 = 350;
+
+/// Sample depth of the per-process CPU sparkline shown in the detail pane —
+/// a shorter window than the whole-system charts so the mini-line stays punchy.
+const PROC_SPARK_CAP: usize = 48;
+
+/// Height of the pinned action bar at the bottom of the detail pane. The
+/// Kill/Stop buttons live here and nowhere else, so process content above can
+/// never collide with them however narrow the pane gets.
+const DETAIL_ACTION_H: f64 = 46.0;
+
+/// Human label for a refresh cadence in ms: `1s`, `1.5s`, `2s`. Whole seconds
+/// drop the decimal. Mirrors [`crate::prefs::Prefs::interval_label`] so the
+/// pill and the popover options read identically.
+fn interval_label(ms: u64) -> String {
+    if ms % 1000 == 0 {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{:.1}s", ms as f32 / 1000.0)
+    }
+}
+
 /// A scrollbar's on-screen geometry, recorded during `draw` so `handle_event`
 /// can hit-test its thumb/track and map a thumb drag to a scroll value.
 /// `max_value` is the scroll range's ceiling in that bar's own units — rows
@@ -164,6 +195,8 @@ struct Hit {
     /// The "Tree / Flat" view toggle pill in the toolbar.
     tree_toggle: Rect,
     kill_btn: Rect,
+    /// The "Stop" (SIGTERM) button in the detail pane's action bar.
+    stop_btn: Rect,
     /// Context-menu item rects, recorded while the menu is open.
     menu_items: Vec<(usize, Rect)>,
     modal_kill: Rect,
@@ -198,6 +231,7 @@ impl Hit {
             sum_toggle: Rect::ZERO,
             tree_toggle: Rect::ZERO,
             kill_btn: Rect::ZERO,
+            stop_btn: Rect::ZERO,
             menu_items: Vec::new(),
             modal_kill: Rect::ZERO,
             modal_cancel: Rect::ZERO,
@@ -270,6 +304,24 @@ pub struct MonitorApp {
     /// rects). Consumed on the first frame that finds the row.
     context_menu_seed: Option<u32>,
 
+    // interval control
+    /// The refresh-interval option menu opened by long-pressing the pill (the
+    /// reusable `ui::widget::Popover`; this app supplies the input routing, the
+    /// same way it drives its `ContextMenu`).
+    interval_popover: Popover,
+    /// When the left button went down on the interval pill (Some while held).
+    /// A quick release cycles; a hold past [`LONG_PRESS_MS`] opens the popover.
+    interval_press: Option<Instant>,
+    /// Whether the current hold already opened the popover (so the release
+    /// doesn't also cycle).
+    interval_hold_opened: bool,
+    /// A `--shots` request to open the interval popover on the next frame, once
+    /// the pill's hit rect is known from `draw_header`.
+    interval_popover_seed: bool,
+    /// Rolling per-process CPU history, keyed by pid, feeding the detail pane's
+    /// sparkline. Pushed each live refresh and pruned to the live process set.
+    proc_cpu_hist: HashMap<u32, Ring>,
+
     // responsive layout
     /// The Processes master-detail push flow used only when narrow.
     proc_push: ProcPush,
@@ -319,7 +371,12 @@ impl MonitorApp {
             .map(|p| p.pid);
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        Self::build(model, selected_pid, Instant::now())
+        let mut app = Self::build(model, selected_pid, Instant::now());
+        // Seed a synthetic CPU history for the pre-selected process so the
+        // detail pane's sparkline reads as "alive" in the hermetic shot frame
+        // (which never ticks the live sampler that would fill it for real).
+        app.seed_selected_spark();
+        app
     }
 
     /// Construct for the live window: start from an empty model and force the
@@ -363,6 +420,11 @@ impl MonitorApp {
             copied_at: None,
             scroll_drag: None,
             context_menu_seed: None,
+            interval_popover: Popover::new().with_label("Refresh interval"),
+            interval_press: None,
+            interval_hold_opened: false,
+            interval_popover_seed: false,
+            proc_cpu_hist: HashMap::new(),
             proc_push: ProcPush::default(),
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -382,8 +444,40 @@ impl MonitorApp {
         if self.last_refresh.elapsed() >= Duration::from_millis(self.prefs.interval_ms) {
             self.sampler.refresh(&mut self.model);
             self.last_refresh = Instant::now();
+            self.record_proc_cpu();
             self.clamp_scroll();
         }
+    }
+
+    /// Fold this refresh's per-process CPU into the sparkline histories, then
+    /// prune rings for processes that have since exited so the map stays bound
+    /// to the live process set.
+    fn record_proc_cpu(&mut self) {
+        for p in &self.model.processes {
+            self.proc_cpu_hist
+                .entry(p.pid)
+                .or_insert_with(|| Ring::new(PROC_SPARK_CAP))
+                .push(p.cpu);
+        }
+        let live: HashSet<u32> = self.model.processes.iter().map(|p| p.pid).collect();
+        self.proc_cpu_hist.retain(|pid, _| live.contains(pid));
+    }
+
+    /// Seed the currently-selected process's CPU ring with a synthetic wave
+    /// around its present load. Used only by the hermetic `--shots`/sample
+    /// constructor so the detail sparkline has data before any live refresh.
+    fn seed_selected_spark(&mut self) {
+        let Some(pid) = self.selected_pid else { return };
+        let Some(p) = self.model.processes.iter().find(|p| p.pid == pid) else { return };
+        let base = p.cpu;
+        let ring = Ring::from_iter(
+            PROC_SPARK_CAP,
+            (0..PROC_SPARK_CAP).map(|i| {
+                let t = i as f32;
+                (base + 9.0 * (t * 0.31).sin() + 4.0 * (t * 0.73).cos()).clamp(0.0, base.max(4.0) * 1.6)
+            }),
+        );
+        self.proc_cpu_hist.insert(pid, ring);
     }
 
     /// The filtered + sorted process list currently displayed.
@@ -619,6 +713,60 @@ impl MonitorApp {
         self.context_pid = None;
     }
 
+    // ---- interval option popover -----------------------------------------
+
+    /// Open the refresh-interval popover anchored under the pill, with the
+    /// current cadence pre-selected. Seeds the reusable `Popover` primitive
+    /// with the [`INTERVAL_OPTIONS`] labels and hands it the window rect as its
+    /// viewport so it flips/clamps to stay on-screen.
+    fn open_interval_popover(&mut self) {
+        let labels: Vec<String> = INTERVAL_OPTIONS.iter().map(|ms| interval_label(*ms)).collect();
+        let selected = INTERVAL_OPTIONS.iter().position(|ms| *ms == self.prefs.interval_ms);
+        self.interval_popover.set_items(labels);
+        self.interval_popover.set_viewport(self.rect);
+        // The pill's hit rect is known after `draw_header`; fall back to a
+        // sensible header-corner anchor if the popover is opened outside a draw
+        // (headless tests that never paint a frame).
+        let anchor = if self.hit.interval == Rect::ZERO {
+            Rect::new(self.rect.x1 - 140.0, self.rect.y0 + 20.0, self.rect.x1 - 40.0, self.rect.y0 + 48.0)
+        } else {
+            self.hit.interval
+        };
+        self.interval_popover.open_at(anchor, selected);
+    }
+
+    /// Apply the interval option the popover just yielded (drained via
+    /// `take_selection`) to the prefs + CRDT.
+    fn apply_interval_selection(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        if let Some(sel) = self.interval_popover.take_selection() {
+            self.prefs.interval_ms = INTERVAL_OPTIONS[sel];
+            self.prefs.store(doc, path);
+        }
+    }
+
+    /// Resolve a completed press on the interval pill. A release *after* the
+    /// long-press threshold has already opened the popover (via the hold check
+    /// in `draw`) leaves it up; a release *before* the threshold cycles the
+    /// cadence — the plain click. A release that crosses the threshold with no
+    /// paint in between (headless) opens the popover now. Returns whether a
+    /// pending press was consumed.
+    fn release_interval_press(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        let Some(started) = self.interval_press.take() else {
+            return false;
+        };
+        if self.interval_hold_opened {
+            self.interval_hold_opened = false;
+            return true;
+        }
+        if started.elapsed().as_millis() >= LONG_PRESS_MS {
+            self.open_interval_popover();
+        } else {
+            self.prefs.cycle_interval();
+            self.prefs.store(doc, path);
+        }
+        true
+    }
+
     // ---- shot-scenario seed helpers --------------------------------------
     /// Expand every process whose name is in `names` (for the tree-expanded
     /// shots). Matches on the live model names so the seed survives a relabel.
@@ -817,6 +965,8 @@ impl MonitorApp {
     /// * `"detail"` — snap the narrow Processes push flow to the pushed detail
     ///   pane (otherwise a narrow frame opens to the table, as a fresh window
     ///   would).
+    /// * `"interval-popover"` — open the refresh-interval option popover under
+    ///   the header pill (long-press invoked at runtime).
     /// * `"resources"`      — switch to the Resources dashboard so a shot shows
     ///   the overview row + per-core grid + chart grid.
     /// * `"resources-many"` — Resources tab seeded with a high core count so a
@@ -825,6 +975,9 @@ impl MonitorApp {
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "detail" => self.proc_push.snap(ProcPane::Detail),
+            // Open the refresh-interval option popover (anchored under the pill,
+            // which isn't positioned until `draw_header` runs, so defer it).
+            "interval-popover" => self.interval_popover_seed = true,
             "resources" => self.tab = Tab::Resources,
             // ---- process-tree scenarios -----------------------------------
             // The default frame is already the tree COLLAPSED with summed
@@ -1700,47 +1853,171 @@ impl MonitorApp {
         }
     }
 
+    /// The per-process detail pane. Reserves a pinned action bar (Stop + Kill)
+    /// at the bottom so process content can never collide with the buttons.
+    /// When the pane is tall (the narrow pushed detail), fills the space with
+    /// the command line, identity, a live CPU sparkline and a two-column stat
+    /// grid; when it's the short wide strip, keeps a compact chip row clear of
+    /// the reserved buttons.
     fn draw_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
         let c = &theme.tokens.colors;
         let inner = charts::panel(scene, t, r, theme, 12.0);
         self.hit.kill_btn = Rect::ZERO;
+        self.hit.stop_btn = Rect::ZERO;
         let Some(p) = self.selected_process() else {
             tr.draw_text(scene, "Select a process to view details and actions.", theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((inner.x0, inner.center().y - 8.0)), None);
             return;
         };
-        // Name + pid.
-        tr.draw_text_weighted(scene, &p.name, theme.tokens.typography.scale.lg, c.text_primary, t * Affine::translate((inner.x0, inner.y0)), None, TextWeight::Bold);
-        tr.draw_text(scene, &format!("PID {}  ·  {}  ·  {}", p.pid, p.user, p.status), theme.tokens.typography.scale.xs, c.text_dim, t * Affine::translate((inner.x0, inner.y0 + 24.0)), None);
 
-        // Stat chips.
-        let chip = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str, value: &str, color: Color| -> f64 {
-            let fs = theme.tokens.typography.scale.xs;
-            let vs = theme.tokens.typography.scale.base;
-            tr.draw_text(scene, label, fs, c.text_dim, t * Affine::translate((x, inner.y1 - 34.0)), None);
-            tr.draw_text_weighted(scene, value, vs, color, t * Affine::translate((x, inner.y1 - 20.0)), None, TextWeight::Bold);
-            let w1 = tr.measure(label, fs, None).0 as f64;
-            let w2 = tr.measure_weighted(value, vs, None, TextWeight::Bold).0 as f64;
-            x + w1.max(w2) + 28.0
-        };
-        let mut x = inner.x0;
-        x = chip(scene, tr, x, "CPU", &format!("{:.1}%", p.cpu), charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0)));
-        x = chip(scene, tr, x, "MEMORY", &fmt_bytes(p.mem_bytes), c.text_primary);
-        x = chip(scene, tr, x, "THREADS", &p.threads.to_string(), c.text_primary);
-        let _ = chip(scene, tr, x, "STATUS", &p.status, c.semantic.info);
+        let xs = theme.tokens.typography.scale.xs;
+        let sm = theme.tokens.typography.scale.sm;
+        let base = theme.tokens.typography.scale.base;
+        let lg = theme.tokens.typography.scale.lg;
+        let ppid = p.ppid.map(|x| x.to_string()).unwrap_or_else(|| "—".into());
+        let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
-        // Kill button (danger), bottom-right.
-        let kw = 96.0;
-        let kh = 32.0;
-        let kr = Rect::new(inner.x1 - kw, inner.y1 - kh, inner.x1, inner.y1);
-        charts::fill_rrect(scene, t, kr, theme.tokens.radii.md as f64, c.semantic.danger);
-        let kl = "Kill";
-        let kfs = theme.tokens.typography.scale.sm;
-        let icon_r = Rect::new(kr.x0 + 16.0, kr.center().y - 8.0, kr.x0 + 32.0, kr.center().y + 8.0);
-        icons::draw_icon(scene, t, icon_r, Icon::X, Color::WHITE, 1.8);
-        let (klw, klh) = tr.measure_weighted(kl, kfs, None, TextWeight::Semibold);
-        tr.draw_text_weighted(scene, kl, kfs, Color::WHITE, t * Affine::translate((icon_r.x1 + 6.0, kr.center().y - klh as f64 / 2.0)), None, TextWeight::Semibold);
-        let _ = klw;
-        self.hit.kill_btn = kr;
+        let tall = inner.height() > 150.0;
+
+        if tall {
+            // ---- full detail: reserve a bottom action bar, fill above it ----
+            let bar = Rect::new(inner.x0, inner.y1 - DETAIL_ACTION_H, inner.x1, inner.y1);
+            let content = Rect::new(inner.x0, inner.y0, inner.x1, bar.y0 - 12.0);
+            let mut y = content.y0;
+
+            // Header: name + identity line.
+            tr.draw_text_weighted(scene, &p.name, lg, c.text_primary, t * Affine::translate((content.x0, y)), None, TextWeight::Bold);
+            y += lg as f64 + 8.0;
+            let ident = format!("PID {}   ·   PPID {}   ·   {}", p.pid, ppid, p.user);
+            tr.draw_text(scene, &ident, xs, c.text_dim, t * Affine::translate((content.x0, y)), None);
+            y += xs as f64 + 14.0;
+
+            // Command line.
+            tr.draw_text_weighted(scene, "COMMAND", xs, c.text_dim, t * Affine::translate((content.x0, y)), None, TextWeight::Semibold);
+            y += xs as f64 + 4.0;
+            let cmd = Self::truncate(tr, &p.cmd, sm, content.width());
+            tr.draw_text(scene, &cmd, sm, c.text_primary, t * Affine::translate((content.x0, y)), None);
+            y += sm as f64 + 14.0;
+
+            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &Line::new((content.x0, y), (content.x1, y)));
+            y += 14.0;
+
+            // CPU sparkline block: label + current value over a mini area line.
+            tr.draw_text_weighted(scene, "CPU", xs, c.text_dim, t * Affine::translate((content.x0, y)), None, TextWeight::Semibold);
+            let cpu_val = format!("{:.1}%", p.cpu);
+            let (cvw, _) = tr.measure_weighted(&cpu_val, base, None, TextWeight::Bold);
+            tr.draw_text_weighted(scene, &cpu_val, base, cpu_col, t * Affine::translate((content.x1 - cvw as f64, y - 2.0)), None, TextWeight::Bold);
+            y += base as f64 + 6.0;
+            // The stat grid gets a fixed, comfortable stride; the sparkline
+            // absorbs whatever vertical slack remains so a tall pane fills
+            // top-to-bottom cleanly instead of leaving gaps between the rows.
+            let stats: [(&str, String, Color); 6] = [
+                ("MEMORY (RSS)", fmt_bytes(p.mem_bytes), c.text_primary),
+                ("VIRTUAL", fmt_bytes(p.virt_bytes), c.text_primary),
+                ("THREADS", p.threads.to_string(), c.text_primary),
+                ("OPEN FILES", p.open_files.map(|n| n.to_string()).unwrap_or_else(|| "—".into()), c.text_primary),
+                ("STATUS", p.status.clone(), c.semantic.info),
+                ("RUNNING FOR", fmt_uptime(p.run_secs), c.text_primary),
+            ];
+            let cols = 2usize;
+            let grid_rows = stats.len().div_ceil(cols);
+            let stat_row_h = 48.0;
+            let grid_h = grid_rows as f64 * stat_row_h;
+            // Sparkline fills the space between the CPU value line and the grid
+            // (minus the two 14px divider gaps around it), floored so it stays
+            // legible on a short pane.
+            let spark_h = (content.y1 - y - grid_h - 28.0).max(46.0);
+            let spark = Rect::new(content.x0, y, content.x1, y + spark_h);
+            charts::fill_rrect(scene, t, spark, 6.0, with_alpha(c.border_standard, 40));
+            if let Some(ring) = self.proc_cpu_hist.get(&p.pid) {
+                let smax = ring.max().max(100.0);
+                charts::sparkline(scene, t, layout::inner(spark, 5.0), ring.as_slice(), smax, cpu_col);
+            }
+            y += spark_h + 14.0;
+
+            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &Line::new((content.x0, y), (content.x1, y)));
+            y += 14.0;
+
+            let col_gap = 18.0;
+            let cell_w = (content.width() - (cols as f64 - 1.0) * col_gap) / cols as f64;
+            for (i, (label, value, color)) in stats.iter().enumerate() {
+                let col = i % cols;
+                let row = i / cols;
+                let cx = content.x0 + col as f64 * (cell_w + col_gap);
+                let cy = y + row as f64 * stat_row_h;
+                tr.draw_text(scene, label, xs, c.text_dim, t * Affine::translate((cx, cy)), None);
+                let v = Self::truncate(tr, value, base, cell_w);
+                tr.draw_text_weighted(scene, &v, base, *color, t * Affine::translate((cx, cy + xs as f64 + 5.0)), None, TextWeight::Semibold);
+            }
+
+            // Reserved action bar: hairline top, right-aligned Stop + Kill.
+            scene.stroke(&Stroke::new(1.0), t, with_alpha(c.border_standard, 120), None, &Line::new((bar.x0, bar.y0), (bar.x1, bar.y0)));
+            self.draw_detail_actions(scene, t, tr, theme, bar);
+        } else {
+            // ---- compact strip: chips clamped left of a button cluster ------
+            let cluster_w = 92.0 + 8.0 + 92.0;
+            let bar = Rect::new(inner.x1 - cluster_w, inner.y1 - 32.0, inner.x1, inner.y1);
+            let chips_right = bar.x0 - 14.0;
+
+            tr.draw_text_weighted(scene, &p.name, lg, c.text_primary, t * Affine::translate((inner.x0, inner.y0)), None, TextWeight::Bold);
+            let ident = format!("PID {}  ·  PPID {}  ·  {}  ·  {}", p.pid, ppid, p.user, p.status);
+            let ident = Self::truncate(tr, &ident, xs, chips_right - inner.x0);
+            tr.draw_text(scene, &ident, xs, c.text_dim, t * Affine::translate((inner.x0, inner.y0 + lg as f64 + 4.0)), None);
+
+            // Chip row along the bottom, stopping before the button cluster.
+            let chip = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str, value: &str, color: Color| -> f64 {
+                if x > chips_right {
+                    return x;
+                }
+                tr.draw_text(scene, label, xs, c.text_dim, t * Affine::translate((x, inner.y1 - 30.0)), None);
+                tr.draw_text_weighted(scene, value, base, color, t * Affine::translate((x, inner.y1 - 16.0)), None, TextWeight::Bold);
+                let w1 = tr.measure(label, xs, None).0 as f64;
+                let w2 = tr.measure_weighted(value, base, None, TextWeight::Bold).0 as f64;
+                x + w1.max(w2) + 24.0
+            };
+            let mut x = inner.x0;
+            x = chip(scene, tr, x, "CPU", &format!("{:.1}%", p.cpu), cpu_col);
+            x = chip(scene, tr, x, "RSS", &fmt_bytes(p.mem_bytes), c.text_primary);
+            x = chip(scene, tr, x, "VIRT", &fmt_bytes(p.virt_bytes), c.text_primary);
+            x = chip(scene, tr, x, "THREADS", &p.threads.to_string(), c.text_primary);
+            let _ = chip(scene, tr, x, "FILES", &p.open_files.map(|n| n.to_string()).unwrap_or_else(|| "—".into()), c.text_primary);
+
+            self.draw_detail_actions(scene, t, tr, theme, bar);
+        }
+    }
+
+    /// Draw the detail pane's Stop (SIGTERM) + Kill (SIGKILL) buttons,
+    /// right-aligned inside `bar`, and record their hit rects. Both fit within
+    /// `bar` so they occupy only the reserved area.
+    fn draw_detail_actions(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+        let c = &theme.tokens.colors;
+        let bh = (bar.height() - 8.0).clamp(26.0, 34.0);
+        let by0 = bar.center().y - bh / 2.0;
+        let bw = 92.0_f64.min((bar.width() - 8.0) / 2.0);
+        let kill_r = Rect::new(bar.x1 - bw, by0, bar.x1, by0 + bh);
+        let stop_r = Rect::new(kill_r.x0 - 8.0 - bw, by0, kill_r.x0 - 8.0, by0 + bh);
+        Self::draw_action_button(scene, t, tr, theme, stop_r, "Stop", Icon::Power, c.surface_white_5, c.text_primary, true);
+        Self::draw_action_button(scene, t, tr, theme, kill_r, "Kill", Icon::X, c.semantic.danger, Color::WHITE, false);
+        self.hit.stop_btn = stop_r;
+        self.hit.kill_btn = kill_r;
+    }
+
+    /// One rounded action button: fill + optional border, an icon and a label,
+    /// both in `text_color`, centred as an icon-then-label pair.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_action_button(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, icon: Icon, fill: Color, text_color: Color, border: bool) {
+        let radius = theme.tokens.radii.md as f64;
+        charts::fill_rrect(scene, t, rect, radius, fill);
+        if border {
+            charts::stroke_rrect(scene, t, rect, radius, theme.tokens.colors.border_standard, 1.0);
+        }
+        let fs = theme.tokens.typography.scale.sm;
+        let (lw, lh) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
+        // Centre the icon+label pair (16px icon + 6px gap + label) in the button.
+        let pair_w = 16.0 + 6.0 + lw as f64;
+        let start = rect.center().x - pair_w / 2.0;
+        let icon_r = Rect::new(start, rect.center().y - 8.0, start + 16.0, rect.center().y + 8.0);
+        icons::draw_icon(scene, t, icon_r, icon, text_color, 1.8);
+        tr.draw_text_weighted(scene, label, fs, text_color, t * Affine::translate((icon_r.x1 + 6.0, rect.center().y - lh as f64 / 2.0)), None, TextWeight::Semibold);
     }
 
     /// The Resources dashboard. Top-to-bottom: an **overview row** (Processor
@@ -2017,6 +2294,20 @@ impl MonitorApp {
             return;
         }
 
+        // An open interval popover captures clicks: a press on an option row
+        // selects that cadence, a press anywhere else dismisses. Either way the
+        // click is consumed so it doesn't fall through to the content.
+        if self.interval_popover.is_open() {
+            if let Some(idx) = self.interval_popover.item_at(p) {
+                self.interval_popover.select(idx);
+                self.apply_interval_selection(doc, path);
+            } else {
+                self.interval_popover.close();
+            }
+            *handled = true;
+            return;
+        }
+
         // An open context menu floats above the rest of the content. A click
         // on one of its action rows dispatches the action (and the action's
         // callback records a `ProcAction` we then drain + apply); a click
@@ -2091,8 +2382,12 @@ impl MonitorApp {
             return;
         }
         if self.hit.interval.contains(p) {
-            self.prefs.cycle_interval();
-            self.prefs.store(doc, path);
+            // The interval pill distinguishes a quick click (cycle) from a
+            // press-and-hold (open the option popover). Start the hold timer on
+            // press; `draw` opens the popover once it crosses the threshold, and
+            // `release_interval_press` cycles on an early release.
+            self.interval_press = Some(Instant::now());
+            self.interval_hold_opened = false;
             *handled = true;
             return;
         }
@@ -2140,6 +2435,13 @@ impl MonitorApp {
             if self.hit.kill_btn.contains(p) {
                 if let Some(pid) = self.selected_pid {
                     self.request_kill(pid, doc, path);
+                }
+                *handled = true;
+                return;
+            }
+            if self.hit.stop_btn.contains(p) {
+                if let Some(pid) = self.selected_pid {
+                    self.request_stop(pid, doc);
                 }
                 *handled = true;
                 return;
@@ -2230,6 +2532,26 @@ impl MonitorApp {
                     return;
                 }
             }
+        }
+
+        // Interval popover open: full keyboard nav (↑/↓/Home/End move, Enter
+        // selects, Esc closes). Every key is swallowed so none leaks to the
+        // table behind the overlay — the primitive's focus-capture contract.
+        if self.interval_popover.is_open() {
+            match key {
+                Key::Named(NamedKey::ArrowDown) => self.interval_popover.move_highlight(1),
+                Key::Named(NamedKey::ArrowUp) => self.interval_popover.move_highlight(-1),
+                Key::Named(NamedKey::Home) => self.interval_popover.highlight_first(),
+                Key::Named(NamedKey::End) => self.interval_popover.highlight_last(),
+                Key::Named(NamedKey::Enter) => {
+                    self.interval_popover.select_highlighted();
+                    self.apply_interval_selection(doc, path);
+                }
+                Key::Named(NamedKey::Escape) => self.interval_popover.close(),
+                _ => {}
+            }
+            *handled = true;
+            return;
         }
 
         // Context menu open: Esc dismisses it, everything else is swallowed.
@@ -2452,6 +2774,25 @@ impl Widget for MonitorApp {
 
         self.draw_header(scene, t, text_renderer, theme, header);
 
+        // A press-and-hold on the interval pill opens the option popover while
+        // still held (the pill's hit rect is now known from `draw_header`). The
+        // redraw loop keeps pumping — `needs_animation_frame` is always true —
+        // so this check fires mid-hold without waiting for another event.
+        if let Some(started) = self.interval_press {
+            if !self.interval_hold_opened
+                && !self.interval_popover.is_open()
+                && started.elapsed().as_millis() >= LONG_PRESS_MS
+            {
+                self.open_interval_popover();
+                self.interval_hold_opened = true;
+            }
+        }
+        // Headless `--shots` seed: open the popover deterministically once the
+        // pill is positioned.
+        if std::mem::take(&mut self.interval_popover_seed) {
+            self.open_interval_popover();
+        }
+
         // ---- whole-view vertical scroll -------------------------------
         // The Resources dashboard can be taller than its viewport — the
         // overview row + per-core grid + chart grid on a large machine or a
@@ -2546,6 +2887,13 @@ impl Widget for MonitorApp {
             self.hit.menu_items.clear();
         }
 
+        // The refresh-interval option popover floats above the content (below
+        // the confirm modal). The reusable primitive positions + paints itself
+        // against the pill anchor; the app routes clicks/keys into it.
+        if self.interval_popover.is_open() {
+            self.interval_popover.draw(scene, t, text_renderer, theme, _presence);
+        }
+
         // The "PID copied" toast floats above the content, below the modal.
         self.draw_toast(scene, t, text_renderer, theme);
 
@@ -2638,8 +2986,12 @@ impl Widget for MonitorApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // End any scrollbar thumb drag.
+                // End any scrollbar thumb drag, otherwise resolve a pending
+                // interval-pill press (quick release cycles; a held release
+                // that already opened the popover leaves it up).
                 if self.scroll_drag.take().is_some() {
+                    *handled = true;
+                } else if self.release_interval_press(doc, path) {
                     *handled = true;
                 }
             }
@@ -2699,6 +3051,15 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         a.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Whether two rects share more than a hairline of area (a real overlap).
+    fn rects_overlap(a: Rect, b: Rect) -> bool {
+        let x0 = a.x0.max(b.x0);
+        let y0 = a.y0.max(b.y0);
+        let x1 = a.x1.min(b.x1);
+        let y1 = a.y1.min(b.y1);
+        x1 > x0 + 0.5 && y1 > y0 + 0.5
     }
 
     #[test]
@@ -3448,23 +3809,166 @@ mod tests {
         }
     }
 
-    /// Clicking the interval pill cycles the cadence AND persists it to the
-    /// CRDT — the full `on_click` → `cycle_interval` → `store` production path.
+    /// A quick click (press + prompt release) on the interval pill cycles the
+    /// cadence AND persists it to the CRDT — the full `on_click` press →
+    /// `release_interval_press` → `cycle_interval` → `store` production path. A
+    /// press alone must NOT cycle (that would double-fire on a long-press).
     #[test]
     fn interval_pill_click_cycles_and_persists() {
         let mut a = app();
         a.hit.interval = Rect::new(0.0, 0.0, 80.0, 30.0);
+        a.prefs.interval_ms = 1000; // land on the cycle grid
         let before = a.prefs.interval_ms;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut h = false;
+        // Press: starts the hold timer, does NOT cycle yet.
         a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h, "interval pill consumed the click");
-        assert_ne!(a.prefs.interval_ms, before, "cadence advanced");
+        assert!(h, "interval pill consumed the press");
+        assert_eq!(a.prefs.interval_ms, before, "a bare press does not cycle");
+        // Release before the long-press threshold cycles + persists.
+        let cycled = a.release_interval_press(&mut doc, &root);
+        assert!(cycled, "the pending press was resolved on release");
+        assert_ne!(a.prefs.interval_ms, before, "a quick release cycled the cadence");
         assert_eq!(
             Prefs::load(&doc, &root).interval_ms,
             a.prefs.interval_ms,
             "new cadence persisted to the CRDT"
+        );
+        assert!(!a.interval_popover.is_open(), "a quick click never opens the popover");
+    }
+
+    /// Holding the interval pill past the long-press threshold opens the option
+    /// popover (instead of cycling), seeded with every cadence and the current
+    /// one pre-selected — the real `release_interval_press` long-press path.
+    #[test]
+    fn interval_long_press_opens_the_option_popover() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+        a.prefs.interval_ms = 2000;
+        let before = a.prefs.interval_ms;
+        // Simulate a press that started well past the long-press threshold.
+        a.interval_press = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(LONG_PRESS_MS as u64 + 200))
+                .unwrap(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let handled = a.release_interval_press(&mut doc, &root);
+        assert!(handled, "the held press was consumed");
+        assert!(a.interval_popover.is_open(), "a long-press opens the popover");
+        assert_eq!(a.prefs.interval_ms, before, "opening the popover does not cycle");
+        assert_eq!(
+            a.interval_popover.items().len(),
+            INTERVAL_OPTIONS.len(),
+            "every cadence is offered"
+        );
+        assert_eq!(
+            a.interval_popover.selected(),
+            Some(2),
+            "the current cadence (2s) is pre-selected"
+        );
+    }
+
+    /// Clicking an option in the open popover applies + persists that cadence
+    /// and closes the menu — the production `on_click` popover-routing path.
+    #[test]
+    fn interval_popover_click_sets_and_persists_the_cadence() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+        a.prefs.interval_ms = 1000;
+        a.open_interval_popover();
+        assert!(a.interval_popover.is_open());
+        // Resolve the body geometry, then click the "3s" row (index 3).
+        let mut tr = TextRenderer::new();
+        a.interval_popover.place(&mut tr, &Theme::dark());
+        let row = a.interval_popover.rect();
+        // Row 3 centre: y0 + PAD_Y(6) + 3.5 * ROW_H(30).
+        let click = Point::new(row.center().x, row.y0 + 6.0 + 3.5 * 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_click(click, &mut doc, &root, &mut h);
+        assert!(h, "the popover consumed the click");
+        assert!(!a.interval_popover.is_open(), "picking an option closes the popover");
+        assert_eq!(a.prefs.interval_ms, INTERVAL_OPTIONS[3], "the picked cadence applied");
+        assert_eq!(
+            Prefs::load(&doc, &root).interval_ms,
+            INTERVAL_OPTIONS[3],
+            "the picked cadence persisted to the CRDT"
+        );
+    }
+
+    /// Keyboard nav in the open popover: ↓ moves the highlight, Enter applies
+    /// the highlighted cadence + persists, and every key is consumed so nothing
+    /// leaks to the table behind it.
+    #[test]
+    fn interval_popover_keyboard_selects_and_captures_input() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+        a.prefs.interval_ms = 1000; // selected index 0
+        a.open_interval_popover();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // A stray letter must be swallowed, not fall through to a sort shortcut.
+        let sort_before = a.sort_key;
+        let mut h = false;
+        a.on_key(&Key::Character("c".into()), Some("c"), false, &mut doc, &root, &mut h);
+        assert!(h, "keys are captured while the popover is open");
+        assert_eq!(a.sort_key, sort_before, "the 'c' sort shortcut did not leak through");
+
+        // ↓ ↓ moves the highlight to index 2, Enter applies it.
+        let mut h = false;
+        a.on_key(&Key::Named(NamedKey::ArrowDown), None, false, &mut doc, &root, &mut h);
+        a.on_key(&Key::Named(NamedKey::ArrowDown), None, false, &mut doc, &root, &mut h);
+        assert_eq!(a.interval_popover.highlighted(), 2);
+        let mut h = false;
+        a.on_key(&Key::Named(NamedKey::Enter), None, false, &mut doc, &root, &mut h);
+        assert!(h);
+        assert!(!a.interval_popover.is_open(), "Enter applies + closes");
+        assert_eq!(a.prefs.interval_ms, INTERVAL_OPTIONS[2], "the highlighted cadence applied");
+        assert_eq!(Prefs::load(&doc, &root).interval_ms, INTERVAL_OPTIONS[2], "persisted");
+    }
+
+    /// The narrow detail pane reserves a bottom action bar so the Kill button
+    /// can never overlap the stat content — the exact collision the rework
+    /// fixes. Asserted against the real drawn hit rects at a narrow, tall
+    /// viewport with the detail pane pushed in: the buttons sit inside the
+    /// reserved band pinned to the pane bottom, and don't overlap each other.
+    #[test]
+    fn detail_kill_button_sits_in_reserved_action_bar() {
+        let mut a = app();
+        a.proc_push.snap(ProcPane::Detail);
+        draw_at(&mut a, 480.0, 820.0);
+        let kill = a.hit.kill_btn;
+        let stop = a.hit.stop_btn;
+        assert!(kill.area() > 0.0, "the Kill button is drawn in the pushed detail pane");
+        assert!(stop.area() > 0.0, "the Stop button is drawn too");
+        // The two action buttons don't overlap each other.
+        assert!(!rects_overlap(stop, kill), "Stop and Kill must not overlap");
+        assert!(
+            stop.x1 <= kill.x0 + 0.5,
+            "Stop ({stop:?}) must sit left of Kill ({kill:?})"
+        );
+        // The pane's inner bottom = window − outer pad − panel pad. The buttons
+        // live entirely inside the reserved `DETAIL_ACTION_H` band pinned there,
+        // so all stat content laid out above the band is clear of them.
+        let pane_bottom = 820.0 - OUTER_PAD - 12.0;
+        assert!(
+            kill.y1 <= pane_bottom + 1.0,
+            "Kill bottom ({}) stays inside the pane ({pane_bottom})",
+            kill.y1
+        );
+        assert!(
+            kill.y0 >= pane_bottom - DETAIL_ACTION_H - 1.0,
+            "Kill top ({}) stays within the reserved action band (>= {})",
+            kill.y0,
+            pane_bottom - DETAIL_ACTION_H
         );
     }
 

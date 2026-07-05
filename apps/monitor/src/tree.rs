@@ -406,8 +406,12 @@ mod tests {
             user: "quinten".into(),
             cpu,
             mem_bytes: mem_mib * 1024 * 1024,
+            virt_bytes: mem_mib * 3 * 1024 * 1024,
             threads: 1,
             status: "Running".into(),
+            cmd: name.into(),
+            run_secs: 120,
+            open_files: Some(8),
             kernel: false,
         }
     }
