@@ -1,0 +1,173 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# qos-kernel — Fedora kernel rebuild with a config fragment that:
+#   * statically links the storage / net / USB / HID / paravirt drivers on
+#     the boot path, so the image mounts its root FS without an initramfs,
+#   * tunes for interactive throughput (PREEMPT + HZ=1000 + THP=always +
+#     SCHED_MC), and
+#   * drops DEBUG_INFO / KGDB — we ship the running kernel, not its
+#     ~800 MB debuginfo companion.
+#
+# Output OCI image layout (published by .forgejo/workflows/build-kernel.yml):
+#   /repo/
+#     qos-kernel-<ver>.<arch>.rpm
+#     qos-kernel-core-<ver>.<arch>.rpm
+#     qos-kernel-modules-<ver>.<arch>.rpm
+#     repodata/…
+#
+# os/Containerfile mounts this image as a second RPM repo alongside the
+# frozen fedora snapshot, and runs
+#   dnf swap kernel-core qos-kernel-core --nogpgcheck
+# so the OS image ships this tuned kernel instead of Fedora's stock.
+#
+# Build takes ~40 min on the CI runner; on a laptop, allow ~60 min.
+# ============================================================================
+
+
+# ---- Frozen RPM repo (build deps, cross-time reproducible) -----------------
+# Every dnf install below reads exclusively from this digest-pinned snapshot,
+# same as os/Containerfile.  Adding a build dep here => the awk scan in
+# .forgejo/workflows/snapshot-rpms.yml picks it up on the next re-snapshot
+# and the frozen repo grows accordingly.  See os/rpms-snapshot.env for the
+# current pin; the workflow passes it as --build-arg RPMS_REF.
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
+
+# ---- Stage 1: kernel builder ----------------------------------------------
+# SAME base digest as os/Containerfile so the produced modules link against
+# the exact glibc + userspace the OS image ships.  A drift here would show
+# up as "invalid module format" at boot.
+FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS build
+
+# Toolchain for a kernel RPM build.  All from the frozen repo.
+#   kernel-devel / kernel-headers  — matched headers so external module
+#     ABIs (dwarves BTF) resolve.
+#   rpm-build                       — rpmbuild(1) for -bp + -bb targets.
+#   make gcc bc flex bison          — the kernel build itself.
+#   openssl-devel                   — module signing keys.
+#   elfutils-libelf-devel dwarves  — pahole/BTF, needed by CONFIG_DEBUG_INFO_BTF
+#                                     (Fedora sets this; we override it off).
+#   perl-generators python3 gzip xz cpio git  — misc SRPM build hooks.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        kernel-devel kernel-headers \
+        rpm-build make gcc bc flex bison \
+        openssl-devel elfutils-libelf-devel dwarves \
+        perl-generators python3 gzip xz cpio git which findutils \
+    && dnf clean all
+
+# The Fedora kernel SRPM is snapshotted into the frozen repo alongside its
+# binary RPMs (see os/Containerfile.rpms).  If the RPMS_REF you're building
+# against pre-dates that change, the file won't be present and this cp will
+# fail with a clear "no such file" — re-run .forgejo/workflows/snapshot-rpms.yml
+# and bump os/rpms-snapshot.env.
+WORKDIR /work
+RUN cp /repo/kernel-*.src.rpm /work/kernel.src.rpm
+
+# ---- Extract + patch the Fedora source tree --------------------------------
+# `rpmbuild -bp` runs %prep from the Fedora kernel spec: unpacks the tarball,
+# applies every Fedora patch, and drops the .config that matches the target
+# arch/flavor.  --nodeps because we install the toolchain manually above
+# instead of via the SRPM's BuildRequires (some of those are pandoc / bindgen
+# heavyweights the qOS build doesn't need — DEBUG_INFO=n skips them).
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo mkdir -p /root/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} \
+    && rpm -i /work/kernel.src.rpm \
+    && cd /root/rpmbuild/SPECS \
+    && KERN_SPEC="$(ls kernel*.spec 2>/dev/null | head -1)" \
+    && test -n "$KERN_SPEC" \
+    && rpmbuild -bp --nodeps --define "_topdir /root/rpmbuild" "$KERN_SPEC"
+
+# ---- Merge our config fragment on top of Fedora's --------------------------
+COPY os/kernel/config-fragments/qos.config /work/qos.config
+
+# The prepared source lands at /root/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
+# with a resolved .config in place.  Use the in-tree merge_config.sh (the
+# canonical kconfig fragment merger) to overlay our overrides, then
+# olddefconfig to resolve any newly-exposed symbols non-interactively.
+#
+# `-y` in merge_config makes it die on missing symbols (rather than silently
+# dropping them) — a Fedora rename that killed one of our knobs surfaces here
+# instead of at boot.
+RUN set -eux; \
+    KSRC="$(find /root/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
+    test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
+    cd "$KSRC"; \
+    cp .config /work/fedora.config; \
+    scripts/kconfig/merge_config.sh -m .config /work/qos.config; \
+    make olddefconfig; \
+    diff -u /work/fedora.config .config | head -200 > /work/config.diff || true; \
+    echo "----- effective config diff (top 200 lines) -----"; \
+    cat /work/config.diff
+
+# ---- Rebuild as qos-kernel-* -----------------------------------------------
+# `make binrpm-pkg` uses scripts/package/kernel.spec (upstream template) to
+# produce a minimal binary RPM directly from the prepared source tree — much
+# faster + simpler than re-running the full Fedora spec (which builds every
+# flavor and the debuginfo pair).  We rename the package via the spec's
+# Name: header so it doesn't collide with Fedora's `kernel-core` and can be
+# swapped in cleanly via `dnf swap kernel-core qos-kernel-core`.
+#
+# Reproducible timestamp: buildkit passes SOURCE_DATE_EPOCH; the kernel's
+# KBUILD_BUILD_TIMESTAMP honours it.
+ARG SOURCE_DATE_EPOCH=0
+ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
+    KBUILD_BUILD_USER=qos \
+    KBUILD_BUILD_HOST=qos-build \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
+
+RUN set -eux; \
+    KSRC="$(find /root/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
+    cd "$KSRC"; \
+    # Rename the produced RPM: `kernel` → `qos-kernel`.  `make binrpm-pkg`
+    # invokes `scripts/package/mkspec` (a shell script) to synthesise the
+    # binkernel.spec on the fly — patch its `Name:`, `Summary:` and
+    # `Provides:` heredoc lines so the final RPM is `qos-kernel-*`.
+    # Kept generic (matches `Name: kernel` anywhere in mkspec) so a Fedora
+    # spec re-layout doesn't silently drop the rename.
+    for f in scripts/package/mkspec scripts/package/kernel.spec; do \
+        [ -f "$f" ] && sed -i -E \
+            -e 's/(Name:[[:space:]]*)kernel([[:space:]]|$)/\1qos-kernel\2/g' \
+            -e 's/(Provides:[[:space:]]*)kernel([[:space:]]|=|$)/\1qos-kernel\2/g' \
+            "$f" || true; \
+    done; \
+    # Sanity check: at least one file was patched.  If neither exists the
+    # kernel Makefile has moved to a different packaging path and this
+    # Containerfile needs updating.
+    grep -q 'qos-kernel' scripts/package/mkspec scripts/package/kernel.spec 2>/dev/null \
+        || { echo "ERROR: neither mkspec nor kernel.spec was patched; check kernel packaging layout"; exit 1; }; \
+    make -j"$(nproc)" binrpm-pkg; \
+    mkdir -p /out; \
+    find /root/rpmbuild/RPMS -name 'qos-kernel-*.rpm' -exec cp -v {} /out/ \;; \
+    ls -lh /out/
+
+# Provide a `qos-kernel-core` alias package name.  `dnf swap kernel-core
+# qos-kernel-core` (in os/Containerfile) resolves by package name — the
+# `make binrpm-pkg` output is a single `qos-kernel` RPM; wrap it in a
+# tiny meta-RPM that Provides: qos-kernel-core so the swap succeeds.
+COPY os/kernel/qos-kernel-core.spec /work/qos-kernel-core.spec
+RUN set -eux; \
+    KVER="$(rpm -qp --queryformat '%{VERSION}-%{RELEASE}' /out/qos-kernel-[0-9]*.rpm | head -1)"; \
+    test -n "$KVER"; \
+    rpmbuild -bb \
+        --define "_topdir /root/rpmbuild" \
+        --define "_kver $KVER" \
+        /work/qos-kernel-core.spec; \
+    find /root/rpmbuild/RPMS -name 'qos-kernel-core-*.rpm' -exec cp -v {} /out/ \;; \
+    ls -lh /out/
+
+# Build the repo metadata inside the build stage; the final stage is
+# just a COPY of /repo so it stays tiny.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen dnf install -y --setopt=reposdir=/frozen createrepo_c \
+    && mkdir -p /repo \
+    && cp /out/*.rpm /repo/ \
+    && createrepo_c --quiet /repo \
+    && printf '[qos-kernel]\nname=qOS custom kernel\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/qos-kernel.repo
+
+
+# ---- Stage 2: publish ------------------------------------------------------
+# Same shape as the frozen-repo image (os/Containerfile.rpms): FROM scratch +
+# just /repo.  os/Containerfile mounts this at build time as a second RPM
+# source and `dnf swap`s kernel-core → qos-kernel-core.
+FROM scratch
+COPY --from=build /repo /repo
