@@ -214,9 +214,21 @@ pub fn stream_command<F: FnMut(String)>(
     // then drop the handle so the child sees EOF.
     {
         if let Some(mut stdin) = child.stdin.take() {
-            writeln!(stdin, "{password}")?;
-            for line in extra_stdin {
-                writeln!(stdin, "{line}")?;
+            // A backend that exits (or stops reading stdin) before we finish
+            // writing yields EPIPE here — benign: the command's exit status is
+            // authoritative, so tolerate BrokenPipe and let wait() drive the
+            // result. Any other write error is still propagated.
+            let mut feed = || -> std::io::Result<()> {
+                writeln!(stdin, "{password}")?;
+                for line in extra_stdin {
+                    writeln!(stdin, "{line}")?;
+                }
+                Ok(())
+            };
+            if let Err(e) = feed() {
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(e);
+                }
             }
         }
     }
