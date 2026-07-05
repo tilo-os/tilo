@@ -103,11 +103,59 @@ impl SearchFilter {
 
 type SelectFn = dyn Fn(&mut AutoCommit, &ObjId) + Send + Sync;
 
+/// Declares that an entry, when chosen, first collects a free-text argument
+/// from the user before it completes — e.g. "Go to cell: B12". The palette
+/// switches into an argument-entry step showing `prompt` as a heading and an
+/// editable field seeded with `prefill`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArgumentSpec {
+    /// Heading shown while the argument is being typed (e.g. "Go to cell").
+    pub prompt: String,
+    /// Dimmed placeholder shown while the field is empty (e.g. "e.g. B12").
+    pub placeholder: String,
+    /// Text the field is pre-seeded (and pre-selected) with when the step opens.
+    pub prefill: Option<String>,
+}
+
+/// The result of pressing Enter on an entry: its `id` plus the free-text
+/// `argument` the user typed (only `Some` for entries built with
+/// [`CommandEntry::with_argument`]). Drained by the host through
+/// [`CommandPalette::take_outcome`] so an app can dispatch to its own
+/// `&mut self` methods — the app-agnostic alternative to the
+/// [`CommandEntry::on_select`] CRDT callback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandOutcome {
+    pub id: String,
+    pub argument: Option<String>,
+}
+
+/// Which chrome the palette wears.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PaletteMode {
+    /// GlobalSearch styling: scope + filetype chips under the prompt and
+    /// single-line result rows. The default; byte-for-byte the shell's Cmd+K
+    /// search overlay.
+    Search,
+    /// Command-launcher styling: no filter chips, taller rows that show a
+    /// per-entry description and an optional keybinding hint. This is the
+    /// reusable "Ctrl+K command palette" any app seeds with its own actions.
+    Commands,
+}
+
 /// One row in the palette.
 #[derive(Clone)]
 pub struct CommandEntry {
     pub id: String,
     pub label: String,
+    /// One-line explanation rendered under the label in [`PaletteMode::Commands`]
+    /// so users learn what each command does. `None` → label only.
+    pub description: Option<String>,
+    /// Optional keybinding hint (e.g. "Ctrl+D") rendered right-aligned in the
+    /// row. Purely informational — the palette never binds it.
+    pub keybinding: Option<String>,
+    /// When set, choosing this entry collects a free-text argument before it
+    /// completes (see [`ArgumentSpec`]).
+    pub argument: Option<ArgumentSpec>,
     pub on_select: Option<Arc<SelectFn>>,
 }
 
@@ -116,6 +164,9 @@ impl std::fmt::Debug for CommandEntry {
         f.debug_struct("CommandEntry")
             .field("id", &self.id)
             .field("label", &self.label)
+            .field("description", &self.description)
+            .field("keybinding", &self.keybinding)
+            .field("argument", &self.argument)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -123,7 +174,58 @@ impl std::fmt::Debug for CommandEntry {
 
 impl CommandEntry {
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), on_select: None }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            keybinding: None,
+            argument: None,
+            on_select: None,
+        }
+    }
+
+    /// Attach a one-line description shown under the label (Commands mode).
+    pub fn description(mut self, d: impl Into<String>) -> Self {
+        self.description = Some(d.into());
+        self
+    }
+
+    /// Attach a keybinding hint rendered right-aligned in the row.
+    pub fn keybinding(mut self, k: impl Into<String>) -> Self {
+        self.keybinding = Some(k.into());
+        self
+    }
+
+    /// Mark this entry as taking a free-text argument, collected in a second
+    /// step before the outcome is emitted (e.g. "Go to cell: B12").
+    pub fn with_argument(
+        mut self,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+    ) -> Self {
+        let prefill = self.argument.take().and_then(|s| s.prefill);
+        self.argument = Some(ArgumentSpec {
+            prompt: prompt.into(),
+            placeholder: placeholder.into(),
+            prefill,
+        });
+        self
+    }
+
+    /// Seed the argument field with `prefill` (fully selected) when the
+    /// argument step opens, so the first keystroke replaces it.
+    pub fn with_argument_prefill(mut self, prefill: impl Into<String>) -> Self {
+        let prefill = prefill.into();
+        match &mut self.argument {
+            Some(spec) => spec.prefill = Some(prefill),
+            None => {
+                self.argument = Some(ArgumentSpec {
+                    prefill: Some(prefill),
+                    ..Default::default()
+                })
+            }
+        }
+        self
     }
 
     /// Attach a callback invoked when Enter is pressed on this entry.
@@ -133,6 +235,18 @@ impl CommandEntry {
     {
         self.on_select = Some(Arc::new(f));
         self
+    }
+
+    /// Does the entry match `query` as a case-insensitive subsequence over its
+    /// label *or* description? Empty query always matches.
+    fn matches(&self, query: &str) -> bool {
+        if fuzzy_score(query, &self.label).is_some() {
+            return true;
+        }
+        self.description
+            .as_deref()
+            .map(|d| fuzzy_score(query, d).is_some())
+            .unwrap_or(false)
     }
 }
 
@@ -173,6 +287,18 @@ pub struct InputRowLayout {
     pub kbd_chip_rect: Rect,
 }
 
+/// Live state while the palette is collecting a free-text argument for a
+/// chosen entry (see [`ArgumentSpec`]). While `Some`, keyboard input edits
+/// `buffer` instead of the query, and the result list is frozen.
+#[derive(Clone, Debug)]
+struct ArgState {
+    entry_id: String,
+    prompt: String,
+    placeholder: String,
+    buffer: String,
+    selection: crate::text_selection::Selection,
+}
+
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     query: String,
@@ -190,6 +316,16 @@ pub struct CommandPalette {
     rect: Rect,
     is_focused: bool,
     search_filter: SearchFilter,
+    /// Chrome style (search chips vs command descriptions). Default [`PaletteMode::Search`].
+    mode: PaletteMode,
+    /// Whether the palette traps host keyboard focus while open (see
+    /// [`Widget::traps_focus`]). Default `false` so the shell's search overlay
+    /// is unaffected; [`PaletteMode::Commands`] turns it on.
+    modal: bool,
+    /// `Some` while collecting a free-text argument for the chosen entry.
+    arg_state: Option<ArgState>,
+    /// The chosen action, set on Enter and drained by [`take_outcome`].
+    outcome: Option<CommandOutcome>,
 }
 
 impl Default for CommandPalette {
@@ -208,6 +344,339 @@ impl CommandPalette {
             rect: Rect::ZERO,
             is_focused: false,
             search_filter: SearchFilter::default(),
+            mode: PaletteMode::Search,
+            modal: false,
+            arg_state: None,
+            outcome: None,
+        }
+    }
+
+    /// Build a command-launcher palette: [`PaletteMode::Commands`] chrome
+    /// (descriptions + keybinding hints, no scope/filetype chips) and focus
+    /// trapping enabled. This is the reusable Ctrl+K command palette.
+    pub fn commands() -> Self {
+        let mut p = Self::new();
+        p.mode = PaletteMode::Commands;
+        p.modal = true;
+        p
+    }
+
+    /// Current chrome mode.
+    pub fn mode(&self) -> PaletteMode {
+        self.mode
+    }
+
+    /// Switch chrome mode. `Commands` also enables focus trapping.
+    pub fn set_mode(&mut self, mode: PaletteMode) {
+        self.mode = mode;
+        if mode == PaletteMode::Commands {
+            self.modal = true;
+        }
+    }
+
+    /// Override whether the palette traps host keyboard focus while open.
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
+
+    /// Remove every registered entry (and any filtered view of them). Apps that
+    /// rebuild their action set each time they open the palette call this first.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.visible.clear();
+        self.cursor = 0;
+    }
+
+    /// Open the palette: clear the query + any in-progress argument, focus it,
+    /// and reset the highlight to the first entry. Registers already-pushed
+    /// entries in the visible list.
+    pub fn open(&mut self) {
+        self.is_focused = true;
+        self.query.clear();
+        self.query_selection = crate::text_selection::Selection::collapsed(0);
+        self.arg_state = None;
+        self.outcome = None;
+        self.cursor = 0;
+        self.rebuild();
+    }
+
+    /// Close the palette and discard any in-progress argument entry. Does not
+    /// clear the registered entries (so the next `open` reuses them).
+    pub fn close(&mut self) {
+        self.is_focused = false;
+        self.arg_state = None;
+    }
+
+    /// Whether the palette is currently open (focused).
+    pub fn is_open(&self) -> bool {
+        self.is_focused
+    }
+
+    /// Whether the palette is currently collecting a free-text argument.
+    pub fn in_argument_mode(&self) -> bool {
+        self.arg_state.is_some()
+    }
+
+    /// The text currently typed into the argument field, if in argument mode.
+    pub fn argument_buffer(&self) -> Option<&str> {
+        self.arg_state.as_ref().map(|a| a.buffer.as_str())
+    }
+
+    /// Drain the chosen action, if the user pressed Enter since the last drain.
+    /// Rising-edge: returns `Some` at most once per selection.
+    pub fn take_outcome(&mut self) -> Option<CommandOutcome> {
+        self.outcome.take()
+    }
+
+    /// Place the palette card directly (bypassing taffy), for apps that
+    /// hand-position their overlays. Pair with [`desired_size`] to centre it.
+    pub fn set_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
+    /// The card's natural `(width, height)` for the current mode and visible
+    /// row count. Apps use this to centre the palette via [`set_rect`]; it
+    /// matches the size [`build_layout`] requests from taffy.
+    pub fn desired_size(&self) -> (f64, f64) {
+        let rows = self.visible.len().clamp(1, self.max_visible_rows()) as f64;
+        let height = PADDING * 2.0
+            + INPUT_HEIGHT
+            + PADDING
+            + self.filter_block()
+            + rows * self.row_height()
+            + PADDING
+            + FOOTER_HEIGHT;
+        (self.card_width(), height)
+    }
+
+    /// Height reserved for the filter strip + its trailing gap (Search only).
+    fn filter_block(&self) -> f64 {
+        match self.mode {
+            PaletteMode::Search => FILTER_STRIP_HEIGHT + PADDING,
+            PaletteMode::Commands => 0.0,
+        }
+    }
+
+    /// Per-result-row height. Commands rows are taller to fit a description.
+    fn row_height(&self) -> f64 {
+        match self.mode {
+            PaletteMode::Search => ROW_HEIGHT,
+            PaletteMode::Commands => CMD_ROW_HEIGHT,
+        }
+    }
+
+    /// Card width for the current mode.
+    fn card_width(&self) -> f64 {
+        match self.mode {
+            PaletteMode::Search => SEARCH_CARD_WIDTH,
+            PaletteMode::Commands => CMD_CARD_WIDTH,
+        }
+    }
+
+    /// Max rows rendered before the list clips.
+    fn max_visible_rows(&self) -> usize {
+        match self.mode {
+            PaletteMode::Search => 10,
+            PaletteMode::Commands => 8,
+        }
+    }
+
+    /// Activate whatever row is currently highlighted, exactly as pressing
+    /// Enter would: an entry that takes an argument opens the argument step
+    /// (seeded + pre-selected); any other entry runs immediately, emitting its
+    /// [`CommandOutcome`]. Hosts wire pointer clicks to this so a click and
+    /// Enter share one path. No-op while already collecting an argument.
+    pub fn activate_selected(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.arg_state.is_some() {
+            return;
+        }
+        let Some(&idx) = self.visible.get(self.cursor) else {
+            return;
+        };
+        if let Some(spec) = self.entries[idx].argument.clone() {
+            let buffer = spec.prefill.clone().unwrap_or_default();
+            let selection = crate::text_selection::Selection {
+                anchor: 0,
+                cursor: buffer.len(),
+            };
+            self.arg_state = Some(ArgState {
+                entry_id: self.entries[idx].id.clone(),
+                prompt: spec.prompt,
+                placeholder: spec.placeholder,
+                buffer,
+                selection,
+            });
+        } else {
+            let id = self.entries[idx].id.clone();
+            self.run_entry(state, path, id, None);
+        }
+    }
+
+    /// Finalise the chosen entry: fire its legacy `on_select` callback (if
+    /// any), record the [`CommandOutcome`] for `take_outcome`, and (in
+    /// Commands mode) close the palette. Search mode keeps the palette open,
+    /// matching the shell's existing behaviour.
+    fn run_entry(
+        &mut self,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        id: String,
+        argument: Option<String>,
+    ) {
+        if let Some(cb) = self
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.on_select.clone())
+        {
+            cb(state, path);
+        }
+        self.outcome = Some(CommandOutcome { id, argument });
+        self.arg_state = None;
+        if self.mode == PaletteMode::Commands {
+            self.is_focused = false;
+        }
+    }
+
+    /// Keyboard handling while the argument step is open. Enter finalises the
+    /// entry with the typed text, Escape returns to the result list, and every
+    /// other key edits the argument buffer via the shared text-selection
+    /// helpers. All keys are consumed so nothing leaks to the app behind.
+    fn handle_arg_key(
+        &mut self,
+        key: &winit::keyboard::Key,
+        shift: bool,
+        ctrl: bool,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        use crate::text_selection::{
+            clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+            prev_char_boundary, prev_word_boundary, Selection,
+        };
+        // Everything past this point consumes the key.
+        *handled = true;
+        match key {
+            Key::Named(NamedKey::Enter) => {
+                let (id, value) = {
+                    let arg = self.arg_state.as_ref().unwrap();
+                    (arg.entry_id.clone(), arg.buffer.clone())
+                };
+                self.run_entry(state, path, id, Some(value));
+                return;
+            }
+            Key::Named(NamedKey::Escape) => {
+                // Cancel the argument step, fall back to the result list.
+                self.arg_state = None;
+                return;
+            }
+            // From here on we mutate the buffer in place.
+            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {
+                // Swallowed — no list navigation while typing an argument.
+                return;
+            }
+            _ => {}
+        }
+        let arg = self.arg_state.as_mut().unwrap();
+        match key {
+            Key::Named(NamedKey::ArrowLeft) => {
+                let pos = arg.selection.cursor;
+                arg.selection.cursor = if ctrl {
+                    prev_word_boundary(&arg.buffer, pos)
+                } else {
+                    prev_char_boundary(&arg.buffer, pos)
+                };
+                if !shift {
+                    arg.selection.collapse_to_cursor();
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                let pos = arg.selection.cursor;
+                arg.selection.cursor = if ctrl {
+                    next_word_boundary(&arg.buffer, pos)
+                } else {
+                    next_char_boundary(&arg.buffer, pos)
+                };
+                if !shift {
+                    arg.selection.collapse_to_cursor();
+                }
+            }
+            Key::Named(NamedKey::Home) => {
+                arg.selection.cursor = 0;
+                if !shift {
+                    arg.selection.collapse_to_cursor();
+                }
+            }
+            Key::Named(NamedKey::End) => {
+                arg.selection.cursor = arg.buffer.len();
+                if !shift {
+                    arg.selection.collapse_to_cursor();
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                let r = arg.selection.range();
+                if !r.is_empty() {
+                    arg.buffer.replace_range(r.clone(), "");
+                    arg.selection = Selection::collapsed(r.start);
+                } else if r.start > 0 {
+                    let prev = prev_char_boundary(&arg.buffer, r.start);
+                    arg.buffer.replace_range(prev..r.start, "");
+                    arg.selection = Selection::collapsed(prev);
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                let r = arg.selection.range();
+                if !r.is_empty() {
+                    arg.buffer.replace_range(r.clone(), "");
+                    arg.selection = Selection::collapsed(r.start);
+                } else if r.start < arg.buffer.len() {
+                    let next = next_char_boundary(&arg.buffer, r.start);
+                    arg.buffer.replace_range(r.start..next, "");
+                }
+            }
+            Key::Named(NamedKey::Space) => {
+                let r = arg.selection.range();
+                arg.buffer.replace_range(r.clone(), " ");
+                arg.selection = Selection::collapsed(r.start + 1);
+            }
+            Key::Character(s) if ctrl => match s.as_str() {
+                "a" | "A" => {
+                    arg.selection.anchor = 0;
+                    arg.selection.cursor = arg.buffer.len();
+                }
+                "c" | "C" => {
+                    let r = arg.selection.range();
+                    if !r.is_empty() {
+                        clipboard_copy(&arg.buffer[r]);
+                    }
+                }
+                "x" | "X" => {
+                    let r = arg.selection.range();
+                    if !r.is_empty() {
+                        clipboard_copy(&arg.buffer[r.clone()]);
+                        arg.buffer.replace_range(r.clone(), "");
+                        arg.selection = Selection::collapsed(r.start);
+                    }
+                }
+                "v" | "V" => {
+                    if let Some(paste) = clipboard_paste() {
+                        let r = arg.selection.range();
+                        arg.buffer.replace_range(r.clone(), &paste);
+                        arg.selection = Selection::collapsed(r.start + paste.len());
+                    }
+                }
+                _ => {}
+            },
+            Key::Character(s) => {
+                let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
+                if !filtered.is_empty() {
+                    let r = arg.selection.range();
+                    arg.buffer.replace_range(r.clone(), &filtered);
+                    arg.selection = Selection::collapsed(r.start + filtered.len());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -292,16 +761,33 @@ impl CommandPalette {
             .map(|&i| self.entries[i].id.as_str())
     }
 
+    /// Index of the first visible entry actually painted, given the cursor and
+    /// the row cap. The list scrolls just enough to keep the highlighted row on
+    /// screen when there are more entries than fit.
+    fn first_visible_row(&self) -> usize {
+        let max = self.max_visible_rows();
+        if self.cursor >= max {
+            self.cursor + 1 - max
+        } else {
+            0
+        }
+    }
+
     /// Rect of the `i`th *visible* row, in the same coordinate space as
-    /// `get_rect()`. Returns `None` if `i` is past the end of the
-    /// rendered window (the palette caps at 10 rows in `build_layout`).
+    /// `get_rect()`. Returns `None` when the row is scrolled out of the
+    /// currently painted window.
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
         if i >= self.visible.len() {
             return None;
         }
+        let first = self.first_visible_row();
+        if i < first || i >= first + self.max_visible_rows() {
+            return None;
+        }
         let list_top = self.list_top_y();
-        let y0 = list_top + (i as f64) * ROW_HEIGHT;
-        let y1 = y0 + ROW_HEIGHT;
+        let display = (i - first) as f64;
+        let y0 = list_top + display * self.row_height();
+        let y1 = y0 + self.row_height();
         // The footer + its gap eat into the bottom of the card; cap at
         // the start of the footer band rather than `rect.y1 - PADDING`.
         let max_y = self.footer_rect().y0 - PADDING;
@@ -312,10 +798,10 @@ impl CommandPalette {
     }
 
     /// Y coordinate where the result list begins (immediately under the
-    /// filter strip + its gap). Shared by `row_rect` and `draw`.
+    /// filter strip + its gap in Search mode, or straight under the prompt row
+    /// in Commands mode). Shared by `row_rect` and `draw`.
     fn list_top_y(&self) -> f64 {
-        self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING
-            + FILTER_STRIP_HEIGHT + PADDING
+        self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING + self.filter_block()
     }
 
     /// Index of the visible row whose rect contains `p`, if any. Used by
@@ -632,15 +1118,19 @@ impl CommandPalette {
             x += lw as f64 + 12.0;
         }
 
-        // Right-anchored scope label.
-        let scope_label = match self.search_filter.scope {
-            SearchScope::Workspace => "in Workspace",
-            SearchScope::All => "in All Workspaces",
+        // Right-anchored label. Search shows the active scope; a command
+        // palette shows the dismiss hint instead (scope is meaningless here).
+        let right_label = match self.mode {
+            PaletteMode::Search => match self.search_filter.scope {
+                SearchScope::Workspace => "in Workspace",
+                SearchScope::All => "in All Workspaces",
+            },
+            PaletteMode::Commands => "Esc to close",
         };
-        let (sw, sh) = text_renderer.measure(scope_label, chip_text_size, None);
+        let (sw, sh) = text_renderer.measure(right_label, chip_text_size, None);
         text_renderer.draw_text(
             scene,
-            scope_label,
+            right_label,
             chip_text_size,
             dim,
             transform * Affine::translate((
@@ -651,13 +1141,144 @@ impl CommandPalette {
         );
     }
 
+    /// Draw the [`PaletteMode::Commands`] result rows: a highlighted selection
+    /// row, each entry's label, a dimmed one-line description underneath, and
+    /// an optional right-aligned keybinding chip (or a `→` cue for entries that
+    /// take an argument).
+    fn draw_command_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        list_top: f64,
+        footer_top: f64,
+    ) {
+        let colors = &theme.tokens.colors;
+        let label_size = theme.tokens.typography.scale.base;
+        let desc_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let rh = self.row_height();
+        // Scroll the window so the highlighted row is always painted.
+        let first = self.first_visible_row();
+        let max_rows = self.max_visible_rows();
+        for (i, &entry_idx) in self.visible.iter().enumerate().skip(first).take(max_rows) {
+            let y0 = list_top + ((i - first) as f64) * rh;
+            let y1 = y0 + rh;
+            if y1 > footer_top - PADDING {
+                break;
+            }
+            let row = Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
+            let selected = i == self.cursor;
+            if selected {
+                // Concept selected row = fully indigo (accent[5]).
+                let highlight = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &highlight,
+                );
+            }
+            let entry = &self.entries[entry_idx];
+            let has_desc = entry.description.is_some();
+            let lx = row.x0 + 12.0;
+
+            // Label.
+            let label_y = if has_desc {
+                row.y0 + 8.0
+            } else {
+                row.y0 + (row.height() - label_size as f64) / 2.0
+            };
+            text_renderer.draw_text(
+                scene,
+                &entry.label,
+                label_size,
+                colors.text_primary,
+                transform * Affine::translate((lx, label_y)),
+                None,
+            );
+
+            // Description (dimmed, second line).
+            if let Some(desc) = &entry.description {
+                let dy = row.y1 - desc_size as f64 - 9.0;
+                let desc_color = if selected {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                };
+                text_renderer.draw_text(
+                    scene,
+                    desc,
+                    desc_size,
+                    desc_color,
+                    transform * Affine::translate((lx, dy)),
+                    None,
+                );
+            }
+
+            // Right-aligned keybinding chip, or an argument cue.
+            if let Some(kb) = &entry.keybinding {
+                let (kw, kh) = text_renderer.measure(kb, desc_size, None);
+                let chip_w = kw as f64 + 14.0;
+                let chip_h = kh as f64 + 8.0;
+                let cy = (row.y0 + row.y1) / 2.0;
+                let chip = Rect::new(
+                    row.x1 - chip_w - 6.0,
+                    cy - chip_h / 2.0,
+                    row.x1 - 6.0,
+                    cy + chip_h / 2.0,
+                );
+                let chip_shape = RoundedRect::from_rect(chip, 5.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    Color::from_rgba8(255, 255, 255, 13),
+                    None,
+                    &chip_shape,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    Color::from_rgba8(255, 255, 255, 26),
+                    None,
+                    &chip_shape,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    kb,
+                    desc_size,
+                    colors.text_dim,
+                    transform * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
+                    None,
+                );
+            } else if entry.argument.is_some() {
+                let cue = "\u{2192}"; // →
+                let (hw, hh) = text_renderer.measure(cue, label_size, None);
+                let color = if selected { colors.text_primary } else { colors.text_dim };
+                text_renderer.draw_text(
+                    scene,
+                    cue,
+                    label_size,
+                    color,
+                    transform
+                        * Affine::translate((
+                            row.x1 - hw as f64 - 14.0,
+                            (row.y0 + row.y1) / 2.0 - hh as f64 / 2.0,
+                        )),
+                    None,
+                );
+            }
+        }
+    }
+
     fn rebuild(&mut self) {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(f) = &self.filter {
                 if !f(e) { continue; }
             }
-            if fuzzy_score(&self.query, &e.label).is_none() { continue; }
+            if !e.matches(&self.query) { continue; }
             self.visible.push(i);
         }
         if self.cursor >= self.visible.len() {
@@ -667,6 +1288,12 @@ impl CommandPalette {
 }
 
 const ROW_HEIGHT: f64 = 32.0;
+/// Taller result row in [`PaletteMode::Commands`] — fits a label plus a
+/// dimmed one-line description underneath.
+const CMD_ROW_HEIGHT: f64 = 50.0;
+const SEARCH_CARD_WIDTH: f64 = 360.0;
+/// Command palettes are wider so descriptions read on one line.
+const CMD_CARD_WIDTH: f64 = 480.0;
 const INPUT_HEIGHT: f64 = 36.0;
 const PADDING: f64 = 8.0;
 /// Concept `GlobalSearch.tsx:184` — a `py-2` strip (≈ 40 px) wrapping
@@ -685,23 +1312,18 @@ impl Widget for CommandPalette {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let rows = self.visible.len().min(10).max(1) as f32;
-        // padding (top) + input row + gap + filter strip + gap + list +
-        // gap + footer + padding (bottom). The `gap` between sections
-        // reuses `PADDING` so the surface stays a single visual rhythm.
-        let height = (PADDING as f32) * 2.0
-            + INPUT_HEIGHT as f32
-            + PADDING as f32
-            + FILTER_STRIP_HEIGHT as f32
-            + PADDING as f32
-            + rows * ROW_HEIGHT as f32
-            + PADDING as f32
-            + FOOTER_HEIGHT as f32;
+        // padding (top) + input row + gap + [filter strip + gap] + list +
+        // gap + footer + padding (bottom). The `gap` between sections reuses
+        // `PADDING` so the surface stays a single visual rhythm. The filter
+        // strip block collapses to zero in Commands mode, where rows are
+        // taller. `desired_size` is the single source of truth so a
+        // hand-placed palette (`set_rect`) and a taffy-laid one agree.
+        let (width, height) = self.desired_size();
         let node = taffy
             .new_leaf(Style {
                 size: Size {
-                    width: Dimension::length(360.0),
-                    height: Dimension::length(height),
+                    width: Dimension::length(width as f32),
+                    height: Dimension::length(height as f32),
                 },
                 ..Default::default()
             })
@@ -823,61 +1445,102 @@ impl Widget for CommandPalette {
             None,
         );
 
-        // Query / placeholder text inside the input slot.
-        let display = if self.query.is_empty() { "Search\u{2026}" } else { &self.query };
-        let text_color = if self.query.is_empty() {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
+        // Prompt text inside the input slot. While collecting an argument the
+        // slot shows the entry's prompt (dim) followed by the editable buffer
+        // (or its placeholder); otherwise the search query / placeholder.
         let text_size = theme.tokens.typography.scale.sm;
         let text_y = layout.input_rect.y0
             + (layout.input_rect.height() - text_size as f64) / 2.0;
-        text_renderer.draw_text(
-            scene,
-            display,
-            text_size,
-            text_color,
-            transform * Affine::translate((layout.input_rect.x0 + 8.0, text_y)),
-            None,
-        );
+        let mut tx = layout.input_rect.x0 + 8.0;
+        if let Some(arg) = &self.arg_state {
+            if !arg.prompt.is_empty() {
+                let heading = format!("{}:  ", arg.prompt);
+                text_renderer.draw_text(
+                    scene,
+                    &heading,
+                    text_size,
+                    theme.tokens.colors.text_dim,
+                    transform * Affine::translate((tx, text_y)),
+                    None,
+                );
+                let (hw, _) = text_renderer.measure(&heading, text_size, None);
+                tx += hw as f64;
+            }
+            let (body, color) = if arg.buffer.is_empty() {
+                (arg.placeholder.as_str(), theme.tokens.colors.text_dim)
+            } else {
+                (arg.buffer.as_str(), theme.tokens.colors.text_primary)
+            };
+            text_renderer.draw_text(
+                scene,
+                body,
+                text_size,
+                color,
+                transform * Affine::translate((tx, text_y)),
+                None,
+            );
+        } else {
+            let display = if self.query.is_empty() { "Search\u{2026}" } else { &self.query };
+            let text_color = if self.query.is_empty() {
+                theme.tokens.colors.text_dim
+            } else {
+                theme.tokens.colors.text_primary
+            };
+            text_renderer.draw_text(
+                scene,
+                display,
+                text_size,
+                text_color,
+                transform * Affine::translate((tx, text_y)),
+                None,
+            );
+        }
 
-        // Filter strip — scope chips, filetype chips, full-text toggle.
-        // Concept `nirios-concept/src/components/GlobalSearch.tsx:184-244`.
-        self.draw_filter_strip(scene, transform, text_renderer, theme);
+        // Filter strip (Search only) — scope chips, filetype chips, full-text
+        // toggle. Concept `nirios-concept/src/components/GlobalSearch.tsx:184-244`.
+        if self.mode == PaletteMode::Search {
+            self.draw_filter_strip(scene, transform, text_renderer, theme);
+        }
 
         // Vertical list of visible entries.
         let list_top = self.list_top_y();
         let footer_top = self.footer_rect().y0;
-        for (i, &entry_idx) in self.visible.iter().enumerate() {
-            let y0 = list_top + (i as f64) * ROW_HEIGHT;
-            let y1 = y0 + ROW_HEIGHT;
-            if y1 > footer_top - PADDING {
-                break;
+        match self.mode {
+            PaletteMode::Commands => {
+                self.draw_command_rows(scene, transform, text_renderer, theme, list_top, footer_top);
             }
-            let entry_rect =
-                Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
-            if i == self.cursor {
-                let highlight =
-                    RoundedRect::from_rect(entry_rect, theme.tokens.radii.sm as f64);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.neutral[4],
-                    None,
-                    &highlight,
-                );
+            PaletteMode::Search => {
+                for (i, &entry_idx) in self.visible.iter().enumerate() {
+                    let y0 = list_top + (i as f64) * ROW_HEIGHT;
+                    let y1 = y0 + ROW_HEIGHT;
+                    if y1 > footer_top - PADDING {
+                        break;
+                    }
+                    let entry_rect =
+                        Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
+                    if i == self.cursor {
+                        let highlight =
+                            RoundedRect::from_rect(entry_rect, theme.tokens.radii.sm as f64);
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            theme.tokens.colors.neutral[4],
+                            None,
+                            &highlight,
+                        );
+                    }
+                    let label = &self.entries[entry_idx].label;
+                    let label_y = entry_rect.y0 + (entry_rect.height() - text_size as f64) / 2.0;
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        text_size,
+                        theme.tokens.colors.text_primary,
+                        transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
+                        None,
+                    );
+                }
             }
-            let label = &self.entries[entry_idx].label;
-            let label_y = entry_rect.y0 + (entry_rect.height() - text_size as f64) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                label,
-                text_size,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
-                None,
-            );
         }
 
         // Footer band: kbd-chip hints on the left + scope label on the
@@ -912,27 +1575,29 @@ impl Widget for CommandPalette {
             let mods = modifiers.state();
             let shift = mods.shift_key();
             let ctrl = mods.control_key() || mods.super_key();
+            // While collecting a free-text argument, every key edits the
+            // argument field (or finalises / cancels it) — the result list is
+            // frozen and arrow/enter never reach the app behind the palette.
+            if self.arg_state.is_some() {
+                self.handle_arg_key(logical_key, shift, ctrl, state, path, handled);
+                return;
+            }
             match logical_key {
                 // --- Row navigation: down / up over visible entries.
                 Key::Named(NamedKey::ArrowDown) => {
                     if !self.visible.is_empty() {
                         self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
-                        *handled = true;
                     }
+                    // Consume even at the list end so it never scrolls the app.
+                    *handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    if self.cursor > 0 {
-                        self.cursor -= 1;
-                        *handled = true;
-                    }
+                    self.cursor = self.cursor.saturating_sub(1);
+                    *handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    if let Some(&idx) = self.visible.get(self.cursor) {
-                        if let Some(cb) = self.entries[idx].on_select.clone() {
-                            cb(state, path);
-                        }
-                        *handled = true;
-                    }
+                    self.activate_selected(state, path);
+                    *handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.is_focused = false;
@@ -1069,6 +1734,24 @@ impl Widget for CommandPalette {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    /// Traps host keyboard focus while open, but only when built as a modal
+    /// command launcher (`CommandPalette::commands` / `set_modal(true)`). The
+    /// default Search palette leaves this `false` so the shell's overlay host
+    /// keeps driving focus itself.
+    fn traps_focus(&self) -> bool {
+        self.modal && self.is_focused
+    }
+
+    /// Reports the palette card as the modal capture rect while open + modal,
+    /// so the host suppresses its global shortcuts and swallows click-through.
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.modal && self.is_focused {
+            Some(self.rect)
+        } else {
+            None
+        }
+    }
 
     /// The palette is a modal command launcher: it reports
     /// [`Role::Dialog`] with `modal` set so an AT announces it as a focus-
@@ -1489,5 +2172,225 @@ mod tests {
         );
         assert_eq!(p.query(), "hio");
         assert_eq!(p.query_selection.cursor, 2);
+    }
+
+    // -------------------------------------------------------------------
+    // Command-launcher mode: descriptions, keybinding hints, free-text
+    // arguments, focus capture, and the pull-based outcome API.
+    // -------------------------------------------------------------------
+
+    fn seeded_command_palette() -> CommandPalette {
+        let mut p = CommandPalette::commands();
+        p.push(
+            CommandEntry::new("goto", "Go to cell\u{2026}")
+                .description("Jump to and select a cell by reference")
+                .with_argument("Go to cell", "e.g. B12")
+                .with_argument_prefill("A1"),
+        );
+        p.push(
+            CommandEntry::new("sum", "Sum selection")
+                .description("Write =SUM() of the selected range below it")
+                .keybinding("Alt+="),
+        );
+        p.push(
+            CommandEntry::new("export", "Export CSV")
+                .description("Write the active sheet to a .csv file"),
+        );
+        p.open();
+        p
+    }
+
+    /// Commands mode traps focus and reports a modal-capture rect while open;
+    /// the default Search palette does neither.
+    #[test]
+    fn command_mode_traps_focus_search_does_not() {
+        let mut cmd = seeded_command_palette();
+        cmd.set_rect(Rect::new(0.0, 0.0, 480.0, 400.0));
+        assert!(Widget::traps_focus(&cmd), "command palette must trap focus");
+        assert!(Widget::modal_capture(&cmd).is_some());
+        cmd.close();
+        assert!(!Widget::traps_focus(&cmd), "closed palette releases focus");
+
+        let mut search = CommandPalette::new();
+        search.push(CommandEntry::new("a", "Alpha"));
+        search.set_focus(true);
+        assert!(!Widget::traps_focus(&search), "search palette never traps");
+        assert!(Widget::modal_capture(&search).is_none());
+    }
+
+    /// The crux: ↑/↓ move the highlighted row (not the app), Enter runs the
+    /// highlighted action, and every one of those keys is consumed so nothing
+    /// leaks to the app behind the overlay.
+    #[test]
+    fn command_mode_arrows_and_enter_are_captured_and_navigate() {
+        let mut p = seeded_command_palette();
+        assert_eq!(p.selected_id(), Some("goto"));
+
+        // ArrowDown moves the highlight and is consumed.
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT.clone();
+        for _ in 0..2 {
+            let mut handled = false;
+            let mut focus = None;
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            p.handle_event(
+                &key_press(Key::Named(NamedKey::ArrowDown)),
+                1.0,
+                &Modifiers::default(),
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            assert!(handled, "ArrowDown must be consumed by the palette");
+        }
+        assert_eq!(p.selected_id(), Some("export"), "cursor advanced two rows");
+
+        // ArrowUp is also consumed and moves back.
+        let mut handled = false;
+        dispatch_h(&mut p, key_press(Key::Named(NamedKey::ArrowUp)), Modifiers::default(), &mut handled);
+        assert!(handled);
+        assert_eq!(p.selected_id(), Some("sum"));
+
+        // Enter on a plain (no-argument) entry runs it → outcome, palette closes.
+        let mut handled = false;
+        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut handled);
+        assert!(handled, "Enter is consumed");
+        let outcome = p.take_outcome().expect("Enter emits an outcome");
+        assert_eq!(outcome.id, "sum");
+        assert_eq!(outcome.argument, None);
+        assert!(!p.is_open(), "running a command closes the palette");
+    }
+
+    /// Filtering matches over label *and* description.
+    #[test]
+    fn command_mode_filter_matches_label_and_description() {
+        let mut p = seeded_command_palette();
+        // "csv" only appears in the Export entry's description.
+        p.set_query("csv");
+        let ids: Vec<&str> = p.visible_entries().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["export"], "description text is searchable");
+
+        // A label match still works.
+        p.set_query("sum");
+        let ids: Vec<&str> = p.visible_entries().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["sum"]);
+    }
+
+    /// The "Go to cell" flow: Enter opens the argument step (seeded + fully
+    /// selected), typing replaces the prefill, and a second Enter emits the
+    /// outcome carrying the typed argument.
+    #[test]
+    fn command_mode_argument_flow_returns_typed_value() {
+        let mut p = seeded_command_palette();
+        assert_eq!(p.selected_id(), Some("goto"));
+
+        // Enter → argument mode, prefilled with the active cell "A1", fully
+        // selected so the first keystroke replaces it.
+        let mut handled = false;
+        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut handled);
+        assert!(handled);
+        assert!(p.in_argument_mode(), "entry with an argument opens the arg step");
+        assert_eq!(p.argument_buffer(), Some("A1"));
+        assert!(p.take_outcome().is_none(), "no outcome until the argument is confirmed");
+
+        // Type "B12" — replaces the selected prefill.
+        for ch in ["B", "1", "2"] {
+            let mut h = false;
+            dispatch_h(&mut p, key_press(Key::Character(SmolStr::new(ch))), Modifiers::default(), &mut h);
+            assert!(h, "typing in the arg field is consumed");
+        }
+        assert_eq!(p.argument_buffer(), Some("B12"));
+
+        // Confirm.
+        let mut handled = false;
+        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut handled);
+        assert!(handled);
+        let outcome = p.take_outcome().expect("confirming emits an outcome");
+        assert_eq!(outcome.id, "goto");
+        assert_eq!(outcome.argument.as_deref(), Some("B12"));
+        assert!(!p.is_open());
+    }
+
+    /// Escape from the argument step returns to the list rather than closing.
+    #[test]
+    fn command_mode_escape_from_argument_returns_to_list() {
+        let mut p = seeded_command_palette();
+        let mut h = false;
+        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut h);
+        assert!(p.in_argument_mode());
+        let mut h = false;
+        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Escape)), Modifiers::default(), &mut h);
+        assert!(h, "Escape is consumed");
+        assert!(!p.in_argument_mode(), "Escape leaves the argument step");
+        assert!(p.is_open(), "…but the palette is still open on the list");
+        assert!(p.take_outcome().is_none());
+    }
+
+    /// Command rows are taller than search rows and the card is wider, and the
+    /// filter-strip block collapses so the list sits directly under the prompt.
+    #[test]
+    fn command_mode_geometry_differs_from_search() {
+        let cmd = seeded_command_palette();
+        let (cw, _) = cmd.desired_size();
+        assert_eq!(cw, CMD_CARD_WIDTH);
+        assert_eq!(cmd.row_height(), CMD_ROW_HEIGHT);
+        assert_eq!(cmd.filter_block(), 0.0, "no filter strip in command mode");
+
+        let search = CommandPalette::new();
+        let (sw, _) = search.desired_size();
+        assert_eq!(sw, SEARCH_CARD_WIDTH);
+        assert_eq!(search.row_height(), ROW_HEIGHT);
+        assert!(search.filter_block() > 0.0, "search keeps its filter strip");
+    }
+
+    /// With more entries than fit, the list scrolls so the highlighted row is
+    /// always painted (its `row_rect` is `Some`) while off-window rows are not.
+    #[test]
+    fn command_mode_scrolls_to_keep_cursor_visible() {
+        let mut p = CommandPalette::commands();
+        for i in 0..20 {
+            p.push(CommandEntry::new(format!("id{i}"), format!("Command {i}")));
+        }
+        p.open();
+        let (w, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, w, h));
+        // Cursor at the top: row 0 visible, a row past the cap is not.
+        assert!(p.row_rect(0).is_some());
+        assert!(p.row_rect(p.max_visible_rows()).is_none(), "row past the cap is scrolled off");
+
+        // Move the cursor to the last entry: it must now be painted, and row 0
+        // must have scrolled off the top.
+        p.set_cursor(19);
+        assert!(p.row_rect(19).is_some(), "highlighted last row stays visible");
+        assert!(p.row_rect(0).is_none(), "the top row scrolled out of view");
+    }
+
+    /// Helper: dispatch one event and surface whether the palette consumed it.
+    fn dispatch_h(
+        p: &mut CommandPalette,
+        event: WindowEvent,
+        modifiers: Modifiers,
+        handled: &mut bool,
+    ) {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT.clone();
+        let mut focus: Option<NodeId> = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        p.handle_event(
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &root,
+            handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 }
