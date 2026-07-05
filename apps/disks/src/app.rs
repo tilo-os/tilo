@@ -9,6 +9,8 @@
 //! collaborative.
 
 use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -25,19 +27,61 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget};
 
+use crate::actions::{self, Op};
 use crate::doc::DisksDoc;
 use crate::model::{
     fmt_hours, fmt_size, AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartStatus,
     Topology,
 };
 
+/// Result of a background action thread, drained in `update`.
+struct ActionResult {
+    text: String,
+    /// Whether the topology changed and should be re-probed.
+    refresh: bool,
+}
+
+impl ActionKind {
+    /// The real operation this action maps to, if any (Eject/Mount/… all do;
+    /// this is a total map today but kept explicit for clarity).
+    fn op(&self) -> Op {
+        match self {
+            ActionKind::Mount => Op::Mount,
+            ActionKind::Unmount => Op::Unmount,
+            ActionKind::Format => Op::Format,
+            ActionKind::Benchmark => Op::Benchmark,
+            ActionKind::Eject => Op::Eject,
+        }
+    }
+    /// Present-tense verb for the "…in progress" status line.
+    fn gerund(&self) -> &'static str {
+        match self {
+            ActionKind::Mount => "Mounting",
+            ActionKind::Unmount => "Unmounting",
+            ActionKind::Format => "Formatting",
+            ActionKind::Benchmark => "Benchmarking",
+            ActionKind::Eject => "Ejecting",
+        }
+    }
+    /// Does completing this action change the mount/partition topology?
+    fn changes_topology(&self) -> bool {
+        matches!(self, ActionKind::Mount | ActionKind::Unmount | ActionKind::Format | ActionKind::Eject)
+    }
+}
+
 // ---- layout constants (logical px) ---------------------------------
 const PAD: f64 = 18.0;
 const TOPBAR_H: f64 = 60.0;
 const LIST_W: f64 = 320.0;
+/// Height of the "DRIVES" section header sitting above the drive rows.
+const LIST_HEADER_H: f64 = 30.0;
 const CARD_H: f64 = 96.0;
 const CARD_GAP: f64 = 12.0;
-const HEADER_H: f64 = 116.0;
+/// Identity header (model + meta + chips). Actions moved to their own band.
+const HEADER_H: f64 = 96.0;
+/// The dedicated action band below the identity header: a target label plus
+/// the Mount / Unmount / Format / Benchmark / Eject buttons and a helper line.
+const ACTIONBAR_H: f64 = 94.0;
 const TAB_H: f64 = 40.0;
 
 /// Below this allocated width (logical px) the drive list stops fitting
@@ -54,19 +98,17 @@ pub enum Tab {
     Overview,
     Smart,
     Partitions,
-    Tools,
 }
 
 impl Tab {
-    fn all() -> [Tab; 4] {
-        [Tab::Overview, Tab::Smart, Tab::Partitions, Tab::Tools]
+    fn all() -> [Tab; 3] {
+        [Tab::Overview, Tab::Smart, Tab::Partitions]
     }
     fn key(&self) -> &'static str {
         match self {
             Tab::Overview => "overview",
             Tab::Smart => "smart",
             Tab::Partitions => "partitions",
-            Tab::Tools => "tools",
         }
     }
     fn title(&self) -> &'static str {
@@ -74,14 +116,12 @@ impl Tab {
             Tab::Overview => "Overview",
             Tab::Smart => "SMART & Health",
             Tab::Partitions => "Partitions",
-            Tab::Tools => "Tools",
         }
     }
     fn from_key(k: &str) -> Tab {
         match k {
             "smart" => Tab::Smart,
             "partitions" => Tab::Partitions,
-            "tools" => Tab::Tools,
             _ => Tab::Overview,
         }
     }
@@ -93,15 +133,27 @@ pub enum ActionKind {
     Unmount,
     Format,
     Benchmark,
+    Eject,
 }
 
 impl ActionKind {
+    /// The action bar, left-to-right.
+    fn bar() -> [ActionKind; 5] {
+        [
+            ActionKind::Mount,
+            ActionKind::Unmount,
+            ActionKind::Format,
+            ActionKind::Benchmark,
+            ActionKind::Eject,
+        ]
+    }
     fn key(&self) -> &'static str {
         match self {
             ActionKind::Mount => "mount",
             ActionKind::Unmount => "unmount",
             ActionKind::Format => "format",
             ActionKind::Benchmark => "benchmark",
+            ActionKind::Eject => "eject",
         }
     }
     fn label(&self) -> &'static str {
@@ -110,6 +162,18 @@ impl ActionKind {
             ActionKind::Unmount => "Unmount",
             ActionKind::Format => "Format…",
             ActionKind::Benchmark => "Benchmark",
+            ActionKind::Eject => "Eject",
+        }
+    }
+    /// One-line description of what the action does, shown under the action
+    /// bar so every control is self-labelling (no unexplained buttons).
+    fn describe(&self) -> &'static str {
+        match self {
+            ActionKind::Mount => "Attach the filesystem so its files become reachable.",
+            ActionKind::Unmount => "Safely detach the filesystem before removing the device.",
+            ActionKind::Format => "Erase and create a new filesystem — destroys all data.",
+            ActionKind::Benchmark => "Measure sequential read / write throughput.",
+            ActionKind::Eject => "Power down and safely remove the whole device.",
         }
     }
     fn from_key(k: &str) -> Option<ActionKind> {
@@ -118,6 +182,7 @@ impl ActionKind {
             "unmount" => Some(ActionKind::Unmount),
             "format" => Some(ActionKind::Format),
             "benchmark" => Some(ActionKind::Benchmark),
+            "eject" => Some(ActionKind::Eject),
             _ => None,
         }
     }
@@ -125,27 +190,29 @@ impl ActionKind {
     fn destructive(&self) -> bool {
         matches!(self, ActionKind::Format)
     }
-    fn confirm_title(&self, drive: &str) -> String {
+    fn confirm_title(&self, target: &str) -> String {
         match self {
-            ActionKind::Format => format!("Format {drive}?"),
-            ActionKind::Unmount => format!("Unmount {drive}?"),
-            ActionKind::Mount => format!("Mount {drive}?"),
-            ActionKind::Benchmark => format!("Benchmark {drive}?"),
+            ActionKind::Format => format!("Format {target}?"),
+            ActionKind::Unmount => format!("Unmount {target}?"),
+            ActionKind::Mount => format!("Mount {target}?"),
+            ActionKind::Benchmark => format!("Benchmark {target}?"),
+            ActionKind::Eject => format!("Eject {target}?"),
         }
     }
-    fn confirm_body(&self, drive: &str) -> String {
+    fn confirm_body(&self, target: &str) -> String {
         match self {
             ActionKind::Format => format!(
-                "Formatting erases ALL data on {drive}. This cannot be undone. \
+                "Formatting erases ALL data on {target}. This cannot be undone. \
                  (Demo build — no changes are written to disk.)"
             ),
             ActionKind::Unmount => format!(
-                "Detach {drive} from the filesystem. Programs using it may lose access."
+                "Detach {target} from the filesystem. Programs using it may lose access."
             ),
-            ActionKind::Mount => format!("Attach {drive} so its files become available."),
+            ActionKind::Mount => format!("Attach {target} so its files become available."),
             ActionKind::Benchmark => format!(
-                "Run a read/write throughput benchmark on {drive}. May briefly slow the system."
+                "Run a read/write throughput benchmark on {target}. May briefly slow the system."
             ),
+            ActionKind::Eject => format!("Power down and detach {target} so it is safe to unplug."),
         }
     }
 }
@@ -154,6 +221,8 @@ impl ActionKind {
 struct Pending {
     action: ActionKind,
     drive: usize,
+    /// Partition the action targets, or `None` for the whole disk.
+    part: Option<usize>,
 }
 
 /// Computed interactive rectangles for one frame. Pure function of the
@@ -170,19 +239,32 @@ struct Layout {
     scrim: Rect,
     /// Hamburger toggle in the top bar (only painted/hit in overlay mode).
     hamburger: Option<Rect>,
+    /// Header label + clipped scroll viewport for the drive rows.
+    list_header: Rect,
+    list_body: Rect,
     refresh: Rect,
     cards: Vec<Rect>,
     header: Rect,
-    actions: Vec<(Rect, ActionKind)>,
+    /// The action band: its bounding rect plus each button with its
+    /// applicability flag (disabled buttons are dimmed and non-interactive).
+    action_bar: Rect,
+    action_buttons: Vec<(Rect, ActionKind, bool)>,
     tabs: Vec<(Rect, Tab)>,
     content: Rect,
+    /// The pill that reselects "Whole disk" (clears the partition selection).
+    whole_disk_pill: Rect,
+    /// Clickable partition segments in the Overview map (index into partitions).
+    part_segments: Vec<(Rect, usize)>,
+    /// Clickable partition rows in the Partitions table (index into partitions).
+    part_rows: Vec<(Rect, usize)>,
     modal: Option<ModalLayout>,
-    tool_buttons: Vec<(Rect, ActionKind)>,
 }
 
 #[derive(Clone, Copy)]
 struct ModalLayout {
     card: Rect,
+    /// Type-to-confirm input box (destructive actions only).
+    input: Rect,
     cancel: Rect,
     confirm: Rect,
 }
@@ -191,16 +273,37 @@ pub struct DisksApp {
     topo: Topology,
     topo_json_cache: String,
     selected: usize,
+    /// Selected partition within the current drive, or `None` for the whole
+    /// disk. Drives every partition-scoped action + detail highlight.
+    selected_part: Option<usize>,
     tab: Tab,
     pending: Option<Pending>,
+    /// Typed confirmation text for a destructive (Format) action. The Erase
+    /// button only unlocks once this matches the target device name.
+    confirm_input: String,
     status: String,
+    /// True in the live binary (`DISKS_LIVE`): actions actually execute.
+    /// False for `--shots` and unit tests, which stay inert.
+    live: bool,
+    /// Receiver for the currently-running background action, if any.
+    action_rx: Option<mpsc::Receiver<ActionResult>>,
     seeded: bool,
     rect: Rect,
     dirty: bool,
     last_mouse: Point,
+    /// Vertical scroll offsets (logical px) for the drive list and the detail
+    /// content, so both panes stay usable at small window sizes.
+    list_scroll: f64,
+    content_scroll: f64,
+    /// Content extents measured during the last draw, used to clamp scrolling.
+    list_h: f64,
+    content_h: f64,
     hover_card: Option<usize>,
     hover_action: Option<ActionKind>,
     hover_tab: Option<Tab>,
+    /// Hovered partition (map segment or table row), for a live highlight.
+    hover_part: Option<usize>,
+    hover_whole_disk: bool,
     /// Eased open/closed state of the drive-list flap. Open by default when
     /// the list is docked (wide window); closed by default when it collapses
     /// to an overlay (narrow window). The same kernel the shared `NavSplit`
@@ -222,16 +325,26 @@ impl DisksApp {
             topo: Topology::default(),
             topo_json_cache: String::new(),
             selected: 0,
+            selected_part: None,
             tab: Tab::Overview,
             pending: None,
+            confirm_input: String::new(),
             status: String::new(),
+            live: std::env::var("DISKS_LIVE").is_ok(),
+            action_rx: None,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
             last_mouse: Point::ZERO,
+            list_scroll: 0.0,
+            content_scroll: 0.0,
+            list_h: 0.0,
+            content_h: 0.0,
             hover_card: None,
             hover_action: None,
             hover_tab: None,
+            hover_part: None,
+            hover_whole_disk: false,
             flap: FlapState::open_when_docked(),
             hover_menu: false,
             laid_out: false,
@@ -261,6 +374,53 @@ impl DisksApp {
 
     fn drive(&self) -> Option<&Drive> {
         self.topo.drives.get(self.selected)
+    }
+
+    /// The selected partition index, validated against the current drive so a
+    /// stale index (after switching drives) never points out of bounds.
+    fn part_index(&self) -> Option<usize> {
+        let n = self.drive()?.partitions.len();
+        self.selected_part.filter(|&i| i < n)
+    }
+
+    /// The selected partition, if any.
+    fn part(&self) -> Option<&Partition> {
+        let d = self.drive()?;
+        self.part_index().and_then(|i| d.partitions.get(i))
+    }
+
+    /// Which partition Mount / Unmount act on: the explicitly-selected one,
+    /// or — when the whole disk is selected and it carries exactly one
+    /// filesystem — that sole partition, so single-fs drives (USB sticks,
+    /// data disks) mount without first drilling into the map.
+    fn mount_target_part<'a>(&self, drive: &'a Drive) -> Option<usize> {
+        if let Some(i) = self.part_index() {
+            return Some(i);
+        }
+        if drive.partitions.len() == 1 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    /// Whether an action applies to the current selection. Inapplicable
+    /// actions render disabled rather than silently no-op'ing.
+    fn action_enabled(&self, drive: &Drive, action: ActionKind) -> bool {
+        match action {
+            ActionKind::Mount => self
+                .mount_target_part(drive)
+                .and_then(|i| drive.partitions.get(i))
+                .is_some_and(|p| p.mountpoint.is_none()),
+            ActionKind::Unmount => self
+                .mount_target_part(drive)
+                .and_then(|i| drive.partitions.get(i))
+                .is_some_and(|p| p.mountpoint.is_some()),
+            // Format works on either the selected partition or the whole disk.
+            ActionKind::Format => true,
+            ActionKind::Benchmark => true,
+            ActionKind::Eject => drive.removable,
+        }
     }
 
     // ---- layout --------------------------------------------------------
@@ -293,9 +453,12 @@ impl DisksApp {
             }
         };
 
-        // Drive list cards — anchored to the (possibly sliding) list column.
+        // Drive list: a "DRIVES" section header, then a scrolling body of
+        // rows anchored to the (possibly sliding) list column.
+        let list_header = Rect::new(list_x0, TOPBAR_H + PAD, list_x0 + LIST_W, TOPBAR_H + PAD + LIST_HEADER_H);
+        let list_body = Rect::new(list_x0, list_header.y1, list_x0 + LIST_W, v.y1 - PAD);
         let mut cards = Vec::new();
-        let mut cy = TOPBAR_H + PAD;
+        let mut cy = list_body.y0 - self.list_scroll;
         for _ in &self.topo.drives {
             cards.push(Rect::new(list_x0, cy, list_x0 + LIST_W, cy + CARD_H));
             cy += CARD_H + CARD_GAP;
@@ -306,25 +469,24 @@ impl DisksApp {
         let region_top = TOPBAR_H + PAD;
         let header = Rect::new(dx0, region_top, dx1, region_top + HEADER_H);
 
-        // Action buttons right-aligned along the header's lower edge.
-        let mut actions = Vec::new();
+        // Action band: Mount / Unmount / Format / Benchmark / Eject, laid out
+        // left-to-right below the identity header, each flagged applicable or
+        // not for the current drive/partition selection.
+        let action_bar = Rect::new(dx0, header.y1 + 12.0, dx1, header.y1 + 12.0 + ACTIONBAR_H);
+        let mut action_buttons = Vec::new();
+        let drive_ref = self.drive();
         let btn_h = 32.0;
-        let btn_y = header.y1 - 16.0 - btn_h;
-        let mut bx = dx1 - 16.0;
-        for a in [
-            ActionKind::Benchmark,
-            ActionKind::Format,
-            ActionKind::Unmount,
-            ActionKind::Mount,
-        ] {
-            let w = (a.label().len() as f64) * 8.0 + 28.0;
-            let r = Rect::new(bx - w, btn_y, bx, btn_y + btn_h);
-            actions.push((r, a));
-            bx -= w + 8.0;
+        let btn_y = action_bar.y0 + 34.0;
+        let mut bx = action_bar.x0 + 14.0;
+        for a in ActionKind::bar() {
+            let w = (a.label().len() as f64) * 8.0 + 30.0;
+            let enabled = drive_ref.map(|d| self.action_enabled(d, a)).unwrap_or(false);
+            action_buttons.push((Rect::new(bx, btn_y, bx + w, btn_y + btn_h), a, enabled));
+            bx += w + 10.0;
         }
 
         // Tab bar.
-        let tab_top = header.y1 + PAD;
+        let tab_top = action_bar.y1 + 12.0;
         let mut tabs = Vec::new();
         let mut tx = dx0;
         for t in Tab::all() {
@@ -335,37 +497,41 @@ impl DisksApp {
 
         let content = Rect::new(dx0, tab_top + TAB_H + PAD, dx1, v.y1 - PAD);
 
-        // Tools-tab big buttons (only meaningful on that tab, but cheap).
-        let mut tool_buttons = Vec::new();
-        if self.tab == Tab::Tools {
-            let tools = [
-                ActionKind::Mount,
-                ActionKind::Unmount,
-                ActionKind::Benchmark,
-                ActionKind::Format,
-            ];
-            let col_w = (content.width() - 16.0) / 2.0;
-            let row_h = 92.0;
-            for (i, a) in tools.iter().enumerate() {
-                let col = (i % 2) as f64;
-                let row = (i / 2) as f64;
-                let x = content.x0 + col * (col_w + 16.0);
-                let y = content.y0 + row * (row_h + 14.0);
-                tool_buttons.push((Rect::new(x, y, x + col_w, y + row_h), *a));
+        // Content-scoped interactive rects (computed in *unscrolled* content
+        // coordinates; hit-testing offsets the pointer by `content_scroll`).
+        let pill_w = 116.0;
+        let whole_disk_pill = Rect::new(content.x1 - pill_w, content.y0 - 3.0, content.x1, content.y0 + 19.0);
+        let mut part_segments = Vec::new();
+        let mut part_rows = Vec::new();
+        if let Some(d) = drive_ref {
+            if self.tab == Tab::Overview {
+                let map = Rect::new(content.x0, content.y0 + 20.0, content.x1, content.y0 + 20.0 + 58.0);
+                for (r, idx) in partition_segments(d, map) {
+                    if let Some(i) = idx {
+                        part_segments.push((r, i));
+                    }
+                }
+            } else if self.tab == Tab::Partitions {
+                let mut ry = content.y0 + 24.0;
+                for i in 0..d.partitions.len() {
+                    part_rows.push((Rect::new(content.x0, ry - 6.0, content.x1, ry + 30.0), i));
+                    ry += 38.0;
+                }
             }
         }
 
-        // Confirm modal.
+        // Confirm modal (type-to-confirm for destructive actions).
         let modal = self.pending.map(|_| {
-            let w = 460.0;
-            let h = 210.0;
+            let w = 480.0;
+            let h = 258.0;
             let cx = (v.x0 + v.x1) / 2.0;
             let cy = (v.y0 + v.y1) / 2.0;
             let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+            let input = Rect::new(card.x0 + 22.0, card.y0 + 128.0, card.x1 - 22.0, card.y0 + 128.0 + 36.0);
             let by = card.y1 - 18.0 - 36.0;
             let confirm = Rect::new(card.x1 - 18.0 - 130.0, by, card.x1 - 18.0, by + 36.0);
             let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + 36.0);
-            ModalLayout { card, cancel, confirm }
+            ModalLayout { card, input, cancel, confirm }
         });
 
         Layout {
@@ -373,14 +539,19 @@ impl DisksApp {
             sidebar,
             scrim,
             hamburger,
+            list_header,
+            list_body,
             refresh,
             cards,
             header,
-            actions,
+            action_bar,
+            action_buttons,
             tabs,
             content,
+            whole_disk_pill,
+            part_segments,
+            part_rows,
             modal,
-            tool_buttons,
         }
     }
 
@@ -503,28 +674,51 @@ impl DisksApp {
     // ---- drive list ----------------------------------------------------
     fn draw_drive_list(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
+        // Section header — anchors the column as an explicit, pickable list.
+        let hr = lay.list_header;
+        self.txt(scene, tr, "DRIVES", 11.5, c.text_dim, hr.x0 + 2.0, hr.y0 + 8.0, None, TextWeight::Bold);
+        self.txt_right(scene, tr, &format!("{}", self.topo.drives.len()), 11.5, c.text_dim, hr.x1 - 2.0, hr.y0 + 8.0, TextWeight::Semibold);
+
+        // Rows, clipped to the scrolling body so a long list can't spill over
+        // the header or the window edge.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &lay.list_body);
         for (i, drive) in self.topo.drives.iter().enumerate() {
             let Some(&r) = lay.cards.get(i) else { continue };
+            if r.y1 < lay.list_body.y0 || r.y0 > lay.list_body.y1 {
+                continue; // fully scrolled out of view
+            }
             let selected = i == self.selected;
             let hover = self.hover_card == Some(i);
             let bg = if selected {
-                c.accent[2]
+                with_alpha(theme.accent_primary, 46)
             } else if hover {
                 c.neutral[3]
             } else {
                 c.surfaces.raised
             };
             Self::fill_rr(scene, t, r, 12.0, bg);
-            Self::stroke_rr(scene, t, r, 12.0, if selected { c.border_focus } else { c.border_standard }, if selected { 1.6 } else { 1.0 });
+            Self::stroke_rr(
+                scene,
+                t,
+                r,
+                12.0,
+                if selected { theme.accent_primary } else { c.border_standard },
+                if selected { 2.0 } else { 1.0 },
+            );
+            // Left accent bar — the unmistakable "this row is selected" cue.
+            if selected {
+                Self::fill_rr(scene, t, Rect::new(r.x0, r.y0 + 10.0, r.x0 + 4.0, r.y1 - 10.0), 2.0, theme.accent_primary);
+            }
 
+            let inset = if selected { 8.0 } else { 0.0 };
             // Kind badge.
-            let badge = Rect::new(r.x0 + 14.0, r.y0 + 14.0, r.x0 + 14.0 + 52.0, r.y0 + 14.0 + 22.0);
+            let badge = Rect::new(r.x0 + 14.0 + inset, r.y0 + 14.0, r.x0 + 14.0 + inset + 52.0, r.y0 + 14.0 + 22.0);
             Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
             self.txt_center(scene, tr, drive.kind.tag(), 12.0, Color::WHITE, (badge.x0 + badge.x1) / 2.0, badge.y0 + 4.0, TextWeight::Bold);
 
             // Model + name + size.
-            let tx = r.x0 + 14.0;
-            self.txt(scene, tr, &drive.model, 15.0, c.text_primary, tx, r.y0 + 42.0, Some((r.width() - 28.0) as f32), TextWeight::Semibold);
+            let tx = r.x0 + 14.0 + inset;
+            self.txt(scene, tr, &drive.model, 15.0, c.text_primary, tx, r.y0 + 42.0, Some((r.width() - 28.0 - inset) as f32), TextWeight::Semibold);
             let sub = format!("/dev/{}  ·  {}", drive.name, fmt_size(drive.size));
             self.txt(scene, tr, &sub, 12.0, c.text_dim, tx, r.y0 + 63.0, None, TextWeight::Regular);
 
@@ -537,11 +731,14 @@ impl DisksApp {
             let barr = Rect::new(tx, r.y1 - 16.0, r.x1 - 14.0, r.y1 - 10.0);
             Self::bar(scene, t, barr, used_frac, c.neutral[4], usage_color(theme, used_frac));
 
-            // Health dot.
-            let dot_c = status_color(theme, drive.smart_status());
-            let dot = Rect::new(r.x1 - 26.0, r.y0 + 16.0, r.x1 - 14.0, r.y0 + 28.0);
-            Self::fill_rr(scene, t, dot, 6.0, dot_c);
+            // Health dot + short label at a glance.
+            let status = drive.smart_status();
+            let dot_c = status_color(theme, status);
+            let dot = Rect::new(r.x1 - 26.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 28.0);
+            Self::fill_rr(scene, t, dot, 5.0, dot_c);
+            self.txt_right(scene, tr, status.label(), 10.5, dot_c, r.x1 - 32.0, r.y0 + 17.0, TextWeight::Semibold);
         }
+        scene.pop_layer();
     }
 
     // ---- detail header -------------------------------------------------
@@ -569,7 +766,7 @@ impl DisksApp {
         self.txt(scene, tr, &meta, 13.0, c.text_dim, tx, h.y0 + 46.0, Some((h.width() - 40.0) as f32), TextWeight::Regular);
 
         // Health + connection chips.
-        let chip_y = h.y0 + 70.0;
+        let chip_y = h.y0 + 62.0;
         let status = drive.smart_status();
         self.draw_chip(scene, tr, theme, t, tx, chip_y, &format!("● {}", status.label()), status_color(theme, status));
         let tran = drive.tran.clone().unwrap_or_else(|| "—".into()).to_uppercase();
@@ -577,19 +774,76 @@ impl DisksApp {
         if drive.removable {
             self.draw_chip(scene, tr, theme, t, tx + 132.0 + 86.0, chip_y, "REMOVABLE", c.semantic.info);
         }
+    }
 
-        // Action buttons.
-        for (r, a) in &lay.actions {
-            let hov = self.hover_action == Some(*a);
-            let (bg, fg) = if a.destructive() {
-                (if hov { c.semantic.danger } else { with_alpha(c.semantic.danger, 40) }, if hov { Color::WHITE } else { c.semantic.danger })
+    // ---- action band ---------------------------------------------------
+    /// The single home for Mount / Unmount / Format / Benchmark / Eject.
+    /// It names its target so there is never any doubt what a button acts on,
+    /// dims the actions that don't apply, and captions the hovered one.
+    fn draw_action_bar(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, drive: &Drive) {
+        let c = &theme.tokens.colors;
+        let bar = lay.action_bar;
+        Self::fill_rr(scene, t, bar, 12.0, c.surfaces.raised);
+        Self::stroke_rr(scene, t, bar, 12.0, c.border_standard, 1.0);
+
+        // Target line: exactly what the buttons below operate on.
+        let (scope, detail, scope_c) = match self.part() {
+            Some(p) => (
+                "PARTITION",
+                format!("/dev/{}  ·  {}", p.name, p.display_label()),
+                role_color(theme, p.role()),
+            ),
+            None => (
+                "WHOLE DISK",
+                format!("/dev/{}  ·  {}", drive.name, drive.model),
+                theme.accent_primary,
+            ),
+        };
+        let sx = bar.x0 + 14.0;
+        // Small scope tag.
+        let (tw, _) = tr.measure_weighted(scope, 10.5, None, TextWeight::Bold);
+        let tag = Rect::new(sx, bar.y0 + 9.0, sx + tw as f64 + 16.0, bar.y0 + 9.0 + 18.0);
+        Self::fill_rr(scene, t, tag, 6.0, with_alpha(scope_c, 46));
+        self.txt(scene, tr, scope, 10.5, scope_c, sx + 8.0, bar.y0 + 12.0, None, TextWeight::Bold);
+        self.txt(scene, tr, &detail, 12.5, c.text_primary, tag.x1 + 10.0, bar.y0 + 11.0, Some((bar.width() - (tag.x1 - bar.x0) - 24.0) as f32), TextWeight::Medium);
+
+        // Buttons.
+        for (r, a, enabled) in &lay.action_buttons {
+            let hov = *enabled && self.hover_action == Some(*a);
+            if !enabled {
+                // Disabled — clearly inert.
+                Self::fill_rr(scene, t, *r, 8.0, with_alpha(c.neutral[2], 120));
+                Self::stroke_rr(scene, t, *r, 8.0, with_alpha(c.border_standard, 120), 1.0);
+                self.txt_center(scene, tr, a.label(), 13.0, with_alpha(c.text_dim, 130), (r.x0 + r.x1) / 2.0, r.y0 + 9.0, TextWeight::Medium);
+                continue;
+            }
+            let (bg, fg, border) = if a.destructive() {
+                (
+                    if hov { c.semantic.danger } else { with_alpha(c.semantic.danger, 44) },
+                    if hov { Color::WHITE } else { c.semantic.danger },
+                    with_alpha(c.semantic.danger, 150),
+                )
             } else {
-                (if hov { c.accent[4] } else { c.neutral[2] }, c.text_primary)
+                (
+                    if hov { c.accent[4] } else { c.neutral[2] },
+                    c.text_primary,
+                    c.border_standard,
+                )
             };
             Self::fill_rr(scene, t, *r, 8.0, bg);
-            Self::stroke_rr(scene, t, *r, 8.0, c.border_standard, 1.0);
-            self.txt_center(scene, tr, a.label(), 13.0, fg, (r.x0 + r.x1) / 2.0, r.y0 + 8.0, TextWeight::Medium);
+            Self::stroke_rr(scene, t, *r, 8.0, border, 1.0);
+            self.txt_center(scene, tr, a.label(), 13.0, fg, (r.x0 + r.x1) / 2.0, r.y0 + 9.0, TextWeight::Medium);
         }
+
+        // Caption: describe the hovered action, or the current scope by default.
+        let caption = match self.hover_action {
+            Some(a) => a.describe().to_string(),
+            None => match self.part() {
+                Some(_) => "Pick a partition action, or select the whole disk for device-level actions.".into(),
+                None => "Actions apply to the whole disk. Click a partition in the map to target it.".into(),
+            },
+        };
+        self.txt(scene, tr, &caption, 11.5, c.text_dim, bar.x0 + 14.0, bar.y1 - 20.0, Some((bar.width() - 28.0) as f32), TextWeight::Regular);
     }
 
     fn draw_chip(&self, scene: &mut Scene, tr: &mut TextRenderer, _theme: &Theme, t: Affine, x: f64, y: f64, label: &str, color: Color) {
@@ -617,25 +871,52 @@ impl DisksApp {
     }
 
     // ---- content: overview --------------------------------------------
-    fn draw_overview(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, area: Rect, drive: &Drive) {
+    fn draw_overview(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, drive: &Drive) {
         let c = &theme.tokens.colors;
-        // Partition map section.
+        let area = lay.content;
+        // Section heading + "Whole disk" selector (top-right).
         self.txt(scene, tr, "PARTITION MAP", 11.0, c.text_dim, area.x0, area.y0, None, TextWeight::Semibold);
+        self.txt(scene, tr, "— click a partition to select it", 11.0, with_alpha(c.text_dim, 170), area.x0 + 110.0, area.y0, None, TextWeight::Regular);
+        let pill = lay.whole_disk_pill;
+        let whole = self.part().is_none();
+        let pill_hov = self.hover_whole_disk;
+        let pill_c = theme.accent_primary;
+        Self::fill_rr(scene, t, pill, 11.0, if whole { with_alpha(pill_c, 60) } else if pill_hov { c.neutral[3] } else { c.neutral[2] });
+        Self::stroke_rr(scene, t, pill, 11.0, if whole { pill_c } else { c.border_standard }, if whole { 1.6 } else { 1.0 });
+        self.txt_center(scene, tr, "◍ Whole disk", 11.5, if whole { pill_c } else { c.text_dim }, (pill.x0 + pill.x1) / 2.0, pill.y0 + 4.0, TextWeight::Semibold);
+
         let map = Rect::new(area.x0, area.y0 + 20.0, area.x1, area.y0 + 20.0 + 58.0);
         self.draw_partition_map(scene, tr, theme, t, map, drive);
         // Legend.
         let legend_y = map.y1 + 12.0;
         self.draw_legend(scene, tr, theme, t, area.x0, legend_y, area.x1, drive);
 
-        // Two columns below: capacity (left) + SMART summary (right).
+        // Two columns below: capacity (left) + SMART summary (right). Sized to
+        // their natural content height (not the viewport) so scrolling can
+        // reveal the whole thing when the window is short.
         let cols_top = legend_y + 56.0;
         let gap = 16.0;
         let left_w = (area.width() - gap) * 0.56;
-        let left = Rect::new(area.x0, cols_top, area.x0 + left_w, area.y1);
-        let right = Rect::new(left.x1 + gap, cols_top, area.x1, area.y1);
+        let cols_bottom = cols_top + overview_cols_h(drive);
+        let left = Rect::new(area.x0, cols_top, area.x0 + left_w, cols_bottom);
+        let right = Rect::new(left.x1 + gap, cols_top, area.x1, cols_bottom);
 
         self.draw_capacity(scene, tr, theme, t, left, drive);
         self.draw_smart_card(scene, tr, theme, t, right, drive);
+    }
+
+    /// Natural pixel height of the current tab's content, used to size the
+    /// scroll range and the Overview columns.
+    fn content_height(&self, drive: &Drive) -> f64 {
+        match self.tab {
+            // heading + map(78) + legend(gap 12 + 56) = 146, then the columns.
+            Tab::Overview => 146.0 + overview_cols_h(drive) + 12.0,
+            Tab::Smart => {
+                let attrs = drive.smart.as_ref().map(|s| s.attrs.len()).unwrap_or(0);
+                258.0 + attrs as f64 * 24.0
+            }
+            Tab::Partitions => 24.0 + drive.partitions.len() as f64 * 38.0 + 16.0,
+        }
     }
 
     fn draw_partition_map(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, map: Rect, drive: &Drive) {
@@ -643,43 +924,50 @@ impl DisksApp {
         // Background track for the whole device.
         Self::fill_rr(scene, t, map, 8.0, c.neutral[2]);
 
-        let total = drive.size.max(1) as f64;
-        let mut x = map.x0;
-        let inner_pad = 0.0_f64;
-        let n_segs = drive.partitions.len();
-        for (i, p) in drive.partitions.iter().enumerate() {
-            let frac = p.size as f64 / total;
-            let mut w = frac * map.width();
-            // Keep tiny partitions visible.
-            if w < 6.0 {
-                w = 6.0;
+        let sel = self.part_index();
+        let any_sel = sel.is_some();
+        let segments = partition_segments(drive, map);
+        let n = segments.len();
+        for (si, (seg, idx)) in segments.iter().enumerate() {
+            let (seg, idx) = (*seg, *idx);
+            let radius = if si == 0 || si == n - 1 { 6.0 } else { 3.0 };
+            let is_sel = idx.is_some() && idx == sel;
+            let is_hov = idx.is_some() && idx == self.hover_part;
+            match idx {
+                Some(i) => {
+                    let p = &drive.partitions[i];
+                    let mut col = role_color(theme, p.role());
+                    // Dim the unselected segments once something is selected so
+                    // the chosen partition reads as the focus.
+                    if any_sel && !is_sel {
+                        col = with_alpha(col, 150);
+                    }
+                    Self::fill_rr(scene, t, seg, radius, col);
+                    if let Some(f) = p.used_frac() {
+                        let uh = (seg.height() - 6.0) * f;
+                        let used_r = Rect::new(seg.x0, seg.y1 - 3.0 - uh, seg.x1, seg.y1 - 3.0);
+                        Self::fill_rr(scene, t, used_r, 2.0, with_alpha(Color::BLACK, 70));
+                    }
+                    if seg.width() > 64.0 {
+                        self.txt(scene, tr, &p.display_label(), 11.0, Color::WHITE, seg.x0 + 8.0, seg.y0 + 8.0, Some((seg.width() - 12.0) as f32), TextWeight::Semibold);
+                        self.txt(scene, tr, &fmt_size(p.size), 11.0, with_alpha(Color::WHITE, 200), seg.x0 + 8.0, seg.y0 + 24.0, None, TextWeight::Regular);
+                    }
+                }
+                None => {
+                    // Free tail.
+                    Self::fill_rr(scene, t, seg, radius, role_color(theme, PartRole::Free));
+                    if seg.width() > 64.0 {
+                        self.txt(scene, tr, "Free", 11.0, c.text_dim, seg.x0 + 8.0, seg.y0 + 8.0, None, TextWeight::Semibold);
+                        self.txt(scene, tr, &fmt_size(drive.free_tail()), 11.0, c.text_dim, seg.x0 + 8.0, seg.y0 + 24.0, None, TextWeight::Regular);
+                    }
+                }
             }
-            let is_last_seg = i == n_segs - 1 && drive.free_tail() == 0;
-            let seg = Rect::new(x + inner_pad, map.y0 + 4.0, x + w - 2.0, map.y1 - 4.0);
-            let col = role_color(theme, p.role());
-            let radius = if i == 0 || is_last_seg { 6.0 } else { 3.0 };
-            Self::fill_rr(scene, t, seg, radius, col);
-            // Inner used overlay (darker band at bottom showing fill).
-            if let Some(f) = p.used_frac() {
-                let uh = (seg.height() - 6.0) * f;
-                let used_r = Rect::new(seg.x0, seg.y1 - 3.0 - uh, seg.x1, seg.y1 - 3.0);
-                Self::fill_rr(scene, t, used_r, 2.0, with_alpha(Color::BLACK, 70));
-            }
-            // Label inside if wide enough.
-            if seg.width() > 64.0 {
-                self.txt(scene, tr, &p.display_label(), 11.0, Color::WHITE, seg.x0 + 8.0, seg.y0 + 8.0, Some((seg.width() - 12.0) as f32), TextWeight::Semibold);
-                self.txt(scene, tr, &fmt_size(p.size), 11.0, with_alpha(Color::WHITE, 200), seg.x0 + 8.0, seg.y0 + 24.0, None, TextWeight::Regular);
-            }
-            x += w;
-        }
-        // Free tail.
-        let tail = drive.free_tail();
-        if tail > 0 && x < map.x1 - 2.0 {
-            let seg = Rect::new(x, map.y0 + 4.0, map.x1 - 2.0, map.y1 - 4.0);
-            Self::fill_rr(scene, t, seg, 6.0, role_color(theme, PartRole::Free));
-            if seg.width() > 64.0 {
-                self.txt(scene, tr, "Free", 11.0, c.text_dim, seg.x0 + 8.0, seg.y0 + 8.0, None, TextWeight::Semibold);
-                self.txt(scene, tr, &fmt_size(tail), 11.0, c.text_dim, seg.x0 + 8.0, seg.y0 + 24.0, None, TextWeight::Regular);
+            // Selection / hover outline — lifts the chosen segment above a track.
+            if is_sel {
+                let ring = seg.inset(-2.0);
+                Self::stroke_rr(scene, t, ring, radius + 2.0, theme.accent_primary, 2.4);
+            } else if is_hov {
+                Self::stroke_rr(scene, t, seg, radius, with_alpha(theme.accent_primary, 170), 1.6);
             }
         }
     }
@@ -723,9 +1011,16 @@ impl DisksApp {
             self.txt(scene, tr, "No mounted filesystems.", 13.0, c.text_dim, area.x0, y, None, TextWeight::Regular);
             return;
         }
+        let sel_name = self.part().map(|p| p.name.clone());
         for p in mounted {
             if y > area.y1 - 40.0 {
                 break;
+            }
+            // Tie the selected partition's usage back to the map + action bar.
+            if sel_name.as_deref() == Some(p.name.as_str()) {
+                let hl = Rect::new(area.x0 - 8.0, y - 6.0, area.x1 + 8.0, y + 44.0);
+                Self::fill_rr(scene, t, hl, 8.0, with_alpha(theme.accent_primary, 30));
+                Self::fill_rr(scene, t, Rect::new(hl.x0, hl.y0 + 4.0, hl.x0 + 3.0, hl.y1 - 4.0), 2.0, theme.accent_primary);
             }
             let mp = p.mountpoint.clone().unwrap_or_default();
             self.txt(scene, tr, &p.display_label(), 13.5, c.text_primary, area.x0, y, None, TextWeight::Semibold);
@@ -907,12 +1202,19 @@ impl DisksApp {
         let mut ry = hy + 24.0;
         for (i, p) in drive.partitions.iter().enumerate() {
             let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry + 30.0);
-            if i % 2 == 0 {
+            let selected = self.selected_part == Some(i);
+            let hover = self.hover_part == Some(i);
+            if selected {
+                Self::fill_rr(scene, t, rowr, 6.0, with_alpha(theme.accent_primary, 40));
+                Self::stroke_rr(scene, t, rowr, 6.0, theme.accent_primary, 1.4);
+            } else if hover {
+                Self::fill_rr(scene, t, rowr, 6.0, c.neutral[3]);
+            } else if i % 2 == 0 {
                 Self::fill_rr(scene, t, rowr, 6.0, with_alpha(Color::WHITE, 8));
             }
-            // role swatch
-            let sw = Rect::new(area.x0 - 0.0, ry + 2.0, area.x0 + 4.0, ry + 18.0);
-            Self::fill_rr(scene, t, sw, 2.0, role_color(theme, p.role()));
+            // role swatch (thickened when selected → doubles as the accent bar)
+            let sw = Rect::new(area.x0, ry + 2.0, area.x0 + if selected { 5.0 } else { 4.0 }, ry + 18.0);
+            Self::fill_rr(scene, t, sw, 2.0, if selected { theme.accent_primary } else { role_color(theme, p.role()) });
             self.txt(scene, tr, &p.name, 13.0, c.text_primary, name_x, ry, None, TextWeight::Medium);
             self.txt(scene, tr, &p.label.clone().unwrap_or_else(|| "—".into()), 12.5, c.text_dim, label_x, ry, Some((fs_x - label_x - 8.0) as f32), TextWeight::Regular);
             self.txt(scene, tr, &p.fstype.clone().unwrap_or_else(|| "—".into()), 12.5, c.text_dim, fs_x, ry, None, TextWeight::Regular);
@@ -930,28 +1232,6 @@ impl DisksApp {
         }
     }
 
-    // ---- content: tools tab -------------------------------------------
-    fn draw_tools_tab(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, _area: Rect, lay: &Layout) {
-        let c = &theme.tokens.colors;
-        for (r, a) in &lay.tool_buttons {
-            let hov = self.hover_action == Some(*a);
-            let accent = if a.destructive() { c.semantic.danger } else { c.accent[5] };
-            Self::fill_rr(scene, t, *r, 12.0, if hov { c.neutral[3] } else { c.surfaces.raised });
-            Self::stroke_rr(scene, t, *r, 12.0, if hov { accent } else { c.border_standard }, if hov { 1.5 } else { 1.0 });
-            // accent stripe
-            Self::fill_rr(scene, t, Rect::new(r.x0, r.y0, r.x0 + 5.0, r.y1), 12.0, accent);
-            self.txt(scene, tr, a.label().trim_end_matches('…'), 16.0, c.text_primary, r.x0 + 18.0, r.y0 + 16.0, None, TextWeight::Semibold);
-            let desc = match a {
-                ActionKind::Mount => "Attach the selected filesystem so its files are reachable.",
-                ActionKind::Unmount => "Safely detach the filesystem before removing the device.",
-                ActionKind::Benchmark => "Measure sequential read / write throughput and access time.",
-                ActionKind::Format => "Erase and create a new filesystem (destructive).",
-            };
-            self.txt(scene, tr, desc, 12.0, c.text_dim, r.x0 + 18.0, r.y0 + 42.0, Some((r.width() - 36.0) as f32), TextWeight::Regular);
-            self.txt(scene, tr, "Click to configure →", 11.5, accent, r.x0 + 18.0, r.y1 - 22.0, None, TextWeight::Medium);
-        }
-    }
-
     // ---- modal ---------------------------------------------------------
     fn draw_modal(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, ml: &ModalLayout, pending: Pending) {
         let c = &theme.tokens.colors;
@@ -960,16 +1240,35 @@ impl DisksApp {
         let card = ml.card;
         Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 16.0, c.border_standard, 1.0);
-        let drive_name = self
-            .topo
-            .drives
-            .get(pending.drive)
-            .map(|d| format!("/dev/{}", d.name))
-            .unwrap_or_else(|| "device".into());
+        let target = self.pending_target_name(pending);
         let danger = pending.action.destructive();
         let title_c = if danger { c.semantic.danger } else { c.text_primary };
-        self.txt(scene, tr, &pending.action.confirm_title(&drive_name), 19.0, title_c, card.x0 + 22.0, card.y0 + 22.0, None, TextWeight::Bold);
-        self.txt(scene, tr, &pending.action.confirm_body(&drive_name), 13.0, c.text_dim, card.x0 + 22.0, card.y0 + 56.0, Some((card.width() - 44.0) as f32), TextWeight::Regular);
+        self.txt(scene, tr, &pending.action.confirm_title(&target), 19.0, title_c, card.x0 + 22.0, card.y0 + 22.0, None, TextWeight::Bold);
+        self.txt(scene, tr, &pending.action.confirm_body(&target), 13.0, c.text_dim, card.x0 + 22.0, card.y0 + 54.0, Some((card.width() - 44.0) as f32), TextWeight::Regular);
+
+        // Type-to-confirm gate: the user must type the device name exactly.
+        let expected = self.pending_target_leaf(pending);
+        let ready = self.confirm_ready();
+        self.txt(
+            scene, tr,
+            &format!("Type “{expected}” to confirm:"),
+            12.0, c.text_dim, card.x0 + 22.0, ml.input.y0 - 20.0, None, TextWeight::Medium,
+        );
+        let inp = ml.input;
+        Self::fill_rr(scene, t, inp, 8.0, c.surfaces.base);
+        Self::stroke_rr(scene, t, inp, 8.0, if ready { c.semantic.success } else { c.border_focus }, 1.4);
+        let shown = if self.confirm_input.is_empty() { expected.clone() } else { self.confirm_input.clone() };
+        let text_c = if self.confirm_input.is_empty() {
+            with_alpha(c.text_dim, 110) // placeholder
+        } else if ready {
+            c.semantic.success
+        } else {
+            c.text_primary
+        };
+        self.txt(scene, tr, &shown, 14.0, text_c, inp.x0 + 12.0, inp.y0 + 9.0, Some((inp.width() - 24.0) as f32), TextWeight::Medium);
+        if ready {
+            self.txt_right(scene, tr, "✓ match", 12.0, c.semantic.success, inp.x1 - 12.0, inp.y0 + 10.0, TextWeight::Semibold);
+        }
 
         // Cancel.
         let cancel_hov = ml.cancel.contains(self.last_mouse);
@@ -977,12 +1276,20 @@ impl DisksApp {
         Self::stroke_rr(scene, t, ml.cancel, 9.0, c.border_standard, 1.0);
         self.txt_center(scene, tr, "Cancel", 14.0, c.text_primary, (ml.cancel.x0 + ml.cancel.x1) / 2.0, ml.cancel.y0 + 9.0, TextWeight::Medium);
 
-        // Confirm.
-        let confirm_hov = ml.confirm.contains(self.last_mouse);
+        // Confirm — locked (dimmed, inert) until the typed name matches.
+        let confirm_hov = ready && ml.confirm.contains(self.last_mouse);
         let cc = if danger { c.semantic.danger } else { c.accent[5] };
-        Self::fill_rr(scene, t, ml.confirm, 9.0, if confirm_hov { cc } else { with_alpha(cc, 220) });
-        let label = if danger { "Erase device" } else { "Confirm" };
-        self.txt_center(scene, tr, label, 14.0, Color::WHITE, (ml.confirm.x0 + ml.confirm.x1) / 2.0, ml.confirm.y0 + 9.0, TextWeight::Semibold);
+        let fill = if !ready {
+            with_alpha(cc, 70)
+        } else if confirm_hov {
+            cc
+        } else {
+            with_alpha(cc, 220)
+        };
+        Self::fill_rr(scene, t, ml.confirm, 9.0, fill);
+        let label = if danger { "Erase" } else { "Confirm" };
+        let label_c = if ready { Color::WHITE } else { with_alpha(Color::WHITE, 140) };
+        self.txt_center(scene, tr, label, 14.0, label_c, (ml.confirm.x0 + ml.confirm.x1) / 2.0, ml.confirm.y0 + 9.0, TextWeight::Semibold);
     }
 
     // ---- status line ---------------------------------------------------
@@ -995,60 +1302,191 @@ impl DisksApp {
     }
 
     // ---- interaction ---------------------------------------------------
-    fn trigger_action(&mut self, state: &mut AutoCommit, action: ActionKind) {
-        if action.destructive() {
-            self.pending = Some(Pending { action, drive: self.selected });
-            DisksDoc::set_pending(state, &format!("{}:{}", action.key(), self.selected));
-        } else {
-            // Non-destructive demo actions: just report on the status line.
-            let name = self
-                .drive()
-                .map(|d| format!("/dev/{}", d.name))
-                .unwrap_or_default();
-            let msg = match action {
-                ActionKind::Mount => format!("Mounted {name} (demo — udisks call stubbed)"),
-                ActionKind::Unmount => format!("Unmounted {name} (demo — udisks call stubbed)"),
-                ActionKind::Benchmark => format!("Benchmark queued for {name} (demo)"),
-                ActionKind::Format => unreachable!(),
-            };
-            self.status = msg.clone();
-            DisksDoc::set_status(state, &msg);
+    /// The `/dev/…` name a *pending* action targets (partition if one was
+    /// captured with the action, else the whole disk).
+    fn pending_target_name(&self, p: Pending) -> String {
+        format!("/dev/{}", self.pending_target_leaf(p))
+    }
+
+    /// The bare kernel leaf name (`nvme0n1p3`, `sdc`) a pending action targets.
+    /// This is also the string the user must type to unlock a destructive op.
+    fn pending_target_leaf(&self, p: Pending) -> String {
+        let Some(d) = self.topo.drives.get(p.drive) else {
+            return String::new();
+        };
+        match p.part.and_then(|i| d.partitions.get(i)) {
+            Some(part) => part.name.clone(),
+            None => d.name.clone(),
         }
     }
 
-    fn confirm_pending(&mut self, state: &mut AutoCommit) {
-        if let Some(p) = self.pending.take() {
-            let name = self
-                .topo
-                .drives
-                .get(p.drive)
-                .map(|d| format!("/dev/{}", d.name))
-                .unwrap_or_default();
-            let msg = format!("{} on {name} confirmed (demo build — not executed)", p.action.label().trim_end_matches('…'));
+    /// True once the typed confirmation matches the target — gates Erase.
+    fn confirm_ready(&self) -> bool {
+        match self.pending {
+            Some(p) => !self.confirm_input.trim().is_empty()
+                && self.confirm_input.trim() == self.pending_target_leaf(p),
+            None => false,
+        }
+    }
+
+    fn trigger_action(&mut self, state: &mut AutoCommit, action: ActionKind) {
+        let Some(drive) = self.drive() else { return };
+        if !self.action_enabled(drive, action) {
+            return; // inapplicable buttons are inert
+        }
+        // Resolve what the action targets: Mount/Unmount snap to a filesystem;
+        // Eject always the whole device; Format/Benchmark follow the selection.
+        let part = match action {
+            ActionKind::Mount | ActionKind::Unmount => self.mount_target_part(drive),
+            ActionKind::Eject => None,
+            ActionKind::Format | ActionKind::Benchmark => self.part_index(),
+        };
+
+        if action.destructive() {
+            // Open the type-to-confirm modal — nothing executes until the user
+            // types the device name and confirms.
+            self.pending = Some(Pending { action, drive: self.selected, part });
+            self.confirm_input.clear();
+            DisksDoc::set_pending(
+                state,
+                &format!("{}:{}:{}", action.key(), self.selected, part.map(|i| i as i64).unwrap_or(-1)),
+            );
+            self.dirty = true;
+        } else {
+            self.dispatch_action(state, action, part);
+        }
+    }
+
+    /// Actually perform (or, in hermetic mode, describe) an action. Live runs
+    /// spawn a worker thread whose result is drained in `sync`.
+    fn dispatch_action(&mut self, state: &mut AutoCommit, action: ActionKind, part: Option<usize>) {
+        // Snapshot the target as owned strings so the drive borrow ends before
+        // we mutate `self` / spawn a thread.
+        let (leaf, fstype) = {
+            let Some(drive) = self.drive() else { return };
+            let p = part.and_then(|i| drive.partitions.get(i));
+            let leaf = p.map(|p| p.name.clone()).unwrap_or_else(|| drive.name.clone());
+            let fstype = p.and_then(|p| p.fstype.clone());
+            (leaf, fstype)
+        };
+        let dev = format!("/dev/{leaf}");
+
+        if self.live {
+            let (tx, rx) = mpsc::channel();
+            let op = action.op();
+            let refresh = action.changes_topology();
+            let done_label = action.label().trim_end_matches('…').to_string();
+            thread::spawn(move || {
+                let res = actions::run(op, &leaf, fstype.as_deref());
+                let text = match res {
+                    Ok(msg) => msg,
+                    Err(e) => format!("{done_label} failed — {e}"),
+                };
+                let _ = tx.send(ActionResult { text, refresh });
+            });
+            self.action_rx = Some(rx);
+            let msg = format!("{} {dev}…", action.gerund());
             self.status = msg.clone();
             DisksDoc::set_status(state, &msg);
+        } else {
+            // Hermetic build / --shots: state what *would* run, no side effects.
+            let plan = match action {
+                ActionKind::Mount => format!("Would run udisks2 Filesystem.Mount on {dev} (set DISKS_LIVE to execute)"),
+                ActionKind::Unmount => format!("Would run udisks2 Filesystem.Unmount on {dev} (set DISKS_LIVE to execute)"),
+                ActionKind::Format => format!("Would run udisks2 Block.Format on {dev} (set DISKS_LIVE to execute)"),
+                ActionKind::Benchmark => format!("Would run a read/seek benchmark on {dev} (set DISKS_LIVE to execute)"),
+                ActionKind::Eject => format!("Would power off {dev} via udisks2 (set DISKS_LIVE to execute)"),
+            };
+            self.status = plan.clone();
+            DisksDoc::set_status(state, &plan);
         }
+        self.dirty = true;
+    }
+
+    fn confirm_pending(&mut self, state: &mut AutoCommit) {
+        // Locked until the typed name matches the target device.
+        if !self.confirm_ready() {
+            return;
+        }
+        let Some(p) = self.pending.take() else { return };
+        self.confirm_input.clear();
         DisksDoc::set_pending(state, "");
+        self.dispatch_action(state, p.action, p.part);
     }
 
     fn cancel_pending(&mut self, state: &mut AutoCommit) {
         self.pending = None;
+        self.confirm_input.clear();
         DisksDoc::set_pending(state, "");
     }
 
     fn select(&mut self, state: &mut AutoCommit, idx: usize) {
         if idx < self.topo.drives.len() {
+            let changed = idx != self.selected;
             self.selected = idx;
             DisksDoc::set_selected(state, idx);
+            // A new drive resets the partition focus to the whole disk so the
+            // detail + action bar can never point at a stale partition.
+            if changed {
+                self.selected_part = None;
+                DisksDoc::set_selected_part(state, None);
+                self.content_scroll = 0.0;
+            }
             self.dirty = true;
         }
+    }
+
+    /// Select a partition within the current drive, or the whole disk (`None`).
+    /// Clicking the already-selected partition toggles back to whole-disk.
+    fn select_part(&mut self, state: &mut AutoCommit, part: Option<usize>) {
+        let next = match part {
+            Some(i) if self.selected_part == Some(i) => None,
+            other => other,
+        };
+        self.selected_part = next;
+        DisksDoc::set_selected_part(state, next);
+        self.dirty = true;
     }
 
     fn set_tab(&mut self, state: &mut AutoCommit, tab: Tab) {
         self.tab = tab;
         DisksDoc::set_tab(state, tab.key());
+        self.content_scroll = 0.0;
         self.dirty = true;
     }
+}
+
+/// Height of the Overview's capacity / SMART column block, sized to whichever
+/// column is taller so the two-up layout never clips a mounted filesystem row.
+fn overview_cols_h(drive: &Drive) -> f64 {
+    let mounted = drive.partitions.iter().filter(|p| p.mountpoint.is_some()).count();
+    let cap_h = (24.0 + (mounted.max(1) as f64) * 62.0).max(90.0);
+    let smart_h = 258.0;
+    cap_h.max(smart_h)
+}
+
+/// Proportional partition segment rects across the device map, in draw order.
+/// `(rect, Some(index))` for real partitions and a trailing `(rect, None)` for
+/// the unallocated free tail (when present). Tiny partitions are widened to a
+/// 6px floor so they stay both visible and clickable. Shared by `compute_layout`
+/// (hit-testing) and `draw_partition_map` so geometry never drifts.
+fn partition_segments(drive: &Drive, map: Rect) -> Vec<(Rect, Option<usize>)> {
+    let total = drive.size.max(1) as f64;
+    let mut out = Vec::new();
+    let mut x = map.x0;
+    for (i, p) in drive.partitions.iter().enumerate() {
+        let frac = p.size as f64 / total;
+        let mut w = frac * map.width();
+        if w < 6.0 {
+            w = 6.0;
+        }
+        out.push((Rect::new(x, map.y0 + 4.0, x + w - 2.0, map.y1 - 4.0), Some(i)));
+        x += w;
+    }
+    if drive.free_tail() > 0 && x < map.x1 - 2.0 {
+        out.push((Rect::new(x, map.y0 + 4.0, map.x1 - 2.0, map.y1 - 4.0), None));
+    }
+    out
 }
 
 // ---- theme-derived colour helpers --------------------------------------
@@ -1141,6 +1579,13 @@ impl Widget for DisksApp {
             self.selected = sel;
             self.dirty = true;
         }
+        // Partition selection, clamped against the current drive's partitions.
+        let part = DisksDoc::selected_part(state)
+            .filter(|&i| self.drive().is_some_and(|d| i < d.partitions.len()));
+        if part != self.selected_part {
+            self.selected_part = part;
+            self.dirty = true;
+        }
         let tab = Tab::from_key(&DisksDoc::tab(state));
         if tab != self.tab {
             self.tab = tab;
@@ -1156,6 +1601,30 @@ impl Widget for DisksApp {
         if status != self.status {
             self.status = status;
             self.dirty = true;
+        }
+
+        // Drain a completed background action (the root widget's `update` is
+        // not pumped by the runtime, so we poll here — `sync` runs every frame
+        // while `needs_animation_frame` holds).
+        if let Some(rx) = &self.action_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.status = res.text.clone();
+                    DisksDoc::set_status(state, &res.text);
+                    // A mount/format/unmount changed the on-disk topology.
+                    if res.refresh && self.live {
+                        if let Some(topo) = crate::probe::probe() {
+                            DisksDoc::write_topology(state, &topo);
+                        }
+                    }
+                    self.action_rx = None;
+                    self.dirty = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.action_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
         }
     }
 
@@ -1211,7 +1680,9 @@ impl Widget for DisksApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.flap.is_animating(self.split_layout())
+        // Keep frames (and thus `sync` polling) coming while a background
+        // action is in flight, so its result surfaces promptly.
+        self.flap.is_animating(self.split_layout()) || self.action_rx.is_some()
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
@@ -1219,19 +1690,46 @@ impl Widget for DisksApp {
         // App background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
+        // Measure content extents + clamp scroll before laying out (the list
+        // rows are positioned from `list_scroll`).
+        let n = self.topo.drives.len();
+        let (ch, lh) = match self.drive() {
+            Some(d) => (
+                self.content_height(d),
+                n as f64 * CARD_H + n.saturating_sub(1) as f64 * CARD_GAP,
+            ),
+            None => (0.0, 0.0),
+        };
+        self.content_h = ch;
+        self.list_h = lh;
+        let v = self.rect;
+        let list_body_h = (v.y1 - PAD) - (TOPBAR_H + PAD + LIST_HEADER_H);
+        let content_top = TOPBAR_H + PAD + HEADER_H + 12.0 + ACTIONBAR_H + 12.0 + TAB_H + PAD;
+        let content_avail = (v.y1 - PAD) - content_top;
+        self.content_scroll = self.content_scroll.clamp(0.0, (ch - content_avail).max(0.0));
+        self.list_scroll = self.list_scroll.clamp(0.0, (lh - list_body_h).max(0.0));
+
         let lay = self.compute_layout();
         let tr = text_renderer;
 
         // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
             self.draw_header(scene, tr, theme, transform, &lay, drive);
+            self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
+            // Content scrolls within its own clip so it stays usable when the
+            // window is short/narrow. `ct` shifts the content up by the scroll;
+            // interactive rects live in unscrolled coords (see handle_event).
+            let ct = transform * Affine::translate((0.0, -self.content_scroll));
+            let natural_bottom = (lay.content.y0 + self.content_h).max(lay.content.y1);
+            let ext = Rect::new(lay.content.x0, lay.content.y0, lay.content.x1, natural_bottom);
+            scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &lay.content);
             match self.tab {
-                Tab::Overview => self.draw_overview(scene, tr, theme, transform, lay.content, drive),
-                Tab::Smart => self.draw_smart_tab(scene, tr, theme, transform, lay.content, drive),
-                Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, transform, lay.content, drive),
-                Tab::Tools => self.draw_tools_tab(scene, tr, theme, transform, lay.content, &lay),
+                Tab::Overview => self.draw_overview(scene, tr, theme, ct, &lay, drive),
+                Tab::Smart => self.draw_smart_tab(scene, tr, theme, ct, ext, drive),
+                Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, ct, ext, drive),
             }
+            scene.pop_layer();
         } else {
             self.txt(scene, tr, "No drives detected.", 16.0, c.text_dim, lay.content.x0, lay.content.y0, None, TextWeight::Regular);
         }
@@ -1282,7 +1780,7 @@ impl Widget for DisksApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        use winit::event::{ElementState, KeyEvent, MouseButton};
+        use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
         use winit::keyboard::{Key, NamedKey};
 
         let lay = self.compute_layout();
@@ -1291,25 +1789,74 @@ impl Widget for DisksApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
-                let prev = (self.hover_card, self.hover_action, self.hover_tab, self.hover_menu);
+                // Content-space point: content is drawn shifted up by the scroll,
+                // so unshift the pointer before testing content-scoped rects.
+                let pc = Point::new(p.x, p.y + self.content_scroll);
+                let in_content = p.y >= lay.content.y0 - 6.0
+                    && p.y <= lay.content.y1
+                    && p.x >= lay.content.x0 - 8.0
+                    && p.x <= lay.content.x1 + 8.0;
+                let prev = (
+                    self.hover_card,
+                    self.hover_action,
+                    self.hover_tab,
+                    self.hover_menu,
+                    self.hover_part,
+                    self.hover_whole_disk,
+                );
                 // The drive list only receives hover when it's actually shown.
                 let list_shown = self.list_open();
-                self.hover_card = if list_shown {
+                self.hover_card = if list_shown && lay.list_body.contains(p) {
                     lay.cards.iter().position(|r| r.contains(p))
                 } else {
                     None
                 };
+                // Only applicable action buttons light up.
                 self.hover_action = lay
-                    .actions
+                    .action_buttons
                     .iter()
-                    .chain(lay.tool_buttons.iter())
-                    .find(|(r, _)| r.contains(p))
-                    .map(|(_, a)| *a);
+                    .find(|(r, _, en)| *en && r.contains(p))
+                    .map(|(_, a, _)| *a);
                 self.hover_tab = lay.tabs.iter().find(|(r, _)| r.contains(p)).map(|(_, t)| *t);
                 self.hover_menu = lay.hamburger.is_some_and(|hb| hb.contains(p));
-                if prev != (self.hover_card, self.hover_action, self.hover_tab, self.hover_menu) {
+                self.hover_part = if in_content {
+                    match self.tab {
+                        Tab::Overview => lay.part_segments.iter().find(|(r, _)| r.contains(pc)).map(|(_, i)| *i),
+                        Tab::Partitions => lay.part_rows.iter().find(|(r, _)| r.contains(pc)).map(|(_, i)| *i),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.hover_whole_disk = in_content && self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc);
+                let now = (
+                    self.hover_card,
+                    self.hover_action,
+                    self.hover_tab,
+                    self.hover_menu,
+                    self.hover_part,
+                    self.hover_whole_disk,
+                );
+                if prev != now {
                     self.dirty = true;
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                    MouseScrollDelta::PixelDelta(pos) => -pos.y,
+                };
+                let p = self.last_mouse;
+                if self.list_open() && lay.list_body.contains(p) {
+                    let max = (self.list_h - lay.list_body.height()).max(0.0);
+                    self.list_scroll = (self.list_scroll + dy).clamp(0.0, max);
+                    *handled = true;
+                } else if lay.content.contains(p) {
+                    let max = (self.content_h - lay.content.height()).max(0.0);
+                    self.content_scroll = (self.content_scroll + dy).clamp(0.0, max);
+                    *handled = true;
+                }
+                self.dirty = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1373,23 +1920,46 @@ impl Widget for DisksApp {
                     *handled = true;
                     return;
                 }
-                if let Some((_, a)) = lay
-                    .actions
-                    .iter()
-                    .chain(lay.tool_buttons.iter())
-                    .find(|(r, _)| r.contains(p))
-                {
+                // Action-bar buttons — only the applicable ones respond.
+                if let Some((_, a, _)) = lay.action_buttons.iter().find(|(r, _, en)| *en && r.contains(p)) {
                     self.trigger_action(state, *a);
                     *handled = true;
                     self.dirty = true;
                     return;
+                }
+                // Content selection: whole-disk pill, partition map segment, or
+                // partition table row. Test in content space (unshift scroll).
+                let pc = Point::new(p.x, p.y + self.content_scroll);
+                if self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc) {
+                    self.select_part(state, None);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                if lay.content.contains(p) {
+                    if self.tab == Tab::Overview {
+                        if let Some((_, i)) = lay.part_segments.iter().find(|(r, _)| r.contains(pc)) {
+                            self.select_part(state, Some(*i));
+                            *handled = true;
+                            self.dirty = true;
+                            return;
+                        }
+                    } else if self.tab == Tab::Partitions {
+                        if let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc)) {
+                            self.select_part(state, Some(*i));
+                            *handled = true;
+                            self.dirty = true;
+                            return;
+                        }
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } => {
-                // Modal key handling.
+                // Modal key handling — Escape cancels, Enter confirms (when the
+                // typed name matches), and characters build the confirmation.
                 if self.pending.is_some() {
                     match logical_key {
                         Key::Named(NamedKey::Escape) => {
@@ -1399,6 +1969,24 @@ impl Widget for DisksApp {
                         }
                         Key::Named(NamedKey::Enter) => {
                             self.confirm_pending(state);
+                            *handled = true;
+                            self.dirty = true;
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            self.confirm_input.pop();
+                            *handled = true;
+                            self.dirty = true;
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            self.confirm_input.push(' ');
+                            *handled = true;
+                            self.dirty = true;
+                        }
+                        Key::Character(s) => {
+                            // Device names are printable ASCII; append them.
+                            for ch in s.chars().filter(|c| !c.is_control()) {
+                                self.confirm_input.push(ch);
+                            }
                             *handled = true;
                             self.dirty = true;
                         }
@@ -1448,7 +2036,6 @@ impl Widget for DisksApp {
                             "1" => { self.set_tab(state, Tab::Overview); *handled = true; }
                             "2" => { self.set_tab(state, Tab::Smart); *handled = true; }
                             "3" => { self.set_tab(state, Tab::Partitions); *handled = true; }
-                            "4" => { self.set_tab(state, Tab::Tools); *handled = true; }
                             "r" | "R" => { self.do_refresh(state); *handled = true; }
                             _ => {}
                         }
@@ -1509,10 +2096,19 @@ impl DisksApp {
 }
 
 fn parse_pending(s: &str) -> Option<Pending> {
-    let (a, idx) = s.split_once(':')?;
-    let action = ActionKind::from_key(a)?;
-    let drive = idx.parse::<usize>().ok()?;
-    Some(Pending { action, drive })
+    // Format: "<action>:<drive>[:<part|-1>]". The partition field is optional
+    // so older docs (drive-only) still parse.
+    let mut it = s.split(':');
+    let action = ActionKind::from_key(it.next()?)?;
+    let drive = it.next()?.parse::<usize>().ok()?;
+    let part = match it.next() {
+        Some(p) => match p.parse::<i64>().ok()? {
+            n if n < 0 => None,
+            n => Some(n as usize),
+        },
+        None => None,
+    };
+    Some(Pending { action, drive, part })
 }
 
 #[cfg(test)]
@@ -1558,18 +2154,33 @@ mod tests {
     #[test]
     fn non_destructive_action_sets_status_no_modal() {
         let (mut app, mut doc) = seeded_app();
-        app.trigger_action(&mut doc, ActionKind::Mount);
+        // Benchmark always applies, so it reports on the status line with no modal.
+        app.trigger_action(&mut doc, ActionKind::Benchmark);
         assert!(app.pending.is_none());
         assert!(!DisksDoc::status(&doc).is_empty());
     }
 
     #[test]
-    fn confirm_clears_pending() {
+    fn confirm_requires_typed_name_then_clears_pending() {
         let (mut app, mut doc) = seeded_app();
-        app.trigger_action(&mut doc, ActionKind::Format);
+        app.trigger_action(&mut doc, ActionKind::Format); // whole nvme disk
+        // The Erase gate is locked until the exact device name is typed.
+        assert!(!app.confirm_ready(), "empty input does not unlock");
         app.confirm_pending(&mut doc);
-        assert!(app.pending.is_none());
+        assert!(app.pending.is_some(), "confirm is a no-op while locked");
+
+        app.confirm_input = "wrong".into();
+        assert!(!app.confirm_ready());
+        app.confirm_pending(&mut doc);
+        assert!(app.pending.is_some(), "a mismatched name stays locked");
+
+        app.confirm_input = "nvme0n1".into(); // the whole-disk device name
+        assert!(app.confirm_ready(), "the exact name unlocks Erase");
+        app.confirm_pending(&mut doc);
+        assert!(app.pending.is_none(), "confirming clears the modal");
         assert_eq!(DisksDoc::pending(&doc), "");
+        // Hermetic build reports the plan rather than executing.
+        assert!(DisksDoc::status(&doc).contains("Block.Format"));
     }
 
     #[test]
@@ -1578,8 +2189,8 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let lay = app.compute_layout();
         assert_eq!(lay.cards.len(), 4);
-        assert_eq!(lay.tabs.len(), 4);
-        assert_eq!(lay.actions.len(), 4);
+        assert_eq!(lay.tabs.len(), 3);
+        assert_eq!(lay.action_buttons.len(), 5);
     }
 
     /// Lay the app out at a given width through the real `build_layout` +
@@ -1672,5 +2283,238 @@ mod tests {
         assert!(!app.list_open(), "narrow default is closed");
         layout_at(&mut app, 1280.0);
         assert!(app.list_open(), "widening restores the docked-open default");
+    }
+
+    // ================================================================
+    // Selection-model behaviour, driven through the production
+    // `Widget::handle_event` path (real clicks / wheel), not shortcuts.
+    // ================================================================
+
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+
+    fn device_id() -> DeviceId {
+        // winit exposes no public constructor; the all-zero pattern is inert
+        // for our widget (the same trick the contacts/terminal harnesses use).
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// A laid-out + drawn app that pumps real winit events. The draw pass
+    /// populates the scroll extents (`content_h` / `list_h`) exactly as the
+    /// live renderer does each frame.
+    struct Harness {
+        app: DisksApp,
+        doc: AutoCommit,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        w: f64,
+        h: f64,
+    }
+
+    impl Harness {
+        fn new(w: f64, h: f64) -> Self {
+            let (app, doc) = seeded_app();
+            let mut hn = Harness { app, doc, taffy: TaffyTree::new(), node: NodeId::new(0), w, h };
+            hn.relayout();
+            hn
+        }
+
+        fn relayout(&mut self) {
+            let theme = Theme::dark();
+            self.taffy = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = self.app.build_layout(&mut self.taffy, &theme, &mut node_map);
+            self.node = child;
+            let root = self
+                .taffy
+                .new_with_children(
+                    Style {
+                        size: taffy::Size {
+                            width: taffy::Dimension::length(self.w as f32),
+                            height: taffy::Dimension::length(self.h as f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            self.taffy
+                .compute_layout(
+                    root,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(self.w as f32),
+                        height: taffy::AvailableSpace::Definite(self.h as f32),
+                    },
+                )
+                .unwrap();
+            self.app.apply_layout(&self.taffy, child, Point::ORIGIN);
+            self.draw();
+        }
+
+        /// A real draw pass — settles `content_h` / `list_h` for scroll clamps.
+        fn draw(&mut self) {
+            let theme = Theme::dark();
+            let presence = PresenceCtx::empty();
+            let permission = PermissionContext::permissive();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            self.app.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        }
+
+        fn dispatch(&mut self, event: &WindowEvent) -> bool {
+            let mods = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(event, 1.0, &mods, &mut self.doc, &automerge::ROOT, &mut handled, &mut focus, self.node, &self.taffy);
+            handled
+        }
+
+        fn move_to(&mut self, p: Point) {
+            self.dispatch(&WindowEvent::CursorMoved { device_id: device_id(), position: PhysicalPosition::new(p.x, p.y) });
+        }
+
+        fn click(&mut self, p: Point) -> bool {
+            self.move_to(p);
+            self.dispatch(&WindowEvent::MouseInput { device_id: device_id(), state: ElementState::Pressed, button: MouseButton::Left })
+        }
+
+        fn wheel(&mut self, p: Point, lines: f32) {
+            self.move_to(p);
+            self.dispatch(&WindowEvent::MouseWheel { device_id: device_id(), delta: MouseScrollDelta::LineDelta(0.0, lines), phase: winit::event::TouchPhase::Moved });
+        }
+
+        fn lay(&self) -> Layout {
+            self.app.compute_layout()
+        }
+    }
+
+    fn center(r: Rect) -> Point {
+        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+    }
+
+    #[test]
+    fn clicking_a_drive_row_selects_it_and_repoints_the_detail() {
+        let mut h = Harness::new(1280.0, 800.0);
+        let target = h.lay().cards[2];
+        assert!(h.click(center(target)), "a drive row is clickable");
+        assert_eq!(h.app.selected, 2, "the clicked row becomes the selection");
+        // The detail now points at that exact drive.
+        assert_eq!(h.app.drive().unwrap().name, h.app.topo.drives[2].name);
+        assert_eq!(h.app.selected_part, None, "a fresh drive resets to whole-disk");
+        assert_eq!(DisksDoc::selected(&h.doc), 2, "selection persisted to the CRDT");
+    }
+
+    #[test]
+    fn clicking_a_partition_segment_selects_it_and_scopes_actions() {
+        let mut h = Harness::new(1280.0, 800.0);
+        // nvme partitions: 0=EFI 1=root 2=home 3=swap. Click the root segment.
+        let seg = h.lay().part_segments.iter().find(|(_, i)| *i == 1).map(|(r, _)| *r).unwrap();
+        assert!(h.click(center(seg)), "a map segment is clickable");
+        assert_eq!(h.app.selected_part, Some(1), "the segment becomes the partition selection");
+        assert_eq!(DisksDoc::selected_part(&h.doc), Some(1), "persisted to the CRDT");
+        // Actions now target that mounted partition.
+        let drive = h.app.drive().unwrap();
+        assert!(h.app.action_enabled(drive, ActionKind::Unmount), "mounted → Unmount applies");
+        assert!(!h.app.action_enabled(drive, ActionKind::Mount), "already mounted → Mount inert");
+    }
+
+    #[test]
+    fn clicking_a_partition_row_in_the_table_selects_it() {
+        let mut h = Harness::new(1280.0, 800.0);
+        h.app.set_tab(&mut h.doc, Tab::Partitions);
+        h.relayout();
+        let row = h.lay().part_rows.iter().find(|(_, i)| *i == 2).map(|(r, _)| *r).unwrap();
+        assert!(h.click(center(row)));
+        assert_eq!(h.app.selected_part, Some(2), "table row selects the partition");
+    }
+
+    #[test]
+    fn whole_disk_pill_clears_the_partition_selection() {
+        let mut h = Harness::new(1280.0, 800.0);
+        let seg = h.lay().part_segments.iter().find(|(_, i)| *i == 1).map(|(r, _)| *r).unwrap();
+        h.click(center(seg));
+        assert_eq!(h.app.selected_part, Some(1));
+        let pill = h.lay().whole_disk_pill;
+        assert!(h.click(center(pill)), "the Whole disk pill is clickable");
+        assert_eq!(h.app.selected_part, None, "clicking it returns to whole-disk scope");
+    }
+
+    #[test]
+    fn multipartition_whole_disk_gates_mount_unmount() {
+        let (mut app, mut doc) = seeded_app(); // nvme (4 partitions) selected
+        let d = app.drive().unwrap();
+        assert!(!app.action_enabled(d, ActionKind::Mount), "no partition chosen → Mount inert");
+        assert!(!app.action_enabled(d, ActionKind::Unmount), "no partition chosen → Unmount inert");
+        // Choosing the EFI partition (mounted) enables Unmount.
+        app.select_part(&mut doc, Some(0));
+        let d = app.drive().unwrap();
+        assert!(app.action_enabled(d, ActionKind::Unmount));
+        assert!(!app.action_enabled(d, ActionKind::Mount));
+    }
+
+    #[test]
+    fn single_filesystem_disk_targets_its_sole_partition() {
+        let (mut app, mut doc) = seeded_app();
+        app.select(&mut doc, 3); // USB stick: one mounted partition, removable
+        let d = app.drive().unwrap();
+        assert!(app.action_enabled(d, ActionKind::Unmount), "sole fs is the implicit target");
+        assert!(app.action_enabled(d, ActionKind::Eject), "removable → Eject applies");
+        // A fixed, non-removable disk cannot be ejected.
+        app.select(&mut doc, 1); // SATA SSD
+        assert!(!app.action_enabled(app.drive().unwrap(), ActionKind::Eject));
+    }
+
+    #[test]
+    fn clicking_format_prompts_confirmation_targeting_the_partition() {
+        let mut h = Harness::new(1280.0, 800.0);
+        // Select the home partition, then click the Format button.
+        let seg = h.lay().part_segments.iter().find(|(_, i)| *i == 2).map(|(r, _)| *r).unwrap();
+        h.click(center(seg));
+        let fmt = h.lay().action_buttons.iter().find(|(_, a, _)| *a == ActionKind::Format).map(|(r, _, _)| *r).unwrap();
+        assert!(h.click(center(fmt)), "Format is clickable");
+        let pending = h.app.pending.expect("format opens a confirm modal");
+        assert_eq!(pending.action, ActionKind::Format);
+        assert_eq!(pending.part, Some(2), "the confirmation targets the selected partition");
+        assert_eq!(DisksDoc::pending(&h.doc), "format:0:2");
+        // The modal is now part of the layout and blocks the app.
+        assert!(h.lay().modal.is_some());
+    }
+
+    #[test]
+    fn disabled_action_button_does_not_fire() {
+        let mut h = Harness::new(1280.0, 800.0);
+        // Whole nvme selected → Mount is disabled; clicking it is a no-op.
+        let lay = h.lay();
+        let mount = *lay.action_buttons.iter().find(|(_, a, _)| *a == ActionKind::Mount).unwrap();
+        assert!(!mount.2, "Mount is disabled for the multi-partition whole disk");
+        drop(lay);
+        h.click(center(mount.0));
+        assert!(DisksDoc::status(&h.doc).is_empty(), "a disabled button reports nothing");
+        assert!(h.app.pending.is_none());
+    }
+
+    #[test]
+    fn narrow_layout_scrolls_both_the_list_and_the_content() {
+        // A short window overflows both panes; the wheel must move them.
+        let mut h = Harness::new(640.0, 420.0);
+        h.app.snap_sidebar(true); // reveal the overlay drive list
+        h.relayout();
+        assert!(h.app.content_h > h.lay().content.height(), "content overflows the short window");
+
+        // Scroll the content pane down, then back to the top (clamped at 0).
+        // Aim at the content's right edge so the open overlay list (which
+        // covers the left) doesn't intercept the wheel.
+        let content = h.lay().content;
+        let cpt = Point::new(content.x1 - 24.0, content.y0 + 18.0);
+        h.wheel(cpt, -3.0);
+        assert!(h.app.content_scroll > 0.0, "wheel scrolls the detail content down");
+        h.wheel(cpt, 30.0);
+        assert_eq!(h.app.content_scroll, 0.0, "scrolling up clamps at the top");
+
+        // Scroll the drive list.
+        assert!(h.app.list_h > h.lay().list_body.height(), "the drive list overflows too");
+        let lpt = center(h.lay().list_body);
+        h.wheel(lpt, -3.0);
+        assert!(h.app.list_scroll > 0.0, "wheel scrolls the drive list");
     }
 }

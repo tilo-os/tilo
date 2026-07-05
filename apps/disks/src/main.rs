@@ -38,7 +38,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             DEFAULT_SHOTS_VIEWPORT
         });
-        render_shot_to_png(DisksApp::new(), viewport, narrow, &out)?;
+        // Optional preset so a capture can pin a specific drive / partition /
+        // tab (used to verify the selection states offscreen).
+        let preset = Preset {
+            drive: parse_num_arg(&args, "--drive"),
+            part: parse_num_arg(&args, "--part"),
+            tab: parse_val_arg(&args, "--tab"),
+            pending: parse_val_arg(&args, "--pending"),
+        };
+        render_shot_to_png(DisksApp::new(), viewport, narrow, preset, &out)?;
         return Ok(());
     }
 
@@ -88,6 +96,37 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     None
 }
 
+/// Optional pinned state for a `--shots` capture.
+#[derive(Default)]
+struct Preset {
+    drive: Option<usize>,
+    part: Option<usize>,
+    tab: Option<String>,
+    /// Pre-arm a confirm modal, e.g. `format:0:2`, to capture the
+    /// type-to-confirm gate offscreen.
+    pending: Option<String>,
+}
+
+/// Parse `--flag N` / `--flag=N` as a `usize`.
+fn parse_num_arg(args: &[String], flag: &str) -> Option<usize> {
+    parse_val_arg(args, flag).and_then(|s| s.parse().ok())
+}
+
+/// Parse `--flag VALUE` / `--flag=VALUE` as a string.
+fn parse_val_arg(args: &[String], flag: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
 /// `narrow` snaps the drive-list flap open *after* layout so the collapsed
@@ -96,6 +135,7 @@ fn render_shot_to_png(
     mut widget: DisksApp,
     viewport: (u32, u32),
     narrow: bool,
+    preset: Preset,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -108,6 +148,26 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
+    // Apply any pinned selection, then re-sync so the widget adopts it.
+    if preset.drive.is_some()
+        || preset.part.is_some()
+        || preset.tab.is_some()
+        || preset.pending.is_some()
+    {
+        if let Some(d) = preset.drive {
+            disks::doc::DisksDoc::set_selected(&mut state.doc, d);
+        }
+        if let Some(p) = preset.part {
+            disks::doc::DisksDoc::set_selected_part(&mut state.doc, Some(p));
+        }
+        if let Some(t) = &preset.tab {
+            disks::doc::DisksDoc::set_tab(&mut state.doc, t);
+        }
+        if let Some(p) = &preset.pending {
+            disks::doc::DisksDoc::set_pending(&mut state.doc, p);
+        }
+        widget.sync(&mut state.doc, &state.root);
+    }
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
