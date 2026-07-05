@@ -14,10 +14,17 @@
 # a target machine. See os/build-host.sh.
 # ============================================================================
 
+# ---- Frozen RPM repo (cross-time reproducibility) --------------------------
+# Same digest-pinned snapshot the desktop image uses (see os/Containerfile
+# comment + os/rpms-snapshot.env). Every `dnf install` in this file pulls
+# from it, never live Fedora mirrors.
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
 # ---- Stage 1: builder (same base + toolchain as the desktop image) ---------
 FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS builder
 
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
@@ -57,7 +64,7 @@ FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac8
 # Minimal runtime — no display stack, no PipeWire, no greetd. Just
 # what a headless network appliance needs: time sync, firewall,
 # fuse for the workspace mount, ca-certs for iroh relays.
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
         firewalld \
         fuse3 \
