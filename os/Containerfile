@@ -21,6 +21,16 @@
 # ============================================================================
 
 
+# ---- Frozen RPM repo (cross-time reproducibility) --------------------------
+# Every `dnf install` below installs ONLY from this digest-pinned snapshot of
+# the exact RPM set (built by os/dev/snapshot-rpms.sh / the snapshot-rpms CI
+# job), never live Fedora mirrors — so the same source rebuilds the same image
+# regardless of when. RPMS_REF (code.sandbox.example/qos/rpms@sha256:...) comes from
+# os/rpms-snapshot.env via the build scripts.
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
+
 # ---- Stage 1: builder ------------------------------------------------------
 # Base pinned by digest (security plan §9 — reproducibility + supply chain: a
 # tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-06-30.
@@ -34,7 +44,7 @@ FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac8
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
 # .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
@@ -141,21 +151,21 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d
 
 # Graphics stack
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
     && dnf clean all
 
 # Audio/Video
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     pipewire \
     pipewire-pulseaudio \
     wireplumber \
     && dnf clean all
 
 # GStreamer (for future streaming)
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     gstreamer1 \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
@@ -168,7 +178,7 @@ RUN dnf install -y \
 # logind: `systemctl reboot` / `poweroff` issue the
 # `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-qos-greeter-power.rules.
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     greetd \
     greetd-tuigreet \
     fprintd \
@@ -185,7 +195,7 @@ RUN dnf install -y \
 # full bus surface). Without this package the launcher logs a warning
 # and falls back to a direct bind of the raw session bus — degraded
 # security, no functional regression.
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
     xdg-dbus-proxy \
@@ -201,7 +211,7 @@ RUN dnf install -y \
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # qOS backend (Sandbox Phase 4.3).
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
     && dnf clean all
 
@@ -211,7 +221,7 @@ RUN dnf install -y \
 # C2 time sync (chrony), C3 zram swap (zram-generator), C4 locale data,
 # C5 firewall (firewalld), C7 bluetooth (bluez), C8 power (power-profiles-daemon).
 # Audio (C6) reuses the pipewire stack installed above.
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     chrony \
     zram-generator \
     glibc-langpack-en \
@@ -227,13 +237,13 @@ RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
     sed -i 's/^input:x:104:$/input:x:104:greetd/' /etc/group
 
 # Fonts
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     google-noto-sans-fonts \
     google-noto-sans-mono-fonts \
     && dnf clean all
 
 # Wayland runtime libraries (needed by compositor)
-RUN dnf install -y \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
     libinput-devel \
@@ -387,7 +397,7 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 # drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
 # would fail the service. (Base daemons use the system allocator — verified no
 # jemalloc — so the preload is safe.)
-RUN dnf install -y compiler-rt && dnf clean all && \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
