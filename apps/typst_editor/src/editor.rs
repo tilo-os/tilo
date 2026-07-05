@@ -10,7 +10,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -19,6 +19,7 @@ use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use crate::compile::{DiagKind, Diagnostic};
 use crate::highlight::{self, Token};
 
 /// Monospace point size of the editor text.
@@ -43,6 +44,9 @@ pub struct SourceEditor {
     desired_col: Option<usize>,
     /// Internal clipboard for Ctrl+C/X/V (no system clipboard dependency).
     clipboard: String,
+    /// Last known hover position (window space), or `None` when the pointer is
+    /// off the pane. Drives the inline-diagnostic tooltip.
+    hover: Option<Point>,
 }
 
 impl Default for SourceEditor {
@@ -58,6 +62,7 @@ impl Default for SourceEditor {
             line_h: (FONT_SIZE as f64 * 1.5).round(),
             desired_col: None,
             clipboard: String::new(),
+            hover: None,
         }
     }
 }
@@ -194,6 +199,30 @@ impl SourceEditor {
         let c = self.caret_at_point(p, text);
         self.caret = c;
         self.desired_col = None;
+    }
+
+    /// Update the hover position (window space); `None` when the pointer leaves
+    /// the pane. Returns whether the tooltip-relevant state changed, so the app
+    /// can schedule a redraw only when something moved into/out of a squiggle.
+    pub fn on_mouse_move(&mut self, p: Option<Point>) -> bool {
+        if self.hover == p {
+            return false;
+        }
+        self.hover = p;
+        true
+    }
+
+    /// 0-based (line, col) for a window-space point, without clamping to a real
+    /// caret — used to hit-test the hovered diagnostic squiggle.
+    fn hover_line_col(&self, p: Point, text: &str) -> (usize, usize) {
+        let idx = LineIndex::new(text);
+        let gutter = self.gutter_width(idx.line_count());
+        let rel_y = p.y - self.rect.y0 - 6.0 + self.scroll_y as f64;
+        let line = (rel_y / self.line_h).floor().max(0.0) as usize;
+        let line = line.min(idx.line_count().saturating_sub(1));
+        let content_x = self.rect.x0 + gutter;
+        let col = (((p.x - content_x + self.scroll_x) / self.char_w).floor()).max(0.0) as usize;
+        (line, col)
     }
 
     // ----- keyboard --------------------------------------------------------
@@ -451,6 +480,7 @@ impl SourceEditor {
         theme: &Theme,
         text: &str,
         tokens: &[Vec<Token>],
+        diags: &[Diagnostic],
     ) {
         // Refresh cell metrics from the actual monospace face.
         let (cw, _ch) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
@@ -489,10 +519,31 @@ impl SourceEditor {
         let sel = self.selection();
         let (caret_line, caret_col) = idx.line_col(self.caret);
 
+        // Per-line worst diagnostic severity — drives the gutter marker and the
+        // inline squiggle colour. Computed once for the whole buffer so the
+        // draw loop is a cheap lookup.
+        let line_severity = worst_severity_by_line(diags);
+
         // Line numbers live in the fixed gutter — never scrolled sideways — so
         // they're painted before the horizontally-scrolled content clip.
         for line in first..last {
             let y = self.rect.y0 + top_pad + line as f64 * self.line_h - self.scroll_y as f64;
+
+            // Gutter severity marker (a small dot) for lines a diagnostic starts
+            // on, so problems are visible even when scrolled away from the span.
+            if let Some(&kind) = line_severity.get(&line) {
+                let col = diag_color(kind, theme);
+                let cx = self.rect.x0 + 7.0;
+                let cy = y + self.line_h * 0.5;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    col,
+                    None,
+                    &vello::kurbo::Circle::new(Point::new(cx, cy), 3.0),
+                );
+            }
+
             let num = (line + 1).to_string();
             let num_w = num.chars().count() as f64 * self.char_w;
             let num_x = content_x - 8.0 - num_w;
@@ -569,6 +620,20 @@ impl SourceEditor {
                     );
                 }
             }
+
+            // Inline diagnostic squiggles: a wavy underline under every span
+            // that touches this line, at the compiler's reported columns.
+            for d in diags {
+                if let Some((c0, c1)) = diag_cols_on_line(d, line, line_len) {
+                    let x0 = content_x + c0 as f64 * self.char_w - sx;
+                    let x1 = content_x + c1 as f64 * self.char_w - sx;
+                    if x1 < content_x || x0 > self.rect.x1 {
+                        continue;
+                    }
+                    let yb = y + self.line_h - 3.5;
+                    draw_squiggle(scene, transform, x0.max(content_x), x1, yb, diag_color(d.kind, theme));
+                }
+            }
         }
 
         // Caret — a steady bar (deliberately non-blinking; see `wants_animation`).
@@ -583,6 +648,100 @@ impl SourceEditor {
 
         scene.pop_layer(); // content clip
         scene.pop_layer(); // pane clip
+
+        // Hover tooltip for a diagnostic squiggle — drawn last and outside the
+        // clips so it floats above the source and can overflow the pane.
+        if let Some(hp) = self.hover {
+            if self.rect.contains(hp) {
+                let (hl, hc) = self.hover_line_col(hp, text);
+                let line_len = idx.line_len(hl);
+                if let Some(d) = diags.iter().find(|d| {
+                    diag_cols_on_line(d, hl, line_len)
+                        .map(|(c0, c1)| hc >= c0 && hc < c1.max(c0 + 1))
+                        .unwrap_or(false)
+                }) {
+                    self.draw_tooltip(scene, transform, tr, theme, hp, d);
+                }
+            }
+        }
+    }
+
+    /// Draw a floating tooltip card near `at` carrying a diagnostic's message
+    /// (and its first hint, dimmed). Sizing is measured from the text so the
+    /// card hugs the content.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tooltip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        at: Point,
+        d: &Diagnostic,
+    ) {
+        let c = &theme.tokens.colors;
+        let pad = 8.0;
+        let font = 12.0;
+        let gap = 3.0;
+        let max_text_w = 360.0f64;
+        let mut lines: Vec<(String, bool)> = vec![(d.message.clone(), false)];
+        if let Some(h) = d.hints.first() {
+            lines.push((format!("hint: {h}"), true));
+        }
+        // Measure each line at the wrap width so a long message that wraps still
+        // gets a correctly-tall card.
+        let mut w = 0.0f64;
+        let mut total_h = 0.0f64;
+        let mut heights = Vec::with_capacity(lines.len());
+        for (s, _) in &lines {
+            let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
+            w = w.max(tw as f64);
+            let h = (th as f64).max(font as f64 * 1.2);
+            heights.push(h);
+            total_h += h + gap;
+        }
+        total_h -= gap;
+        let card_w = (w + pad * 2.0).min(max_text_w + pad * 2.0);
+        let card_h = total_h + pad * 2.0;
+        // Anchor just below the cursor, nudged to stay inside the pane.
+        let mut x0 = at.x + 12.0;
+        let mut y0 = at.y + 18.0;
+        if x0 + card_w > self.rect.x1 - 4.0 {
+            x0 = (self.rect.x1 - 4.0 - card_w).max(self.rect.x0 + 4.0);
+        }
+        if y0 + card_h > self.rect.y1 - 4.0 {
+            y0 = (at.y - card_h - 8.0).max(self.rect.y0 + 4.0);
+        }
+        let card = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.overlay,
+            None,
+            &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
+        );
+        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &RoundedRect::from_rect(card, 7.0));
+        // A severity stripe on the leading edge.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            diag_color(d.kind, theme),
+            None,
+            &Rect::new(card.x0, card.y0, card.x0 + 3.0, card.y1),
+        );
+        let mut ty = y0 + pad;
+        for ((s, dim), h) in lines.iter().zip(heights.iter()) {
+            let col = if *dim { c.text_dim } else { c.text_primary };
+            tr.draw_text(
+                scene,
+                s,
+                font,
+                col,
+                transform * Affine::translate((x0 + pad + 4.0, ty)),
+                Some((card_w - pad * 2.0 - 4.0) as f32),
+            );
+            ty += h + gap;
+        }
     }
 
     /// Whether the editor needs continuous repaints. The caret is a steady bar
@@ -599,6 +758,67 @@ impl SourceEditor {
 fn selection_color(theme: &Theme) -> vello::peniko::Color {
     let a = theme.accent_primary;
     vello::peniko::Color::from_rgba8(a.r(), a.g(), a.b(), 70)
+}
+
+/// The theme colour a diagnostic severity draws in.
+fn diag_color(kind: DiagKind, theme: &Theme) -> vello::peniko::Color {
+    match kind {
+        DiagKind::Error => theme.tokens.colors.semantic.danger,
+        DiagKind::Warning => theme.tokens.colors.semantic.warning,
+    }
+}
+
+/// Map each 0-based source line that a diagnostic *starts* on to the worst
+/// severity present there (Error beats Warning), for the gutter markers.
+fn worst_severity_by_line(diags: &[Diagnostic]) -> std::collections::HashMap<usize, DiagKind> {
+    let mut map: std::collections::HashMap<usize, DiagKind> = std::collections::HashMap::new();
+    for d in diags {
+        let Some(line1) = d.line else { continue };
+        let line = line1.saturating_sub(1);
+        map.entry(line)
+            .and_modify(|k| {
+                if d.kind == DiagKind::Error {
+                    *k = DiagKind::Error;
+                }
+            })
+            .or_insert(d.kind);
+    }
+    map
+}
+
+/// The 0-based `[c0, c1)` column range a diagnostic covers on 0-based `line`,
+/// or `None` when the span doesn't touch that line. Always at least one column
+/// wide so a zero-width span still gets a visible squiggle.
+fn diag_cols_on_line(d: &Diagnostic, line: usize, line_len: usize) -> Option<(usize, usize)> {
+    let (sl, sc) = (d.line?.saturating_sub(1), d.col?.saturating_sub(1));
+    let (el, ec) = (d.end_line?.saturating_sub(1), d.end_col?.saturating_sub(1));
+    if line < sl || line > el {
+        return None;
+    }
+    let c0 = if line == sl { sc } else { 0 }.min(line_len);
+    let raw_c1 = if line == el { ec } else { line_len };
+    let c1 = raw_c1.max(c0 + 1);
+    Some((c0, c1))
+}
+
+/// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
+fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64, color: vello::peniko::Color) {
+    if x1 <= x0 {
+        return;
+    }
+    const PERIOD: f64 = 4.0;
+    const AMP: f64 = 1.6;
+    let mut path = BezPath::new();
+    path.move_to(Point::new(x0, y));
+    let mut x = x0;
+    let mut up = true;
+    while x < x1 {
+        x = (x + PERIOD * 0.5).min(x1);
+        let dy = if up { -AMP } else { AMP };
+        path.line_to(Point::new(x, y + dy));
+        up = !up;
+    }
+    scene.stroke(&Stroke::new(1.3), transform, color, None, &path);
 }
 
 /// Char-index helper over a text split into `\n` lines. Cheap to build, used
@@ -758,5 +978,55 @@ mod tests {
         let ed = SourceEditor::new();
         assert!(ed.focused);
         assert!(!ed.wants_animation(), "steady caret => no idle repaints");
+    }
+
+    fn diag(line: usize, col: usize, end_line: usize, end_col: usize) -> Diagnostic {
+        Diagnostic {
+            kind: DiagKind::Error,
+            message: "boom".into(),
+            line: Some(line),
+            col: Some(col),
+            end_line: Some(end_line),
+            end_col: Some(end_col),
+            hints: vec![],
+        }
+    }
+
+    /// The inline squiggle maps a compiler span (1-based line/col) to the right
+    /// 0-based columns on the covered line, and reports nothing off-span.
+    #[test]
+    fn diag_cols_map_to_the_span() {
+        // 1-based ln 2, cols 3..6  →  0-based line 1, cols 2..5.
+        let d = diag(2, 3, 2, 6);
+        assert_eq!(diag_cols_on_line(&d, 1, 40), Some((2, 5)));
+        assert_eq!(diag_cols_on_line(&d, 0, 40), None, "line above the span");
+        assert_eq!(diag_cols_on_line(&d, 2, 40), None, "line below the span");
+    }
+
+    /// A multi-line span underlines from the start column on the first line to
+    /// the end column on the last, full-width in between.
+    #[test]
+    fn diag_cols_span_multiple_lines() {
+        let d = diag(1, 5, 3, 4); // lines 1..3 (0-based 0..2)
+        assert_eq!(diag_cols_on_line(&d, 0, 20), Some((4, 20)), "start line: col→EOL");
+        assert_eq!(diag_cols_on_line(&d, 1, 20), Some((0, 20)), "middle line: whole line");
+        assert_eq!(diag_cols_on_line(&d, 2, 20), Some((0, 3)), "end line: BOL→col");
+    }
+
+    /// A zero-width span still yields a one-column squiggle so it's visible.
+    #[test]
+    fn zero_width_span_is_widened() {
+        let d = diag(1, 3, 1, 3);
+        let (c0, c1) = diag_cols_on_line(&d, 0, 40).unwrap();
+        assert!(c1 > c0, "at least one column wide");
+    }
+
+    /// Error beats warning when both start on the same gutter line.
+    #[test]
+    fn gutter_severity_prefers_error() {
+        let warn = Diagnostic { kind: DiagKind::Warning, ..diag(2, 1, 2, 2) };
+        let err = diag(2, 4, 2, 6);
+        let map = worst_severity_by_line(&[warn, err]);
+        assert_eq!(map.get(&1), Some(&DiagKind::Error));
     }
 }
