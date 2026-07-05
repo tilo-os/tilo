@@ -12,6 +12,7 @@ pub mod draw;
 pub mod gallery;
 pub mod model;
 pub mod preview;
+pub mod store;
 pub mod widgets;
 
 pub use app::ThemesApp;
@@ -30,6 +31,10 @@ pub fn app_root() -> Box<dyn Widget> {
 /// width therefore captures the collapsed gallery floating over its scrim.
 pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     let mut app = ThemesApp::new();
-    app.seed_shot_viewport(width as f64);
+    // Optional scenario for the capture (sidebar menu, narrow scroll, font
+    // change), selected via the `QOS_THEMES_SHOT` env var so a single binary
+    // renders every review still.
+    let scenario = std::env::var("QOS_THEMES_SHOT").unwrap_or_default();
+    app.seed_shot(width as f64, &scenario);
     Box::new(app)
 }

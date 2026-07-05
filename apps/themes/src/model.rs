@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use ui::color_compat::ColorCompat;
+use ui::text_render::FontChoice;
 use ui::theme::Theme;
 use ui::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 use vello::peniko::Color;
@@ -29,6 +30,22 @@ pub const SPACING_MAX: f32 = 22.0;
 
 /// Fonts offered by the typography dropdown.
 pub const FONTS: [&str; 5] = ["Inter", "JetBrains Mono", "IBM Plex Sans", "Roboto", "Source Serif"];
+
+/// Map a font-family name to a [`FontChoice`] the text renderer can shape
+/// with, so the live preview actually re-renders in the chosen family. A
+/// monospace or serif family resolves to that generic class (a guaranteed
+/// visible change even when the exact face isn't installed); anything else
+/// targets the named family, falling back to the system sans face.
+pub fn font_choice(name: &str) -> FontChoice {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("mono") {
+        FontChoice::Monospace
+    } else if lower.contains("serif") {
+        FontChoice::Serif
+    } else {
+        FontChoice::Named(name.to_string())
+    }
+}
 
 // --- colour helpers -------------------------------------------------------
 
@@ -552,5 +569,16 @@ mod tests {
         assert!(cat.len() >= 8);
         assert!(cat.iter().any(|t| !t.builtin));
         assert!(cat.iter().filter(|t| t.builtin).count() >= 7);
+    }
+
+    #[test]
+    fn font_choice_maps_distinctive_families_to_generic_classes() {
+        // Monospace / serif families resolve to a generic class so the preview
+        // visibly changes typeface even without the exact face installed; a
+        // plain sans family targets the named face (falls back to sans).
+        assert_eq!(font_choice("JetBrains Mono"), FontChoice::Monospace);
+        assert_eq!(font_choice("Source Serif"), FontChoice::Serif);
+        assert_eq!(font_choice("Inter"), FontChoice::Named("Inter".to_string()));
+        assert_eq!(font_choice("Roboto"), FontChoice::Named("Roboto".to_string()));
     }
 }
