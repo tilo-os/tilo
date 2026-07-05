@@ -386,6 +386,40 @@ COPY os/etc/locale.conf /etc/locale.conf
 COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 
 # ---------------------------------------------------------------------------
+# Bootloader — swap GRUB for systemd-boot
+# ---------------------------------------------------------------------------
+# systemd-boot is smaller + simpler than GRUB (no menu render step, no module
+# load path, BLS entries loaded straight off the ESP), so cold boot to the
+# kernel handoff is measurably shorter. bootc chooses which bootloader to
+# plant on the ESP at install time based on the `bootloader` key in the
+# /usr/lib/bootc/install/*.toml drop-ins baked into this image (see the
+# 40-qos.toml file below). The `systemd-boot-unsigned` package supplies the
+# actual EFI binaries + BLS layout that bootc/bootupd copy across.
+#
+# The GRUB stack (grub2 + shim + bootupd's grub2 side) is pulled in by the
+# fedora-bootc base and would otherwise still ship on the rootfs, wasting
+# ~30 MB and leaving dead code paths in bootupd. Drop it after installing
+# systemd-boot so nothing during install can pick GRUB by accident.
+# `--allowerasing` is required because bootupd Recommends grub2-tools; the
+# systemd-boot install itself satisfies the "some bootloader must exist"
+# invariant so removing GRUB is safe.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    systemd-boot-unsigned \
+    && dnf remove -y --allowerasing \
+        grub2-common grub2-tools grub2-tools-minimal grub2-tools-extra \
+        grub2-pc grub2-pc-modules grub2-efi-x64 grub2-efi-x64-modules \
+        shim-x64 \
+    && dnf clean all
+
+# The install-config drop-in that flips bootc's bootloader choice to
+# systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
+# merges at every `bootc install {to-disk,to-filesystem}` invocation. bib
+# (bootc-image-builder) runs the same install code path when it builds a
+# qcow2, so this covers both interactive Anaconda installs and the direct
+# bib->qcow2 path.
+COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
+
+# ---------------------------------------------------------------------------
 # Kernel/userspace hardening (security plan §11 — "table stakes")
 # ---------------------------------------------------------------------------
 # Kernel args (init_on_alloc/free, lockdown=integrity, slab_nomerge, kstack
