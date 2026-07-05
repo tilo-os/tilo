@@ -2,12 +2,16 @@
 //! Hosts the `FileExplorerWidget` (built over Tasks 8–13) and helper modules.
 
 pub mod command;
+pub mod config;
+pub mod favorites;
+pub mod templates;
 pub mod model;
 pub mod fileops;
 pub mod breadcrumbs;
 pub mod breadcrumb_bar;
 pub mod sidebar;
 pub mod sidebar_row;
+pub mod places_sidebar;
 pub mod toolbar;
 pub mod views;
 pub mod files_app;
