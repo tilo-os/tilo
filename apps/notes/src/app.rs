@@ -871,6 +871,25 @@ impl NotesApp {
         self.sidebar.row_center_for_test(idx)
     }
 
+    /// Test hook: the tree depth of visible sidebar row `idx`.
+    #[doc(hidden)]
+    pub fn sidebar_row_depth_for_test(&self, idx: usize) -> Option<usize> {
+        self.sidebar.row_depth_for_test(idx)
+    }
+
+    /// Test hook: whether visible sidebar row `idx` has children.
+    #[doc(hidden)]
+    pub fn sidebar_row_has_children_for_test(&self, idx: usize) -> Option<bool> {
+        self.sidebar.row_has_children_for_test(idx)
+    }
+
+    /// Test hook: whether the active inline rename field is plain-chrome
+    /// (styled like the row, not a boxed form field).
+    #[doc(hidden)]
+    pub fn sidebar_rename_is_plain_for_test(&self) -> Option<bool> {
+        self.sidebar.rename_is_plain_for_test()
+    }
+
     /// Test hook: centre of the sidebar's "+" new-page button, for
     /// click targeting through the real event path.
     #[doc(hidden)]
@@ -1585,7 +1604,11 @@ impl Widget for NotesApp {
             // Drain any commands the sidebar produced.
             self.drain_sidebar_events();
         }
-        if !(sidebar_menu_open && is_keyboard) {
+        // The editor never sees keystrokes the sidebar is capturing — its
+        // right-click menu OR an in-progress inline rename — so a rename
+        // keystroke doesn't also type into the note behind the field.
+        let sidebar_capturing_kbd = sidebar_menu_open || self.sidebar.is_renaming();
+        if !(sidebar_capturing_kbd && is_keyboard) {
             if let Some(n) = self.main_node {
                 self.main.handle_event(
                     event,

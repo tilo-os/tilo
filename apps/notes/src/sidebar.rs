@@ -9,7 +9,8 @@
 //!
 //! Keyboard (only while the panel itself holds focus, since these keys
 //! otherwise belong to the editor):
-//!   - Delete / Backspace to delete the selected page,
+//!   - Delete to delete the selected page (NOT Backspace — the editor and
+//!     the tree can both hold focus, so Backspace stays the editor's),
 //!   - F2 to rename the selected page,
 //!   - ↑ / ↓ to move the selection between rows,
 //!   - Alt-↑ / Alt-↓ to reorder the selected page among its siblings,
@@ -171,6 +172,14 @@ pub struct NoteTreeView {
     /// The page the open context menu targets. Its rows map back to
     /// intent by fixed index (see `apply_menu_selection`).
     menu_target: Option<PageId>,
+    /// False until the first `sync_from_workspace` expands every branch so
+    /// the tree opens showing its structure rather than a collapsed flat
+    /// list. After that, expand/collapse is fully user-driven.
+    did_initial_expand: bool,
+    /// The selection observed on the previous sync. When it changes we
+    /// expand the new selection's ancestors so the selected row is always
+    /// visible (e.g. after a `[[link]]` jump into a nested page).
+    last_selection: Option<PageId>,
 }
 
 struct RowEntry {
@@ -208,6 +217,8 @@ impl NoteTreeView {
             drag: DragController::vertical(),
             menu: ContextMenu::new(),
             menu_target: None,
+            did_initial_expand: false,
+            last_selection: None,
         }
     }
 
@@ -229,6 +240,31 @@ impl NoteTreeView {
     /// the parent during `sync_from_workspace`. Cheap — workspace
     /// trees are at most a few hundred pages in normal use.
     pub fn sync_from_workspace(&mut self, ws: &Workspace) {
+        // First render: expand every branch that has children so the tree
+        // opens showing its nesting rather than a collapsed flat list.
+        if !self.did_initial_expand {
+            for p in ws.pages() {
+                if !ws.children_of(Some(p.id)).is_empty() {
+                    self.expanded.insert(p.id);
+                }
+            }
+            self.did_initial_expand = true;
+        }
+        // Reveal the selected page: whenever the selection changes, expand
+        // its ancestor chain so a nested selection (e.g. from a link jump)
+        // is actually on screen.
+        let sel = ws.selected();
+        if sel != self.last_selection {
+            if let Some(id) = sel {
+                let mut cur = ws.get(id).and_then(|p| p.parent);
+                while let Some(pid) = cur {
+                    self.expanded.insert(pid);
+                    cur = ws.get(pid).and_then(|p| p.parent);
+                }
+            }
+            self.last_selection = sel;
+        }
+
         self.flat_rows.clear();
         let roots = ws.children_of(None);
         for root in roots {
@@ -268,7 +304,13 @@ impl NoteTreeView {
 
     /// Open the inline rename editor on the given page.
     pub fn begin_rename(&mut self, id: PageId, initial_title: &str) {
-        let mut input = TextInput::local().with_initial_value(initial_title);
+        // Plain chrome + the row's own text size so the field reads as the
+        // row itself in edit mode, not a differently-styled box dropped on
+        // top. `apply_layout` pins it over the row's label span.
+        let mut input = TextInput::local()
+            .with_plain_chrome()
+            .with_font_size(ROW_TEXT_SIZE)
+            .with_initial_value(initial_title);
         // Mark as focused so the caret blinks immediately and key
         // events route to it without an extra click.
         input.set_focus(true);
@@ -695,6 +737,21 @@ impl Widget for NoteTreeView {
             let label_x = glyph_x + GLYPH_WIDTH;
             let text_y = row_rect.y0 + (ROW_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
 
+            // Nesting guides: a faint vertical rail at each ancestor depth
+            // so the tree structure reads at a glance — this is what makes
+            // an indented child obviously nested under its parent.
+            for level in 0..row.depth {
+                let gx = row_rect.x0 + (level as f64) * INDENT_PX + GLYPH_WIDTH / 2.0;
+                let guide = Rect::new(gx - 0.5, row_rect.y0, gx + 0.5, row_rect.y1);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    tokens.colors.border_standard,
+                    None,
+                    &guide,
+                );
+            }
+
             if row.has_children {
                 let glyph = if self.expanded.contains(&row.id) {
                     "\u{25BC}" // ▼
@@ -882,6 +939,27 @@ impl Widget for NoteTreeView {
                 self.dirty = true;
                 *handled = true;
                 return;
+            }
+        }
+
+        // Commit an in-progress rename when the user presses OUTSIDE its
+        // editor (click-away ends editing), then let the same press fall
+        // through to select / toggle whatever row it landed on.
+        if self.rename.is_some() {
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                let inside = self
+                    .rename
+                    .as_ref()
+                    .map(|r| r.input.get_rect().contains(self.last_cursor.unwrap_or(Point::ZERO)))
+                    .unwrap_or(false);
+                if !inside {
+                    self.commit_rename();
+                }
             }
         }
 
@@ -1152,7 +1230,15 @@ impl Widget for NoteTreeView {
                     }
                 }
                 match logical_key {
-                    Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                    // Delete removes the selected page. Backspace is
+                    // deliberately NOT bound here: the editor and the page
+                    // tree can both hold focus at once (selecting a page
+                    // focuses the tree AND the editor), so binding Backspace
+                    // to "delete page" meant a Backspace at the very start of
+                    // a note deleted the note and jumped the user to another
+                    // one. Backspace belongs to the editor (merge / no-op at
+                    // the start of the first block).
+                    Key::Named(NamedKey::Delete) => {
                         if let Some(sel) = self.selected {
                             self.pending_events.push(OutEvent::Delete(sel));
                             *handled = true;
@@ -1222,11 +1308,11 @@ impl Widget for NoteTreeView {
 
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
-        // Dropping focus from the panel collapses any open rename
-        // editor — we don't have a sensible "commit on blur" UX
-        // story yet, so cancel rather than silently committing.
+        // Losing focus commits any in-progress rename (focus-out ends
+        // editing), matching every inline-rename field. Escape still
+        // cancels explicitly before focus is dropped.
         if !focused && self.rename.is_some() {
-            self.cancel_rename();
+            self.commit_rename();
         }
     }
 
@@ -1274,6 +1360,28 @@ impl NoteTreeView {
     #[doc(hidden)]
     pub fn row_center_for_test(&self, idx: usize) -> Option<Point> {
         self.row_rects.get(idx).map(|r| r.center())
+    }
+
+    /// Test hook: the tree depth of visible row `idx` (0 = root), so a test
+    /// can prove a child renders indented under its parent.
+    #[doc(hidden)]
+    pub fn row_depth_for_test(&self, idx: usize) -> Option<usize> {
+        self.flat_rows.get(idx).map(|r| r.depth)
+    }
+
+    /// Test hook: whether visible row `idx` has children (draws a
+    /// disclosure triangle).
+    #[doc(hidden)]
+    pub fn row_has_children_for_test(&self, idx: usize) -> Option<bool> {
+        self.flat_rows.get(idx).map(|r| r.has_children)
+    }
+
+    /// Test hook: whether the active inline rename field renders in plain
+    /// chrome (no form-field box), i.e. styled like the row rather than a
+    /// jarring different box. `None` when no rename is in progress.
+    #[doc(hidden)]
+    pub fn rename_is_plain_for_test(&self) -> Option<bool> {
+        self.rename.as_ref().map(|r| r.input.is_plain())
     }
 
     /// Test hook: the centre of the header "+" new-page button, for

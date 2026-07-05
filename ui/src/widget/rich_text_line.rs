@@ -150,6 +150,18 @@ impl RichTextLine {
         self
     }
 
+    /// Builder-style: render + measure this line in the monospace face.
+    /// Used by `BlockEditor` code-block cells so code reads as code.
+    pub fn with_mono(mut self) -> Self {
+        self.inner.set_mono(true);
+        self
+    }
+
+    /// Mutate the monospace flag after construction.
+    pub fn set_mono(&mut self, mono: bool) {
+        self.inner.set_mono(mono);
+    }
+
     /// Current text content.
     pub fn value(&self) -> &str {
         self.inner.value()
