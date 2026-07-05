@@ -105,6 +105,22 @@ RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
     cd "$KSRC"; \
+    # `rpmbuild -bp` runs %prep which extracts + patches, but does NOT drop
+    # the target .config into the source tree — Fedora's kernel spec does
+    # that inside %build. Copy the right config manually:
+    # `kernel-<arch>-fedora.config` is Fedora's non-debug baseline.
+    ARCH="$(uname -m)"; \
+    CANDIDATES="kernel-${ARCH}-fedora.config kernel-${ARCH}.config"; \
+    FOUND=""; \
+    for c in $CANDIDATES; do \
+        [ -f "/work/rpmbuild/SOURCES/$c" ] && FOUND="/work/rpmbuild/SOURCES/$c" && break; \
+    done; \
+    [ -n "$FOUND" ] || { \
+        echo "no matching .config in /work/rpmbuild/SOURCES/ (tried: $CANDIDATES)"; \
+        ls -1 /work/rpmbuild/SOURCES/ | grep -F .config | head; \
+        exit 1; \
+    }; \
+    cp "$FOUND" .config; \
     cp .config /work/fedora.config; \
     scripts/kconfig/merge_config.sh -m .config /work/qos.config; \
     make olddefconfig; \
