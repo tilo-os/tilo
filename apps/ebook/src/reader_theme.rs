@@ -92,6 +92,22 @@ impl ReaderPalette {
                     dark: true,
                 }
             }
+            ReadTheme::HighContrast => {
+                // True black paper, pure-white ink, and a vivid amber accent —
+                // maximum legibility for low-vision reading. Secondary ink stays
+                // bright (a light grey) so captions/footers never fade out, and
+                // rules are a clear mid-grey rather than a whisper.
+                ReaderPalette {
+                    page: Color::from_rgb8(0x00, 0x00, 0x00),
+                    page_edge: Color::from_rgb8(0x3A, 0x3A, 0x3A),
+                    ink: Color::from_rgb8(0xFF, 0xFF, 0xFF),
+                    ink_dim: Color::from_rgb8(0xCF, 0xCF, 0xCF),
+                    rule: Color::from_rgb8(0x6A, 0x6A, 0x6A),
+                    code_bg: Color::from_rgb8(0x1A, 0x1A, 0x1A),
+                    accent: Color::from_rgb8(0xFF, 0xD5, 0x2E),
+                    dark: true,
+                }
+            }
         }
     }
 

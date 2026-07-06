@@ -339,15 +339,20 @@ pub enum ReadTheme {
     Light,
     Sepia,
     Dark,
+    /// Maximum-contrast reading: a true-black page with white ink and a vivid
+    /// accent, for low-vision reading. A first-class tint alongside the classics.
+    HighContrast,
 }
 
 impl ReadTheme {
-    pub const ALL: [ReadTheme; 3] = [ReadTheme::Light, ReadTheme::Sepia, ReadTheme::Dark];
+    pub const ALL: [ReadTheme; 4] =
+        [ReadTheme::Light, ReadTheme::Sepia, ReadTheme::Dark, ReadTheme::HighContrast];
     pub fn label(self) -> &'static str {
         match self {
             ReadTheme::Light => "Light",
             ReadTheme::Sepia => "Sepia",
             ReadTheme::Dark => "Dark",
+            ReadTheme::HighContrast => "High contrast",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -355,12 +360,14 @@ impl ReadTheme {
             ReadTheme::Light => "light",
             ReadTheme::Sepia => "sepia",
             ReadTheme::Dark => "dark",
+            ReadTheme::HighContrast => "high-contrast",
         }
     }
     pub fn from_str(s: &str) -> Self {
         match s {
             "sepia" => ReadTheme::Sepia,
             "dark" => ReadTheme::Dark,
+            "high-contrast" | "high_contrast" | "hc" => ReadTheme::HighContrast,
             _ => ReadTheme::Light,
         }
     }
@@ -675,6 +682,19 @@ pub fn default_schemes() -> Vec<ColorScheme> {
             enabled: true,
             builtin: true,
         },
+        ColorScheme {
+            // Maximum contrast: a true-black page, pure-white ink, and a vivid
+            // amber accent that stays unmistakable against the black. For
+            // low-vision reading; its reading palette is fixed in `reader_theme`.
+            id: "high-contrast".into(),
+            name: "High contrast".into(),
+            page: [0x00, 0x00, 0x00],
+            ink: [0xFF, 0xFF, 0xFF],
+            accent: [0xFF, 0xD5, 0x2E],
+            dark: true,
+            enabled: true,
+            builtin: true,
+        },
     ]
 }
 
@@ -951,6 +971,17 @@ mod tests {
         assert!(dark.page[0] >= dark.page[2], "kept faintly warm");
         assert!(dark.page[0] - dark.page[2] <= 6, "not a brown/sepia paper");
         assert!(luminance(dark.page) < 0.2, "still a dark page");
+    }
+
+    #[test]
+    fn high_contrast_builtin_is_maximal_contrast() {
+        let hc = default_schemes().into_iter().find(|s| s.id == "high-contrast").unwrap();
+        assert!(hc.builtin && hc.dark, "high contrast ships as a dark built-in");
+        assert!(luminance(hc.page) < 0.02, "a true-black page");
+        assert!(luminance(hc.ink) > 0.98, "white ink");
+        // It is a first-class built-in tint: the ReadTheme enum round-trips its id.
+        assert_eq!(ReadTheme::from_str(&hc.id), ReadTheme::HighContrast);
+        assert_eq!(ReadTheme::HighContrast.as_str(), "high-contrast");
     }
 
     #[test]
