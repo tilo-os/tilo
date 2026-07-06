@@ -370,16 +370,50 @@ impl SidebarDrawer {
 
     /// Paint the dimming scrim behind an open overlay drawer. Alpha tracks the
     /// eased reveal so it fades in/out with the slide. No-op when docked.
+    ///
+    /// A modern overlay drawer *floats* over the content: a light scrim so the
+    /// content recedes without being blacked out, plus a soft shadow at the
+    /// drawer's trailing edge so it reads as elevated. A flat 50%-black fill over
+    /// the whole UI looks heavy and dated — kept deliberately subtle here.
     pub fn draw_scrim(&self, scene: &mut Scene, transform: Affine) {
         if self.scrim_rect.width() <= 0.0 {
             return;
         }
-        let alpha = (self.flap.reveal() * 0.5).clamp(0.0, 1.0) as f32;
-        if alpha <= 0.0 {
+        let reveal = self.flap.reveal().clamp(0.0, 1.0) as f32;
+        if reveal <= 0.0 {
             return;
         }
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
+        // Subtle dim (peaks at ~22%, not 50%).
+        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(reveal * 0.22);
         scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
+
+        // Soft elevation shadow along the edge of the scrim that abuts the
+        // drawer, so it reads as floating above the content rather than merely
+        // dimming it. Stepped thin bands fake a gradient with decaying alpha —
+        // `ui` has no gradient primitive, so this stays in plain fills.
+        let sr = self.scrim_rect;
+        let steps = 6usize;
+        let band = 16.0_f64.min(sr.width());
+        let w = band / steps as f64;
+        for i in 0..steps {
+            let t = i as f32 / steps as f32;
+            let a = reveal * 0.15 * (1.0 - t);
+            if a <= 0.001 {
+                continue;
+            }
+            let c = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(a);
+            let (bx0, bx1) = match self.side {
+                SidebarSide::Left => (sr.x0 + w * i as f64, sr.x0 + w * (i as f64 + 1.0)),
+                SidebarSide::Right => (sr.x1 - w * (i as f64 + 1.0), sr.x1 - w * i as f64),
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c,
+                None,
+                &Rect::new(bx0, sr.y0, bx1, sr.y1),
+            );
+        }
     }
 
     /// Paint the standard collapse affordance inside `rect`: a pill holding a
