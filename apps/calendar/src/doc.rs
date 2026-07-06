@@ -116,6 +116,19 @@ impl CalDoc {
         Self::write_task_fields(doc, &m, t);
     }
 
+    /// Remove an event (and its notes) from the document. Idempotent — a
+    /// missing id is a no-op.
+    pub fn delete_event(doc: &mut AutoCommit, id: Id) {
+        let events = Self::map_at(doc, "events");
+        let _ = doc.delete(&events, id.to_string().as_str());
+    }
+
+    /// Remove a task (and its notes) from the document. Idempotent.
+    pub fn delete_task(doc: &mut AutoCommit, id: Id) {
+        let tasks = Self::map_at(doc, "tasks");
+        let _ = doc.delete(&tasks, id.to_string().as_str());
+    }
+
     fn ensure_child(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -244,6 +257,87 @@ impl CalDoc {
                 if let automerge::ScalarValue::Str(s) = v.as_ref() {
                     if let Ok(id) = s.as_str().parse::<Id>() {
                         out.push(id);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    // --- CalDAV delete outbox -------------------------------------------
+    //
+    // Deleting an event that was synced from a remote CalDAV calendar must
+    // also remove the resource from the server. The event itself is gone from
+    // the model the moment it is deleted, so we cannot resolve its target
+    // later from `Event::calendar_id` — we record both the source calendar id
+    // and the event uid here. Stored as a root `del_outbox` List of
+    // `"<calendar_id>\t<uid>"` strings, so a pending delete survives a restart
+    // and drains through the same live push worker as uploads.
+
+    fn del_outbox_list(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "del_outbox") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "del_outbox", ObjType::List)
+                .expect("put_object del_outbox list never fails"),
+        }
+    }
+
+    /// Queue a synced event's deletion for its remote calendar. Idempotent per
+    /// uid.
+    pub fn enqueue_delete(doc: &mut AutoCommit, calendar_id: &str, id: Id) {
+        let list = Self::del_outbox_list(doc);
+        let uid = id.to_string();
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
+                if let automerge::ScalarValue::Str(s) = v.as_ref() {
+                    if s.as_str().split('\t').nth(1) == Some(uid.as_str()) {
+                        return;
+                    }
+                }
+            }
+        }
+        let entry = format!("{calendar_id}\t{uid}");
+        let idx = doc.length(&list);
+        let _ = doc.insert(&list, idx, entry.as_str());
+    }
+
+    /// Drop a queued deletion (after the server confirms it, or if the event
+    /// was recreated locally). Removes every entry carrying this uid.
+    pub fn dequeue_delete(doc: &mut AutoCommit, id: Id) {
+        let list = Self::del_outbox_list(doc);
+        let uid = id.to_string();
+        let mut i = 0;
+        while i < doc.length(&list) {
+            let hit = matches!(
+                doc.get(&list, i),
+                Ok(Some((Value::Scalar(v), _)))
+                    if matches!(v.as_ref(),
+                        automerge::ScalarValue::Str(s) if s.as_str().split('\t').nth(1) == Some(uid.as_str()))
+            );
+            if hit {
+                let _ = doc.delete(&list, i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The queued deletions as `(calendar_id, uid)` pairs, in insertion order.
+    pub fn delete_outbox(doc: &AutoCommit) -> Vec<(String, Id)> {
+        let list = match doc.get(&ROOT, "del_outbox") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
+                if let automerge::ScalarValue::Str(s) = v.as_ref() {
+                    let mut parts = s.as_str().splitn(2, '\t');
+                    if let (Some(cal), Some(uid)) = (parts.next(), parts.next()) {
+                        if let Ok(id) = uid.parse::<Id>() {
+                            out.push((cal.to_string(), id));
+                        }
                     }
                 }
             }
@@ -403,6 +497,51 @@ mod tests {
         assert_eq!(CalDoc::outbox(&doc), vec![a, b]);
         CalDoc::dequeue_push(&mut doc, a);
         assert_eq!(CalDoc::outbox(&doc), vec![b]);
+    }
+
+    #[test]
+    fn delete_event_removes_it_from_the_document() {
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let mut doc = AutoCommit::new();
+        CalDoc::seed(&mut doc, &model);
+        let victim = model.events[0].id;
+        let before = CalDoc::read_model(&doc).events.len();
+        CalDoc::delete_event(&mut doc, victim);
+        let after = CalDoc::read_model(&doc);
+        assert_eq!(after.events.len(), before - 1);
+        assert!(!after.events.iter().any(|e| e.id == victim), "deleted event is gone");
+        // Idempotent.
+        CalDoc::delete_event(&mut doc, victim);
+        assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
+    }
+
+    #[test]
+    fn delete_task_removes_it_from_the_document() {
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let mut doc = AutoCommit::new();
+        CalDoc::seed(&mut doc, &model);
+        let victim = model.tasks[0].id;
+        let before = CalDoc::read_model(&doc).tasks.len();
+        CalDoc::delete_task(&mut doc, victim);
+        let after = CalDoc::read_model(&doc);
+        assert_eq!(after.tasks.len(), before - 1);
+        assert!(!after.tasks.iter().any(|t| t.id == victim), "deleted task is gone");
+    }
+
+    #[test]
+    fn delete_outbox_enqueues_dedupes_and_dequeues() {
+        let mut doc = AutoCommit::new();
+        let a = crate::model::Id::new_v4();
+        let b = crate::model::Id::new_v4();
+        CalDoc::enqueue_delete(&mut doc, "work/default", a);
+        CalDoc::enqueue_delete(&mut doc, "work/default", a); // dup — ignored
+        CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
+        assert_eq!(
+            CalDoc::delete_outbox(&doc),
+            vec![("work/default".to_string(), a), ("icloud/personal".to_string(), b)]
+        );
+        CalDoc::dequeue_delete(&mut doc, a);
+        assert_eq!(CalDoc::delete_outbox(&doc), vec![("icloud/personal".to_string(), b)]);
     }
 
     #[test]
