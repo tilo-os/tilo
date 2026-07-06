@@ -34,6 +34,8 @@ use crate::model::{
     Swatch, Tool, MARGIN, PAGE_H, PAGE_W,
 };
 use crate::render;
+use crate::text_layer::{PageText, TextMatch};
+use std::sync::Arc;
 
 const TOOLBAR_H: f64 = 56.0;
 const STATUS_H: f64 = 28.0;
@@ -155,6 +157,33 @@ struct PanState {
     moved: bool,
 }
 
+/// A text selection over the real pdfium text layer (raster backend only). The
+/// anchor is where the drag began; the caret follows the pointer. Both are
+/// glyph indices into that page's [`PageText`]; selection stays within one page.
+#[derive(Clone, Copy)]
+struct TextSelection {
+    page: usize,
+    anchor: usize,
+    caret: usize,
+    /// True while the pointer button is held and the drag is live.
+    dragging: bool,
+}
+
+impl TextSelection {
+    /// The selected glyph run as a half-open `[start, end)` index range.
+    fn range(&self) -> (usize, usize) {
+        let lo = self.anchor.min(self.caret);
+        let hi = self.anchor.max(self.caret) + 1;
+        (lo, hi)
+    }
+
+    /// Whether the selection spans at least one glyph (a bare click selects
+    /// nothing).
+    fn is_active(&self) -> bool {
+        self.anchor != self.caret
+    }
+}
+
 /// The target of a right-click "Delete" context menu.
 #[derive(Clone)]
 enum DeleteTarget {
@@ -182,6 +211,7 @@ enum ToolbarHit {
     ToggleSidebar,
     ToggleRail,
     Open,
+    Save,
 }
 
 #[derive(Clone)]
@@ -295,6 +325,27 @@ pub struct PdfApp {
     active_match: usize,
     search_whole_word: bool,
     search_case_sensitive: bool,
+    /// Raster-backend search hits over the real pdfium text layer. Used instead
+    /// of `matches` (which is the text backend's block model) when a real PDF
+    /// is open, so search highlights land on genuine glyph rectangles.
+    raster_matches: Vec<TextMatch>,
+
+    // Real PDF text layer (raster backend) — glyph geometry per visible page,
+    // refreshed each draw, powering selection + search-hit rectangles. Empty in
+    // the text backend, where the block model handles both.
+    raster_text: std::collections::HashMap<usize, Arc<PageText>>,
+    /// A live text selection over the raster text layer, if any.
+    selection: Option<TextSelection>,
+
+    // Save-back.
+    /// The on-disk path the current document was opened from, used to suggest a
+    /// filename and folder when saving flattened markup.
+    source_path: Option<std::path::PathBuf>,
+    /// A transient one-line status (e.g. "Saved to …"), shown as a toast until
+    /// the next document action.
+    status_note: Option<String>,
+    /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
+    portal_save_rx: Option<crate::portal::PortalChannel>,
 
     // Interaction transients.
     last_mouse: Point,
@@ -365,6 +416,7 @@ impl PdfApp {
                 app.raster = loaded.raster;
                 app.has_document = true;
                 app.doc_name = loaded.name;
+                app.source_path = Some(path.to_path_buf());
                 app
             }
             Err(e) => {
@@ -448,6 +500,12 @@ impl PdfApp {
             active_match: 0,
             search_whole_word: false,
             search_case_sensitive: false,
+            raster_matches: Vec::new(),
+            raster_text: std::collections::HashMap::new(),
+            selection: None,
+            source_path: None,
+            status_note: None,
+            portal_save_rx: None,
             last_mouse: Point::ZERO,
             drag: None,
             pan: None,
@@ -797,23 +855,55 @@ impl PdfApp {
     }
 
     fn recompute_matches(&mut self) {
-        self.matches = model::search(&self.doc, &self.query, self.search_options());
+        let opts = self.search_options();
         self.active_match = 0;
-        if let Some(m) = self.matches.first() {
-            self.go_to_page(m.page);
+        if self.raster.is_some() {
+            // Raster backend: search the real pdfium text layer of every page.
+            self.matches.clear();
+            let mut hits = Vec::new();
+            let n = self.doc.page_count();
+            for i in 0..n {
+                let pt = self.raster.as_mut().unwrap().page_text(i);
+                hits.extend(pt.search(i + 1, &self.query, opts));
+            }
+            self.raster_matches = hits;
+            if let Some(m) = self.raster_matches.first() {
+                self.go_to_page(m.page);
+            }
+        } else {
+            // Text backend: search the reflowed block model.
+            self.raster_matches.clear();
+            self.matches = model::search(&self.doc, &self.query, opts);
+            if let Some(m) = self.matches.first() {
+                self.go_to_page(m.page);
+            }
         }
         self.dirty = true;
     }
 
+    /// The number of live search hits, across whichever backend is active.
+    fn match_count(&self) -> usize {
+        if self.raster.is_some() {
+            self.raster_matches.len()
+        } else {
+            self.matches.len()
+        }
+    }
+
     fn step_match(&mut self, delta: isize) {
-        if self.matches.is_empty() {
+        let n = self.match_count();
+        if n == 0 {
             return;
         }
-        let n = self.matches.len() as isize;
+        let n = n as isize;
         let mut idx = self.active_match as isize + delta;
         idx = ((idx % n) + n) % n;
         self.active_match = idx as usize;
-        let page = self.matches[self.active_match].page;
+        let page = if self.raster.is_some() {
+            self.raster_matches[self.active_match].page
+        } else {
+            self.matches[self.active_match].page
+        };
         self.go_to_page(page);
     }
 
@@ -829,6 +919,175 @@ impl PdfApp {
             }
         }
         (set, active)
+    }
+
+    // ---- text selection (raster backend) ----------------------------
+    //
+    // A real PDF's glyph geometry lives in `raster_text` (filled each draw for
+    // the visible pages). Selection maps pointer positions to glyph indices via
+    // that layer, exactly the geometry the raster page bitmap is drawn from, so
+    // a highlighted run lines up with the printed text.
+
+    /// Try to begin a text selection at page-point `pt` on `page`. Returns
+    /// `true` when the point lands on a glyph (selection armed); `false` when
+    /// there is no text there, so the caller can fall back to panning.
+    fn begin_selection(&mut self, page: usize, pt: (f64, f64)) -> bool {
+        let Some(layer) = self.raster_text.get(&page) else { return false };
+        let Some(idx) = layer.char_at(pt.0, pt.1) else { return false };
+        self.selection = Some(TextSelection { page, anchor: idx, caret: idx, dragging: true });
+        self.dirty = true;
+        true
+    }
+
+    /// Extend the live selection to the pointer at page-point `pt`. Only tracks
+    /// motion on the selection's own page (selection stays single-page).
+    fn update_selection(&mut self, page: usize, pt: (f64, f64)) {
+        let Some(sel) = self.selection else { return };
+        if !sel.dragging || sel.page != page {
+            return;
+        }
+        let Some(layer) = self.raster_text.get(&page) else { return };
+        if let Some(idx) = layer.char_at(pt.0, pt.1).or_else(|| layer.nearest_char(pt.0, pt.1)) {
+            if let Some(s) = self.selection.as_mut() {
+                s.caret = idx;
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// End the drag. A selection that never grew past its anchor (a bare click)
+    /// is dropped so a single click doesn't leave a one-glyph highlight behind.
+    fn finish_selection(&mut self) {
+        if let Some(s) = self.selection.as_mut() {
+            s.dragging = false;
+            if !s.is_active() {
+                self.selection = None;
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn clear_selection(&mut self) {
+        if self.selection.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// The selected text, if a run is selected and its page's glyph layer is
+    /// available.
+    fn selection_text(&self) -> Option<String> {
+        let sel = self.selection?;
+        if !sel.is_active() {
+            return None;
+        }
+        let layer = self.raster_text.get(&sel.page)?;
+        let (a, b) = sel.range();
+        let s = layer.text_for_range(a, b);
+        (!s.trim().is_empty()).then_some(s)
+    }
+
+    /// Copy the current selection to the system clipboard, surfacing a toast.
+    fn copy_selection(&mut self) -> bool {
+        if let Some(text) = self.selection_text() {
+            ui::clipboard_copy(&text);
+            let n = text.chars().count();
+            self.status_note = Some(format!("Copied {n} character{}", if n == 1 { "" } else { "s" }));
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    // ---- save-back (flatten markup onto a real .pdf) ----------------
+
+    /// A suggested filename for the saved copy: `<stem>-annotated.pdf`.
+    fn suggested_save_name(&self) -> String {
+        let stem = self
+            .source_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("document");
+        format!("{stem}-annotated.pdf")
+    }
+
+    /// Ask the host portal for a save location (HIG §5 — never an in-app
+    /// picker). A second request while one is in flight is ignored.
+    fn request_save_via_portal(&mut self) {
+        // Saving flattens via pdfium; the text backend has no library loaded.
+        if self.raster.is_none() {
+            self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
+            self.dirty = true;
+            return;
+        }
+        if self.portal_save_rx.is_some() {
+            return;
+        }
+        self.portal_save_rx = Some(crate::portal::request_save(self.suggested_save_name()));
+        self.dirty = true;
+    }
+
+    /// Drain a completed portal *save* request, if any, and flatten the current
+    /// markup to the chosen path. Called once per frame from [`Widget::sync`].
+    fn drain_portal_save(&mut self) {
+        let Some(rx) = self.portal_save_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_save_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => {
+                        let path = ensure_pdf_extension(path);
+                        self.save_annotated_to(&path);
+                    }
+                    crate::portal::PortalOutcome::Cancelled => {}
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        self.status_note = Some(format!("Couldn't open the save dialog: {reason}"));
+                        self.dirty = true;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_save_rx = None;
+            }
+        }
+    }
+
+    /// Flatten the current annotations + signatures onto a fresh copy of the
+    /// PDF and write it to `path`. Surfaces success or failure as a toast.
+    fn save_annotated_to(&mut self, path: &std::path::Path) -> bool {
+        if self.raster.is_none() {
+            self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
+            self.dirty = true;
+            return false;
+        }
+        // Scope the (immutable) raster borrow tightly so the toast update below
+        // can take its mutable borrow of `self`.
+        let result = self.raster.as_ref().unwrap().save_annotated(
+            &self.annotations,
+            &self.comments,
+            &self.signatures,
+            path,
+        );
+        match result {
+            Ok(()) => {
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("the file")
+                    .to_string();
+                self.status_note = Some(format!("Saved annotated PDF to {name}"));
+                self.dirty = true;
+                true
+            }
+            Err(e) => {
+                self.status_note = Some(format!("Save failed: {e}"));
+                self.dirty = true;
+                false
+            }
+        }
     }
 
     // ---- annotation actions -----------------------------------------
@@ -1338,7 +1597,9 @@ impl PdfApp {
                 self.raster = loaded.raster;
                 self.has_document = true;
                 self.doc_name = loaded.name;
+                self.source_path = Some(path.to_path_buf());
                 self.load_error = None;
+                self.status_note = None;
                 PdfDoc::clear_all(state);
                 self.reload(state);
                 self.commit_pending = true;
@@ -1349,9 +1610,12 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.selected_sig = None;
                 self.editing = None;
+                self.selection = None;
                 self.close_search();
                 self.query.clear();
                 self.matches.clear();
+                self.raster_matches.clear();
+                self.raster_text.clear();
                 self.text_lines.clear();
                 self.prev_overlay = None; // re-derive panel docking for the new doc
                 self.reconcile_overlay();
@@ -1384,6 +1648,23 @@ impl Default for PdfApp {
     }
 }
 
+/// Ensure a chosen save path ends in `.pdf` (some portals return a name
+/// without the extension when the user typed it bare).
+fn ensure_pdf_extension(path: std::path::PathBuf) -> std::path::PathBuf {
+    let is_pdf = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if is_pdf {
+        path
+    } else {
+        let mut s = path.into_os_string();
+        s.push(".pdf");
+        std::path::PathBuf::from(s)
+    }
+}
+
 include!("app_draw.rs");
 include!("app_events.rs");
 
@@ -1392,6 +1673,8 @@ impl Widget for PdfApp {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
+        // And any completed save-location choice, flattening markup to it.
+        self.drain_portal_save();
 
         if !self.seeded {
             // Demonstration markup is seeded only on the screenshot / test
@@ -2195,5 +2478,224 @@ mod tests {
         // View state resets for the fresh document.
         assert_eq!(app.current_page, 1);
         assert!(app.selected_anno.is_none() && app.selected_sig.is_none());
+    }
+
+    // ----------------------------------------------------------------
+    // Real-PDF (pdfium raster) tests: text layer + save-back.
+    //
+    // These exercise the pdfium backend directly, so they require a usable
+    // `libpdfium.so`. `crate::source::find_pdfium` already probes the well-known
+    // paths, `~/.local/lib/pdfium`, and `QOS_PDFIUM_LIB`; if none is present the
+    // test fails loudly with an actionable message rather than silently passing,
+    // because the feature under test *is* the pdfium backend.
+    // ----------------------------------------------------------------
+
+    const SAMPLE_PDF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+
+    /// Open the bundled sample and require the raster backend, or fail with an
+    /// operator-facing message.
+    fn open_raster_sample() -> PdfApp {
+        let app = PdfApp::open(SAMPLE_PDF);
+        assert!(
+            app.raster.is_some(),
+            "sample.pdf must open with the pdfium raster backend — install libpdfium.so \
+             (e.g. ~/.local/lib/pdfium/libpdfium.so) or set QOS_PDFIUM_LIB"
+        );
+        app
+    }
+
+    /// The first run of `min_len`+ alphabetic characters in `text`.
+    fn first_word(text: &str, min_len: usize) -> Option<String> {
+        let mut cur = String::new();
+        for ch in text.chars() {
+            if ch.is_alphabetic() {
+                cur.push(ch);
+            } else {
+                if cur.chars().count() >= min_len {
+                    return Some(cur);
+                }
+                cur.clear();
+            }
+        }
+        (cur.chars().count() >= min_len).then_some(cur)
+    }
+
+    #[test]
+    fn raster_text_layer_hit_tests_real_glyphs_and_search_finds_them() {
+        let mut app = open_raster_sample();
+
+        // The text layer comes straight from pdfium's glyph geometry.
+        let layer = app.raster.as_mut().unwrap().page_text(0);
+        assert!(!layer.is_empty(), "page 1 exposes real extracted glyphs");
+
+        // Hit-testing a glyph's own centre returns a glyph whose box contains
+        // that point — proving the selectable layer is aligned to the render.
+        let probe = layer
+            .chars
+            .iter()
+            .find(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
+            .cloned()
+            .expect("a printable glyph with a real box");
+        let (cx, cy) = probe.rect.center();
+        let hit = layer.char_at(cx, cy).expect("hit-test lands on a glyph");
+        assert!(
+            layer.chars[hit].rect.contains(cx, cy),
+            "the hit glyph's box contains the probed point"
+        );
+
+        // A real word from the page must be found by search, and the hit must
+        // resolve back to on-page bands that read as that word.
+        let word = first_word(&layer.text, 4).expect("a searchable word on page 1");
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.query = word.clone();
+        app.recompute_matches();
+        assert!(
+            !app.raster_matches.is_empty(),
+            "search finds the real word {word:?} through the pdfium text layer"
+        );
+        let m = app.raster_matches[0];
+        let hit_layer = app.raster.as_mut().unwrap().page_text(m.page - 1);
+        let got = hit_layer.text_for_range(m.char_start, m.char_start + m.char_len);
+        assert_eq!(got.to_lowercase(), word.to_lowercase(), "the hit is the searched word");
+        let bands = hit_layer.bands_for_range(m.char_start, m.char_start + m.char_len);
+        assert!(!bands.is_empty(), "the hit yields at least one on-page band");
+        let pw = app.pw();
+        for b in &bands {
+            assert!(b.x >= -1.0 && b.x + b.w <= pw + 1.0, "band {b:?} sits within the page width {pw}");
+            assert!(b.w > 0.0 && b.h > 0.0, "band {b:?} is non-degenerate");
+        }
+    }
+
+    #[test]
+    fn save_back_flattens_markup_into_a_reopenable_pdf() {
+        let mut app = open_raster_sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+
+        let before = app
+            .raster
+            .as_ref()
+            .unwrap()
+            .page_object_count(0)
+            .expect("page 1 object count");
+
+        // Place a highlight, a sticky note with a body, and a signature on page
+        // 1 — all through the reader's real mutation methods.
+        app.tool = Tool::Highlight;
+        app.drag = Some(DragState {
+            tool: Tool::Highlight,
+            page: 1,
+            start: (70.0, 150.0),
+            cur: (360.0, 165.0),
+            points: vec![],
+        });
+        app.commit_drag(&mut st.doc);
+        app.create_note(&mut st.doc, 1, (120.0, 300.0));
+        app.edit_insert("Check this claim");
+        app.commit_edit(&mut st.doc);
+        app.signer_name = "Grace Hopper".into();
+        app.place_signature(&mut st.doc, 1, (360.0, 520.0));
+        assert!(app.annotations.iter().any(|a| matches!(a.kind, AnnoKind::Highlight { .. })));
+        assert!(app.signatures.iter().any(|s| s.signer == "Grace Hopper"));
+
+        // Flatten + write a real .pdf to disk.
+        let out = std::env::temp_dir().join("qos_pdf_saveback").join("annotated.pdf");
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(
+            app.save_annotated_to(&out),
+            "save_annotated_to reports success (note: {:?})",
+            app.status_note
+        );
+        assert!(out.exists(), "the annotated .pdf exists on disk");
+        assert!(std::fs::metadata(&out).unwrap().len() > 0, "and is non-empty");
+
+        // Reopen the saved file with a fresh pdfium document and prove the
+        // markup is really in the file: page 1 gained content objects, and the
+        // signer name + note body are extractable text (so any viewer sees them).
+        let reopened = crate::source::open(&out).expect("the saved PDF reopens");
+        let mut rz = reopened.raster.expect("the saved PDF reopens via pdfium");
+        let after = rz.page_object_count(0).expect("reopened page 1 object count");
+        assert!(after > before, "flattening added page content ({before} -> {after})");
+        let text = rz.page_text(0).text.clone();
+        assert!(
+            text.contains("Grace Hopper"),
+            "the signer name is baked into the saved page text: {text:?}"
+        );
+        assert!(
+            text.contains("Check this claim"),
+            "the note body is baked into the saved page text"
+        );
+    }
+
+    /// Drive the real fixture PDF through the live frame path to produce the
+    /// review shots: a search hit over genuine glyphs, a placed highlight +
+    /// signature, and the *reopened saved* file rendered by pdfium with the
+    /// flattened markup baked in. PNGs are written only under `PDF_SHOTS=1`
+    /// (to `$PDF_SHOT_DIR`, default a temp dir); the assertions always run.
+    #[test]
+    fn drive_real_pdf_search_highlight_save_shots() {
+        let shot_dir = std::env::var("PDF_SHOT_DIR").unwrap_or_else(|_| {
+            std::env::temp_dir().join("qos_pdf_review").to_string_lossy().into_owned()
+        });
+        let shot = |name: &str| format!("{shot_dir}/{name}");
+
+        let mut app = open_raster_sample();
+        let mut st = ui::State::new();
+        full_frame(&mut app, &mut st, 1280.0, 800.0, None);
+
+        // --- search a real word and shoot the hit over genuine glyphs. ---
+        let word = {
+            let layer = app.raster.as_mut().unwrap().page_text(0);
+            first_word(&layer.text, 4).expect("a searchable word")
+        };
+        app.open_search();
+        app.query = word.clone();
+        app.recompute_matches();
+        assert!(!app.raster_matches.is_empty(), "search finds {word:?} on the real PDF");
+        let p_search = shot("real_search_hit.png");
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some(p_search.as_str()));
+        app.close_search();
+
+        // --- place a highlight + a signature and shoot the annotated page. ---
+        app.tool = Tool::Highlight;
+        app.drag = Some(DragState {
+            tool: Tool::Highlight,
+            page: 1,
+            start: (70.0, 150.0),
+            cur: (360.0, 165.0),
+            points: vec![],
+        });
+        app.commit_drag(&mut st.doc);
+        app.signer_name = "Grace Hopper".into();
+        app.place_signature(&mut st.doc, 1, (360.0, 520.0));
+        app.go_to_page(1);
+        let p_anno = shot("real_annotated.png");
+        full_frame(&mut app, &mut st, 1280.0, 800.0, Some(p_anno.as_str()));
+
+        // --- save, reopen the saved file, and shoot pdfium's own render of the
+        //     flattened markup — proof the annotations are in the .pdf. ---
+        let out = std::env::temp_dir().join("qos_pdf_review").join("annotated.pdf");
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        assert!(app.save_annotated_to(&out), "save succeeds: {:?}", app.status_note);
+
+        let mut app2 = PdfApp::open(&out);
+        assert!(app2.raster.is_some(), "the saved file reopens via pdfium");
+        let mut st2 = ui::State::new();
+        let p_reopen = shot("real_reopened_saved.png");
+        full_frame(&mut app2, &mut st2, 1280.0, 800.0, Some(p_reopen.as_str()));
+        let baked = app2.raster.as_mut().unwrap().page_text(0).text.clone();
+        assert!(baked.contains("Grace Hopper"), "reopened saved file carries the signature text");
+        eprintln!(
+            "DRIVE real-pdf: word={word:?}  hits={}  saved={}  reopened-has-signature={}",
+            app.raster_matches.len(),
+            out.display(),
+            baked.contains("Grace Hopper")
+        );
     }
 }
