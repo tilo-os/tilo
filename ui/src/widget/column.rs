@@ -38,6 +38,12 @@ pub struct Column {
     /// default standard horizontal padding we'd otherwise leave a
     /// 24 px wallpaper gap to the left of the wheel disc.
     horizontal_padding_override: Option<(f32, f32)>,
+    /// When `Some(px)`, override the between-children vertical gap
+    /// (default `theme.gap_standard`). Set to `0.0` for a tightly
+    /// banded stack whose children own their own internal spacing —
+    /// e.g. a chrome column where a full-bleed panel child must sit
+    /// flush against the band above it with no wallpaper seam.
+    gap_override: Option<f32>,
     intrinsic_height: bool,
     /// Use `flex_grow: 1 + flex_basis: 0` instead of the default
     /// `height: percent(1.0)` outer size. The percent variant claims
@@ -72,6 +78,7 @@ impl Column {
             no_padding: false,
             vertical_padding_override: None,
             horizontal_padding_override: None,
+            gap_override: None,
             intrinsic_height: false,
             fill_remaining_height: false,
             subtree_cache: Scene::new(),
@@ -143,6 +150,15 @@ impl Column {
         self
     }
 
+    /// Override the vertical gap between children (default
+    /// `theme.gap_standard`). Use `0.0` for a tightly banded chrome
+    /// stack where each child owns its own internal spacing and a
+    /// full-bleed panel child must sit flush against the band above it.
+    pub fn with_gap(mut self, px: f32) -> Self {
+        self.gap_override = Some(px);
+        self
+    }
+
     /// Switch the column from `height: percent(1.0)` to
     /// `flex_grow: 1 + flex_basis: 0`. Use this when the column is a
     /// flex sibling of a fixed-height widget (a topbar, say) — the
@@ -200,7 +216,7 @@ impl Widget for Column {
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0),
-                    height: length(theme.gap_standard),
+                    height: length(self.gap_override.unwrap_or(theme.gap_standard)),
                 },
                 padding: {
                     let base = if self.no_padding { 0.0 } else { theme.padding_standard * 2.0 };
