@@ -38,8 +38,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // as "open a window the same way it always did".
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = TerminalWidget::spawn_default()?;
-        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let scenario = parse_scenario_arg(&args);
+        // Scenarios drive the grid entirely through `feed`, so they use a null
+        // backend (no shell) to keep the frame deterministic. The plain
+        // cold-start shot uses a real shell.
+        let mut widget = if scenario.is_some() {
+            TerminalWidget::spawn_headless()?
+        } else {
+            TerminalWidget::spawn_default()?
+        };
+        render_shot_to_png(&mut widget, DEFAULT_SHOTS_VIEWPORT, &out, scenario.as_deref())?;
         return Ok(());
     }
 
@@ -48,6 +56,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, Box::new(widget));
     app.run();
     Ok(())
+}
+
+/// Returns `Some(name)` if `--scenario <name>` (or `--scenario=<name>`)
+/// appears in `args`.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
@@ -71,11 +94,14 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 /// Mirrors `ui::App`'s layout/draw cycle for a single redraw:
 /// `sync` → `build_layout` → `compute_layout` → `apply_layout` → `draw`.
 /// Skips the event loop entirely because we render exactly one frame
-/// before exiting.
+/// before exiting. When `scenario` is set, canned VT byte sequences are
+/// fed through the widget *after* layout (so the grid is sized to the
+/// viewport) and then re-synced before the draw.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    widget: &mut TerminalWidget,
     viewport: (u32, u32),
     out: &std::path::Path,
+    scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
@@ -123,6 +149,13 @@ fn render_shot_to_png(
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
+    // Drive the scenario now that the grid is sized to the viewport, then
+    // re-sync so the mirrored grid reflects the fed sequences.
+    if let Some(name) = scenario {
+        run_scenario(widget, &mut state.doc, &state.root, name);
+        widget.sync(&mut state.doc, &state.root);
+    }
+
     let mut scene = Scene::new();
     widget.draw_with_presence(
         &mut scene,
@@ -140,4 +173,76 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("terminal: wrote shot to {}", out.display());
     Ok(())
+}
+
+/// Feed a named demo scenario's VT byte sequences through the widget's
+/// production `feed` path. Used only by `--shots --scenario`.
+fn run_scenario(
+    widget: &mut TerminalWidget,
+    doc: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+    name: &str,
+) {
+    match name {
+        // A palette of SGR effects: 16 ANSI colors, a 256-cube strip, a
+        // truecolor gradient, and the four style bits.
+        "colors" => {
+            let mut s = String::new();
+            s.push_str("\x1b[1mqOS terminal — SGR palette\x1b[0m\r\n\r\n");
+            s.push_str(" 16-color ANSI:  ");
+            for n in 0..8 { s.push_str(&format!("\x1b[4{}m  \x1b[0m", n)); }
+            s.push(' ');
+            for n in 0..8 { s.push_str(&format!("\x1b[48;5;{}m  \x1b[0m", n + 8)); }
+            s.push_str("\r\n\r\n 256-color:      ");
+            for n in (16..232).step_by(6) { s.push_str(&format!("\x1b[48;5;{}m \x1b[0m", n)); }
+            s.push_str("\r\n\r\n truecolor:      ");
+            for i in 0..48 {
+                let r = (i * 255 / 47) as u8;
+                let g = (255 - i * 255 / 47) as u8;
+                s.push_str(&format!("\x1b[48;2;{};{};128m \x1b[0m", r, g));
+            }
+            s.push_str("\r\n\r\n styles:         ");
+            s.push_str("\x1b[1mbold\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
+            s.push_str("\r\n foreground:     ");
+            s.push_str("\x1b[38;2;255;90;90mred \x1b[38;2;90;220;120mgreen \x1b[38;2;110;160;255mblue\x1b[0m\r\n");
+            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, qOS\"\x1b[0m\r\n");
+            widget.feed(doc, root, s.as_bytes());
+        }
+        // A full-screen alternate-screen redraw resembling a text editor.
+        "tui" => {
+            let mut s = String::new();
+            s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
+            // Reverse-video title bar across the top.
+            s.push_str("\x1b[1;1H\x1b[7m qOS EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
+            let lines = [
+                "fn main() {",
+                "    // alternate-screen redraw via CSI ?1049h",
+                "    let greeting = \"hello, qOS\";",
+                "    for i in 0..3 {",
+                "        println!(\"{i}: {greeting}\");",
+                "    }",
+                "}",
+            ];
+            for (i, line) in lines.iter().enumerate() {
+                // Line-number gutter in a dim color, then source text.
+                s.push_str(&format!("\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}", i + 3, i + 1, line));
+            }
+            // A status line near the bottom in reverse video.
+            s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
+            s.push_str("\x1b[24;1H:wq");
+            widget.feed(doc, root, s.as_bytes());
+        }
+        // Long output, then scrolled back so history is on screen.
+        "scrollback" => {
+            let mut s = String::new();
+            for i in 0..80 {
+                s.push_str(&format!("\x1b[38;5;250m{:>4}\x1b[0m  log entry {:03}: the quick brown fox jumps over the lazy dog\r\n", i, i));
+            }
+            widget.feed(doc, root, s.as_bytes());
+            widget.sync(doc, root);
+            // Scroll up so retained history (not the live tail) is visible.
+            widget.scroll_up(20);
+        }
+        _ => {}
+    }
 }

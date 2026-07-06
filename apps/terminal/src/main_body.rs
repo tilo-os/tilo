@@ -1,10 +1,10 @@
 use ui::ColorCompat;
-use ui::{Theme, widget::Widget, text_render::TextRenderer};
+use ui::{Theme, widget::Widget, text_render::{TextRenderer, TextWeight}};
 use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, ReadDoc};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Point};
 use vello::peniko::Color;
-use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton};
+use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty};
@@ -72,32 +72,131 @@ pub(crate) fn clipboard_copy(text: &str) {
     }
 }
 
+/// Best-effort clipboard read for paste. Returns `None` when no clipboard
+/// backend is available (e.g. headless CI) — paste is then a no-op rather
+/// than a crash.
+pub(crate) fn clipboard_paste() -> Option<String> {
+    let cb = clipboard_handle()?;
+    let mut handle = cb.lock().ok()?;
+    handle.get_text().ok()
+}
+
+/// A single foreground/background color, as produced by SGR. `Default`
+/// tracks the theme (fg → `palette.fg_default`, bg → transparent /
+/// `palette.bg_default`); `Indexed` is an ANSI-256 palette slot; `Rgb`
+/// is a 24-bit truecolor triple.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CellColor {
+    Default,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+impl CellColor {
+    /// Fixed 4-byte encoding: `[kind, a, b, c]`.
+    fn pack(self) -> [u8; 4] {
+        match self {
+            CellColor::Default => [0, 0, 0, 0],
+            CellColor::Indexed(n) => [1, n, 0, 0],
+            CellColor::Rgb(r, g, b) => [2, r, g, b],
+        }
+    }
+    fn unpack(b: &[u8]) -> Self {
+        match b.first().copied().unwrap_or(0) {
+            1 => CellColor::Indexed(b[1]),
+            2 => CellColor::Rgb(b[1], b[2], b[3]),
+            _ => CellColor::Default,
+        }
+    }
+}
+
+/// Per-cell rendering attributes. Colors are `CellColor` (default / ANSI-256
+/// / truecolor); the four SGR style bits plus the wide-glyph continuation
+/// marker are packed into a single flags byte.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Attr {
-    pub fg: u8,
-    pub bg: u8,
+    pub fg: CellColor,
+    pub bg: CellColor,
     pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub reverse: bool,
     pub is_wide_cont: bool,
 }
 
+/// Bytes per cell in the packed `attrs` blob: fg(4) + bg(4) + flags(1).
+const ATTR_BYTES: usize = 9;
+
 impl Attr {
-    pub fn pack(self) -> [u8; 4] {
-        [self.fg, self.bg, if self.bold { 1 } else { 0 }, if self.is_wide_cont { 1 } else { 0 }]
+    pub fn pack(self) -> [u8; ATTR_BYTES] {
+        let f = self.fg.pack();
+        let b = self.bg.pack();
+        let mut flags = 0u8;
+        if self.bold { flags |= 0b0_0001; }
+        if self.italic { flags |= 0b0_0010; }
+        if self.underline { flags |= 0b0_0100; }
+        if self.reverse { flags |= 0b0_1000; }
+        if self.is_wide_cont { flags |= 0b1_0000; }
+        [f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags]
     }
     pub fn unpack(bytes: &[u8]) -> Self {
-        if bytes.len() < 4 { return Self::default(); }
+        if bytes.len() < ATTR_BYTES { return Self::default(); }
+        let flags = bytes[8];
         Self {
-            fg: bytes[0],
-            bg: bytes[1],
-            bold: bytes[2] == 1,
-            is_wide_cont: bytes[3] == 1,
+            fg: CellColor::unpack(&bytes[0..4]),
+            bg: CellColor::unpack(&bytes[4..8]),
+            bold: flags & 0b0_0001 != 0,
+            italic: flags & 0b0_0010 != 0,
+            underline: flags & 0b0_0100 != 0,
+            reverse: flags & 0b0_1000 != 0,
+            is_wide_cont: flags & 0b1_0000 != 0,
         }
     }
 }
 
 impl Default for Attr {
     fn default() -> Self {
-        Self { fg: 7, bg: 0, bold: false, is_wide_cont: false }
+        Self {
+            fg: CellColor::Default,
+            bg: CellColor::Default,
+            bold: false,
+            italic: false,
+            underline: false,
+            reverse: false,
+            is_wide_cont: false,
+        }
+    }
+}
+
+/// Terminal mode flags toggled by DEC private set/reset (`CSI ? Ps h/l`).
+/// Owned by the widget and passed by mutable reference into the vte
+/// performer so parsed modes (bracketed paste, cursor visibility, mouse
+/// reporting, application cursor keys) survive across PTY reads.
+#[derive(Clone, Copy, Debug)]
+pub struct TermModes {
+    /// `?25` — block cursor drawn when true (DECTCEM).
+    pub cursor_visible: bool,
+    /// `?2004` — wrap pasted text in `ESC[200~`…`ESC[201~`.
+    pub bracketed_paste: bool,
+    /// `?1` — arrow keys send `ESC O A` instead of `ESC [ A` (DECCKM).
+    pub app_cursor_keys: bool,
+    /// `?1000`/`?1002`/`?1003` — some form of mouse reporting requested.
+    /// Tracked so wheel scrolling can defer to the app; event forwarding
+    /// itself is intentionally a stub.
+    pub mouse_report: bool,
+    /// `?1006` — SGR-encoded mouse coordinates requested.
+    pub mouse_sgr: bool,
+}
+
+impl Default for TermModes {
+    fn default() -> Self {
+        Self {
+            cursor_visible: true,
+            bracketed_paste: false,
+            app_cursor_keys: false,
+            mouse_report: false,
+            mouse_sgr: false,
+        }
     }
 }
 
@@ -124,12 +223,39 @@ pub struct TerminalWidget {
     font_size: f32,
 
     grid_id: Option<ObjId>,
+    /// Alternate-screen buffer (its own CRDT list). Full-screen apps
+    /// (`vim`, `less`, `htop`) switch to it via `CSI ? 1049 h` so their
+    /// redraw never pollutes the scrollback, then restore the main buffer
+    /// on exit. Created lazily alongside the main grid in `init_crdt`.
+    alt_grid_id: Option<ObjId>,
     cursor_id: Option<ObjId>,
     line_ids: Vec<ObjId>,
+    alt_line_ids: Vec<ObjId>,
     last_sync_heads: Vec<automerge::ChangeHash>,
+    /// Set when the active buffer flips (main ↔ alt) so `sync` re-reads the
+    /// grid even if the CRDT heads did not change (leaving the alt screen
+    /// only restores the cursor, which is not a doc edit).
+    force_resync: bool,
 
     current_attr: Attr,
     pending_wrap: bool,
+
+    /// True while the alternate screen is the active buffer.
+    alt_active: bool,
+    /// Cursor + attribute saved on alt-screen entry / DECSC, restored on
+    /// exit / DECRC.
+    saved_cursor: Option<(usize, usize, Attr)>,
+    /// DEC scrolling region (0-based, inclusive). Defaults to the full
+    /// screen; honoured for the alternate buffer's scroll/insert/delete.
+    scroll_top: usize,
+    scroll_bottom: usize,
+
+    /// Terminal mode flags (cursor visibility, bracketed paste, …).
+    modes: TermModes,
+
+    /// Rows scrolled up from the bottom of the buffer. 0 == pinned to the
+    /// live output; a new keystroke or fresh PTY output snaps it back to 0.
+    scroll_offset: usize,
 
     /// Last palette-derived cursor color, captured on every `draw`. Exposed
     /// for behavioural tests that want to verify palette swaps actually
@@ -190,11 +316,20 @@ impl TerminalWidget {
             char_h: 18.0,
             font_size: 0.0,
             grid_id: None,
+            alt_grid_id: None,
             cursor_id: None,
             line_ids: Vec::new(),
+            alt_line_ids: Vec::new(),
             last_sync_heads: Vec::new(),
+            force_resync: false,
             current_attr: Attr::default(),
             pending_wrap: false,
+            alt_active: false,
+            saved_cursor: None,
+            scroll_top: 0,
+            scroll_bottom: height - 1,
+            modes: TermModes::default(),
+            scroll_offset: 0,
             last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
             last_fg_default: Color::from_rgba8(0, 0, 0, 0),
             last_bg_default: Color::from_rgba8(0, 0, 0, 0),
@@ -214,6 +349,12 @@ impl TerminalWidget {
     pub fn selection(&self) -> Option<Selection> { self.selection }
     /// True between left-mouse-press and left-mouse-release. Test-only.
     pub fn is_dragging(&self) -> bool { self.dragging }
+    /// True while the alternate screen buffer is active. Test/host accessor.
+    pub fn is_alt_screen(&self) -> bool { self.alt_active }
+    /// Current terminal mode flags. Test/host accessor.
+    pub fn modes(&self) -> TermModes { self.modes }
+    /// Rows currently scrolled back from the live bottom. Test/host accessor.
+    pub fn scroll_offset(&self) -> usize { self.scroll_offset }
     /// Force the widget into a known geometry for tests. Replicates the
     /// effect of `apply_layout` without needing a Taffy tree.
     #[cfg(test)]
@@ -241,6 +382,32 @@ impl TerminalWidget {
     pub fn force_grid(&mut self, grid: Vec<String>) {
         self.grid = grid;
     }
+    /// The rows the viewport currently shows, top-to-bottom, honouring the
+    /// scrollback offset. Test accessor: lets a scrollback test assert that
+    /// scrolling up reveals older lines without a GPU scene.
+    #[cfg(test)]
+    pub fn visible_lines(&self) -> Vec<String> {
+        let vis = self.current_visible_rows();
+        let max_top = self.grid.len().saturating_sub(vis);
+        let scroll = if self.alt_active { 0 } else { self.scroll_offset };
+        let start = max_top.saturating_sub(scroll);
+        self.grid.iter().skip(start).take(vis).cloned().collect()
+    }
+    /// The parsed attribute for the mirrored grid cell at `(row, col)`.
+    /// Test accessor for SGR-parsing assertions.
+    #[cfg(test)]
+    pub fn cell_attr(&self, row: usize, col: usize) -> Attr {
+        self.grid_attrs
+            .get(row)
+            .and_then(|r| r.get(col))
+            .copied()
+            .unwrap_or_default()
+    }
+    /// The mirrored grid row text at `row`. Test accessor.
+    #[cfg(test)]
+    pub fn grid_row(&self, row: usize) -> String {
+        self.grid.get(row).cloned().unwrap_or_default()
+    }
     /// Compute the per-row spans for the current selection, exposed for
     /// tests. Returns an empty vec when no selection is active.
     #[cfg(test)]
@@ -260,6 +427,36 @@ impl TerminalWidget {
     /// palette). Test-only.
     pub fn last_bg_default(&self) -> Color { self.last_bg_default }
 
+    /// Number of grid rows currently visible, from the paint geometry.
+    fn current_visible_rows(&self) -> usize {
+        (self.rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize
+    }
+
+    /// Furthest the viewport can scroll up: the number of rows above the
+    /// live viewport.
+    fn max_scroll(&self) -> usize {
+        self.grid.len().saturating_sub(self.current_visible_rows())
+    }
+
+    /// Scroll the viewport back (toward older output) by `n` rows.
+    pub fn scroll_up(&mut self, n: usize) {
+        if self.alt_active { return; }
+        self.scroll_offset = (self.scroll_offset + n).min(self.max_scroll());
+    }
+    /// Scroll the viewport forward (toward the live bottom) by `n` rows.
+    pub fn scroll_down(&mut self, n: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+    }
+    /// Jump to the oldest retained line.
+    pub fn scroll_to_top(&mut self) {
+        if self.alt_active { return; }
+        self.scroll_offset = self.max_scroll();
+    }
+    /// Pin the viewport back to the live output.
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+    }
+
     /// Drain queued PTY bytes and replay them through the vte parser into the
     /// CRDT grid. Shared by both `Widget::update` (for hosts that pump it, e.g.
     /// the compositor's tile host) and `Widget::sync` (for the plain `ui::App`
@@ -268,33 +465,68 @@ impl TerminalWidget {
     fn pump(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
         self.init_crdt(state, root);
 
+        // Collect queued messages first so the `output_rx` borrow is dropped
+        // before `feed` takes `&mut self`.
+        let mut msgs = Vec::new();
+        while let Ok(bytes) = self.output_rx.try_recv() {
+            msgs.push(bytes);
+        }
+        let activity = !msgs.is_empty();
+        for bytes in &msgs {
+            self.feed(state, root, bytes);
+        }
+        // Fresh output snaps the viewport back to the live bottom.
+        if activity {
+            self.scroll_offset = 0;
+        }
+        activity
+    }
+
+    /// Run `bytes` through the vte parser + performer, mutating the active
+    /// CRDT buffer. This is the single production entry point for terminal
+    /// input processing — the PTY pump feeds real shell output through it,
+    /// and tests / headless screenshot scenarios feed canned VT sequences
+    /// through the very same path.
+    pub fn feed(&mut self, state: &mut AutoCommit, root: &ObjId, bytes: &[u8]) {
+        self.init_crdt(state, root);
+
         // Clamp cursors in case of resize.
         self.cursor_x = self.cursor_x.min(self.width.saturating_sub(1));
         self.cursor_y = self.cursor_y.min(self.height.saturating_sub(1));
 
-        let mut pty_activity = false;
-        while let Ok(bytes) = self.output_rx.try_recv() {
-            pty_activity = true;
-            let mut performer = TerminalPerformer {
-                state,
-                grid_id: self.grid_id.clone().unwrap(),
-                cursor_id: self.cursor_id.clone().unwrap(),
-                line_ids: &mut self.line_ids,
-                width: self.width,
-                height: self.height,
-                cursor_x: self.cursor_x,
-                cursor_y: self.cursor_y,
-                current_attr: self.current_attr,
-                pending_wrap: self.pending_wrap,
-            };
-            // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
-            self.parser.advance(&mut performer, &bytes);
-            self.cursor_x = performer.cursor_x;
-            self.cursor_y = performer.cursor_y;
-            self.current_attr = performer.current_attr;
-            self.pending_wrap = performer.pending_wrap;
+        let was_alt = self.alt_active;
+        let mut performer = TerminalPerformer {
+            state,
+            main_grid_id: self.grid_id.clone().unwrap(),
+            alt_grid_id: self.alt_grid_id.clone().unwrap(),
+            cursor_id: self.cursor_id.clone().unwrap(),
+            main_line_ids: &mut self.line_ids,
+            alt_line_ids: &mut self.alt_line_ids,
+            alt_active: &mut self.alt_active,
+            width: self.width,
+            height: self.height,
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+            current_attr: self.current_attr,
+            pending_wrap: self.pending_wrap,
+            modes: &mut self.modes,
+            saved_cursor: &mut self.saved_cursor,
+            scroll_top: self.scroll_top,
+            scroll_bottom: self.scroll_bottom,
+        };
+        // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
+        self.parser.advance(&mut performer, bytes);
+        self.cursor_x = performer.cursor_x;
+        self.cursor_y = performer.cursor_y;
+        self.current_attr = performer.current_attr;
+        self.pending_wrap = performer.pending_wrap;
+        self.scroll_top = performer.scroll_top;
+        self.scroll_bottom = performer.scroll_bottom;
+
+        // A buffer flip must force `sync` to re-read even if heads match.
+        if self.alt_active != was_alt {
+            self.force_resync = true;
         }
-        pty_activity
     }
 
     /// Place the terminal at an explicit `rect` and reflow the grid + PTY to
@@ -313,6 +545,26 @@ impl TerminalWidget {
             let _ = w.write_all(bytes);
             let _ = w.flush();
         }
+    }
+
+    /// Paste `text` into the PTY. When the running app has requested
+    /// bracketed paste (`CSI ? 2004 h`) the text is wrapped in the
+    /// `ESC[200~`…`ESC[201~` guards so the app can tell a paste from typed
+    /// input; otherwise newlines are normalised to carriage returns (what
+    /// the Enter key sends). Pasting snaps the viewport to the live bottom.
+    pub fn paste(&mut self, text: &str) {
+        if text.is_empty() { return; }
+        let mut out = Vec::new();
+        if self.modes.bracketed_paste {
+            out.extend_from_slice(b"\x1b[200~");
+            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(b"\x1b[201~");
+        } else {
+            let normalised = text.replace("\r\n", "\r").replace('\n', "\r");
+            out.extend_from_slice(normalised.as_bytes());
+        }
+        self.write_input(&out);
+        self.scroll_offset = 0;
     }
 
     /// Assign `rect` and, if the cell grid dimensions changed, reflow the
@@ -344,6 +596,10 @@ impl TerminalWidget {
 
             self.width = new_width;
             self.height = new_height;
+            // Reset the scrolling region to the full new screen unless an
+            // app narrows it again.
+            self.scroll_top = 0;
+            self.scroll_bottom = new_height.saturating_sub(1);
             let _ = self.pty_master.lock().unwrap().resize(PtySize {
                 rows: self.height as u16,
                 cols: self.width as u16,
@@ -362,35 +618,23 @@ impl TerminalWidget {
                 self.grid_id = Some(id);
             }
         }
+        Self::ensure_lines(state, self.grid_id.as_ref().unwrap(), self.height, self.width, &mut self.line_ids);
 
-        let grid_id = self.grid_id.as_ref().unwrap();
-        let current_len = state.length(grid_id);
-
-        if current_len < self.height {
-            for y in current_len..self.height {
-                let line_id = state.insert_object(grid_id, y, ObjType::Map).unwrap();
-                let text_id = state.put_object(&line_id, "text", ObjType::Text).unwrap();
-                let _ = state.splice_text(&text_id, 0, 0, &" ".repeat(self.width));
-                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-                let _ = state.put(&line_id, "attrs", attr_bytes);
+        if self.alt_grid_id.is_none() {
+            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid_alt") {
+                self.alt_grid_id = Some(id.clone());
+            } else {
+                let id = state.put_object(root, "terminal_grid_alt", ObjType::List).unwrap();
+                self.alt_grid_id = Some(id);
             }
         }
-
-        let new_len = state.length(grid_id);
-        if self.line_ids.len() != new_len {
-            self.line_ids.clear();
-            for i in 0..new_len {
-                if let Ok(Some((Value::Object(ObjType::Map), line_id))) = state.get(grid_id, i) {
-                    self.line_ids.push(line_id);
-                }
-            }
-        }
+        Self::ensure_lines(state, self.alt_grid_id.as_ref().unwrap(), self.height, self.width, &mut self.alt_line_ids);
 
         if self.cursor_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "cursor") {
                 self.cursor_id = Some(id.clone());
                 if let Ok(Some((Value::Scalar(v), _))) = state.get(&id, "y") {
-                    if let Some(y) = v.to_i64() { 
+                    if let Some(y) = v.to_i64() {
                         let abs_y = y as usize;
                         let history_offset = self.line_ids.len().saturating_sub(self.height);
                         self.cursor_y = abs_y.saturating_sub(history_offset).min(self.height.saturating_sub(1));
@@ -401,6 +645,30 @@ impl TerminalWidget {
                 state.put(&cursor_id, "x", 0u64).unwrap();
                 state.put(&cursor_id, "y", 0u64).unwrap();
                 self.cursor_id = Some(cursor_id);
+            }
+        }
+    }
+
+    /// Ensure `grid_id` holds at least `min_len` blank lines and refresh
+    /// `ids` to mirror the list. Shared by the main and alternate buffers.
+    fn ensure_lines(state: &mut AutoCommit, grid_id: &ObjId, min_len: usize, width: usize, ids: &mut Vec<ObjId>) {
+        let current_len = state.length(grid_id);
+        if current_len < min_len {
+            for y in current_len..min_len {
+                let line_id = state.insert_object(grid_id, y, ObjType::Map).unwrap();
+                let text_id = state.put_object(&line_id, "text", ObjType::Text).unwrap();
+                let _ = state.splice_text(&text_id, 0, 0, &" ".repeat(width));
+                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
+                let _ = state.put(&line_id, "attrs", attr_bytes);
+            }
+        }
+        let new_len = state.length(grid_id);
+        if ids.len() != new_len {
+            ids.clear();
+            for i in 0..new_len {
+                if let Ok(Some((Value::Object(ObjType::Map), line_id))) = state.get(grid_id, i) {
+                    ids.push(line_id);
+                }
             }
         }
     }
@@ -416,7 +684,9 @@ impl Widget for TerminalWidget {
         // 0.0 and we keep the constructor-seeded char_w/char_h so layout still
         // yields a usable grid.
         if self.font_size > 0.0 {
-            let (w, _h) = text_renderer.measure(" ", self.font_size, None);
+            // Measure with the monospace family so the cell advance matches
+            // the mono glyphs `draw` actually paints.
+            let (w, _h) = text_renderer.measure_styled(" ", self.font_size, None, TextWeight::Regular, false, true);
             self.char_w = (w as f64).max(1.0);
             self.char_h = ((self.font_size as f64) * 1.25f64).ceil().max(1.0);
         }
@@ -434,43 +704,52 @@ impl Widget for TerminalWidget {
         self.pump(state, root);
 
         let current_heads = state.get_heads();
-        if !self.last_sync_heads.is_empty() && current_heads == self.last_sync_heads {
+        if !self.force_resync && !self.last_sync_heads.is_empty() && current_heads == self.last_sync_heads {
             return;
         }
+        self.force_resync = false;
         self.last_sync_heads = current_heads;
 
         self.init_crdt(state, root);
-        
-        let grid_id = match self.grid_id.as_ref() {
-            Some(id) => id.clone(),
+
+        // Mirror whichever buffer is active. The alt buffer has no scrollback,
+        // so its list is exactly `height` lines.
+        let (grid_id, line_ids) = if self.alt_active {
+            (self.alt_grid_id.clone(), &self.alt_line_ids)
+        } else {
+            (self.grid_id.clone(), &self.line_ids)
+        };
+        let grid_id = match grid_id {
+            Some(id) => id,
             None => return,
         };
 
         let len = state.length(&grid_id);
         self.grid.resize(len, String::new());
         self.grid_attrs.resize(len, Vec::new());
-        
-        for i in 0..len {
-            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(&self.line_ids[i], "text") {
+
+        for i in 0..len.min(line_ids.len()) {
+            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(&line_ids[i], "text") {
                 if let Ok(text) = state.text(&text_id) {
                     self.grid[i] = text;
                 }
             }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(&self.line_ids[i], "attrs") {
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(&line_ids[i], "attrs") {
                 if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
-                    self.grid_attrs[i] = bytes.chunks_exact(4).map(Attr::unpack).collect();
+                    self.grid_attrs[i] = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
                 }
             }
         }
-        
+
+        let active_len = line_ids.len();
         if let Some(cursor_id) = self.cursor_id.as_ref() {
             if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x") {
                 if let Some(x) = v.to_i64() { self.cursor_x = x as usize; }
             }
             if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y") {
-                if let Some(y) = v.to_i64() { 
+                if let Some(y) = v.to_i64() {
                     let abs_y = y as usize;
-                    let history_offset = self.line_ids.len().saturating_sub(self.height);
+                    let history_offset = active_len.saturating_sub(self.height);
                     self.cursor_y = abs_y.saturating_sub(history_offset).min(self.height.saturating_sub(1));
                 }
             }
@@ -514,10 +793,6 @@ impl Widget for TerminalWidget {
         // Pull every visual parameter from design tokens. Nothing in this
         // method may hard-code a color, font size, or padding — the OS owns
         // the theme and swapping it must reflect in the rendered output.
-        //
-        // TODO(plan-4): once TextRenderer::draw_text accepts a font family
-        // parameter, route `theme.tokens.font_mono.family` through it so the
-        // terminal actually shapes with the OS-configured mono font.
         let font_size = theme.tokens.font_size_base;
         let palette = &theme.tokens.terminal_palette;
         // Horizontal gutter between the terminal's left edge and the first
@@ -532,19 +807,23 @@ impl Widget for TerminalWidget {
 
         scene.fill(vello::peniko::Fill::NonZero, transform, palette.bg_default, None, &self.rect);
 
-        let (w, _h) = text_renderer.measure(" ", font_size, None);
+        // Measure the space glyph in the monospace family — that's the cell
+        // advance the mono glyph runs will use.
+        let (w, _h) = text_renderer.measure_styled(" ", font_size, None, TextWeight::Regular, false, true);
         self.char_w = (w as f64).max(1.0);
         self.char_h = ((font_size as f64) * 1.25f64).ceil().max(1.0);
 
         let visible_rows = (self.rect.height() / self.char_h).floor() as usize;
-        let start_y = if self.grid.len() > visible_rows { self.grid.len() - visible_rows } else { 0 };
+        let max_top = self.grid.len().saturating_sub(visible_rows);
+        // Alt screen has no scrollback; clamp the offset for the main buffer.
+        let scroll = if self.alt_active { 0 } else { self.scroll_offset.min(max_top) };
+        self.scroll_offset = scroll;
+        let start_y = max_top.saturating_sub(scroll);
 
         // Cache for `handle_event`: pointer hit-tests translate logical y
         // into viewport-local rows by subtracting `self.rect.y0` and dividing
-        // by `char_h`. The scrollback offset lives implicitly in `start_y`,
-        // and the selection model already stores viewport-local rows — so
-        // no extra translation is needed, but the selection-rendering
-        // pass below uses the offset directly to find the row in `self.grid`.
+        // by `char_h`. The selection-rendering pass below uses the offset
+        // directly to find the row in `self.grid`.
         self.viewport_start_y = start_y;
 
         // Paint the selection BEFORE the cell text so glyphs read on top
@@ -562,7 +841,7 @@ impl Widget for TerminalWidget {
             }
         }
 
-        for (y, line_text) in self.grid.iter().skip(start_y).enumerate() {
+        for (y, line_text) in self.grid.iter().skip(start_y).take(visible_rows).enumerate() {
             let py = (self.rect.y0 + y as f64 * self.char_h).floor();
             let attrs_idx = y + start_y;
             if attrs_idx >= self.grid_attrs.len() { continue; }
@@ -594,25 +873,54 @@ impl Widget for TerminalWidget {
             }
         }
 
-        let cx = self.rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
-        let cy_local = if self.cursor_y >= start_y { self.cursor_y - start_y } else { 0 };
-        let cy = (self.rect.y0 + cy_local as f64 * self.char_h).floor();
-
-        let cursor_rect = Rect::new(cx, cy, cx + self.char_w, cy + self.char_h);
         // Cursor color is derived from the palette's default foreground at a
         // reduced opacity so it reads as a translucent block. Using the
-        // palette makes the cursor follow theme swaps automatically.
+        // palette makes the cursor follow theme swaps automatically. These
+        // caches update every frame regardless of whether the cursor is
+        // actually painted (hidden by `?25l` or scrolled off screen).
         let cursor_color = cursor_from_palette(palette);
         self.last_cursor_color = cursor_color;
         self.last_fg_default = palette.fg_default;
         self.last_bg_default = palette.bg_default;
-        scene.fill(vello::peniko::Fill::NonZero, transform, cursor_color, None, &cursor_rect);
+
+        // Absolute grid row of the cursor → visible row (may be scrolled off).
+        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
+        if self.modes.cursor_visible
+            && cursor_abs >= start_y
+            && cursor_abs < start_y + visible_rows.max(1)
+        {
+            let cy_local = cursor_abs - start_y;
+            let cx = self.rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
+            let cy = (self.rect.y0 + cy_local as f64 * self.char_h).floor();
+            let cursor_rect = Rect::new(cx, cy, cx + self.char_w, cy + self.char_h);
+            scene.fill(vello::peniko::Fill::NonZero, transform, cursor_color, None, &cursor_rect);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         self.init_crdt(state, root);
 
         match event {
+            WindowEvent::MouseWheel { delta, .. } => {
+                if !self.rect.contains(self.last_cursor_pos) { return; }
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
+                    MouseScrollDelta::PixelDelta(pos) => (pos.y / self.char_h.max(1.0)).round() as i32,
+                };
+                if lines == 0 { return; }
+                if self.alt_active && !self.modes.mouse_report {
+                    // In the alternate screen (pager / editor) forward wheel
+                    // notches as arrow keys so `less`/`man` scroll naturally.
+                    let seq: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
+                    let reps = lines.unsigned_abs() as usize;
+                    let mut out = Vec::new();
+                    for _ in 0..reps { out.extend_from_slice(seq); }
+                    self.write_input(&out);
+                } else if !self.alt_active {
+                    if lines > 0 { self.scroll_up(lines as usize); } else { self.scroll_down((-lines) as usize); }
+                }
+                *handled = true;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 // Always cache pointer position so the next MouseInput::Pressed
                 // event can hit-test without needing the position from
@@ -631,9 +939,9 @@ impl Widget for TerminalWidget {
                 }
             }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
-                // TODO(v2): when the PTY app enables mouse-reporting
-                // (ESC[?1000h family), forward presses to the PTY instead
-                // of starting a selection. v1 always captures for selection.
+                // Mouse reporting (ESC[?1000h family) is parsed into `modes`
+                // but click forwarding is intentionally a stub — v1 always
+                // captures the left button for text selection.
                 match element_state {
                     ElementState::Pressed if self.rect.contains(self.last_cursor_pos) => {
                         let pos = self.pos_from_logical(self.last_cursor_pos);
@@ -660,10 +968,9 @@ impl Widget for TerminalWidget {
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
                 if *element_state == ElementState::Pressed {
                     let mods = modifiers.state();
-                    // Ctrl+Shift+C → clipboard copy. Must be matched
-                    // BEFORE the regular Ctrl+C → SIGINT path or the user
-                    // would lose the ability to interrupt running
-                    // processes.
+                    // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
+                    // Both must be matched BEFORE the regular Ctrl+C → SIGINT
+                    // path or the user would lose the ability to interrupt.
                     if mods.control_key() && mods.shift_key() {
                         if let Key::Character(c) = logical_key {
                             if c.as_str().eq_ignore_ascii_case("c") {
@@ -674,6 +981,29 @@ impl Widget for TerminalWidget {
                                 }
                                 *handled = true;
                                 return;
+                            }
+                            if c.as_str().eq_ignore_ascii_case("v") {
+                                if let Some(text) = clipboard_paste() {
+                                    self.paste(&text);
+                                }
+                                *handled = true;
+                                return;
+                            }
+                        }
+                    }
+
+                    // Scrollback navigation — only intercepted for the main
+                    // buffer; the alternate screen (pager / editor) gets the
+                    // keys forwarded to the app instead.
+                    if !self.alt_active {
+                        if let Key::Named(named) = logical_key {
+                            let page = self.current_visible_rows().saturating_sub(1).max(1);
+                            match named {
+                                NamedKey::PageUp => { self.scroll_up(page); *handled = true; return; }
+                                NamedKey::PageDown => { self.scroll_down(page); *handled = true; return; }
+                                NamedKey::Home if mods.shift_key() => { self.scroll_to_top(); *handled = true; return; }
+                                NamedKey::End if mods.shift_key() => { self.scroll_to_bottom(); *handled = true; return; }
+                                _ => {}
                             }
                         }
                     }
@@ -687,9 +1017,13 @@ impl Widget for TerminalWidget {
                         }
                     }
                     if let Some(b) = bytes {
-                        let mut w = self.pty_write.lock().unwrap();
-                        let _ = w.write_all(&b);
-                        let _ = w.flush();
+                        {
+                            let mut w = self.pty_write.lock().unwrap();
+                            let _ = w.write_all(&b);
+                            let _ = w.flush();
+                        }
+                        // Typing snaps the viewport back to the live bottom.
+                        self.scroll_offset = 0;
                         *handled = true;
                     }
                 }
@@ -704,6 +1038,7 @@ impl Widget for TerminalWidget {
 }
 
 impl TerminalWidget {
+    #[allow(clippy::too_many_arguments)]
     fn draw_run(
         &self,
         scene: &mut Scene,
@@ -716,22 +1051,37 @@ impl TerminalWidget {
         font_size: f32,
         palette: &ui::tokens::TerminalPalette,
     ) {
-        let fg = map_ansi_256(attr.fg, palette);
-        let bg = if attr.bg != 0 { Some(map_ansi_256(attr.bg, palette)) } else { None };
+        let (fg, bg_opt) = resolve_pair(attr, palette);
         let tx = self.rect.x0 + rx;
 
-        if let Some(bg_color) = bg {
-            let mut visual_width = 0.0;
-            for c in text.chars() {
-                visual_width += c.width().unwrap_or(1) as f64 * self.char_w;
-            }
+        let mut visual_width = 0.0;
+        for c in text.chars() {
+            visual_width += c.width().unwrap_or(1) as f64 * self.char_w;
+        }
+
+        if let Some(bg_color) = bg_opt {
             let bg_rect = Rect::new(tx, py, tx + visual_width + 0.5, py + self.char_h + 0.5);
             scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &bg_rect);
         }
 
-        // TODO(plan-4): pass theme.tokens.font_mono.family through draw_text
-        // once TextRenderer gains a font-family parameter.
-        text_renderer.draw_text(scene, text, font_size, fg, transform * Affine::translate((tx, py)), None);
+        let weight = if attr.bold { TextWeight::Bold } else { TextWeight::Regular };
+        text_renderer.draw_text_styled(
+            scene,
+            text,
+            font_size,
+            fg,
+            transform * Affine::translate((tx, py)),
+            None,
+            weight,
+            attr.italic,
+            true, // monospace family — a terminal must render fixed-width
+        );
+
+        if attr.underline {
+            let uy = py + self.char_h - 1.5;
+            let line = Rect::new(tx, uy, tx + visual_width, uy + 1.0);
+            scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
+        }
     }
 
     /// Convert a logical pointer position into a viewport-local
@@ -804,25 +1154,40 @@ impl TerminalWidget {
 
     fn map_key(&self, key: &Key, modifiers: &winit::event::Modifiers) -> Option<Vec<u8>> {
         let mods = modifiers.state();
+        // DECCKM: application cursor keys send SS3-prefixed sequences.
+        let cursor_prefix: &[u8] = if self.modes.app_cursor_keys { b"\x1bO" } else { b"\x1b[" };
+        let cursor_seq = |final_byte: u8| {
+            let mut v = cursor_prefix.to_vec();
+            v.push(final_byte);
+            v
+        };
         match key {
             Key::Named(named) => match named {
                 NamedKey::Enter => Some(vec![b'\r']),
                 NamedKey::Backspace => Some(vec![127]),
                 NamedKey::Tab => Some(vec![b'\t']),
                 NamedKey::Escape => Some(vec![27]),
-                NamedKey::ArrowUp => Some(vec![27, b'[', b'A']),
-                NamedKey::ArrowDown => Some(vec![27, b'[', b'B']),
-                NamedKey::ArrowRight => Some(vec![27, b'[', b'C']),
-                NamedKey::ArrowLeft => Some(vec![27, b'[', b'D']),
+                NamedKey::ArrowUp => Some(cursor_seq(b'A')),
+                NamedKey::ArrowDown => Some(cursor_seq(b'B')),
+                NamedKey::ArrowRight => Some(cursor_seq(b'C')),
+                NamedKey::ArrowLeft => Some(cursor_seq(b'D')),
+                NamedKey::Home => Some(cursor_seq(b'H')),
+                NamedKey::End => Some(cursor_seq(b'F')),
+                NamedKey::PageUp => Some(vec![27, b'[', b'5', b'~']),
+                NamedKey::PageDown => Some(vec![27, b'[', b'6', b'~']),
+                NamedKey::Insert => Some(vec![27, b'[', b'2', b'~']),
+                NamedKey::Delete => Some(vec![27, b'[', b'3', b'~']),
                 _ => None,
             },
             Key::Character(c) if mods.control_key() => {
-                match c.as_str() {
-                    "c" | "C" => Some(vec![3]),
-                    "d" | "D" => Some(vec![4]),
-                    "l" | "L" => Some(vec![12]),
-                    "u" | "U" => Some(vec![21]),
-                    "z" | "Z" => Some(vec![26]),
+                // Ctrl+letter → the corresponding C0 control code.
+                let s = c.as_str();
+                let ch = s.chars().next()?;
+                let up = ch.to_ascii_uppercase();
+                match up {
+                    'A'..='Z' => Some(vec![(up as u8) - b'A' + 1]),
+                    // Ctrl+Space → NUL, common shell binding.
+                    ' ' => Some(vec![0]),
                     _ => None,
                 }
             }
@@ -833,15 +1198,22 @@ impl TerminalWidget {
 
 pub struct TerminalPerformer<'a> {
     pub state: &'a mut AutoCommit,
-    pub grid_id: ObjId,
+    pub main_grid_id: ObjId,
+    pub alt_grid_id: ObjId,
     pub cursor_id: ObjId,
-    pub line_ids: &'a mut Vec<ObjId>,
+    pub main_line_ids: &'a mut Vec<ObjId>,
+    pub alt_line_ids: &'a mut Vec<ObjId>,
+    pub alt_active: &'a mut bool,
     pub width: usize,
     pub height: usize,
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub current_attr: Attr,
     pub pending_wrap: bool,
+    pub modes: &'a mut TermModes,
+    pub saved_cursor: &'a mut Option<(usize, usize, Attr)>,
+    pub scroll_top: usize,
+    pub scroll_bottom: usize,
 }
 
 impl<'a> Perform for TerminalPerformer<'a> {
@@ -855,8 +1227,9 @@ impl<'a> Perform for TerminalPerformer<'a> {
             self.pending_wrap = false;
         }
 
-        let y = self.absolute_y().min(self.line_ids.len().saturating_sub(1));
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&self.line_ids[y], "text") {
+        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
             let current_len = self.state.length(&text_id);
             let replacement = format!("{}{}", c, if char_w > 1 { " ".repeat(char_w - 1) } else { "".into() });
 
@@ -866,53 +1239,103 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 let _ = self.state.splice_text(&text_id, self.cursor_x, 0, &replacement);
             }
 
-            if let Ok(Some((Value::Scalar(v), _))) = self.state.get(&self.line_ids[y], "attrs") {
+            if let Ok(Some((Value::Scalar(v), _))) = self.state.get(&line_obj, "attrs") {
                 if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
                     let mut attr_bytes = bytes.clone();
-                    let start = self.cursor_x * 4;
-                    let end = (self.cursor_x + char_w) * 4;
+                    let start = self.cursor_x * ATTR_BYTES;
+                    let end = (self.cursor_x + char_w) * ATTR_BYTES;
                     if attr_bytes.len() < end { attr_bytes.resize(end, 0); }
-                    
-                    attr_bytes[start..start+4].copy_from_slice(&self.current_attr.pack());
+
+                    attr_bytes[start..start + ATTR_BYTES].copy_from_slice(&self.current_attr.pack());
                     if char_w > 1 {
                         let mut cont = self.current_attr;
                         cont.is_wide_cont = true;
                         let cont_packed = cont.pack();
                         for i in 1..char_w {
-                            let s = (self.cursor_x + i) * 4;
-                            if s + 4 <= attr_bytes.len() { attr_bytes[s..s+4].copy_from_slice(&cont_packed); }
+                            let s = (self.cursor_x + i) * ATTR_BYTES;
+                            if s + ATTR_BYTES <= attr_bytes.len() { attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&cont_packed); }
                         }
                     }
-                    let _ = self.state.put(&self.line_ids[y], "attrs", attr_bytes);
+                    let _ = self.state.put(&line_obj, "attrs", attr_bytes);
                 }
             }
 
             self.cursor_x += char_w;
             if self.cursor_x >= self.width {
                 self.pending_wrap = true;
+                self.cursor_x = self.width - 1;
             }
         }
         self.update_cursor();
     }
 
     fn execute(&mut self, byte: u8) {
-        self.pending_wrap = false;
         match byte {
-            b'\n' => self.newline(),
-            b'\r' => self.cursor_x = 0,
-            8 => if self.cursor_x > 0 { self.cursor_x -= 1; },
+            b'\n' | 0x0B | 0x0C => { self.pending_wrap = false; self.newline(); }
+            b'\r' => { self.pending_wrap = false; self.cursor_x = 0; }
+            8 => { self.pending_wrap = false; if self.cursor_x > 0 { self.cursor_x -= 1; } }
+            b'\t' => {
+                self.pending_wrap = false;
+                let next = ((self.cursor_x / 8) + 1) * 8;
+                self.cursor_x = next.min(self.width.saturating_sub(1));
+            }
+            7 => {} // BEL — no audible bell in the toolkit yet.
             _ => {}
         }
         self.update_cursor();
     }
 
-    fn csi_dispatch(&mut self, params: &vte::Params, _intermediates: &[u8], _ignore: bool, c: char) {
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        match byte {
+            b'7' => { *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr)); } // DECSC
+            b'8' => { // DECRC
+                if let Some((x, y, a)) = *self.saved_cursor {
+                    self.cursor_x = x.min(self.width.saturating_sub(1));
+                    self.cursor_y = y.min(self.height.saturating_sub(1));
+                    self.current_attr = a;
+                }
+            }
+            b'D' => { self.pending_wrap = false; self.newline(); } // IND — index (line feed)
+            b'E' => { self.pending_wrap = false; self.cursor_x = 0; self.newline(); } // NEL
+            b'M' => { // RI — reverse index
+                self.pending_wrap = false;
+                if self.cursor_y == self.scroll_top {
+                    self.scroll_region_down(1);
+                } else if self.cursor_y > 0 {
+                    self.cursor_y -= 1;
+                }
+            }
+            _ => {}
+        }
+        self.update_cursor();
+    }
+
+    fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
         self.pending_wrap = false;
+        let private = intermediates.first() == Some(&b'?');
+        let first = |p: &vte::Params| p.iter().next().and_then(|x| x.first()).copied().unwrap_or(0);
+        let first_or1 = |p: &vte::Params| {
+            let v = first(p);
+            if v == 0 { 1 } else { v as usize }
+        };
+
+        if private {
+            match c {
+                'h' => self.set_dec_modes(params, true),
+                'l' => self.set_dec_modes(params, false),
+                _ => {}
+            }
+            self.update_cursor();
+            return;
+        }
+
         match c {
-            'A' => { let n = params.iter().next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize; self.cursor_y = self.cursor_y.saturating_sub(n); }
-            'B' => { let n = params.iter().next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize; self.cursor_y = (self.cursor_y + n).min(self.height - 1); }
-            'C' => { let n = params.iter().next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize; self.cursor_x = (self.cursor_x + n).min(self.width - 1); }
-            'D' => { let n = params.iter().next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize; self.cursor_x = self.cursor_x.saturating_sub(n); }
+            'A' => { let n = first_or1(params); self.cursor_y = self.cursor_y.saturating_sub(n); }
+            'B' | 'e' => { let n = first_or1(params); self.cursor_y = (self.cursor_y + n).min(self.height - 1); }
+            'C' | 'a' => { let n = first_or1(params); self.cursor_x = (self.cursor_x + n).min(self.width - 1); }
+            'D' => { let n = first_or1(params); self.cursor_x = self.cursor_x.saturating_sub(n); }
+            'G' | '`' => { let n = first_or1(params); self.cursor_x = (n - 1).min(self.width - 1); } // CHA
+            'd' => { let n = first_or1(params); self.cursor_y = (n - 1).min(self.height - 1); } // VPA
             'H' | 'f' => {
                 let mut it = params.iter();
                 let y = it.next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize;
@@ -920,67 +1343,37 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 self.cursor_y = (y.saturating_sub(1)).min(self.height - 1);
                 self.cursor_x = (x.saturating_sub(1)).min(self.width - 1);
             }
-            'J' => {
-                let mode = params.iter().next().and_then(|p| p.first()).cloned().unwrap_or(0);
-                match mode {
-                    2 | 3 => {
-                        for y in 0..self.height {
-                            let abs_y = (self.line_ids.len().saturating_sub(self.height) + y).min(self.line_ids.len().saturating_sub(1));
-                            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&self.line_ids[abs_y], "text") {
-                                let len = self.state.length(&text_id);
-                                let _ = self.state.splice_text(&text_id, 0, len as isize, &" ".repeat(self.width));
-                                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-                                let _ = self.state.put(&self.line_ids[abs_y], "attrs", attr_bytes);
-                            }
-                        }
-                    }
-                    _ => {}
+            'J' => self.erase_display(first(params)),
+            'K' => self.erase_line(first(params)),
+            'X' => self.erase_chars(first_or1(params)), // ECH
+            '@' => self.insert_chars(first_or1(params)), // ICH
+            'P' => self.delete_chars(first_or1(params)), // DCH
+            'L' => self.insert_lines(first_or1(params)), // IL
+            'M' => self.delete_lines(first_or1(params)), // DL
+            'S' => self.scroll_region_up(first_or1(params)), // SU
+            'T' => self.scroll_region_down(first_or1(params)), // SD
+            'r' => { // DECSTBM — set scrolling region
+                let mut it = params.iter();
+                let top = it.next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize;
+                let bot = it.next().and_then(|p| p.first()).cloned().unwrap_or(self.height as u16 as u16) as usize;
+                let top0 = top.saturating_sub(1).min(self.height.saturating_sub(1));
+                let bot0 = if bot == 0 { self.height - 1 } else { (bot - 1).min(self.height - 1) };
+                if top0 < bot0 {
+                    self.scroll_top = top0;
+                    self.scroll_bottom = bot0;
+                }
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+            }
+            's' => { *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr)); } // SCP
+            'u' => { // RCP
+                if let Some((x, y, a)) = *self.saved_cursor {
+                    self.cursor_x = x.min(self.width - 1);
+                    self.cursor_y = y.min(self.height - 1);
+                    self.current_attr = a;
                 }
             }
-            'K' => {
-                let mode = params.iter().next().and_then(|p| p.first()).cloned().unwrap_or(0);
-                let y = self.absolute_y().min(self.line_ids.len().saturating_sub(1));
-                if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&self.line_ids[y], "text") {
-                    match mode {
-                        0 => {
-                            let len = self.state.length(&text_id);
-                            if self.cursor_x < len {
-                                let _ = self.state.splice_text(&text_id, self.cursor_x, (len - self.cursor_x) as isize, &" ".repeat(len - self.cursor_x));
-                                if let Ok(Some((Value::Scalar(v), _))) = self.state.get(&self.line_ids[y], "attrs") {
-                                    if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
-                                        let mut attr_bytes = bytes.clone();
-                                        let empty_packed = Attr::default().pack();
-                                        for i in self.cursor_x..self.width {
-                                            let s = i * 4;
-                                            if s + 4 <= attr_bytes.len() { attr_bytes[s..s+4].copy_from_slice(&empty_packed); }
-                                        }
-                                        let _ = self.state.put(&self.line_ids[y], "attrs", attr_bytes);
-                                    }
-                                }
-                            }
-                        }
-                        1 => { let _ = self.state.splice_text(&text_id, 0, self.cursor_x as isize, &" ".repeat(self.cursor_x)); }
-                        2 => { let len = self.state.length(&text_id); let _ = self.state.splice_text(&text_id, 0, len as isize, &" ".repeat(len)); }
-                        _ => {}
-                    }
-                }
-            }
-            'm' => {
-                for param in params {
-                    for v in param {
-                        match v {
-                            0 => self.current_attr = Attr::default(),
-                            1 => self.current_attr.bold = true,
-                            22 => self.current_attr.bold = false,
-                            30..=37 => self.current_attr.fg = (v - 30) as u8,
-                            40..=47 => self.current_attr.bg = (v - 40) as u8,
-                            90..=97 => self.current_attr.fg = (v - 90 + 8) as u8,
-                            100..=107 => self.current_attr.bg = (v - 100 + 8) as u8,
-                            _ => {}
-                        }
-                    }
-                }
-            }
+            'm' => self.apply_sgr(params),
             _ => {}
         }
         self.update_cursor();
@@ -988,38 +1381,414 @@ impl<'a> Perform for TerminalPerformer<'a> {
 }
 
 impl<'a> TerminalPerformer<'a> {
+    fn active_grid_id(&self) -> ObjId {
+        if *self.alt_active { self.alt_grid_id.clone() } else { self.main_grid_id.clone() }
+    }
+    fn active_len(&self) -> usize {
+        if *self.alt_active { self.alt_line_ids.len() } else { self.main_line_ids.len() }
+    }
+    fn active_line_id(&self, idx: usize) -> Option<ObjId> {
+        let ids: &Vec<ObjId> = if *self.alt_active { self.alt_line_ids } else { self.main_line_ids };
+        ids.get(idx).cloned()
+    }
+    fn active_line_ids_mut(&mut self) -> &mut Vec<ObjId> {
+        if *self.alt_active { self.alt_line_ids } else { self.main_line_ids }
+    }
+
+    /// Insert a fresh blank line object into the active grid at `idx`,
+    /// returning its id. Does not touch `line_ids`.
+    fn make_blank_line(&mut self, idx: usize) -> ObjId {
+        let grid_id = self.active_grid_id();
+        let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).unwrap();
+        let text_id = self.state.put_object(&line_id, "text", ObjType::Text).unwrap();
+        let _ = self.state.splice_text(&text_id, 0, 0, &" ".repeat(self.width));
+        let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
+        let _ = self.state.put(&line_id, "attrs", attr_bytes);
+        line_id
+    }
+
     fn newline(&mut self) {
         self.cursor_y += 1;
-        
-        if self.cursor_y >= self.height {
-            self.cursor_y = self.height - 1;
-            
-            let line_id = self.state.insert_object(&self.grid_id, self.line_ids.len(), ObjType::Map).unwrap();
+        if self.cursor_y < self.height {
+            return;
+        }
+        self.cursor_y = self.height - 1;
+
+        if *self.alt_active {
+            // Fixed-height alternate buffer: scroll the region up in place.
+            self.scroll_region_up(1);
+        } else {
+            // Main buffer accumulates scrollback.
+            let grid_id = self.main_grid_id.clone();
+            let idx = self.main_line_ids.len();
+            let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).unwrap();
             let text_id = self.state.put_object(&line_id, "text", ObjType::Text).unwrap();
             let _ = self.state.splice_text(&text_id, 0, 0, &" ".repeat(self.width));
             let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-            let _ = self.state.put(&line_id, "attrs", attr_bytes).unwrap();
-            self.line_ids.push(line_id);
+            let _ = self.state.put(&line_id, "attrs", attr_bytes);
+            self.main_line_ids.push(line_id);
 
-            // Prune history
-            if self.line_ids.len() > MAX_HISTORY {
-                let overflow = self.line_ids.len() - MAX_HISTORY;
+            if self.main_line_ids.len() > MAX_HISTORY {
+                let overflow = self.main_line_ids.len() - MAX_HISTORY;
                 for _ in 0..overflow {
-                    let _ = self.state.delete(&self.grid_id, 0);
-                    self.line_ids.remove(0);
+                    let _ = self.state.delete(&grid_id, 0);
+                    self.main_line_ids.remove(0);
                 }
             }
         }
     }
 
+    /// Scroll the current scrolling region up by `n` lines (content moves up;
+    /// blank lines appear at the bottom of the region). Honours the DEC
+    /// scrolling margins.
+    fn scroll_region_up(&mut self, n: usize) {
+        let len = self.active_len();
+        if len == 0 { return; }
+        let top = self.scroll_top.min(len - 1);
+        let bot = self.scroll_bottom.min(len - 1);
+        if top > bot { return; }
+        let n = n.min(bot - top + 1);
+        for _ in 0..n {
+            let grid_id = self.active_grid_id();
+            let _ = self.state.delete(&grid_id, top);
+            self.active_line_ids_mut().remove(top);
+            let line = self.make_blank_line(bot);
+            self.active_line_ids_mut().insert(bot, line);
+        }
+    }
+
+    /// Scroll the current scrolling region down by `n` lines (content moves
+    /// down; blank lines appear at the top of the region).
+    fn scroll_region_down(&mut self, n: usize) {
+        let len = self.active_len();
+        if len == 0 { return; }
+        let top = self.scroll_top.min(len - 1);
+        let bot = self.scroll_bottom.min(len - 1);
+        if top > bot { return; }
+        let n = n.min(bot - top + 1);
+        for _ in 0..n {
+            let grid_id = self.active_grid_id();
+            let _ = self.state.delete(&grid_id, bot);
+            self.active_line_ids_mut().remove(bot);
+            let line = self.make_blank_line(top);
+            self.active_line_ids_mut().insert(top, line);
+        }
+    }
+
+    /// IL — insert `n` blank lines at the cursor row, within the region.
+    fn insert_lines(&mut self, n: usize) {
+        let len = self.active_len();
+        if len == 0 { return; }
+        let at = self.cursor_y.max(self.scroll_top);
+        let bot = self.scroll_bottom.min(len - 1);
+        if at > bot { return; }
+        let n = n.min(bot - at + 1);
+        for _ in 0..n {
+            let grid_id = self.active_grid_id();
+            let _ = self.state.delete(&grid_id, bot);
+            self.active_line_ids_mut().remove(bot);
+            let line = self.make_blank_line(at);
+            self.active_line_ids_mut().insert(at, line);
+        }
+        self.cursor_x = 0;
+    }
+
+    /// DL — delete `n` lines at the cursor row, within the region.
+    fn delete_lines(&mut self, n: usize) {
+        let len = self.active_len();
+        if len == 0 { return; }
+        let at = self.cursor_y.max(self.scroll_top);
+        let bot = self.scroll_bottom.min(len - 1);
+        if at > bot { return; }
+        let n = n.min(bot - at + 1);
+        for _ in 0..n {
+            let grid_id = self.active_grid_id();
+            let _ = self.state.delete(&grid_id, at);
+            self.active_line_ids_mut().remove(at);
+            let line = self.make_blank_line(bot);
+            self.active_line_ids_mut().insert(bot, line);
+        }
+        self.cursor_x = 0;
+    }
+
+    fn erase_display(&mut self, mode: u16) {
+        let len = self.active_len();
+        if len == 0 { return; }
+        let screen_top = len.saturating_sub(self.height);
+        let range: Vec<usize> = match mode {
+            0 => (self.absolute_y()..len).collect(),         // cursor → end
+            1 => (screen_top..=self.absolute_y().min(len - 1)).collect(), // start → cursor
+            2 | 3 => (screen_top..len).collect(),            // whole screen
+            _ => return,
+        };
+        for abs_y in range {
+            if let Some(line_obj) = self.active_line_id(abs_y) {
+                if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+                    let l = self.state.length(&text_id);
+                    let _ = self.state.splice_text(&text_id, 0, l as isize, &" ".repeat(self.width));
+                }
+                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
+                let _ = self.state.put(&line_obj, "attrs", attr_bytes);
+            }
+        }
+    }
+
+    fn erase_line(&mut self, mode: u16) {
+        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+            let len = self.state.length(&text_id);
+            let (from, count): (usize, usize) = match mode {
+                0 => (self.cursor_x, len.saturating_sub(self.cursor_x)), // cursor → end
+                1 => (0, self.cursor_x.min(len)),                        // start → cursor
+                2 => (0, len),                                           // whole line
+                _ => return,
+            };
+            if count > 0 {
+                let _ = self.state.splice_text(&text_id, from, count as isize, &" ".repeat(count));
+            }
+            self.reset_attr_range(&line_obj, from, count);
+        }
+    }
+
+    fn erase_chars(&mut self, n: usize) {
+        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+            let len = self.state.length(&text_id);
+            let count = n.min(len.saturating_sub(self.cursor_x));
+            if count > 0 {
+                let _ = self.state.splice_text(&text_id, self.cursor_x, count as isize, &" ".repeat(count));
+                self.reset_attr_range(&line_obj, self.cursor_x, count);
+            }
+        }
+    }
+
+    fn insert_chars(&mut self, n: usize) {
+        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+            let n = n.min(self.width.saturating_sub(self.cursor_x));
+            if n == 0 { return; }
+            let _ = self.state.splice_text(&text_id, self.cursor_x, 0, &" ".repeat(n));
+            // Truncate back to the grid width.
+            let len = self.state.length(&text_id);
+            if len > self.width {
+                let _ = self.state.splice_text(&text_id, self.width, (len - self.width) as isize, "");
+            }
+        }
+    }
+
+    fn delete_chars(&mut self, n: usize) {
+        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+            let len = self.state.length(&text_id);
+            let count = n.min(len.saturating_sub(self.cursor_x));
+            if count == 0 { return; }
+            let _ = self.state.splice_text(&text_id, self.cursor_x, count as isize, "");
+            // Pad blanks at the end to restore the width.
+            let new_len = self.state.length(&text_id);
+            if new_len < self.width {
+                let _ = self.state.splice_text(&text_id, new_len, 0, &" ".repeat(self.width - new_len));
+            }
+        }
+    }
+
+    /// Reset the packed attrs for cells `[from, from+count)` to default.
+    fn reset_attr_range(&mut self, line_obj: &ObjId, from: usize, count: usize) {
+        if count == 0 { return; }
+        if let Ok(Some((Value::Scalar(v), _))) = self.state.get(line_obj, "attrs") {
+            if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
+                let mut attr_bytes = bytes.clone();
+                let empty = Attr::default().pack();
+                for i in from..(from + count) {
+                    let s = i * ATTR_BYTES;
+                    if s + ATTR_BYTES <= attr_bytes.len() {
+                        attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&empty);
+                    }
+                }
+                let _ = self.state.put(line_obj, "attrs", attr_bytes);
+            }
+        }
+    }
+
+    /// DEC private set/reset — `CSI ? Ps h` / `CSI ? Ps l`.
+    fn set_dec_modes(&mut self, params: &vte::Params, enable: bool) {
+        for p in params {
+            let Some(&n) = p.first() else { continue };
+            match n {
+                1 => self.modes.app_cursor_keys = enable,
+                25 => self.modes.cursor_visible = enable,
+                1000 | 1002 | 1003 => self.modes.mouse_report = enable,
+                1006 => self.modes.mouse_sgr = enable,
+                2004 => self.modes.bracketed_paste = enable,
+                1048 => {
+                    if enable {
+                        *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
+                    } else if let Some((x, y, a)) = *self.saved_cursor {
+                        self.cursor_x = x.min(self.width - 1);
+                        self.cursor_y = y.min(self.height - 1);
+                        self.current_attr = a;
+                    }
+                }
+                47 | 1047 | 1049 => {
+                    if enable { self.enter_alt(n == 1049); } else { self.exit_alt(n == 1049); }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn enter_alt(&mut self, save_cursor: bool) {
+        if *self.alt_active { return; }
+        if save_cursor {
+            *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
+        }
+        *self.alt_active = true;
+        // Present a cleared alternate screen and home the cursor.
+        self.clear_alt_buffer();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.pending_wrap = false;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.height.saturating_sub(1);
+    }
+
+    fn exit_alt(&mut self, restore_cursor: bool) {
+        if !*self.alt_active { return; }
+        *self.alt_active = false;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.height.saturating_sub(1);
+        if restore_cursor {
+            if let Some((x, y, a)) = self.saved_cursor.take() {
+                self.cursor_x = x.min(self.width.saturating_sub(1));
+                self.cursor_y = y.min(self.height.saturating_sub(1));
+                self.current_attr = a;
+            }
+        }
+        self.pending_wrap = false;
+    }
+
+    /// Blank every line of the alternate buffer and trim it back to exactly
+    /// `height` lines (a previous alt session may have left it longer).
+    fn clear_alt_buffer(&mut self) {
+        let width = self.width;
+        let ids: Vec<ObjId> = self.alt_line_ids.clone();
+        for id in &ids {
+            if let Ok(Some((Value::Object(ObjType::Text), tid))) = self.state.get(id, "text") {
+                let l = self.state.length(&tid);
+                let _ = self.state.splice_text(&tid, 0, l as isize, &" ".repeat(width));
+            }
+            let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
+            let _ = self.state.put(id, "attrs", attr_bytes);
+        }
+        while self.alt_line_ids.len() > self.height {
+            let idx = self.alt_line_ids.len() - 1;
+            let _ = self.state.delete(&self.alt_grid_id, idx);
+            self.alt_line_ids.pop();
+        }
+    }
+
+    /// SGR — `CSI Ps... m`. Handles reset, the four style bits, the 8+8 ANSI
+    /// slots, and both truecolor forms (`38;2;r;g;b`, `38:2::r:g:b`) plus
+    /// 256-indexed (`38;5;n`).
+    fn apply_sgr(&mut self, params: &vte::Params) {
+        // Flatten into groups so we can look across `;`-separated params for
+        // the extended-color introducers while still handling `:`-subparam
+        // colon form within a single group.
+        let groups: Vec<Vec<u16>> = params.iter().map(|p| p.to_vec()).collect();
+        if groups.is_empty() {
+            self.current_attr = Attr::default();
+            return;
+        }
+        let mut i = 0;
+        while i < groups.len() {
+            let group = &groups[i];
+            let code = group.first().copied().unwrap_or(0);
+            match code {
+                0 => self.current_attr = Attr::default(),
+                1 => self.current_attr.bold = true,
+                3 => self.current_attr.italic = true,
+                4 => self.current_attr.underline = true,
+                7 => self.current_attr.reverse = true,
+                22 => self.current_attr.bold = false,
+                23 => self.current_attr.italic = false,
+                24 => self.current_attr.underline = false,
+                27 => self.current_attr.reverse = false,
+                30..=37 => self.current_attr.fg = CellColor::Indexed((code - 30) as u8),
+                39 => self.current_attr.fg = CellColor::Default,
+                40..=47 => self.current_attr.bg = CellColor::Indexed((code - 40) as u8),
+                49 => self.current_attr.bg = CellColor::Default,
+                90..=97 => self.current_attr.fg = CellColor::Indexed((code - 90 + 8) as u8),
+                100..=107 => self.current_attr.bg = CellColor::Indexed((code - 100 + 8) as u8),
+                38 | 48 => {
+                    let is_fg = code == 38;
+                    if group.len() >= 2 {
+                        // Colon subparam form: `38:2:..:r:g:b` or `38:5:n`.
+                        if let Some(col) = color_from_subparams(&group[1..]) {
+                            if is_fg { self.current_attr.fg = col; } else { self.current_attr.bg = col; }
+                        }
+                    } else {
+                        // Semicolon form: pull the following groups.
+                        let mode = groups.get(i + 1).and_then(|g| g.first()).copied();
+                        match mode {
+                            Some(2) => {
+                                let r = groups.get(i + 2).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
+                                let g = groups.get(i + 3).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
+                                let b = groups.get(i + 4).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
+                                let col = CellColor::Rgb(r, g, b);
+                                if is_fg { self.current_attr.fg = col; } else { self.current_attr.bg = col; }
+                                i += 4;
+                            }
+                            Some(5) => {
+                                let n = groups.get(i + 2).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
+                                let col = CellColor::Indexed(n);
+                                if is_fg { self.current_attr.fg = col; } else { self.current_attr.bg = col; }
+                                i += 2;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
     fn absolute_y(&self) -> usize {
-        let history_offset = self.line_ids.len().saturating_sub(self.height);
+        let history_offset = self.active_len().saturating_sub(self.height);
         history_offset + self.cursor_y
     }
 
     fn update_cursor(&mut self) {
-        let _ = self.state.put(&self.cursor_id, "x", self.cursor_x as u64);
-        let _ = self.state.put(&self.cursor_id, "y", self.absolute_y() as u64);
+        let x = self.cursor_x as u64;
+        let y = self.absolute_y() as u64;
+        let _ = self.state.put(&self.cursor_id, "x", x);
+        let _ = self.state.put(&self.cursor_id, "y", y);
+    }
+}
+
+/// Decode a truecolor / indexed color from the subparams following a `38`
+/// or `48` introducer (colon form). `sub[0]` is the color space id (2 = RGB,
+/// 5 = indexed); RGB takes the last three values so an optional colorspace
+/// placeholder (`38:2::r:g:b`) is tolerated.
+fn color_from_subparams(sub: &[u16]) -> Option<CellColor> {
+    match sub.first().copied() {
+        Some(2) => {
+            let n = sub.len();
+            if n >= 4 {
+                Some(CellColor::Rgb(sub[n - 3] as u8, sub[n - 2] as u8, sub[n - 1] as u8))
+            } else if n >= 2 {
+                // `38:2:r` style with too few components — treat what we have.
+                Some(CellColor::Rgb(sub.get(1).copied().unwrap_or(0) as u8, 0, 0))
+            } else {
+                None
+            }
+        }
+        Some(5) => sub.get(1).map(|&n| CellColor::Indexed(n as u8)),
+        _ => None,
     }
 }
 
@@ -1072,6 +1841,38 @@ pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> C
     }
 }
 
+/// Resolve a `CellColor` to a concrete `Color`. Bold brightens the low 8
+/// ANSI foreground slots (xterm behaviour).
+pub(crate) fn resolve_color(c: CellColor, palette: &ui::tokens::TerminalPalette, is_fg: bool, bold: bool) -> Color {
+    match c {
+        CellColor::Default => if is_fg { palette.fg_default } else { palette.bg_default },
+        CellColor::Indexed(mut n) => {
+            if bold && is_fg && n < 8 { n += 8; }
+            map_ansi_256(n, palette)
+        }
+        CellColor::Rgb(r, g, b) => Color::from_rgb8(r, g, b),
+    }
+}
+
+/// Resolve a cell's `(foreground, optional background)` colors, applying
+/// reverse video. A `None` background means "leave the default terminal
+/// background showing" (no fill).
+pub(crate) fn resolve_pair(attr: Attr, palette: &ui::tokens::TerminalPalette) -> (Color, Option<Color>) {
+    let fg = resolve_color(attr.fg, palette, true, attr.bold);
+    let bg = match attr.bg {
+        CellColor::Default => None,
+        other => Some(resolve_color(other, palette, false, false)),
+    };
+    if attr.reverse {
+        // Swap: the foreground color fills the cell; the (explicit) bg
+        // color, or the default terminal bg, paints the text.
+        let text = bg.unwrap_or(palette.bg_default);
+        (text, Some(fg))
+    } else {
+        (fg, bg)
+    }
+}
+
 /// Derive the block-cursor color from the palette's default foreground.
 /// Kept as a free function so the rule "the cursor always tracks the theme"
 /// is a single obvious call site and tests can invoke it directly.
@@ -1119,5 +1920,29 @@ impl TerminalWidget {
         });
 
         Ok(TerminalWidget::new(writer, master, output_rx))
+    }
+
+    /// A terminal with a null backend: a sink writer, an empty reader, and a
+    /// mock PTY master. No shell is spawned, so nothing arrives on the output
+    /// channel — used by headless screenshot scenarios that drive the grid
+    /// entirely through `feed`, keeping the frame deterministic.
+    pub fn spawn_headless() -> anyhow::Result<Self> {
+        struct NullMaster;
+        impl MasterPty for NullMaster {
+            fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
+            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
+            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
+            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
+            fn process_group_leader(&self) -> Option<i32> { None }
+            fn as_raw_fd(&self) -> Option<i32> { None }
+            fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+        }
+        let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
+        let (_tx, output_rx) = crossbeam_channel::unbounded();
+        Ok(TerminalWidget::new(
+            std::sync::Arc::new(std::sync::Mutex::new(writer)),
+            std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),
+            output_rx,
+        ))
     }
 }
