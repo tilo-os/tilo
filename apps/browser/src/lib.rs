@@ -1,14 +1,15 @@
 //! Quick Browser library root. The binary is a thin shim over the
-//! `BrowserWidget` exported here. Phase B of the iced→quick-ui
-//! migration moved every UI module out of `main.rs` so the `--shots`
-//! mode (Phase C) can construct a `BrowserWidget` without booting an
-//! event loop.
+//! `BrowserWidget` exported here so the `--shots` mode can construct
+//! the whole chrome without booting an event loop.
+//!
+//! The browser is deliberately small: it is chrome (address bar,
+//! navigation, progress, filter loading) around the `ui` toolkit's
+//! `WebView` widget. The web engine itself lives behind
+//! `ui::webview::WebViewEngine`; there is no tab UI — tabbing is the
+//! compositor's WindowGroup frame primitive.
 
 pub mod blocker;
 pub mod browser_widget;
-pub mod engine;
-pub mod host;
-pub mod servo_engine;
-pub mod servo_surface;
+pub mod extensions;
 
 pub use browser_widget::BrowserWidget;

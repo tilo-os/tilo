@@ -1,14 +1,12 @@
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports two modes:
-//   * default — build a `BrowserWidget`, hand it to `ui::App`,
-//     run the live event loop (winit window). Servo is booted from
-//     `BrowserWidget::sync` on the first frame.
-//   * `--shots <PATH>` — render the chrome at a default size into a
-//     PNG at `<PATH>` and exit. No window, no Servo event loop. Used
-//     for headless screenshot tests and CI snapshots of the cold-start
-//     UI. The Servo surface paints its placeholder/loading state in
-//     this mode since no live frame is available before exit.
+//   * default — build a `BrowserWidget`, hand it to `ui::App`, run the
+//     live event loop (winit window).
+//   * `--shots <PATH>` — render the chrome at a default size into a PNG
+//     at `<PATH>` and exit. No window, no network: the embedded test
+//     engine pre-renders a deterministic page so the snapshot includes
+//     a populated web view, not just empty chrome.
 
 use std::collections::HashMap;
 
@@ -25,33 +23,33 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 /// Default offscreen viewport for `--shots`. Wide enough to show the
-/// chrome row + a sizeable surface area.
+/// toolbar row + a sizeable page area.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    // rustls init lives here instead of `BrowserWidget::new` so the
-    // `--shots` path doesn't pay for it.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        // Headless mode: skip Servo engine boot — the snapshot is just
-        // the chrome at cold start.
         let widget = BrowserWidget::new_headless();
         render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
     let widget = BrowserWidget::new();
+    let engine = widget.engine_handle();
     let state = ui::State::new();
     let app = ui::App::new(state, Box::new(widget));
-    app.run();
-
-    // Fast exit to side-step Servo's noisy thread teardown — matches
-    // the iced-era behaviour in Phase A.
-    unsafe { libc::_exit(0) };
+    // Wake the (otherwise event-driven) winit loop whenever the engine
+    // publishes a frame or a navigation event, so pages animate and
+    // finish loading without waiting for user input.
+    app.run_with_setup(move |proxy| {
+        use ui::webview::WebViewEngine;
+        engine.set_waker(Box::new(move || {
+            let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
+        }));
+    });
+    Ok(())
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
