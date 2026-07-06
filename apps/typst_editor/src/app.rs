@@ -81,17 +81,6 @@ enum CompactPane {
     Preview,
 }
 
-/// Source with two deliberate mistakes, used only by the `--shots errors`
-/// scenario to capture the Problems panel with real compiler diagnostics.
-const ERROR_DEMO: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
-
-= Draft with mistakes
-
-This paragraph references #missing_variable which is not defined.
-
-$ 1 / $
-"#;
-
 /// A document whose final line is very long, used only by the `--shots
 /// scrolled` scenario to capture the source editor scrolled sideways with the
 /// caret kept in view at the end of the line. The long line is last (no
@@ -116,6 +105,7 @@ enum TbAction {
     Compile,
     Save,
     Open,
+    ExportPdf,
     ZoomOut,
     ZoomIn,
     Fit,
@@ -176,6 +166,9 @@ pub struct TypstApp {
     /// Screenshot-only: on the next layout pass, zoom the preview in and scroll
     /// it so the capture proves cursor-zoom + scroll-when-zoomed.
     demo_preview_zoom: bool,
+    /// Screenshot-only: on the next layout pass, zoom the preview past fit-width
+    /// and pan it on both axes so the capture proves drag/wheel panning.
+    demo_preview_pan: bool,
     /// Screenshot-only: on the next layout pass, select a run of preview text so
     /// the capture proves rendered-text selection.
     demo_preview_select: bool,
@@ -272,6 +265,7 @@ impl TypstApp {
             menu_open: false,
             demo_scroll_caret_end: false,
             demo_preview_zoom: false,
+            demo_preview_pan: false,
             demo_preview_select: false,
             rect: Rect::ZERO,
             toolbar_rect: Rect::ZERO,
@@ -313,10 +307,11 @@ impl TypstApp {
             "errors" => {
                 self.show_diagnostics = true;
                 if let Some(d) = self.documents.get_mut(self.current) {
-                    d.source = ERROR_DEMO.to_string();
+                    d.source = crate::samples::ERROR_WARNING.to_string();
                 }
             }
             "preview-zoom" => self.demo_preview_zoom = true,
+            "preview-pan" => self.demo_preview_pan = true,
             "select" => self.demo_preview_select = true,
             _ => {}
         }
@@ -456,6 +451,51 @@ impl TypstApp {
         }
     }
 
+    /// Export the current document to a PDF next to where the source saves.
+    fn export_pdf(&mut self, doc: &mut AutoCommit) {
+        match Self::save_dir() {
+            Some(dir) => match self.export_pdf_to(doc, &dir) {
+                Ok(path) => self.set_flash(format!("Exported {}", path.display())),
+                Err(e) => self.set_flash(format!("Export failed: {e}")),
+            },
+            None => self.set_flash("No writable documents directory".into()),
+        }
+    }
+
+    /// Compile the current source to a PDF and write it into `dir`, named after
+    /// the open document with a `.pdf` extension. Returns the written path, or an
+    /// error string (a compile failure or an I/O error). Split out from
+    /// [`Self::export_pdf`] so it can be driven against a scratch directory in a
+    /// test without touching the user's real documents folder.
+    fn export_pdf_to(
+        &mut self,
+        doc: &mut AutoCommit,
+        dir: &std::path::Path,
+    ) -> Result<PathBuf, String> {
+        let src = self.read_source(doc);
+        let bytes = compile::compile_pdf(&self.parts, &src).map_err(|diags| {
+            let errs = diags.iter().filter(|d| d.kind == compile::DiagKind::Error).count();
+            if errs > 0 {
+                format!("{} — fix errors first", plural(errs, "error", "errors"))
+            } else {
+                "could not build PDF".to_string()
+            }
+        })?;
+        let stem = self
+            .documents
+            .get(self.current)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "untitled.typ".into());
+        let pdf_name = std::path::Path::new(&stem)
+            .with_extension("pdf")
+            .to_string_lossy()
+            .to_string();
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let path = dir.join(pdf_name);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
     fn open(&mut self, doc: &mut AutoCommit) {
         self.rescan_library();
         if let Some(i) = self.documents.iter().position(|d| d.from_disk) {
@@ -539,6 +579,7 @@ impl TypstApp {
             TbAction::Compile => self.force_recompile(doc),
             TbAction::Save => self.save(doc),
             TbAction::Open => self.open(doc),
+            TbAction::ExportPdf => self.export_pdf(doc),
             TbAction::ZoomOut => {
                 self.preview.zoom_out();
                 self.set_compact_view(CompactPane::Preview);
@@ -666,6 +707,12 @@ impl TypstApp {
             self.demo_preview_zoom = false;
             self.preview.demo_set_view(1.9, 0.42);
         }
+        if self.demo_preview_pan && self.preview.page_count() > 0 {
+            self.demo_preview_pan = false;
+            // Zoom well past fit-width and pan toward the lower-right so the
+            // capture shows the page displaced on both axes.
+            self.preview.demo_pan_view(2.4, 0.72, 0.55);
+        }
         if self.demo_preview_select && self.preview.page_count() > 0 {
             self.demo_preview_select = false;
             self.preview.demo_select_fraction(0.0, 0.03);
@@ -784,11 +831,18 @@ impl TypstApp {
         x += 10.0;
 
         // --- action group ---
-        for (lbl, act) in [
+        // "Export PDF" only earns its full label when the toolbar is roomy;
+        // on a tighter bar it folds into the overflow menu instead.
+        let with_export = tb.width() >= 1120.0;
+        let mut actions: Vec<(&str, TbAction)> = vec![
             ("Compile", TbAction::Compile),
             ("Save", TbAction::Save),
             ("Open", TbAction::Open),
-        ] {
+        ];
+        if with_export {
+            actions.push(("Export PDF", TbAction::ExportPdf));
+        }
+        for (lbl, act) in actions {
             let w = Self::pill_width(tr, lbl);
             self.paint_pill(scene, t, tr, theme, Rect::new(x, y, x + w, y + PILL_H), lbl, act, false);
             x += w + 8.0;
@@ -1040,10 +1094,11 @@ impl TypstApp {
         } else {
             "Show problems"
         };
-        let items: [(&str, TbAction); 7] = [
+        let items: [(&str, TbAction); 8] = [
             ("Recompile", TbAction::Compile),
             ("Save", TbAction::Save),
             ("Open…", TbAction::Open),
+            ("Export PDF", TbAction::ExportPdf),
             ("Zoom in", TbAction::ZoomIn),
             ("Zoom out", TbAction::ZoomOut),
             ("Fit width", TbAction::Fit),
@@ -1385,6 +1440,11 @@ impl Widget for TypstApp {
                         }
                         "o" => {
                             self.open(doc);
+                            *handled = true;
+                            return;
+                        }
+                        "e" => {
+                            self.export_pdf(doc);
                             *handled = true;
                             return;
                         }
@@ -1878,6 +1938,146 @@ mod tests {
         assert_eq!(app.documents[0].name, "untitled.typ");
         assert!(!app.documents[0].from_disk, "starter is not a disk file");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- helpers for the preview-interaction + diagnostics tests ----------
+
+    use crate::compile::DiagKind;
+    use winit::event::TouchPhase;
+    use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+
+    /// A character keypress through the real event path. winit's per-platform
+    /// `KeyEventExtra` is `pub(crate)`, so the struct is zeroed and only its
+    /// public fields set — the same trick the toolkit's own widget tests use.
+    fn char_press(c: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(c.into());
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(c.into());
+        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+    }
+
+    /// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
+    /// via `x` for the horizontal-pan path.
+    fn wheel(x: f32, y: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: device_id(),
+            delta: MouseScrollDelta::LineDelta(x, y),
+            phase: TouchPhase::Moved,
+        }
+    }
+
+    /// Like [`send`] but with explicit modifiers held.
+    fn send_mods(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: &Modifiers) -> bool {
+        let taffy = TaffyTree::<()>::new();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(ev, 1.0, mods, doc, &ROOT, &mut handled, &mut focus, NodeId::new(0), &taffy);
+        handled
+    }
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "typst_editor_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    /// Ctrl+= zooms the rendered preview in and Ctrl+- zooms it back out, driven
+    /// through the production keyboard-shortcut path.
+    #[test]
+    fn ctrl_plus_minus_keys_zoom_preview() {
+        let (mut app, mut doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+        let base = app.preview.zoom();
+        assert!(send_mods(&mut app, &mut doc, &char_press("="), &ctrl), "Ctrl+= consumed");
+        let zoomed_in = app.preview.zoom();
+        assert!(zoomed_in > base, "Ctrl+= zoomed the preview in ({base} -> {zoomed_in})");
+
+        assert!(send_mods(&mut app, &mut doc, &char_press("-"), &ctrl), "Ctrl+- consumed");
+        assert!(
+            app.preview.zoom() < zoomed_in,
+            "Ctrl+- zoomed the preview back out ({zoomed_in} -> {})",
+            app.preview.zoom()
+        );
+    }
+
+    /// Ctrl+mouse-wheel over the preview pane zooms it (cursor-anchored), routed
+    /// through the real `MouseWheel` handler.
+    #[test]
+    fn ctrl_wheel_over_preview_zooms() {
+        let (mut app, mut doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+        let over = app.preview_rect.center();
+        send_mods(&mut app, &mut doc, &cursor(over), &ctrl);
+        let base = app.preview.zoom();
+        assert!(send_mods(&mut app, &mut doc, &wheel(0.0, 1.0), &ctrl), "Ctrl+wheel consumed");
+        assert!(
+            app.preview.zoom() > base,
+            "Ctrl+wheel over the preview zoomed in ({base} -> {})",
+            app.preview.zoom()
+        );
+    }
+
+    /// The Problems panel shows both an error and a warning from the real
+    /// compiler, and clicking a row jumps the editor caret to that diagnostic's
+    /// line — proven for both severities through the production pointer path.
+    #[test]
+    fn diagnostic_click_jumps_editor_for_both_severities() {
+        let mut app = TypstApp::with_demo_documents();
+        app.apply_demo_scenario("errors");
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT); // first sync compiles synchronously
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+
+        let diags = app.diagnostics.diags().to_vec();
+        assert!(diags.iter().any(|d| d.kind == DiagKind::Error), "an error is listed");
+        assert!(diags.iter().any(|d| d.kind == DiagKind::Warning), "a warning is listed");
+        assert!(app.show_diagnostics && app.diag_rect.area() > 0.0, "Problems panel is open");
+        assert!(diags.len() >= 2 && diags[0].line != diags[1].line, "rows target distinct lines");
+
+        // HEADER_H (30) + ROW_H (26) mirror the diagnostics panel geometry.
+        let list_top = app.diag_rect.y0 + 30.0;
+        for (i, d) in diags.iter().enumerate() {
+            let Some(line) = d.line else { continue };
+            let y = list_top + (i as f64 + 0.5) * 26.0;
+            let p = Point::new(app.diag_rect.x0 + 40.0, y);
+            send(&mut app, &mut doc, &cursor(p));
+            assert!(send(&mut app, &mut doc, &press()), "diagnostic row click consumed");
+            assert_eq!(
+                app.caret_line_col().0,
+                line,
+                "clicking the {:?} row jumped the editor to line {line}",
+                d.kind
+            );
+        }
+    }
+
+    /// Exporting writes a real `.pdf` next to the source — the file on disk
+    /// begins with the `%PDF` magic. Driven against a scratch dir so it never
+    /// touches the user's documents folder.
+    #[test]
+    fn export_pdf_writes_a_real_pdf_file() {
+        let (mut app, mut doc) = fresh();
+        let dir = unique_dir("pdf");
+        let path = app
+            .export_pdf_to(&mut doc, &dir)
+            .expect("the clean demo document exports");
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("pdf"));
+        let bytes = std::fs::read(&path).expect("the pdf was written to disk");
+        assert!(bytes.starts_with(b"%PDF"), "the written file is a real PDF");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
