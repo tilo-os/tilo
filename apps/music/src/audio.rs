@@ -1,19 +1,36 @@
 //! Audio output engine.
 //!
 //! Real playback uses a GStreamer `playbin` (gated behind the `audio`
-//! cargo feature) fed an HTTP(S) `uri` resolved by [`crate::backend`]. The
-//! default build compiles the silent stub so the UI, the offline `--shots`
-//! screenshot and CI stay free of a system GStreamer dependency. The public
-//! surface is identical either way, so the app can drive playback without
-//! caring which backend is linked.
+//! cargo feature). The default build compiles the silent stub so the UI, the
+//! offline `--shots` screenshot and CI stay free of a system GStreamer
+//! dependency. The public surface is identical either way, so the app can drive
+//! playback without caring which backend is linked.
 //!
 //! ## Real audio out — routing to a real sink, never a `fakesink`
 //!
 //! `playbin` is given an **explicit audio sink chain** —
-//! `audioconvert ! audioresample ! level ! autoaudiosink` — so the decoded
-//! PCM is converted to whatever the system sink wants and handed to
-//! `autoaudiosink`, which auto-plugs the real desktop sink
-//! (`pipewiresink` / `pulsesink` / `alsasink`). This is the audible path.
+//! `audioconvert ! audioresample ! autoaudiosink` — so the decoded PCM is
+//! converted to whatever the system sink wants and handed to `autoaudiosink`,
+//! which auto-plugs the real desktop sink (`pipewiresink` / `pulsesink` /
+//! `alsasink`). This is the audible path.
+//!
+//! ## Fetching googlevideo streams (the reason real playback was silent)
+//!
+//! A resolved YouTube stream URL cannot be handed straight to playbin's
+//! `souphttpsrc`: to enable seeking it issues an **open-ended** `Range:
+//! bytes=0-` request, which googlevideo answers `403 Forbidden` — it only
+//! serves **bounded** byte ranges. So every real stream returned no bytes,
+//! decoded nothing and was silent, while the pipeline lingered with `pending ==
+//! PLAYING`, making the transport *look* like it was playing.
+//!
+//! The engine therefore stages an http(s) stream to a temp file with `reqwest`
+//! using bounded `Range` requests (which YouTube serves), then plays that local
+//! file through the ordinary playbin path — see [`spawn_stream_download`] and
+//! [`AudioEngine::pump`]. A `file://` uri (a cached track, or the audible test)
+//! plays directly. Any properly-rangeable http source streams in full; a
+//! PoToken-gated URL plays as much as the server serves. The engine also
+//! services the GStreamer bus so a genuinely failed pipeline is no longer
+//! reported as playing.
 //!
 //! Crucially the engine can **prove** audio is genuinely flowing rather than
 //! merely that the pipeline reached `PLAYING`: a buffer pad-probe on the sink's
@@ -37,9 +54,10 @@
 //!   * an **AAC / Opus decoder** for the streams YouTube Music serves —
 //!     `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
 //!     `gstreamer1-plugins-bad-free` (`faad`). `gstreamer1-plugins-base` +
-//!     `-good` alone can fetch (`souphttpsrc`) and demux (`qtdemux`) but cannot
-//!     decode AAC, so playback is silent. This is the qOS-image dependency the
-//!     Containerfile must install alongside the PipeWire sink.
+//!     `-good` can demux (`qtdemux`) the staged file but cannot decode AAC, so
+//!     playback is silent without one. This is the qOS-image dependency the
+//!     Containerfile must install alongside the PipeWire sink. (The stream is
+//!     fetched by `reqwest`, so no GStreamer HTTP-source plugin is needed.)
 
 /// A handle to the audio backend. Cheap to construct; owns the pipeline
 /// when the `audio` feature is enabled.
@@ -62,6 +80,35 @@ struct Inner {
     /// a pad probe. Non-zero ⇒ audio is genuinely flowing to the sink (real
     /// output), not merely that the pipeline reported `PLAYING`.
     frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Set when the pipeline posts a fatal error on its bus (a forbidden fetch,
+    /// an undecodable stream). The transport reads it so it never *pretends* to
+    /// play a dead pipeline (see [`AudioEngine::is_playing_real`]).
+    errored: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// An in-flight HTTP stream being downloaded (bounded reqwest ranges) into a
+    /// temp file before playback. `None` for a local (`file://`) uri, which is
+    /// handed straight to playbin. Only present in a build that can fetch
+    /// (`live`); see [`AudioEngine::begin_stream_download`].
+    #[cfg(feature = "live")]
+    pending: Option<Pending>,
+}
+
+/// A live HTTP stream being staged to a temp file so it can be played locally.
+///
+/// googlevideo 403s playbin's `souphttpsrc` (its open-ended `Range: bytes=0-`
+/// request is refused; YouTube only serves **bounded** ranges from byte 0), so
+/// the media is fetched with `reqwest` — which *does* get bounded ranges — into
+/// this temp file, then played through the ordinary (proven) playbin file path.
+#[cfg(all(feature = "audio", feature = "live"))]
+struct Pending {
+    /// Temp file the stream is downloaded into.
+    path: std::path::PathBuf,
+    /// Set by the download thread when it has finished (fully, or stopped early
+    /// on a forbidden/short range) — playback may begin from whatever landed.
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the transport wants to be playing once the file is ready.
+    want_play: bool,
+    /// Whether playback has already been switched onto the temp file.
+    started: bool,
 }
 
 #[cfg(not(feature = "audio"))]
@@ -84,15 +131,24 @@ impl AudioEngine {
                     let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                     // Route audio through an explicit **real** sink chain, so the
                     // output is audible and verifiable. `autoaudiosink` selects
-                    // the concrete system sink (pipewire/pulse/alsa); the `level`
-                    // element and the pad probe let us confirm real buffers flow.
+                    // the concrete system sink (pipewire/pulse/alsa); the pad
+                    // probe lets us confirm real buffers flow.
                     let sink = build_audio_sink(&playbin, &frames);
+                    let errored =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     // Defensive: never leave the transport muted, and start at a
                     // sane volume so "no sound" is never a stuck property.
                     playbin.set_property("mute", false);
                     playbin.set_property("volume", 0.8f64);
                     return Self {
-                        inner: Inner { playbin, sink, frames },
+                        inner: Inner {
+                            playbin,
+                            sink,
+                            frames,
+                            errored,
+                            #[cfg(feature = "live")]
+                            pending: None,
+                        },
                         current_uri: None,
                         volume: 0.8,
                     };
@@ -107,6 +163,9 @@ impl AudioEngine {
                     .expect("playbin"),
                 sink: None,
                 frames: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                errored: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                #[cfg(feature = "live")]
+                pending: None,
             },
             #[cfg(not(feature = "audio"))]
             inner: Inner { playing: false },
@@ -125,6 +184,22 @@ impl AudioEngine {
             // never leaves the previous stream decoding underneath the new one.
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
             self.inner.frames.store(0, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .errored
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // An http(s) stream can't be handed to playbin's `souphttpsrc`:
+            // googlevideo 403s its open-ended range request. Stage it to a temp
+            // file via bounded reqwest ranges, then play that locally (below,
+            // once the download is ready). A `file://` uri plays directly.
+            #[cfg(feature = "live")]
+            if uri.starts_with("http") {
+                self.begin_stream_download(uri);
+                return;
+            }
+            #[cfg(feature = "live")]
+            self.clear_pending();
+
             self.inner.playbin.set_property("uri", uri);
             self.inner.playbin.set_property("mute", false);
             self.inner
@@ -137,6 +212,15 @@ impl AudioEngine {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            // A stream still downloading to its temp file starts when the file
+            // is ready (in `pump`); record the intent and don't touch playbin yet.
+            #[cfg(feature = "live")]
+            if let Some(p) = &mut self.inner.pending {
+                p.want_play = true;
+                if !p.started {
+                    return;
+                }
+            }
             let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
         }
         #[cfg(not(feature = "audio"))]
@@ -149,6 +233,10 @@ impl AudioEngine {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            #[cfg(feature = "live")]
+            if let Some(p) = &mut self.inner.pending {
+                p.want_play = false;
+            }
             let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
         }
         #[cfg(not(feature = "audio"))]
@@ -164,6 +252,8 @@ impl AudioEngine {
         {
             use gstreamer::prelude::*;
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            #[cfg(feature = "live")]
+            self.clear_pending();
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -258,8 +348,74 @@ impl AudioEngine {
             if self.current_uri.is_none() {
                 return false;
             }
+            // A pipeline that errored (a forbidden fetch, an undecodable stream)
+            // can linger with `pending == Playing`; never report that as playing,
+            // or the transport fakes progress over a stream that makes no sound.
+            if self.inner.errored.load(std::sync::atomic::Ordering::Relaxed) {
+                return false;
+            }
             let (_, current, pending) = self.inner.playbin.state(gstreamer::ClockTime::ZERO);
             current == gstreamer::State::Playing || pending == gstreamer::State::Playing
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            false
+        }
+    }
+
+    /// Service the GStreamer bus (non-blocking): drain pending messages so they
+    /// don't accumulate, and latch a fatal error so the transport stops
+    /// pretending to play. Called once per frame from the app's tick. Also
+    /// returns whether an error is currently latched, for diagnostics.
+    pub fn pump(&mut self) -> bool {
+        #[cfg(feature = "audio")]
+        {
+            use gstreamer::prelude::*;
+            // Once a staged stream's temp file is ready, switch playback onto it.
+            #[cfg(feature = "live")]
+            {
+                let ready = matches!(
+                    &self.inner.pending,
+                    Some(p) if !p.started && p.ready.load(std::sync::atomic::Ordering::Relaxed)
+                );
+                if ready {
+                    let (path, want) = {
+                        let p = self.inner.pending.as_ref().unwrap();
+                        (p.path.clone(), p.want_play)
+                    };
+                    let has_bytes =
+                        std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+                    if has_bytes {
+                        let uri = format!("file://{}", path.display());
+                        let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+                        self.inner.playbin.set_property("uri", &uri);
+                        self.inner.playbin.set_property("mute", false);
+                        self.inner.playbin.set_property("volume", self.volume as f64);
+                        if want {
+                            let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+                        }
+                    } else {
+                        // The fetch was forbidden before any bytes landed: honest
+                        // silence, never a transport that pretends to play.
+                        self.inner
+                            .errored
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(p) = &mut self.inner.pending {
+                        p.started = true;
+                    }
+                }
+            }
+            if let Some(bus) = self.inner.playbin.bus() {
+                while let Some(msg) = bus.pop() {
+                    if let gstreamer::MessageView::Error(_) = msg.view() {
+                        self.inner
+                            .errored
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            self.inner.errored.load(std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -350,6 +506,138 @@ impl AudioEngine {
     pub fn is_live() -> bool {
         cfg!(feature = "audio")
     }
+
+    /// Begin staging an http(s) stream to a temp file via bounded reqwest ranges.
+    /// Non-blocking: the fetch runs on its own thread; [`Self::pump`] switches
+    /// playback onto the file once it is ready.
+    #[cfg(all(feature = "audio", feature = "live"))]
+    fn begin_stream_download(&mut self, uri: &str) {
+        self.clear_pending();
+        let path = std::env::temp_dir().join(format!(
+            "qos-music-stream-{}-{}.bin",
+            std::process::id(),
+            next_stream_id()
+        ));
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        spawn_stream_download(uri.to_string(), path.clone(), ready.clone());
+        self.inner.pending = Some(Pending { path, ready, want_play: false, started: false });
+    }
+
+    /// Drop any staged stream, removing its temp file.
+    #[cfg(all(feature = "audio", feature = "live"))]
+    fn clear_pending(&mut self) {
+        if let Some(p) = self.inner.pending.take() {
+            let _ = std::fs::remove_file(&p.path);
+        }
+    }
+}
+
+/// The HTTP `User-Agent`s of the player clients rustypipe resolves streams
+/// through (its default order with no BotGuard is `[Ios, Tv]`). We present the
+/// client UA matching the URL's `c=` param on the media fetch to mirror the
+/// client that signed it. Values mirror rustypipe's own client UAs (crate 0.11).
+#[cfg(all(feature = "audio", feature = "live"))]
+const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X)";
+#[cfg(all(feature = "audio", feature = "live"))]
+const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 NativeTVAds Safari/538.1";
+
+/// Pick the `User-Agent` matching the client that signed a googlevideo URL.
+/// The client is carried as the `c=` query param (`c=IOS`, `c=TV`, …); default
+/// to the iOS UA since that is the first (and usual) client rustypipe uses.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn ua_for_uri(uri: &str) -> &'static str {
+    let client = uri
+        .split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("c="));
+    match client {
+        Some(c) if c.starts_with("TV") => TV_UA,
+        _ => IOS_UA,
+    }
+}
+
+/// Parse the `clen=` (content-length) query param off a googlevideo url, so the
+/// download knows when it has fetched the whole stream.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn parse_clen(uri: &str) -> Option<u64> {
+    uri.split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("clen="))
+        .and_then(|v| v.parse().ok())
+}
+
+/// A process-unique id so concurrent/successive streams get distinct temp files.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn next_stream_id() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Download an http(s) media stream into `path` on a background thread, using
+/// **bounded** `Range` requests (`bytes=off-off+chunk`) — the only form
+/// googlevideo serves (it 403s the open-ended range playbin's `souphttpsrc`
+/// sends). Stops at end-of-stream, a short read, or the first refused range
+/// (a PoToken-gated stream then yields as much as the server served). Sets
+/// `ready` when finished so the engine can begin playback from the file.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn spawn_stream_download(
+    uri: String,
+    path: std::path::PathBuf,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _ = std::thread::Builder::new()
+        .name("qos-music-stream-dl".into())
+        .spawn(move || {
+            let finish = || ready.store(true, Relaxed);
+            let client = match reqwest::blocking::Client::builder()
+                .user_agent(ua_for_uri(&uri))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return finish(),
+            };
+            let mut file = match std::fs::File::create(&path) {
+                Ok(f) => f,
+                Err(_) => return finish(),
+            };
+            let clen = parse_clen(&uri);
+            const CHUNK: u64 = 1_048_576;
+            let mut off = 0u64;
+            loop {
+                if let Some(c) = clen {
+                    if off >= c {
+                        break;
+                    }
+                }
+                let end = match clen {
+                    Some(c) => (off + CHUNK - 1).min(c - 1),
+                    None => off + CHUNK - 1,
+                };
+                let want = end - off + 1;
+                let resp = client
+                    .get(&uri)
+                    .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
+                    .send();
+                let Ok(resp) = resp else { break };
+                if !resp.status().is_success() {
+                    break;
+                }
+                let Ok(bytes) = resp.bytes() else { break };
+                if bytes.is_empty() {
+                    break;
+                }
+                if std::io::Write::write_all(&mut file, &bytes).is_err() {
+                    break;
+                }
+                let n = bytes.len() as u64;
+                off += n;
+                if n < want {
+                    break; // short read ⇒ end of stream
+                }
+            }
+            let _ = std::io::Write::flush(&mut file);
+            finish();
+        });
 }
 
 /// Build the explicit real audio sink chain and install it on `playbin`,
@@ -369,8 +657,7 @@ fn build_audio_sink(
     // playbin can feed decoded audio into the chain (same idiom as the video
     // sink bin in `apps/tube`). `autoaudiosink` plugs the real system sink.
     let bin = gstreamer::parse::bin_from_description(
-        "audioconvert ! audioresample ! level name=qos_level post-messages=true ! \
-         autoaudiosink name=qos_audiosink sync=true",
+        "audioconvert ! audioresample ! autoaudiosink name=qos_audiosink sync=true",
         true,
     )
     .ok()?;
@@ -398,6 +685,10 @@ impl Drop for AudioEngine {
     fn drop(&mut self) {
         use gstreamer::prelude::*;
         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+        #[cfg(feature = "live")]
+        if let Some(p) = self.inner.pending.take() {
+            let _ = std::fs::remove_file(&p.path);
+        }
     }
 }
 
