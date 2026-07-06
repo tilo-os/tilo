@@ -14,9 +14,14 @@ use ui::theme::Theme;
 
 use crate::draw;
 use crate::geo::{self, Projection};
-use crate::model::{Category, MapModel, TransitJourney, TransitMode};
+use crate::model::{Category, MapModel, Poi, TransitJourney, TransitMode};
 use crate::sample::{Area, AreaKind, Basemap, RoadClass};
 use crate::tiles::{self, TileLayer};
+
+/// Slippy-map zoom at and above which POI markers upgrade from small category
+/// dots to labelled icon markers bearing a category pictogram. Kept here so the
+/// draw pass and the app's hit-test agree on the marker size.
+pub const POI_ICON_ZOOM: f64 = 16.0;
 
 /// Cartographic palette resolved from the active theme.
 #[derive(Clone, Copy)]
@@ -77,6 +82,68 @@ pub fn category_color(theme: &Theme, cat: Category) -> Color {
         Category::Hospital => c.semantic.danger,
         Category::Other => c.neutral[6],
     }
+}
+
+/// Marker draw priority for decluttering — a more salient category wins a
+/// contested screen cell, so a dense area keeps its landmarks / transit stops
+/// rather than a random scatter of shops.
+pub fn category_priority(cat: Category) -> u8 {
+    match cat {
+        Category::Transit => 6,
+        Category::Landmark => 6,
+        Category::Hospital => 5,
+        Category::Museum => 5,
+        Category::Park => 4,
+        Category::Hotel => 3,
+        Category::Restaurant => 3,
+        Category::Cafe => 2,
+        Category::Bar => 2,
+        Category::Shop => 1,
+        Category::Other => 0,
+    }
+}
+
+/// Choose which POIs to draw so markers don't pile up on top of one another at
+/// the current projection. A greedy pass in descending priority order keeps a
+/// POI only when no already-kept marker sits within `min_px` screen pixels of
+/// it; the `selected` POI (its info card is open) is always kept. Returns the
+/// kept indices into `pois` in the original order, so draw order stays stable.
+///
+/// Pure — the same function backs both the draw pass and the click hit-test, so
+/// a click always resolves to exactly the marker the user can see.
+pub fn declutter_indices(
+    proj: &Projection,
+    pois: &[Poi],
+    min_px: f64,
+    selected: Option<&str>,
+) -> Vec<usize> {
+    let pts: Vec<Point> = pois.iter().map(|p| proj.project(p.pos)).collect();
+    // Consider the selected POI first, then most-salient categories, then input
+    // order as a stable tie-break.
+    let mut order: Vec<usize> = (0..pois.len()).collect();
+    order.sort_by(|&a, &b| {
+        let sa = selected == Some(pois[a].id.as_str());
+        let sb = selected == Some(pois[b].id.as_str());
+        sb.cmp(&sa)
+            .then(category_priority(pois[b].category).cmp(&category_priority(pois[a].category)))
+            .then(a.cmp(&b))
+    });
+    let min2 = (min_px * min_px).max(0.0);
+    let mut kept_pts: Vec<Point> = Vec::new();
+    let mut keep = vec![false; pois.len()];
+    for &i in &order {
+        let p = pts[i];
+        let clear = kept_pts.iter().all(|k| {
+            let dx = k.x - p.x;
+            let dy = k.y - p.y;
+            dx * dx + dy * dy >= min2
+        });
+        if clear {
+            keep[i] = true;
+            kept_pts.push(p);
+        }
+    }
+    (0..pois.len()).filter(|&i| keep[i]).collect()
 }
 
 /// Project a polyline of geo coords to screen points.
@@ -459,25 +526,33 @@ pub fn draw_markers(
     }
 }
 
-/// Draw the live POI marker layer (Overpass results) as small themed category
-/// dots over the basemap — OUR markers, resolved from the OS theme, never baked
-/// into the raster tiles. The selected POI is enlarged with an accent halo and
-/// always labelled; at close zoom every POI is labelled.
+/// Draw the live POI marker layer (Overpass results) over the basemap — OUR
+/// markers, resolved from the OS theme, never baked into the raster tiles.
+///
+/// `visible` is the decluttered index set into `pois` (see [`declutter_indices`])
+/// so a dense area never piles markers on top of one another. Far out, each POI
+/// is a small themed category dot; at [`POI_ICON_ZOOM`] and closer it upgrades to
+/// a larger disc bearing a white category pictogram and (past the label
+/// threshold) a name plate. The selected POI is enlarged with an accent halo and
+/// always labelled.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pois(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
     proj: &Projection,
-    pois: &[crate::model::Poi],
+    pois: &[Poi],
+    visible: &[usize],
     selected: Option<&str>,
     theme: &Theme,
     pal: &MapPalette,
     clip: Rect,
 ) {
+    let icons = proj.zoom() >= POI_ICON_ZOOM;
     let show_labels = proj.zoom() >= 16.5;
     scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-    for poi in pois {
+    for &i in visible {
+        let poi = &pois[i];
         if selected == Some(poi.id.as_str()) {
             continue; // draw the selected POI last, on top
         }
@@ -485,13 +560,13 @@ pub fn draw_pois(
         if !clip.contains(p) {
             continue;
         }
-        draw_poi_dot(scene, t, tr, p, poi, theme, pal, false, show_labels);
+        draw_poi_dot(scene, t, tr, p, poi, theme, pal, false, show_labels, icons);
     }
     if let Some(sel) = selected {
         if let Some(poi) = pois.iter().find(|p| p.id == sel) {
             let p = proj.project(poi.pos);
             if clip.contains(p) {
-                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true);
+                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons);
             }
         }
     }
@@ -504,17 +579,28 @@ fn draw_poi_dot(
     t: Affine,
     tr: &mut TextRenderer,
     p: Point,
-    poi: &crate::model::Poi,
+    poi: &Poi,
     theme: &Theme,
     pal: &MapPalette,
     selected: bool,
     label: bool,
+    icons: bool,
 ) {
     let col = category_color(theme, poi.category);
-    let r = if selected { 8.5 } else { 4.5 };
-    draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.7), r + 1.2, draw::alpha(Color::BLACK, 0.35));
+    let r = match (icons, selected) {
+        (true, true) => 13.0,
+        (true, false) => 9.0,
+        (false, true) => 8.5,
+        (false, false) => 4.5,
+    };
+    draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.9), r + 1.3, draw::alpha(Color::BLACK, 0.32));
     draw::fill_circle(scene, t, p, r, col);
-    draw::stroke_circle(scene, t, p, r, if selected { 2.5 } else { 1.5 }, pal.marker_ring);
+    draw::stroke_circle(scene, t, p, r, if selected { 2.5 } else { 1.6 }, pal.marker_ring);
+    if icons {
+        // White category pictogram on the disc; the disc colour shows through
+        // any cut-outs (train windows, etc.).
+        draw_category_icon(scene, t, p, r, poi.category, pal.marker_ring, col);
+    }
     if selected {
         draw::stroke_circle(scene, t, p, r + 4.0, 2.0, draw::alpha(col, 0.5));
     }
@@ -526,6 +612,102 @@ fn draw_poi_dot(
         let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + size as f64 + 3.0);
         draw::fill_rrect(scene, t, plate, 4.0, draw::alpha(theme.tokens.colors.surfaces.base, 0.74));
         draw::text_w(scene, tr, t, &poi.name, lx, ly, size, theme.text_primary, TextWeight::Medium);
+    }
+}
+
+/// Draw a compact white category pictogram centred at `c` on a disc of radius
+/// `r`. `fg` is the icon colour (the near-white marker ring); `bg` is the disc
+/// colour, used for cut-outs (e.g. train windows) so they read against the fill.
+/// Deliberately built from a handful of primitives — no icon-font dependency, so
+/// it renders identically headless and live and tracks the OS theme.
+pub fn draw_category_icon(
+    scene: &mut Scene,
+    t: Affine,
+    c: Point,
+    r: f64,
+    cat: Category,
+    fg: Color,
+    bg: Color,
+) {
+    let s = r * 0.58;
+    let lw = (r * 0.16).max(1.4);
+    let ln = |scene: &mut Scene, ax: f64, ay: f64, bx: f64, by: f64, w: f64| {
+        draw::line(scene, t, Point::new(ax, ay), Point::new(bx, by), w, fg);
+    };
+    match cat {
+        Category::Hospital => {
+            draw::fill_rrect(scene, t, Rect::new(c.x - s, c.y - s * 0.32, c.x + s, c.y + s * 0.32), 1.5, fg);
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.32, c.y - s, c.x + s * 0.32, c.y + s), 1.5, fg);
+        }
+        Category::Landmark => {
+            let mut pts = Vec::with_capacity(10);
+            for k in 0..10 {
+                let ang = -std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI / 5.0;
+                let rad = if k % 2 == 0 { s } else { s * 0.45 };
+                pts.push(Point::new(c.x + rad * ang.cos(), c.y + rad * ang.sin()));
+            }
+            draw::polygon(scene, t, &pts, fg);
+        }
+        Category::Park => {
+            ln(scene, c.x, c.y + s * 0.1, c.x, c.y + s * 0.8, lw * 1.4);
+            draw::fill_circle(scene, t, Point::new(c.x, c.y - s * 0.2), s * 0.62, fg);
+        }
+        Category::Cafe => {
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.6, c.y - s * 0.35, c.x + s * 0.35, c.y + s * 0.45), 2.0, fg);
+            draw::stroke_circle(scene, t, Point::new(c.x + s * 0.5, c.y + s * 0.02), s * 0.3, lw, fg);
+            ln(scene, c.x - s * 0.8, c.y + s * 0.68, c.x + s * 0.6, c.y + s * 0.68, lw);
+        }
+        Category::Restaurant => {
+            // Fork (left): three short prongs onto a stem.
+            for dx in [-0.68, -0.45, -0.22] {
+                ln(scene, c.x + dx * s, c.y - s * 0.7, c.x + dx * s, c.y - s * 0.18, lw);
+            }
+            ln(scene, c.x - s * 0.45, c.y - s * 0.18, c.x - s * 0.45, c.y + s * 0.82, lw * 1.5);
+            // Knife (right): a single tapering blade+handle.
+            ln(scene, c.x + s * 0.5, c.y - s * 0.7, c.x + s * 0.5, c.y + s * 0.82, lw * 1.7);
+        }
+        Category::Bar => {
+            let bowl = [
+                Point::new(c.x - s * 0.72, c.y - s * 0.55),
+                Point::new(c.x + s * 0.72, c.y - s * 0.55),
+                Point::new(c.x, c.y + s * 0.18),
+            ];
+            draw::polygon(scene, t, &bowl, fg);
+            ln(scene, c.x, c.y + s * 0.18, c.x, c.y + s * 0.72, lw);
+            ln(scene, c.x - s * 0.4, c.y + s * 0.72, c.x + s * 0.4, c.y + s * 0.72, lw);
+        }
+        Category::Museum => {
+            let roof = [
+                Point::new(c.x - s * 0.82, c.y - s * 0.18),
+                Point::new(c.x + s * 0.82, c.y - s * 0.18),
+                Point::new(c.x, c.y - s * 0.78),
+            ];
+            draw::polygon(scene, t, &roof, fg);
+            for dx in [-0.45, 0.0, 0.45] {
+                ln(scene, c.x + dx * s, c.y - s * 0.12, c.x + dx * s, c.y + s * 0.55, lw * 1.2);
+            }
+            ln(scene, c.x - s * 0.78, c.y + s * 0.66, c.x + s * 0.78, c.y + s * 0.66, lw * 1.3);
+        }
+        Category::Transit => {
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.6, c.y - s * 0.72, c.x + s * 0.6, c.y + s * 0.5), 2.5, fg);
+            // Two windows cut out of the body (disc colour).
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.42, c.y - s * 0.5, c.x - s * 0.06, c.y - s * 0.06), 1.5, bg);
+            draw::fill_rrect(scene, t, Rect::new(c.x + s * 0.06, c.y - s * 0.5, c.x + s * 0.42, c.y - s * 0.06), 1.5, bg);
+            draw::fill_circle(scene, t, Point::new(c.x - s * 0.32, c.y + s * 0.62), s * 0.16, fg);
+            draw::fill_circle(scene, t, Point::new(c.x + s * 0.32, c.y + s * 0.62), s * 0.16, fg);
+        }
+        Category::Hotel => {
+            ln(scene, c.x - s * 0.72, c.y - s * 0.5, c.x - s * 0.72, c.y + s * 0.5, lw * 1.4);
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.72, c.y + s * 0.08, c.x + s * 0.78, c.y + s * 0.46), 2.0, fg);
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.5, c.y - s * 0.2, c.x - s * 0.08, c.y + s * 0.12), 2.0, fg);
+        }
+        Category::Shop => {
+            draw::stroke_circle(scene, t, Point::new(c.x, c.y - s * 0.22), s * 0.32, lw, fg);
+            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.6, c.y - s * 0.18, c.x + s * 0.6, c.y + s * 0.72), 2.5, fg);
+        }
+        Category::Other => {
+            draw::fill_circle(scene, t, c, s * 0.4, fg);
+        }
     }
 }
 
@@ -613,8 +795,60 @@ pub fn draw_scale_and_attribution(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::MapModel;
+    use crate::model::{LatLon, MapModel, Poi};
     use crate::tiles::TileLayer;
+
+    fn poi_at(id: &str, cat: Category, lat: f64, lon: f64) -> Poi {
+        Poi {
+            id: id.to_string(),
+            name: id.to_string(),
+            category: cat,
+            pos: LatLon::new(lat, lon),
+            address: String::new(),
+            opening_hours: None,
+            website: None,
+            phone: None,
+            kind: None,
+        }
+    }
+
+    /// The declutter pass thins markers that would pile up within `min_px`,
+    /// keeps the more salient category when two collide, and always keeps the
+    /// selected POI — the same set the draw pass and the hit-test both consume.
+    #[test]
+    fn declutter_thins_overlapping_keeps_priority_and_selected() {
+        let center = LatLon::new(48.1371, 11.5754);
+        let proj = Projection::new(center, 17.0, Point::new(640.0, 400.0));
+
+        // Two POIs at essentially the same coordinate (they project within a
+        // pixel of each other) — a Shop and a Transit stop — plus one clearly
+        // separate Cafe far to the east.
+        let far = LatLon::new(center.lat, center.lon + 0.01);
+        let pois = vec![
+            poi_at("shop", Category::Shop, center.lat, center.lon),
+            poi_at("transit", Category::Transit, center.lat, center.lon + 1e-6),
+            poi_at("cafe-far", Category::Cafe, far.lat, far.lon),
+        ];
+
+        // No selection: the overlapping pair collapses to the higher-priority
+        // Transit stop; the far Cafe always survives.
+        let kept = declutter_indices(&proj, &pois, 24.0, None);
+        let ids: Vec<&str> = kept.iter().map(|&i| pois[i].id.as_str()).collect();
+        assert!(ids.contains(&"transit"), "salient category wins the contested cell: {ids:?}");
+        assert!(!ids.contains(&"shop"), "the overlapped lower-priority marker is dropped: {ids:?}");
+        assert!(ids.contains(&"cafe-far"), "a well-separated marker is always kept: {ids:?}");
+
+        // Returned indices stay in input order (stable draw order).
+        let mut sorted = kept.clone();
+        sorted.sort_unstable();
+        assert_eq!(kept, sorted, "kept indices preserve input order");
+
+        // Selecting the otherwise-dropped Shop forces it to be kept (its info
+        // card is open, so its marker must be on screen and clickable).
+        let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
+        let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
+        assert!(ids_sel.contains(&"shop"), "the selected POI is always kept: {ids_sel:?}");
+    }
 
     /// `draw_tiles` must NOT fetch or decode synchronously: when given an
     /// offline layer (no worker, empty cache), it draws placeholders, reports
