@@ -421,12 +421,13 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # fedora-bootc base and would otherwise still ship on the rootfs, wasting
 # ~30 MB and leaving dead code paths in bootupd. Drop it after installing
 # systemd-boot so nothing during install can pick GRUB by accident.
-# `--allowerasing` is required because bootupd Recommends grub2-tools; the
-# systemd-boot install itself satisfies the "some bootloader must exist"
-# invariant so removing GRUB is safe.
+# dnf5's `remove` doesn't accept `--allowerasing` (only install/upgrade/
+# swap/downgrade do); it's not needed either since `remove` already tears
+# down the dependency subtree on those packages. The systemd-boot install
+# itself satisfies the "some bootloader must exist" invariant.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     systemd-boot-unsigned \
-    && dnf remove -y --allowerasing \
+    && dnf remove -y \
         grub2-common grub2-tools grub2-tools-minimal grub2-tools-extra \
         grub2-pc grub2-pc-modules grub2-efi-x64 grub2-efi-x64-modules \
         shim-x64 \
