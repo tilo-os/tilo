@@ -56,8 +56,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         perl perl-generators rsync \
         python3 python3-devel python3-rpm-macros \
         gzip xz cpio git which findutils \
-        createrepo_c \
     && dnf clean all
+
+# `createrepo_c` is only needed at build time to write the repo metadata
+# into our output image — it never ships to end users, so pulling it from
+# the live Fedora mirrors here is fine. The frozen-repo snapshot's
+# buildkit cache has been holding on to a version of the repo that
+# lacks createrepo_c despite the awk-derived PACKAGES list requesting
+# it; sidestepping that entirely.
+RUN dnf install -y createrepo_c && dnf clean all
 
 # Fetch the Fedora kernel SRPM. Preferring the frozen-repo copy keeps the
 # build hermetic when the snapshot has it, but the frozen-repo builder
