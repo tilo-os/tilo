@@ -55,6 +55,7 @@ pub enum Category {
     TimeDate,
     Users,
     Printers,
+    Appearance,
     ExternalAccounts,
     RegionFormats,
     Permissions,
@@ -74,6 +75,7 @@ impl Category {
         Category::MouseKeyboard,
         Category::Printers,
         // System
+        Category::Appearance,
         Category::TimeDate,
         Category::Users,
         Category::RegionFormats,
@@ -96,7 +98,10 @@ impl Category {
             | Category::Displays
             | Category::MouseKeyboard
             | Category::Printers => Section::Devices,
-            Category::TimeDate | Category::Users | Category::RegionFormats => Section::System,
+            Category::Appearance
+            | Category::TimeDate
+            | Category::Users
+            | Category::RegionFormats => Section::System,
             Category::ExternalAccounts | Category::Permissions => Section::Hubs,
             Category::Updates | Category::About => Section::Maintenance,
         }
@@ -122,6 +127,7 @@ impl Category {
             Category::TimeDate => "Time & Date",
             Category::Users => "Users",
             Category::Printers => "Printers",
+            Category::Appearance => "Appearance",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
             Category::Permissions => "Permissions & Roles",
@@ -141,6 +147,7 @@ impl Category {
             Category::TimeDate => "Clock, time zone, and how dates display",
             Category::Users => "Accounts on this device and their roles",
             Category::Printers => "Printers, queues, and recent jobs",
+            Category::Appearance => "Theme, contrast, motion, and text size",
             Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
             Category::RegionFormats => "Currency, date, time, and measurement units",
             Category::Permissions => "Roles and per-action permissions for this workspace",
@@ -160,6 +167,7 @@ impl Category {
             Category::TimeDate => "\u{f0954}",         // clock
             Category::Users => "\u{f0849}",            // account-group
             Category::Printers => "\u{f042a}",         // printer
+            Category::Appearance => "\u{f0779}",       // palette
             Category::ExternalAccounts => "\u{f16e1}", // cloud
             Category::RegionFormats => "\u{f0ac0}",    // earth
             Category::Permissions => "\u{f0498}",      // shield-account
@@ -179,6 +187,7 @@ impl Category {
             Category::TimeDate => "time_date",
             Category::Users => "users",
             Category::Printers => "printers",
+            Category::Appearance => "appearance",
             Category::ExternalAccounts => "external_accounts",
             Category::RegionFormats => "region_formats",
             Category::Permissions => "permissions",
