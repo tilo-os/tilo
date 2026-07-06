@@ -18,6 +18,7 @@
 
 pub mod about;
 pub mod accounts;
+pub mod appearance;
 pub mod audio;
 pub mod bluetooth;
 pub mod display;

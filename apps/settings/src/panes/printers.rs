@@ -4,9 +4,9 @@
 //! the job queue is read from `lpstat -o` ([`parse_lpstat_jobs`]); and each
 //! job's **Cancel** button really runs `cancel <job-id>` through
 //! [`JobCanceller`], then re-reads the queue. When `lpstat` is absent (a
-//! minimal container, or `--shots` on CI) the printer list falls back to a
-//! realistic sample so the surface reads as designed, and the queue shows an
-//! honest empty state.
+//! minimal container, a non-qOS host without CUPS, or `--shots` on CI) the
+//! pane shows an **honest empty state** — it never fabricates printers, so a
+//! machine with no CUPS reads as "no printers" rather than inventing a list.
 //!
 //! Adding and per-printer administration need privileged CUPS operations and
 //! a dialog flow that lives outside this app, so those affordances are not
@@ -115,6 +115,7 @@ impl JobCanceller for RealCanceller {
 }
 
 impl Printer {
+    #[cfg(test)]
     fn sample(name: &str, location: &str, state: PrinterState, default: bool) -> Self {
         Self {
             name: name.to_string(),
@@ -125,14 +126,16 @@ impl Printer {
     }
 }
 
+/// The real printer list from CUPS, or an empty list when CUPS is absent.
+/// We deliberately do **not** substitute a sample here: a machine with no
+/// CUPS shows an honest empty state rather than fabricated printers.
 fn printers_for_display() -> Vec<Printer> {
-    match read_cups_printers() {
-        Some(printers) if !printers.is_empty() => printers,
-        _ => sample_printers(),
-    }
+    read_cups_printers().unwrap_or_default()
 }
 
-/// The fallback sample, shown when no real CUPS printers are configured.
+/// A realistic printer list used only by tests / deterministic `--shots`,
+/// never as a production fallback.
+#[cfg(test)]
 fn sample_printers() -> Vec<Printer> {
     vec![
         Printer::sample(
@@ -322,11 +325,23 @@ impl PrintersPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut printer_rows: Vec<El> = Vec::new();
-        for p in &self.printers {
-            printer_rows.push(printer_row(p));
-        }
-        let printer_card = card("Printers", rows(printer_rows));
+        let printer_card = if self.printers.is_empty() {
+            // Honest empty state — no CUPS printers configured (or no CUPS at
+            // all). We never invent a list here.
+            card(
+                "Printers",
+                rows(vec![caption(
+                    "No printers configured. Printers set up through CUPS will \
+                     appear here.",
+                )]),
+            )
+        } else {
+            let mut printer_rows: Vec<El> = Vec::new();
+            for p in &self.printers {
+                printer_rows.push(printer_row(p));
+            }
+            card("Printers", rows(printer_rows))
+        };
 
         let job_card = if self.jobs.is_empty() {
             card("Print queue", rows(vec![caption("No active jobs.")]))
@@ -654,5 +669,31 @@ this is not a job line\n\
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         }
+    }
+
+    /// The production display list is the real CUPS list (or empty) — it must
+    /// never fall back to the illustrative sample. On a box without CUPS this
+    /// is an empty vec; on a box with CUPS it is the real printers. Either way
+    /// it can never contain the sample's fabricated "Office LaserJet".
+    #[test]
+    fn production_list_never_fabricates_the_sample() {
+        let real = printers_for_display();
+        assert!(
+            !real.iter().any(|p| p.name == "Office LaserJet"),
+            "the sample must not leak into the production list: {real:?}"
+        );
+    }
+
+    /// With no CUPS printers the pane renders an honest empty state and builds
+    /// cleanly rather than inventing rows.
+    #[test]
+    fn empty_printer_list_builds_honest_state() {
+        let canceller = Arc::new(RecordingCanceller::default());
+        let mut pane = PrintersPane::with_data(vec![], vec![], canceller);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(pane.jobs().is_empty());
     }
 }

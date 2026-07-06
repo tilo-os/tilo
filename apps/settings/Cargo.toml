@@ -44,3 +44,7 @@ uuid = { version = "1.23.1", features = ["v4", "serde"] }
 # The persistence tests read the shared account store + vault back to prove
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }
+# The accounts→Mail loop test drives the Settings add flow, then loads the
+# account back through Mail's own reader to prove Mail actually consumes what
+# Settings persisted (end-to-end across the shared store, not a mock).
+mail = { path = "../mail" }

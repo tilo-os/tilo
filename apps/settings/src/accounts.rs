@@ -9,24 +9,33 @@
 //! share, or a Nextcloud sign-in all happen here. The individual apps only
 //! *consume* the resulting lists.
 //!
-//! # The files (format contracts, not crate dependencies)
+//! # Where email + CalDAV live: the shared `accounts` crate
 //!
-//! These are plain `serde`-serialisable JSON documents at fixed per-user
-//! paths. Each app reads the same file with the same shape — there is no
-//! shared Rust crate to depend on.
+//! Email and CalDAV accounts are persisted through the shared
+//! [`accounts::AccountStore`] — one canonical JSON document at
+//! `~/.config/qos/accounts/store.json` — the **same** store Mail and Calendar
+//! read. Settings owns the write lifecycle (add / edit / remove); those apps
+//! consume it. Passwords are sealed in the accompanying encrypted
+//! [`accounts::SecretVault`], never in the plaintext store.
+//!
+//! [`AccountDirectory::load`] projects that shared store into the in-memory
+//! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
+//! unchanged while the on-disk store is the shared one. Consequently the
+//! `MailStore` / `MailAccount` / `AccountConfig` types below are now **render
+//! view-models** populated from the shared store — the legacy
+//! `MailStore::path` / `MailStore::save` are no longer the path that feeds
+//! Mail (kept only for the file-store kinds that have not migrated yet).
+//!
+//! # The still-separate file stores (format contracts)
+//!
+//! WebDAV (files) and Nextcloud accounts keep their own JSON documents at
+//! fixed per-user paths for now; each app reads the same file with the same
+//! shape:
 //!
 //! | Store | Path | Consumed by |
 //! |-------|------|-------------|
-//! | [`MailStore`] | `~/.config/qos/mail/accounts.json` | Mail |
-//! | [`DavStore`] (calendar) | `~/.config/qos/calendar/accounts.json` | Calendar |
 //! | [`DavStore`] (files) | `~/.config/qos/files/accounts.json` | file apps |
 //! | [`NextcloudStore`] | `~/.config/qos/nextcloud/accounts.json` | Mail + Calendar + files |
-//!
-//! The [`MailStore`] shape is **identical** to the one Mail shipped first
-//! (`AccountStore`/`Account`/`AccountConfig`), so Settings writing this
-//! file and Mail reading it is a true seam, not a parallel invention. The
-//! DAV and Nextcloud stores live in sibling directories so each app reads
-//! only what it understands.
 //!
 //! # Credentials are never serialised
 //!

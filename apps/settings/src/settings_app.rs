@@ -246,6 +246,7 @@ impl SettingsApp {
             Category::TimeDate => panes::time_date::build(),
             Category::Users => panes::users::build(),
             Category::Printers => panes::printers::build(),
+            Category::Appearance => panes::appearance::build(),
             Category::ExternalAccounts => panes::accounts::build(),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
