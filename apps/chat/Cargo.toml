@@ -25,6 +25,10 @@ live-media = ["dep:gstreamer", "dep:iroh", "dep:zbus", "dep:tokio"]
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
+# per-peer identity the collab layer signs with. Chat uses its public key +
+# display name so every running instance is a distinct participant.
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
