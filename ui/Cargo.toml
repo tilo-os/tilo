@@ -78,6 +78,11 @@ media = { path = "../crates/media" }
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+# The `Link` widget hands its URL to the OS's registered handler (xdg-open /
+# the desktop portal on Linux) when activated. Same crate + pin the file
+# explorer already uses to open files with the desktop default; already
+# resolved in the workspace lockfile, so this adds no registry fetch.
+open = "5.3.5"
 # Shared collaboration-types crate. Phase 1 widgets
 # (`widget::activity_timeline`, `widget::history_scrubber`,
 # `widget::conflict_picker`, `widget::channel_browser`) read `OpClass`

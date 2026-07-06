@@ -22,7 +22,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{Address, Contact, ContactId, Labeled};
+use crate::model::{Address, Birthday, Contact, ContactId, Labeled};
 
 /// Stateless namespace for the contacts document helpers.
 pub struct ContactsDoc;
@@ -60,7 +60,14 @@ impl ContactsDoc {
         sync_text(doc, &m, "title", &c.title);
         sync_text(doc, &m, "website", &c.website);
         sync_text(doc, &m, "notes", &c.notes);
-        ui::doc::put_if_changed(doc, &m, "birthday", c.birthday.clone());
+        // Persist the birthday as its canonical string (empty when unset); the
+        // structured value is reconstructed by `Birthday::parse` on read.
+        ui::doc::put_if_changed(
+            doc,
+            &m,
+            "birthday",
+            c.birthday.map(|b| b.iso()).unwrap_or_default(),
+        );
         ui::doc::put_if_changed(doc, &m, "favorite", c.favorite);
         sync_str_list(doc, &m, "groups", &c.groups);
         sync_labeled_list(doc, &m, "phones", &c.phones);
@@ -96,7 +103,7 @@ impl ContactsDoc {
                 title: read_text(doc, &m, "title"),
                 website: read_text(doc, &m, "website"),
                 notes: read_text(doc, &m, "notes"),
-                birthday: read_str(doc, &m, "birthday"),
+                birthday: Birthday::parse(&read_str(doc, &m, "birthday")),
                 favorite: read_bool(doc, &m, "favorite"),
                 groups: read_str_list(doc, &m, "groups"),
                 phones: read_labeled_list(doc, &m, "phones"),

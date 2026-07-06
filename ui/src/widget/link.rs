@@ -1,0 +1,475 @@
+//! A hyperlink: theme-driven, underlined accent-coloured text that opens a
+//! URL through the OS's registered handler when clicked, activated by keyboard
+//! (Enter / Space), or triggered by an assistive-technology `Activate`.
+//!
+//! Reusable across the app fleet — anywhere a widget needs to surface a
+//! clickable URL (a contact's website, a feed's source link, an "about" page)
+//! it should build a [`Link`] rather than hand-roll underline + click plumbing.
+//!
+//! Opening is pluggable. By default activation hands the URL to [`open::that`]
+//! (xdg-open / the desktop portal on Linux); a host that routes external opens
+//! through its own mechanism — or a test that wants to observe the URL without
+//! spawning a browser — overrides it with [`Link::on_open`]. Either way the
+//! most-recently-activated URL is recorded on [`Link::last_activated`] so a
+//! parent or test can confirm the link fired.
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
+
+/// Default opener: hand the URL to the OS's registered handler (xdg-open / the
+/// desktop portal on Linux) via the `open` crate. Best-effort — a launch
+/// failure is logged, not surfaced, matching how the rest of the qOS app fleet
+/// treats an external-open miss.
+fn os_open(url: &str) {
+    if let Err(e) = open::that(url) {
+        tracing::warn!("Link: failed to open {url:?}: {e}");
+    }
+}
+
+pub struct Link {
+    /// The URL activation opens.
+    url: String,
+    /// Visible (and spoken) text. Defaults to the URL; a caller can show a
+    /// friendlier label (e.g. "Website") via [`with_label`](Self::with_label).
+    label: String,
+    font_size: f32,
+    rect: Rect,
+    is_hovered: bool,
+    is_pressed: bool,
+    is_focused: bool,
+    enabled: bool,
+    /// Overrides the default OS opener. When set, activation calls this instead
+    /// of [`open::that`] — tests record the URL, hosts route through a portal.
+    opener: Option<Box<dyn FnMut(&str)>>,
+    /// The URL most recently activated (mouse / keyboard / AT). Lets a parent
+    /// or test observe that the link fired without intercepting the opener.
+    last_activated: Option<String>,
+    dirty: bool,
+    last_state: (bool, bool, bool),
+}
+
+impl Link {
+    /// A link whose visible text is the URL itself.
+    pub fn new(url: &str) -> Self {
+        Self {
+            url: url.to_string(),
+            label: url.to_string(),
+            font_size: 14.0,
+            rect: Rect::ZERO,
+            is_hovered: false,
+            is_pressed: false,
+            is_focused: false,
+            enabled: true,
+            opener: None,
+            last_activated: None,
+            dirty: true,
+            last_state: (false, false, false),
+        }
+    }
+
+    /// Show `label` in place of the raw URL (the URL is still what opens and
+    /// what the accessible value reports).
+    pub fn with_label(mut self, label: &str) -> Self {
+        self.label = label.to_string();
+        self
+    }
+
+    /// Override the 14px default text size.
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size = size;
+        self
+    }
+
+    /// Replace the default OS opener with a custom sink. Fires with the URL on
+    /// every activation; used by tests to record the URL without spawning a
+    /// browser, and by hosts that open external links through their own portal.
+    pub fn on_open<F: FnMut(&str) + 'static>(mut self, f: F) -> Self {
+        self.opener = Some(Box::new(f));
+        self
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The URL most recently opened by this link, or `None` if it hasn't been
+    /// activated yet.
+    pub fn last_activated(&self) -> Option<&str> {
+        self.last_activated.as_deref()
+    }
+
+    /// Set hover state from a parent that routes input by hand (rather than
+    /// through [`handle_event`](Widget::handle_event)). Returns `true` when the
+    /// state changed, so the caller can request a redraw. The Contacts detail
+    /// pane uses this to thicken the underline as the pointer passes over.
+    pub fn set_hovered(&mut self, hovered: bool) -> bool {
+        if hovered != self.is_hovered {
+            self.is_hovered = hovered;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Position this link explicitly, bypassing taffy — mirrors
+    /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
+    /// parents (like the Contacts detail pane) that lay children out by hand.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
+    /// Fire the link: record the URL and hand it to the opener (default: the OS
+    /// handler). The single entry point shared by mouse, keyboard and AT so all
+    /// three paths behave identically.
+    pub fn activate(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        self.last_activated = Some(self.url.clone());
+        match &mut self.opener {
+            Some(cb) => cb(&self.url),
+            None => os_open(&self.url),
+        }
+    }
+}
+
+impl Widget for Link {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::auto(), height: Dimension::auto() },
+                flex_shrink: 0.0,
+                flex_grow: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn measure(
+        &mut self,
+        _known: taffy::Size<Option<f32>>,
+        _available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        // A link is a single, non-wrapping run of text.
+        let (w, h) = text_renderer.measure(&self.label, self.font_size, None);
+        taffy::Size { width: w + 0.1, height: h }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        let new_rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+        if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
+            self.dirty = true;
+        }
+        self.rect = new_rect;
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
+        let color = theme.accent_primary;
+        let (tw, th) = text_renderer.measure(&self.label, self.font_size, None);
+        let (tw, th) = (tw as f64, th as f64);
+        let x0 = self.rect.x0;
+        let y0 = self.rect.y0;
+
+        text_renderer.draw_text(
+            scene,
+            &self.label,
+            self.font_size,
+            color,
+            transform * Affine::translate((x0, y0)),
+            None,
+        );
+
+        // Underline just under the baseline; a touch thicker on hover so the
+        // link reads as "live" alongside the pointer cursor.
+        let uy = y0 + th - 1.5;
+        let stroke_w = if self.is_hovered { 1.6 } else { 1.0 };
+        scene.stroke(
+            &Stroke::new(stroke_w),
+            transform,
+            color,
+            None,
+            &Line::new((x0, uy), (x0 + tw, uy)),
+        );
+
+        // Keyboard focus ring.
+        if self.is_focused {
+            let pad = 2.0;
+            let ring = RoundedRect::from_rect(
+                Rect::new(x0 - pad, y0 - pad, x0 + tw + pad, y0 + th + pad),
+                4.0,
+            );
+            scene.stroke(&Stroke::new(1.5), transform, theme.border_focus, None, &ring);
+        }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let hover = self.rect.contains(p);
+                if hover != self.is_hovered {
+                    self.is_hovered = hover;
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+                if self.is_hovered {
+                    let pressed = *element_state == ElementState::Pressed;
+                    if pressed != self.is_pressed {
+                        self.is_pressed = pressed;
+                        *handled = true;
+                        if self.is_pressed {
+                            *focus_target = Some(node_id);
+                        } else {
+                            // Release over the link → open it.
+                            self.activate();
+                        }
+                    }
+                } else if self.is_pressed {
+                    self.is_pressed = false;
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Link"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(self.label.as_str())
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// A hyperlink is a click affordance, so the pointing-hand cursor while
+    /// hovered.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.enabled && self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Pointer)
+        } else {
+            None
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.enabled
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Keyboard / AT activation (Enter, Space, AccessKit `Activate`) opens the
+    /// URL exactly as a mouse click does.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if !self.enabled {
+            return false;
+        }
+        match action {
+            Action::Activate => {
+                self.activate();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Link)
+                .with_name(self.label.clone())
+                .with_value(self.url.clone())
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                }),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    /// Lay the link out at a known rect so it has a non-zero hit box.
+    fn laid_out(link: &mut Link) -> (TaffyTree<()>, NodeId) {
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = link.build_layout(&mut tree, &theme, &mut node_map);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(40.0),
+            },
+        )
+        .unwrap();
+        link.apply_layout(&tree, node, Point::ZERO);
+        // Force a deterministic hit rect (measure needs a text renderer we don't
+        // have here); the interaction logic only cares about `rect`.
+        link.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 20.0));
+        (tree, node)
+    }
+
+    #[test]
+    fn click_opens_url_through_the_opener_with_the_right_url() {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut link = {
+            let opened = opened.clone();
+            Link::new("https://example.com/page").on_open(move |u| opened.borrow_mut().push(u.to_string()))
+        };
+        let (tree, node) = laid_out(&mut link);
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut dispatch = |link: &mut Link, ev: WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            link.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        };
+
+        dispatch(&mut link, WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() });
+        dispatch(&mut link, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        assert!(opened.borrow().is_empty(), "does not open until release");
+        dispatch(&mut link, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+
+        assert_eq!(opened.borrow().as_slice(), &["https://example.com/page".to_string()], "opened exactly the link's URL on release");
+        assert_eq!(link.last_activated(), Some("https://example.com/page"));
+    }
+
+    #[test]
+    fn keyboard_activate_opens_url() {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut link = {
+            let opened = opened.clone();
+            Link::new("https://w3.org").on_open(move |u| opened.borrow_mut().push(u.to_string()))
+        };
+        let mut doc = AutoCommit::new();
+        let handled = link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT);
+        assert!(handled, "Activate is handled");
+        assert_eq!(opened.borrow().as_slice(), &["https://w3.org".to_string()]);
+    }
+
+    #[test]
+    fn renders_as_a_link_in_the_accessibility_tree() {
+        use crate::a11y::Role;
+        let link = Link::new("https://turing.org.uk").with_label("Turing");
+        let node = Widget::accessibility(&link).expect("a link is not presentational");
+        assert_eq!(node.role, Role::Link);
+        assert_eq!(node.name.as_deref(), Some("Turing"), "the visible label is the accessible name");
+        assert_eq!(node.value.as_deref(), Some("https://turing.org.uk"), "the URL is the accessible value");
+        assert!(node.state.focusable, "a link is keyboard-focusable");
+    }
+
+    #[test]
+    fn hovered_link_requests_the_pointer_cursor() {
+        let mut link = Link::new("https://example.com");
+        let _ = laid_out(&mut link);
+        assert_eq!(
+            Widget::cursor_shape(&link, Point::new(10.0, 10.0)),
+            Some(winit::window::CursorIcon::Pointer),
+            "pointer over the link asks for the pointing-hand cursor",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&link, Point::new(500.0, 500.0)),
+            None,
+            "off the link, no cursor claim",
+        );
+    }
+
+    #[test]
+    fn default_label_is_the_url() {
+        let link = Link::new("https://example.com");
+        assert_eq!(link.label(), "https://example.com");
+        assert_eq!(link.url(), "https://example.com");
+    }
+}
