@@ -31,16 +31,18 @@
 //!   "input":   { "natural_scroll": false, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
-//!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" }
+//!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
+//!   "appearance": { "theme": "Dark", "high_contrast": false,
+//!                   "reduce_motion": false, "text_scale": 1.0 }
 //! }
 //! ```
 //!
 //! # Non-destructive writes
 //!
 //! [`SystemPrefs::save`] is a **merge** write: it reads the current file,
-//! overwrites only the four sections this store owns, and preserves every
-//! other key (including `locale`). So a pane that changes one preference
-//! never clobbers another pane's — or the region store's — section.
+//! overwrites only the sections this store owns, and preserves every other
+//! key (including `locale`). So a pane that changes one preference never
+//! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
 
@@ -115,7 +117,72 @@ impl Default for UpdatePrefs {
     }
 }
 
-/// The four preference sections this store owns. Loaded from and merged
+/// Look-and-feel preferences the OS theming layer resolves into the
+/// concrete [`ui::Theme`] every app draws against. `theme` is a named preset
+/// (see [`AppearancePrefs::THEMES`]); `high_contrast` overrides the palette
+/// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
+/// fold in the accessibility comforts. The compositor reads this section the
+/// same way it reads the display/input comfort sections.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppearancePrefs {
+    /// Named theme preset — one of [`AppearancePrefs::THEMES`].
+    pub theme: String,
+    /// Force the high-contrast accessibility palette, overriding `theme`.
+    pub high_contrast: bool,
+    /// Snap animations to their resting state instead of easing.
+    pub reduce_motion: bool,
+    /// UI text-size multiplier (`1.0` = default). Clamped on apply.
+    pub text_scale: f64,
+}
+
+impl Default for AppearancePrefs {
+    fn default() -> Self {
+        Self {
+            theme: "Dark".to_string(),
+            high_contrast: false,
+            reduce_motion: false,
+            text_scale: 1.0,
+        }
+    }
+}
+
+impl AppearancePrefs {
+    /// The named theme presets the Appearance pane offers, in display order.
+    /// Each maps to a real constructor on [`ui::Theme`] via [`theme_by_name`].
+    pub const THEMES: &'static [&'static str] =
+        &["Dark", "Light", "Dracula", "Nord", "Gruvbox", "Solarized"];
+
+    /// Resolve these preferences into the concrete [`ui::Theme`] the OS would
+    /// apply: the named preset (or the high-contrast track when requested),
+    /// with the text scale and reduced-motion comforts folded in. This is the
+    /// real "apply" contract — a consumer that wants the user's look calls
+    /// this rather than hard-coding [`ui::Theme::dark`].
+    pub fn resolve_theme(&self) -> ui::Theme {
+        let base = if self.high_contrast {
+            ui::Theme::high_contrast()
+        } else {
+            theme_by_name(&self.theme)
+        };
+        base.with_text_scale(self.text_scale as f32)
+            .with_reduce_motion(self.reduce_motion)
+    }
+}
+
+/// Map a theme preset name to its [`ui::Theme`] constructor, defaulting to the
+/// dark theme for an unrecognised name so a stray value never leaves the UI
+/// unthemed.
+pub fn theme_by_name(name: &str) -> ui::Theme {
+    match name {
+        "Light" => ui::Theme::light(),
+        "Dracula" => ui::Theme::dracula(),
+        "Nord" => ui::Theme::nord(),
+        "Gruvbox" => ui::Theme::gruvbox(),
+        "Solarized" => ui::Theme::solarized(),
+        _ => ui::Theme::dark(),
+    }
+}
+
+/// The five preference sections this store owns. Loaded from and merged
 /// back into the shared `settings.json`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SystemPrefs {
@@ -123,6 +190,7 @@ pub struct SystemPrefs {
     pub display: DisplayPrefs,
     pub input: InputPrefs,
     pub updates: UpdatePrefs,
+    pub appearance: AppearancePrefs,
 }
 
 impl SystemPrefs {
@@ -145,6 +213,9 @@ impl SystemPrefs {
             updates: section("updates")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
+            appearance: section("appearance")
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
         }
     }
 
@@ -163,6 +234,10 @@ impl SystemPrefs {
         obj.insert("display".into(), serde_json::to_value(self.display).unwrap_or_default());
         obj.insert("input".into(), serde_json::to_value(&self.input).unwrap_or_default());
         obj.insert("updates".into(), serde_json::to_value(&self.updates).unwrap_or_default());
+        obj.insert(
+            "appearance".into(),
+            serde_json::to_value(&self.appearance).unwrap_or_default(),
+        );
         serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
     }
 
@@ -216,9 +291,72 @@ mod tests {
         p.input.keyboard_layout = "de".into();
         p.updates.auto = false;
         p.updates.channel = "Nightly".into();
+        p.appearance.theme = "Nord".into();
+        p.appearance.high_contrast = true;
+        p.appearance.reduce_motion = true;
+        p.appearance.text_scale = 1.25;
         let json = p.to_json_merged("");
         let back = SystemPrefs::from_json(&json);
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn appearance_defaults_and_resolves_to_a_real_theme() {
+        let p = AppearancePrefs::default();
+        assert_eq!(p.theme, "Dark");
+        assert!(!p.high_contrast);
+        assert_eq!(p.text_scale, 1.0);
+        // The default resolves to the dark theme, unscaled.
+        let theme = p.resolve_theme();
+        assert_eq!(theme.name, "Dark");
+        assert_eq!(theme.text_scale, 1.0);
+        assert!(!theme.reduce_motion);
+    }
+
+    #[test]
+    fn appearance_resolves_named_presets_and_comforts() {
+        let p = AppearancePrefs {
+            theme: "Nord".into(),
+            high_contrast: false,
+            reduce_motion: true,
+            text_scale: 1.5,
+        };
+        let theme = p.resolve_theme();
+        assert_eq!(theme.name, "Nord", "the named preset is applied");
+        assert_eq!(theme.text_scale, 1.5, "the text scale folds in");
+        assert!(theme.reduce_motion, "reduced motion folds in");
+    }
+
+    #[test]
+    fn appearance_high_contrast_overrides_the_named_theme() {
+        let p = AppearancePrefs {
+            theme: "Dracula".into(),
+            high_contrast: true,
+            reduce_motion: false,
+            text_scale: 1.0,
+        };
+        // high_contrast wins over the named preset.
+        assert_eq!(p.resolve_theme().name, "High Contrast");
+    }
+
+    #[test]
+    fn appearance_unknown_theme_name_degrades_to_dark() {
+        assert_eq!(theme_by_name("not-a-theme").name, "Dark");
+        // Every advertised preset maps to a distinct real constructor.
+        for name in AppearancePrefs::THEMES {
+            let t = theme_by_name(name);
+            assert_eq!(&t.name, name, "{name} must resolve to its own theme");
+        }
+    }
+
+    #[test]
+    fn merge_preserves_locale_when_writing_appearance() {
+        let existing = r#"{"version":1,"locale":{"currency":"EUR","date_format":"EU","time_format":"H12","measurement":"Imperial"}}"#;
+        let mut p = SystemPrefs::default();
+        p.appearance.theme = "Gruvbox".into();
+        let out = p.to_json_merged(existing);
+        assert!(out.contains("\"theme\": \"Gruvbox\""), "appearance landed: {out}");
+        assert!(out.contains("\"currency\": \"EUR\""), "locale survived: {out}");
     }
 
     #[test]
