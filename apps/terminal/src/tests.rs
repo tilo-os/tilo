@@ -780,4 +780,72 @@ mod tests {
         assert_eq!(b.fg, CellColor::Default);
         assert!(!b.bold && !b.italic && !b.underline && !b.reverse, "SGR 0 resets style: {:?}", b);
     }
+
+    // ---------------------------------------------------------------
+    // Real PTY — a live subprocess through the production reader→sync path.
+    // ---------------------------------------------------------------
+
+    /// Poll the production `sync` (which drains the PTY reader thread and
+    /// replays bytes through vte into the CRDT grid) until the grid contains
+    /// `needle` or `tries` elapse. Returns whether it appeared.
+    fn pump_until_contains(
+        w: &mut TerminalWidget,
+        doc: &mut AutoCommit,
+        needle: &str,
+        tries: usize,
+    ) -> bool {
+        for _ in 0..tries {
+            w.sync(doc, &ROOT);
+            if w.grid_text().contains(needle) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        w.grid_text().contains(needle)
+    }
+
+    #[test]
+    fn spawn_command_runs_real_pty_and_grid_shows_output() {
+        use portable_pty::CommandBuilder;
+        // Run a real subprocess in a real PTY and prove its stdout reaches the
+        // emulator grid through the production reader → sync → vte → CRDT path
+        // (no `feed`, no mock). This is the load-bearing "the terminal actually
+        // runs programs" proof.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf 'QOS_PTY_OK\\n'");
+        let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
+        let mut doc = AutoCommit::new();
+        assert!(
+            pump_until_contains(&mut w, &mut doc, "QOS_PTY_OK", 200),
+            "real PTY command output must reach the grid; grid was:\n{}",
+            w.grid_text()
+        );
+    }
+
+    #[test]
+    fn spawn_default_runs_real_shell_and_executes_typed_command() {
+        // Spawn the user's login shell, then type a command exactly the way a
+        // keystroke sends it (`write_input`), and prove the shell ran it and
+        // the output flowed back into the grid.
+        let mut w = TerminalWidget::spawn_default().expect("spawn login shell");
+        let mut doc = AutoCommit::new();
+        // Let the shell reach a prompt before typing.
+        w.sync(&mut doc, &ROOT);
+        w.write_input(b"printf 'QOS_SHELL_OK\\n'\n");
+        assert!(
+            pump_until_contains(&mut w, &mut doc, "QOS_SHELL_OK", 300),
+            "the real shell must run the typed command and show output; grid was:\n{}",
+            w.grid_text()
+        );
+    }
+
+    #[test]
+    fn spawn_command_reports_grid_size() {
+        use portable_pty::CommandBuilder;
+        // The default PTY is opened at 80x24; the host-facing accessor must
+        // report that until a `place_at` reflow changes it.
+        let w = TerminalWidget::spawn_command(CommandBuilder::new("/bin/sh")).expect("spawn");
+        assert_eq!(w.grid_size(), (80, 24));
+    }
 }
