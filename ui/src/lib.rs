@@ -27,6 +27,7 @@ pub mod offscreen;
 pub mod image_store;
 pub mod render_thread;
 pub mod warmup;
+pub mod webview;
 
 pub use app::App;
 pub use color_compat::ColorCompat;

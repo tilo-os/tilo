@@ -14,9 +14,24 @@ edition = "2024"
 # once every consumer is on the SDK dialect.
 default = ["legacy-broker"]
 legacy-broker = []
+# Brave/EasyList filter-list → WebKit content-blocker JSON compiler
+# (`webview::adblock`). Off by default: only the browser app (and any
+# other app embedding a WebView with built-in blocking) pays for the
+# adblock-rust dependency.
+webview-adblock = ["dep:adblock"]
+# WPE WebKit engine backend for the WebView widget (`webview::wpe`).
+# Links the WPE stack (not packaged by Fedora — build it with
+# os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
+# prefix). Off by default so the workspace builds without the libraries.
+webview-wpe = []
 
 [dependencies]
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
+# Filter-list compiler for the WebView's built-in ad blocking (feature
+# `webview-adblock`). The `content-blocking` feature provides the
+# EasyList→WebKit-content-blocker conversion; blocking then runs inside
+# WebKit's network process, not in Rust.
+adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
 # runtime-collab is the qOS collab-broker Cap'n Proto SDK.
 # `CollaborationManager` now delegates to it via a shovel thread; the
 # legacy Unix-socket JSON dialect stays available behind the
@@ -153,6 +168,11 @@ accesskit_winit = "0.33.1"
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../crates/system/tts" }
+
+[build-dependencies]
+# Locates the WPE WebKit stack when the `webview-wpe` feature is on
+# (see build.rs); inert otherwise.
+pkg-config = "0.3"
 
 [dev-dependencies]
 regex = "1"
