@@ -180,11 +180,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     wireplumber \
     && dnf clean all
 
-# GStreamer (for future streaming)
+# GStreamer — the Music app plays audio through a `playbin` whose sink chain
+# ends in `autoaudiosink` (→ `pulsesink`, from -plugins-good, over the PipeWire
+# pulse shim above). `gstreamer1-libav` supplies the AAC/Opus decoders
+# (`avdec_aac`, `avdec_opus`) YouTube-Music streams need — without it the
+# pipeline demuxes but decodes nothing and playback is silent.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     gstreamer1 \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
+    gstreamer1-libav \
     && dnf clean all
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
