@@ -332,6 +332,23 @@ impl ChatDoc {
                 },
             ),
             (
+                "m_clip",
+                NewMessage {
+                    author: "u_sora".into(),
+                    ts: m(64),
+                    text: "Screen recording of the tile-promotion motion — this is the feel I'm after:".into(),
+                    attachment: Some(Attachment::Video {
+                        name: "tile-promotion.webm".into(),
+                        path: "/var/workspace/design/tile-promotion.webm".into(),
+                        w: 1280,
+                        h: 720,
+                        size: 6_815_744,
+                    }),
+                    reactions: vec![("🔥".into(), vec!["u_me".into(), "u_aria".into()])],
+                    ..Default::default()
+                },
+            ),
+            (
                 "m_sora",
                 NewMessage {
                     author: "u_sora".into(),
@@ -544,6 +561,14 @@ impl ChatDoc {
                     let _ = doc.put(&a, "w", *w as i64);
                     let _ = doc.put(&a, "h", *h as i64);
                 }
+                Attachment::Video { name, path, w, h, size } => {
+                    let _ = doc.put(&a, "kind", "video");
+                    let _ = doc.put(&a, "name", name.as_str());
+                    let _ = doc.put(&a, "path", path.as_str());
+                    let _ = doc.put(&a, "w", *w as i64);
+                    let _ = doc.put(&a, "h", *h as i64);
+                    let _ = doc.put(&a, "size", *size as i64);
+                }
                 Attachment::File { name, path, size } => {
                     let _ = doc.put(&a, "kind", "file");
                     let _ = doc.put(&a, "name", name.as_str());
@@ -670,34 +695,70 @@ impl ChatDoc {
         Self::list_messages(doc, channel).iter().filter(|m| m.is_top_level()).count()
     }
 
-    /// The local peer's `read` watermark map (channel → count), created on
-    /// demand under its own user id.
-    fn read_map(doc: &mut AutoCommit) -> ObjId {
-        let read = get_or_map(doc, &ROOT, "read");
-        get_or_map(doc, &read, crate::model::ME)
+    /// Guarded upsert of a user record: writes each field only when it differs
+    /// from what's stored, so registering the local peer every frame doesn't
+    /// churn the document (which would spew empty collab deltas). Returns true
+    /// iff it wrote. This is how a peer that just adopted someone else's shared
+    /// document announces itself into the roster so others see its name/colour.
+    pub fn ensure_user(
+        doc: &mut AutoCommit,
+        id: &str,
+        name: &str,
+        initials: &str,
+        color: usize,
+        status: Presence,
+    ) -> bool {
+        let users = get_or_map(doc, &ROOT, "users");
+        let u = get_or_map(doc, &users, id);
+        let mut wrote = false;
+        if get_str(doc, &u, "name") != name {
+            let _ = doc.put(&u, "name", name);
+            wrote = true;
+        }
+        if get_str(doc, &u, "initials") != initials {
+            let _ = doc.put(&u, "initials", initials);
+            wrote = true;
+        }
+        if get_i64(doc, &u, "color_idx") != color as i64 {
+            let _ = doc.put(&u, "color_idx", color as i64);
+            wrote = true;
+        }
+        if get_str(doc, &u, "status") != status.as_str() {
+            let _ = doc.put(&u, "status", status.as_str());
+            wrote = true;
+        }
+        wrote
     }
 
-    /// The local peer's read watermark for `channel` (0 if never opened).
-    pub fn read_watermark(doc: &AutoCommit, channel: &str) -> i64 {
-        match map_at(doc, &ROOT, "read").and_then(|r| map_at(doc, &r, crate::model::ME)) {
+    /// The peer's `read` watermark map (channel → count), created on demand
+    /// under its own user id. Keyed by `user` so two peers never clobber each
+    /// other's unread badges.
+    fn read_map(doc: &mut AutoCommit, user: &str) -> ObjId {
+        let read = get_or_map(doc, &ROOT, "read");
+        get_or_map(doc, &read, user)
+    }
+
+    /// A peer's read watermark for `channel` (0 if never opened).
+    pub fn read_watermark(doc: &AutoCommit, channel: &str, user: &str) -> i64 {
+        match map_at(doc, &ROOT, "read").and_then(|r| map_at(doc, &r, user)) {
             Some(m) => get_i64(doc, &m, channel),
             None => 0,
         }
     }
 
-    /// Unread top-level messages in `channel` for the local peer.
-    pub fn unread_count(doc: &AutoCommit, channel: &str) -> u32 {
+    /// Unread top-level messages in `channel` for `user`.
+    pub fn unread_count(doc: &AutoCommit, channel: &str, user: &str) -> u32 {
         let total = Self::top_level_count(doc, channel) as i64;
-        (total - Self::read_watermark(doc, channel)).max(0) as u32
+        (total - Self::read_watermark(doc, channel, user)).max(0) as u32
     }
 
-    /// Mark `channel` read up to the present: advance the local peer's
-    /// watermark to the current top-level count. Idempotent — only writes when
-    /// the watermark actually moves, so viewing a channel doesn't churn the
-    /// document every frame.
-    pub fn mark_read(doc: &mut AutoCommit, channel: &str) {
+    /// Mark `channel` read up to the present: advance `user`'s watermark to the
+    /// current top-level count. Idempotent — only writes when the watermark
+    /// actually moves, so viewing a channel doesn't churn the document every
+    /// frame.
+    pub fn mark_read(doc: &mut AutoCommit, channel: &str, user: &str) {
         let total = Self::top_level_count(doc, channel) as i64;
-        let m = Self::read_map(doc);
+        let m = Self::read_map(doc, user);
         if get_i64(doc, &m, channel) != total {
             let _ = doc.put(&m, channel, total);
         }
@@ -934,6 +995,18 @@ impl ChatDoc {
         let _ = doc.put(&m, field, value);
     }
 
+    /// Publish `user`'s dialable media ticket into the shared voice membership.
+    /// This is the call's signalling write: every peer polling the `voice` map
+    /// then learns how to dial this peer's media transport. Guarded so a
+    /// re-announce with the same ticket doesn't churn the document.
+    pub fn voice_set_ticket(doc: &mut AutoCommit, channel: &str, user: &str, ticket: &str) {
+        let ch = Self::voice_channel_map(doc, channel);
+        let m = get_or_map(doc, &ch, user);
+        if get_str(doc, &m, "ticket") != ticket {
+            let _ = doc.put(&m, "ticket", ticket);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Readers
     // -----------------------------------------------------------------------
@@ -965,12 +1038,14 @@ impl ChatDoc {
             .keys(&ch)
             .filter_map(|user| {
                 let m = map_at(doc, &ch, &user)?;
+                let ticket = get_str(doc, &m, "ticket");
                 Some(VoiceMember {
                     user: user.clone(),
                     talking: get_bool(doc, &m, "talking"),
                     muted: get_bool(doc, &m, "muted"),
                     deafened: get_bool(doc, &m, "deafened"),
                     audio_only: get_bool(doc, &m, "audio_only"),
+                    ticket: if ticket.is_empty() { None } else { Some(ticket) },
                 })
             })
             .collect();
@@ -1123,6 +1198,13 @@ impl ChatDoc {
                 path: get_str(doc, &a, "path"),
                 w: get_i64(doc, &a, "w") as u32,
                 h: get_i64(doc, &a, "h") as u32,
+            }),
+            "video" => Some(Attachment::Video {
+                name: get_str(doc, &a, "name"),
+                path: get_str(doc, &a, "path"),
+                w: get_i64(doc, &a, "w") as u32,
+                h: get_i64(doc, &a, "h") as u32,
+                size: get_i64(doc, &a, "size") as u64,
             }),
             "file" => Some(Attachment::File {
                 name: get_str(doc, &a, "name"),
@@ -1362,20 +1444,20 @@ mod tests {
     #[test]
     fn unread_derives_from_the_read_watermark() {
         let mut doc = seeded();
-        // #design-crit has seven top-level messages (thread replies excluded).
-        assert_eq!(ChatDoc::top_level_count(&doc, "c_crit"), 7);
+        // #design-crit has eight top-level messages (thread replies excluded).
+        assert_eq!(ChatDoc::top_level_count(&doc, "c_crit"), 8);
         // Never opened → every top-level message is unread.
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 7);
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 8);
         // Reading it clears the badge…
-        ChatDoc::mark_read(&mut doc, "c_crit");
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 0);
+        ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 0);
         // …and a new message makes it unread again.
         ChatDoc::push_message(
             &mut doc,
             "c_crit",
             NewMessage { author: "u_aria".into(), ts: NOW, text: "one more".into(), ..Default::default() },
         );
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 1);
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1);
         // A threaded reply is not a top-level message, so it doesn't count.
         ChatDoc::push_message(
             &mut doc,
@@ -1388,7 +1470,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit"), 1, "thread replies don't bump unread");
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1, "thread replies don't bump unread");
     }
 
     #[test]
@@ -1396,10 +1478,73 @@ mod tests {
         // Reading a channel twice with no new messages must not append a new
         // change (the watermark write is guarded on a real value change).
         let mut doc = seeded();
-        ChatDoc::mark_read(&mut doc, "c_crit");
+        ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
         let heads = doc.get_heads();
-        ChatDoc::mark_read(&mut doc, "c_crit");
+        ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
         assert_eq!(doc.get_heads(), heads, "a no-op mark_read writes nothing");
+    }
+
+    #[test]
+    fn video_attachment_round_trips_through_the_crdt() {
+        // A video share references the FUSE path (no bytes in the CRDT) and
+        // reads back as a Video with its resolution + size intact.
+        let mut doc = seeded();
+        ChatDoc::push_message(
+            &mut doc,
+            "c_general",
+            NewMessage {
+                author: model::ME.into(),
+                ts: NOW,
+                attachment: Some(Attachment::Video {
+                    name: "demo.mp4".into(),
+                    path: "/var/workspace/clips/demo.mp4".into(),
+                    w: 1920,
+                    h: 1080,
+                    size: 4_200_000,
+                }),
+                ..Default::default()
+            },
+        );
+        let msgs = ChatDoc::list_messages(&doc, "c_general");
+        match msgs.last().and_then(|m| m.attachment.clone()) {
+            Some(Attachment::Video { name, path, w, h, size }) => {
+                assert_eq!(name, "demo.mp4");
+                assert_eq!(path, "/var/workspace/clips/demo.mp4");
+                assert_eq!((w, h), (1920, 1080));
+                assert_eq!(size, 4_200_000);
+            }
+            other => panic!("expected a Video attachment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_user_is_guarded_and_announces_a_peer() {
+        // Registering the local peer writes once, then no-ops (so it never
+        // churns the doc / spams empty collab deltas), and a fresh peer id is
+        // announced into the roster so others learn its name + colour.
+        let mut doc = seeded();
+        let wrote = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
+        assert!(wrote, "a new peer is announced");
+        assert!(ChatDoc::list_users(&doc).iter().any(|u| u.id == "u_bob" && u.name == "Bob"));
+        let again = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
+        assert!(!again, "an unchanged re-announce writes nothing");
+    }
+
+    #[test]
+    fn read_watermarks_are_independent_per_peer() {
+        // The exact multi-participant bug the identity work fixes: two peers
+        // must not clobber each other's unread badges. Alice reads a channel;
+        // Bob's unread for it is unaffected.
+        let mut doc = seeded();
+        let total = ChatDoc::top_level_count(&doc, "c_crit") as u32;
+        assert!(total > 0);
+        ChatDoc::mark_read(&mut doc, "c_crit", "u_alice");
+        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", "u_alice"), 0, "alice caught up");
+        assert_eq!(
+            ChatDoc::unread_count(&doc, "c_crit", "u_bob"),
+            total,
+            "bob's unread is untouched by alice reading"
+        );
     }
 
     #[test]

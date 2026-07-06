@@ -161,6 +161,13 @@ impl MediaEngine {
         self.transport.is_live()
     }
 
+    /// The local node's dialable media ticket, published into the shared voice
+    /// membership on join so peers can connect. `Some("sim://local")` for the
+    /// simulator; the live engine returns its iroh node ticket.
+    pub fn local_ticket(&self) -> Option<String> {
+        self.transport.local_ticket()
+    }
+
     pub fn transport_mut(&mut self) -> &mut (dyn MediaTransport + Send) {
         &mut *self.transport
     }
