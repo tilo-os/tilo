@@ -490,6 +490,7 @@ pub mod chart;            pub use chart::{Chart, Series, Sparkline};
 pub mod gauge;            pub use gauge::{RingGauge, BarGauge, GaugeThresholds};
 pub mod resizable_split;  pub use resizable_split::ResizableSplit;
 pub mod video_player;     pub use video_player::VideoPlayer;
+pub mod webview;          pub use webview::WebView;
 pub mod image_viewer;     pub use image_viewer::ImageViewer;
 pub mod tree_view;        pub use tree_view::TreeView;
 pub mod toggle_group;     pub use toggle_group::ToggleGroup;

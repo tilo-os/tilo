@@ -17,13 +17,19 @@ branchbox feature teardown my-feature
 
 ## How It Works
 
-BranchBox creates isolated workspaces for each feature using git worktrees:
+BranchBox creates isolated workspaces for each feature using git worktrees.
+
+**In this repository, all worktrees live under `.claude/worktrees/` inside the
+main checkout** — `quickdesktop/.claude/worktrees/<feature-name>` — not as
+siblings of the project directory. This applies to Claude/agent sessions and
+manual `git worktree add` alike; the directory is gitignored and shared build
+caches (`.claude/qos-*`) sit next to it.
 
 ```
-project/
-├── main/           # Main branch (you are here)
-├── my-feature/     # Feature worktree
-└── another-feature/
+quickdesktop/                          # Main checkout (main branch)
+└── .claude/worktrees/
+    ├── my-feature/                    # Feature worktree
+    └── another-feature/
 ```
 
 Each worktree:
