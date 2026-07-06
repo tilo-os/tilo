@@ -13,6 +13,7 @@ struct CommentMetrics {
 
 struct ToolbarLayout {
     open: Rect,
+    save: Rect,
     tools: Vec<(Tool, Rect)>,
     swatches: Vec<(Swatch, Rect)>,
     zoom_out: Rect,
@@ -86,10 +87,11 @@ impl PdfApp {
         let zoom_out = place(28.0, &mut rx);
         let right_start = zoom_out.x0;
 
-        // ---- left cluster: wordmark reserve + Open button ----
+        // ---- left cluster: wordmark reserve + Open + Save buttons ----
         let left_w = if self.tb_show_wordmark() { 150.0 } else { 26.0 };
         let open = row(tb.x0 + 16.0 + left_w + 8.0, bw);
-        let left_end = open.x1;
+        let save = row(open.x1 + gap, bw);
+        let left_end = save.x1;
 
         // ---- centre: tools, centred in the remaining span ----
         let n = Tool::ALL.len() as f64;
@@ -121,6 +123,7 @@ impl PdfApp {
 
         ToolbarLayout {
             open,
+            save,
             tools,
             swatches,
             zoom_out,
@@ -140,6 +143,7 @@ impl PdfApp {
         let lay = self.toolbar_layout();
         let mut out: Vec<(String, Rect)> = Vec::new();
         out.push(("Open a PDF…  (Ctrl O)".to_string(), lay.open));
+        out.push(("Save annotated PDF…  (Ctrl S)".to_string(), lay.save));
         for (t, r) in &lay.tools {
             out.push((format!("{}  ({})", t.label(), t.hotkey()), *r));
         }
@@ -282,6 +286,9 @@ impl PdfApp {
             self.refresh_text_lines(tr, theme);
         } else {
             self.text_lines.clear();
+            // Raster backend: refresh the real pdfium text layer for the
+            // visible pages so selection + search overlays line up with glyphs.
+            self.refresh_raster_text();
         }
 
         // Resolve which toolbar button (if any) the pointer is hovering and
@@ -319,6 +326,8 @@ impl PdfApp {
         // no in-app dialog to draw here.
         self.draw_context_menu(scene, base, tr, theme);
         self.draw_tooltip(scene, base, tr, theme);
+        // A transient toast (save confirmation, copy confirmation) on top.
+        self.draw_toast(scene, base, tr, theme);
 
         self.sidebar_hits = hits;
     }
@@ -381,6 +390,32 @@ impl PdfApp {
             rz.prune(page_bucket);
         }
         (page_imgs, thumb_imgs)
+    }
+
+    /// Populate `self.raster_text` with the pdfium text layer of the pages
+    /// currently in view (raster backend only). pdfium's own text-page cache
+    /// makes repeated frames cheap; only a page scrolling into view does work.
+    fn refresh_raster_text(&mut self) {
+        if self.raster.is_none() {
+            return;
+        }
+        let pageh = self.ph() * self.zoom();
+        let canvas = self.canvas_rect;
+        let origins = self.page_origins();
+        self.raster_text.clear();
+        let mut want = Vec::new();
+        for (i, o) in origins.iter().enumerate() {
+            if o.y > canvas.y1 || o.y + pageh < canvas.y0 {
+                continue;
+            }
+            want.push(i);
+        }
+        for i in want {
+            if let Some(rz) = self.raster.as_mut() {
+                let pt = rz.page_text(i);
+                self.raster_text.insert(i + 1, pt);
+            }
+        }
     }
 
     /// Populate `self.text_lines` for the pages currently in view. Cheap: the
@@ -600,6 +635,12 @@ impl PdfApp {
                 &self.signatures,
                 self.selected_anno.as_deref(),
             );
+
+            // Raster backend: draw search-hit + selection bands over the page
+            // image, using the real glyph geometry so they land on the text.
+            if self.raster.is_some() {
+                self.draw_text_overlays(scene, base, theme, page_num, *origin);
+            }
         }
 
         // Drag preview.
@@ -640,6 +681,83 @@ impl PdfApp {
         // kernel so they match the other document apps (they appear only when
         // the content overflows the viewport on that axis).
         self.viewport.draw_scrollbars(scene, base, theme);
+    }
+
+    /// Draw the raster text-layer overlays for one page: every search hit as a
+    /// translucent band (the active hit emphasised) and the live selection as
+    /// an accent band. All rectangles come from the real pdfium glyph boxes, so
+    /// they sit exactly over the printed characters.
+    fn draw_text_overlays(&self, scene: &mut Scene, base: Affine, theme: &Theme, page_num: usize, origin: Point) {
+        let Some(layer) = self.raster_text.get(&page_num) else { return };
+        let z = self.zoom();
+        let to_screen = |r: &PtRect| {
+            Rect::new(
+                origin.x + r.x * z,
+                origin.y + r.y * z,
+                origin.x + (r.x + r.w) * z,
+                origin.y + (r.y + r.h) * z,
+            )
+        };
+
+        // Search hits.
+        let hit_col = theme.tokens.colors.semantic.warning;
+        for (i, m) in self.raster_matches.iter().enumerate() {
+            if m.page != page_num {
+                continue;
+            }
+            let active = i == self.active_match;
+            for band in layer.bands_for_range(m.char_start, m.char_start + m.char_len) {
+                let sr = to_screen(&band);
+                let fill = if active { render::alpha(hit_col, 150) } else { render::alpha(hit_col, 70) };
+                scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(sr, 1.5));
+                if active {
+                    scene.stroke(&Stroke::new(1.25), base, hit_col, None, &RoundedRect::from_rect(sr, 1.5));
+                }
+            }
+        }
+
+        // Live selection.
+        if let Some(sel) = self.selection {
+            if sel.page == page_num && sel.is_active() {
+                let (a, b) = sel.range();
+                for band in layer.bands_for_range(a, b) {
+                    let sr = to_screen(&band);
+                    scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 70), None, &sr);
+                }
+            }
+        }
+    }
+
+    /// A transient toast pill (e.g. "Saved to …" or "Copied 42 characters")
+    /// centred near the bottom of the canvas. Set on an action, cleared by the
+    /// next document interaction (Esc, a new open/load).
+    fn draw_toast(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let Some(note) = self.status_note.as_deref() else { return };
+        if note.is_empty() {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let size = theme.tokens.typography.scale.sm;
+        let (tw, _) = tr.measure(note, size, None);
+        let pad_x = 14.0;
+        let w = (tw as f64 + 2.0 * pad_x).min(self.canvas_rect.width() - 24.0);
+        let h = 30.0;
+        let cx = (self.canvas_rect.x0 + self.canvas_rect.x1) / 2.0;
+        let y1 = self.canvas_rect.y1 - 18.0;
+        let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
+        let shape = RoundedRect::from_rect(r, theme.tokens.radii.full as f64);
+        let sh = RoundedRect::new(r.x0, r.y0 + 3.0, r.x1, r.y1 + 3.0, theme.tokens.radii.full as f64);
+        scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 70), None, &sh);
+        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &shape);
+        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &shape);
+        tr.draw_text(
+            scene,
+            note,
+            size,
+            c.text_primary,
+            base * Affine::translate((r.x0 + pad_x, vcenter(r, size))),
+            Some((w - 2.0 * pad_x) as f32),
+        );
     }
 
     // ---- thumbnail rail --------------------------------------------
@@ -768,6 +886,13 @@ impl PdfApp {
         self.icon_button_bg(scene, base, theme, lay.open, false, lay.open.contains(self.last_mouse));
         draw_folder_glyph(scene, base, icon_inset(lay.open), theme.text_primary);
 
+        // Save annotated PDF (tray/down-arrow). Dimmed until a document with the
+        // pdfium backend is open, since flattening needs pdfium.
+        let can_save = self.has_document && self.raster.is_some();
+        self.icon_button_bg(scene, base, theme, lay.save, false, can_save && lay.save.contains(self.last_mouse));
+        let save_col = if can_save { theme.text_primary } else { theme.text_dim };
+        draw_save_glyph(scene, base, icon_inset(lay.save), save_col);
+
         for (t, r) in &lay.tools {
             let active = *t == self.tool;
             let hovered = r.contains(self.last_mouse);
@@ -875,11 +1000,11 @@ impl PdfApp {
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &caret);
         }
 
-        // Match counter.
-        let counter = if self.matches.is_empty() {
+        // Match counter (spans whichever backend's hits are live).
+        let counter = if self.match_count() == 0 {
             if self.query.is_empty() { String::new() } else { "No matches".to_string() }
         } else {
-            format!("{} of {} matches", self.active_match + 1, self.matches.len())
+            format!("{} of {} matches", self.active_match + 1, self.match_count())
         };
         tr.draw_text(
             scene,
@@ -1595,6 +1720,32 @@ fn draw_folder_glyph(scene: &mut Scene, base: Affine, bounds: Rect, color: Color
     p.line_to((r.x1, r.y1));
     p.close_path();
     scene.stroke(&Stroke::new(1.6), base, color, None, &p);
+}
+
+/// A "save" glyph: a down arrow dropping into an open tray, within `bounds`.
+fn draw_save_glyph(scene: &mut Scene, base: Affine, bounds: Rect, color: Color) {
+    let r = bounds.inflate(-1.0, -1.0);
+    let cx = (r.x0 + r.x1) / 2.0;
+    // Down arrow (shaft + head) in the upper two-thirds.
+    let top = r.y0 + 1.0;
+    let mid = r.y0 + r.height() * 0.52;
+    scene.stroke(&Stroke::new(1.6), base, color, None, &Line::new((cx, top), (cx, mid)));
+    let head = {
+        let mut p = BezPath::new();
+        p.move_to((cx - r.width() * 0.22, mid - r.height() * 0.18));
+        p.line_to((cx, mid));
+        p.line_to((cx + r.width() * 0.22, mid - r.height() * 0.18));
+        p
+    };
+    scene.stroke(&Stroke::new(1.6), base, color, None, &head);
+    // Open tray along the bottom.
+    let ty = r.y1 - r.height() * 0.14;
+    let mut tray = BezPath::new();
+    tray.move_to((r.x0 + 1.0, r.y1 - r.height() * 0.34));
+    tray.line_to((r.x0 + 1.0, ty));
+    tray.line_to((r.x1 - 1.0, ty));
+    tray.line_to((r.x1 - 1.0, r.y1 - r.height() * 0.34));
+    scene.stroke(&Stroke::new(1.6), base, color, None, &tray);
 }
 
 fn draw_search_glyph(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
