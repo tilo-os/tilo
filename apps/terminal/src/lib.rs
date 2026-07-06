@@ -4,6 +4,10 @@
 
 pub use crate::inner::{Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer, TerminalWidget};
 
+/// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]
+/// without taking a direct dependency on `portable-pty`.
+pub use portable_pty::CommandBuilder;
+
 // The existing `main.rs` content becomes `inner.rs` in Task 5. For this task
 // we only need the re-export scaffolding. Until Task 5, we temporarily
 // `include!` the binary source — replaced by a proper module split next.

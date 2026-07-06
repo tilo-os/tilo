@@ -792,6 +792,14 @@ impl CodeApp {
         }
     }
 
+    /// The embedded terminal's current grid text, if a live terminal is
+    /// present. `None` before the Terminal tab is opened (or if the shell
+    /// failed to spawn). Used by `--shots` staging and the embed tests to read
+    /// the live shell session without a GPU scene.
+    pub fn shots_terminal_grid_text(&self) -> Option<String> {
+        self.terminal.as_ref().map(|t| t.grid_text())
+    }
+
     /// Stage a multi-word selection in the editor for the selection screenshot.
     pub fn shots_select_words(&mut self) {
         // Select a span on the first line that covers several words. Line 0 of
@@ -1512,6 +1520,51 @@ mod tests {
         let app = CodeApp::new();
         let active = app.session.active_buffer().unwrap();
         assert_eq!(active.name, "main.rs");
+    }
+
+    #[test]
+    fn ide_embeds_the_real_terminal_widget() {
+        // The IDE must embed the real system `TerminalWidget` as its integrated
+        // terminal — not ship a second, weaker emulator. Opening the Terminal
+        // dock tab spawns a live widget whose grid the panel hands its body to.
+        let mut app = CodeApp::new();
+        assert!(
+            app.shots_terminal_grid_text().is_none(),
+            "no terminal exists before the Terminal tab is opened"
+        );
+        app.shots_open_terminal();
+        assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+        assert!(
+            app.shots_terminal_grid_text().is_some(),
+            "opening the Terminal tab embeds a live TerminalWidget"
+        );
+    }
+
+    #[test]
+    fn ide_terminal_runs_a_command_and_shows_output() {
+        // End-to-end: open the embedded terminal, type a command, pump the
+        // app's `sync` (which drains the terminal's PTY), and prove the shell's
+        // output flowed back into the IDE's integrated terminal grid.
+        let mut app = CodeApp::new();
+        app.shots_open_terminal();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
+        let mut found = false;
+        for _ in 0..300 {
+            app.sync(&mut state.doc, &state.root);
+            if let Some(t) = app.shots_terminal_grid_text() {
+                if t.contains("IDE_TERM_OK") {
+                    found = true;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            found,
+            "the IDE's embedded terminal must run the typed command and show its output"
+        );
     }
 
     #[test]
