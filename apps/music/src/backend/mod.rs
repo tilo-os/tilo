@@ -31,6 +31,7 @@
 
 pub mod offline;
 pub mod potoken;
+pub mod proxy;
 
 #[cfg(feature = "live")]
 pub mod live;
@@ -161,6 +162,12 @@ pub struct ResolvedStream {
     pub size_bytes: u64,
     /// Stream duration in milliseconds, when known.
     pub duration_ms: u64,
+    /// A secondary source the audio engine falls back to when [`Self::url`]
+    /// yields no bytes. Set when `url` is a (fully-rangeable but sometimes-down)
+    /// Invidious proxy: the fallback is the direct googlevideo URL, which always
+    /// renders at least the first segment. `None` when `url` is already the
+    /// last-resort direct URL.
+    pub fallback_url: Option<String>,
 }
 
 /// Error surfaced by a backend. Stringly-typed on purpose — the UI only shows

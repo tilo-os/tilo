@@ -169,10 +169,13 @@ mod tests {
             video_id: "synthetic".into(),
         });
 
-        // Drain with a bounded wait — the worker replies on its own thread.
+        // Drain with a bounded wait — the worker replies on its own thread. A
+        // `live` build first probes the rangeable-source instances (a bounded
+        // few-second budget) before falling back, so give it comfortable slack;
+        // it breaks out the instant a terminal update lands.
         let mut announced = false;
         let mut failed_or_resolved = false;
-        for _ in 0..200 {
+        for _ in 0..2000 {
             for up in w.poll() {
                 match up {
                     StreamUpdate::Backend { .. } => announced = true,
