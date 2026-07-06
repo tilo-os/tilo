@@ -28,7 +28,7 @@ use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::text_selection::{
-    clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+    clipboard_copy, clipboard_paste, extend_span_drag, next_char_boundary, next_word_boundary,
     prev_char_boundary, prev_word_boundary, word_boundaries,
 };
 use crate::theme::Theme;
@@ -1106,22 +1106,11 @@ impl Widget for TextInput {
                             (anchor_lo, raw)
                         }
                         DragUnit::Word => {
+                            // Extend by whole words, keeping the double-clicked
+                            // word inside the selection — the shared rule the
+                            // reader uses too (`text_selection::extend_span_drag`).
                             let (w_start, w_end) = word_boundaries(&self.text, raw);
-                            if raw < anchor_lo {
-                                // Dragging left of the original word —
-                                // pin the anchor to the original word's
-                                // right edge, walk cursor to the left
-                                // edge of whichever word the pointer is
-                                // currently inside.
-                                (anchor_hi, w_start)
-                            } else {
-                                // Dragging right of (or inside) the
-                                // original word — pin the anchor to
-                                // the original word's left edge, walk
-                                // cursor to the right edge of the word
-                                // containing the pointer.
-                                (anchor_lo, w_end)
-                            }
+                            extend_span_drag(anchor_lo, anchor_hi, raw, w_start, w_end)
                         }
                         DragUnit::All => {
                             // Whole content is already selected; drag is

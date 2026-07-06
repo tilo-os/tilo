@@ -36,6 +36,7 @@ use vello::peniko::{
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::gesture::{DragSelect, Granularity};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget};
@@ -122,7 +123,11 @@ struct Hit {
 
 /// A position in the current chapter's flow: a block index and a character
 /// offset into that block's canonical text ([`crate::paginate::LaidBlock::text`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// `Ord` compares block-then-char, so ordering a document position is the same
+/// as ordering `(block, ch)` — this is what lets the shared word-drag rule
+/// ([`ui::extend_span_drag`]) work directly on `DocPos`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct DocPos {
     block: usize,
     ch: usize,
@@ -132,6 +137,16 @@ impl DocPos {
     fn key(&self) -> (usize, usize) {
         (self.block, self.ch)
     }
+}
+
+/// The unit an in-flight text-selection drag snaps to, set on press from the
+/// [`DragSelect`] click ladder: a single click drags at character granularity;
+/// a double/triple click drags by whole words so the selection always contains
+/// the double-clicked word and grows word-by-word. Mirrors `TextInput`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DragUnit {
+    Char,
+    Word,
 }
 
 /// A drag text selection: an anchor (where the drag started) and a head (where
@@ -366,10 +381,16 @@ pub struct BooksApp {
     /// Arbitrary drag text selection spanning paragraphs/pages, if any. Text
     /// selection is now the *only* annotation mechanism.
     sel: Option<TextSel>,
-    /// Timestamp + position of the last page press, for double-click (word
-    /// selection) detection.
-    last_click: Option<std::time::Instant>,
-    last_click_pos: Point,
+    /// The shared toolkit selection-gesture core: it owns the multi-click ladder
+    /// (single → double-word → triple), the timing/anchor rules, and reports the
+    /// drag granularity — so the reader never hand-rolls double-click detection.
+    drag_select: DragSelect,
+    /// The unit the in-flight drag snaps to (from the click ladder).
+    drag_unit: DragUnit,
+    /// The anchor span the current drag grows from: the pressed char for a
+    /// single-click drag, or the whole double-clicked word for a word drag. The
+    /// drag keeps this span inside the selection (see [`ui::extend_span_drag`]).
+    drag_anchor_span: (DocPos, DocPos),
     /// Whether the left button is currently down (for drag selection).
     mouse_down: bool,
     /// Screen point where the current press began.
@@ -546,8 +567,9 @@ impl BooksApp {
             notes_flap: FlapState::open_when_docked(),
             selected_block: None,
             sel: None,
-            last_click: None,
-            last_click_pos: Point::ZERO,
+            drag_select: DragSelect::new(),
+            drag_unit: DragUnit::Char,
+            drag_anchor_span: (DocPos { block: 0, ch: 0 }, DocPos { block: 0, ch: 0 }),
             mouse_down: false,
             press_pos: Point::ZERO,
             press_doc: None,
@@ -735,6 +757,56 @@ impl BooksApp {
                 self.view = View::Reader;
                 self.shot_settings =
                     Some(Settings { theme: ReadTheme::Dark, ..Settings::default() });
+            }
+            "light" => {
+                self.view = View::Reader;
+                self.shot_settings =
+                    Some(Settings { theme: ReadTheme::Light, ..Settings::default() });
+            }
+            "sepia" => {
+                self.view = View::Reader;
+                self.shot_settings =
+                    Some(Settings { theme: ReadTheme::Sepia, ..Settings::default() });
+            }
+            "hicontrast" => {
+                // The high-contrast reading scheme: true-black page, white ink.
+                self.view = View::Reader;
+                self.shot_settings =
+                    Some(Settings { theme: ReadTheme::HighContrast, ..Settings::default() });
+            }
+            "font-picker" => {
+                // The system-font family picker open over the font manager,
+                // listing the *real* installed families (via cosmic-text /
+                // fontconfig), each previewed in its own face.
+                self.view = View::Settings;
+                self.settings_tab = SettingsTab::Fonts;
+                self.font_picker = true;
+            }
+            "word-select" => {
+                // The end state of a double-click-word then drag-right-by-words:
+                // a clean selection that starts and ends exactly on word
+                // boundaries (snapped through the real block text).
+                self.demo = false;
+                self.view = View::Reader;
+                let block = 2usize;
+                if let Some(text) = self
+                    .library
+                    .first()
+                    .and_then(|b| b.chapters.first())
+                    .map(|c| c.block_text(block))
+                {
+                    let n = text.chars().count();
+                    if n > 6 {
+                        let (s, _) = ui::word_boundaries_chars(&text, 0);
+                        let target = (n / 3).clamp(6, 48).min(n - 1);
+                        let (_, e) = ui::word_boundaries_chars(&text, target);
+                        self.sel = Some(TextSel {
+                            anchor: DocPos { block, ch: s },
+                            head: DocPos { block, ch: e },
+                        });
+                        self.selected_block = Some(block);
+                    }
+                }
             }
             "settings-colours" => {
                 // The colour-scheme manager with a custom scheme present.
@@ -1886,6 +1958,20 @@ impl BooksApp {
         }
     }
 
+    /// The word span containing `p`, as a `(start, end)` [`DocPos`] pair within
+    /// `p`'s block — the reader's char-indexed mirror of the byte-based word
+    /// snapping `TextInput` uses. Powers word-granularity drag extension. Falls
+    /// back to a collapsed span at `p` when the block isn't laid out.
+    fn word_span_at(&self, p: DocPos) -> (DocPos, DocPos) {
+        if let Some(l) = self.layout.as_ref() {
+            if let Some(b) = l.blocks.iter().find(|b| b.index == p.block) {
+                let (s, e) = ui::word_boundaries_chars(&b.text, p.ch.min(b.char_len));
+                return (DocPos { block: p.block, ch: s }, DocPos { block: p.block, ch: e });
+            }
+        }
+        (p, p)
+    }
+
     /// Char length of a laid-out block (0 for separators / unknown).
     fn block_char_len(&self, block: usize) -> usize {
         self.layout
@@ -2232,8 +2318,19 @@ impl Widget for BooksApp {
                             self.dragging_sel = true;
                         }
                         if self.dragging_sel {
-                            if let Some(head) = self.hit_doc_pos(p) {
-                                let anchor = self.press_doc.unwrap();
+                            if let Some(raw) = self.hit_doc_pos(p) {
+                                let (lo, hi) = self.drag_anchor_span;
+                                // Extend by the drag's unit. Word drags keep the
+                                // double-clicked word inside the selection and grow
+                                // word-by-word via the shared toolkit rule; char
+                                // drags follow the pointer from the pressed anchor.
+                                let (anchor, head) = match self.drag_unit {
+                                    DragUnit::Char => (lo, raw),
+                                    DragUnit::Word => {
+                                        let (ws, we) = self.word_span_at(raw);
+                                        ui::extend_span_drag(lo, hi, raw, ws, we)
+                                    }
+                                };
                                 let sel = TextSel { anchor, head };
                                 self.sel = Some(sel);
                                 self.selected_block = Some(sel.ordered().0.block);
@@ -2293,41 +2390,67 @@ impl Widget for BooksApp {
                     }
                 }
 
-                // A press on page text (nothing else on top) either extends a
-                // word selection (double-click) or starts a fresh drag selection.
+                // A press on page text (nothing else on top) runs through the
+                // shared selection-gesture core: it laddders single → double
+                // (word) → triple and reports the granularity + whether Shift is
+                // extending, so the reader never re-derives double-click timing.
                 let on_page = self.view == View::Reader && top.is_none();
-                let now = std::time::Instant::now();
-                let is_dbl = on_page
-                    && self
-                        .last_click
-                        .map_or(false, |t| now.duration_since(t).as_millis() < 450)
-                    && (self.cursor - self.last_click_pos).hypot() < 6.0;
+                let shift = _modifiers.state().shift_key();
                 self.press_doc = if on_page { self.hit_doc_pos(self.cursor) } else { None };
                 self.press_hl_group = None;
+                let mut consumed_page = false;
                 if on_page {
-                    if is_dbl {
-                        if let Some(dp) = self.press_doc {
-                            self.select_word_at(dp);
+                    let intent = self.drag_select.press(self.cursor, shift);
+                    match intent.granularity {
+                        // Double/triple click: select the word under the press and
+                        // arm a word-granularity drag (so dragging beyond the word
+                        // extends by whole words, never resetting to the click).
+                        Granularity::Word | Granularity::Line => {
+                            if let Some(dp) = self.press_doc {
+                                self.select_word_at(dp);
+                                if let Some(s) = self.sel {
+                                    self.drag_anchor_span = s.ordered();
+                                    self.drag_unit = DragUnit::Word;
+                                    consumed_page = true;
+                                }
+                            }
                         }
-                    } else {
-                        self.sel = None; // fresh press clears any prior selection
-                        self.selected_block = None;
-                        // Remember whether the press landed inside a highlight so
-                        // a plain click (no drag) can open its comment overlay on
-                        // release. A drag from here still selects text instead.
-                        self.press_hl_group =
-                            self.press_doc.and_then(|dp| self.highlight_group_at(dp));
+                        Granularity::Char if intent.extend => {
+                            // Shift+click extends the live selection (or starts one
+                            // at the pressed caret) to the press, then drags at
+                            // char granularity from the original anchor.
+                            if let Some(dp) = self.press_doc {
+                                let anchor = self.sel.map(|s| s.anchor).unwrap_or(dp);
+                                let sel = TextSel { anchor, head: dp };
+                                self.sel = Some(sel);
+                                self.selected_block = Some(sel.ordered().0.block);
+                                self.drag_anchor_span = (anchor, anchor);
+                                self.drag_unit = DragUnit::Char;
+                                consumed_page = true;
+                            }
+                        }
+                        Granularity::Char => {
+                            self.sel = None; // fresh press clears any prior selection
+                            self.selected_block = None;
+                            self.drag_unit = DragUnit::Char;
+                            if let Some(dp) = self.press_doc {
+                                self.drag_anchor_span = (dp, dp);
+                            }
+                            // Remember whether the press landed inside a highlight so
+                            // a plain click (no drag) can open its comment overlay on
+                            // release. A drag from here still selects text instead.
+                            self.press_hl_group =
+                                self.press_doc.and_then(|dp| self.highlight_group_at(dp));
+                        }
                     }
                 }
-                self.last_click = Some(now);
-                self.last_click_pos = self.cursor;
                 if let Some(h) = top {
                     self.dispatch(h.action, doc);
                     self.refresh_from_doc(doc);
                     self.persist_progress(doc);
                     self.dirty = true;
                     *handled = true;
-                } else if on_page && is_dbl {
+                } else if consumed_page {
                     self.dirty = true;
                     *handled = true;
                 }
@@ -2338,6 +2461,7 @@ impl Widget for BooksApp {
                 ..
             } => {
                 self.mouse_down = false;
+                self.drag_select.release();
                 let was_drag = self.dragging_sel;
                 if self.pick_drag.take().is_some() {
                     self.dirty = true;
@@ -2382,14 +2506,15 @@ impl Widget for BooksApp {
                 // dominantly *horizontal* gesture (a tilt wheel or two-finger
                 // trackpad scroll) turns pages: scroll-right advances, scroll-left
                 // goes back — the same "forward is toward the end" mapping as the
-                // vertical wheel. winit reports a scroll-right as a *negative* x
-                // (positive x = content moves right = reveal content on the left),
-                // so both axes negate winit's value to get "forward is positive".
+                // vertical wheel. On this stack a physical scroll-RIGHT arrives as
+                // a *positive* x, so the horizontal axis is passed through as-is
+                // (`dx > 0` == right == forward); only the vertical is negated to
+                // make a downward scroll "forward".
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
-                        ((-*x as f64) * WHEEL_LINE_PX, (-*y as f64) * WHEEL_LINE_PX)
+                        ((*x as f64) * WHEEL_LINE_PX, (-*y as f64) * WHEEL_LINE_PX)
                     }
-                    MouseScrollDelta::PixelDelta(p) => (-p.x, -p.y),
+                    MouseScrollDelta::PixelDelta(p) => (p.x, -p.y),
                 };
                 let acted = if dx.abs() > dy.abs() {
                     self.handle_swipe(dx, doc)
@@ -2699,6 +2824,7 @@ impl BooksApp {
                     "1" => Some(Action::SetReadTheme(ReadTheme::Light)),
                     "2" => Some(Action::SetReadTheme(ReadTheme::Sepia)),
                     "3" => Some(Action::SetReadTheme(ReadTheme::Dark)),
+                    "4" => Some(Action::SetReadTheme(ReadTheme::HighContrast)),
                     "h" | "H" => self
                         .sel
                         .filter(|s| !s.is_empty())
@@ -5695,9 +5821,9 @@ mod interaction_tests {
     }
 
     /// Route a *horizontal* wheel/scroll through `handle_event`. `lines` is
-    /// winit's `LineDelta` x: positive means the content moves right (revealing
-    /// content on the left) — i.e. a **scroll-left** gesture — and negative is a
-    /// **scroll-right**. This is how a tilt wheel / two-finger scroll arrives.
+    /// winit's `LineDelta` x. On this stack a physical scroll-**right** arrives
+    /// as a **positive** x and a scroll-**left** as a negative x (the tilt wheel /
+    /// two-finger horizontal gesture), so positive `lines` here is a scroll-right.
     fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
         let mods = Modifiers::default();
         let taffy: TaffyTree<()> = TaffyTree::new();
@@ -5844,15 +5970,16 @@ mod interaction_tests {
     #[test]
     fn horizontal_scroll_right_turns_forward() {
         // The secondary/tilt wheel: scrolling RIGHT must advance (next page) and
-        // scrolling LEFT must go back — the inverse of the old mapping. winit
-        // reports a scroll-right as a *negative* LineDelta x.
+        // scrolling LEFT must go back. On this stack a physical scroll-right
+        // arrives as a POSITIVE LineDelta x (the previous mapping negated it,
+        // which is why scroll-right wrongly went backward).
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.view, View::Reader);
         let start = (app.chapter, app.page);
-        // Scroll right (negative x) advances forward.
-        assert!(hwheel(&mut app, &mut doc, -3.0), "scroll-right turned a page");
+        // Scroll right (positive x) advances forward.
+        assert!(hwheel(&mut app, &mut doc, 3.0), "scroll-right turned a page");
         let after_right = (app.chapter, app.page);
         assert!(after_right != start, "scroll-right advanced (forward)");
         // Position strictly moved forward (page or chapter increased).
@@ -5860,9 +5987,9 @@ mod interaction_tests {
             after_right.0 > start.0 || (after_right.0 == start.0 && after_right.1 > start.1),
             "scroll-right moved forward, not back: {start:?} -> {after_right:?}",
         );
-        // Scroll left (positive x) turns back.
+        // Scroll left (negative x) turns back.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        hwheel(&mut app, &mut doc, 3.0);
+        hwheel(&mut app, &mut doc, -3.0);
         let after_left = (app.chapter, app.page);
         assert!(after_left != after_right, "scroll-left turned back");
         assert!(
@@ -5904,15 +6031,15 @@ mod interaction_tests {
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        // All three built-in schemes start enabled and offered in quick settings.
-        assert_eq!(app.quick_scheme_pills().len(), 3);
+        // All four built-in schemes start enabled and offered in quick settings.
+        assert_eq!(app.quick_scheme_pills().len(), 4);
         // Toggle the Light scheme off through its manager row.
         let toggle = find_hit(&app, |a| matches!(a, Action::ToggleSchemeEnabled(id) if id.as_str() == "light"))
             .expect("scheme enable toggle");
         assert!(click(&mut app, &mut doc, toggle), "toggle handled");
         frame(&mut app, &mut doc, 1200.0, 820.0);
         let pills = app.quick_scheme_pills();
-        assert_eq!(pills.len(), 2, "a disabled scheme drops out of quick settings");
+        assert_eq!(pills.len(), 3, "a disabled scheme drops out of quick settings");
         assert!(!pills.iter().any(|p| p.label == "Light"), "Light is gone from quick settings");
     }
 
@@ -6944,6 +7071,160 @@ mod interaction_tests {
         assert!(
             BooksDoc::list_annotations(&doc).iter().all(|a| a.kind != AnnoKind::Highlight),
             "the highlight under the selection was deleted",
+        );
+    }
+
+    /// The core selection fix: double-clicking a word and then dragging must keep
+    /// the double-clicked word inside the selection and extend by whole *words* —
+    /// never resetting to the raw character the press landed on. Drives the real
+    /// press → drag → release path (the button stays down across the double-click).
+    #[test]
+    fn double_click_then_drag_extends_by_whole_words() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(app.sel_runs.len() > 3, "the page laid out real run geometry");
+
+        // A multi-char word (so the double-click centre lands *inside* it,
+        // strictly past its start) that has a later word in the same paragraph.
+        let runs = app.sel_runs.clone();
+        let r0 = runs
+            .iter()
+            .find(|r0| {
+                r0.cl >= 3 && runs.iter().any(|r| r.block == r0.block && r.cs > r0.cs + r0.cl)
+            })
+            .cloned()
+            .expect("a multi-char word with a later word after it");
+        let far = runs
+            .iter()
+            .filter(|r| r.block == r0.block && r.cs > r0.cs + r0.cl)
+            .min_by_key(|r| r.cs)
+            .cloned()
+            .expect("a later word in the same paragraph");
+        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let far_p = Point::new((far.x0 + far.x1) / 2.0, (far.y0 + far.y1) / 2.0);
+
+        // First click, then a second press at the same spot (a double-click) that
+        // stays DOWN — this is where the word gets selected and the word-drag arms.
+        ptr_move(&mut app, &mut doc, start);
+        ptr_down(&mut app, &mut doc);
+        ptr_up(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, start);
+        ptr_down(&mut app, &mut doc);
+        let word = app.sel.expect("the double-click selected a word");
+        assert_eq!(word.ordered().0.ch, r0.cs, "word selection starts at the word start");
+        assert_eq!(word.ordered().1.ch, r0.cs + r0.cl, "word selection ends at the word end");
+
+        // Now drag right to a later word while still held, then release.
+        ptr_move(&mut app, &mut doc, far_p);
+        ptr_up(&mut app, &mut doc);
+
+        let sel = app.sel.expect("the drag kept a selection");
+        let (s, e) = sel.ordered();
+        // The anchor did NOT reset to the mid-word click point: it is still the
+        // double-clicked word's *start* (this is exactly the reported bug).
+        assert_eq!(s.block, r0.block);
+        assert_eq!(s.ch, r0.cs, "anchor pinned to the word start, not the click char");
+        // The head extended by whole words to cover the far word entirely.
+        assert_eq!(e.ch, far.cs + far.cl, "head extended to the whole far word");
+        assert!(e.ch > r0.cs + r0.cl, "the selection grew past the original word");
+    }
+
+    /// Headline: the font control lists the reader's *real* installed system
+    /// families and, once picked, actually re-renders the book body in that
+    /// family. Drives the real enumeration + picker hit + apply path.
+    #[test]
+    fn system_font_picker_lists_real_families_and_applies_to_the_body() {
+        use crate::model::FontKind;
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        // Open the font manager's system-family picker.
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Fonts;
+        app.dispatch(Action::OpenFontPicker, &mut doc);
+        frame(&mut app, &mut doc, 1200.0, 860.0);
+
+        // The picker records an add-hit per installed family — real system fonts.
+        let listed: Vec<String> = app
+            .hits
+            .iter()
+            .filter_map(|h| match &h.action {
+                Action::AddSystemFont(f) => Some(f.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(!listed.is_empty(), "the picker lists installed system families");
+        // They are genuinely the renderer's enumerated families, not a hardcoded set.
+        let real = TextRenderer::new().system_families();
+        assert!(!real.is_empty(), "the text system enumerates installed families");
+        assert!(
+            listed.iter().all(|f| real.contains(f)),
+            "every listed family is a real installed family",
+        );
+
+        // Click one family's real hit → it registers as a Named face.
+        let fam = listed[0].clone();
+        let hit = find_hit(&app, |a| matches!(a, Action::AddSystemFont(f) if f == &fam))
+            .expect("the chosen family has a clickable row");
+        assert!(click(&mut app, &mut doc, hit), "adding the system font handled");
+        let entry = BooksDoc::read_fonts(&doc)
+            .into_iter()
+            .find(|f| f.kind == FontKind::Named(fam.clone()))
+            .expect("the family is now a registered reading font");
+
+        // Select it as the reading font → the body font resolves to that family.
+        app.dispatch(Action::SetFont(entry.id.clone()), &mut doc);
+        app.refresh_from_doc(&doc);
+        assert_eq!(app.active_font().kind, FontKind::Named(fam.clone()));
+        let (choice, _mult, _sig, mono) = app.body_font();
+        assert_eq!(
+            choice,
+            FontChoice::Named(fam.clone()),
+            "the book body re-renders in the chosen installed family",
+        );
+        assert!(!mono, "a named proportional family is not monospace");
+    }
+
+    /// Headline: a chosen colour scheme applies live to the reading view. Asserts
+    /// the real `resolve_palette` the draw pass uses — for the built-in
+    /// high-contrast tint, the de-browned dark, and a custom scheme.
+    #[test]
+    fn selecting_a_scheme_applies_its_palette_to_the_reading_view() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let theme = Theme::dark();
+
+        // High-contrast built-in tint → true-black page, white ink.
+        app.dispatch(Action::SetReadTheme(ReadTheme::HighContrast), &mut doc);
+        app.refresh_from_doc(&doc);
+        let pal = app.resolve_palette(&theme);
+        assert!(pal.dark, "high contrast is a dark reading mode");
+        assert!(pal.page.r() < 6 && pal.page.g() < 6 && pal.page.b() < 6, "a true-black page");
+        assert!(
+            pal.ink.r() > 250 && pal.ink.g() > 250 && pal.ink.b() > 250,
+            "white ink for maximum contrast",
+        );
+
+        // Dark tint → a neutral charcoal, NOT a brown/sepia (R ≈ B).
+        app.dispatch(Action::SetReadTheme(ReadTheme::Dark), &mut doc);
+        app.refresh_from_doc(&doc);
+        let dark = app.resolve_palette(&theme);
+        assert!(dark.dark);
+        let warm = dark.page.r() as i32 - dark.page.b() as i32;
+        assert!((0..=8).contains(&warm), "dark page is a neutral charcoal, not brown (Δrb={warm})");
+
+        // A custom scheme's page colour drives the reading view directly.
+        let mut schemes = default_schemes();
+        schemes.push(ColorScheme::from_bg("scheme_z", "Ocean", [0x0A, 0x22, 0x33]));
+        BooksDoc::write_schemes(&mut doc, &schemes);
+        app.dispatch(Action::SetScheme("scheme_z".into()), &mut doc);
+        app.refresh_from_doc(&doc);
+        let ocean = app.resolve_palette(&theme);
+        assert_eq!(
+            (ocean.page.r(), ocean.page.g(), ocean.page.b()),
+            (0x0A, 0x22, 0x33),
+            "the custom scheme's page colour is what the reading view paints",
         );
     }
 }
