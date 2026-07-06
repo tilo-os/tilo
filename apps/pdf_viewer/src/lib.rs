@@ -21,6 +21,7 @@ pub mod doc;
 pub mod model;
 pub mod portal;
 pub mod render;
+pub mod text_layer;
 
 pub use app::PdfApp;
 pub use doc::PdfDoc;
