@@ -26,6 +26,10 @@ pub struct PickEntry {
     pub path: PathBuf,
     pub name: String,
     pub size: u64,
+    /// True when this is a video container — the composer posts it as a
+    /// [`crate::model::Attachment::Video`] (inline play card) rather than an
+    /// image thumbnail.
+    pub is_video: bool,
 }
 
 impl PickEntry {
@@ -39,26 +43,56 @@ impl PickEntry {
 /// `image` dependency).
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
-/// Whether `name` looks like a shareable image by extension.
-pub fn is_image_name(name: &str) -> bool {
+/// Video containers the picker offers. These post as inline video cards; the
+/// bytes hydrate from the FUSE mount by reference (no decode in the default
+/// build — see [`crate::model::Attachment::Video`]).
+const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi", "ogv"];
+
+fn has_ext(name: &str, exts: &[&str]) -> bool {
     match name.rsplit_once('.') {
-        Some((_, ext)) => IMAGE_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e)),
+        Some((_, ext)) => exts.iter().any(|e| ext.eq_ignore_ascii_case(e)),
         None => false,
     }
 }
 
-/// List shareable images in `dir` — its top level plus one level of
-/// subdirectories — sorted by name and capped so a large workspace can't stall
-/// the picker. A missing or unreadable directory yields an empty list.
+/// Whether `name` looks like a shareable image by extension.
+pub fn is_image_name(name: &str) -> bool {
+    has_ext(name, IMAGE_EXTS)
+}
+
+/// Whether `name` looks like a shareable video by extension.
+pub fn is_video_name(name: &str) -> bool {
+    has_ext(name, VIDEO_EXTS)
+}
+
+/// Whether `name` is any shareable media (image or video).
+pub fn is_media_name(name: &str) -> bool {
+    is_image_name(name) || is_video_name(name)
+}
+
+/// List shareable images only. Retained for callers/tests that specifically
+/// want the image set.
 pub fn list_images(dir: &Path) -> Vec<PickEntry> {
+    list_filtered(dir, is_image_name)
+}
+
+/// List shareable media (images **and** videos) in `dir` — its top level plus
+/// one level of subdirectories — sorted by name and capped so a large
+/// workspace can't stall the picker. A missing/unreadable directory yields an
+/// empty list. This is what the composer's "+" browses.
+pub fn list_media(dir: &Path) -> Vec<PickEntry> {
+    list_filtered(dir, is_media_name)
+}
+
+fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
     let mut out = Vec::new();
-    collect_images(dir, 1, &mut out);
+    collect(dir, 1, accept, &mut out);
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     out.truncate(60);
     out
 }
 
-fn collect_images(dir: &Path, depth: usize, out: &mut Vec<PickEntry>) {
+fn collect(dir: &Path, depth: usize, accept: fn(&str) -> bool, out: &mut Vec<PickEntry>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
         if out.len() >= 200 {
@@ -68,16 +102,17 @@ fn collect_images(dir: &Path, depth: usize, out: &mut Vec<PickEntry>) {
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_dir() {
             if depth > 0 {
-                collect_images(&path, depth - 1, out);
+                collect(&path, depth - 1, accept, out);
             }
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !is_image_name(&name) {
+        if !accept(&name) {
             continue;
         }
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        out.push(PickEntry { path, name, size });
+        let is_video = is_video_name(&name);
+        out.push(PickEntry { path, name, size, is_video });
     }
 }
 
@@ -113,7 +148,35 @@ mod tests {
         assert_eq!(entries.len(), 1, "only the image is offered");
         assert_eq!(entries[0].name, "shot.png");
         assert!(entries[0].size > 0);
+        assert!(!entries[0].is_video);
         assert_eq!(image_dimensions(&png), Some((320, 200)), "real header dims");
+    }
+
+    #[test]
+    fn list_media_offers_images_and_videos_and_flags_them() {
+        let dir = tempfile::tempdir().unwrap();
+        write_png(dir.path(), "shot.png", 64, 64);
+        std::fs::write(dir.path().join("clip.mp4"), b"\x00\x00\x00\x18ftypmp42").unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"nope").unwrap();
+
+        let entries = list_media(dir.path());
+        assert_eq!(entries.len(), 2, "the image and the video are both offered, the .md is not");
+        let vid = entries.iter().find(|e| e.name == "clip.mp4").expect("video listed");
+        assert!(vid.is_video, "the video is flagged so it posts as a video card");
+        let img = entries.iter().find(|e| e.name == "shot.png").expect("image listed");
+        assert!(!img.is_video);
+        // The image-only listing excludes the video.
+        assert!(list_images(dir.path()).iter().all(|e| e.name != "clip.mp4"));
+    }
+
+    #[test]
+    fn video_extension_detection() {
+        assert!(is_video_name("demo.MP4"));
+        assert!(is_video_name("capture.webm"));
+        assert!(!is_video_name("photo.png"));
+        assert!(is_media_name("photo.png"));
+        assert!(is_media_name("demo.mov"));
+        assert!(!is_media_name("readme.txt"));
     }
 
     #[test]
