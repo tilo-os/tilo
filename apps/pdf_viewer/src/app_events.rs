@@ -20,6 +20,11 @@ impl PdfApp {
 
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
+        // Switching tools drops any live text selection so a lingering
+        // highlight doesn't sit under the next tool's work.
+        if t != Tool::Select {
+            self.clear_selection();
+        }
         if t == Tool::Sign {
             self.sidebar_tab = SidebarTab::Signatures;
             if !self.show_sidebar {
@@ -62,6 +67,7 @@ impl PdfApp {
         if self.search_active {
             self.search_active = false;
             self.matches.clear();
+            self.raster_matches.clear();
             self.reflow();
         }
     }
@@ -107,6 +113,9 @@ impl PdfApp {
         let lay = self.toolbar_layout();
         if lay.open.contains(p) {
             return Some(ToolbarHit::Open);
+        }
+        if lay.save.contains(p) {
+            return Some(ToolbarHit::Save);
         }
         for (t, r) in &lay.tools {
             if r.contains(p) {
@@ -178,6 +187,7 @@ impl PdfApp {
             ToolbarHit::ToggleRail => self.toggle_rail(),
             ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
             ToolbarHit::Open => self.request_open_via_portal(),
+            ToolbarHit::Save => self.request_save_via_portal(),
         }
     }
 
@@ -312,15 +322,22 @@ impl PdfApp {
         }
         match self.hit_page(p) {
             Some((page, pt)) => match self.tool {
-                // Select arms a pan-or-click: a press that doesn't move is a
-                // selection; a press that drags pans the canvas.
+                // Select arms one of three gestures. Over real text on a raster
+                // page it begins a text selection; otherwise it is a pan-or-click
+                // (a press that doesn't move is a selection of markup under it; a
+                // press that drags pans the canvas).
                 Tool::Select => {
-                    self.pan = Some(PanState {
-                        start: p,
-                        scroll_x0: self.scroll_x(),
-                        scroll_y0: self.scroll_y(),
-                        moved: false,
-                    });
+                    if self.raster.is_some() && self.begin_selection(page, pt) {
+                        // Text selection armed; motion extends it, release ends it.
+                    } else {
+                        self.clear_selection();
+                        self.pan = Some(PanState {
+                            start: p,
+                            scroll_x0: self.scroll_x(),
+                            scroll_y0: self.scroll_y(),
+                            moved: false,
+                        });
+                    }
                     self.dirty = true;
                 }
                 Tool::Highlight | Tool::Ink => {
@@ -338,6 +355,7 @@ impl PdfApp {
             },
             None => {
                 // Empty canvas: with Select, start a pan; otherwise clear.
+                self.clear_selection();
                 if matches!(self.tool, Tool::Select) {
                     self.pan = Some(PanState {
                         start: p,
@@ -394,6 +412,17 @@ impl PdfApp {
                     self.reflow();
                     self.dirty = true;
                     return;
+                }
+
+                // Text selection drag (Select tool over real text). Map the
+                // pointer onto the selection's page even past the card edge so
+                // the drag can reach the end of a line.
+                if let Some(sel) = self.selection {
+                    if sel.dragging {
+                        let pt = self.page_point(sel.page, p);
+                        self.update_selection(sel.page, pt);
+                        return;
+                    }
                 }
 
                 // Drag-to-pan (Select tool).
@@ -509,7 +538,18 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.rail_drag.take().is_some() {
+                if self.selection.map(|s| s.dragging).unwrap_or(false) {
+                    // End a text-selection drag. A bare click (no drag) selects
+                    // nothing textual, so also let it pick markup underneath.
+                    let was_active = self.selection.map(|s| s.is_active()).unwrap_or(false);
+                    self.finish_selection();
+                    if !was_active {
+                        if let Some((page, pt)) = self.hit_page(self.last_mouse) {
+                            self.select_at(page, pt);
+                        }
+                    }
+                    *handled = true;
+                } else if self.rail_drag.take().is_some() {
                     self.dirty = true;
                     *handled = true;
                 } else if let Some(pan) = self.pan.take() {
@@ -698,6 +738,19 @@ impl PdfApp {
                         *handled = true;
                         return;
                     }
+                    "c" | "C" => {
+                        // Copy the live text selection, if any. Falls through
+                        // when nothing is selected so the key is a harmless no-op.
+                        if self.copy_selection() {
+                            *handled = true;
+                            return;
+                        }
+                    }
+                    "s" | "S" => {
+                        self.request_save_via_portal();
+                        *handled = true;
+                        return;
+                    }
                     _ => {}
                 }
             }
@@ -768,6 +821,8 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.selected_sig = None;
                 self.context_menu = None;
+                self.clear_selection();
+                self.status_note = None;
                 self.dirty = true;
                 *handled = true;
             }
