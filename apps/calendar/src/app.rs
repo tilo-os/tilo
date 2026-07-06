@@ -60,28 +60,56 @@ const NOTES_TOP_OFFSET: f64 = 296.0;
 const DAY_START: i64 = 7;
 const DAY_END: i64 = 22;
 
-/// Width at/above which the calendar shows its full side-by-side layout
-/// (persistent sidebar + calendar view + detail panel). Below it the app
-/// collapses to a narrow single-pane: the sidebar becomes an overlay flap and
-/// the detail is pushed over the calendar as its own screen. Driven purely by
-/// the allocated window width (see [`CalendarApp::relayout`]).
-const WIDE_BREAKPOINT: f64 = 980.0;
-/// Detail panel width when it sits beside the calendar (wide layout). In the
-/// narrow layout the detail screen takes the whole content width instead.
-const DETAIL_W_WIDE: f64 = 392.0;
-/// Notes editor column width. Fixed (rather than tracking the detail width) so
-/// the taffy-registered editor node has a stable size across frames; the
-/// narrow detail screen simply left-aligns the same column.
-const NOTES_W: f64 = DETAIL_W_WIDE - 2.0 * DETAIL_PAD;
+/// Width at/above which the sidebar is an inline persistent panel. Below it the
+/// sidebar becomes an overlay drawer (see [`SidebarMode`] and
+/// [`CalendarApp::relayout`]).
+const SIDEBAR_PERSISTENT_MIN: f64 = 900.0;
+/// Below this window width the overlay sidebar drawer covers the WHOLE window
+/// (a full-screen page) rather than a 252px flap over a dimmed calendar — more
+/// readable on phone-width windows.
+const SIDEBAR_FULLSCREEN_MAX: f64 = 560.0;
+/// Width at/above which the event/task editor opens as a centered modal
+/// **overlay** floating over the still-visible calendar. Below it the editor
+/// takes the whole screen as its own pushed page — comfortable on narrow
+/// windows where a floating card would be cramped.
+const EDITOR_OVERLAY_MIN: f64 = 640.0;
+
+/// Modal editor card width (overlay presentation) and the derived body column.
+const MODAL_W: f64 = 468.0;
+/// Notes editor / form column width inside the modal card. Fixed so the
+/// taffy-registered editor node has a stable size across frames.
+const MODAL_BODY_W: f64 = MODAL_W - 2.0 * DETAIL_PAD;
+/// Minimum gap kept between the modal card and the window edges.
+const MODAL_MARGIN: f64 = 40.0;
+/// Cap on the modal card height so it stays a card, not a full-height column.
+const MODAL_MAX_H: f64 = 720.0;
+
+/// Topbar view-switcher metrics, shared by the draw pass and the fit check so
+/// the two never disagree about whether the switcher fits.
+const SEG_CELL_W: f64 = 56.0;
+const SEG_TOTAL_W: f64 = SEG_CELL_W * 4.0;
+const NEW_BTN_W: f64 = 60.0;
+/// Minimum horizontal room the period title needs beside the switcher before
+/// the switcher folds out of the topbar into the sidebar.
+const TITLE_MIN_W: f64 = 80.0;
 
 /// How the calendars/smart-lists sidebar is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SidebarMode {
     /// Inline, always visible, occupies the left edge (wide windows).
     Persistent,
-    /// Floats over the content behind a scrim; toggled open, hidden by default
-    /// (narrow windows).
+    /// Floats over the content behind a scrim; toggled open, hidden by default.
+    /// A 252px flap at tablet width, a full-window page at phone width.
     Overlay,
+}
+
+/// How the event/task detail editor is presented at the current width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DetailMode {
+    /// A centered modal card floating over the still-visible calendar (wide).
+    Overlay,
+    /// The editor takes the whole content area as its own pushed page (narrow).
+    FullScreen,
 }
 
 /// In the narrow layout the content area is a two-screen navigation stack: the
@@ -150,6 +178,14 @@ enum Action {
     FocusField(FormField),
     /// Dismiss any open form popover (scrim / outside click).
     ClosePopover,
+    /// Delete an event from the model + CRDT (and queue a CalDAV delete for a
+    /// synced event). Fired by the editor's trash button and the Delete key.
+    DeleteEvent(Id),
+    /// Delete a task (and its subtasks) from the model + CRDT.
+    DeleteTask(Id),
+    /// Absorb a click without acting on it — the modal card's own backing, so a
+    /// press on the card padding doesn't fall through to the dismiss scrim.
+    Noop,
 }
 
 /// Which transient popover is floating over the event form, if any. Only one is
@@ -267,8 +303,14 @@ pub struct CalendarApp {
     /// lets the calendar + detail reclaim its width; the overlay flap uses
     /// `sidebar_open` instead.
     sidebar_collapsed: bool,
-    /// Which narrow screen is showing (only meaningful below the breakpoint).
+    /// Which narrow screen is showing (only meaningful when the editor is
+    /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
+    /// How the detail editor is presented — recomputed every layout from width.
+    detail_mode: DetailMode,
+    /// Whether the topbar has room for the segmented view switcher. When it
+    /// doesn't, the switcher folds into the sidebar/flap. Recomputed per layout.
+    switcher_in_topbar: bool,
 
     // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
@@ -298,7 +340,10 @@ pub struct CalendarApp {
     /// A finished background pass delivers `(pull result, outcome, pushed ids)`
     /// — the queued events that uploaded successfully, so they can be cleared
     /// from the outbox.
-    sync_rx: Option<std::sync::mpsc::Receiver<(caldav::SyncResult, SyncOutcome, Vec<Id>)>>,
+    /// Delivers `(pull result, outcome, pushed uids, deleted uids)` — the
+    /// events that uploaded and the ones the server confirmed removed, so both
+    /// outboxes can be cleared.
+    sync_rx: Option<std::sync::mpsc::Receiver<(caldav::SyncResult, SyncOutcome, Vec<Id>, Vec<Id>)>>,
     /// True while a background sync is running, which keeps the event loop
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
@@ -384,12 +429,14 @@ impl CalendarApp {
             } else {
                 NarrowScreen::Calendar
             },
+            detail_mode: DetailMode::Overlay,
+            switcher_in_topbar: true,
             rect: Rect::ZERO,
             sidebar_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
             notes_origin: Point::new(-10000.0, -10000.0),
-            notes_w: DETAIL_W_WIDE - 2.0 * DETAIL_PAD,
+            notes_w: MODAL_BODY_W,
             editor_node: None,
             built_notes_w: -1.0,
             hits: Vec::new(),
@@ -483,16 +530,19 @@ impl CalendarApp {
             return;
         }
 
-        // Live pull + push on a background thread; the result lands via
-        // `poll_sync`. Queued local events (created on a remote calendar) are
-        // uploaded first, then the collections are pulled.
+        // Live delete + push + pull on a background thread; the result lands via
+        // `poll_sync`. Remote deletions go out first (so a re-pull can't
+        // resurrect a just-deleted event), then queued uploads, then the
+        // collections are pulled.
+        let delete_jobs = self.gather_delete_jobs(doc);
         let push_jobs = self.gather_push_jobs(doc);
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
         std::thread::spawn(move || {
+            let deleted = caldav::delete_all(&delete_jobs);
             let pushed = caldav::push_all(&push_jobs);
             let (result, outcome) = caldav::sync_all(&inputs, today);
-            let _ = tx.send((result, outcome, pushed));
+            let _ = tx.send((result, outcome, pushed, deleted));
         });
         self.sync_rx = Some(rx);
         self.syncing = true;
@@ -508,12 +558,16 @@ impl CalendarApp {
             return;
         };
         match rx.try_recv() {
-            Ok((result, outcome, pushed)) => {
+            Ok((result, outcome, pushed, deleted)) => {
                 self.sync_rx = None;
                 self.syncing = false;
-                // Clear successfully-uploaded events from the outbox.
+                // Clear successfully-uploaded events from the push outbox and
+                // server-confirmed removals from the delete outbox.
                 for id in pushed {
                     CalDoc::dequeue_push(doc, id);
+                }
+                for id in deleted {
+                    CalDoc::dequeue_delete(doc, id);
                 }
                 self.apply_sync_result(result, outcome, doc);
                 // A landed pull mutated the document — persist it.
@@ -781,16 +835,104 @@ impl CalendarApp {
         self.open_detail();
     }
 
-    /// Open the detail panel for the current selection. In the narrow layout
-    /// this pushes the detail screen over the calendar and closes the flap; in
-    /// the wide layout the panel just appears beside the calendar.
+    /// Open the detail editor for the current selection. In the full-screen
+    /// layout this pushes the editor page over the calendar; in the overlay
+    /// layout the modal card floats over it. Either way an open overlay
+    /// sidebar flap is dismissed so it isn't left covering the editor.
     fn open_detail(&mut self) {
         self.detail_open = true;
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+        if matches!(self.detail_mode, DetailMode::FullScreen) {
             self.narrow_screen = NarrowScreen::Detail;
+        }
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
             self.sidebar_open = false;
         }
         self.dirty = true;
+    }
+
+    /// Delete an event: drop it from the model + CRDT, clear any pending upload,
+    /// and — for an event synced from a configured remote calendar — queue a
+    /// CalDAV delete so the server copy is removed on the next sync. Closes the
+    /// editor if the deleted event was the one on screen.
+    fn delete_event(&mut self, id: Id, doc: &mut AutoCommit) {
+        let cal_id = self.model.event(id).and_then(|e| e.calendar_id.clone());
+        self.model.events.retain(|e| e.id != id);
+        CalDoc::delete_event(doc, id);
+        // A queued upload for a now-deleted event is moot.
+        CalDoc::dequeue_push(doc, id);
+        // Only queue a remote delete for a calendar we still know about;
+        // otherwise there is nothing real to address.
+        if let Some(cid) = cal_id {
+            let known = self
+                .accounts
+                .accounts
+                .iter()
+                .any(|a| a.calendars.iter().any(|c| c.id == cid));
+            if known {
+                CalDoc::enqueue_delete(doc, &cid, id);
+            }
+        }
+        if self.selection == Some(Sel::Event(id)) {
+            self.close_after_delete();
+        }
+        self.status = Some("Event deleted".into());
+        self.force_persist = true;
+        self.dirty = true;
+    }
+
+    /// Delete a task (and any subtasks) from the model + CRDT. Closes the editor
+    /// if the deleted task was the one on screen.
+    fn delete_task(&mut self, id: Id, doc: &mut AutoCommit) {
+        let victims: Vec<Id> = std::iter::once(id)
+            .chain(
+                self.model
+                    .tasks
+                    .iter()
+                    .filter(|t| t.parent == Some(id))
+                    .map(|t| t.id),
+            )
+            .collect();
+        self.model.tasks.retain(|t| !victims.contains(&t.id));
+        for v in &victims {
+            CalDoc::delete_task(doc, *v);
+        }
+        if matches!(self.selection, Some(Sel::Task(sel)) if victims.contains(&sel)) {
+            self.close_after_delete();
+        }
+        self.status = Some("Task deleted".into());
+        self.force_persist = true;
+        self.dirty = true;
+    }
+
+    /// Shared teardown after deleting the on-screen item: drop the selection,
+    /// close the editor, and return to the calendar.
+    fn close_after_delete(&mut self) {
+        self.selection = None;
+        self.detail_open = false;
+        self.narrow_screen = NarrowScreen::Calendar;
+        self.notes_editor.set_focus(false);
+        self.title_input.set_focus(false);
+        self.location_input.set_focus(false);
+    }
+
+    /// Resolve the delete outbox into concrete CalDAV delete jobs: each queued
+    /// `(calendar_id, uid)` paired with the account config + remote calendar it
+    /// targets. Entries whose calendar is no longer configured are skipped and
+    /// left queued for a later attempt.
+    fn gather_delete_jobs(
+        &self,
+        doc: &AutoCommit,
+    ) -> Vec<(crate::account::CalDavConfig, crate::account::RemoteCalendar, Id)> {
+        let mut jobs = Vec::new();
+        for (cal_id, uid) in CalDoc::delete_outbox(doc) {
+            for acc in &self.accounts.accounts {
+                if let Some(cal) = acc.calendars.iter().find(|c| c.id == cal_id) {
+                    jobs.push((acc.config.clone(), cal.clone(), uid));
+                    break;
+                }
+            }
+        }
+        jobs
     }
 
     fn toggle_task(&mut self, id: Id, doc: &mut AutoCommit) {
@@ -1263,22 +1405,43 @@ impl CalendarApp {
     }
 
     /// Recompute every layout rect from the allocated window size. Called from
-    /// `apply_layout`. This is the one place breakpoints are decided:
+    /// `apply_layout`. This is the one place breakpoints are decided, along two
+    /// independent axes:
     ///
-    /// * **wide** (`width >= WIDE_BREAKPOINT`): persistent sidebar on the left,
-    ///   calendar view in the middle, detail panel docked on the right.
-    /// * **narrow**: the sidebar becomes an overlay flap (hidden by default),
-    ///   the calendar view goes full-width, and the detail is its own screen
-    ///   pushed over the calendar — only one of {calendar, detail} is laid out
-    ///   at a time (the other gets a zero rect and is neither drawn nor hit).
+    /// * **sidebar** — persistent inline panel at/above [`SIDEBAR_PERSISTENT_MIN`];
+    ///   an overlay drawer below it (a 252px flap, or a full-window page below
+    ///   [`SIDEBAR_FULLSCREEN_MAX`]).
+    /// * **editor** — a centered modal card floating over the still-visible
+    ///   calendar at/above [`EDITOR_OVERLAY_MIN`]; a full-screen page that
+    ///   replaces the calendar below it (only one of {calendar, detail} is laid
+    ///   out at a time in that mode).
     fn relayout(&mut self) {
         let r = self.rect;
-        let wide = r.width() >= WIDE_BREAKPOINT;
-        self.sidebar_mode = if wide { SidebarMode::Persistent } else { SidebarMode::Overlay };
+        // Two independent responsive axes, each re-derived from the current
+        // width so a live resize reflows both: how the sidebar is presented,
+        // and how the detail editor is presented.
+        self.sidebar_mode = if r.width() >= SIDEBAR_PERSISTENT_MIN {
+            SidebarMode::Persistent
+        } else {
+            SidebarMode::Overlay
+        };
+        self.detail_mode = if r.width() >= EDITOR_OVERLAY_MIN {
+            DetailMode::Overlay
+        } else {
+            DetailMode::FullScreen
+        };
 
-        // Sidebar occupies the left edge in both modes; in overlay it floats
-        // over the content (so the content starts at the window's left edge).
-        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
+        // Sidebar rect. A persistent panel and the tablet-width flap are both
+        // SIDEBAR_W wide; the phone-width drawer covers the whole window so it
+        // reads as a full page.
+        let sidebar_w = if matches!(self.sidebar_mode, SidebarMode::Overlay)
+            && r.width() < SIDEBAR_FULLSCREEN_MAX
+        {
+            r.width()
+        } else {
+            SIDEBAR_W
+        };
+        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + sidebar_w, r.y1);
         // A persistent sidebar only takes width while it's expanded; collapsed,
         // or in overlay mode, the content begins at the window's left edge.
         let content_x0 = match self.sidebar_mode {
@@ -1286,29 +1449,38 @@ impl CalendarApp {
             _ => r.x0,
         };
 
-        if wide {
-            // Detail docked on the right when open; calendar fills the rest.
-            let detail_x0 = if self.detail_open { r.x1 - DETAIL_W_WIDE } else { r.x1 };
-            self.content_rect = Rect::new(content_x0, r.y0, detail_x0, r.y1);
-            self.detail_rect = if self.detail_open {
-                Rect::new(detail_x0, r.y0, r.x1, r.y1)
-            } else {
-                Rect::ZERO
-            };
-        } else {
-            // Single-pane: calendar OR detail occupies the full content width.
-            let full = Rect::new(content_x0, r.y0, r.x1, r.y1);
-            match (self.detail_open, self.narrow_screen) {
-                (true, NarrowScreen::Detail) => {
-                    self.content_rect = Rect::ZERO;
-                    self.detail_rect = full;
-                }
-                _ => {
-                    self.content_rect = full;
-                    self.detail_rect = Rect::ZERO;
+        match self.detail_mode {
+            DetailMode::Overlay => {
+                // The calendar stays full-width; the editor floats over it as a
+                // centered modal card. Both panes have area so both draw.
+                self.content_rect = Rect::new(content_x0, r.y0, r.x1, r.y1);
+                self.detail_rect = if self.detail_open {
+                    self.modal_rect(content_x0)
+                } else {
+                    Rect::ZERO
+                };
+            }
+            DetailMode::FullScreen => {
+                // Single-pane: calendar OR the pushed detail page fills the
+                // content width, never both.
+                let full = Rect::new(content_x0, r.y0, r.x1, r.y1);
+                match (self.detail_open, self.narrow_screen) {
+                    (true, NarrowScreen::Detail) => {
+                        self.content_rect = Rect::ZERO;
+                        self.detail_rect = full;
+                    }
+                    _ => {
+                        self.content_rect = full;
+                        self.detail_rect = Rect::ZERO;
+                    }
                 }
             }
         }
+
+        // The switcher stays in the topbar as long as it genuinely fits beside
+        // the period title and New button; only then does it fold into the
+        // sidebar/flap.
+        self.switcher_in_topbar = self.topbar_fits_switcher(self.content_rect.width());
 
         // Notes editor placement, derived from whichever detail rect is active.
         // The column width tracks the detail rect (capped for readability) so
@@ -1346,8 +1518,57 @@ impl CalendarApp {
         }
     }
 
+    /// Geometry of the centered modal editor card, sized to a comfortable
+    /// column and clamped inside the content area (right of a persistent
+    /// sidebar). Only meaningful in [`DetailMode::Overlay`].
+    fn modal_rect(&self, content_x0: f64) -> Rect {
+        let r = self.rect;
+        let content_w = (r.x1 - content_x0).max(0.0);
+        let w = MODAL_W.min((content_w - 2.0 * MODAL_MARGIN).max(240.0));
+        let h = (r.height() - 2.0 * MODAL_MARGIN).clamp(360.0, MODAL_MAX_H);
+        let cx = content_x0 + content_w / 2.0;
+        let cy = r.y0 + r.height() / 2.0;
+        Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+    }
+
+    /// Whether the segmented view switcher fits in the topbar at `content_w`.
+    /// Mirrors `draw_topbar`'s fixed metrics so the two agree; when this is
+    /// false the switcher folds into the sidebar/flap instead. Kept as a pure
+    /// function of width so it is deterministic and directly testable.
+    fn topbar_fits_switcher(&self, content_w: f64) -> bool {
+        if content_w <= 0.0 {
+            return false;
+        }
+        let mut left = 16.0;
+        // Hamburger (overlay) or expand chevron (collapsed persistent) share the
+        // same left slot.
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) || self.sidebar_collapsed {
+            left += 38.0;
+        }
+        left += 74.0; // prev / next chevrons
+        left += 60.0; // Today pill
+        let title_x = left + 14.0;
+        let seg_x1 = content_w - 14.0;
+        let seg_x0 = seg_x1 - SEG_TOTAL_W;
+        let new_x0 = seg_x0 - NEW_BTN_W - 10.0;
+        let title_right = new_x0 - 12.0;
+        title_right - title_x >= TITLE_MIN_W
+    }
+
+    /// The rect covering the notes editor column inside the detail card/page —
+    /// used to route clicks to the editor (and to bound them so a press outside
+    /// a modal card doesn't get swallowed by the editor).
+    fn notes_region(&self) -> Rect {
+        Rect::new(
+            self.detail_rect.x0,
+            self.notes_origin.y - 4.0,
+            self.detail_rect.x1,
+            self.detail_rect.y1,
+        )
+    }
+
     /// Compute the event-form field rects from the current detail panel. Pure
-    /// function of the detail rect, body width, sidebar mode and the selected
+    /// function of the detail rect, body width, detail mode and the selected
     /// event's all-day flag, so `draw`, the hit map, and the embedded widgets
     /// all read identical geometry. Returns a zeroed layout when no event is
     /// being edited.
@@ -1365,10 +1586,10 @@ impl CalendarApp {
         };
         let x = r.x0 + DETAIL_PAD;
         let w = self.detail_body_w();
-        let overlay = matches!(self.sidebar_mode, SidebarMode::Overlay);
-        // Header: 18px top pad, plus a back bar in the narrow pushed screen,
+        let fullscreen = matches!(self.detail_mode, DetailMode::FullScreen);
+        // Header: 18px top pad, plus a back bar in the full-screen pushed page,
         // plus the "EVENT" kind label row.
-        let top = r.y0 + 18.0 + if overlay { 34.0 } else { 0.0 };
+        let top = r.y0 + 18.0 + if fullscreen { 34.0 } else { 0.0 };
         f.header_bottom = top + 22.0;
         let mut y = top + 30.0;
 
@@ -1423,8 +1644,11 @@ impl CalendarApp {
     /// pane instead of hugging the left edge. Derived from the allocated
     /// window width so `build_layout` and `relayout` agree.
     fn detail_body_w(&self) -> f64 {
-        if self.rect.width() >= WIDE_BREAKPOINT {
-            NOTES_W
+        // Keyed off the allocated window width (not `detail_rect`) so
+        // `build_layout` and `relayout` — which run in that order within a
+        // frame — always agree on the editor node's width.
+        if self.rect.width() >= EDITOR_OVERLAY_MIN {
+            MODAL_BODY_W
         } else {
             (self.rect.width() - 2.0 * DETAIL_PAD).clamp(240.0, 620.0)
         }
@@ -1444,7 +1668,7 @@ impl CalendarApp {
     /// start lower. Single source of truth for both `relayout` (editor origin)
     /// and `draw_detail` (the NOTES label/divider).
     fn notes_top_offset(&self) -> f64 {
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+        if matches!(self.detail_mode, DetailMode::FullScreen) {
             NOTES_TOP_OFFSET + 40.0
         } else {
             NOTES_TOP_OFFSET
@@ -1542,6 +1766,9 @@ impl CalendarApp {
                 self.start_time_picker.set_focus(false);
                 self.end_time_picker.set_focus(false);
             }
+            Action::DeleteEvent(id) => self.delete_event(id, doc),
+            Action::DeleteTask(id) => self.delete_task(id, doc),
+            Action::Noop => {}
         }
         // Discrete actions are worth an immediate save; if the action didn't
         // touch the document (view/navigation) the head check in `maybe_persist`
@@ -1665,14 +1892,21 @@ impl CalendarApp {
             }
             draw_chevron(scene, t, c.neutral[7], cb.center(), true);
             hits.push((cb, Action::ToggleSidebarCollapsed));
+        } else if r.width() >= self.rect.width() - 0.5 {
+            // Full-screen drawer: it covers the whole window, so there is no
+            // dimmed calendar edge to click — it carries its own close button.
+            let cl = Rect::new(r.x1 - pad - 24.0, y - 4.0, r.x1 - pad, y + 20.0);
+            draw_icon_button(scene, t, theme, cl, cl.contains(self.last_mouse));
+            draw_cross(scene, t, c.neutral[8], cl.center());
+            hits.push((cl, Action::DismissSidebar));
         }
         y += 40.0;
 
-        // View switcher — carried by the flap only in the overlay layout. The
-        // wide topbar has its own segmented switch, but on narrow layouts that
-        // switch folds away, so without this a pointer/touch user could reach
-        // Day/Agenda but never get back to Month. Keeps every view reachable.
-        if overlay {
+        // View switcher — carried by the flap only when the topbar switch has
+        // folded away (a too-narrow topbar). Without it a pointer/touch user
+        // could reach Day/Agenda but never get back to Month. When the topbar
+        // still shows the switch, the flap omits it so there's no duplicate.
+        if overlay && !self.switcher_in_topbar {
             let seg = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 36.0);
             fill_round(scene, t, c.surfaces.base, seg, 9.0);
             stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
@@ -2147,9 +2381,10 @@ impl CalendarApp {
 
         let cy = r.center().y;
         let overlay_sidebar = matches!(self.sidebar_mode, SidebarMode::Overlay);
-        // Narrow layouts cannot fit the segmented view switch; it folds away
-        // (the view is still switchable by keyboard m/w/d/a).
-        let show_segmented = !overlay_sidebar;
+        // The segmented switch stays in the topbar whenever it genuinely fits
+        // (computed in `relayout`); only when it doesn't does it fold into the
+        // sidebar/flap. Either way the view stays switchable by keyboard.
+        let show_segmented = self.switcher_in_topbar;
 
         let mut left = r.x0 + 16.0;
         // Hamburger toggle for the overlay flap (narrow only).
@@ -2188,11 +2423,11 @@ impl CalendarApp {
         hits.push((today_btn, Action::Today));
         let title_x = today_btn.x1 + 14.0;
 
-        // Right cluster: segmented view control (wide only) + New button.
-        let new_w = 60.0;
+        // Right cluster: segmented view control (when it fits) + New button.
+        let new_w = NEW_BTN_W;
         let seg_x0 = if show_segmented {
-            let seg_w = 56.0;
-            let seg_total = seg_w * 4.0;
+            let seg_w = SEG_CELL_W;
+            let seg_total = SEG_TOTAL_W;
             let seg_x1 = right_edge - 14.0;
             let seg_x0 = seg_x1 - seg_total;
             let seg = Rect::new(seg_x0, cy - 16.0, seg_x1, cy + 16.0);
@@ -2742,16 +2977,32 @@ impl CalendarApp {
         let c = &theme.tokens.colors;
         let mut hits = Vec::new();
         let r = self.detail_rect;
-        fill_rect(scene, t, c.surfaces.raised, r);
-        stroke_line(scene, t, c.border_standard, Point::new(r.x0, r.y0), Point::new(r.x0, r.y1), 1.0);
+        let modal = matches!(self.detail_mode, DetailMode::Overlay);
+
+        if modal {
+            // Dim the calendar behind the card; a click on the dim closes the
+            // editor. The card is a floating panel, not a docked strip.
+            fill_rect(scene, t, c.surfaces.overlay, self.content_rect);
+            hits.push((self.content_rect, Action::CloseDetail));
+            let shadow = r.inflate(6.0, 10.0);
+            fill_round(scene, t, Color::from_rgba8(0, 0, 0, 90), shadow, 18.0);
+            fill_round(scene, t, c.surfaces.raised, r, 14.0);
+            stroke_round(scene, t, c.border_standard, r, 14.0, 1.0);
+            // Backing guard so a press on the card padding is absorbed rather
+            // than falling through to the dismiss scrim beneath it.
+            hits.push((r, Action::Noop));
+        } else {
+            fill_rect(scene, t, c.surfaces.raised, r);
+            stroke_line(scene, t, c.border_standard, Point::new(r.x0, r.y0), Point::new(r.x0, r.y1), 1.0);
+        }
 
         let x = r.x0 + DETAIL_PAD;
         let w = self.notes_w;
         let mut y = r.y0 + 18.0;
 
-        // In the narrow single-pane layout the detail is its own pushed screen,
-        // so it gets a back affordance instead of a docked close button.
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+        // The full-screen editor page is its own pushed screen, so it gets a
+        // Back affordance top-left instead of a close button.
+        if !modal {
             let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
             if back.contains(self.last_mouse) {
                 fill_round(scene, t, c.surface_white_5, back, 8.0);
@@ -2770,14 +3021,30 @@ impl CalendarApp {
             y += 34.0;
         }
 
-        // Close affordance. The wide docked panel gets an X to dismiss it back
-        // to a full-width calendar. The narrow pushed screen already carries the
-        // Back bar above, so it doesn't repeat the control as a redundant X.
-        if !matches!(self.sidebar_mode, SidebarMode::Overlay) {
-            let close = Rect::new(r.x1 - 36.0, r.y0 + 14.0, r.x1 - 14.0, r.y0 + 36.0);
-            draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
-            draw_cross(scene, t, c.neutral[8], close.center());
-            hits.push((close, Action::CloseDetail));
+        // Header controls, top-right: a Delete (trash) button for the selected
+        // item, plus a Close (X) on the modal (the full-screen page uses Back).
+        {
+            let mut bx = r.x1 - 14.0;
+            if modal {
+                let close = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
+                draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
+                draw_cross(scene, t, c.neutral[8], close.center());
+                hits.push((close, Action::CloseDetail));
+                bx -= 30.0;
+            }
+            let del_action = match self.selection {
+                Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
+                Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
+                None => None,
+            };
+            if let Some(action) = del_action {
+                let del = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
+                let hot = del.contains(self.last_mouse);
+                draw_icon_button(scene, t, theme, del, hot);
+                let col = if hot { c.semantic.danger } else { c.neutral[8] };
+                draw_trash(scene, t, col, del.center());
+                hits.push((del, action));
+            }
         }
 
         match self.selection {
@@ -3293,9 +3560,9 @@ impl Widget for CalendarApp {
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
         let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
         let popover_open = form_active && self.popover != FormPopover::None;
-        let in_notes = editor_active
-            && self.last_mouse.x >= self.detail_rect.x0
-            && self.last_mouse.y >= self.notes_origin.y - 4.0;
+        // Bounded to the notes column of the detail card/page so a click below
+        // or beside a floating modal isn't swallowed by the editor.
+        let in_notes = editor_active && self.notes_region().contains(self.last_mouse);
 
         // --- Open popover owns input first --------------------------------
         if popover_open {
@@ -3341,7 +3608,7 @@ impl Widget for CalendarApp {
                     self.dirty = true;
                     return;
                 }
-                if matches!(self.sidebar_mode, SidebarMode::Overlay)
+                if matches!(self.detail_mode, DetailMode::FullScreen)
                     && matches!(self.narrow_screen, NarrowScreen::Detail)
                 {
                     self.narrow_screen = NarrowScreen::Calendar;
@@ -3355,6 +3622,27 @@ impl Widget for CalendarApp {
                     self.selection = None;
                     self.narrow_screen = NarrowScreen::Calendar;
                     self.notes_editor.set_focus(false);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+            }
+
+            // Delete removes the on-screen event/task — but only when the caret
+            // isn't in a text field or the notes editor (where Delete edits
+            // text). Mirrors the editor's trash button through the same action.
+            if matches!(logical_key, Key::Named(NamedKey::Delete))
+                && editor_active
+                && !field_focused
+                && !notes_focused
+            {
+                let act = match self.selection {
+                    Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
+                    Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
+                    None => None,
+                };
+                if let Some(a) = act {
+                    self.apply_action(a, state);
                     *handled = true;
                     self.dirty = true;
                     return;
@@ -3631,6 +3919,23 @@ fn draw_back_arrow(scene: &mut Scene, t: Affine, color: Color, center: Point) {
 fn draw_cross(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(scene, t, color, Point::new(center.x - 5.0, center.y - 5.0), Point::new(center.x + 5.0, center.y + 5.0), 1.6);
     stroke_line(scene, t, color, Point::new(center.x + 5.0, center.y - 5.0), Point::new(center.x - 5.0, center.y + 5.0), 1.6);
+}
+
+/// A small trash-can glyph centered on `center` — the delete affordance.
+fn draw_trash(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+    let cx = center.x;
+    let cy = center.y;
+    // Lid line + handle.
+    stroke_line(scene, t, color, Point::new(cx - 6.0, cy - 5.0), Point::new(cx + 6.0, cy - 5.0), 1.5);
+    stroke_line(scene, t, color, Point::new(cx - 2.5, cy - 5.0), Point::new(cx - 2.5, cy - 7.0), 1.4);
+    stroke_line(scene, t, color, Point::new(cx + 2.5, cy - 5.0), Point::new(cx + 2.5, cy - 7.0), 1.4);
+    stroke_line(scene, t, color, Point::new(cx - 2.5, cy - 7.0), Point::new(cx + 2.5, cy - 7.0), 1.4);
+    // Can body (slightly tapered) + two ribs.
+    stroke_line(scene, t, color, Point::new(cx - 5.0, cy - 5.0), Point::new(cx - 4.0, cy + 7.0), 1.5);
+    stroke_line(scene, t, color, Point::new(cx + 5.0, cy - 5.0), Point::new(cx + 4.0, cy + 7.0), 1.5);
+    stroke_line(scene, t, color, Point::new(cx - 4.0, cy + 7.0), Point::new(cx + 4.0, cy + 7.0), 1.5);
+    stroke_line(scene, t, color, Point::new(cx - 1.6, cy - 2.5), Point::new(cx - 1.6, cy + 4.5), 1.2);
+    stroke_line(scene, t, color, Point::new(cx + 1.6, cy - 2.5), Point::new(cx + 1.6, cy + 4.5), 1.2);
 }
 
 fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
@@ -4036,16 +4341,28 @@ mod tests {
     // --- responsive layout ---------------------------------------------
 
     #[test]
-    fn wide_window_uses_persistent_sidebar_and_docked_detail() {
+    fn wide_window_uses_persistent_sidebar_and_overlay_editor() {
         let mut app = CalendarApp::new_demo();
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
         assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
-        // Sidebar is inline (content starts to its right), detail docked right.
+        assert_eq!(app.detail_mode, DetailMode::Overlay);
+        // Sidebar is inline (content starts to its right).
         assert!(app.content_rect.x0 >= app.sidebar_rect.x1 - 0.5);
+        // The editor is a centered modal floating OVER the calendar: the
+        // calendar keeps its full content width behind it, and the card is
+        // inset from every content edge (not a docked strip on the right).
         assert!(app.detail_rect.area() > 0.0);
         assert!(app.content_rect.area() > 0.0);
+        assert_eq!(app.content_rect.x1, app.rect.x1, "calendar spans to the window edge behind the modal");
+        assert!(app.detail_rect.x0 > app.content_rect.x0 + 1.0, "card inset from the left");
+        assert!(app.detail_rect.x1 < app.rect.x1 - 1.0, "card inset from the right");
+        assert!(app.detail_rect.y0 > app.rect.y0 + 1.0, "card inset from the top");
+        // Card is centered within the content area.
+        let card_cx = app.detail_rect.center().x;
+        let content_cx = (app.content_rect.x0 + app.content_rect.x1) / 2.0;
+        assert!((card_cx - content_cx).abs() < 1.0, "modal centered over the content");
     }
 
     #[test]
@@ -4064,8 +4381,9 @@ mod tests {
     #[test]
     fn desktop_sidebar_collapses_and_only_the_sidebar_collapses() {
         // Confirmed-defect: on desktop the sidebar must be collapsible, and ONLY
-        // the sidebar collapses — the detail stays docked on the right. Drive the
-        // real `relayout` across expand → collapse → expand on ONE instance.
+        // the sidebar collapses — the editor modal stays open and re-centers in
+        // the reclaimed width. Drive the real `relayout` expand → collapse →
+        // expand on ONE instance.
         let mut app = CalendarApp::new_demo();
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -4076,19 +4394,17 @@ mod tests {
             expanded_content_x0 >= app.sidebar_rect.x1 - 0.5,
             "expanded: content starts to the right of the sidebar"
         );
-        let detail_right = app.detail_rect.x1;
 
-        // Collapse: sidebar hidden, content reclaims the left edge, detail stays.
+        // Collapse: sidebar hidden, content reclaims the left edge, editor stays.
         app.sidebar_collapsed = true;
         app.relayout();
         assert!(!app.sidebar_visible(), "collapsed sidebar is hidden");
         assert_eq!(app.content_rect.x0, app.rect.x0, "content reclaims the sidebar edge");
         assert!(app.content_rect.width() > 0.0);
-        assert!(app.detail_rect.area() > 0.0, "detail stays docked — only the sidebar collapsed");
-        assert!(
-            (app.detail_rect.x1 - detail_right).abs() < 0.5,
-            "detail keeps its right dock when the sidebar collapses"
-        );
+        assert!(app.detail_rect.area() > 0.0, "editor stays open — only the sidebar collapsed");
+        // Re-centered within the now-wider content.
+        let content_cx = (app.content_rect.x0 + app.content_rect.x1) / 2.0;
+        assert!((app.detail_rect.center().x - content_cx).abs() < 1.0, "modal re-centers after collapse");
 
         // Expand again — proves it toggles both directions.
         app.sidebar_collapsed = false;
@@ -4100,10 +4416,11 @@ mod tests {
     #[test]
     fn narrow_detail_screen_replaces_the_calendar() {
         let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
+        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
         app.detail_open = true;
         app.narrow_screen = NarrowScreen::Detail;
         app.relayout();
+        assert_eq!(app.detail_mode, DetailMode::FullScreen, "480px editor is full-screen");
         // The detail is pushed over the calendar: only one pane is laid out.
         assert!(app.detail_rect.area() > 0.0);
         assert_eq!(app.content_rect.area(), 0.0, "calendar hidden behind detail");
@@ -4119,13 +4436,123 @@ mod tests {
     #[test]
     fn selecting_in_narrow_mode_pushes_detail_and_closes_flap() {
         let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
+        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
         app.relayout();
         app.sidebar_open = true;
         let id = app.model.events[0].id;
         app.select_event(id);
         assert_eq!(app.narrow_screen, NarrowScreen::Detail);
         assert!(!app.sidebar_open, "opening a detail dismisses the overlay flap");
+    }
+
+    #[test]
+    fn editor_presentation_switches_from_overlay_to_fullscreen_by_width() {
+        // The reported fix: on big screens the editor is a modal OVERLAY over
+        // the calendar; only on small windows does it take the whole screen.
+        // Drive the real relayout across the breakpoint on ONE instance.
+        let mut app = CalendarApp::new_demo();
+        app.detail_open = true;
+
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert_eq!(app.detail_mode, DetailMode::Overlay, "wide → modal overlay");
+        assert!(app.content_rect.area() > 0.0, "calendar stays laid out behind the modal");
+        assert!(app.detail_rect.x1 < app.rect.x1 - 1.0, "modal is a floating card, not edge-to-edge");
+
+        // Just above the breakpoint stays an overlay.
+        app.rect = Rect::new(0.0, 0.0, EDITOR_OVERLAY_MIN + 10.0, 800.0);
+        app.relayout();
+        assert_eq!(app.detail_mode, DetailMode::Overlay);
+
+        // Below the breakpoint: full-screen editor page replacing the calendar.
+        app.rect = Rect::new(0.0, 0.0, EDITOR_OVERLAY_MIN - 10.0, 800.0);
+        app.narrow_screen = NarrowScreen::Detail;
+        app.relayout();
+        assert_eq!(app.detail_mode, DetailMode::FullScreen, "narrow → full-screen editor");
+        assert_eq!(app.content_rect.area(), 0.0, "full-screen editor replaces the calendar");
+        assert!(app.detail_rect.area() > 0.0);
+    }
+
+    #[test]
+    fn view_switcher_stays_in_topbar_until_it_genuinely_doesnt_fit() {
+        // Issue: the switcher folded into the sidebar too eagerly. It must stay
+        // in the topbar at normal/large widths and only fold when it truly
+        // can't fit. Assert the real fit decision that `draw_topbar` reads.
+        let mut app = CalendarApp::new_demo();
+        // Isolate the switcher logic on the calendar screen (no pushed detail
+        // zeroing the content width out from under us).
+        app.detail_open = false;
+        app.selection = None;
+        app.narrow_screen = NarrowScreen::Calendar;
+
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert!(app.switcher_in_topbar, "wide window keeps the switcher in the topbar");
+
+        // A mid-width overlay-sidebar window still has ample topbar room — the
+        // previous behaviour wrongly folded it away here.
+        app.rect = Rect::new(0.0, 0.0, 780.0, 800.0);
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert!(
+            app.switcher_in_topbar,
+            "a roomy topbar keeps the switcher even with an overlay sidebar"
+        );
+
+        // Truly cramped → it folds into the flap.
+        app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
+        app.relayout();
+        assert!(!app.switcher_in_topbar, "a cramped topbar folds the switcher into the sidebar");
+    }
+
+    #[test]
+    fn phone_width_sidebar_is_a_full_screen_drawer() {
+        // Below the phone breakpoint the overlay sidebar covers the whole
+        // window (a page) rather than a cramped 252px flap.
+        let mut app = CalendarApp::new_demo();
+
+        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert!(
+            app.sidebar_rect.width() < app.rect.width() - 1.0,
+            "tablet width: a flap, not full-width"
+        );
+
+        app.rect = Rect::new(0.0, 0.0, 420.0, 800.0);
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert!(
+            (app.sidebar_rect.width() - app.rect.width()).abs() < 0.5,
+            "phone width: the sidebar drawer is a full-screen page"
+        );
+    }
+
+    #[test]
+    fn full_screen_drawer_offers_a_pointer_reachable_close() {
+        // The full-screen drawer covers the window, so it must carry its own
+        // close (no dimmed edge to click). Drive the real click path.
+        let mut h = Harness::new(420, 800);
+        h.app.shots_show_calendar();
+        h.app.sidebar_open = true;
+        h.relayout();
+        assert!(h.app.sidebar_visible(), "flap is open");
+        assert!(
+            (h.app.sidebar_rect.width() - h.app.rect.width()).abs() < 0.5,
+            "the drawer is full-screen at this width"
+        );
+        // Two DismissSidebar targets exist: the (hidden) scrim behind and the
+        // small close button in the header. Pick the compact one — the button.
+        let close = h
+            .app
+            .hits
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::DismissSidebar))
+            .min_by_key(|(r, _)| r.area() as i64)
+            .map(|(r, _)| r.center())
+            .expect("a close button in the full-screen drawer");
+        h.click(close);
+        assert!(!h.app.sidebar_open, "clicking close dismissed the full-screen drawer");
     }
 
     // --- click-label-to-complete ---------------------------------------
@@ -4267,6 +4694,7 @@ mod tests {
         tx.send((
             caldav::SyncResult { events: vec![synced], tasks: Vec::new() },
             SyncOutcome::Synced { calendars: 1, events: 1 },
+            Vec::new(),
             Vec::new(),
         ))
         .unwrap();
@@ -4475,6 +4903,11 @@ mod tests {
     #[test]
     fn clicking_new_button_creates_and_selects_an_event() {
         let mut h = Harness::new(1280, 800);
+        // Start from the calendar screen: the wide editor is a modal whose
+        // dismiss scrim covers the topbar, so the New button is reachable once
+        // no editor is open (which is the state a user creates from).
+        h.app.shots_show_calendar();
+        h.relayout();
         let before = h.app.model.events.len();
         let p = h.hit_center(|a| matches!(a, Action::NewEvent)).expect("New button present");
         h.click(p);
@@ -4485,6 +4918,8 @@ mod tests {
     #[test]
     fn clicking_a_view_segment_switches_the_view() {
         let mut h = Harness::new(1280, 800);
+        h.app.shots_show_calendar();
+        h.relayout();
         assert_eq!(h.app.view, View::Month);
         let p = h
             .hit_center(|a| matches!(a, Action::View(View::Week)))
@@ -4497,6 +4932,8 @@ mod tests {
     fn clicking_an_event_chip_opens_its_detail() {
         // Month view is full of chips; clicking one selects that event.
         let mut h = Harness::new(1280, 800);
+        h.app.shots_show_calendar();
+        h.relayout();
         let (rect, id) = h
             .app
             .hits
@@ -4517,6 +4954,11 @@ mod tests {
         // click path, and its expand mirror lives in the topbar once collapsed —
         // so a pointer user can always get the sidebar back.
         let mut h = Harness::new(1280, 800);
+        // The topbar's expand chevron lives behind the modal's dismiss scrim, so
+        // exercise the sidebar collapse from the calendar screen (the state a
+        // user collapses the rail from).
+        h.app.shots_show_calendar();
+        h.relayout();
         assert!(h.app.sidebar_visible(), "starts expanded on a wide window");
         let collapse = h
             .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
@@ -4550,13 +4992,32 @@ mod tests {
     }
 
     #[test]
-    fn wide_docked_detail_keeps_its_x_close() {
-        // The wide docked panel still carries an X — distinct from Back, which
-        // only exists on narrow.
+    fn wide_modal_editor_has_an_x_close_and_a_dismiss_scrim() {
+        // The wide editor is a modal card: it carries an X close button (a
+        // small top-right target) AND a dismiss scrim over the calendar behind
+        // it (clicking outside closes it). No Back — that's narrow-only.
         let mut h = Harness::new(1280, 800);
-        assert!(h.app.detail_open, "demo opens with a selected event → detail docked");
-        let closes = h.app.hits.iter().filter(|(_, a)| matches!(a, Action::CloseDetail)).count();
-        assert_eq!(closes, 1, "wide docked detail carries exactly one X close");
+        assert!(h.app.detail_open, "demo opens with a selected event → modal editor");
+        assert_eq!(h.app.detail_mode, DetailMode::Overlay);
+        let backs = h.app.hits.iter().filter(|(_, a)| matches!(a, Action::BackToCalendar)).count();
+        assert_eq!(backs, 0, "no Back affordance on the wide modal");
+        let closes: Vec<Rect> = h
+            .app
+            .hits
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::CloseDetail))
+            .map(|(r, _)| *r)
+            .collect();
+        // A small X button …
+        assert!(
+            closes.iter().any(|r| r.area() < 2000.0 && r.x0 > h.app.detail_rect.x0),
+            "a compact X close button in the card header"
+        );
+        // … and a large dismiss scrim covering the calendar behind the card.
+        assert!(
+            closes.iter().any(|r| (r.area() - h.app.content_rect.area()).abs() < 1.0),
+            "a dismiss scrim over the content behind the modal"
+        );
     }
 
     #[test]
@@ -4979,7 +5440,7 @@ mod tests {
         app.demo = false;
         let mut state = AutoCommit::new();
         let (tx, rx) =
-            std::sync::mpsc::channel::<(caldav::SyncResult, SyncOutcome, Vec<Id>)>();
+            std::sync::mpsc::channel::<(caldav::SyncResult, SyncOutcome, Vec<Id>, Vec<Id>)>();
         app.sync_rx = Some(rx);
         app.syncing = true;
         drop(tx); // worker vanished without sending
@@ -5134,6 +5595,10 @@ mod tests {
         // A fresh event has NO seeded title or notes: both fields show their
         // placeholders instead of literal text the user must delete.
         let mut h = Harness::new(1280, 800);
+        // Create from the calendar screen; the demo's modal editor would
+        // otherwise sit over the New button behind its dismiss scrim.
+        h.app.shots_show_calendar();
+        h.relayout();
         let p = h.hit_center(|a| matches!(a, Action::NewEvent)).expect("New button");
         h.click(p);
         let id = selected_event_id(&h.app);
@@ -5283,5 +5748,117 @@ mod tests {
         assert!(has(|a| matches!(a, Action::OpenPopover(FormPopover::StartDate))), "start date");
         assert!(has(|a| matches!(a, Action::OpenPopover(FormPopover::StartTime))), "start time");
         assert!(has(|a| matches!(a, Action::OpenPopover(FormPopover::Calendar))), "calendar selector");
+    }
+
+    // --- delete ---------------------------------------------------------
+
+    #[test]
+    fn delete_event_removes_it_from_the_model_and_crdt() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = app.model.events[0].id;
+        let before = app.model.events.len();
+        app.select_event(id);
+        app.apply_action(Action::DeleteEvent(id), &mut state);
+        assert_eq!(app.model.events.len(), before - 1, "event dropped from the model");
+        assert!(app.model.event(id).is_none());
+        assert!(
+            !CalDoc::read_model(&state).events.iter().any(|e| e.id == id),
+            "removed from the CRDT too"
+        );
+        assert!(app.selection.is_none(), "deleting the on-screen event closes the editor");
+        assert!(!app.detail_open);
+    }
+
+    #[test]
+    fn deleting_a_synced_event_queues_a_caldav_delete() {
+        // A synced event carries a calendar_id; deleting it enqueues a CalDAV
+        // delete for that collection so the server copy is removed on next sync.
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.apply_action(Action::Sync, &mut state); // pull the sample synced events
+        let synced = app
+            .model
+            .events
+            .iter()
+            .find(|e| e.calendar_id.is_some())
+            .cloned()
+            .expect("a synced event with a calendar id");
+        app.apply_action(Action::DeleteEvent(synced.id), &mut state);
+        let outbox = CalDoc::delete_outbox(&state);
+        assert!(
+            outbox
+                .iter()
+                .any(|(cal, uid)| *uid == synced.id && Some(cal.as_str()) == synced.calendar_id.as_deref()),
+            "a CalDAV delete was queued for the synced event: {outbox:?}"
+        );
+    }
+
+    #[test]
+    fn delete_task_removes_it_and_its_subtasks() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let parent = app
+            .model
+            .tasks
+            .iter()
+            .find(|t| !app.model.subtasks_of(t.id).is_empty())
+            .map(|t| t.id)
+            .expect("a task with subtasks");
+        let sub_count = app.model.subtasks_of(parent).len();
+        assert!(sub_count > 0);
+        let before = app.model.tasks.len();
+        app.apply_action(Action::DeleteTask(parent), &mut state);
+        assert_eq!(
+            app.model.tasks.len(),
+            before - 1 - sub_count,
+            "the task and its subtasks are gone"
+        );
+        assert!(app.model.task(parent).is_none());
+        assert!(!CalDoc::read_model(&state).tasks.iter().any(|t| t.id == parent));
+    }
+
+    #[test]
+    fn delete_key_removes_the_selected_event() {
+        // The Delete key on a selected event (no field focused) removes it —
+        // through the real handle_event key path.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        assert!(h.app.detail_open);
+        let before = h.app.model.events.len();
+        h.press_named(winit::keyboard::NamedKey::Delete);
+        assert_eq!(h.app.model.events.len(), before - 1, "Delete removed the event");
+        assert!(h.app.model.event(id).is_none());
+    }
+
+    #[test]
+    fn editor_exposes_a_delete_target_that_removes_the_event() {
+        // The editor header carries a trash button wired to delete the event —
+        // clicked through the real handle_event path.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let p = h
+            .hit_center(|a| matches!(a, Action::DeleteEvent(_)))
+            .expect("a delete target in the editor");
+        h.click(p);
+        assert!(h.app.model.event(id).is_none(), "clicking the trash button deleted the event");
+    }
+
+    #[test]
+    fn delete_key_in_the_title_field_does_not_delete_the_event() {
+        // Guard: Delete must edit text when a field is focused, never nuke the
+        // event out from under the caret.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let p = h
+            .hit_center(|a| matches!(a, Action::FocusField(FormField::Title)))
+            .expect("title target");
+        h.click(p);
+        assert!(h.app.title_input.is_focused());
+        h.press_named(winit::keyboard::NamedKey::Delete);
+        assert!(h.app.model.event(id).is_some(), "Delete in a text field kept the event");
     }
 }
