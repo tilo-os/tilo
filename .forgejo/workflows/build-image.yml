@@ -62,6 +62,14 @@ jobs:
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
+      # Set up buildx with the docker-container driver — the default `docker`
+      # driver doesn't support cache export (the registry-backed cache we
+      # need to survive across ephemeral runners).
+      - name: Set up buildx (docker-container driver for cache export)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
       - name: Extract image metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
