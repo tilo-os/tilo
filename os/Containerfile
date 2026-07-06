@@ -30,7 +30,13 @@
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
 # new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
 # match for argument". The snapshot's package list is derived from this file.
+# Both ARGs are declared here (before the first FROM) so they're in
+# scope for FROM directives. An `ARG NAME` placed between two FROMs is
+# scoped to the previous stage, not global — buildkit then reports
+# `base name (${…}) should not be blank` when the next FROM tries to
+# use it.
 ARG RPMS_REF
+ARG KERNEL_RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
 # ---- Custom kernel repo ----------------------------------------------------
@@ -41,7 +47,6 @@ FROM ${RPMS_REF} AS rpms
 # .forgejo/workflows/build-kernel.yml and pinned by digest via
 # os/kernel-snapshot.env — the runtime stage below swaps kernel-core for
 # qos-kernel-core out of it.
-ARG KERNEL_RPMS_REF
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 
