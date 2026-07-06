@@ -16,7 +16,7 @@
 //! * Structured `N` and `ADR` component splitting on unescaped `;`.
 //! * `BDAY` in both `YYYY-MM-DD` (3.0) and `YYYYMMDD` (4.0) shapes.
 
-use crate::model::{Address, Contact, Labeled};
+use crate::model::{Address, Birthday, Contact, Labeled};
 use uuid::Uuid;
 
 /// The vCard version to emit. Affects the `VERSION` line, `BDAY`
@@ -102,8 +102,8 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         ));
     }
 
-    if !c.birthday.trim().is_empty() {
-        lines.push(format!("BDAY:{}", format_bday(&c.birthday, version)));
+    if let Some(bday) = &c.birthday {
+        lines.push(format!("BDAY:{}", format_bday(bday, version)));
     }
     if !c.website.trim().is_empty() {
         lines.push(format!("URL:{}", esc(&c.website)));
@@ -139,13 +139,18 @@ fn type_param(label: &str, version: VCardVersion) -> String {
 }
 
 /// Birthday formatting: 4.0 prefers the basic `YYYYMMDD`; 3.0 keeps the
-/// extended `YYYY-MM-DD`. Falls back to the raw string when it isn't a
-/// clean ISO date.
-fn format_bday(iso: &str, version: VCardVersion) -> String {
-    let iso = iso.trim();
-    match version {
-        VCardVersion::V3 => iso.to_string(),
-        VCardVersion::V4 => iso.chars().filter(|c| c.is_ascii_digit()).collect(),
+/// extended `YYYY-MM-DD`. A year-less birthday emits the RFC 6350 truncated
+/// form (`--MMDD` for 4.0, `--MM-DD` for 3.0).
+fn format_bday(bday: &Birthday, version: VCardVersion) -> String {
+    match (bday, version) {
+        (Birthday::Full { year, month, day }, VCardVersion::V3) => {
+            format!("{year:04}-{month:02}-{day:02}")
+        }
+        (Birthday::Full { year, month, day }, VCardVersion::V4) => {
+            format!("{year:04}{month:02}{day:02}")
+        }
+        (Birthday::MonthDay { month, day }, VCardVersion::V3) => format!("--{month:02}-{day:02}"),
+        (Birthday::MonthDay { month, day }, VCardVersion::V4) => format!("--{month:02}{day:02}"),
     }
 }
 
@@ -365,7 +370,7 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
                 c.addresses.push(addr);
             }
         }
-        "BDAY" => c.birthday = normalize_bday(&unescape(value)),
+        "BDAY" => c.birthday = Birthday::parse(&unescape(value)),
         "URL" => c.website = unescape(strip_uri(value)),
         "NOTE" => c.notes = unescape(value),
         "CATEGORIES" => {
@@ -389,20 +394,6 @@ fn strip_uri(value: &str) -> &str {
         }
     }
     value
-}
-
-/// Normalize a birthday into `YYYY-MM-DD` when it parses as a clean
-/// 8-digit basic date; otherwise pass it through (already-extended dates
-/// and partial dates survive unchanged).
-fn normalize_bday(value: &str) -> String {
-    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
-    if value.contains('-') {
-        return value.trim().to_string();
-    }
-    if digits.len() == 8 {
-        return format!("{}-{}-{}", &digits[0..4], &digits[4..6], &digits[6..8]);
-    }
-    value.trim().to_string()
 }
 
 /// Split `s` on `delim`, honouring backslash escaping so an escaped
@@ -457,7 +448,7 @@ mod tests {
             org: "Analytical Engines".into(),
             title: "Mathematician".into(),
             website: "https://example.com".into(),
-            birthday: "1815-12-10".into(),
+            birthday: Birthday::parse("1815-12-10"),
             notes: "Note: with, punctuation; and a\nnewline".into(),
             phones: vec![Labeled::new("mobile", "+44 20 7946 0101")],
             emails: vec![Labeled::new("work", "ada@example.com")],
@@ -487,7 +478,7 @@ mod tests {
         assert_eq!(r.org, "Analytical Engines");
         assert_eq!(r.title, "Mathematician");
         assert_eq!(r.website, "https://example.com");
-        assert_eq!(r.birthday, "1815-12-10");
+        assert_eq!(r.birthday, Some(Birthday::Full { year: 1815, month: 12, day: 10 }));
         assert_eq!(r.phones[0].value, "+44 20 7946 0101");
         assert_eq!(r.phones[0].label, "mobile");
         assert_eq!(r.emails[0].value, "ada@example.com");
@@ -505,10 +496,35 @@ mod tests {
         assert!(doc.contains("VERSION:4.0"));
         assert!(doc.contains("BDAY:18151210"), "v4 emits basic date: {doc}");
         assert!(doc.to_lowercase().contains("type=mobile"));
-        // …and parsing it back recovers the ISO birthday.
+        // …and parsing it back recovers the structured birthday.
         let back = parse_vcards(&doc);
-        assert_eq!(back[0].birthday, "1815-12-10");
+        assert_eq!(back[0].birthday, Some(Birthday::Full { year: 1815, month: 12, day: 10 }));
         assert_eq!(back[0].phones[0].label, "mobile");
+    }
+
+    #[test]
+    fn year_less_birthday_round_trips_through_vcard() {
+        // A birthday whose year is unknown survives both flavours as the
+        // RFC 6350 truncated `--MMDD` / `--MM-DD` form.
+        let mut c = sample();
+        c.birthday = Some(Birthday::MonthDay { month: 3, day: 9 });
+
+        let v3 = to_vcard(&c, VCardVersion::V3);
+        assert!(v3.contains("BDAY:--03-09"), "v3 truncated form: {v3}");
+        assert_eq!(parse_vcards(&v3)[0].birthday, Some(Birthday::MonthDay { month: 3, day: 9 }));
+
+        let v4 = to_vcard(&c, VCardVersion::V4);
+        assert!(v4.contains("BDAY:--0309"), "v4 truncated form: {v4}");
+        assert_eq!(parse_vcards(&v4)[0].birthday, Some(Birthday::MonthDay { month: 3, day: 9 }));
+    }
+
+    #[test]
+    fn absent_birthday_emits_no_bday_line() {
+        let mut c = sample();
+        c.birthday = None;
+        let doc = to_vcard(&c, VCardVersion::V3);
+        assert!(!doc.contains("BDAY:"), "no BDAY line when unset: {doc}");
+        assert_eq!(parse_vcards(&doc)[0].birthday, None);
     }
 
     #[test]

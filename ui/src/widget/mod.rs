@@ -394,6 +394,7 @@ mod toggle;      pub use toggle::Toggle;
 mod stack;       pub use stack::Stack;
 mod container;   pub use container::Container;
 mod divider;     pub use divider::{Divider, DividerAxis};
+mod link;        pub use link::Link;
 mod nav_split;
 pub use nav_split::{
     NavSplit, FlapState, SplitMode, SplitLayout, PushPane,

@@ -28,11 +28,13 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Link, TextInput, Widget};
 
 use crate::date;
 use crate::doc::ContactsDoc;
-use crate::model::{Address, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts};
+use crate::model::{
+    Address, Birthday, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts,
+};
 use crate::portal::{self, ExportOutcome, ImportOutcome};
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
@@ -168,7 +170,7 @@ impl EditForm {
             inputs.push(field(Slot::AddrPostal(i), &a.postal));
             inputs.push(field(Slot::AddrCountry(i), &a.country));
         }
-        inputs.push(field(Slot::Birthday, &draft.birthday));
+        inputs.push(field(Slot::Birthday, &draft.birthday.map(|b| b.iso()).unwrap_or_default()));
         inputs.push(field(Slot::Website, &draft.website));
         inputs.push(field(Slot::Notes, &draft.notes));
         inputs.push(field(Slot::Groups, &draft.groups.join(", ")));
@@ -185,7 +187,9 @@ impl EditForm {
                 Slot::Org => self.draft.org = v,
                 Slot::Title => self.draft.title = v,
                 Slot::Website => self.draft.website = v,
-                Slot::Birthday => self.draft.birthday = v,
+                // Parse the typed birthday into a real date. Unparseable /
+                // empty text clears it rather than storing junk.
+                Slot::Birthday => self.draft.birthday = Birthday::parse(&v),
                 Slot::Notes => self.draft.notes = v,
                 Slot::Groups => {
                     self.draft.groups = v
@@ -404,6 +408,10 @@ pub struct ContactsApp {
     /// View-mode detail field value hit rects, recomputed every `draw_detail`.
     /// Double-clicking one jumps straight into editing that field.
     detail_field_hits: Vec<(Slot, Rect)>,
+    /// The clickable website link shown in the view-mode detail pane, kept
+    /// across frames so its hover/press state persists. Rebuilt when the
+    /// selected contact's website changes; `None` when the contact has none.
+    website_link: Option<Link>,
     /// Time + position of the last left-press in the detail pane, for
     /// double-click detection on field values.
     last_detail_click: Option<(Instant, Point)>,
@@ -487,6 +495,7 @@ impl ContactsApp {
             hit: Hit::default(),
             detail_content_h: 0.0,
             detail_field_hits: Vec::new(),
+            website_link: None,
             last_detail_click: None,
             push: PushNav::default(),
             narrow: false,
@@ -720,7 +729,7 @@ impl ContactsApp {
                 || !draft.org.trim().is_empty()
                 || !draft.title.trim().is_empty()
                 || !draft.website.trim().is_empty()
-                || !draft.birthday.trim().is_empty()
+                || draft.birthday.is_some()
                 || !draft.notes.trim().is_empty()
                 || !draft.groups.is_empty()
                 || draft.phones.iter().any(|p| !p.value.trim().is_empty())
@@ -1393,7 +1402,7 @@ impl ContactsApp {
         if self.mode == Mode::Edit {
             self.draw_form(scene, transform, tr, theme, presence);
         } else {
-            self.draw_detail(scene, transform, tr, theme);
+            self.draw_detail(scene, transform, tr, theme, presence);
         }
         // Narrow-window Back affordance (the master-detail return-to-list).
         if self.narrow && self.hit.back.width() > 0.0 {
@@ -1609,7 +1618,14 @@ impl ContactsApp {
         scene.fill(Fill::NonZero, t, color, None, &r);
     }
 
-    fn draw_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_detail(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         let c = &theme.tokens.colors;
         let area = self.detail_rect;
         let Some(id) = self.selected else {
@@ -1627,6 +1643,7 @@ impl ContactsApp {
                 None,
             );
             self.detail_content_h = 0.0;
+            self.website_link = None;
             return;
         };
         let Some(contact) = self.store.get(id).cloned() else { return };
@@ -1741,17 +1758,41 @@ impl ContactsApp {
                 hits.push((Slot::AddrStreet(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
-        if !contact.birthday.is_empty() {
+        if let Some(bday) = &contact.birthday {
             detail_section(scene, t, tr, theme, x0, &mut y, "BIRTHDAY");
             let y0 = y;
-            detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &date::pretty(&contact.birthday));
+            // Render the structured date, formatted; double-click still edits it.
+            detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &bday.pretty());
             hits.push((Slot::Birthday, Rect::new(x0, y0 - 4.0, x1, y)));
         }
         if !contact.website.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "WEBSITE");
-            let y0 = y;
-            detail_field(scene, t, tr, theme, x0, x1, &mut y, "url", &contact.website);
-            hits.push((Slot::Website, Rect::new(x0, y0 - 4.0, x1, y)));
+            // "url" field label on the left, matching the other detail rows.
+            tr.draw_text(scene, "url", 12.0, c.text_dim, t * Affine::translate((x0, y + 2.0)), Some(64.0));
+            // The website is a live hyperlink (ui `Link` widget), not plain
+            // text: single-click opens it via the OS handler. Rebuilt only when
+            // the URL changes so its hover/press state survives across frames.
+            let vx = x0 + 78.0;
+            let vw = (x1 - vx).max(40.0);
+            let needs_new = self
+                .website_link
+                .as_ref()
+                .map(|l| l.url() != contact.website)
+                .unwrap_or(true);
+            if needs_new {
+                self.website_link = Some(Link::new(&contact.website).with_font_size(14.0));
+            }
+            let (lw, lh) = tr.measure(&contact.website, 14.0, None);
+            let lw = (lw as f64).min(vw);
+            let lh = (lh as f64).max(20.0);
+            let lrect = Rect::new(vx, y, vx + lw, y + lh);
+            if let Some(link) = self.website_link.as_mut() {
+                link.apply_layout_external(lrect);
+                link.draw(scene, t, tr, theme, presence);
+            }
+            y += lh + 8.0;
+        } else {
+            self.website_link = None;
         }
         if !contact.notes.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
@@ -2008,7 +2049,7 @@ impl ContactsApp {
                 let cur = self
                     .form
                     .as_ref()
-                    .map(|f| f.draft.birthday.clone())
+                    .and_then(|f| f.draft.birthday.map(|b| b.iso()))
                     .unwrap_or_default();
                 for (d, r) in &cells {
                     let hov = r.contains(self.last_mouse);
@@ -2751,6 +2792,20 @@ impl Widget for ContactsApp {
         // Track logical cursor position.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            // Update the website hyperlink's hover so its underline thickens as
+            // the pointer passes over it (view mode only).
+            if self.mode == Mode::View {
+                let over = self
+                    .website_link
+                    .as_ref()
+                    .map(|l| l.get_rect().contains(self.last_mouse))
+                    .unwrap_or(false);
+                if let Some(l) = self.website_link.as_mut() {
+                    if l.set_hovered(over) {
+                        self.dirty = true;
+                    }
+                }
+            }
         }
 
         // Modal layers consume input first.
@@ -2877,6 +2932,19 @@ impl Widget for ContactsApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The pointing-hand cursor over the view-mode website hyperlink; every
+    /// other region defers to the default arrow.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.mode == Mode::View {
+            if let Some(l) = &self.website_link {
+                if l.get_rect().contains(point) {
+                    return Some(winit::window::CursorIcon::Pointer);
+                }
+            }
+        }
+        None
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3051,6 +3119,18 @@ impl ContactsApp {
         }
 
         if self.mode == Mode::View {
+            // A click on the website hyperlink opens it via the OS handler
+            // (delegated to the ui `Link` widget — no hand-rolled open here).
+            if self.selected.is_some()
+                && self.website_link.as_ref().map(|l| l.get_rect().contains(p)).unwrap_or(false)
+            {
+                if let Some(l) = self.website_link.as_mut() {
+                    l.activate();
+                }
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
             // Double-click a detail field value → edit, focused on that field.
             if self.selected.is_some()
                 && self.detail_rect.contains(p)
@@ -3114,15 +3194,23 @@ impl ContactsApp {
             return;
         }
         if self.hit.cal_btn.contains(p) {
-            let (year, month) = self
-                .form
-                .as_ref()
-                .and_then(|f| date::parse_ymd(&f.draft.birthday))
-                .map(|(y, m, _)| (y, m))
-                .unwrap_or_else(|| {
+            // Seed the calendar from whatever's currently typed in the birthday
+            // field (parsed live), falling back to the draft, then today. A
+            // year-less birthday opens on its month in the current year.
+            let seed = self.form.as_ref().and_then(|f| {
+                f.inputs
+                    .iter()
+                    .find(|i| i.slot == Slot::Birthday)
+                    .and_then(|i| Birthday::parse(i.ti.value()))
+                    .or(f.draft.birthday)
+            });
+            let (year, month) = match seed {
+                Some(b) => (b.year().unwrap_or_else(|| date::today().0), b.month()),
+                None => {
                     let (y, m, _) = date::today();
                     (y, m)
-                });
+                }
+            };
             self.popup = Some(Popup::Calendar { year, month, anchor: self.hit.cal_btn });
             *handled = true;
             self.dirty = true;
@@ -3533,7 +3621,7 @@ impl ContactsApp {
                     if let Some((d, _)) = cells.iter().find(|(_, r)| r.contains(p)) {
                         let iso = format!("{:04}-{:02}-{:02}", year, month, d);
                         if let Some(form) = &mut self.form {
-                            form.draft.birthday = iso.clone();
+                            form.draft.birthday = Birthday::parse(&iso);
                             if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Birthday) {
                                 fi.ti.set_text(&iso);
                             }
@@ -4368,26 +4456,28 @@ mod tests {
     fn double_click_detail_field_enters_edit_focused_on_that_field() {
         let mut h = Harness::new(1280, 800);
         assert_eq!(h.app.mode, Mode::View);
-        // Find the WEBSITE field value rect (the selected seed has a website).
+        // Find the BIRTHDAY field value rect (every seed contact has one). The
+        // website is deliberately excluded — it's a live hyperlink now, not a
+        // double-click-to-edit target.
         let (slot, rect) = h
             .app
             .detail_field_hits
             .iter()
-            .find(|(s, _)| *s == Slot::Website)
+            .find(|(s, _)| *s == Slot::Birthday)
             .copied()
-            .expect("selected contact shows a website field");
-        assert_eq!(slot, Slot::Website);
+            .expect("selected contact shows a birthday field");
+        assert_eq!(slot, Slot::Birthday);
         h.double_click(rect.center());
         assert_eq!(h.app.mode, Mode::Edit, "double-click enters edit mode");
-        // The website input must be the focused one.
+        // The birthday input must be the focused one.
         let form = h.app.form.as_ref().unwrap();
-        let website_focused = form
+        let birthday_focused = form
             .inputs
             .iter()
-            .find(|f| f.slot == Slot::Website)
+            .find(|f| f.slot == Slot::Birthday)
             .map(|f| f.ti.is_focused())
             .unwrap_or(false);
-        assert!(website_focused, "the double-clicked field is focused for editing");
+        assert!(birthday_focused, "the double-clicked field is focused for editing");
     }
 
     /// Build an edit-mode harness on a known contact so the field order under
@@ -4486,11 +4576,29 @@ mod tests {
             .app
             .detail_field_hits
             .iter()
-            .find(|(s, _)| *s == Slot::Website)
+            .find(|(s, _)| *s == Slot::Birthday)
             .map(|(_, r)| *r)
-            .expect("website field present");
+            .expect("birthday field present");
         h.press_left(rect.center());
         assert_eq!(h.app.mode, Mode::View, "a single click must not enter edit mode");
+    }
+
+    #[test]
+    fn website_renders_via_the_link_widget() {
+        // The view-mode website is a real ui `Link` widget (not hand-drawn
+        // text): the app holds a Link bound to the selected contact's URL, laid
+        // out with a hit rect so it's clickable.
+        let h = Harness::new(1280, 800);
+        let id = h.app.selected.expect("a contact is selected");
+        let website = h.app.store.get(id).unwrap().website.clone();
+        assert!(!website.is_empty(), "the selected seed has a website");
+        let link = h
+            .app
+            .website_link
+            .as_ref()
+            .expect("the website is rendered via a Link widget");
+        assert_eq!(link.url(), website, "the link opens the contact's website");
+        assert!(link.get_rect().width() > 0.0, "the link is laid out with a hit rect");
     }
 
     #[test]
@@ -5019,7 +5127,11 @@ mod tests {
             .expect("a selectable in-panel day");
         h.press_left(rect.center());
         let expect = format!("{:04}-{:02}-{:02}", year, month, day);
-        assert_eq!(h.app.form.as_ref().unwrap().draft.birthday, expect, "the picked day set the draft birthday");
+        assert_eq!(
+            h.app.form.as_ref().unwrap().draft.birthday,
+            Some(Birthday::Full { year, month, day }),
+            "the picked day set the draft birthday as a structured date",
+        );
         assert_eq!(h.field_value(Slot::Birthday), expect, "and mirrored into the birthday field");
         // Draft-only: not committed to the store yet.
         assert_eq!(h.app.store.get(id).unwrap().birthday, stored_bday, "birthday not committed until Save");
