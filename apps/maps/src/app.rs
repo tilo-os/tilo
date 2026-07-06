@@ -71,6 +71,8 @@ const POI_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
 const POI_MIN_ZOOM: f64 = 14.0;
 /// Cap on POI markers drawn so a dense area stays legible.
 const POI_MAX: usize = 140;
+/// How many nearby POIs the Explore panel lists (the closest to the anchor).
+const NEARBY_MAX: usize = 10;
 
 /// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
@@ -84,6 +86,9 @@ enum Hit {
     Tab(Panel),
     Mode(TravelMode),
     SelectPlace(String),
+    /// Select a nearby POI from the Explore list: centre the map on it and open
+    /// its info card, linking the list to the marker layer.
+    SelectPoi(String),
     /// Dismiss the open POI info card.
     ClosePoi,
     /// Route to the POI whose info card is open.
@@ -310,12 +315,17 @@ impl MapsApp {
         self.pois = sample::pois();
         self.selected_poi = Some("osm-node-203".to_string()); // Hofbräuhaus
         // Frame the map so the POI cluster sits in the upper map area and the
-        // bottom-anchored info card is clear of it. Zoom past the label
-        // threshold so every marker is labelled.
+        // bottom-anchored info card is clear of it. Zoom past the icon + label
+        // threshold so every marker carries its category pictogram and name.
         self.model.center = LatLon::new(48.1381, 11.5770);
         self.model.zoom = 16.7;
         self.model.selected = None;
         self.model.route = None;
+        // Focus the Explore panel on the live NEARBY list for the shot: drop the
+        // stale committed search/results so the nearby places lead the panel and
+        // the selected POI's row is the highlighted one.
+        self.model.results.clear();
+        self.model.query.clear();
         self.model.panel = Panel::Explore;
     }
 
@@ -618,6 +628,28 @@ impl MapsApp {
                 .filter(|p| keyword_match(&needle, p.category))
                 .cloned()
                 .collect();
+        }
+        // Also match the live viewport POIs (Overpass) by name, address,
+        // category label, cuisine/kind, or a category keyword, so a query like
+        // "coffee" or "museum" instantly surfaces what's on the map right now.
+        for poi in &self.pois {
+            if results.iter().any(|r| r.id == poi.id) {
+                continue;
+            }
+            let hit = poi.name.to_lowercase().contains(&needle)
+                || poi.address.to_lowercase().contains(&needle)
+                || poi.category.label().to_lowercase().contains(&needle)
+                || poi.kind.as_deref().is_some_and(|k| k.to_lowercase().contains(&needle))
+                || keyword_match(&needle, poi.category);
+            if hit {
+                results.push(crate::model::Place::new(
+                    &poi.id,
+                    &poi.name,
+                    poi.category,
+                    &poi.address,
+                    poi.pos,
+                ));
+            }
         }
         results
     }
@@ -1172,14 +1204,42 @@ impl MapsApp {
         }
     }
 
-    /// Hit-test a click against the POI dots; returns the POI id if any.
+    /// Whether POI markers are drawn as labelled icon markers (close zoom) vs.
+    /// small category dots. Kept in step with [`canvas::draw_pois`].
+    fn poi_icons_shown(&self) -> bool {
+        self.model.zoom >= canvas::POI_ICON_ZOOM
+    }
+
+    /// Minimum screen spacing between kept POI markers for the declutter pass —
+    /// wider when icon markers are drawn (they are physically larger).
+    fn poi_declutter_px(&self) -> f64 {
+        if self.poi_icons_shown() { 26.0 } else { 15.0 }
+    }
+
+    /// The decluttered POI index set drawn this frame. The draw pass and the
+    /// click hit-test both read it, so a click always resolves to a marker the
+    /// user can actually see (never one hidden behind a denser neighbour).
+    fn visible_poi_indices(&self) -> Vec<usize> {
+        canvas::declutter_indices(
+            &self.projection(),
+            &self.pois,
+            self.poi_declutter_px(),
+            self.selected_poi.as_deref(),
+        )
+    }
+
+    /// Hit-test a click against the *visible* POI markers; returns the POI id if
+    /// any. Uses the same decluttered set and marker radius as the draw pass.
     fn poi_at(&self, p: Point) -> Option<String> {
         let proj = self.projection();
+        let icons = self.poi_icons_shown();
         let mut best: Option<(f64, String)> = None;
-        for poi in &self.pois {
+        for i in self.visible_poi_indices() {
+            let poi = &self.pois[i];
             let c = proj.project(poi.pos);
             let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
-            let r = if selected { 8.5 } else { 4.5 };
+            let base = if icons { 9.0 } else { 4.5 };
+            let r = if selected { base + 4.0 } else { base };
             let d = c.distance(p);
             if d <= r + 6.0 && best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
                 best = Some((d, poi.id.clone()));
@@ -1191,6 +1251,38 @@ impl MapsApp {
     /// Open the info card for a POI marker.
     fn select_poi(&mut self, id: &str) {
         self.selected_poi = Some(id.to_string());
+        self.mark_dirty();
+    }
+
+    /// The viewport POIs the Explore panel lists, nearest-first. The selected
+    /// POI is always included even if it would fall past the cap, so the list
+    /// row and the open info card stay in sync.
+    fn nearby_pois(&self) -> Vec<crate::model::Poi> {
+        let anchor = self.search_anchor();
+        let mut v = self.pois.clone();
+        v.sort_by(|a, b| {
+            geo::haversine_m(a.pos, anchor).total_cmp(&geo::haversine_m(b.pos, anchor))
+        });
+        v.truncate(NEARBY_MAX);
+        if let Some(sel) = self.selected_poi.clone() {
+            if !v.iter().any(|p| p.id == sel) {
+                if let Some(p) = self.pois.iter().find(|p| p.id == sel).cloned() {
+                    v.pop();
+                    v.insert(0, p);
+                }
+            }
+        }
+        v
+    }
+
+    /// Adopt a nearby POI chosen from the Explore list: centre the map on it and
+    /// open its info card. Links the list selection to the map marker layer.
+    fn select_poi_from_list(&mut self, id: &str) {
+        let Some(poi) = self.pois.iter().find(|p| p.id == id).cloned() else { return };
+        self.model.center = poi.pos;
+        self.selected_poi = Some(id.to_string());
+        // Reveal the drawer on narrow layouts so the tapped result is visible.
+        self.nav_open = true;
         self.mark_dirty();
     }
 
@@ -1410,6 +1502,7 @@ impl MapsApp {
             Hit::SelectPlace(id) => {
                 self.select_place(id);
             }
+            Hit::SelectPoi(id) => self.select_poi_from_list(id),
             Hit::ClosePoi => {
                 self.selected_poi = None;
                 self.mark_dirty();
@@ -1578,9 +1671,13 @@ impl MapsApp {
                 canvas::draw_transit(scene, t, &proj, j, theme, &pal, clip);
             }
         }
-        // Live POI marker layer (Overpass) — our own themed dots over the
-        // basemap, under the user's saved/selected pins.
-        canvas::draw_pois(scene, t, tr, &proj, &self.pois, self.selected_poi.as_deref(), theme, &pal, clip);
+        // Live POI marker layer (Overpass) — our own themed category markers
+        // over the basemap, decluttered and under the user's saved/selected
+        // pins.
+        let visible_pois = self.visible_poi_indices();
+        canvas::draw_pois(
+            scene, t, tr, &proj, &self.pois, &visible_pois, self.selected_poi.as_deref(), theme, &pal, clip,
+        );
         canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, clip);
 
         // Side panel: docked when wide, an overlay drawer (with a dimming
@@ -2082,12 +2179,14 @@ impl MapsApp {
         let x = content.x0;
         let right = content.x1;
 
-        // First-run empty state: nothing selected, searched, saved or recent.
-        // An honest hint toward the primary action rather than a blank panel.
+        // First-run empty state: nothing selected, searched, saved, recent, or
+        // fetched for the viewport. An honest hint toward the primary action
+        // rather than a blank panel.
         let empty = self.model.selected_place().is_none()
             && self.model.results.is_empty()
             && self.model.saved_places().is_empty()
-            && self.model.recents.is_empty();
+            && self.model.recents.is_empty()
+            && self.pois.is_empty();
         if empty {
             draw::text_w(scene, tr, t, "Find your way", x, y, 16.0, theme.text_primary, TextWeight::Bold);
             draw::text(scene, tr, t, "Search for a place or address", x, y + 28.0, 13.0, theme.text_dim);
@@ -2148,6 +2247,20 @@ impl MapsApp {
             y += 8.0;
         }
 
+        // Nearby POIs fetched for the current viewport (Overpass), nearest-first
+        // and linked to the marker layer: tapping a row centres the map and
+        // opens the POI's info card, and the selected marker highlights its row.
+        let nearby = self.nearby_pois();
+        if !nearby.is_empty() {
+            draw::text_w(scene, tr, t, "NEARBY", x, y, 11.0, theme.text_dim, TextWeight::Semibold);
+            y += 20.0;
+            let anchor = self.search_anchor();
+            for poi in &nearby {
+                y = self.draw_poi_row(scene, t, tr, theme, content, y, poi, anchor);
+            }
+            y += 8.0;
+        }
+
         let saved = self.model.saved_places().into_iter().cloned().collect::<Vec<_>>();
         if !saved.is_empty() {
             draw::text_w(scene, tr, t, "SAVED", x, y, 11.0, theme.text_dim, TextWeight::Semibold);
@@ -2200,6 +2313,51 @@ impl MapsApp {
             draw::text_right(scene, tr, t, "♥", r.x1 - 8.0, r.y0 + 24.0, 12.0, theme.tokens.colors.semantic.danger);
         }
         self.click_targets.push((r, Hit::SelectPlace(p.id.clone())));
+        y + ROW_H
+    }
+
+    /// One nearby-POI row: a category marker chip (disc + white pictogram,
+    /// matching the map markers), the name, a "Category · detail" subtitle, and a
+    /// trailing distance chip. The whole row selects the POI (centre + info card)
+    /// and highlights while its marker is the open one.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_poi_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        y: f64,
+        poi: &crate::model::Poi,
+        anchor: LatLon,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - 8.0);
+        let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
+        if selected {
+            draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
+        }
+        let cat_col = canvas::category_color(theme, poi.category);
+        let ring = draw::mix(c.surfaces.base, Color::WHITE, 0.85);
+        let cc = Point::new(r.x0 + 18.0, r.center().y);
+        draw::fill_circle(scene, t, cc, 11.0, cat_col);
+        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, ring, cat_col);
+
+        let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
+        let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
+        let tx = r.x0 + 38.0;
+        draw::text_clip(scene, tr, t, &poi.name, tx, r.y0 + 6.0, 13.0, theme.text_primary, r.x1 - tx - dw);
+        let sub = if !poi.address.is_empty() {
+            format!("{} · {}", poi.category.label(), poi.address)
+        } else if let Some(k) = &poi.kind {
+            format!("{} · {}", poi.category.label(), k)
+        } else {
+            poi.category.label().to_string()
+        };
+        draw::text_clip(scene, tr, t, &sub, tx, r.y0 + 24.0, 11.0, theme.text_dim, r.x1 - tx - dw);
+        draw::text_right(scene, tr, t, &dist, r.x1 - 8.0, r.y0 + 8.0, 11.0, theme.accent_primary);
+        self.click_targets.push((r, Hit::SelectPoi(poi.id.clone())));
         y + ROW_H
     }
 
@@ -3351,6 +3509,126 @@ mod tests {
         assert!(a.model.route.is_some(), "a route to the POI is computed");
         assert!(a.selected_poi.is_none(), "the card closes when directions start");
         assert!(a.model.place("pd").is_some(), "the POI is upserted as a Place so its pin shows");
+    }
+
+    /// The Explore panel lists the viewport POIs nearest-first, each row is a
+    /// real click target, and choosing one centres the map on it and opens its
+    /// info card — the list → map-selection link. Exercises the actual
+    /// draw → hit-test → dispatch path.
+    #[test]
+    fn nearby_list_lists_pois_and_links_to_map() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.model.panel = Panel::Explore;
+        a.model.origin = None; // rank against the map centre, deterministically
+        let c = a.model.center;
+        let sel_before = a.model.selected.clone();
+        // A near POI and a far POI, supplied out of nearest order.
+        let near = LatLon::new(c.lat + 0.0008, c.lon);
+        let far = LatLon::new(c.lat + 0.02, c.lon);
+        a.pois = vec![demo_poi("far", far.lat, far.lon), demo_poi("near", near.lat, near.lon)];
+        a.selected_poi = None;
+
+        // Nearest-first ordering off the real proximity sort.
+        let listed = a.nearby_pois();
+        assert_eq!(listed.first().map(|p| p.id.as_str()), Some("near"), "closest POI leads the list");
+
+        // The draw pass records a SelectPoi target for each listed POI.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let has = |id: &str| {
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::SelectPoi(s) if s == id))
+        };
+        assert!(has("near") && has("far"), "every nearby row is a click target");
+
+        // Dispatching the row selects the POI: opens its card AND centres the map
+        // on it (the list → map link), without disturbing the place selection.
+        a.dispatch(&Hit::SelectPoi("far".to_string()));
+        assert_eq!(a.selected_poi.as_deref(), Some("far"), "the row opens the POI card");
+        assert_eq!(a.model.center, far, "the map re-centres on the chosen POI");
+        assert_eq!(a.model.selected, sel_before, "selecting a POI never disturbs the place selection");
+    }
+
+    /// A selected POI beyond the list cap is still listed (so its row can be the
+    /// highlighted one), and clicking its marker on the map opens the same card —
+    /// the map → list link, the mirror of the list → map one above.
+    #[test]
+    fn selected_poi_is_always_listed_and_marker_click_selects_it() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.panel = Panel::Explore;
+        a.model.origin = None; // rank against the map centre, deterministically
+        a.model.zoom = 16.5;
+        let c = a.model.center;
+        // More POIs than the list cap, all at distinct, well-separated coords.
+        a.pois = (0..(NEARBY_MAX + 4))
+            .map(|i| demo_poi(&format!("p{i}"), c.lat + 0.001 * (i as f64 + 1.0), c.lon))
+            .collect();
+        // Select the farthest one — it would fall past the cap by proximity.
+        let far_id = format!("p{}", NEARBY_MAX + 3);
+        a.selected_poi = Some(far_id.clone());
+        let listed = a.nearby_pois();
+        assert!(
+            listed.iter().any(|p| p.id == far_id),
+            "the open POI is always present in the list even past the cap"
+        );
+        assert_eq!(listed.len(), NEARBY_MAX, "the list stays capped");
+
+        // Clicking that POI's marker (map → selection) resolves to exactly it.
+        let far_poi = a.pois.iter().find(|p| p.id == far_id).unwrap().clone();
+        let hit = a.poi_at(a.projection().project(far_poi.pos));
+        assert_eq!(hit.as_deref(), Some(far_id.as_str()), "a marker click resolves to that POI");
+    }
+
+    /// The declutter set that the draw pass uses is exactly the set the click
+    /// hit-test walks: a marker dropped for being too dense is not clickable,
+    /// and the kept one at that spot is.
+    #[test]
+    fn poi_hit_test_matches_the_decluttered_draw_set() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.zoom = 17.0;
+        // Two POIs on the same coordinate; declutter keeps the higher-priority
+        // Transit stop over the Shop.
+        let c = a.model.center;
+        a.pois = vec![
+            crate::model::Poi { category: Category::Shop, ..demo_poi("shop", c.lat, c.lon) },
+            crate::model::Poi { category: Category::Transit, ..demo_poi("transit", c.lat, c.lon) },
+        ];
+        let vis = a.visible_poi_indices();
+        assert_eq!(vis.len(), 1, "overlapping markers collapse to one");
+        let kept = a.pois[vis[0]].id.clone();
+        assert_eq!(kept, "transit", "the salient category is the kept marker");
+        // The hit-test at that pixel returns exactly the kept marker.
+        let p = a.projection().project(c);
+        assert_eq!(a.poi_at(p).as_deref(), Some("transit"), "hit-test agrees with the draw set");
+    }
+
+    /// The search folds the live viewport POIs in, so a name OR category query
+    /// (e.g. "coffee") instantly surfaces what is on the map — the real
+    /// ranked-matches path the overlay and Enter-search both use.
+    #[test]
+    fn search_matches_live_pois_by_name_and_category() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.places.clear(); // isolate: only the live POIs can match
+        let c = a.model.center;
+        a.pois = vec![
+            crate::model::Poi {
+                category: Category::Cafe,
+                kind: Some("coffee".to_string()),
+                ..demo_poi("cafe1", c.lat + 0.001, c.lon)
+            },
+            crate::model::Poi { category: Category::Shop, ..demo_poi("shop1", c.lat, c.lon + 0.001) },
+        ];
+        // Category keyword: "coffee" surfaces the café (not the shop).
+        let by_kw = a.ranked_matches("coffee");
+        assert!(by_kw.iter().any(|p| p.id == "cafe1"), "a category keyword surfaces the live POI");
+        assert!(!by_kw.iter().any(|p| p.id == "shop1"), "unrelated POIs stay out");
+        // Category label: "Café" also matches.
+        assert!(a.ranked_matches("café").iter().any(|p| p.id == "cafe1"));
+        // Name substring: the POI's own name matches.
+        assert!(a.ranked_matches("POI cafe1").iter().any(|p| p.id == "cafe1"));
     }
 
     // --- Time picker for all modes -----------------------------------------
