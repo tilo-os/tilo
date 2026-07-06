@@ -43,7 +43,9 @@ pub enum AdblockError {
 pub fn compile_filter_lists<'a>(
     lists: impl IntoIterator<Item = &'a str>,
 ) -> Result<CompiledFilter, AdblockError> {
-    let mut set = FilterSet::new(false);
+    // `true` = keep the parsed filters' debug info — the content-blocking
+    // conversion refuses to run without it (it needs the raw filter text).
+    let mut set = FilterSet::new(true);
     for list in lists {
         set.add_filter_list(list, ParseOptions::default());
     }
