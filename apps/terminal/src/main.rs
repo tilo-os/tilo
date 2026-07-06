@@ -39,13 +39,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_scenario_arg(&args);
-        // Scenarios drive the grid entirely through `feed`, so they use a null
-        // backend (no shell) to keep the frame deterministic. The plain
-        // cold-start shot uses a real shell.
-        let mut widget = if scenario.is_some() {
-            TerminalWidget::spawn_headless()?
-        } else {
-            TerminalWidget::spawn_default()?
+        // The `shell` scenario (and the plain cold-start shot) run a real login
+        // shell so the frame captures a live session. The canned scenarios
+        // (`colors`/`tui`/`scrollback`) drive the grid entirely through `feed`
+        // on a null backend to keep the frame deterministic.
+        let mut widget = match scenario.as_deref() {
+            Some("shell") | None => TerminalWidget::spawn_default()?,
+            Some(_) => TerminalWidget::spawn_headless()?,
         };
         render_shot_to_png(&mut widget, DEFAULT_SHOTS_VIEWPORT, &out, scenario.as_deref())?;
         return Ok(());
@@ -150,9 +150,14 @@ fn render_shot_to_png(
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     // Drive the scenario now that the grid is sized to the viewport, then
-    // re-sync so the mirrored grid reflects the fed sequences.
+    // re-sync so the mirrored grid reflects the fed sequences. The `shell`
+    // scenario drives the real PTY instead of feeding canned bytes.
     if let Some(name) = scenario {
-        run_scenario(widget, &mut state.doc, &state.root, name);
+        if name == "shell" {
+            drive_live_shell(widget, &mut state.doc, &state.root);
+        } else {
+            run_scenario(widget, &mut state.doc, &state.root, name);
+        }
         widget.sync(&mut state.doc, &state.root);
     }
 
@@ -173,6 +178,34 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("terminal: wrote shot to {}", out.display());
     Ok(())
+}
+
+/// Drive the real login shell for the `shell` shot: let the prompt settle,
+/// send a short demo command exactly as a keystroke would, and pump `sync` so
+/// the live PTY output lands in the captured frame. This exercises the same
+/// reader → `sync` → vte → CRDT path the live terminal uses every frame.
+fn drive_live_shell(
+    widget: &mut TerminalWidget,
+    doc: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+) {
+    use std::time::Duration;
+    // Let the shell reach its first prompt.
+    for _ in 0..8 {
+        widget.sync(doc, root);
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    // A short demo: identify the shell, print some content, and end with a
+    // green "done" so the shot shows real SGR-coloured output.
+    widget.write_input(
+        b"printf 'qOS terminal (real PTY) - shell: %s\\n' \"$0\"; \
+          printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
+          printf '\\033[1;32mdone\\033[0m\\n'\n",
+    );
+    for _ in 0..30 {
+        widget.sync(doc, root);
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Feed a named demo scenario's VT byte sequences through the widget's
