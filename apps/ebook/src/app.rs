@@ -6818,15 +6818,19 @@ mod interaction_tests {
             .expect("a highlight now exists");
         assert!(app.comment_group.is_none(), "no overlay yet");
 
-        // Re-lay the page, then plain-click a run strictly inside the range.
+        // Re-lay the page, then plain-click on the highlight. A char range can be
+        // sub-word (this one starts and ends mid-word), so there isn't always a
+        // whole run wholly inside it — the reader taps the *rendered band*, which
+        // is exactly what the click must resolve back to the highlight's range.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let inside = app
-            .sel_runs
-            .iter()
-            .find(|r| r.block == hl.block && r.cs >= hl.start && r.cs + r.cl <= hl.end)
-            .cloned()
-            .expect("a run inside the highlighted range");
-        let p = Point::new((inside.x0 + inside.x1) / 2.0, (inside.y0 + inside.y1) / 2.0);
+        let band = *app.hi_bands.first().expect("the highlight drew a band to tap");
+        let p = band.center();
+        // Sanity: that tap really lands inside the stored char range.
+        assert_eq!(
+            app.hit_doc_pos(p).and_then(|dp| app.highlight_group_at(dp)),
+            Some(hl.group),
+            "the tapped point resolves to the highlight's char range",
+        );
         ptr_move(&mut app, &mut doc, p);
         ptr_down(&mut app, &mut doc);
         ptr_up(&mut app, &mut doc);
