@@ -200,6 +200,37 @@ impl Default for TermModes {
     }
 }
 
+/// A terminal emulator packaged as a reusable `ui` widget.
+///
+/// It owns a PTY running a shell (or an arbitrary command), a vte parser, and
+/// a CRDT-backed cell grid, and implements the toolkit's `Widget` trait so it
+/// drops into any layout the same way any other widget does.
+///
+/// # Embedding
+///
+/// A host that wants an integrated terminal (e.g. the IDE's terminal panel):
+///
+/// 1. Spawn one: [`TerminalWidget::spawn_default`] (the user's `$SHELL`) or
+///    [`TerminalWidget::spawn_command`] (a given `CommandBuilder`).
+/// 2. Give it a region every frame with [`place_at`](Self::place_at) (this
+///    reflows the grid **and** resizes the PTY so the shell sees the new size),
+///    then call [`Widget::draw`] to paint it there.
+/// 3. Pump it: call [`Widget::sync`] each frame — it drains the PTY reader and
+///    replays the bytes into the grid. (Gate your host's animation-frame /
+///    redraw request on the terminal being visible so it only spins while on
+///    screen.)
+/// 4. Forward input: route winit events to [`Widget::handle_event`] while the
+///    terminal is focused; keystrokes go to the PTY, wheel scrolls scrollback.
+///
+/// # Programmatic driving
+///
+/// [`write_input`](Self::write_input) sends raw bytes to the shell's stdin and
+/// [`paste`](Self::paste) pastes text (honouring bracketed-paste); the
+/// scrollback API ([`scroll_up`](Self::scroll_up) / [`scroll_down`](Self::scroll_down)
+/// / [`scroll_to_top`](Self::scroll_to_top) / [`scroll_to_bottom`](Self::scroll_to_bottom)
+/// / [`scroll_offset`](Self::scroll_offset)) and the read-back accessors
+/// ([`grid_text`](Self::grid_text) / [`grid_size`](Self::grid_size)) let a host
+/// inspect and control the session without a GPU.
 pub struct TerminalWidget {
     rect: Rect,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -426,6 +457,20 @@ impl TerminalWidget {
     /// Default-bg color last drawn with (sampled from the theme's terminal
     /// palette). Test-only.
     pub fn last_bg_default(&self) -> Color { self.last_bg_default }
+
+    /// The full terminal buffer as text — one grid row per line, including
+    /// retained scrollback. Host-facing: lets an embedder read the on-screen
+    /// content (search, "copy all", accessibility) without a GPU scene.
+    /// Trailing padding spaces are preserved; callers trim as needed.
+    pub fn grid_text(&self) -> String {
+        self.grid.join("\n")
+    }
+
+    /// Current grid dimensions as `(cols, rows)`. Reflects the last
+    /// `place_at` / `apply_layout` reflow. Host-facing accessor for sizing.
+    pub fn grid_size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 
     /// Number of grid rows currently visible, from the paint geometry.
     fn current_visible_rows(&self) -> usize {
@@ -1884,24 +1929,43 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
 
 pub struct TerminalBackend { pub writer: Box<dyn Write + Send>, pub reader: Box<dyn Read + Send>, pub master: Box<dyn MasterPty + Send>, pub shell_name: String }
 impl TerminalBackend {
+    /// Open a PTY running the user's login shell (`$SHELL`, falling back to
+    /// `/bin/sh`).
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let cmd = CommandBuilder::new(&shell);
+        Self::with_command(cmd)
+    }
+
+    /// Open a PTY running an arbitrary command. `TERM` is forced to
+    /// `xterm-256color` (unless the caller already set it) so programs emit the
+    /// SGR / DEC sequences this emulator understands.
+    pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
+        if cmd.get_env("TERM").is_none() {
+            cmd.env("TERM", "xterm-256color");
+        }
+        let shell_name = cmd
+            .get_argv()
+            .first()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let mut cmd = CommandBuilder::new(&shell); cmd.env("TERM", "xterm-256color");
         let _child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
-        Ok(Self { writer, reader, master: pair.master, shell_name: shell })
+        Ok(Self { writer, reader, master: pair.master, shell_name })
     }
 }
 
 impl TerminalWidget {
-    /// Spawn a PTY + reader thread and return a fully wired `TerminalWidget`.
-    /// Returns an error if PTY creation fails.
-    pub fn spawn_default() -> anyhow::Result<Self> {
-        let backend = TerminalBackend::new().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    /// Wire a spawned [`TerminalBackend`] into a widget: share the writer +
+    /// master behind mutexes and start a reader thread that funnels PTY output
+    /// onto the channel the widget drains in `sync` / `update`. The reader
+    /// thread exits when the shell closes the PTY or the widget (hence the
+    /// receiver) is dropped.
+    fn from_backend(backend: TerminalBackend) -> Self {
         let writer = std::sync::Arc::new(std::sync::Mutex::new(backend.writer));
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = crossbeam_channel::unbounded();
@@ -1913,13 +1977,35 @@ impl TerminalWidget {
                 let mut r = reader.lock().unwrap();
                 match std::io::Read::read(&mut *r, &mut buf) {
                     Ok(0) => break,
-                    Ok(n) => { let _ = output_tx.send(buf[..n].to_vec()); }
+                    Ok(n) => { if output_tx.send(buf[..n].to_vec()).is_err() { break; } }
                     Err(_) => break,
                 }
             }
         });
 
-        Ok(TerminalWidget::new(writer, master, output_rx))
+        TerminalWidget::new(writer, master, output_rx)
+    }
+
+    /// Spawn the user's login shell (`$SHELL`) in a PTY + reader thread and
+    /// return a fully wired `TerminalWidget`. Errors if PTY creation fails.
+    pub fn spawn_default() -> anyhow::Result<Self> {
+        let backend = TerminalBackend::new().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        Ok(Self::from_backend(backend))
+    }
+
+    /// Spawn an arbitrary command in a PTY + reader thread and return a fully
+    /// wired `TerminalWidget`. This is the embedding entry point for hosts that
+    /// want the terminal to run a specific program (a build, a REPL, `ssh …`)
+    /// instead of a login shell. Errors if PTY creation or the spawn fails.
+    ///
+    /// ```no_run
+    /// use terminal::{TerminalWidget, CommandBuilder};
+    /// let cmd = CommandBuilder::new("htop");
+    /// let _term = TerminalWidget::spawn_command(cmd).unwrap();
+    /// ```
+    pub fn spawn_command(cmd: CommandBuilder) -> anyhow::Result<Self> {
+        let backend = TerminalBackend::with_command(cmd).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        Ok(Self::from_backend(backend))
     }
 
     /// A terminal with a null backend: a sink writer, an empty reader, and a
