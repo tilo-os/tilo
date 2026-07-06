@@ -2,6 +2,7 @@
 mod tests {
     use crate::{TerminalWidget, TerminalPerformer, Attr, GridPos, Selection};
     use ui::State;
+    use ui::widget::Widget as _;
     use automerge::{AutoCommit, ROOT, ObjType, ReadDoc, transaction::Transactable};
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
@@ -49,6 +50,41 @@ mod tests {
             pty_out_rx,
         );
         (widget, write_rx)
+    }
+
+    /// Like `build_test_widget` but also hands back the PTY *output* sender,
+    /// so a test can push bytes down the exact channel the reader thread uses.
+    /// This exercises the production `sync` → `pump` drain path (which is what
+    /// snaps the scrollback viewport back to the live bottom on fresh output).
+    fn build_test_widget_io() -> (
+        TerminalWidget,
+        crossbeam_channel::Receiver<Vec<u8>>,
+        crossbeam_channel::Sender<Vec<u8>>,
+    ) {
+        let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+        impl Write for ChanWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.send(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
+        let (pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+        let widget = TerminalWidget::new(
+            Arc::new(Mutex::new(writer)),
+            Arc::new(Mutex::new(Box::new(MockMasterShared))),
+            pty_out_rx,
+        );
+        (widget, write_rx, pty_out_tx)
+    }
+
+    /// Drain and concatenate everything the PTY-write channel has buffered.
+    fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Ok(b) = rx.try_recv() { out.extend_from_slice(&b); }
+        out
     }
 
     fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
@@ -167,33 +203,48 @@ mod tests {
 
     #[test]
     fn test_terminal_performer_print() {
+        use crate::TermModes;
         let mut doc = AutoCommit::new();
         let grid_id = doc.put_object(ROOT, "terminal_grid", ObjType::List).unwrap();
         let line_id = doc.insert_object(&grid_id, 0, ObjType::Map).unwrap();
         let text_id = doc.put_object(&line_id, "text", ObjType::Text).unwrap();
         doc.splice_text(&text_id, 0, 0, &" ".repeat(80)).unwrap();
-        
+
         let attr_bytes: Vec<u8> = vec![Attr::default().pack(); 80].concat();
         doc.put(&line_id, "attrs", attr_bytes).unwrap();
+
+        // The performer also needs a (possibly empty) alternate buffer list.
+        let alt_grid_id = doc.put_object(ROOT, "terminal_grid_alt", ObjType::List).unwrap();
 
         let cursor_id = doc.put_object(ROOT, "cursor", ObjType::Map).unwrap();
         doc.put(&cursor_id, "x", 0u64).unwrap();
         doc.put(&cursor_id, "y", 0u64).unwrap();
 
         let mut line_ids = vec![line_id.clone()];
+        let mut alt_line_ids: Vec<_> = Vec::new();
+        let mut alt_active = false;
+        let mut modes = TermModes::default();
+        let mut saved_cursor = None;
 
         {
             let mut performer = TerminalPerformer {
                 state: &mut doc,
-                grid_id,
+                main_grid_id: grid_id,
+                alt_grid_id,
                 cursor_id,
-                line_ids: &mut line_ids,
+                main_line_ids: &mut line_ids,
+                alt_line_ids: &mut alt_line_ids,
+                alt_active: &mut alt_active,
                 width: 80,
                 height: 24,
                 cursor_x: 0,
                 cursor_y: 0,
                 current_attr: Attr::default(),
                 pending_wrap: false,
+                modes: &mut modes,
+                saved_cursor: &mut saved_cursor,
+                scroll_top: 0,
+                scroll_bottom: 23,
             };
 
             performer.print('H');
@@ -529,5 +580,204 @@ mod tests {
         let mut cb = arboard::Clipboard::new().expect("clipboard backend");
         let got = cb.get_text().expect("clipboard contents readable");
         assert_eq!(got, "coverage one\ncoverage two");
+    }
+
+    // ---------------------------------------------------------------
+    // Scrollback viewing — real VT bytes through `feed`/`sync`.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scrollback_reveals_older_lines_and_snaps_back() {
+        use vello::kurbo::Rect;
+        // 240px tall / 20px rows → 12 visible rows. Feed many more than that
+        // so history accumulates above the viewport.
+        let (mut w, _write_rx, out_tx) = build_test_widget_io();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+
+        let mut payload = Vec::new();
+        for i in 0..60 {
+            payload.extend_from_slice(format!("LINE{:03}\r\n", i).as_bytes());
+        }
+        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.sync(&mut doc, &automerge::ROOT);
+
+        // Pinned to the bottom: newest lines visible, oldest not.
+        let bottom = w.visible_lines();
+        assert!(bottom.iter().any(|l| l.contains("LINE059")), "bottom shows newest: {:?}", bottom);
+        assert!(!bottom.iter().any(|l| l.contains("LINE000")), "bottom hides oldest");
+        assert_eq!(w.scroll_offset(), 0);
+
+        // Scroll to the very top: oldest lines visible, newest not.
+        w.scroll_to_top();
+        let top = w.visible_lines();
+        assert!(top.iter().any(|l| l.contains("LINE000")), "top shows oldest: {:?}", top);
+        assert!(!top.iter().any(|l| l.contains("LINE059")), "top hides newest");
+        assert!(w.scroll_offset() > 0);
+
+        // Fresh PTY output must snap the viewport back to the bottom. Push it
+        // through the real channel so `sync`→`pump` performs the snap.
+        out_tx.send(b"LINE060\r\n".to_vec()).unwrap();
+        w.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(w.scroll_offset(), 0, "new output snaps to the live bottom");
+        let after = w.visible_lines();
+        assert!(after.iter().any(|l| l.contains("LINE060")), "bottom shows freshest: {:?}", after);
+    }
+
+    #[test]
+    fn keystroke_snaps_scrollback_to_bottom() {
+        use vello::kurbo::Rect;
+        use winit::keyboard::{Key, SmolStr};
+        let (mut w, _write_rx, _out_tx) = build_test_widget_io();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+
+        let mut payload = Vec::new();
+        for i in 0..60 { payload.extend_from_slice(format!("L{:03}\r\n", i).as_bytes()); }
+        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.sync(&mut doc, &automerge::ROOT);
+
+        w.scroll_to_top();
+        assert!(w.scroll_offset() > 0);
+
+        // Typing a key that reaches the PTY must snap to the bottom.
+        send_key(&mut w, &mut doc, Key::Character(SmolStr::new_static("x")), false, false);
+        assert_eq!(w.scroll_offset(), 0, "keystroke snaps to bottom");
+    }
+
+    // ---------------------------------------------------------------
+    // Paste — bracketed and plain, straight to the PTY.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn plain_paste_writes_to_pty_with_cr_newlines() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b""); // init crdt / modes
+        w.paste("echo hi\nls");
+        let got = drain_writes(&write_rx);
+        assert_eq!(got, b"echo hi\rls", "plain paste normalises LF to CR");
+    }
+
+    #[test]
+    fn bracketed_paste_wraps_when_app_enabled_it() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // App turns on bracketed paste via a real DEC private set sequence.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?2004h");
+        assert!(w.modes().bracketed_paste);
+        w.paste("data");
+        let got = drain_writes(&write_rx);
+        assert_eq!(got, b"\x1b[200~data\x1b[201~", "bracketed paste wraps the payload");
+    }
+
+    // ---------------------------------------------------------------
+    // Alternate screen + DEC private modes.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn alt_screen_switches_buffers_and_restores_main() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        // Write to the main screen.
+        w.feed(&mut doc, &automerge::ROOT, b"MAIN CONTENT\r\n");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert!(!w.is_alt_screen());
+        assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
+
+        // Enter the alternate screen and do a full-screen redraw.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1049h\x1b[2J\x1b[H");
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[3;5HTUI REDRAW");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert!(w.is_alt_screen(), "?1049h enters the alternate screen");
+        // The alt buffer holds the redraw, and the main content is not in it.
+        assert!(w.grid_row(2).contains("TUI REDRAW"), "row 2 (1-based row 3): {:?}", w.grid_row(2));
+        assert!(!w.grid_row(0).contains("MAIN CONTENT"), "alt buffer is fresh");
+
+        // Leave the alternate screen — the main buffer must return intact.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1049l");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert!(!w.is_alt_screen(), "?1049l restores the main screen");
+        assert!(
+            w.grid_row(0).starts_with("MAIN CONTENT"),
+            "main content restored: {:?}",
+            w.grid_row(0)
+        );
+        assert!(!w.grid_row(2).contains("TUI REDRAW"), "alt redraw did not leak into main");
+    }
+
+    #[test]
+    fn dec_private_modes_toggle_cursor_and_bracketed_paste() {
+        let (mut w, _rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"");
+        assert!(w.modes().cursor_visible, "cursor visible by default");
+
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?25l");
+        assert!(!w.modes().cursor_visible, "?25l hides the cursor");
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?25h");
+        assert!(w.modes().cursor_visible, "?25h shows the cursor");
+
+        // Mouse reporting is parsed (not crashing) into the mode flags.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1000h\x1b[?1006h");
+        assert!(w.modes().mouse_report && w.modes().mouse_sgr, "mouse modes stubbed but tracked");
+    }
+
+    // ---------------------------------------------------------------
+    // SGR — 256-color, truecolor, and the four style bits.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn sgr_truecolor_and_indexed_colors_parse_into_cells() {
+        use crate::CellColor;
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        // Semicolon truecolor foreground.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38;2;10;20;30mA");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(w.cell_attr(0, 0).fg, CellColor::Rgb(10, 20, 30), "38;2 truecolor fg");
+
+        // Semicolon 256-indexed foreground.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38;5;196mB");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(w.cell_attr(0, 0).fg, CellColor::Indexed(196), "38;5 indexed fg");
+
+        // Colon-subparam 256-indexed foreground (the xterm form apps emit).
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38:5:214mC");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(w.cell_attr(0, 0).fg, CellColor::Indexed(214), "38:5 colon-form indexed fg");
+
+        // Truecolor background.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[48;2;5;6;7mD");
+        w.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(w.cell_attr(0, 0).bg, CellColor::Rgb(5, 6, 7), "48;2 truecolor bg");
+    }
+
+    #[test]
+    fn sgr_style_bits_and_reset_parse_into_cells() {
+        use crate::CellColor;
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        // Bold + italic + underline + reverse all at once.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[1;3;4;7mW");
+        w.sync(&mut doc, &automerge::ROOT);
+        let a = w.cell_attr(0, 0);
+        assert!(a.bold && a.italic && a.underline && a.reverse, "combined SGR style bits: {:?}", a);
+
+        // A reset clears everything back to the default attribute.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[0mN");
+        w.sync(&mut doc, &automerge::ROOT);
+        let b = w.cell_attr(0, 0);
+        assert_eq!(b.fg, CellColor::Default);
+        assert!(!b.bold && !b.italic && !b.underline && !b.reverse, "SGR 0 resets style: {:?}", b);
     }
 }
