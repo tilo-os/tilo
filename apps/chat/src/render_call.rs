@@ -36,13 +36,13 @@ impl ChatApp {
         let mut out: Vec<Participant> = Vec::new();
         // Host = this peer.
         out.push(Participant {
-            user: model::ME.to_string(),
+            user: self.me.id.clone(),
             talking: !self.call.muted,
             muted: self.call.muted,
             audio_only: self.call.audio_only,
         });
         for m in members {
-            if m.user == model::ME {
+            if m.user == self.me.id {
                 continue; // already the host tile
             }
             out.push(Participant {
@@ -88,7 +88,7 @@ impl ChatApp {
         let radius = if self.call.expanded { 14.0 } else { 10.0 };
         fill_round(scene, tf, rect, radius, c.neutral[2]);
         let (initials, cidx) = self
-            .user(model::ME)
+            .user(&self.me.id)
             .map(|u| (u.initials.clone(), u.color_idx))
             .unwrap_or_else(|| ("Y".into(), 0));
         let r = (rect.height() * 0.20).clamp(22.0, 52.0);
@@ -161,7 +161,9 @@ impl ChatApp {
         let strip_y = v.y1 + 10.0;
         let toggle = Rect::new(panel.x1 - 84.0, strip_y, panel.x1 - 14.0, strip_y + 20.0);
         let caret = if self.call.participants_expanded { "▾" } else { "▸" };
-        label(scene, tr, tf, &format!("{caret} {} in call", parts.len()), 11.0, c.text_dim, panel.x0 + 14.0, strip_y + 3.0);
+        // Surface the real media routing decision (P2P vs host relay), chosen
+        // from the live headcount — the call promotes as people join.
+        label(scene, tr, tf, &format!("{caret} {} in call · {}", parts.len(), self.call_session().label()), 11.0, c.text_dim, panel.x0 + 14.0, strip_y + 3.0);
         let _ = toggle;
         let toggle_hit = Rect::new(panel.x0 + 12.0, strip_y - 2.0, panel.x1 - 12.0, strip_y + 20.0);
         ChatApp::push_hit(hits, toggle_hit, Hit::CallParticipantsToggle);
