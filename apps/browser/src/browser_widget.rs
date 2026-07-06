@@ -124,7 +124,11 @@ impl BrowserWidget {
             .with_on_change_path(URL_PATH)
             .with_placeholder("Search or enter address");
 
+        // `no_wrap` keeps the address input on the same line as the
+        // buttons (a wrapping row would push the 100%-width input onto
+        // its own line instead of shrinking it to the remaining space).
         let toolbar = Row::new()
+            .no_wrap()
             .push(Box::new(back))
             .push(Box::new(forward))
             .push(Box::new(reload))

@@ -87,6 +87,12 @@ fn render_shot_to_png(
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    // `BrowserWidget` composes fresh children inside `build_layout`, so
+    // they missed the sync above and would draw blank (the address bar
+    // would show its placeholder instead of the page URL). Re-sync
+    // against the built tree — the same post-build re-sync `ui::App`
+    // performs each frame.
+    widget.sync(&mut state.doc, &state.root);
     let root = taffy.new_with_children(
         Style {
             size: Size {
