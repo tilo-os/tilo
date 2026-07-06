@@ -300,7 +300,7 @@ const GUIDE_GRAB: f64 = 7.0;
 const CP_W: f64 = 236.0;
 const CP_H: f64 = 176.0;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ToolAction {
     Bold,
     Italic,
@@ -310,11 +310,13 @@ enum ToolAction {
     H2,
     Body,
     Bullet,
-    AlignLeft,
-    AlignCenter,
-    AlignRight,
-    AlignJustify,
     FontCycle,
+    /// Nudge the selection's font size down one step (a per-run `size` character
+    /// mark). Direct formatting on the selection — the style's *default* size
+    /// lives separately in the side panel's "Paragraph style" Size field.
+    FontSizeDec,
+    /// Nudge the selection's font size up one step (per-run `size` mark).
+    FontSizeInc,
     /// Apply a per-run text colour (the toolbar swatch row). `None` is the
     /// neutral/default — it clears any `color` run mark over the selection.
     TextColor(Option<[u8; 3]>),
@@ -325,10 +327,9 @@ enum ToolAction {
     Super,
     /// Toggle subscript (`sub` run mark) over the selection; clears `super`.
     Sub,
-    /// Cycle the focused paragraph's line spacing (1.0 → 1.15 → 1.5 → 2.0 → 1.0).
-    LineSpacing,
-    // NB: font size is intentionally NOT a toolbar action — it lives solely in
-    // the side inspector's "Size" field (single home; see `draw_num_row`).
+    // NB: paragraph-level controls (alignment, line spacing) are NOT toolbar
+    // actions — they live in the side panel's "This paragraph" section, so the
+    // toolbar carries only direct character formatting + structural actions.
     /// Insert an image at the caret via the host file-chooser portal (an OS
     /// picker; drag-and-drop is the secondary insert path).
     InsertImage,
@@ -573,10 +574,15 @@ impl NumField {
 enum PanelHit {
     /// Apply this style id to the selection / caret block.
     Pick(String),
+    /// Set the alignment of the **current paragraph(s)** (an instance `align`
+    /// attr — direct formatting, not the style default). The "This paragraph"
+    /// section, distinct from the named-style editor below it.
+    ParaAlign(&'static str),
+    /// Cycle the **current paragraph(s)** line spacing (1.0 → 1.15 → 1.5 → 2.0).
+    ParaLineSpacing,
     CycleFont,
     ToggleBold,
     ToggleItalic,
-    SetAlign(&'static str),
     SetColor([u8; 3]),
     /// Open the shared [`ColorPicker`] popover to choose an arbitrary colour for
     /// the focused style (beyond the quick-preset swatches).
@@ -3308,9 +3314,15 @@ impl WordProcessorWidget {
         tr.draw_text(scene, &readout, 12.5, cc.text_dim, transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
 
-    /// The contextual styles panel: the focused block's style name, a style
-    /// picker (apply any style to the selection), and editable property rows that
-    /// mutate the *style* — every block of that style updates live.
+    /// The contextual paragraph panel, in two clearly-labelled halves so the
+    /// direct-vs-preset distinction is legible:
+    ///
+    /// * **This paragraph** — direct formatting on the current paragraph(s):
+    ///   alignment + line spacing (instance attrs). These moved off the toolbar
+    ///   so per-paragraph controls have one home.
+    /// * **Paragraph style** — the named-style editor: a style picker plus
+    ///   property rows that mutate the *style* (every block of that style
+    ///   updates live). Distinct from the toolbar's direct character formatting.
     fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
         let cc = self.chrome;
         self.panel_rect = panel;
@@ -3328,32 +3340,62 @@ impl WordProcessorWidget {
         let mut y = panel.y0 + 14.0;
 
         // When an image is selected, the panel becomes an image inspector
-        // (resize + flip) instead of the paragraph-style editor.
+        // (resize + flip) instead of the paragraph editor.
         if self.selected_image_id().is_some() {
             self.draw_image_inspector(scene, transform, tr, x0, right, y);
             scene.pop_layer();
             return;
         }
 
-        tr.draw_text(scene, &t("panel-style"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
-        y += 16.0;
-
         let Some(key) = self.focused_style_key() else {
             tr.draw_text(scene, &t("panel-caret-hint"), 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
             scene.pop_layer();
             return;
         };
-        // Snapshot the focused style for drawing (read-only copy).
-        let st = self.sheet.get(&key);
 
-        tr.draw_text(scene, &st.name, 18.0, cc.text, transform * Affine::translate((x0, y)), Some(inner_w as f32));
-        y += 28.0;
+        // ================= This paragraph (direct formatting) =============
+        tr.draw_text(scene, &t("panel-this-paragraph"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        y += 18.0;
+
+        // Alignment: L / C / R / J — the current paragraph(s), via an instance
+        // `align` attr (not the style default).
+        {
+            let cur = self.current_align();
+            tr.draw_text(scene, &t("panel-align"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+            let bw = 34.0;
+            let gap = 6.0;
+            for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right"), ("J", "justify")].iter().enumerate() {
+                let rx = right - (4.0 - i as f64) * bw - (3.0 - i as f64) * gap;
+                let r = Rect::new(rx, y, rx + bw, y + 24.0);
+                draw_btn(scene, transform, tr, &cc, r, label, cur == *val, true);
+                self.panel_hits.push((r, PanelHit::ParaAlign(val)));
+            }
+            y += 30.0;
+        }
+
+        // Line spacing: a cycling chip (1.0 → 1.15 → 1.5 → 2.0) on the current
+        // paragraph(s).
+        {
+            tr.draw_text(scene, &t("panel-line-spacing"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+            let label = line_spacing_label(self.current_line_spacing());
+            let r = Rect::new(right - 96.0, y, right, y + 24.0);
+            draw_btn(scene, transform, tr, &cc, r, &label, false, true);
+            self.panel_hits.push((r, PanelHit::ParaLineSpacing));
+            y += 30.0;
+        }
+
         panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
-        // ---- Style picker -------------------------------------------------
-        tr.draw_text(scene, &t("panel-paragraph-styles"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        // ================= Paragraph style (the named preset) =============
+        // Snapshot the focused style for drawing (read-only copy).
+        let st = self.sheet.get(&key);
+        tr.draw_text(scene, &t("panel-style"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
+        tr.draw_text(scene, &st.name, 18.0, cc.text, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+        y += 28.0;
+
+        // ---- Style picker -------------------------------------------------
         let order = self.sheet.order();
         let gap = 6.0;
         let col_w = (inner_w - gap) / 2.0;
@@ -3373,9 +3415,10 @@ impl WordProcessorWidget {
         panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
-        // ---- Editable style properties ------------------------------------
-        tr.draw_text(scene, &t("panel-style-properties"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
-        y += 18.0;
+        // ---- Editable style properties (defaults for every block of this style;
+        // alignment + line spacing are the direct controls above, not here). The
+        // "PARAGRAPH STYLE" header + style name already frame this as the preset
+        // editor, so no separate sub-header is needed.
 
         // Font (cycles sans → serif → mono).
         {
@@ -3437,21 +3480,7 @@ impl WordProcessorWidget {
             y += 30.0;
         }
 
-        // Alignment: L / C / R.
-        {
-            tr.draw_text(scene, &t("panel-align"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
-            let bw = 40.0;
-            let gap = 6.0;
-            for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right")].iter().enumerate() {
-                let rx = right - (3.0 - i as f64) * bw - (2.0 - i as f64) * gap;
-                let r = Rect::new(rx, y, rx + bw, y + 24.0);
-                draw_btn(scene, transform, tr, &cc, r, label, st.align == *val, true);
-                self.panel_hits.push((r, PanelHit::SetAlign(val)));
-            }
-            y += 30.0;
-        }
-
-        // Numeric rows.
+        // Numeric rows (style defaults: size, spacing before/after, indent).
         for field in [NumField::Size, NumField::SpaceBefore, NumField::SpaceAfter, NumField::Indent] {
             self.draw_num_row(scene, transform, tr, field, field.get(&st), x0, right, y);
             y += 30.0;
@@ -3765,12 +3794,9 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::H2 => "a11y-heading2",
         ToolAction::Body => "a11y-body-text",
         ToolAction::Bullet => "a11y-bulleted-list",
-        ToolAction::AlignLeft => "a11y-align-left",
-        ToolAction::AlignCenter => "a11y-align-center",
-        ToolAction::AlignRight => "a11y-align-right",
-        ToolAction::AlignJustify => "a11y-justify",
-        ToolAction::LineSpacing => "a11y-line-spacing",
         ToolAction::FontCycle => "a11y-font",
+        ToolAction::FontSizeDec => "a11y-size-down",
+        ToolAction::FontSizeInc => "a11y-size-up",
         ToolAction::InsertImage => "a11y-insert-image",
         ToolAction::InsertTable => "a11y-insert-table",
         ToolAction::TableRowAdd => "a11y-table-row-add",
@@ -6219,10 +6245,6 @@ impl WordProcessorWidget {
             ToolAction::H2 => self.inner.set_paragraph_style(state, "heading", Some(2), None),
             ToolAction::Body => self.inner.set_paragraph_style(state, "paragraph", None, None),
             ToolAction::Bullet => self.inner.set_paragraph_style(state, "list_item", None, Some(false)),
-            ToolAction::AlignLeft => self.inner.set_align(state, "left"),
-            ToolAction::AlignCenter => self.inner.set_align(state, "center"),
-            ToolAction::AlignRight => self.inner.set_align(state, "right"),
-            ToolAction::AlignJustify => self.inner.set_align(state, "justify"),
             ToolAction::TextColor(Some(c)) => self.inner.set_text_color(state, &crate::styles::color_to_hex(c)),
             // The neutral swatch clears any per-run colour, reverting to the
             // block's style ink.
@@ -6232,9 +6254,13 @@ impl WordProcessorWidget {
             ToolAction::Highlight(None) => self.inner.clear_mark(state, "highlight"),
             ToolAction::Super => self.inner.toggle_super(state),
             ToolAction::Sub => self.inner.toggle_sub(state),
-            ToolAction::LineSpacing => {
-                let next = next_line_spacing(self.inner.caret_line_spacing(state));
-                self.inner.set_line_spacing(state, next);
+            ToolAction::FontSizeInc => {
+                let next = (self.current_font_size() + 1.0).round().clamp(6.0, 200.0) as i64;
+                self.inner.set_font_size(state, next);
+            }
+            ToolAction::FontSizeDec => {
+                let next = (self.current_font_size() - 1.0).round().clamp(6.0, 200.0) as i64;
+                self.inner.set_font_size(state, next);
             }
             ToolAction::FontCycle => {
                 let name = match self.current_font().next() {
@@ -6326,7 +6352,23 @@ impl WordProcessorWidget {
             }
             PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
             PanelHit::ToggleItalic => self.edit_focused_style(state, true, |st| st.italic = !st.italic),
-            PanelHit::SetAlign(a) => self.edit_focused_style(state, true, |st| st.align = a.into()),
+            // Direct paragraph formatting — applies to the current paragraph(s),
+            // not the named style (the toolbar no longer carries these).
+            PanelHit::ParaAlign(a) => {
+                self.inner.set_align(state, a);
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                self.modified = true;
+                self.dirty = true;
+            }
+            PanelHit::ParaLineSpacing => {
+                let next = next_line_spacing(self.inner.caret_line_spacing(state));
+                self.inner.set_line_spacing(state, next);
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                self.modified = true;
+                self.dirty = true;
+            }
             PanelHit::SetColor(c) => self.edit_focused_style(state, true, |st| st.color = c),
             PanelHit::OpenColorPicker => self.open_color_picker(),
             PanelHit::NumDelta(field, d) => {
@@ -6535,6 +6577,16 @@ impl WordProcessorWidget {
         self.font_probe()
             .and_then(|(b, pos)| char_font_family(pos, &b.marks))
             .unwrap_or_default()
+    }
+
+    /// The effective font size at the selection: the per-run `size` character
+    /// mark under the caret if present, else the resolved paragraph style's
+    /// size. Seeds the toolbar's A− / A+ nudges (which write a per-run mark).
+    fn current_font_size(&self) -> f32 {
+        if let Some(sz) = self.font_probe().and_then(|(b, pos)| char_font_size(pos, &b.marks)) {
+            return sz;
+        }
+        self.focused_style_key().map(|k| self.sheet.get(&k).size).unwrap_or(16.5)
     }
 
     fn current_align(&self) -> String {
@@ -7190,9 +7242,7 @@ impl WordProcessorWidget {
         let super_a = self.mark_active_in_selection("super");
         let sub_a = self.mark_active_in_selection("sub");
         let (kind, level) = self.current_block_style();
-        let align = self.current_align();
         let font_label = self.current_font().label();
-        let line_label = line_spacing_label(self.current_line_spacing());
 
         // Build the toolbar spec; the ui::chrome toolbar component owns the look
         // and hands back each button's clickable rect (zipped to its action).
@@ -7203,7 +7253,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
+            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::H1 | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
@@ -7211,8 +7261,8 @@ impl WordProcessorWidget {
             specs.push((a, ToolbarItem::new(label, w).active(active).cue(cue(a)).group_start(group_start(a))));
         };
         // New-from-template picker (leads the toolbar). Active while its menu is open.
-        // Single-glyph faces (B/I/U/S, x²/x₂, H1/H2, L/C/R/J, A−/A+, ✕) are symbols,
-        // not words, and stay as literals; the spelled-out names live in the a11y
+        // Single-glyph faces (B/I/U/S, x²/x₂, H1/H2, A−/A+, ✕) are symbols, not
+        // words, and stay as literals; the spelled-out names live in the a11y
         // labels (see `tool_action_a11y_label`).
         add(ToolAction::NewMenu, &t("toolbar-new"), 64.0, self.new_menu.is_open());
         add(ToolAction::Bold, "B", 34.0, bold_a);
@@ -7225,16 +7275,13 @@ impl WordProcessorWidget {
         add(ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2));
         add(ToolAction::Body, &t("toolbar-body"), 58.0, kind == "paragraph");
         add(ToolAction::Bullet, &t("toolbar-list"), 66.0, kind == "list_item");
-        add(ToolAction::AlignLeft, "L", 30.0, align == "left");
-        add(ToolAction::AlignCenter, "C", 30.0, align == "center");
-        add(ToolAction::AlignRight, "R", 30.0, align == "right");
-        add(ToolAction::AlignJustify, "J", 30.0, align == "justify");
-        add(ToolAction::LineSpacing, &line_label, 54.0, false);
+        // Font family (cycles) + direct font-size nudges — all character
+        // formatting on the selection. Paragraph controls (alignment, line
+        // spacing) intentionally live in the side panel's "This paragraph"
+        // section, not here.
         add(ToolAction::FontCycle, font_label, 58.0, false);
-        // NB: font *size* deliberately lives in exactly ONE place — the side
-        // inspector's "Size" field (a click-to-type number) — not here. It used to
-        // be duplicated as a toolbar A−/value/A+ stepper; that duplicate was
-        // removed so there is a single, unambiguous home for the control.
+        add(ToolAction::FontSizeDec, "A−", 34.0, false);
+        add(ToolAction::FontSizeInc, "A+", 34.0, false);
         // Contextual table section: editing controls inside a cell, else insert.
         if kind == "cell" {
             add(ToolAction::TableRowAdd, &t("toolbar-row-add"), 54.0, false);
@@ -7337,9 +7384,8 @@ impl WordProcessorWidget {
             34.0, 30.0, 32.0, 30.0, // B I U S
             34.0, 34.0, // x² x₂
             42.0, 42.0, 58.0, 66.0, // H1 H2 Body • List
-            30.0, 30.0, 30.0, 30.0, // L C R J
-            54.0, // line spacing
-            58.0, // font
+            58.0, // font family
+            34.0, 34.0, // A− A+ (font size)
         ];
         if kind == "cell" {
             w.extend([54.0, 54.0, 52.0, 52.0, 30.0]); // +Row −Row +Col −Col ✕
@@ -7363,9 +7409,8 @@ impl WordProcessorWidget {
             true, false, false, false, // B(group) I U S
             false, false, // x² x₂
             true, false, false, false, // H1(group) H2 Body • List
-            true, false, false, false, // L(group) C R J
-            true, // line spacing(group)
-            true, // font(group)
+            true, // font family(group)
+            false, false, // A− A+ (same group as font)
         ];
         if kind == "cell" {
             g.extend([true, false, false, false, false]); // +Row starts a group
@@ -7840,6 +7885,188 @@ mod tests {
         assert!(wp.styles_panel_open, "panel defaults open");
         wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         assert!(!wp.styles_panel_open, "toolbar toggle dismisses the panel");
+    }
+
+    // ---- toolbar ⇄ panel reorganization: paragraph controls belong to the
+    // side panel; the toolbar is direct character formatting only (no dupes) ----
+
+    /// The toolbar carries character/inline + structural controls only — the
+    /// paragraph-level alignment + line-spacing buttons were moved off it, and a
+    /// direct font-size control (A− / A+) was added. Asserted on `ToolAction`
+    /// variants (locale-independent; the alignment/line-spacing variants were
+    /// deleted, so a regression that re-adds them would fail to compile against
+    /// the allowed-set check below).
+    #[test]
+    fn toolbar_drops_paragraph_controls_and_keeps_character_formatting() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "para");
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+
+        let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(a, _)| *a).collect();
+        // Character formatting + the new direct font-size nudges are present.
+        for kept in [
+            ToolAction::Bold,
+            ToolAction::Italic,
+            ToolAction::Underline,
+            ToolAction::Strike,
+            ToolAction::Super,
+            ToolAction::Sub,
+            ToolAction::FontCycle,
+            ToolAction::FontSizeInc,
+            ToolAction::FontSizeDec,
+        ] {
+            assert!(actions.contains(&kept), "{kept:?} stays on the toolbar; toolbar={actions:?}");
+        }
+        // Structural actions stay.
+        assert!(actions.contains(&ToolAction::InsertTable), "table insert stays on the toolbar");
+        assert!(actions.contains(&ToolAction::ToggleStyles), "styles-panel toggle stays on the toolbar");
+
+        // Every toolbar action is direct character formatting or a structural
+        // action — none is paragraph-level. (Alignment + line spacing live in the
+        // side panel now; see `panel_owns_paragraph_alignment_and_the_style_editor`.)
+        let is_char_or_structural = |a: &ToolAction| {
+            matches!(
+                a,
+                ToolAction::Bold
+                    | ToolAction::Italic
+                    | ToolAction::Underline
+                    | ToolAction::Strike
+                    | ToolAction::Super
+                    | ToolAction::Sub
+                    | ToolAction::FontCycle
+                    | ToolAction::FontSizeInc
+                    | ToolAction::FontSizeDec
+                    | ToolAction::TextColor(_)
+                    | ToolAction::Highlight(_)
+                    | ToolAction::H1
+                    | ToolAction::H2
+                    | ToolAction::Body
+                    | ToolAction::Bullet
+                    | ToolAction::InsertImage
+                    | ToolAction::InsertTable
+                    | ToolAction::TableRowAdd
+                    | ToolAction::TableRowDel
+                    | ToolAction::TableColAdd
+                    | ToolAction::TableColDel
+                    | ToolAction::TableDelete
+                    | ToolAction::ToggleStyles
+                    | ToolAction::ToggleRuler
+                    | ToolAction::ToggleOutline
+                    | ToolAction::InsertToc
+                    | ToolAction::NewMenu
+            )
+        };
+        for a in &actions {
+            assert!(is_char_or_structural(a), "unexpected paragraph-level control on the toolbar: {a:?}");
+        }
+    }
+
+    /// Alignment now applies to the current paragraph through the side panel's
+    /// "This paragraph" section — an instance `align` attr on the caret block,
+    /// read back on the production layout path — and does NOT edit the style.
+    #[test]
+    fn alignment_applies_to_the_paragraph_via_the_panel() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "centre me");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.current_align(), "left", "paragraphs are left-aligned by default");
+
+        // Apply Center on the real dispatch path the panel registers.
+        wp.apply_panel_hit(&mut state.doc, PanelHit::ParaAlign("center"));
+        assert_eq!(wp.current_align(), "center", "the current paragraph is now centred");
+        // It is a per-paragraph (instance) attr, not an edit of the Body style.
+        assert_eq!(
+            wp.model().stylesheet(&state.doc).get("body").align,
+            "left",
+            "the Body style default alignment is untouched — the panel edited the paragraph, not the preset"
+        );
+    }
+
+    /// Line spacing likewise cycles the current paragraph from the panel (1.0 →
+    /// 1.15), on the same `caret_line_spacing` path the layout pass reads.
+    #[test]
+    fn line_spacing_applies_to_the_paragraph_via_the_panel() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "spaced");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!((wp.model().caret_line_spacing(&state.doc) - 1.0).abs() < 1e-9, "single spacing by default");
+
+        wp.apply_panel_hit(&mut state.doc, PanelHit::ParaLineSpacing);
+        assert!((wp.model().caret_line_spacing(&state.doc) - 1.15).abs() < 1e-9, "cycled to the next preset");
+    }
+
+    /// The panel registers the paragraph-alignment controls (all four) + line
+    /// spacing every frame AND still exposes the named-style editor — the two
+    /// clearly-labelled halves ("this paragraph" vs "this style"), so alignment
+    /// is not duplicated between the toolbar and the panel.
+    #[test]
+    fn panel_owns_paragraph_alignment_and_the_style_editor() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "para");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
+        for a in ["left", "center", "right", "justify"] {
+            assert!(has(&PanelHit::ParaAlign(a)), "the panel owns paragraph alignment `{a}`");
+        }
+        assert!(has(&PanelHit::ParaLineSpacing), "the panel owns paragraph line spacing");
+        // The named-style editor is still present in the same panel.
+        assert!(has(&PanelHit::ToggleBold), "the style editor stays (weight toggle present)");
+        assert!(
+            wp.panel_hits.iter().any(|(_, h)| matches!(h, PanelHit::Num(NumField::Size))),
+            "the style Size field stays"
+        );
+    }
+
+    /// Direct font size is character formatting on the selection — the toolbar's
+    /// A+ writes a per-run `size` mark, distinct from (and leaving untouched) the
+    /// style's default size in the panel.
+    #[test]
+    fn font_size_applies_to_the_selection_from_the_toolbar() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Hello");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let style_size = wp.model().stylesheet(&state.doc).get("body").size;
+        let base = wp.current_font_size();
+        assert!((base - style_size).abs() < 0.01, "with no run mark the effective size is the style default");
+
+        wp.apply_tool(&mut state.doc, ToolAction::FontSizeInc);
+        wp.refresh_blocks(&state.doc);
+        let up = wp.current_font_size();
+        assert!(up > base, "A+ enlarges the selection: {base} -> {up}");
+        // The nudge is a per-run character mark, not an edit of the Body style.
+        assert!(
+            (wp.model().stylesheet(&state.doc).get("body").size - style_size).abs() < 0.01,
+            "the Body style default size is untouched — direct formatting only"
+        );
+    }
+
+    /// Character formatting from the toolbar still applies to the selection
+    /// (Bold over a select-all range), unchanged by the reorganization.
+    #[test]
+    fn bold_still_applies_to_the_selection_from_the_toolbar() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "bold me");
+        wp.model_mut().select_all(&state.doc);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(!wp.mark_active_in_selection("strong"), "not bold yet");
+
+        wp.apply_tool(&mut state.doc, ToolAction::Bold);
+        wp.refresh_blocks(&state.doc);
+        assert!(wp.mark_active_in_selection("strong"), "the whole selection is now bold");
     }
 
     #[test]
