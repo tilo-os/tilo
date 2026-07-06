@@ -111,6 +111,10 @@ pub struct NotesApp {
     adopted: bool,
     /// True once our page tree has been mirrored into the shared doc.
     seeded: bool,
+    /// Pages deleted locally this session that still need to be removed from
+    /// the shared doc on the next `sync` (`apply_event` has no CRDT access,
+    /// and the sync pull-loop would otherwise resurrect them).
+    pending_doc_removals: Vec<PageId>,
     /// The page the MainPanel editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
@@ -207,6 +211,7 @@ impl NotesApp {
             synced_once: false,
             adopted: false,
             seeded: false,
+            pending_doc_removals: Vec::new(),
             bound_page: None,
             want_narrow: false,
             built_narrow: false,
@@ -461,6 +466,11 @@ impl NotesApp {
             self.started = std::time::Instant::now();
             self.synced_once = true;
         }
+        // Apply local deletions to the shared doc BEFORE reading it, so the
+        // pull-loop below doesn't resurrect a just-deleted page.
+        for id in std::mem::take(&mut self.pending_doc_removals) {
+            NotesDoc::remove_page(state, id);
+        }
         let doc_pages = NotesDoc::list_pages(state);
         if !doc_pages.is_empty() {
             if !self.adopted {
@@ -621,6 +631,9 @@ impl NotesApp {
             }
             OutEvent::Delete(id) => {
                 let removed = self.workspace.delete_page(id);
+                // Propagate the deletion to the shared doc (done in `sync`,
+                // which has CRDT access) so it isn't resurrected next frame.
+                self.pending_doc_removals.extend(removed.iter().copied());
                 for rid in &removed {
                     if let Err(e) = storage::delete_page_file(&self.root, *rid) {
                         tracing::error!(error = %e, page = %rid, "notes: delete page file failed");

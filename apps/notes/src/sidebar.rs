@@ -172,6 +172,9 @@ pub struct NoteTreeView {
     /// The page the open context menu targets. Its rows map back to
     /// intent by fixed index (see `apply_menu_selection`).
     menu_target: Option<PageId>,
+    /// True when the open menu is the empty-area menu ("New note"), which has
+    /// no page target.
+    empty_menu: bool,
     /// False until the first `sync_from_workspace` expands every branch so
     /// the tree opens showing its structure rather than a collapsed flat
     /// list. After that, expand/collapse is fully user-driven.
@@ -217,6 +220,7 @@ impl NoteTreeView {
             drag: DragController::vertical(),
             menu: ContextMenu::new(),
             menu_target: None,
+            empty_menu: false,
             did_initial_expand: false,
             last_selection: None,
         }
@@ -470,6 +474,7 @@ impl NoteTreeView {
     /// action rows (Delete, Duplicate, New child, Rename).
     fn open_context_menu(&mut self, page: PageId, at: Point) {
         self.menu_target = Some(page);
+        self.empty_menu = false;
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("New child", || {}));
         menu.push(MenuItem::action("Rename", || {}));
@@ -484,9 +489,31 @@ impl NoteTreeView {
         self.dirty = true;
     }
 
+    /// Open the empty-area context menu (a single "New note" action that
+    /// creates a top-level page) at `at`.
+    fn open_empty_area_menu(&mut self, at: Point) {
+        self.menu_target = None;
+        self.empty_menu = true;
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("New note", || {}));
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.menu = menu;
+        self.dirty = true;
+    }
+
     /// Map the menu's selected item index (which counts separators) back
     /// to a [`RowAction`] and enqueue the matching command.
     fn apply_menu_selection(&mut self, item_index: usize) {
+        if self.empty_menu {
+            self.empty_menu = false;
+            // The empty-area menu has a single "New note" action at index 0.
+            if item_index == 0 {
+                self.pending_events
+                    .push(OutEvent::CreateChild { parent: None });
+                self.rows_dirty = true;
+            }
+            return;
+        }
         let Some(page) = self.menu_target else { return };
         // Menu rows: 0 New child, 1 Rename, 2 Duplicate, 3 Separator,
         // 4 Delete. The separator (index 3) maps to no action.
@@ -1106,6 +1133,11 @@ impl Widget for NoteTreeView {
                         return;
                     }
                 }
+                // Right-clicked empty space in the sidebar — offer "New note".
+                self.is_focused = true;
+                *focus_target = Some(node_id);
+                self.open_empty_area_menu(pt);
+                *handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

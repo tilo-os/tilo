@@ -74,6 +74,14 @@ impl NotesDoc {
         put_if_changed(doc, &page, "order", meta.order as i64);
     }
 
+    /// Remove a page's entry from the shared doc. Called when a page is
+    /// deleted locally so `sync`'s pull-loop (which treats any doc page
+    /// missing locally as a remote create) doesn't re-add it next frame.
+    pub fn remove_page(doc: &mut AutoCommit, id: PageId) {
+        let pages = Self::pages_map(doc);
+        let _ = doc.delete(&pages, id.to_string().as_str());
+    }
+
     /// Read every page's metadata out of the document, sorted by
     /// `order`. Pages with an unparseable id key are skipped.
     pub fn list_pages(doc: &AutoCommit) -> Vec<PageMeta> {
