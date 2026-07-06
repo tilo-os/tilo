@@ -176,7 +176,16 @@ impl AudioEngine {
 
     /// Point the engine at a new stream URI and start from zero.
     pub fn load(&mut self, uri: &str) {
+        self.load_with_fallback(uri, None);
+    }
+
+    /// Like [`Self::load`], but with a secondary source the staging download
+    /// falls back to when `uri` yields no bytes (a flaky Invidious proxy → the
+    /// direct googlevideo URL). `fallback` is ignored for a `file://` uri and in
+    /// non-`live` builds.
+    pub fn load_with_fallback(&mut self, uri: &str, fallback: Option<&str>) {
         self.current_uri = Some(uri.to_string());
+        let _ = fallback;
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
@@ -194,7 +203,7 @@ impl AudioEngine {
             // once the download is ready). A `file://` uri plays directly.
             #[cfg(feature = "live")]
             if uri.starts_with("http") {
-                self.begin_stream_download(uri);
+                self.begin_stream_download(uri, fallback.map(str::to_string));
                 return;
             }
             #[cfg(feature = "live")]
@@ -262,13 +271,28 @@ impl AudioEngine {
     }
 
     /// Seek to an absolute position in milliseconds.
+    ///
+    /// The target is clamped to the pipeline's *real* seekable duration (leaving
+    /// a small guard before the end) so a seek can never land past EOS. That is
+    /// the bug behind "can't seek while playing": the app computes a target from
+    /// the track's YouTube metadata duration, but the media the pipeline holds
+    /// may be shorter (a truncated stream) — seeking to metadata-50% then ran
+    /// off the end of the file, the pipeline hit EOS, and the transport snapped
+    /// to the end / advanced. With a fully-rangeable source and this clamp, a
+    /// seek repositions the pipeline instead of ending the track.
     pub fn seek_ms(&mut self, ms: u64) {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            let target = match self.duration_ms() {
+                // Never seek to (or past) the very end — keep a 250 ms guard so a
+                // scrub to ~100% resumes just before the end rather than EOS-ing.
+                Some(dur) if dur > 0 => ms.min(dur.saturating_sub(250)),
+                _ => ms,
+            };
             let _ = self.inner.playbin.seek_simple(
                 gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
-                gstreamer::ClockTime::from_mseconds(ms),
+                gstreamer::ClockTime::from_mseconds(target),
             );
         }
         #[cfg(not(feature = "audio"))]
@@ -511,7 +535,7 @@ impl AudioEngine {
     /// Non-blocking: the fetch runs on its own thread; [`Self::pump`] switches
     /// playback onto the file once it is ready.
     #[cfg(all(feature = "audio", feature = "live"))]
-    fn begin_stream_download(&mut self, uri: &str) {
+    fn begin_stream_download(&mut self, uri: &str, fallback: Option<String>) {
         self.clear_pending();
         let path = std::env::temp_dir().join(format!(
             "qos-music-stream-{}-{}.bin",
@@ -519,7 +543,7 @@ impl AudioEngine {
             next_stream_id()
         ));
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        spawn_stream_download(uri.to_string(), path.clone(), ready.clone());
+        spawn_stream_download(uri.to_string(), fallback, path.clone(), ready.clone());
         self.inner.pending = Some(Pending { path, ready, want_play: false, started: false });
     }
 
@@ -541,18 +565,22 @@ const IOS_UA: &str = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18
 #[cfg(all(feature = "audio", feature = "live"))]
 const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 NativeTVAds Safari/538.1";
 
-/// Pick the `User-Agent` matching the client that signed a googlevideo URL.
-/// The client is carried as the `c=` query param (`c=IOS`, `c=TV`, …); default
-/// to the iOS UA since that is the first (and usual) client rustypipe uses.
+/// Pick the `User-Agent` for fetching a media URL.
+///
+/// A signed **googlevideo** URL is presented with the client UA matching its
+/// `c=` query param (`c=IOS`, `c=TV`, …), mirroring the client that signed it.
+/// Any other source (notably an Invidious `local` proxy) gets a plain browser
+/// UA — those proxies expect a normal browser, not the iOS YouTube app.
 #[cfg(all(feature = "audio", feature = "live"))]
 fn ua_for_uri(uri: &str) -> &'static str {
-    let client = uri
-        .split(['?', '&'])
-        .find_map(|kv| kv.strip_prefix("c="));
-    match client {
-        Some(c) if c.starts_with("TV") => TV_UA,
-        _ => IOS_UA,
+    if uri.contains("googlevideo.com") {
+        let client = uri.split(['?', '&']).find_map(|kv| kv.strip_prefix("c="));
+        return match client {
+            Some(c) if c.starts_with("TV") => TV_UA,
+            _ => IOS_UA,
+        };
     }
+    crate::backend::proxy::BROWSER_UA
 }
 
 /// Parse the `clen=` (content-length) query param off a googlevideo url, so the
@@ -580,6 +608,7 @@ fn next_stream_id() -> u64 {
 #[cfg(all(feature = "audio", feature = "live"))]
 fn spawn_stream_download(
     uri: String,
+    fallback: Option<String>,
     path: std::path::PathBuf,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -588,56 +617,91 @@ fn spawn_stream_download(
         .name("qos-music-stream-dl".into())
         .spawn(move || {
             let finish = || ready.store(true, Relaxed);
-            let client = match reqwest::blocking::Client::builder()
-                .user_agent(ua_for_uri(&uri))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-            {
-                Ok(c) => c,
-                Err(_) => return finish(),
-            };
             let mut file = match std::fs::File::create(&path) {
                 Ok(f) => f,
                 Err(_) => return finish(),
             };
-            let clen = parse_clen(&uri);
-            const CHUNK: u64 = 1_048_576;
-            let mut off = 0u64;
-            loop {
-                if let Some(c) = clen {
-                    if off >= c {
-                        break;
-                    }
-                }
-                let end = match clen {
-                    Some(c) => (off + CHUNK - 1).min(c - 1),
-                    None => off + CHUNK - 1,
-                };
-                let want = end - off + 1;
-                let resp = client
-                    .get(&uri)
-                    .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
-                    .send();
-                let Ok(resp) = resp else { break };
-                if !resp.status().is_success() {
-                    break;
-                }
-                let Ok(bytes) = resp.bytes() else { break };
-                if bytes.is_empty() {
-                    break;
-                }
-                if std::io::Write::write_all(&mut file, &bytes).is_err() {
-                    break;
-                }
-                let n = bytes.len() as u64;
-                off += n;
-                if n < want {
-                    break; // short read ⇒ end of stream
+            // Primary source (the rangeable proxy). If it yields no bytes at all
+            // — a broken/rate-limited public proxy — fall back to the direct
+            // googlevideo URL so playback still works (at least its first
+            // segment). Both stream progressively: `ready` flips after the first
+            // staged chunk so audio starts without waiting for the full download.
+            let mut wrote = download_into(&uri, &mut file, &ready);
+            if wrote == 0 {
+                if let Some(fb) = fallback {
+                    wrote = download_into(&fb, &mut file, &ready);
                 }
             }
+            let _ = wrote;
             let _ = std::io::Write::flush(&mut file);
             finish();
         });
+}
+
+/// Download `uri` into `file` using **bounded** `Range` requests (the only form
+/// googlevideo serves; a proxy serves them over the whole file), flipping
+/// `ready` after the first staged chunk so playback can start progressively.
+/// Returns the number of bytes written.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn download_into(
+    uri: &str,
+    file: &mut std::fs::File,
+    ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let client = match reqwest::blocking::Client::builder()
+        .user_agent(ua_for_uri(uri))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let clen = parse_clen(uri);
+    const CHUNK: u64 = 1_048_576;
+    let mut off = 0u64;
+    loop {
+        if let Some(c) = clen {
+            if off >= c {
+                break;
+            }
+        }
+        let end = match clen {
+            Some(c) => (off + CHUNK - 1).min(c - 1),
+            None => off + CHUNK - 1,
+        };
+        let want = end - off + 1;
+        let resp = client
+            .get(uri)
+            .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
+            .send();
+        let Ok(resp) = resp else { break };
+        if !resp.status().is_success() {
+            break;
+        }
+        let Ok(bytes) = resp.bytes() else { break };
+        if bytes.is_empty() {
+            break;
+        }
+        if std::io::Write::write_all(file, &bytes).is_err() {
+            break;
+        }
+        let _ = std::io::Write::flush(file);
+        let n = bytes.len() as u64;
+        off += n;
+        // Progressive start: the first staged chunk (the moov header + initial
+        // samples) is enough to begin playback, so mark the file playable now and
+        // keep fetching the rest into the SAME file. The whole track still lands
+        // (so it's fully seekable — see the seek clamp), but audio starts in ~a
+        // chunk instead of after the entire download. Playback (real-time, ~16
+        // KB/s for 128 kbps) never outruns the network download, so the demuxer
+        // doesn't hit EOF.
+        ready.store(true, Relaxed);
+        if n < want {
+            break; // short read ⇒ end of stream
+        }
+    }
+    off
 }
 
 /// Build the explicit real audio sink chain and install it on `playbin`,
@@ -790,6 +854,93 @@ mod tests {
             "plugged sink {sink_name} is a real audio sink"
         );
         eprintln!("[audio test] rendered {frames} buffers to real sink `{sink_name}`");
+
+        engine.stop();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **Seek-while-playing proof** (`--features audio`): a real decoded WAV is
+    /// playing, then a seek to ~50% must reposition the transport (position lands
+    /// near 50%) and playback must *continue* — not snap to the end / EOS, which
+    /// was the reported "can't seek while playing" bug. Uses a fully-seekable
+    /// local file so this exercises the real `seek_simple` path.
+    ///
+    /// Skips honestly when the decode/sink plugins or an audio server are absent.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn seek_while_playing_repositions_and_keeps_playing() {
+        assert!(gstreamer::init().is_ok(), "gstreamer initialises");
+        let need = ["filesrc", "wavparse", "audioconvert", "audioresample", "autoaudiosink"];
+        if !need.iter().all(|n| gstreamer::ElementFactory::find(n).is_some()) {
+            eprintln!("[seek test] skipped — missing decode/sink plugins {need:?}");
+            return;
+        }
+        if !have_audio_server() {
+            eprintln!("[seek test] skipped — no PipeWire/Pulse server");
+            return;
+        }
+
+        // ~6 s of audio so a 50% seek lands at a clear ~3 s offset.
+        let path = std::env::temp_dir().join(format!("qos-music-seek-{}.wav", std::process::id()));
+        std::fs::write(&path, sine_wav(6, 44_100)).expect("write test wav");
+        let uri = format!("file://{}", path.display());
+
+        let mut engine = AudioEngine::new();
+        engine.set_volume(0.05);
+        engine.load(&uri);
+        engine.play();
+        assert!(
+            engine.wait_until_playing(std::time::Duration::from_secs(5)),
+            "pipeline reached PLAYING"
+        );
+
+        // Duration should be known now (the WAV header carries it); the seek
+        // clamp reads it.
+        let dur = {
+            let mut d = None;
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                d = engine.duration_ms();
+                if d.is_some() {
+                    break;
+                }
+            }
+            d.expect("duration resolved for a local WAV")
+        };
+        assert!(dur >= 5_000, "≈6 s WAV reports a multi-second duration ({dur} ms)");
+
+        // Seek to ~50% while playing.
+        let target = dur / 2;
+        engine.seek_ms(target);
+
+        // The position must settle near the target — NOT at the end — and the
+        // pipeline must still be playing (never EOS'd by the seek).
+        let mut pos = 0;
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            if let Some(p) = engine.position_ms() {
+                pos = p;
+                if p >= target.saturating_sub(700) && p <= target + 1_500 {
+                    break;
+                }
+            }
+        }
+        assert!(
+            pos >= target.saturating_sub(700) && pos < dur.saturating_sub(100),
+            "seek landed near 50% ({pos} ms) and not at the end ({dur} ms)"
+        );
+        assert!(engine.is_playing_real(), "playback continued after the seek (no EOS)");
+        // Frames keep flowing after the seek — genuinely audible, still decoding.
+        let before = engine.frames_rendered();
+        let mut after = before;
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            after = engine.frames_rendered();
+            if after > before {
+                break;
+            }
+        }
+        assert!(after > before, "decoded buffers keep reaching the sink after the seek");
 
         engine.stop();
         let _ = std::fs::remove_file(&path);
