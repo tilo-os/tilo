@@ -115,8 +115,10 @@ template-report = Report
 template-resume = Resume
 template-meeting-notes = Meeting Notes
 
-## Styles panel
-panel-style = STYLE
+## Paragraph panel
+panel-this-paragraph = THIS PARAGRAPH
+panel-line-spacing = Line spacing
+panel-style = PARAGRAPH STYLE
 panel-caret-hint = Place the caret in a paragraph
 panel-paragraph-styles = PARAGRAPH STYLES
 panel-style-properties = STYLE PROPERTIES
