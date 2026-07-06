@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn dragging_a_favourite_down_pushes_a_reorder_command() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u")));
+        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
         let (tree, node) = lay_out(&mut sb);
 
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn a_plain_click_navigates_instead_of_reordering() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u")));
+        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
         let (tree, node) = lay_out(&mut sb);
         let band = store.borrow().band.unwrap();
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn debug_begin_drag_activates_a_reflow() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u")));
+        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink);
         let _ = lay_out(&mut sb);
         assert!(debug_begin_drag(&store, 4, 1), "band was laid out → drag begins");
