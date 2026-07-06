@@ -125,26 +125,31 @@ impl AccountsPane {
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut panel: Vec<El> = Vec::new();
 
-        panel.push(card(
-            "External accounts",
-            rows(vec![
-                Box::new(
-                    Text::new(
-                        "Accounts you add here are shared across the system. \
-                         Mail reads your email accounts, Calendar reads your \
-                         CalDAV calendars, and the file apps mount your WebDAV \
-                         and Nextcloud shares.",
-                    )
-                    .with_size(12.0),
-                ),
-                caption(&format!(
-                    "Accounts store: {}",
-                    accounts::store_path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "~/.config/qos/accounts/store.json".into())
-                )),
-            ]),
+        let mut intro: Vec<El> = Vec::new();
+        intro.push(Box::new(
+            Text::new(
+                "Accounts you add here are shared across the system. \
+                 Mail reads your email accounts, Calendar reads your \
+                 CalDAV calendars, and the file apps mount your WebDAV \
+                 and Nextcloud shares.",
+            )
+            .with_size(12.0),
         ));
+        if self.is_sample {
+            // Be honest that the visible rows are an illustration, not real
+            // connected accounts — the store is empty until you add one.
+            intro.push(caption(
+                "You have no accounts yet. The entries below are examples of \
+                 what you can add — use \u{201c}Add\u{201d} to create a real one.",
+            ));
+        }
+        intro.push(caption(&format!(
+            "Accounts store: {}",
+            accounts::store_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/.config/qos/accounts/store.json".into())
+        )));
+        panel.push(card("External accounts", rows(intro)));
 
         if self.form_open {
             panel.push(self.mail_form());
@@ -191,12 +196,16 @@ impl AccountsPane {
 
     /// One account: label + connection summary, status, and a Remove button
     /// (only for real accounts — sample rows are illustrative).
+    ///
+    /// Sample rows report an honest "Example" status rather than fabricating
+    /// a live "Connected" — nothing is actually connected in the illustration.
     fn account_row(&self, view: &AccountView) -> El {
-        let status = if view.enabled { "Connected" } else { "Disabled" };
-        let status_color = if view.enabled {
-            ui::Theme::dark().status_success
+        let (status, status_color) = if self.is_sample {
+            ("Example", ui::Theme::dark().text_dim)
+        } else if view.enabled {
+            ("Connected", ui::Theme::dark().status_success)
         } else {
-            ui::Theme::dark().text_dim
+            ("Disabled", ui::Theme::dark().text_dim)
         };
 
         let text_block = Column::new()
