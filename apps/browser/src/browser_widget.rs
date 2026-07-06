@@ -1,221 +1,161 @@
 //! `BrowserWidget` — the quick-ui root widget for the browser app.
 //!
-//! Replaces the iced `Application` impl from Phase A. The widget owns
-//! the chrome composition (URL input + reload/go buttons + Servo
-//! surface), spawns the engine thread, and routes events into Servo via
-//! the shared `BrowserCommand` channel.
+//! Chrome around the toolkit's [`ui::widget::WebView`]: a navigation
+//! toolbar (back / forward / reload + address input), a thin progress
+//! bar while a page loads, and the live page surface. There is no tab
+//! strip — tabbing is the compositor's WindowGroup frame primitive, so
+//! one browser window shows exactly one page.
 //!
 //! State model:
-//!  * URL text lives in the CRDT under `browser.url` (Automerge `Text`
-//!    object) — this is the path the [`TextInput`] reads/writes on
-//!    every frame.
-//!  * Button presses surface as boolean flags at `browser.go_clicked`
-//!    and `browser.reload_clicked`. The widget polls these in `sync`
-//!    after children dispatch, and on `true` issues the corresponding
-//!    `BrowserCommand`, then resets the flag.
-//!
-//! Frame rendering:
-//!  * Servo pushes RGBA into a shared `FrameSlot` via [`QuickHost`].
-//!  * `ServoSurface` reads the slot on every `draw` pass.
-
-use std::sync::{Arc, Mutex};
+//!  * Address text lives in the CRDT under `browser.url` (Automerge
+//!    `Text`) — the [`TextInput`] reads/writes it every frame, and the
+//!    engine's `UriChanged` events are folded back into it (unless the
+//!    user is currently editing).
+//!  * Button presses surface as boolean flags (`browser.back_clicked`
+//!    etc.); `sync` polls them, translates them into
+//!    [`WebViewCommand`]s and resets them.
+//!  * Everything engine-side (history, page pixels, load progress)
+//!    stays in the engine; the widget only mirrors what the chrome
+//!    displays.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
-use crossbeam_channel::Sender;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, Button, Column, Container, IconDescriptor, Row, TextInput, Widget};
+use ui::webview::test_engine::TestEngine;
+use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent, normalise_url};
+use ui::widget::{
+    AppKind, AppWidget, Button, Column, Container, IconDescriptor, ProgressBar, Row, TextInput,
+    WebView, Widget,
+};
 
-use crate::engine::{command_channel, spawn_engine_thread, BrowserCommand};
-use crate::host::{BrowserHost, SharedHost};
-use crate::servo_surface::{FrameData, FrameSlot, ServoSurface};
-
-/// CRDT path for the URL text input.
+/// CRDT path for the address-bar text.
 const URL_PATH: &str = "browser.url";
-/// CRDT path the Go button writes `true` to on click.
-const GO_FLAG_PATH: &str = "browser.go_clicked";
-/// CRDT path the Reload button writes `true` to on click.
-const RELOAD_FLAG_PATH: &str = "browser.reload_clicked";
+/// CRDT flags the toolbar buttons write `true` to on click.
+const BACK_FLAG: &str = "browser.back_clicked";
+const FORWARD_FLAG: &str = "browser.forward_clicked";
+const RELOAD_FLAG: &str = "browser.reload_clicked";
 
-/// Default URL surfaced in the address bar on startup. Matches the iced
-/// host so we don't change behaviour during the migration.
+/// e2e id of the address input (also used internally to detect whether
+/// the user is editing it).
+const URL_INPUT_ID: &str = "browser.url_input";
+
+/// First page loaded in a fresh live window.
 const DEFAULT_URL: &str = "https://duckduckgo.com";
+/// Page loaded in `--shots` mode — the test engine renders it as a
+/// deterministic flat colour, so snapshots stay byte-stable.
+const SHOTS_URL: &str = "https://example.org";
 
-/// Shared sink for Servo's frames + wake notifications.
-pub struct QuickHost {
-    /// Latest RGBA frame from Servo.
-    pub frames: FrameSlot,
-    /// Best-effort wake — the quick-ui App polls its widget tree every
-    /// frame anyway, but signalling here lets us request a redraw
-    /// proactively. v1 leaves this as a no-op; quick-ui's App pulls
-    /// frames on every wakeup, and Servo's own timer drives wakeups via
-    /// the engine thread's 16 ms loop.
-    pub on_wake: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-}
-
-impl QuickHost {
-    pub fn new(frames: FrameSlot) -> Arc<Self> {
-        Arc::new(Self {
-            frames,
-            on_wake: Mutex::new(None),
-        })
-    }
-}
-
-impl BrowserHost for QuickHost {
-    fn submit_frame(&self, rgba: Vec<u8>, width: u32, height: u32) {
-        if let Ok(mut slot) = self.frames.lock() {
-            *slot = Some(FrameData { rgba, width, height });
-        }
-        self.wake();
-    }
-    fn wake(&self) {
-        if let Ok(guard) = self.on_wake.lock() {
-            if let Some(cb) = guard.as_ref() {
-                cb();
-            }
-        }
-    }
-}
-
-/// Root widget for the quick-ui browser app.
+/// Root widget for the browser app. See module docs.
 pub struct BrowserWidget {
     rect: Rect,
-    /// Shared frame slot — written by `QuickHost::submit_frame`, read
-    /// by `ServoSurface::draw`.
-    frames: FrameSlot,
-    /// Command channel sender — the surface and chrome buttons send
-    /// here; the engine thread receives.
-    cmd_tx: Sender<BrowserCommand>,
-    /// Composed child tree (rebuilt on `build_layout`).
+    engine: SharedEngine,
     composed: Option<Box<dyn Widget>>,
-    /// True once we've populated the CRDT with the initial URL text.
-    /// Subsequent `sync` calls only poll for button flags.
     bootstrap_done: bool,
-    /// Last URL we asked Servo to load. Used so a Reload click without
-    /// any pending Go re-sends the same URL.
-    last_loaded_url: String,
-    /// Last reported surface rect — when this changes we issue a
-    /// Resize to Servo. Tracks the *logical* size; we multiply by
-    /// scale_factor when sending.
-    last_surface_size: (f64, f64),
-    /// Most recent OS scale factor seen in `handle_event`.
-    scale_factor: f32,
-    /// Whether we've already kicked off the engine thread. The thread
-    /// runs for the program's lifetime so this is one-shot.
-    engine_started: bool,
-    /// When true, `sync` will not spawn the Servo engine thread. Used by
-    /// `--shots` so the offscreen render stays fully headless: no Servo
-    /// boot, no network requests, no WebRender GL context. The chrome
-    /// paints its loading/placeholder state instead of a live page.
-    skip_engine: bool,
+    /// `--shots` mode: no network, no filter loader, deterministic page.
+    headless: bool,
+    initial_url: &'static str,
+
+    // Chrome state mirrored from engine events.
+    can_go_back: bool,
+    can_go_forward: bool,
+    /// `1.0` when idle; anything below shows the progress bar.
+    progress: f64,
+    title: String,
 }
 
 impl BrowserWidget {
-    /// Construct a browser widget bound to a fresh frame slot + command
-    /// channel. The engine thread is *not* spawned here — it's started
-    /// on the first `sync` so the `--shots` path can render an empty
-    /// chrome without ever booting Servo.
+    /// Live-mode widget with the default engine (WPE WebKit where the
+    /// backend is available, the deterministic test engine otherwise).
     pub fn new() -> Self {
-        let frames: FrameSlot = Arc::new(Mutex::new(None));
-        let (tx, _rx) = command_channel();
-        // Note: we throw away the receiver here; `spawn_engine_thread`
-        // is called from `bootstrap()` with a fresh pair. The cmd_tx
-        // we store is replaced on bootstrap so children get a live one.
-        Self {
-            rect: Rect::ZERO,
-            frames,
-            cmd_tx: tx,
-            composed: None,
-            bootstrap_done: false,
-            last_loaded_url: String::new(),
-            last_surface_size: (0.0, 0.0),
-            scale_factor: 1.0,
-            engine_started: false,
-            skip_engine: false,
-        }
+        Self::with_engine(default_engine(), false)
     }
 
-    /// Construct a browser widget that never spawns the Servo engine.
-    /// Used by the `--shots` headless render so we don't pay for a
-    /// WebRender GL context just to snapshot the chrome.
+    /// Headless widget for `--shots`: test engine, pre-navigated to a
+    /// deterministic page, never touches the network.
     pub fn new_headless() -> Self {
-        let mut w = Self::new();
-        w.skip_engine = true;
+        let engine: SharedEngine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
+        let mut w = Self::with_engine(engine, true);
+        w.initial_url = SHOTS_URL;
         w
     }
 
-    /// Build (or rebuild) the composed widget tree from current model
-    /// state. Called on every `build_layout`.
-    fn build_composition(&self) -> Box<dyn Widget> {
-        // URL bar: reload | text input | go.
-        let url_input = TextInput::new(vec![])
-            .with_id("browser.url_input")
-            .with_on_change_path(URL_PATH);
-        let url_bar = Row::new()
-            .push(Box::new(Button::new(
-                "browser.reload",
-                "Reload",
-                Some(RELOAD_FLAG_PATH),
-            )))
-            .push(Box::new(url_input))
-            .push(Box::new(Button::new(
-                "browser.go",
-                "Go",
-                Some(GO_FLAG_PATH),
-            )));
-
-        // Live Servo surface.
-        let surface = ServoSurface::new(self.frames.clone()).with_sender(self.cmd_tx.clone());
-
-        // Root vertical composition.
-        Box::new(
-            Column::new()
-                .push(Box::new(Container::new().with_child(Box::new(url_bar))))
-                .push(Box::new(surface)),
-        )
+    /// Handle to the engine this widget drives — the binary uses it to
+    /// wire the engine's waker to the winit event-loop proxy.
+    pub fn engine_handle(&self) -> SharedEngine {
+        self.engine.clone()
     }
 
-    /// One-shot CRDT bootstrap: create the URL text object and the
-    /// button flags so children can mutate them on first frame.
+    /// Widget over an explicit engine — used by tests.
+    pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
+        Self {
+            rect: Rect::ZERO,
+            engine,
+            composed: None,
+            bootstrap_done: false,
+            headless,
+            initial_url: DEFAULT_URL,
+            can_go_back: false,
+            can_go_forward: false,
+            progress: 1.0,
+            title: String::new(),
+        }
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        let back = Button::new("browser.back", "", Some(BACK_FLAG))
+            .with_icon(Icon::ArrowLeft)
+            .with_enabled(self.can_go_back);
+        let forward = Button::new("browser.forward", "", Some(FORWARD_FLAG))
+            .with_icon(Icon::ArrowRight)
+            .with_enabled(self.can_go_forward);
+        let reload = Button::new("browser.reload", "", Some(RELOAD_FLAG)).with_icon(Icon::Refresh);
+        let url_input = TextInput::new(vec![])
+            .with_id(URL_INPUT_ID)
+            .with_on_change_path(URL_PATH)
+            .with_placeholder("Search or enter address");
+
+        let toolbar = Row::new()
+            .push(Box::new(back))
+            .push(Box::new(forward))
+            .push(Box::new(reload))
+            .push(Box::new(url_input));
+
+        let mut column =
+            Column::new().push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        if self.progress < 1.0 {
+            column = column.push(Box::new(ProgressBar::new(self.progress as f32)));
+        }
+        column = column.push(Box::new(
+            WebView::new(self.engine.clone()).with_test_id("browser.surface"),
+        ));
+        Box::new(column)
+    }
+
+    /// One-shot CRDT bootstrap so children can read/write their paths
+    /// on the first frame.
     fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // URL text object — Automerge `Text`, seeded with DEFAULT_URL.
         if state.get(root, URL_PATH).ok().flatten().is_none() {
             if let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text) {
-                let _ = state.splice_text(&obj_id, 0, 0, DEFAULT_URL);
+                let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
             }
         }
-        // Flag scalars — start as false so a false→true edge fires only
-        // on real button clicks.
-        if state.get(root, GO_FLAG_PATH).ok().flatten().is_none() {
-            let _ = state.put(root, GO_FLAG_PATH, false);
+        for flag in [BACK_FLAG, FORWARD_FLAG, RELOAD_FLAG] {
+            if state.get(root, flag).ok().flatten().is_none() {
+                let _ = state.put(root, flag, false);
+            }
         }
-        if state.get(root, RELOAD_FLAG_PATH).ok().flatten().is_none() {
-            let _ = state.put(root, RELOAD_FLAG_PATH, false);
-        }
-        self.last_loaded_url = DEFAULT_URL.to_string();
     }
 
-    /// Spawn the Servo engine thread. Idempotent.
-    fn start_engine(&mut self) {
-        if self.engine_started {
-            return;
-        }
-        let (tx, rx) = command_channel();
-        self.cmd_tx = tx;
-        let host: SharedHost = QuickHost::new(self.frames.clone());
-        spawn_engine_thread(DEFAULT_URL.to_string(), 1024, 768, 1.0, host, rx);
-        self.engine_started = true;
-    }
-
-    /// Read the current URL out of the CRDT. Returns `None` if the
-    /// path doesn't yet exist (pre-bootstrap).
     fn read_url(state: &AutoCommit, root: &ObjId) -> Option<String> {
         if let Ok(Some((Value::Object(ObjType::Text), obj_id))) = state.get(root, URL_PATH) {
             state.text(&obj_id).ok()
@@ -224,8 +164,6 @@ impl BrowserWidget {
         }
     }
 
-    /// Read a boolean flag, returning `true` only when the path holds
-    /// a true scalar.
     fn read_flag(state: &AutoCommit, root: &ObjId, path: &str) -> bool {
         matches!(
             state.get(root, path),
@@ -234,12 +172,74 @@ impl BrowserWidget {
         )
     }
 
-    /// Normalise a user-typed URL (prepend `https://` if missing).
-    fn normalise_url(input: &str) -> String {
-        if input.starts_with("http://") || input.starts_with("https://") {
-            input.to_string()
+    /// Take a raised flag, returning whether it was set (and resetting
+    /// it so one click fires exactly once).
+    fn take_flag(state: &mut AutoCommit, root: &ObjId, path: &str) -> bool {
+        if Self::read_flag(state, root, path) {
+            let _ = state.put(root, path, false);
+            true
         } else {
-            format!("https://{}", input)
+            false
+        }
+    }
+
+    /// Whether the address input currently holds keyboard focus (the
+    /// user is editing — engine URI updates must not stomp their text).
+    fn url_input_focused(&self) -> bool {
+        fn walk(w: &dyn Widget) -> Option<bool> {
+            if w.test_id() == Some(URL_INPUT_ID) {
+                return Some(w.is_focused());
+            }
+            for c in w.children() {
+                if let Some(f) = walk(c) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        self.composed
+            .as_ref()
+            .and_then(|c| walk(c.as_ref()))
+            .unwrap_or(false)
+    }
+
+    /// Fold engine events into chrome state + the CRDT address text.
+    fn apply_engine_events(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let editing = self.url_input_focused();
+        for event in self.engine.drain_events() {
+            match event {
+                WebViewEvent::UriChanged(uri) => {
+                    if !editing {
+                        ui::put_text_diffed(state, root, URL_PATH, &uri);
+                    }
+                }
+                WebViewEvent::TitleChanged(title) => self.title = title,
+                WebViewEvent::LoadProgress(p) => self.progress = p,
+                WebViewEvent::LoadFinished => self.progress = 1.0,
+                WebViewEvent::LoadFailed { uri, error } => {
+                    self.progress = 1.0;
+                    tracing::warn!("load failed for {uri}: {error}");
+                    self.title = format!("Failed to load {uri}");
+                }
+                WebViewEvent::HistoryChanged {
+                    can_go_back,
+                    can_go_forward,
+                } => {
+                    self.can_go_back = can_go_back;
+                    self.can_go_forward = can_go_forward;
+                }
+            }
+        }
+    }
+
+    /// Navigate to whatever the address bar currently holds.
+    fn navigate_to_input(&self, state: &AutoCommit, root: &ObjId) {
+        if let Some(url) = Self::read_url(state, root) {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                self.engine
+                    .send(WebViewCommand::Navigate(normalise_url(trimmed)));
+            }
         }
     }
 }
@@ -250,38 +250,43 @@ impl Default for BrowserWidget {
     }
 }
 
+/// The engine a live browser window runs on: WPE WebKit when the `wpe`
+/// feature is compiled in (and its libraries boot), the deterministic
+/// test engine otherwise — so the chrome stays fully drivable in
+/// hermetic builds.
+fn default_engine() -> SharedEngine {
+    #[cfg(feature = "wpe")]
+    {
+        match ui::webview::wpe::WpeEngine::new() {
+            Ok(engine) => return engine,
+            Err(err) => tracing::warn!("WPE engine unavailable, using test engine: {err}"),
+        }
+    }
+    TestEngine::new()
+}
+
 impl Widget for BrowserWidget {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, path);
-            // Spawn the engine on first sync unless headless (--shots).
-            if !self.skip_engine {
-                self.start_engine();
+            if !self.headless {
+                crate::blocker::spawn_filter_loader(self.engine.clone());
+                self.engine
+                    .send(WebViewCommand::Navigate(self.initial_url.to_string()));
             }
             self.bootstrap_done = true;
         }
 
-        // Detect button flags raised since last sync, and translate
-        // them into BrowserCommands. We *reset* the flag right after
-        // handling so a single click fires exactly one command.
-        let go = Self::read_flag(state, path, GO_FLAG_PATH);
-        let reload = Self::read_flag(state, path, RELOAD_FLAG_PATH);
-        if go {
-            if let Some(url) = Self::read_url(state, path) {
-                let normalised = Self::normalise_url(&url);
-                self.last_loaded_url = normalised.clone();
-                let _ = self.cmd_tx.send(BrowserCommand::LoadUrl(normalised));
-                let _ = self.cmd_tx.send(BrowserCommand::Focus);
-            }
-            let _ = state.put(path, GO_FLAG_PATH, false);
+        self.apply_engine_events(state, path);
+
+        if Self::take_flag(state, path, BACK_FLAG) {
+            self.engine.send(WebViewCommand::GoBack);
         }
-        if reload {
-            if !self.last_loaded_url.is_empty() {
-                let _ = self
-                    .cmd_tx
-                    .send(BrowserCommand::LoadUrl(self.last_loaded_url.clone()));
-            }
-            let _ = state.put(path, RELOAD_FLAG_PATH, false);
+        if Self::take_flag(state, path, FORWARD_FLAG) {
+            self.engine.send(WebViewCommand::GoForward);
+        }
+        if Self::take_flag(state, path, RELOAD_FLAG) {
+            self.engine.send(WebViewCommand::Reload);
         }
 
         if let Some(c) = &mut self.composed {
@@ -328,25 +333,6 @@ impl Widget for BrowserWidget {
                 }
             }
         }
-
-        // After children are laid out, the Servo surface has its real
-        // rect — push a resize to the engine if it changed. We dig the
-        // surface out of the composed tree via the children iterator;
-        // it's the last leaf in the composition order.
-        let surface_rect = self.find_surface_rect();
-        if let Some(r) = surface_rect {
-            let new_logical = (r.width(), r.height());
-            if (new_logical.0 - self.last_surface_size.0).abs() > 0.5
-                || (new_logical.1 - self.last_surface_size.1).abs() > 0.5
-            {
-                self.last_surface_size = new_logical;
-                if new_logical.0 > 0.0 && new_logical.1 > 0.0 {
-                    let pw = (new_logical.0 as f32 * self.scale_factor) as u32;
-                    let ph = (new_logical.1 as f32 * self.scale_factor) as u32;
-                    let _ = self.cmd_tx.send(BrowserCommand::Resize(pw.max(1), ph.max(1)));
-                }
-            }
-        }
     }
 
     fn draw(
@@ -364,7 +350,7 @@ impl Widget for BrowserWidget {
 
     fn handle_event(
         &mut self,
-        event: &winit::event::WindowEvent,
+        event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
@@ -374,14 +360,6 @@ impl Widget for BrowserWidget {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // Track scale factor so we can emit physical-pixel resizes.
-        if (self.scale_factor as f64 - scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = scale_factor as f32;
-            let _ = self
-                .cmd_tx
-                .send(BrowserCommand::ScaleFactor(self.scale_factor));
-        }
-
         if let Some(c) = &mut self.composed {
             if let Ok(children) = taffy.children(node_id) {
                 if let Some(&child_node) = children.first() {
@@ -397,6 +375,17 @@ impl Widget for BrowserWidget {
                         taffy,
                     );
                 }
+            }
+        }
+
+        // Enter in the focused address bar submits it.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            if key.state == ElementState::Pressed
+                && key.logical_key == WKey::Named(WNamedKey::Enter)
+                && self.url_input_focused()
+            {
+                self.navigate_to_input(state, path);
+                *handled = true;
             }
         }
     }
@@ -420,31 +409,13 @@ impl Widget for BrowserWidget {
     fn name(&self) -> &str {
         "BrowserWidget"
     }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
     fn test_id(&self) -> Option<&str> {
         Some("browser.root")
-    }
-}
-
-impl BrowserWidget {
-    /// Walk the composed tree and return the [`ServoSurface`]'s rect if
-    /// one is present. The surface is identified by `test_id ==
-    /// "browser.surface"`.
-    fn find_surface_rect(&self) -> Option<Rect> {
-        fn walk(w: &dyn Widget) -> Option<Rect> {
-            if w.test_id() == Some("browser.surface") {
-                return Some(w.get_rect());
-            }
-            for c in w.children() {
-                if let Some(r) = walk(c) {
-                    return Some(r);
-                }
-            }
-            None
-        }
-        self.composed.as_ref().and_then(|c| walk(c.as_ref()))
     }
 }
 
@@ -453,12 +424,118 @@ impl AppWidget for BrowserWidget {
         AppKind::Browser
     }
     fn app_title(&self) -> &str {
-        "Browser"
+        if self.title.is_empty() {
+            "Browser"
+        } else {
+            &self.title
+        }
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("\u{F02AC}") // mdi-web (browser globe glyph)
     }
     fn permission_hint(&self) -> Option<AppKind> {
         Some(AppKind::Browser)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use ui::webview::WebViewEngine;
+
+    fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        widget.sync(&mut state, &root);
+        (state, root)
+    }
+
+    #[test]
+    fn bootstrap_seeds_address_bar() {
+        let engine = TestEngine::new();
+        // Headless so the test never spawns the network filter loader.
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (state, root) = synced(&mut w);
+        assert_eq!(
+            BrowserWidget::read_url(&state, &root).as_deref(),
+            Some(DEFAULT_URL)
+        );
+    }
+
+    #[test]
+    fn button_flags_translate_to_engine_commands() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut state, root) = synced(&mut w);
+
+        // History so back/forward are meaningful.
+        engine.send(WebViewCommand::Navigate("https://a.test".into()));
+        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+
+        let _ = state.put(&root, BACK_FLAG, true);
+        w.sync(&mut state, &root);
+        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+        assert!(
+            !BrowserWidget::read_flag(&state, &root, BACK_FLAG),
+            "flag resets after firing",
+        );
+
+        let _ = state.put(&root, FORWARD_FLAG, true);
+        w.sync(&mut state, &root);
+        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+
+        let _ = state.put(&root, RELOAD_FLAG, true);
+        w.sync(&mut state, &root);
+        assert!(
+            engine.commands().contains(&WebViewCommand::Reload),
+            "reload flag reaches the engine",
+        );
+    }
+
+    #[test]
+    fn engine_uri_updates_address_bar_text() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut state, root) = synced(&mut w);
+
+        engine.send(WebViewCommand::Navigate("https://qos.example".into()));
+        w.sync(&mut state, &root);
+
+        assert_eq!(
+            BrowserWidget::read_url(&state, &root).as_deref(),
+            Some("https://qos.example")
+        );
+        assert_eq!(w.app_title(), "https://qos.example — test page");
+    }
+
+    #[test]
+    fn history_events_drive_button_enablement() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut state, root) = synced(&mut w);
+
+        engine.send(WebViewCommand::Navigate("https://a.test".into()));
+        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+        w.sync(&mut state, &root);
+
+        assert!(w.can_go_back);
+        assert!(!w.can_go_forward);
+    }
+
+    #[test]
+    fn headless_engine_has_deterministic_page() {
+        let w = BrowserWidget::new_headless();
+        let slot = w.engine.frames();
+        let frame = slot.lock().unwrap().clone().expect("pre-rendered frame");
+        assert!(frame.width > 0 && frame.height > 0);
+    }
+
+    #[test]
+    fn default_engine_is_shareable() {
+        // The engine handle must be cloneable/shareable between widget,
+        // app, and blocker thread.
+        let engine: SharedEngine = default_engine();
+        let _clone: SharedEngine = Arc::clone(&engine);
     }
 }

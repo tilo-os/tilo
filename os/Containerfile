@@ -50,6 +50,36 @@ FROM ${RPMS_REF} AS rpms
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 
+# ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
+# The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
+# stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release
+# tarballs by the same script developers use locally (os/dev/build-wpe.sh).
+# Configured for prefix=/usr and staged into /wpe: the rust builder overlays
+# it to link `browser --features wpe`, the final image copies it into the
+# rootfs.
+#
+# Build deps come from `dnf builddep webkitgtk6.0` (wpewebkit builds from the
+# same source tree) against live repos — a deliberate exception to the
+# frozen-repo rule for this throwaway stage: the output is pinned by the
+# wpewebkit version in build-wpe.sh and reused from the layer cache until
+# that changes. Folding the builddep set into the frozen snapshot is a
+# follow-up.
+FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS wpe-builder
+
+RUN dnf install -y 'dnf5-command(builddep)' \
+    && dnf builddep -y webkitgtk6.0 \
+    && dnf install -y \
+        meson ninja-build gperf unifdef libgbm-devel curl xz \
+        wayland-devel wayland-protocols-devel libepoxy-devel \
+    && dnf clean all
+
+COPY os/dev/build-wpe.sh /build-wpe.sh
+RUN --mount=type=cache,target=/wpe-cache \
+    QOS_WPE_CACHE=/wpe-cache QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
+    bash /build-wpe.sh build \
+    && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+
+
 # ---- Stage 1: builder ------------------------------------------------------
 # Base pinned by digest (security plan §9 — reproducibility + supply chain: a
 # tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-06-30.
@@ -100,16 +130,17 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
+# WPE WebKit headers + libs so `browser --features wpe` links against the
+# engine built in the wpe-builder stage. Overlaying /usr in this throwaway
+# stage keeps pkg-config discovery entirely standard.
+COPY --from=wpe-builder /wpe/ /
+
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
 # across rebuilds; a cache-mounted target/ isn't in any layer, so the binaries
 # are cp'd to /out (a real path) in the same RUN for the final stage to COPY.
 #
-# Three CI guards (the image builds under buildkit, not just podman/buildah):
-#  - Drop apps/browser (Servo) from the workspace before building: it's never
-#    built here and its `libservo` dep can't resolve in a clean checkout
-#    (the root Cargo.lock is gitignored). This sed only runs in-build; the
-#    committed Cargo.toml is untouched.
+# Two CI guards (the image builds under buildkit, not just podman/buildah):
 #  - Seed the resolve from a committed pinned lock (os/Cargo.lock.pinned, kept
 #    in sync from a known-good build): without it a fresh CI resolve picks
 #    incompatible transitive versions (e.g. ed25519-dalek vs ed25519/pkcs8).
@@ -121,16 +152,17 @@ ENV CARGO_HOME=/build/.cargo-home \
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    sed -i '/"apps\/browser",/d' Cargo.toml \
-    && cp os/Cargo.lock.pinned Cargo.lock \
+    cp os/Cargo.lock.pinned Cargo.lock \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power \
+        -p browser --features browser/wpe \
     && mkdir -p /out \
     && cp target/release/shell \
           target/release/fs \
           target/release/terminal \
           target/release/file-explorer \
+          target/release/browser \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
@@ -285,10 +317,10 @@ COPY --from=builder /out/fs /usr/bin/fs
 # System apps
 COPY --from=builder /out/terminal /usr/bin/terminal
 COPY --from=builder /out/file-explorer /usr/bin/file-explorer
-# NOTE: browser (Servo) intentionally omitted — currently unmaintained and
-# does not build against the GCC-15/C23 toolchain (glsl-optimizer once_flag
-# conflict). Add `-p browser` to the builder's cargo invocation and a COPY
-# here once the browser is revived.
+# Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
+# (built in the wpe-builder stage; its libs + WebProcess binaries are copied
+# into this rootfs below).
+COPY --from=builder /out/browser /usr/bin/browser
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
@@ -304,8 +336,32 @@ COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
 COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
 COPY --from=builder /out/qos-power /usr/bin/qos-power
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
-              /usr/bin/file-explorer /usr/bin/qos-greeter /usr/bin/qos-installer \
-              /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle /usr/bin/qos-power
+              /usr/bin/file-explorer /usr/bin/browser /usr/bin/qos-greeter \
+              /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
+              /usr/bin/qos-power
+
+# ---- WPE WebKit runtime (browser engine) ------------------------------------
+# Engine libraries + the WebKit helper processes (WPEWebProcess,
+# WPENetworkProcess) from the wpe-builder stage, plus the runtime libraries
+# the engine links that aren't already in this image. GStreamer base/good are
+# installed above.
+COPY --from=wpe-builder /wpe/ /
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    libepoxy \
+    libsoup3 \
+    enchant2 \
+    hyphen \
+    woff2 \
+    lcms2 \
+    openjpeg2 \
+    libavif \
+    libwebp \
+    libgcrypt \
+    libtasn1 \
+    libsecret \
+    gstreamer1-plugins-bad-free \
+    && dnf clean all \
+    && ldconfig
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
