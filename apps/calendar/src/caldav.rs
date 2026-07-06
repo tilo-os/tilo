@@ -94,6 +94,48 @@ pub fn build_put_request(
     PutRequest { url, body: ics::export(&model) }
 }
 
+/// The concrete CalDAV `DELETE` a queued deletion turns into: the URL of the
+/// event resource to remove from its collection. Mirrors [`PutRequest`] but
+/// carries no body — a `DELETE` is addressed by URL alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteRequest {
+    /// Absolute URL of the event resource (`<collection>/<uid>.ics`).
+    pub url: String,
+}
+
+/// Build the CalDAV `DELETE` that removes `uid` from `calendar` under
+/// `config`. The resource name matches the one [`build_put_request`] uploads
+/// to, so a synced event round-trips to the same URL for create and delete.
+pub fn build_delete_request(
+    config: &CalDavConfig,
+    calendar: &RemoteCalendar,
+    uid: crate::model::Id,
+) -> DeleteRequest {
+    let collection = collection_url_for(config, calendar);
+    let url = format!("{}/{}.ics", collection.trim_end_matches('/'), uid);
+    DeleteRequest { url }
+}
+
+/// Remove every queued event from its target CalDAV collection, returning the
+/// uids the server confirmed gone (so the caller can clear them from the delete
+/// outbox). Each job is a `(config, calendar, uid)` triple. Compiled with
+/// `live` this sends an HTTP `DELETE`; without the feature it removes nothing
+/// and returns an empty list — the queue is retained until a live build drains
+/// it, exactly like [`push_all`].
+pub fn delete_all(
+    jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
+) -> Vec<crate::model::Id> {
+    #[cfg(feature = "live")]
+    {
+        live::delete_all_live(jobs)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = jobs;
+        Vec::new()
+    }
+}
+
 /// Resolve a collection href (absolute or relative to the configured server)
 /// to an absolute URL. Shared by the pull and push paths so both address the
 /// same resource.
@@ -411,6 +453,36 @@ mod live {
         pushed
     }
 
+    /// DELETE every queued event resource, returning the uids the server
+    /// confirmed removed. Best-effort and per-resource: a failed delete leaves
+    /// that uid in the outbox for the next attempt and does not abort the rest.
+    pub fn delete_all_live(
+        jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
+    ) -> Vec<crate::model::Id> {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("qOS-Calendar/0.1")
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut deleted = Vec::new();
+        for (config, cal, uid) in jobs {
+            let req = super::build_delete_request(config, cal, *uid);
+            let resp = client
+                .delete(&req.url)
+                .basic_auth(&config.username, Some(&config.password))
+                .send();
+            // 2xx, or a 404 (already gone), both mean the resource is absent.
+            let gone = matches!(resp, Ok(r) if r.status().is_success() || r.status().as_u16() == 404);
+            if gone {
+                deleted.push(*uid);
+            }
+        }
+        deleted
+    }
+
     fn calendar_query_body(today: NaiveDate) -> String {
         // A ±60-day window keeps the payload small while covering the views.
         let from = (today - chrono::Duration::days(60))
@@ -529,6 +601,31 @@ mod tests {
         // Body is a real one-event VCALENDAR carrying the title.
         assert!(req.body.contains("BEGIN:VEVENT"));
         assert!(req.body.contains("Kickoff"));
+    }
+
+    #[test]
+    fn build_delete_request_targets_the_same_resource_as_the_put() {
+        let store = AccountStore::sample();
+        let (account, cal) = store
+            .all_calendars()
+            .find(|(_, c)| c.id == "work/default")
+            .unwrap();
+        let uid = uuid::Uuid::new_v4();
+        let del = build_delete_request(&account.config, cal, uid);
+        assert!(del.url.starts_with(&account.config.server_url), "url = {}", del.url);
+        assert!(del.url.ends_with(&format!("{uid}.ics")));
+    }
+
+    #[test]
+    fn delete_all_without_live_feature_removes_nothing() {
+        // Symmetric with push: the headless build has no transport, so delete is
+        // an honest no-op that keeps the queue rather than faking a success.
+        let store = AccountStore::sample();
+        let (account, cal) = store.all_calendars().next().unwrap();
+        let jobs = vec![(account.config.clone(), cal.clone(), uuid::Uuid::new_v4())];
+        #[cfg(not(feature = "live"))]
+        assert!(delete_all(&jobs).is_empty());
+        let _ = jobs;
     }
 
     #[test]
