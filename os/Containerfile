@@ -429,12 +429,11 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # exist" invariant, so shell out to `rpm -e --nodeps` for the protected
 # ones — dnf handles the unprotected ones on the same pass.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-    systemd-boot-unsigned \
-    && dnf remove -y \
-        grub2-common grub2-tools grub2-pc-modules grub2-efi-x64-modules \
-        grub2-tools-extra \
+        systemd-boot-unsigned \
     && rpm -e --nodeps \
-        grub2-tools-minimal grub2-pc grub2-efi-x64 shim-x64 \
+        shim-x64 grub2-efi-x64 grub2-pc \
+        grub2-tools grub2-tools-minimal grub2-tools-extra \
+        grub2-pc-modules grub2-efi-x64-modules grub2-common \
     && dnf clean all
 
 # The install-config drop-in that flips bootc's bootloader choice to
