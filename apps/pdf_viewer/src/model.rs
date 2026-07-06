@@ -256,6 +256,20 @@ impl Swatch {
             _ => Swatch::Yellow,
         }
     }
+
+    /// A fixed sRGB triple for this swatch, used when **flattening** markup into
+    /// a saved PDF. On screen a swatch resolves through the live OS theme (see
+    /// `render::swatch_color`), but a written-to-disk `.pdf` must carry a
+    /// concrete, theme-independent colour so it looks the same in every viewer.
+    pub fn rgb(self) -> (u8, u8, u8) {
+        match self {
+            Swatch::Yellow => (250, 204, 21),
+            Swatch::Green => (34, 197, 94),
+            Swatch::Pink => (236, 72, 153),
+            Swatch::Blue => (59, 130, 246),
+            Swatch::Purple => (139, 92, 246),
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
