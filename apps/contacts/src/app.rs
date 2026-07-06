@@ -533,12 +533,14 @@ impl ContactsApp {
     }
 
     /// Snap the EDIT form open with its first field focused for `--shots`, so a
-    /// headless frame captures the keyboard-navigation focus ring (Tab lands
-    /// here). Mirrors opening the form and pressing Tab once.
+    /// headless frame captures the keyboard-navigation focus ring on the first
+    /// field (where opening the editor lands the keyboard).
     pub fn shots_edit_focused(&mut self) {
         if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
             self.begin_edit(c, false);
-            self.focus_adjacent_field(1);
+            // The form opens unfocused; land the keyboard on the first field so
+            // the shot captures the focus ring where Tab-navigation begins.
+            self.focus_form_slot(Slot::First);
             self.push.snap(Pane::Detail);
         }
     }
@@ -641,11 +643,11 @@ impl ContactsApp {
         if self.narrow {
             self.push.show_detail();
         }
-        // Land the keyboard on the first field so the form is typeable the
-        // instant it opens (no click required) and Tab/arrows have a starting
-        // point. Callers that want a specific field (double-click-to-edit)
-        // override this with `focus_form_slot` right after.
-        self.focus_adjacent_field(1);
+        // The form opens with no field focused: Tab / Enter / an arrow key
+        // enters at the first field, and Shift+Tab enters at the last. This
+        // keeps a single, predictable entry point for keyboard navigation.
+        // Callers that want to land on a specific field (double-click-to-edit)
+        // focus it explicitly with `focus_form_slot` right after.
         self.relayout = true;
         self.dirty = true;
     }
