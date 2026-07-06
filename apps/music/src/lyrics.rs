@@ -144,14 +144,40 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 /// Real synced-or-plain lyrics from LRCLIB. Compiled whenever an HTTP stack is
 /// available (`lyrics` or the `live` build), so `--features live,audio` fetches
 /// real lyrics for the playing track.
+///
+/// Robustness (the reasons "Finding lyrics…" used to hang or miss a track that
+/// clearly has lyrics):
+///   * **normalisation** — YouTube titles/artists carry noise (`(Official Music
+///     Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
+///     metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
+///     querying, so `Californication (Official Music Video)` by
+///     `Red Hot Chili Peppers - Topic` actually resolves.
+///   * **retry + backoff + timeout** — a transient network blip or an LRCLIB
+///     rate-limit (429 / 5xx) is retried a couple of times with backoff behind
+///     an 8 s per-request timeout, instead of giving up on the first hiccup.
+///   * **cache** — a resolved result (hit *or* miss) is memoised by normalised
+///     identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
+///   * **fallback** — an exact `/api/get` miss (YouTube durations rarely match
+///     to the second) falls back to `/api/search`.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
+    let key = cache_key(meta);
+    if let Some(cached) = cache_get(&key) {
+        return cached;
+    }
+    let result = live_fetch_uncached(meta);
+    cache_put(key, result.clone());
+    result
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(8))
         .user_agent("qOS-Music (https://qos)")
         .build()
         .ok()?;
-    // 1. Exact match by track/artist/album/duration.
+    // 1. Exact match by (normalised) track/artist/album/duration.
     if let Some(l) = lrclib_from_object(&client, &lrclib_url(meta)) {
         return Some(l);
     }
@@ -161,11 +187,44 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     lrclib_from_search(&client, meta)
 }
 
+/// GET `url` as text, retrying a couple of times with linear backoff on a
+/// *transient* failure (a network error, a 429 rate-limit, or a 5xx). A 404 or
+/// any other definitive non-success returns `None` immediately so the caller
+/// moves on to the next strategy rather than burning retries on a real miss.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<String> {
+    for attempt in 0..3u64 {
+        match client.get(url).send() {
+            Ok(resp) => {
+                let status = resp.status();
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    return None; // a real miss — don't retry, let the fallback run
+                }
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                    std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+                    continue; // transient — back off and retry
+                }
+                if !status.is_success() {
+                    return None;
+                }
+                if let Ok(body) = resp.text() {
+                    return Some(body);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+            }
+        }
+    }
+    None
+}
+
 /// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
 /// synced over plain. `None` on a 404 / empty record.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn lrclib_from_object(client: &reqwest::blocking::Client, url: &str) -> Option<Lyrics> {
-    let body = client.get(url).send().ok()?.text().ok()?;
+    let body = get_text_retry(client, url)?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
     lyrics_from_record(&json)
 }
@@ -174,7 +233,7 @@ fn lrclib_from_object(client: &reqwest::blocking::Client, url: &str) -> Option<L
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> Option<Lyrics> {
     let url = lrclib_search_url(meta);
-    let body = client.get(&url).send().ok()?.text().ok()?;
+    let body = get_text_retry(client, &url)?;
     let arr: serde_json::Value = serde_json::from_str(&body).ok()?;
     let list = arr.as_array()?;
     // Prefer the first candidate carrying synced lyrics; else the first plain.
@@ -207,52 +266,156 @@ fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
     None
 }
 
-/// Build the LRCLIB `/api/search?track_name=…&artist_name=…` URL.
-#[cfg(any(feature = "lyrics", feature = "live"))]
-fn lrclib_search_url(meta: &TrackMeta) -> String {
-    fn enc(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for b in s.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    out.push(b as char)
-                }
-                b' ' => out.push_str("%20"),
-                _ => out.push_str(&format!("%{b:02X}")),
+/// Percent-encode a query-string value (RFC 3986 unreserved bytes pass through).
+fn enc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Collapse internal runs of whitespace to a single space and trim the ends.
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Keywords that mark a bracketed segment as a *tag* (a video/remaster/quality
+/// note) rather than part of the actual song name — so it's dropped from the
+/// LRCLIB query. Genuine parentheticals like `(Acoustic)` are kept.
+const TITLE_TAG_KEYWORDS: &[&str] = &[
+    "official", "video", "audio", "lyric", "lyrics", "visualizer", "visualiser",
+    "remaster", "remastered", "explicit", "hd", "hq", "4k", "mv", "m/v",
+    "feat", "ft", "featuring",
+];
+
+fn segment_is_tag(seg: &str) -> bool {
+    let low = seg.to_ascii_lowercase();
+    TITLE_TAG_KEYWORDS.iter().any(|k| low.split(|c: char| !c.is_ascii_alphanumeric() && c != '/').any(|w| w == *k))
+}
+
+/// Cut a trailing `feat.` / `ft.` / `featuring` credit off a title (LRCLIB keys
+/// on the base song name, not the featured-artist list).
+fn strip_feat(s: &str) -> String {
+    let low = s.to_ascii_lowercase();
+    for marker in [" feat.", " feat ", " ft.", " ft ", " featuring "] {
+        if let Some(idx) = low.find(marker) {
+            return s[..idx].to_string();
+        }
+    }
+    s.to_string()
+}
+
+/// Normalise a (YouTube) track title for an LRCLIB lookup: drop bracketed tag
+/// segments (`(Official Music Video)`, `[Remastered 2011]`, …) and any trailing
+/// `feat.` credit, then collapse whitespace. Idempotent on already-clean titles,
+/// so a plain `Neon Mileage` is returned unchanged.
+pub fn normalize_title(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        let close = match ch {
+            '(' => ')',
+            '[' => ']',
+            '{' => '}',
+            _ => {
+                out.push(ch);
+                continue;
+            }
+        };
+        let mut seg = String::new();
+        let mut closed = false;
+        for c in chars.by_ref() {
+            if c == close {
+                closed = true;
+                break;
+            }
+            seg.push(c);
+        }
+        if !segment_is_tag(&seg) {
+            // Keep a genuine parenthetical (e.g. `(Acoustic)`).
+            out.push(ch);
+            out.push_str(&seg);
+            if closed {
+                out.push(close);
             }
         }
-        out
     }
+    collapse_ws(&strip_feat(&out))
+}
+
+/// Normalise a (YouTube Music) artist name for an LRCLIB lookup: strip the
+/// auto-generated `… - Topic` channel suffix and collapse whitespace.
+pub fn normalize_artist(raw: &str) -> String {
+    let mut s = collapse_ws(raw);
+    if s.to_ascii_lowercase().ends_with(" - topic") {
+        s.truncate(s.len() - " - Topic".len());
+        s = collapse_ws(&s);
+    }
+    s
+}
+
+/// Build the LRCLIB `/api/search?track_name=…&artist_name=…` URL from the
+/// normalised metadata.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn lrclib_search_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}",
-        enc(&meta.title),
-        enc(&meta.artist),
+        enc(&normalize_title(&meta.title)),
+        enc(&normalize_artist(&meta.artist)),
     )
 }
 
-/// Build the LRCLIB `/api/get` request URL for a track. Always compiled so the
-/// request contract is documented + testable even offline.
+/// Build the LRCLIB `/api/get` request URL for a track from its normalised
+/// metadata. Always compiled so the request contract is documented + testable
+/// even offline.
 pub fn lrclib_url(meta: &TrackMeta) -> String {
-    fn enc(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for b in s.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    out.push(b as char)
-                }
-                b' ' => out.push_str("%20"),
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-        out
-    }
     format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
-        enc(&meta.title),
-        enc(&meta.artist),
-        enc(&meta.album),
+        enc(&normalize_title(&meta.title)),
+        enc(&normalize_artist(&meta.artist)),
+        enc(&normalize_title(&meta.album)),
         meta.duration_s
     )
+}
+
+/// Process-wide memo of resolved lyrics keyed by normalised (title, artist), so
+/// a revisit / prefetch of the same song is instant and never re-hammers
+/// LRCLIB. Caches misses (`None`) too, so a track without lyrics isn't refetched
+/// on every visit.
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn cache_key(meta: &TrackMeta) -> String {
+    format!(
+        "{}\u{1}{}",
+        normalize_title(&meta.title).to_ascii_lowercase(),
+        normalize_artist(&meta.artist).to_ascii_lowercase(),
+    )
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn lyrics_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<Lyrics>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<Lyrics>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn cache_get(key: &str) -> Option<Option<Lyrics>> {
+    lyrics_cache().lock().ok()?.get(key).cloned()
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn cache_put(key: String, value: Option<Lyrics>) {
+    if let Ok(mut map) = lyrics_cache().lock() {
+        map.insert(key, value);
+    }
 }
 
 /// An async lyrics worker: a background thread that resolves lyrics off the UI
@@ -272,9 +435,12 @@ impl LyricsWorker {
             .name("music-lyrics".into())
             .spawn(move || {
                 while let Ok(meta) = req_rx.recv() {
-                    if let Some(lyrics) = resolve(&meta) {
-                        let _ = res_tx.send((meta.track_id.clone(), lyrics));
-                    }
+                    // ALWAYS deliver a result for the requested track — an empty
+                    // `Lyrics` on a miss — so the UI clears its "Finding lyrics…"
+                    // pending state and shows "No lyrics found" instead of
+                    // hanging forever when a lookup misses or a fetch fails.
+                    let lyrics = resolve(&meta).unwrap_or_default();
+                    let _ = res_tx.send((meta.track_id.clone(), lyrics));
                 }
             })
             .ok();
@@ -432,6 +598,62 @@ mod tests {
         assert!(url.contains("track_name=Neon%20Mileage"));
         assert!(url.contains("artist_name=Midnight%20Transit"));
         assert!(url.contains("duration=252"));
+    }
+
+    #[test]
+    fn normalize_title_strips_youtube_tags_but_keeps_real_parentheticals() {
+        assert_eq!(normalize_title("Californication (Official Music Video)"), "Californication");
+        assert_eq!(normalize_title("Otherside [Remastered 2011]"), "Otherside");
+        assert_eq!(normalize_title("Scar Tissue (Official Audio)"), "Scar Tissue");
+        assert_eq!(normalize_title("Say It Right feat. Nelly Furtado"), "Say It Right");
+        assert_eq!(normalize_title("Under the Bridge (feat. Someone)"), "Under the Bridge");
+        // A genuine version parenthetical is preserved.
+        assert_eq!(normalize_title("Californication (Acoustic)"), "Californication (Acoustic)");
+        // Already clean → unchanged (idempotent).
+        assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
+    }
+
+    #[test]
+    fn normalize_artist_strips_topic_suffix() {
+        assert_eq!(normalize_artist("Red Hot Chili Peppers - Topic"), "Red Hot Chili Peppers");
+        assert_eq!(normalize_artist("Red Hot Chili Peppers"), "Red Hot Chili Peppers");
+        assert_eq!(normalize_artist("  Midnight   Transit  "), "Midnight Transit");
+    }
+
+    /// The Californication-by-RHCP case the user reported: a YouTube-flavoured
+    /// title + a `… - Topic` artist must produce a *well-formed, normalised*
+    /// LRCLIB query (the reason the exact `/api/get` lookup used to miss).
+    #[test]
+    fn lrclib_query_normalizes_youtube_metadata() {
+        let meta = TrackMeta {
+            track_id: "yt:abc".into(),
+            title: "Californication (Official Music Video)".into(),
+            artist: "Red Hot Chili Peppers - Topic".into(),
+            album: "Californication (Remastered)".into(),
+            duration_s: 329,
+        };
+        let url = lrclib_url(&meta);
+        assert!(url.starts_with("https://lrclib.net/api/get?"));
+        assert!(url.contains("track_name=Californication&"), "title tag stripped: {url}");
+        assert!(url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"), "topic suffix stripped: {url}");
+        assert!(url.contains("album_name=Californication&"), "album tag stripped: {url}");
+        assert!(url.ends_with("duration=329"), "{url}");
+    }
+
+    #[cfg(any(feature = "lyrics", feature = "live"))]
+    #[test]
+    fn lrclib_search_url_uses_normalized_metadata() {
+        let meta = TrackMeta {
+            track_id: "yt:abc".into(),
+            title: "Californication (Official Music Video)".into(),
+            artist: "Red Hot Chili Peppers - Topic".into(),
+            album: String::new(),
+            duration_s: 329,
+        };
+        let url = lrclib_search_url(&meta);
+        assert!(url.starts_with("https://lrclib.net/api/search?"));
+        assert!(url.contains("track_name=Californication"), "{url}");
+        assert!(url.contains("artist_name=Red%20Hot%20Chili%20Peppers"), "{url}");
     }
 
     #[test]

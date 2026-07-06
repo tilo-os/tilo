@@ -230,6 +230,19 @@ impl Widget for MusicApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.dirty = true;
+                // Feed the search field cursor moves while it's being hovered or
+                // is mid drag-select, so its hover state + selection track the
+                // pointer (a drag that leaves the pill still extends).
+                if self.search_input.is_dragging()
+                    || self.search_input.get_rect().contains(self.mouse)
+                {
+                    let dragging = self.search_input.is_dragging();
+                    self.forward_to_search(event, scale_factor, modifiers, state);
+                    if dragging {
+                        *handled = true;
+                        return;
+                    }
+                }
                 if let Some(drag) = self.drag {
                     match drag {
                         Drag::Scrubber => {
@@ -256,6 +269,20 @@ impl Widget for MusicApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // A press inside the search field routes to the real TextInput
+                // (caret placement, drag-select, double-click word). Also switch
+                // to the Search view + focus it so typing lands there.
+                if self.search_input.get_rect().contains(self.mouse) {
+                    if self.view != View::Search {
+                        self.dispatch(Action::FocusSearch, state);
+                    } else {
+                        self.search_input.set_focus(true);
+                    }
+                    self.forward_to_search(event, scale_factor, modifiers, state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // A press outside the open volume popover (and its button)
                 // dismisses it.
                 if self.volume_popover_open
@@ -310,15 +337,21 @@ impl Widget for MusicApp {
                 if let Some(action) = self.hit_test(self.mouse) {
                     // Clicking anywhere outside the search field blurs it.
                     if !matches!(action, Action::FocusSearch) {
-                        self.search_focused = false;
+                        self.search_input.set_focus(false);
                     }
                     self.dispatch(action, state);
                     *handled = true;
                 } else {
-                    self.search_focused = false;
+                    self.search_input.set_focus(false);
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                // End an in-progress search-field selection drag on the widget.
+                if self.search_input.is_dragging() {
+                    self.forward_to_search(event, scale_factor, modifiers, state);
+                    *handled = true;
+                    return;
+                }
                 // Resolve a now-playing-bar swipe: a large horizontal delta skips
                 // track; otherwise it was a tap on the captured target.
                 if let Some((start, tap)) = self.bar_press.take() {
@@ -352,6 +385,39 @@ impl Widget for MusicApp {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
                 ..
             } => {
+                // A focused search field routes its keystrokes to the real
+                // `ui::TextInput` (Ctrl+A/C/X/V, selection, word nav, …). Escape
+                // blurs it and Enter submits the live search — those stay at the
+                // app level; everything else is handled by the widget.
+                if self.search_input.is_focused() && self.name_prompt.is_none() {
+                    match logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.search_input.set_focus(false);
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.request_live_search();
+                            self.search_input.set_focus(false);
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
+                    }
+                    let before = self.search_input.value().to_string();
+                    let consumed = self.forward_to_search(event, scale_factor, modifiers, state);
+                    if self.search_input.value() != before {
+                        // Debounce the live query a short beat after the last edit.
+                        self.search_edit_at = Some(Instant::now());
+                    }
+                    if consumed {
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
                 self.on_key(logical_key, text.as_deref(), modifiers, state, handled);
             }
             _ => {}
@@ -409,6 +475,36 @@ impl MusicApp {
         None
     }
 
+    /// Forward a raw window event to the header search `TextInput` on its real
+    /// `handle_event` path (so it runs the same selection / clipboard / caret
+    /// logic as any other field). The field is local-mode, so the doc handle it
+    /// receives is inert; a throwaway taffy node satisfies the trait signature.
+    /// Returns whether the widget consumed the event.
+    fn forward_to_search(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        self.search_input.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
     /// Whether the current detail view is a real (live) artist/album page whose
     /// content hasn't landed yet — so its loading skeleton must keep animating.
     fn detail_loading(&self) -> bool {
@@ -461,41 +557,8 @@ impl MusicApp {
             return;
         }
 
-        // Search field owns typing while focused.
-        if self.search_focused {
-            match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.search_focused = false;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.search_query.pop();
-                    self.search_edit_at = Some(Instant::now());
-                    self.dirty = true;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    // Submit a real YouTube-Music search (live builds); the
-                    // local library search stays visible until results land.
-                    self.request_live_search();
-                    self.search_focused = false;
-                    *handled = true;
-                }
-                _ => {
-                    if let Some(t) = text {
-                        if !t.is_empty() && !t.chars().any(|c| c.is_control()) {
-                            self.search_query.push_str(t);
-                            // Debounce: a real query fires a short beat after
-                            // the last keystroke (see `maybe_dispatch_live_search`).
-                            self.search_edit_at = Some(Instant::now());
-                            self.dirty = true;
-                            *handled = true;
-                        }
-                    }
-                }
-            }
-            return;
-        }
+        // (The focused search field routes its keystrokes to the real
+        // `ui::TextInput` up in `handle_event`, before `on_key` is reached.)
 
         match key {
             Key::Named(NamedKey::Escape) => {
@@ -674,7 +737,7 @@ impl MusicApp {
             self.scroll = max;
         }
 
-        self.draw_header(scene, t, tr, &c, header);
+        self.draw_header(scene, t, tr, &c, theme, header);
         self.draw_nowplaying(scene, t, tr, &c, nowplaying);
 
         // Overlay flap: dim the content behind the drawer's scrim (alpha tracks
@@ -700,6 +763,9 @@ impl MusicApp {
 
         // Collapsed-volume popover floats above the now-playing bar.
         self.draw_volume_popover(scene, t, tr, &c);
+
+        // Queue hover preview floats above the now-playing bar's queue button.
+        self.draw_queue_preview(scene, t, tr, &c);
 
         self.draw_toast(scene, t, tr, &c);
 
@@ -871,7 +937,7 @@ impl MusicApp {
 
     // ---- header -----------------------------------------------------------
 
-    fn draw_header(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
+    fn draw_header(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, theme: &Theme, r: Rect) {
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
         // Leave room for the hamburger toggle in the corner when it's shown.
         let lead = if self.show_hamburger() { 56.0 } else { 24.0 };
@@ -888,10 +954,14 @@ impl MusicApp {
         let title = self.view_title();
         draw_text(tr, scene, t, &title, x, vy(r.y0, HEADER_H, 26.0), 26.0, c.text, TextWeight::Bold, None);
 
-        // Search pill on the right.
+        // Search pill on the right. The pill chrome (bg, focus/hover ring, the
+        // magnifier) is drawn here; the editable text itself is a real
+        // `ui::TextInput` laid into the pill's text area, so it carries its own
+        // caret, selection, placeholder and full editing affordances.
         let pill_w = 320.0_f64.min(r.width() * 0.4);
         let pill = Rect::new(r.x1 - 24.0 - pill_w, r.y0 + 18.0, r.x1 - 24.0, r.y0 + 54.0);
-        let focused = self.search_focused;
+        self.search_pill_rect = pill;
+        let focused = self.search_input.is_focused();
         let hover = self.push_hit(pill, Action::FocusSearch);
         fill_rrect(scene, t, pill, 18.0, c.panel);
         if focused {
@@ -900,28 +970,12 @@ impl MusicApp {
             scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(pill, 18.0));
         }
         icon::draw(scene, t, Icon::Search, Point::new(pill.x0 + 20.0, pill.center().y), 16.0, c.dim);
-        let q = &self.search_query;
-        let (txt, col) = if q.is_empty() {
-            ("Search songs, albums, artists".to_string(), c.dim)
-        } else {
-            (q.clone(), c.text)
-        };
-        let shown = elide(tr, &txt, 14.0, TextWeight::Regular, pill.width() - 60.0);
-        draw_text(tr, scene, t, &shown, pill.x0 + 38.0, vy(pill.y0, 36.0, 14.0), 14.0, col, TextWeight::Regular, None);
-        if focused {
-            // Caret tracks the *typed query* width, never the placeholder — an
-            // empty field puts the caret at the text start, not at the end of the
-            // dim "Search songs, albums, artists" hint.
-            let cw = tr.measure_weighted(&self.search_query, 14.0, None, TextWeight::Regular).0 as f64;
-            let cx = (pill.x0 + 38.0 + cw).min(pill.x1 - 14.0);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.accent,
-                None,
-                &Rect::new(cx, pill.y0 + 9.0, cx + 1.5, pill.y1 - 9.0),
-            );
-        }
+        // The text field fills the pill after the magnifier gutter. Plain chrome
+        // (no field border) so it reads as part of the pill.
+        let text_rect = Rect::new(pill.x0 + 38.0, pill.y0, pill.x1 - 16.0, pill.y1);
+        self.search_input.apply_layout_external(text_rect);
+        self.search_input
+            .draw(scene, t, tr, theme, &PresenceCtx::empty());
     }
 
     fn view_title(&self) -> String {
@@ -1696,6 +1750,54 @@ impl MusicApp {
 
     // ---- queue ------------------------------------------------------------
 
+    /// A small floating card previewing the next few queued songs, shown while
+    /// the pointer hovers the now-playing bar's queue button. Anchored just above
+    /// the button and right-aligned to it.
+    fn draw_queue_preview(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette) {
+        if !self.queue_preview_active() {
+            return;
+        }
+        let btn = self.queue_btn_rect;
+        let ids = self.queue_preview_tracks();
+        let rows = self.gather_tracks(&ids);
+
+        let row_h = 42.0;
+        let head_h = 26.0;
+        let pad = 10.0;
+        let body_rows = rows.len().max(1) as f64;
+        let w = 300.0_f64.min(self.rect.width() - 16.0);
+        let h = head_h + body_rows * row_h + pad;
+        let x1 = (btn.x1 + 8.0).min(self.rect.x1 - 8.0);
+        let x0 = (x1 - w).max(self.rect.x0 + 8.0);
+        let y1 = btn.y0 - 10.0;
+        let y0 = (y1 - h).max(self.rect.y0 + 8.0);
+        let panel = Rect::new(x0, y0, x1, y1);
+
+        fill_rrect(scene, t, panel, 12.0, c.panel);
+        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(panel, 12.0));
+        // Swallow clicks landing on the card so they don't fall through to the
+        // content behind it.
+        self.push_hit(panel, Action::None);
+
+        draw_text(tr, scene, t, "Up next", panel.x0 + 14.0, panel.y0 + 8.0, 12.0, c.dim, TextWeight::Semibold, None);
+        let mut ry = panel.y0 + head_h;
+        if rows.is_empty() {
+            draw_text(tr, scene, t, "Nothing queued", panel.x0 + 14.0, ry + 10.0, 13.0, c.dim, TextWeight::Regular, None);
+            return;
+        }
+        for tk in &rows {
+            let art = Rect::new(panel.x0 + 8.0, ry + 5.0, panel.x0 + 40.0, ry + 37.0);
+            self.draw_cover(scene, t, art, &tk.cover_id(), &tk.title, tr, 6.0);
+            let tx = art.x1 + 10.0;
+            let maxw = panel.x1 - tx - 12.0;
+            let title = elide(tr, &tk.title, 13.0, TextWeight::Medium, maxw);
+            let artist = elide(tr, &tk.artist, 11.0, TextWeight::Regular, maxw);
+            draw_text(tr, scene, t, &title, tx, ry + 7.0, 13.0, c.text, TextWeight::Medium, None);
+            draw_text(tr, scene, t, &artist, tx, ry + 24.0, 11.0, c.dim, TextWeight::Regular, None);
+            ry += row_h;
+        }
+    }
+
     fn draw_queue(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64) -> f64 {
         let pad = 28.0;
         y += 20.0;
@@ -1948,7 +2050,7 @@ impl MusicApp {
 
     fn draw_search(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64) -> f64 {
         let pad = 28.0;
-        let q = self.search_query.clone();
+        let q = self.search_input.value().to_string();
         if q.trim().is_empty() {
             y += 16.0;
             draw_text(tr, scene, t, "Browse all", body.x0 + pad, y, 19.0, c.text, TextWeight::Bold, None);
@@ -2055,6 +2157,9 @@ impl MusicApp {
     fn draw_nowplaying(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
         scene.fill(Fill::NonZero, t, c.panel, None, &r);
         scene.fill(Fill::NonZero, t, c.border, None, &Rect::new(r.x0, r.y0, r.x1, r.y0 + 1.0));
+        // Only the wide transport draws a queue button; clear the captured rect
+        // so the compact bar never reports a stale hover target.
+        self.queue_btn_rect = Rect::ZERO;
 
         // Narrow windows can't fit the full transport (art + title + 5 transport
         // buttons + scrubber + queue + volume) without overlap. Below this width
@@ -2177,9 +2282,14 @@ impl MusicApp {
             scene.fill(Fill::NonZero, t, c.text, None, &Circle::new(Point::new(fillx, bar_y + 2.0), 6.0));
         }
 
-        // Right: queue + volume.
+        // Right: queue + volume. The queue button toggles the queue view (and
+        // restores the prior view on toggle-off); hovering it previews the next
+        // few songs. Capture its rect so the hover overlay + the toggle target
+        // share the exact laid-out geometry.
         let q_c = Point::new(r.x1 - right_w + 28.0, r.y0 + NOWPLAYING_H / 2.0);
-        let qh = self.push_hit(square_around(q_c, 30.0), Action::Nav(View::Queue));
+        let q_rect = square_around(q_c, 30.0);
+        self.queue_btn_rect = q_rect;
+        let qh = self.push_hit(q_rect, Action::ToggleQueue);
         icon::draw(scene, t, Icon::Queue, q_c, 18.0, if self.view == View::Queue { c.accent } else if qh { c.text } else { c.dim });
 
         let vol_icon_c = Point::new(r.x1 - right_w + 64.0, r.y0 + NOWPLAYING_H / 2.0);

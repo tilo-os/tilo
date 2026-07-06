@@ -95,21 +95,28 @@ mod tests {
     use super::*;
 
     /// Run the relay against an isolated data dir so the real user library is
-    /// never touched.
-    fn isolated_relay() -> (Relay, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("qos-music-relay-{}", std::process::id()));
+    /// never touched. Each call gets a **unique** dir (process id + a global
+    /// counter) so tests running in parallel never share a path or race on
+    /// removing each other's dir. Returns the relay, its dir, and the explicit
+    /// library path (so callers don't re-read the process-global
+    /// `QOS_MUSIC_DATA`, which other parallel tests are also mutating).
+    fn isolated_relay() -> (Relay, std::path::PathBuf, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!("qos-music-relay-{}-{}", std::process::id(), n));
         let path = dir.join("library.automerge");
-        // SAFETY: tests in this module run serially via the unique pid dir.
         unsafe {
             std::env::set_var("QOS_MUSIC_DATA", &path);
         }
         let relay = Relay::new();
-        (relay, dir)
+        (relay, dir, path)
     }
 
     #[test]
     fn relay_seeds_and_serves_the_library() {
-        let (relay, dir) = isolated_relay();
+        let (relay, dir, _path) = isolated_relay();
         assert!(relay.track_count() >= 20, "headless relay seeds the catalog");
         // Without the p2p feature the transport is the loopback (not live) but
         // still advertises a ticket — the seam is wired.
@@ -122,8 +129,9 @@ mod tests {
 
     #[test]
     fn relay_persists_on_run_start() {
-        let (mut relay, dir) = isolated_relay();
-        let path = storage::doc_path();
+        let (mut relay, dir, path) = isolated_relay();
+        // Use the test's own explicit path — never the process-global
+        // `QOS_MUSIC_DATA` that a concurrently-running test may have re-pointed.
         let _ = storage::save_to(&path, &mut relay.doc);
         assert!(storage::load_from(&path).is_some(), "relay wrote a durable copy");
         let _ = std::fs::remove_dir_all(&dir);

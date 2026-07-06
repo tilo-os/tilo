@@ -24,7 +24,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{SidebarDrawer, SplitLayout, Widget};
+use ui::widget::{SidebarDrawer, SplitLayout, TextInput, Widget};
 use ui::ImageStore;
 
 use crate::art;
@@ -136,6 +136,10 @@ enum Action {
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
     FocusSearch,
+    /// Toggle the queue view from the now-playing bar: open it (remembering the
+    /// current view), or, when already on it, hide it and return to where the
+    /// user was before.
+    ToggleQueue,
     /// Toggle the adaptive navigation sidebar (hamburger / collapse chevron).
     ToggleSidebar,
     /// Dismiss the overlay sidebar (scrim tap / Esc).
@@ -162,8 +166,14 @@ pub struct MusicApp {
     pb: Playback,
     view: View,
     nav_back: Vec<View>,
-    search_query: String,
-    search_focused: bool,
+    /// The header search field — a real `ui::TextInput` (local mode), so it
+    /// gets full editing affordances for free: Ctrl+A/C/X/V, drag-to-select,
+    /// double-click word, Shift+Arrow selection, word navigation. The app reads
+    /// the live query via `search_input.value()`.
+    search_input: TextInput,
+    /// The search pill's full rect, captured during draw so a press inside it
+    /// routes to `search_input` (caret placement / drag-select).
+    search_pill_rect: Rect,
     source: Source,
     #[allow(dead_code)]
     audio: AudioEngine,
@@ -267,6 +277,13 @@ pub struct MusicApp {
     volume_popover_open: bool,
     volume_popover_rect: Rect,
     volume_popover_slider: Rect,
+    /// The now-playing bar's queue-button rect, captured during draw. Hovering
+    /// it opens the queue preview overlay; clicking it toggles the queue view.
+    queue_btn_rect: Rect,
+    /// The view (+ scroll offset) to return to when the queue view is toggled
+    /// back off, so "Queue" restores exactly where the user was rather than
+    /// resetting. `None` when the queue view wasn't opened via the toggle.
+    queue_return: Option<(View, f64)>,
     dirty: bool,
     toast: Option<(String, Instant)>,
 
@@ -389,13 +406,21 @@ impl MusicApp {
         // A preset search query (`QOS_MUSIC_VIEW=search:…`) arms the debounce so
         // the live-shot loop dispatches it after the usual idle beat.
         let preset_search_at = (!query.is_empty()).then(Instant::now);
+        let mut search_input = TextInput::local()
+            .with_plain_chrome()
+            .with_font_size(14.0)
+            .with_placeholder("Search songs, albums, artists")
+            .with_id("music_search");
+        if !query.is_empty() {
+            search_input.set_text(&query);
+        }
         Self {
             lib: Library::default(),
             pb: Playback::default(),
             view,
             nav_back: Vec::new(),
-            search_query: query,
-            search_focused: false,
+            search_input,
+            search_pill_rect: Rect::ZERO,
             source: Source::default(),
             audio: AudioEngine::new(),
             worker: None,
@@ -437,6 +462,8 @@ impl MusicApp {
             volume_popover_open: false,
             volume_popover_rect: Rect::ZERO,
             volume_popover_slider: Rect::ZERO,
+            queue_btn_rect: Rect::ZERO,
+            queue_return: None,
             dirty: true,
             toast: None,
             context: ContextMenu::new(),
@@ -512,7 +539,7 @@ impl MusicApp {
     /// Kick off a real search (keeping the current view), for staging a
     /// lyrics/now-playing live shot. Idempotent per query.
     pub fn shot_begin_search(&mut self, query: &str) {
-        self.search_query = query.to_string();
+        self.search_input.set_text(query);
         self.request_live_search();
     }
 
@@ -626,6 +653,26 @@ impl MusicApp {
             .and_then(|id| self.lib.track(id))
             .map(|t| t.duration_ms())
             .unwrap_or(0)
+    }
+
+    /// The next few queued track ids (after the current one), for the queue
+    /// hover preview. Respects the linear queue order; empty when nothing is
+    /// queued up next.
+    fn queue_preview_tracks(&self) -> Vec<String> {
+        self.pb
+            .queue
+            .iter()
+            .skip(self.pb.queue_index + 1)
+            .take(4)
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the queue hover preview should be showing: the pointer is over
+    /// the now-playing bar's queue button. Captured geometry, so this reflects
+    /// the real, laid-out button rect.
+    pub(crate) fn queue_preview_active(&self) -> bool {
+        self.queue_btn_rect.width() > 0.0 && self.queue_btn_rect.contains(self.mouse)
     }
 
     /// The best cover-art id for a track: the track's own recorded cover when
@@ -1022,7 +1069,7 @@ impl MusicApp {
                     self.scroll = 0.0;
                 }
                 if matches!(self.view, View::Search) {
-                    self.search_focused = true;
+                    self.search_input.set_focus(true);
                 }
                 // Picking a destination dismisses the overlay sidebar so the
                 // chosen screen takes the full width (Adwaita flap behaviour).
@@ -1229,13 +1276,13 @@ impl MusicApp {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
                 self.new_playlist_track = None;
-                self.search_focused = false;
+                self.search_input.set_focus(false);
             }
             Action::BeginNewPlaylistFor(track) => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
                 self.new_playlist_track = Some(track);
-                self.search_focused = false;
+                self.search_input.set_focus(false);
             }
             Action::CreatePlaylist => {
                 let name = if self.name_input.trim().is_empty() {
@@ -1269,7 +1316,7 @@ impl MusicApp {
                 self.name_input =
                     self.lib.playlist(&id).map(|p| p.name.clone()).unwrap_or_default();
                 self.name_prompt = Some(NamePrompt::Rename(id));
-                self.search_focused = false;
+                self.search_input.set_focus(false);
             }
             Action::CommitRename(id) => {
                 let name = self.name_input.trim().to_string();
@@ -1301,7 +1348,30 @@ impl MusicApp {
                     self.nav_back.push(self.view.clone());
                 }
                 self.view = View::Search;
-                self.search_focused = true;
+                self.search_input.set_focus(true);
+            }
+            Action::ToggleQueue => {
+                if self.view == View::Queue {
+                    // Toggle off: restore exactly where the user was (view +
+                    // scroll), not a reset. Fall back to nav-back if the queue
+                    // was reached some other way.
+                    if let Some((v, s)) = self.queue_return.take() {
+                        self.view = v;
+                        self.scroll = s;
+                    } else if let Some(v) = self.nav_back.pop() {
+                        self.view = v;
+                        self.scroll = 0.0;
+                    }
+                } else {
+                    // Toggle on: remember the current view + scroll so the next
+                    // toggle returns here.
+                    self.queue_return = Some((self.view.clone(), self.scroll));
+                    self.view = View::Queue;
+                    self.scroll = 0.0;
+                }
+                if self.drawer.is_overlay() {
+                    self.drawer.close();
+                }
             }
             Action::ToggleSidebar => {
                 self.toggle_sidebar();
@@ -1370,7 +1440,7 @@ impl MusicApp {
     /// No-op offline builds still spawn the worker (which reports the offline
     /// backend); the UI keeps showing the local library either way.
     fn request_live_search(&mut self) {
-        let q = self.search_query.trim().to_string();
+        let q = self.search_input.value().trim().to_string();
         if q.is_empty() {
             return;
         }
@@ -1450,7 +1520,11 @@ impl MusicApp {
                     // Only adopt it if it's still the current track (the user
                     // may have skipped while it resolved).
                     if self.pb.current.as_deref() == Some(track_id.as_str()) {
-                        self.audio.load(&stream.url);
+                        // Prefer the rangeable proxy URL; the engine falls back
+                        // to the direct googlevideo URL if the proxy yields no
+                        // bytes, so playback always starts.
+                        self.audio
+                            .load_with_fallback(&stream.url, stream.fallback_url.as_deref());
                         if self.pb.playing {
                             self.audio.play();
                         }
@@ -1704,8 +1778,8 @@ impl MusicApp {
     /// of the placeholder hint). `search_focused` is plain widget state, so no
     /// deferral is needed.
     pub fn snap_search_focus(&mut self) {
-        self.search_focused = true;
-        self.search_query.clear();
+        self.search_input.set_focus(true);
+        self.search_input.set_text("");
     }
 
     /// Stage the Home skeleton loading state for a `--shots` frame.
@@ -2070,7 +2144,7 @@ impl MusicApp {
             return;
         }
         self.search_edit_at = None;
-        let q = self.search_query.trim().to_string();
+        let q = self.search_input.value().trim().to_string();
         if q.len() < 2 || self.live_query_sent.as_deref() == Some(q.as_str()) {
             return;
         }
@@ -2369,6 +2443,10 @@ mod tests {
 
     fn shift_mods() -> winit::event::Modifiers {
         winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+    }
+
+    fn ctrl_mods() -> winit::event::Modifiers {
+        winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
     }
 
     /// The captured click rect (center) for the first hit matching `action`,
@@ -2750,7 +2828,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         // Submit a real search (spawns the worker + sends the request).
-        app.search_query = "aurora runaway".into();
+        app.search_input.set_text("aurora runaway");
         app.request_live_search();
         assert!(app.worker.is_some(), "search spawned the streaming worker");
 
@@ -2781,10 +2859,17 @@ mod tests {
 
         // Pump until the resolved URL is loaded into the audio engine.
         let mut loaded_url = None;
-        for _ in 0..1000 {
+        // The resolved audio URL is a fully-rangeable source: an Invidious
+        // `local` proxy (`…/latest_version?…&itag=…&local=true`) that serves the
+        // whole track over arbitrary byte ranges, or the direct googlevideo URL
+        // as a fallback. Either carries an `itag`.
+        let is_streamable = |u: &str| {
+            u.contains("itag=") && (u.contains("local=true") || u.contains("googlevideo.com"))
+        };
+        for _ in 0..2000 {
             app.drain_worker();
             if let Some(uri) = app.audio.current_uri() {
-                if uri.contains("googlevideo.com") {
+                if is_streamable(uri) {
                     loaded_url = Some(uri.to_string());
                     break;
                 }
@@ -2794,17 +2879,17 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let url = loaded_url.expect("app resolved + loaded a real googlevideo audio URL");
-        assert!(url.contains("googlevideo.com") && url.contains("itag="));
+        let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
+        assert!(is_streamable(&url), "resolved a rangeable, itag-bearing audio URL: {url}");
 
         // …and, when this build can actually reach a sound sink, prove the real
         // stream *renders* — decoded PCM buffers reach a real audio sink and the
         // transport advances off the stream clock. This is the end-to-end "a real
-        // YouTube track plays sound" proof: googlevideo 403s playbin's open-ended
-        // range request, so this only passes because the engine stages the stream
-        // to a temp file with bounded reqwest ranges and plays that.
+        // YouTube track plays sound" proof: the engine stages the resolved
+        // (rangeable) source to a temp file with bounded reqwest ranges and plays
+        // that.
         #[cfg(feature = "audio")]
-        if audio_server_present() {
+        if audio_server_present() && decode_plugins_present() {
             // Drive the real frame loop until decoded PCM reaches the sink *and*
             // the transport clock has advanced off it (both prove genuine, not
             // faked, playback of the real stream).
@@ -2818,7 +2903,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            assert!(frames > 0, "real googlevideo stream rendered PCM buffers to the sink");
+            assert!(frames > 0, "real resolved stream rendered PCM buffers to the sink");
             assert_eq!(
                 app.audio.audio_sink_is_real(),
                 Some(true),
@@ -2826,7 +2911,7 @@ mod tests {
             );
             assert!(app.playhead_ms > 0.0, "the playhead advanced with real playback");
         } else {
-            eprintln!("[live audio test] no PipeWire/Pulse server — skipped the render-proof");
+            eprintln!("[live audio test] no audio server / decode plugins — skipped the render-proof");
         }
     }
 
@@ -2838,6 +2923,21 @@ mod tests {
         run.map(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
             .unwrap_or(false)
             || std::env::var_os("PULSE_SERVER").is_some()
+    }
+
+    /// Whether the GStreamer decode chain for a staged YouTube audio stream (an
+    /// m4a/AAC file: `filesrc ! qtdemux ! avdec_aac/faad ! audioconvert !
+    /// audioresample ! autoaudiosink`) is installed. The render-proof skips
+    /// honestly when it isn't — a stock build without `gstreamer1-libav` can't
+    /// decode AAC, so there'd be no frames through no fault of the code.
+    #[cfg(all(feature = "live", feature = "audio"))]
+    fn decode_plugins_present() -> bool {
+        let _ = gstreamer::init();
+        let base = ["filesrc", "qtdemux", "audioconvert", "audioresample", "autoaudiosink"];
+        let have_base = base.iter().all(|n| gstreamer::ElementFactory::find(n).is_some());
+        let have_aac = gstreamer::ElementFactory::find("avdec_aac").is_some()
+            || gstreamer::ElementFactory::find("faad").is_some();
+        have_base && have_aac
     }
 
     // ---- 9. lyrics --------------------------------------------------------
@@ -3019,7 +3119,7 @@ mod tests {
         assert_ne!(app.view, View::Search);
         send(&mut app, &char_key("/"), &mut doc);
         assert_eq!(app.view, View::Search);
-        assert!(app.search_focused);
+        assert!(app.search_input.is_focused());
     }
 
     // ---- 12. drag-to-seek / drag-volume gestures ---------------------------
@@ -3120,16 +3220,112 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.set_offline_for_shot(); // no live worker thread in tests
         app.dispatch(Action::FocusSearch, &mut doc);
-        assert!(app.search_focused);
+        assert!(app.search_input.is_focused());
         for ch in ["g", "l", "a", "s", "s"] {
             send(&mut app, &char_key(ch), &mut doc);
         }
-        assert_eq!(app.search_query, "glass", "typing builds the query through the event path");
+        assert_eq!(app.search_input.value(), "glass", "typing builds the query through the event path");
         // The Search view renders local hits from this exact cache.
         let res = app.local_search_cached("glass");
         assert!(res.tracks.contains(&"tk_g1".to_string()), "local search surfaces the matching track (Glasslight)");
         send(&mut app, &named_key(NamedKey::Backspace), &mut doc);
-        assert_eq!(app.search_query, "glas", "backspace edits the query");
+        assert_eq!(app.search_input.value(), "glas", "backspace edits the query");
+    }
+
+    /// The header search field is a real `ui::TextInput`, so Ctrl+A selects the
+    /// whole query — driven through the production `handle_event` routing, not
+    /// by poking the widget.
+    #[test]
+    fn search_ctrl_a_selects_whole_query_via_event_path() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.dispatch(Action::FocusSearch, &mut doc);
+        app.search_input.set_text("hello world");
+        // Ctrl+A on the focused field.
+        assert!(
+            send_with(&mut app, &char_key("a"), &ctrl_mods(), &mut doc),
+            "Ctrl+A is consumed by the focused search field"
+        );
+        assert_eq!(
+            app.search_input.selection_range_public(),
+            Some((0, "hello world".len())),
+            "Ctrl+A selected the entire query on the real handle_event path"
+        );
+    }
+
+    /// A press-drag across the search field selects a range — proving the real
+    /// mouse routing reaches the TextInput's drag-select on the event path.
+    #[test]
+    fn search_drag_selects_range_via_event_path() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.search_input.set_text("hello world");
+        // Draw once so the field is laid out + its per-char metrics populated
+        // (unfocused, so scroll stays at 0 and the click math is simple).
+        draw_once(&mut app, &mut doc);
+        let rect = app.search_input.get_rect();
+        assert!(rect.width() > 20.0, "the search field laid out with width");
+        let cxp = app.search_input.char_x_positions().to_vec();
+        assert!(cxp.len() >= 10, "per-char metrics populated by the draw");
+        // The widget hit-tests with a 10px inner padding.
+        let x_for = |b: usize| rect.x0 + 10.0 + cxp[b];
+        let y = rect.center().y;
+
+        send(&mut app, &cursor_at(Point::new(x_for(2), y)), &mut doc); // hover → is_hovered
+        send(&mut app, &press(MouseButton::Left), &mut doc); // focus + start drag
+        assert!(app.search_input.is_dragging(), "the press began a selection drag");
+        send(&mut app, &cursor_at(Point::new(x_for(9), y)), &mut doc); // extend
+        let sel = app
+            .search_input
+            .selection_range_public()
+            .expect("the drag produced a selection");
+        assert!(sel.1 > sel.0, "drag selected a non-empty range ({sel:?})");
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert!(!app.search_input.is_dragging(), "release ended the drag");
+    }
+
+    /// Toggling the queue view off returns the user to exactly where they were
+    /// (view + scroll), not a reset.
+    #[test]
+    fn queue_toggle_opens_then_restores_previous_view() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Albums;
+        app.scroll = 137.0;
+
+        app.dispatch(Action::ToggleQueue, &mut doc);
+        assert_eq!(app.view, View::Queue, "toggling opens the queue view");
+        assert_eq!(app.scroll, 0.0, "the queue view starts at the top");
+
+        app.dispatch(Action::ToggleQueue, &mut doc);
+        assert_eq!(app.view, View::Albums, "toggling off returns to the prior view");
+        assert_eq!(app.scroll, 137.0, "and restores the prior scroll position");
+    }
+
+    /// Hovering the now-playing bar's queue button opens the up-next preview,
+    /// which lists the next few queued songs.
+    #[test]
+    fn queue_button_hover_opens_preview() {
+        let (mut app, mut doc) = app_with_doc();
+        // Keep the in-memory queue authoritative across the draw's `sync` (which
+        // would otherwise re-adopt the seeded playback snapshot).
+        app.playback_loaded = true;
+        app.pb.queue = vec!["tk_g1".into(), "tk_a1".into(), "tk_h1".into(), "tk_p1".into()];
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue_index = 0;
+        draw_once(&mut app, &mut doc); // registers the queue button rect
+        assert!(app.queue_btn_rect.width() > 0.0, "the wide transport drew a queue button");
+
+        // The preview lists the upcoming (not-current) tracks.
+        assert_eq!(
+            app.queue_preview_tracks(),
+            vec!["tk_a1".to_string(), "tk_h1".to_string(), "tk_p1".to_string()],
+        );
+
+        // Not hovering yet → closed; hovering the button → open.
+        app.mouse = Point::new(-10.0, -10.0);
+        assert!(!app.queue_preview_active(), "no preview when not hovering");
+        app.mouse = app.queue_btn_rect.center();
+        assert!(app.queue_preview_active(), "hovering the queue button opens the preview");
     }
 
     #[test]
