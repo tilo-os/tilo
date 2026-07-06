@@ -792,6 +792,9 @@ impl MusicApp {
         // while the stream is still resolving/buffering. Offline / no-audio
         // builds fall back to the local clock so the transport still advances.
         if self.audio.has_stream() {
+            // Service the pipeline bus so a failed fetch/decode is detected (and
+            // the message backlog drained) before we trust the transport state.
+            self.audio.pump();
             if let Some(pos) = self.audio.position_ms() {
                 self.playhead_ms = pos as f64;
             } else if self.audio.is_playing_real() {
@@ -1406,10 +1409,7 @@ impl MusicApp {
             match up {
                 StreamUpdate::Backend { name, live } => {
                     self.backend_live = live;
-                    self.backend_name = name.clone();
-                    if live {
-                        self.toast = Some((format!("Streaming from {name}"), Instant::now()));
-                    }
+                    self.backend_name = name;
                 }
                 StreamUpdate::SearchResults { query, hits } => {
                     if self.live_search_pending.as_deref() == Some(query.as_str()) {
@@ -1454,14 +1454,6 @@ impl MusicApp {
                         if self.pb.playing {
                             self.audio.play();
                         }
-                        self.toast = Some((
-                            format!(
-                                "Streaming {} \u{00b7} {} kbps",
-                                stream.format,
-                                stream.bitrate / 1000
-                            ),
-                            Instant::now(),
-                        ));
                     }
                 }
                 StreamUpdate::ResolveFailed { track_id, error } => {
@@ -2804,6 +2796,48 @@ mod tests {
         }
         let url = loaded_url.expect("app resolved + loaded a real googlevideo audio URL");
         assert!(url.contains("googlevideo.com") && url.contains("itag="));
+
+        // …and, when this build can actually reach a sound sink, prove the real
+        // stream *renders* — decoded PCM buffers reach a real audio sink and the
+        // transport advances off the stream clock. This is the end-to-end "a real
+        // YouTube track plays sound" proof: googlevideo 403s playbin's open-ended
+        // range request, so this only passes because the engine stages the stream
+        // to a temp file with bounded reqwest ranges and plays that.
+        #[cfg(feature = "audio")]
+        if audio_server_present() {
+            // Drive the real frame loop until decoded PCM reaches the sink *and*
+            // the transport clock has advanced off it (both prove genuine, not
+            // faked, playback of the real stream).
+            let mut frames = 0u64;
+            for _ in 0..2000 {
+                app.drain_worker();
+                app.tick();
+                frames = app.audio.frames_rendered();
+                if frames > 0 && app.playhead_ms > 0.0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(frames > 0, "real googlevideo stream rendered PCM buffers to the sink");
+            assert_eq!(
+                app.audio.audio_sink_is_real(),
+                Some(true),
+                "the rendered stream reached a real audio sink, not a fakesink"
+            );
+            assert!(app.playhead_ms > 0.0, "the playhead advanced with real playback");
+        } else {
+            eprintln!("[live audio test] no PipeWire/Pulse server — skipped the render-proof");
+        }
+    }
+
+    /// Whether a running PipeWire/Pulse server is reachable (mirrors the audio
+    /// module's check) so the render-proof above only runs where a sink exists.
+    #[cfg(all(feature = "live", feature = "audio"))]
+    fn audio_server_present() -> bool {
+        let run = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+        run.map(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
+            .unwrap_or(false)
+            || std::env::var_os("PULSE_SERVER").is_some()
     }
 
     // ---- 9. lyrics --------------------------------------------------------
