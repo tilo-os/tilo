@@ -62,6 +62,144 @@ impl Address {
     }
 }
 
+/// A birthday as a real calendar value — not a free-text string — so it can
+/// be surfaced in Calendar and reasoned about by day/month/year. Either a
+/// full date, or a month/day with the year unknown (people often record a
+/// birthday without the year; the vCard spec models this as `--MMDD`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Birthday {
+    Full { year: i32, month: u32, day: u32 },
+    MonthDay { month: u32, day: u32 },
+}
+
+impl Birthday {
+    /// The year, or `None` for a year-less birthday.
+    pub fn year(&self) -> Option<i32> {
+        match self {
+            Birthday::Full { year, .. } => Some(*year),
+            Birthday::MonthDay { .. } => None,
+        }
+    }
+
+    /// Month, `1..=12`.
+    pub fn month(&self) -> u32 {
+        match self {
+            Birthday::Full { month, .. } | Birthday::MonthDay { month, .. } => *month,
+        }
+    }
+
+    /// Day of month, `1..=31`.
+    pub fn day(&self) -> u32 {
+        match self {
+            Birthday::Full { day, .. } | Birthday::MonthDay { day, .. } => *day,
+        }
+    }
+
+    /// Build a full date, validating the components against the calendar.
+    fn full(year: i32, month: u32, day: u32) -> Option<Birthday> {
+        if (1..=12).contains(&month) && (1..=crate::date::days_in_month(year, month)).contains(&day) {
+            Some(Birthday::Full { year, month, day })
+        } else {
+            None
+        }
+    }
+
+    /// Build a year-less date. Validated against a leap year so `--02-29`
+    /// (a Feb-29 birthday whose year is unknown) is accepted.
+    fn month_day(month: u32, day: u32) -> Option<Birthday> {
+        if (1..=12).contains(&month) && (1..=crate::date::days_in_month(2000, month)).contains(&day) {
+            Some(Birthday::MonthDay { month, day })
+        } else {
+            None
+        }
+    }
+
+    /// Parse typed input or a vCard `BDAY` value into a structured date.
+    /// Accepts:
+    /// * ISO `YYYY-MM-DD` (and `YYYY/MM/DD`, `YYYY.MM.DD`), basic `YYYYMMDD`
+    /// * US `MM/DD/YYYY`, European `DD.MM.YYYY`
+    /// * year-less `MM-DD` / `MM/DD` (US), `DD.MM` (EU), and the vCard
+    ///   truncated forms `--MMDD` / `--MM-DD`
+    ///
+    /// Returns `None` for empty or unrecognizable input. Where the day/month
+    /// order is ambiguous, a swap that yields a valid date is accepted (so
+    /// `25/12/1990` reads as 25 December).
+    pub fn parse(s: &str) -> Option<Birthday> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+
+        // vCard truncated "year unknown" forms: --MMDD or --MM-DD.
+        if let Some(rest) = s.strip_prefix("--") {
+            let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() == 4 {
+                let m = digits[0..2].parse().ok()?;
+                let d = digits[2..4].parse().ok()?;
+                return Self::month_day(m, d);
+            }
+            return None;
+        }
+
+        // Basic 8-digit ISO with no separators (vCard 4.0): YYYYMMDD.
+        if s.len() == 8 && s.chars().all(|c| c.is_ascii_digit()) {
+            let y = s[0..4].parse().ok()?;
+            let m = s[4..6].parse().ok()?;
+            let d = s[6..8].parse().ok()?;
+            return Self::full(y, m, d);
+        }
+
+        let sep = s.chars().find(|c| matches!(c, '-' | '/' | '.'))?;
+        let parts: Vec<&str> = s.split(sep).map(str::trim).filter(|p| !p.is_empty()).collect();
+        match parts.as_slice() {
+            [a, b, c] => {
+                let (a, b, c): (i64, i64, i64) = (a.parse().ok()?, b.parse().ok()?, c.parse().ok()?);
+                if a >= 1000 {
+                    // Year first: Y-M-D.
+                    Self::full(a as i32, u32::try_from(b).ok()?, u32::try_from(c).ok()?)
+                } else if c >= 1000 {
+                    // Year last. `.` is the European D.M.Y convention; `/` / `-`
+                    // read US-style M/D/Y. Fall back to a swap when the first
+                    // reading is out of range.
+                    let (m, d) = if sep == '.' { (b, a) } else { (a, b) };
+                    let (m, d) = (u32::try_from(m).ok()?, u32::try_from(d).ok()?);
+                    Self::full(c as i32, m, d).or_else(|| Self::full(c as i32, d, m))
+                } else {
+                    None
+                }
+            }
+            [a, b] => {
+                let (a, b): (i64, i64) = (a.parse().ok()?, b.parse().ok()?);
+                // Year-less. `.` is European D.M; otherwise US M/D.
+                let (m, d) = if sep == '.' { (b, a) } else { (a, b) };
+                let (m, d) = (u32::try_from(m).ok()?, u32::try_from(d).ok()?);
+                Self::month_day(m, d).or_else(|| Self::month_day(d, m))
+            }
+            _ => None,
+        }
+    }
+
+    /// Canonical string for persistence and as a display fallback:
+    /// `YYYY-MM-DD` for a full date, `--MM-DD` for a year-less one. Round-trips
+    /// through [`parse`](Self::parse).
+    pub fn iso(&self) -> String {
+        match self {
+            Birthday::Full { year, month, day } => format!("{year:04}-{month:02}-{day:02}"),
+            Birthday::MonthDay { month, day } => format!("--{month:02}-{day:02}"),
+        }
+    }
+
+    /// Human-readable form, e.g. `December 10, 1815`, or `December 10` when the
+    /// year is unknown.
+    pub fn pretty(&self) -> String {
+        let name = crate::date::month_name(self.month());
+        match self {
+            Birthday::Full { year, day, .. } => format!("{name} {day}, {year}"),
+            Birthday::MonthDay { day, .. } => format!("{name} {day}"),
+        }
+    }
+}
+
 /// One person or organization. Text fields are plain strings here; the
 /// CRDT layer stores the collaborative ones as Automerge `Text` objects
 /// so concurrent edits merge.
@@ -73,8 +211,10 @@ pub struct Contact {
     pub org: String,
     pub title: String,
     pub website: String,
-    /// ISO `YYYY-MM-DD`. Empty when unset.
-    pub birthday: String,
+    /// Structured birthday with day/month/year accessible (so Calendar can
+    /// surface it). `None` when unset. Round-trips through the vCard `BDAY`
+    /// field; a year-less birthday is kept as [`Birthday::MonthDay`].
+    pub birthday: Option<Birthday>,
     pub notes: String,
     pub phones: Vec<Labeled>,
     pub emails: Vec<Labeled>,
@@ -330,7 +470,7 @@ pub fn sample_contacts() -> Vec<Contact> {
             org: org.to_string(),
             title: title.to_string(),
             website: website.to_string(),
-            birthday: birthday.to_string(),
+            birthday: Birthday::parse(birthday),
             notes: notes.to_string(),
             phones: phones.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
             emails: emails.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
@@ -473,6 +613,61 @@ pub fn sample_contacts() -> Vec<Contact> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn birthday_parses_iso_to_ymd() {
+        let b = Birthday::parse("1815-12-10").expect("valid ISO date");
+        assert_eq!(b.year(), Some(1815));
+        assert_eq!(b.month(), 12);
+        assert_eq!(b.day(), 10);
+        assert_eq!(b, Birthday::Full { year: 1815, month: 12, day: 10 });
+    }
+
+    #[test]
+    fn birthday_accepts_common_typed_formats() {
+        // Year-first with any separator.
+        assert_eq!(Birthday::parse("2001/03/09"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        // Basic 8-digit.
+        assert_eq!(Birthday::parse("20010309"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        // US month-first, year-last.
+        assert_eq!(Birthday::parse("03/09/2001"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        // European day-first with dots.
+        assert_eq!(Birthday::parse("09.03.2001"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        // Ambiguous order disambiguated by an out-of-range day/month.
+        assert_eq!(Birthday::parse("25/12/1990"), Some(Birthday::Full { year: 1990, month: 12, day: 25 }));
+        // Garbage is rejected, not silently coerced.
+        assert_eq!(Birthday::parse("not a date"), None);
+        assert_eq!(Birthday::parse(""), None);
+        assert_eq!(Birthday::parse("2001-13-40"), None);
+    }
+
+    #[test]
+    fn birthday_handles_year_less_month_day() {
+        // Typed MM-DD, and both vCard truncated forms, land on MonthDay.
+        assert_eq!(Birthday::parse("12-10"), Some(Birthday::MonthDay { month: 12, day: 10 }));
+        assert_eq!(Birthday::parse("--12-10"), Some(Birthday::MonthDay { month: 12, day: 10 }));
+        assert_eq!(Birthday::parse("--1210"), Some(Birthday::MonthDay { month: 12, day: 10 }));
+        let b = Birthday::parse("12-10").unwrap();
+        assert_eq!(b.year(), None, "a year-less birthday has no year");
+        assert_eq!((b.month(), b.day()), (12, 10));
+    }
+
+    #[test]
+    fn birthday_iso_round_trips_through_parse() {
+        for b in [
+            Birthday::Full { year: 1815, month: 12, day: 10 },
+            Birthday::Full { year: 2000, month: 2, day: 29 },
+            Birthday::MonthDay { month: 6, day: 23 },
+        ] {
+            assert_eq!(Birthday::parse(&b.iso()), Some(b), "{} round-trips", b.iso());
+        }
+    }
+
+    #[test]
+    fn birthday_pretty_prints_month_name() {
+        assert_eq!(Birthday::Full { year: 1815, month: 12, day: 10 }.pretty(), "December 10, 1815");
+        assert_eq!(Birthday::MonthDay { month: 12, day: 10 }.pretty(), "December 10");
+    }
 
     #[test]
     fn display_name_falls_back_to_org_then_placeholder() {
