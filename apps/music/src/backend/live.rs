@@ -271,6 +271,7 @@ fn map_stream(video_id: &str, s: &AudioStream) -> ResolvedStream {
         itag: s.itag,
         size_bytes: s.size,
         duration_ms: s.duration_ms.unwrap_or(0) as u64,
+        fallback_url: None,
     }
 }
 
@@ -292,13 +293,30 @@ impl MusicBackend for RustyPipeBackend {
     }
 
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
+        // Reliable base: rustypipe's direct iOS/TV googlevideo URL. It always
+        // renders, but is PoToken/SABR-gated — it only serves the first ~1-minute
+        // segment (the "only a minute plays" bug).
         let q = self.rp.query();
         let player = self
             .block(async { q.player(video_id).await })
             .map_err(|e| BackendError(format!("player: {e}")))?;
         let best = best_audio(&player.audio_streams)
             .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
-        Ok(map_stream(video_id, best))
+        let direct = map_stream(video_id, best);
+
+        // Prefer a fully-rangeable Invidious `local` proxy so the WHOLE track
+        // streams (it serves arbitrary byte ranges over the complete file). Keep
+        // the direct URL as a fallback the engine uses if the (public, sometimes
+        // flaky) proxy yields no bytes — so playback always works.
+        if let Some(mut proxy) = crate::backend::proxy::resolve_rangeable(video_id) {
+            proxy.duration_ms = direct.duration_ms;
+            if proxy.size_bytes == 0 {
+                proxy.size_bytes = direct.size_bytes;
+            }
+            proxy.fallback_url = Some(direct.url);
+            return Ok(proxy);
+        }
+        Ok(direct)
     }
 
     fn home(&self) -> Result<HomeContent, BackendError> {
