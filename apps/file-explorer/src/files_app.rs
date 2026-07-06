@@ -109,6 +109,10 @@ pub struct FileExplorerWidget {
     zoom_level: i32,
     /// Whether dotfiles are shown.
     show_hidden: bool,
+    /// The user's real, localized XDG user directories (Documents, Downloads,
+    /// …). Drives the standard favourites so a German desktop shows
+    /// *Dokumente / Bilder / Musik*, not hard-coded English names.
+    user_dirs: favorites::UserDirs,
 }
 
 impl Default for FileExplorerWidget {
@@ -122,18 +126,33 @@ impl FileExplorerWidget {
         Self::with_persistence(config::config_dir(), dirs::home_dir())
     }
 
-    /// Construct with an explicit persistence directory + home. `new` uses the
-    /// real per-user config dir; tests pass a `tempdir` (or `None`) so they
-    /// never read or write the user's real favourites/zoom state.
+    /// Construct with an explicit persistence directory + home, resolving the
+    /// XDG user dirs from the real environment. `new` uses the real per-user
+    /// config dir; tests pass a `tempdir` (or `None`) so they never read or
+    /// write the user's real favourites/zoom state.
     #[doc(hidden)]
     pub fn with_persistence(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Self {
+        Self::with_persistence_dirs(config_dir, home, favorites::UserDirs::from_system())
+    }
+
+    /// Construct with an explicit persistence directory, home, and injected
+    /// XDG user directories. Tests inject a known (e.g. German-localized) set
+    /// so the standard favourites are deterministic without depending on the
+    /// build machine's locale.
+    #[doc(hidden)]
+    pub fn with_persistence_dirs(
+        config_dir: Option<PathBuf>,
+        home: Option<PathBuf>,
+        user_dirs: favorites::UserDirs,
+    ) -> Self {
         let cwd = initial_path();
         let zoom_level = config_dir.as_deref().map(config::load_zoom).unwrap_or(0);
         // Favourites: persisted list when we have a home + config dir, else the
-        // built-in defaults so the sidebar is never empty.
+        // built-in defaults so the sidebar is never empty. Standard entries
+        // follow the user's real, localized XDG directories.
         let favorites = match (home.as_deref(), config_dir.as_deref()) {
-            (Some(h), Some(dir)) => favorites::load(dir, h),
-            (Some(h), None) => favorites::defaults(h),
+            (Some(h), Some(dir)) => favorites::load(dir, h, &user_dirs),
+            (Some(h), None) => favorites::defaults(h, &user_dirs),
             (None, _) => Vec::new(),
         };
         let show_hidden = false;
@@ -175,6 +194,7 @@ impl FileExplorerWidget {
             config_dir,
             zoom_level,
             show_hidden,
+            user_dirs,
         }
     }
 
@@ -255,12 +275,32 @@ impl FileExplorerWidget {
                 crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds, scale)
             }
         };
-        // Intentional, consistent gutter between the sidebar and the content —
-        // no awkward variable margin.
+        // One shared spacing rhythm: every inset / gap below is pulled from the
+        // theme's spacing scale so the whole app reads as evenly spaced.
+        let sp = &theme.tokens.spacing;
+
+        // A full-width chrome band (toolbar / breadcrumb / footer) with a
+        // consistent horizontal inset from the spacing scale, so its content
+        // lines up with the sidebar's own inset while the panels below still
+        // reach the window edges. `vpad` sets the band's vertical breathing
+        // room.
+        let band = |child: Box<dyn Widget>, vpad: f32| -> Box<dyn Widget> {
+            Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_horizontal_padding(sp.s3, sp.s3)
+                    .with_vertical_padding(vpad)
+                    .push(child),
+            )
+        };
+
+        // Content pane: the file list (plus any error affordance), filling the
+        // space to the right of the sidebar with one symmetric gutter from the
+        // spacing scale — no awkward variable margin.
         let mut view_col = Column::new()
             .with_fill_remaining_height()
-            .with_vertical_padding(6.0)
-            .with_horizontal_padding(14.0, 8.0);
+            .with_vertical_padding(sp.s1)
+            .with_horizontal_padding(sp.s3, sp.s3);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
             // wired to re-read the directory (Refresh).
@@ -278,8 +318,10 @@ impl FileExplorerWidget {
             Scrollable::new(ScrollAxis::Vertical).with_child(view_child),
         ));
 
-        // Body fills the remaining height; sidebar is fixed-width, the view
-        // pane takes the rest.
+        // Body: a full-height sidebar hugging the window's left edge (it owns
+        // its own background, so letting it reach x=0 removes the dead strip a
+        // padded root column used to leave to its left) + the content pane
+        // filling the rest.
         let body = Row::new()
             .with_fill_remaining_height()
             .push(sidebar)
@@ -296,16 +338,22 @@ impl FileExplorerWidget {
             .push(Box::new(Spacer::new()))
             .push(Box::new(Text::new(&path_str).with_size(12.0).with_color(theme.tokens.colors.text_dim)));
 
+        // Root: a tight, edge-to-edge banded stack. No default gutter (so the
+        // sidebar reaches the window's left/top edges) and no inter-band gap
+        // (so the sidebar sits flush under the breadcrumb divider); each chrome
+        // band owns its own inset, pulled from the spacing scale.
         let mut root_col = Column::new()
-            .push(toolbar)
-            .push(Box::new(breadcrumb))
+            .with_no_padding()
+            .with_gap(sp.s0)
+            .push(band(toolbar, sp.s2))
+            .push(band(Box::new(breadcrumb), sp.s0))
             .push(Box::new(body));
         // Inline-rename bar sits just above the footer while a rename is
         // active; its TextInput edits the RENAME_QUERY_PATH Text object.
         if self.renaming.is_some() {
-            root_col = root_col.push(self.build_rename_bar());
+            root_col = root_col.push(band(self.build_rename_bar(), sp.s1));
         }
-        root_col = root_col.push(Box::new(footer));
+        root_col = root_col.push(band(Box::new(footer), sp.s2));
         Box::new(root_col)
     }
 
@@ -663,7 +711,7 @@ impl FileExplorerWidget {
                 let added = {
                     let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
                     let mut favs = self.favs.borrow_mut();
-                    favorites::add(&mut favs.favorites, path, &home)
+                    favorites::add(&mut favs.favorites, path, &home, &self.user_dirs)
                 };
                 if added {
                     self.save_favorites();
@@ -2077,6 +2125,39 @@ mod command_path_tests {
         assert!(!w3.favorites().iter().any(|f| f.path == sub));
         let w4 = make();
         assert!(!w4.favorites().iter().any(|f| f.path == sub), "removal persists");
+    }
+
+    #[test]
+    fn favourites_follow_localized_xdg_user_dirs() {
+        use crate::favorites::{FavKind, UserDirs};
+        let cfg = tempfile::tempdir().unwrap();
+        let home = PathBuf::from("/home/tester");
+        // A German desktop: the XDG user dirs resolve to localized folder names.
+        let dirs = UserDirs {
+            documents: Some(home.join("Dokumente")),
+            downloads: Some(home.join("Downloads")),
+            pictures: Some(home.join("Bilder")),
+            music: Some(home.join("Musik")),
+            videos: Some(home.join("Videos")),
+        };
+        let w = FileExplorerWidget::with_persistence_dirs(
+            Some(cfg.path().to_path_buf()),
+            Some(home.clone()),
+            dirs,
+        );
+        let labels: Vec<String> = w.favorites().iter().map(|f| f.label.clone()).collect();
+        // The sidebar shows the user's real localized names, not hard-coded
+        // English ones.
+        assert!(labels.contains(&"Dokumente".to_string()), "labels: {labels:?}");
+        assert!(labels.contains(&"Bilder".to_string()), "labels: {labels:?}");
+        assert!(labels.contains(&"Musik".to_string()), "labels: {labels:?}");
+        assert!(!labels.contains(&"Documents".to_string()), "must not show hard-coded English Documents");
+        // The Documents favourite points at the actual localized directory (so
+        // clicking it opens ~/Dokumente, where the files really are) and keeps
+        // its evocative glyph despite the localized label.
+        let docs = w.favorites().into_iter().find(|f| f.kind == FavKind::Documents).unwrap();
+        assert_eq!(docs.path, home.join("Dokumente"));
+        assert_eq!(docs.icon(), ui::icons::Icon::FileText);
     }
 
     #[test]
