@@ -114,8 +114,10 @@ template-report = Bericht
 template-resume = Lebenslauf
 template-meeting-notes = Besprechungsnotizen
 
-## Styles panel
-panel-style = STIL
+## Paragraph panel
+panel-this-paragraph = DIESER ABSATZ
+panel-line-spacing = Zeilenabstand
+panel-style = ABSATZSTIL
 panel-caret-hint = Cursor in einen Absatz setzen
 panel-paragraph-styles = ABSATZSTILE
 panel-style-properties = STILEIGENSCHAFTEN
