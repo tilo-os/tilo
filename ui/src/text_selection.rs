@@ -247,6 +247,39 @@ pub fn word_boundaries_chars(text: &str, char_idx: usize) -> (usize, usize) {
     (byte_to_char(text, s), byte_to_char(text, e))
 }
 
+/// Word/line-granularity drag extension — the shared rule behind
+/// double-click-then-drag in `TextInput` and the reader.
+///
+/// After a double- or triple-click snapped the anchor to a whole unit
+/// `(anchor_lo, anchor_hi)` (a word or a line, `lo <= hi`), a continuing drag
+/// must keep that original unit *inside* the selection and grow by whole units.
+/// Given the boundary span `(unit_lo, unit_hi)` the pointer now sits in and the
+/// pointer's own position `raw` (to decide which side of the anchor it is on),
+/// this returns the `(anchor, cursor)` the selection should adopt.
+///
+/// Position type `T` is whatever a selector indexes by — a byte offset
+/// (`TextInput`) or a `(block, char)` document position (the reader) — so both
+/// share one rule instead of re-deriving the anchor pinning.
+pub fn extend_span_drag<T: Ord + Copy>(
+    anchor_lo: T,
+    anchor_hi: T,
+    raw: T,
+    unit_lo: T,
+    unit_hi: T,
+) -> (T, T) {
+    if raw < anchor_lo {
+        // Pointer is left of the original unit: pin the anchor to that unit's
+        // far (right) edge and walk the cursor to the left edge of the unit the
+        // pointer is inside.
+        (anchor_hi, unit_lo)
+    } else {
+        // Pointer is inside or right of the original unit: pin the anchor to the
+        // near (left) edge and walk the cursor to the right edge under the
+        // pointer.
+        (anchor_lo, unit_hi)
+    }
+}
+
 /// Lazy global clipboard handle. `arboard::Clipboard::new()` can be
 /// slow on Wayland the first time (sets up the data-control device),
 /// so we cache one handle process-wide and lock it per access. Kept
@@ -442,6 +475,20 @@ mod tests {
         assert_eq!(next_word_boundary_chars(s, 0), 6); // start of "beta"
         assert_eq!(next_word_boundary_chars(s, 6), 11); // start of "gamma"
         assert_eq!(prev_word_boundary_chars(s, 10), 6); // start of "beta"
+    }
+
+    #[test]
+    fn extend_span_drag_contains_anchor_and_grows_by_whole_units() {
+        // A double-click snapped the anchor to the word "beta" at bytes 6..10.
+        let (lo, hi) = (6usize, 10usize);
+        // Dragging right into "gamma" (11..16): anchor pins to the word's left
+        // edge, cursor walks to the right edge of the word under the pointer.
+        assert_eq!(extend_span_drag(lo, hi, 13, 11, 16), (6, 16));
+        // Dragging back left of the original word, into "alpha" (0..5): anchor
+        // flips to the original word's right edge, cursor to the left word's start.
+        assert_eq!(extend_span_drag(lo, hi, 2, 0, 5), (10, 0));
+        // Still inside the original word: the whole word stays selected.
+        assert_eq!(extend_span_drag(lo, hi, 8, 6, 10), (6, 10));
     }
 
     #[test]
