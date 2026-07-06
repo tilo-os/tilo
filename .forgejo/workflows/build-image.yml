@@ -99,6 +99,15 @@ jobs:
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
+          # Registry-backed layer cache — each run gets a fresh
+          # forgejo-runner container, so buildkit's local storage is
+          # always empty. Without this, every failed rebuild redoes
+          # all 65 stage-3 sub-steps + the rust compile from scratch
+          # (~8 min). With it, only the layers past the fix rerun
+          # (~1-2 min).  mode=max exports intermediate layer caches
+          # too, not just the final image.
+          cache-from: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest
+          cache-to: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest,mode=max
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
