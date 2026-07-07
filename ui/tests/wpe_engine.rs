@@ -44,15 +44,20 @@ fn wpe_engine_renders_a_page_offscreen() {
             }
         }
         if finished {
+            // The first exported buffers can predate the paint (blank /
+            // fully transparent); wait for one with actual content.
             if let Some(f) = engine.frames().lock().unwrap().clone() {
-                frame = Some(f);
-                break;
+                let painted = f.rgba.chunks_exact(4).any(|px| px[3] != 0);
+                if painted {
+                    frame = Some(f);
+                    break;
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let frame = frame.expect("engine produced a frame after LoadFinished");
+    let frame = frame.expect("engine produced a painted frame after LoadFinished");
     assert!(frame.width > 0 && frame.height > 0, "frame has dimensions");
     assert_eq!(
         frame.rgba.len(),
