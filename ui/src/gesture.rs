@@ -5,8 +5,194 @@
 //! caret/selection model. Lives in `ui` so every app gets consistent selection
 //! behaviour instead of re-deriving the timing/anchor rules.
 
+use std::collections::HashMap;
 use std::time::Instant;
 use vello::kurbo::Point;
+
+// ─────────────────────── navigation gestures (back / forward) ──────────────
+//
+// App-agnostic recognisers for the two ways a user asks to go back or
+// forward, recognised once in the host `App` and delivered to the whole
+// widget tree via `Widget::on_nav_gesture` — so every app gets history
+// navigation without re-implementing the input plumbing:
+//
+//   * **two-finger horizontal swipe** on a touchpad (precise / pixel
+//     scroll), and
+//   * **edge-pull swipe** from the left or right screen edge on a
+//     touchscreen (the phone/tablet back gesture).
+
+/// The direction a recognised navigation gesture asks for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NavDirection {
+    Back,
+    Forward,
+}
+
+/// Phase of a continuous gesture, mapped from the windowing layer's
+/// touch/scroll phases so this module stays winit-free and unit-testable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GesturePhase {
+    Begin,
+    Update,
+    End,
+}
+
+/// Accumulated horizontal travel (physical px) that commits a two-finger
+/// swipe to a navigation.
+const TWO_FINGER_SWIPE_PX: f64 = 90.0;
+/// A swipe must be this many times more horizontal than vertical to count
+/// — so ordinary diagonal/vertical scrolling never navigates.
+const SWIPE_HORIZONTAL_RATIO: f64 = 1.6;
+/// A pause longer than this between scroll samples starts a fresh swipe,
+/// so a missing `Begin`/`End` phase (some Wayland setups omit them) can't
+/// let stale travel accumulate across unrelated gestures.
+const SWIPE_IDLE_RESET_MS: u128 = 200;
+/// A touch must start within this many px of a screen edge to arm an
+/// edge-pull.
+const EDGE_ZONE_PX: f64 = 24.0;
+/// Inward travel (physical px) from the edge that commits an edge-pull.
+const EDGE_PULL_PX: f64 = 56.0;
+
+/// Default sign mapping: a positive horizontal scroll delta (as winit
+/// reports it) is treated as a *back* swipe — matching the touchpad
+/// convention on Firefox/Safari (swipe the content rightward to reveal
+/// the previous page). Flip this one constant if it feels inverted for a
+/// given natural-scroll setting.
+const POSITIVE_DX_IS_BACK: bool = true;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    Left,
+    Right,
+}
+
+/// One armed edge-pull touch, keyed by finger id.
+struct EdgeTouch {
+    start_x: f64,
+    edge: Edge,
+    fired: bool,
+}
+
+/// Recognises back/forward navigation gestures from touchpad swipes and
+/// touchscreen edge pulls. One instance lives on the `App`; feed it every
+/// scroll and touch event and act on the `Some(NavDirection)` it returns.
+#[derive(Default)]
+pub struct NavGestureRecognizer {
+    swipe_x: f64,
+    swipe_y: f64,
+    swipe_latched: bool,
+    last_scroll: Option<Instant>,
+    touches: HashMap<u64, EdgeTouch>,
+}
+
+impl NavGestureRecognizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed a scroll sample. `precise` is `true` for pixel-precise
+    /// touchpad scroll and `false` for a notched mouse wheel — only the
+    /// former can be a two-finger swipe, so a horizontal wheel tilt never
+    /// navigates. Returns a direction exactly once per gesture, when the
+    /// accumulated horizontal travel crosses the threshold while staying
+    /// dominantly horizontal.
+    pub fn on_scroll(
+        &mut self,
+        dx: f64,
+        dy: f64,
+        phase: GesturePhase,
+        precise: bool,
+    ) -> Option<NavDirection> {
+        if !precise {
+            return None;
+        }
+        let now = Instant::now();
+        let idle = self
+            .last_scroll
+            .map(|t| now.duration_since(t).as_millis() > SWIPE_IDLE_RESET_MS)
+            .unwrap_or(true);
+        self.last_scroll = Some(now);
+        if phase == GesturePhase::Begin || idle {
+            self.reset_swipe();
+        }
+        if phase == GesturePhase::End {
+            self.reset_swipe();
+            return None;
+        }
+        self.swipe_x += dx;
+        self.swipe_y += dy;
+        if self.swipe_latched {
+            return None;
+        }
+        if self.swipe_x.abs() >= TWO_FINGER_SWIPE_PX
+            && self.swipe_x.abs() >= SWIPE_HORIZONTAL_RATIO * self.swipe_y.abs()
+        {
+            self.swipe_latched = true;
+            let rightward = self.swipe_x > 0.0;
+            return Some(if rightward == POSITIVE_DX_IS_BACK {
+                NavDirection::Back
+            } else {
+                NavDirection::Forward
+            });
+        }
+        None
+    }
+
+    /// Feed a touch sample (physical coordinates + the window's physical
+    /// width, for edge detection). A finger that starts within the edge
+    /// zone and is dragged inward past the threshold navigates once: left
+    /// edge → Back, right edge → Forward (the phone/tablet convention).
+    pub fn on_touch(
+        &mut self,
+        id: u64,
+        x: f64,
+        _y: f64,
+        phase: GesturePhase,
+        window_width: f64,
+    ) -> Option<NavDirection> {
+        match phase {
+            GesturePhase::Begin => {
+                let edge = if x <= EDGE_ZONE_PX {
+                    Some(Edge::Left)
+                } else if x >= window_width - EDGE_ZONE_PX {
+                    Some(Edge::Right)
+                } else {
+                    None
+                };
+                if let Some(edge) = edge {
+                    self.touches.insert(id, EdgeTouch { start_x: x, edge, fired: false });
+                }
+                None
+            }
+            GesturePhase::Update => {
+                let t = self.touches.get_mut(&id)?;
+                if t.fired {
+                    return None;
+                }
+                let dx = x - t.start_x;
+                let dir = match t.edge {
+                    Edge::Left if dx >= EDGE_PULL_PX => Some(NavDirection::Back),
+                    Edge::Right if dx <= -EDGE_PULL_PX => Some(NavDirection::Forward),
+                    _ => None,
+                };
+                if dir.is_some() {
+                    t.fired = true;
+                }
+                dir
+            }
+            GesturePhase::End => {
+                self.touches.remove(&id);
+                None
+            }
+        }
+    }
+
+    fn reset_swipe(&mut self) {
+        self.swipe_x = 0.0;
+        self.swipe_y = 0.0;
+        self.swipe_latched = false;
+    }
+}
 
 /// Selection granularity, from the click count.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -117,5 +303,88 @@ mod tests {
         assert!(g.release());
         assert!(g.drag().is_none());
         assert!(!g.release(), "second release reports no drag");
+    }
+
+    // ── navigation gestures ────────────────────────────────────────────
+
+    /// Drive a two-finger swipe as a sequence of precise scroll samples
+    /// within one gesture (single `Begin`), returning the first direction
+    /// the recogniser commits to.
+    fn swipe(recognizer: &mut NavGestureRecognizer, total_dx: f64, total_dy: f64) -> Option<NavDirection> {
+        let steps = 6;
+        let (mut fired, mut phase) = (None, GesturePhase::Begin);
+        for i in 0..steps {
+            let d = recognizer.on_scroll(total_dx / steps as f64, total_dy / steps as f64, phase, true);
+            fired = fired.or(d);
+            phase = GesturePhase::Update;
+            let _ = i;
+        }
+        fired
+    }
+
+    #[test]
+    fn two_finger_swipe_navigates_by_direction() {
+        let mut g = NavGestureRecognizer::new();
+        // Positive-dx swipe → Back by default; negative → Forward.
+        assert_eq!(swipe(&mut g, 200.0, 5.0), Some(NavDirection::Back));
+        let mut g2 = NavGestureRecognizer::new();
+        assert_eq!(swipe(&mut g2, -200.0, 5.0), Some(NavDirection::Forward));
+    }
+
+    #[test]
+    fn mostly_vertical_scroll_never_navigates() {
+        let mut g = NavGestureRecognizer::new();
+        // Large horizontal but even larger vertical → not a swipe.
+        assert_eq!(swipe(&mut g, 200.0, 400.0), None);
+    }
+
+    #[test]
+    fn small_swipe_below_threshold_does_not_fire() {
+        let mut g = NavGestureRecognizer::new();
+        assert_eq!(swipe(&mut g, 40.0, 2.0), None);
+    }
+
+    #[test]
+    fn swipe_fires_once_per_gesture() {
+        let mut g = NavGestureRecognizer::new();
+        assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Begin, true), Some(NavDirection::Back));
+        // Continued travel in the same gesture must not re-fire.
+        assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
+    }
+
+    #[test]
+    fn notched_wheel_is_ignored() {
+        let mut g = NavGestureRecognizer::new();
+        assert_eq!(g.on_scroll(500.0, 0.0, GesturePhase::Update, false), None);
+    }
+
+    #[test]
+    fn left_edge_pull_goes_back_right_edge_goes_forward() {
+        let w = 1000.0;
+        let mut g = NavGestureRecognizer::new();
+        // Left edge → drag inward (rightward) past threshold → Back.
+        assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
+        assert_eq!(g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Back));
+        assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
+
+        // Right edge → drag inward (leftward) past threshold → Forward.
+        assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
+        assert_eq!(g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Forward));
+    }
+
+    #[test]
+    fn touch_starting_mid_screen_never_navigates() {
+        let mut g = NavGestureRecognizer::new();
+        g.on_touch(1, 500.0, 300.0, GesturePhase::Begin, 1000.0);
+        assert_eq!(g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0), None);
+    }
+
+    #[test]
+    fn edge_pull_fires_once() {
+        let w = 1000.0;
+        let mut g = NavGestureRecognizer::new();
+        g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
+        assert_eq!(g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w), Some(NavDirection::Back));
+        assert_eq!(g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w), None, "must not re-fire");
     }
 }
