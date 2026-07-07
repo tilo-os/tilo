@@ -31,6 +31,9 @@ const MIN_COL_W: f64 = 40.0;
 const MIN_ROW_H: f64 = 18.0;
 const RESIZE_GRAB: f64 = 4.0;
 const CELL_PAD_X: f64 = 6.0;
+/// Upper bound for an auto-fitted column so one very long value can't blow the
+/// column out to an unreadable width (it clips past this, like Excel).
+const MAX_AUTOFIT_W: f64 = DEFAULT_COL_W * 3.0;
 
 /// A mutation the grid wants applied to the document by the app.
 #[derive(Clone, Debug)]
@@ -126,6 +129,10 @@ pub struct Grid {
     scroll_x: f64,
     scroll_y: f64,
     col_widths: HashMap<u32, f64>,
+    /// Widths derived by fitting a column to its content (see
+    /// `autofit_columns`). A manual `col_widths` entry always overrides this;
+    /// columns with neither fall back to `DEFAULT_COL_W`.
+    auto_col_w: HashMap<u32, f64>,
     row_heights: HashMap<u32, f64>,
     n_cols: u32,
     n_rows: u32,
@@ -163,6 +170,9 @@ pub struct Grid {
     /// "Formula view": when on, cells that hold a raw input show that raw text
     /// (formulas verbatim) instead of their computed / formatted value.
     show_formulas: bool,
+    /// Set when cell data changes so the next `draw` recomputes auto-fit
+    /// widths (needs a `TextRenderer`, only available at draw time).
+    needs_autofit: bool,
     dirty: bool,
 }
 
@@ -173,6 +183,7 @@ impl Grid {
             scroll_x: 0.0,
             scroll_y: 0.0,
             col_widths: HashMap::new(),
+            auto_col_w: HashMap::new(),
             row_heights: HashMap::new(),
             n_cols: 48,
             n_rows: 200,
@@ -192,6 +203,7 @@ impl Grid {
             point_drag_start: (0, 0),
             point_selecting: false,
             show_formulas: false,
+            needs_autofit: true,
             dirty: true,
         };
         g.rebuild_geom();
@@ -245,6 +257,8 @@ impl Grid {
         if grew {
             self.rebuild_geom();
         }
+        // Content changed → refit columns to it on the next draw.
+        self.needs_autofit = true;
         self.dirty = true;
     }
 
@@ -506,7 +520,12 @@ impl Grid {
     // --- geometry helpers ---------------------------------------------------
 
     fn col_w(&self, c: u32) -> f64 {
-        self.col_widths.get(&c).copied().unwrap_or(DEFAULT_COL_W)
+        // A manual resize wins; otherwise use the auto-fitted width; otherwise
+        // the default.
+        if let Some(w) = self.col_widths.get(&c) {
+            return *w;
+        }
+        self.auto_col_w.get(&c).copied().unwrap_or(DEFAULT_COL_W)
     }
     fn row_h(&self, r: u32) -> f64 {
         self.row_heights.get(&r).copied().unwrap_or(DEFAULT_ROW_H)
@@ -1326,6 +1345,51 @@ impl Grid {
 
     // --- rendering ----------------------------------------------------------
 
+    /// Fit each column to the width of its widest rendered cell so long labels
+    /// (e.g. a row title in column A) aren't clipped when the neighbouring cell
+    /// is occupied — matching the spreadsheet convention of auto-sizing a
+    /// column to its content. A column the user has manually resized keeps its
+    /// width; the rest grow to fit, clamped to `[DEFAULT_COL_W, MAX_AUTOFIT_W]`
+    /// so they never shrink below the default nor run away for an extreme
+    /// value. Measured with the same font size the cells are drawn at.
+    fn autofit_columns(&mut self, tr: &mut TextRenderer, size: f32) {
+        self.auto_col_w.clear();
+        let mut widest: HashMap<u32, f64> = HashMap::new();
+        for (&(c, r), val) in &self.values {
+            // Skip empties and columns the user pinned to a manual width.
+            if val.is_empty() || self.col_widths.contains_key(&c) {
+                continue;
+            }
+            // Fit to what's actually on screen: the raw formula in formula
+            // view, otherwise the formatted value.
+            let text = if self.show_formulas {
+                match self.raw.get(&(c, r)) {
+                    Some(s) if !s.is_empty() => s.clone(),
+                    _ => continue,
+                }
+            } else {
+                let fmt = self.fmt.get(&(c, r)).copied().unwrap_or_default();
+                format_value(val, fmt)
+            };
+            if text.is_empty() {
+                continue;
+            }
+            let (tw, _) = tr.measure(&text, size, None);
+            let want = tw as f64 + CELL_PAD_X * 2.0;
+            let entry = widest.entry(c).or_insert(0.0);
+            if want > *entry {
+                *entry = want;
+            }
+        }
+        for (c, want) in widest {
+            let fitted = want.clamp(DEFAULT_COL_W, MAX_AUTOFIT_W);
+            // Only record a widening; narrower columns fall back to the default.
+            if fitted > DEFAULT_COL_W {
+                self.auto_col_w.insert(c, fitted);
+            }
+        }
+    }
+
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1334,6 +1398,14 @@ impl Grid {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
+        // Refit columns to their content before laying anything out, so long
+        // labels aren't truncated by an occupied neighbour.
+        if self.needs_autofit {
+            let base = theme.tokens.typography.scale.base;
+            self.autofit_columns(tr, base);
+            self.rebuild_geom();
+            self.needs_autofit = false;
+        }
         let body = self.body_rect();
         let cols = self.visible_cols();
         let rows = self.visible_rows();
@@ -1868,6 +1940,44 @@ mod tests {
         // A raw entry (mid-edit, pre-eval) counts as occupied too.
         g.raw.insert((4, 0), "x".into());
         assert!(g.cell_is_occupied((4, 0)));
+    }
+
+    #[test]
+    fn autofit_grows_column_to_fit_label_past_occupied_neighbour() {
+        // A0 holds a label wider than a default column; B0 is occupied so the
+        // label can't overflow into it. Auto-fit must widen column A to fit the
+        // whole label, while the short occupied neighbour keeps the default.
+        let label = "Monthly budget total";
+        let mut g = grid_with(&[
+            ((0, 0), CellValue::Text(label.into())),
+            ((1, 0), CellValue::Number(2600.0)),
+        ]);
+        let mut tr = TextRenderer::new();
+        let size = 15.0;
+        let label_w = tr.measure(label, size, None).0 as f64;
+        let want = label_w + CELL_PAD_X * 2.0;
+        // Precondition: this label really does overflow a default-width column.
+        assert!(want > DEFAULT_COL_W, "test label must exceed the default width");
+
+        g.autofit_columns(&mut tr, size);
+
+        assert!(
+            g.col_w(0) + 0.5 >= want,
+            "col A width {} must fit the label (needs {want})",
+            g.col_w(0),
+        );
+        assert!(g.col_w(0) <= MAX_AUTOFIT_W + 0.5, "auto-fit stays clamped");
+        assert_eq!(g.col_w(1), DEFAULT_COL_W, "short occupied neighbour is left alone");
+    }
+
+    #[test]
+    fn autofit_leaves_manually_resized_columns_untouched() {
+        // A manual resize must win over auto-fit.
+        let mut g = grid_with(&[((0, 0), CellValue::Text("Monthly budget total".into()))]);
+        g.col_widths.insert(0, 200.0);
+        let mut tr = TextRenderer::new();
+        g.autofit_columns(&mut tr, 15.0);
+        assert_eq!(g.col_w(0), 200.0, "manual width overrides auto-fit");
     }
 
     #[test]
