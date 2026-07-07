@@ -134,8 +134,15 @@ impl BrowserWidget {
             .push(Box::new(reload))
             .push(Box::new(url_input));
 
-        let mut column =
-            Column::new().push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        // The web view must reach the window edges — no border, no gap.
+        // Only the toolbar keeps an inset (its wrapping Container's
+        // default padding); the outer column drops all padding and the
+        // inter-child gap so the page sits flush under the toolbar and
+        // fills the rest of the window.
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(Container::new().with_child(Box::new(toolbar))));
         if self.progress < 1.0 {
             column = column.push(Box::new(ProgressBar::new(self.progress as f32)));
         }

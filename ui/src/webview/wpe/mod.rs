@@ -25,6 +25,7 @@ mod ffi;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_uint, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +48,11 @@ struct Shared {
     /// Host wake callback — pokes the winit loop so an idle app paints
     /// engine activity promptly.
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// The engine thread's `GMainContext`, stored as a pointer once the
+    /// thread has created it (0 until then). `send()` wakes it so a just-
+    /// enqueued command is drained immediately rather than on the next
+    /// timer tick. `g_main_context_wakeup` is explicitly thread-safe.
+    ctx: AtomicUsize,
 }
 
 impl Shared {
@@ -80,6 +86,7 @@ impl WpeEngine {
             frames: Arc::new(Mutex::new(None)),
             events: Mutex::new(Vec::new()),
             waker: Mutex::new(None),
+            ctx: AtomicUsize::new(0),
         });
 
         let (init_tx, init_rx) = sync_channel::<Result<(), String>>(1);
@@ -99,9 +106,17 @@ impl WpeEngine {
 
 impl WebViewEngine for WpeEngine {
     fn send(&self, cmd: WebViewCommand) {
-        // The engine thread drains on a fixed cadence; a dropped send
-        // only happens if the thread died, which `new()` guards.
+        // A dropped send only happens if the thread died, which `new()`
+        // guards.
         let _ = self.tx.send(cmd);
+        // Wake the engine loop so the command is drained now instead of
+        // waiting up to the timer interval — this is the difference
+        // between input latency tracking the drain cadence and tracking
+        // the engine's actual work.
+        let ctx = self.shared.ctx.load(Ordering::Acquire);
+        if ctx != 0 {
+            unsafe { ffi::g_main_context_wakeup(ctx as *mut ffi::GMainContext) };
+        }
     }
 
     fn frames(&self) -> FrameSlot {
@@ -145,6 +160,8 @@ fn engine_thread(
         // process then dies with "Failed to bind wpe_bridge".
         let ctx = ffi::g_main_context_new();
         ffi::g_main_context_push_thread_default(ctx);
+        // Publish the context so `send()` on other threads can wake it.
+        shared.ctx.store(ctx as usize, Ordering::Release);
 
         let fdo_lib = CString::new("libWPEBackend-fdo-1.0.so.1").unwrap();
         if !ffi::wpe_loader_init(fdo_lib.as_ptr()) {
@@ -293,6 +310,7 @@ extern "C" fn on_export_shm_buffer(
                 && height > 0
                 && matches!(format, WL_SHM_FORMAT_ARGB8888 | WL_SHM_FORMAT_XRGB8888)
             {
+                let swizzle_start = std::time::Instant::now();
                 let opaque = format == WL_SHM_FORMAT_XRGB8888;
                 let mut rgba = vec![0u8; width as usize * height as usize * 4];
                 for row in 0..height as usize {
@@ -310,6 +328,7 @@ extern "C" fn on_export_shm_buffer(
                         dst_row[px * 4 + 3] = if opaque { 0xFF } else { src_row[px * 4 + 3] };
                     }
                 }
+                crate::webview::profile::record_frame(width, height, swizzle_start.elapsed());
                 *state.shared.frames.lock().unwrap() = Some(Frame {
                     rgba: Arc::new(rgba),
                     width,
