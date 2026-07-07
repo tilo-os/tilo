@@ -841,7 +841,32 @@ impl MusicApp {
         if self.audio.has_stream() {
             // Service the pipeline bus so a failed fetch/decode is detected (and
             // the message backlog drained) before we trust the transport state.
-            self.audio.pump();
+            let errored = self.audio.pump();
+            if errored {
+                // The pipeline died (a dead proxy, an undecodable/forbidden
+                // stream). Stop pretending to play and surface the real reason,
+                // instead of freezing the transport at 0:00 while the UI still
+                // shows "playing". Tearing the stream down keeps `has_stream`
+                // false so we don't re-toast every frame.
+                let msg = self
+                    .audio
+                    .take_error()
+                    .unwrap_or_else(|| "this track could not be played".to_string());
+                self.toast = Some((format!("Can\u{2019}t play: {msg}"), Instant::now()));
+                self.pb.playing = false;
+                self.audio.stop();
+                return;
+            }
+            if self.audio.reached_eos() {
+                // The staged stream ended. For a fully-streamed track this is a
+                // normal end-of-song; for a SABR-truncated free URL it fires
+                // ~1 minute in. Tear the ended pipeline down and move to the next
+                // track (resolving + streaming it) so playback keeps going rather
+                // than freezing at the truncation point.
+                self.audio.stop();
+                self.auto_advance();
+                return;
+            }
             if let Some(pos) = self.audio.position_ms() {
                 self.playhead_ms = pos as f64;
             } else if self.audio.is_playing_real() {
@@ -852,11 +877,27 @@ impl MusicApp {
         }
         let dur = self.current_duration_ms();
         if dur > 0 && self.playhead_ms >= dur as f64 {
-            self.advance(true);
+            self.auto_advance();
         }
     }
 
     // ---- transport --------------------------------------------------------
+
+    /// Auto-advance to the next track *and* start streaming it. Used by the
+    /// transport tick when the current stream ends — either at its real duration
+    /// or early, because a free (no-PoToken) YouTube URL is SABR-gated to its
+    /// first ~1-minute segment. Advancing without also resolving the next track
+    /// would silently change the "now playing" track but leave it soundless, so
+    /// this pairs the two. Carries no document handle (tick has none); the new
+    /// position persists on the next real event.
+    fn auto_advance(&mut self) {
+        self.advance(true);
+        if self.pb.playing {
+            if let Some(id) = self.pb.current.clone() {
+                self.start_stream(id);
+            }
+        }
+    }
 
     fn play_index(&mut self, index: usize) {
         if let Some(id) = self.pb.queue.get(index).cloned() {
@@ -1533,7 +1574,12 @@ impl MusicApp {
                 StreamUpdate::ResolveFailed { track_id, error } => {
                     self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
                     if self.pb.current.as_deref() == Some(track_id.as_str()) {
+                        // Resolution failed outright (offline, geo-blocked, no
+                        // playable stream). Don't leave the transport stuck on a
+                        // frozen "playing" state — stop and tell the user why.
                         self.toast = Some((format!("Can\u{2019}t stream: {error}"), Instant::now()));
+                        self.pb.playing = false;
+                        self.audio.stop();
                     }
                 }
                 StreamUpdate::Note(_) => {}
@@ -2910,6 +2956,50 @@ mod tests {
                 "the rendered stream reached a real audio sink, not a fakesink"
             );
             assert!(app.playhead_ms > 0.0, "the playhead advanced with real playback");
+            eprintln!(
+                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms url={}",
+                app.audio.actual_audio_sink_name(),
+                app.playhead_ms,
+                url
+            );
+
+            // …and it keeps *advancing*: sample the transport clock over the next
+            // few seconds and require it to have moved meaningfully forward. This
+            // is the "position advances over time" proof — a running playhead
+            // driven by the real pipeline PTS, not a single one-shot nudge or a
+            // frozen 0:00. The pipeline position and the frame counter must both
+            // grow. Each sample is printed so the advance is visible in the log.
+            let p0 = app.playhead_ms;
+            let f0 = app.audio.frames_rendered();
+            let mut advanced = false;
+            let mut last_print = std::time::Instant::now();
+            for _ in 0..400 {
+                app.tick();
+                if last_print.elapsed() >= Duration::from_millis(500) {
+                    eprintln!(
+                        "[live audio] tick: playhead={:.0}ms frames={}",
+                        app.playhead_ms,
+                        app.audio.frames_rendered()
+                    );
+                    last_print = std::time::Instant::now();
+                }
+                if app.playhead_ms > p0 + 250.0 && app.audio.frames_rendered() > f0 {
+                    advanced = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            eprintln!(
+                "[live audio] ADVANCED: {:.0}ms -> {:.0}ms (frames {} -> {})",
+                p0,
+                app.playhead_ms,
+                f0,
+                app.audio.frames_rendered()
+            );
+            assert!(
+                advanced,
+                "the real playhead kept advancing (from {p0:.0}ms) while frames kept flowing"
+            );
         } else {
             eprintln!("[live audio test] no audio server / decode plugins — skipped the render-proof");
         }
@@ -2938,6 +3028,141 @@ mod tests {
         let have_aac = gstreamer::ElementFactory::find("avdec_aac").is_some()
             || gstreamer::ElementFactory::find("faad").is_some();
         have_base && have_aac
+    }
+
+    /// Whether the `yt-dlp` full-stream resolver is available (mirrors
+    /// [`crate::backend::ytdlp`]'s binary selection). The full-track proof skips
+    /// honestly when it isn't — without yt-dlp the resolver can only fall back to
+    /// the SABR-truncated direct URL, which genuinely cannot play past ~1 minute.
+    #[cfg(all(feature = "live", feature = "audio"))]
+    fn ytdlp_present() -> bool {
+        let bin = std::env::var("QOS_MUSIC_YTDLP")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "yt-dlp".to_string());
+        std::process::Command::new(bin)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// **Full-track proof** (`--features live,audio`; needs `yt-dlp` on the host):
+    /// a real YouTube track must play *past the ~1-minute SABR-truncation point*.
+    /// rustypipe's iOS/TV direct URL only serves its first ~1 minute; the app
+    /// resolves a fully-rangeable URL via yt-dlp (the `android_vr` client) so the
+    /// whole song streams. We stage the full file, seek to ~88 s, and require the
+    /// transport to advance **past 90 s** while decoded PCM keeps reaching the
+    /// sink — which a stream truncated at ~1 minute cannot do. Skips honestly
+    /// when yt-dlp / an audio server / decode plugins are absent (never a
+    /// fakesink, never a weakened assertion).
+    #[cfg(all(feature = "live", feature = "audio"))]
+    #[test]
+    fn full_track_plays_past_one_minute() {
+        use std::time::Duration;
+        if !ytdlp_present() {
+            eprintln!("[full-track] skipped — yt-dlp not installed (no full-stream resolver)");
+            return;
+        }
+        if !audio_server_present() || !decode_plugins_present() {
+            eprintln!("[full-track] skipped — no audio server / decode plugins");
+            return;
+        }
+
+        let (mut app, mut doc) = app_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.search_input.set_text("rick astley never gonna give you up");
+        app.request_live_search();
+        let mut ids = Vec::new();
+        for _ in 0..1000 {
+            app.drain_worker();
+            if let Some((_, r)) = &app.live_results {
+                if !r.is_empty() {
+                    ids = r.clone();
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!ids.is_empty(), "live search returned real tracks");
+        let first = ids[0].clone();
+        app.inject_live_hits();
+        app.dispatch(Action::Play { queue: vec![first], index: 0 }, &mut doc);
+
+        // Wait until the resolved stream renders AND the *whole* file has staged
+        // (a fully-rangeable yt-dlp URL fetches the entire song in a few seconds).
+        let mut frames = 0u64;
+        for _ in 0..6000 {
+            app.drain_worker();
+            app.tick();
+            frames = app.audio.frames_rendered();
+            if frames > 0 && app.audio.staging_complete() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(frames > 0, "the resolved stream rendered PCM to the sink");
+        assert!(
+            app.audio.staging_complete(),
+            "the whole track staged (fully-rangeable source, not a truncated segment)"
+        );
+
+        // The staged full track must report a multi-minute duration — a positive
+        // discriminator that this is NOT the ~1-minute truncated segment.
+        let dur = app.audio.duration_ms().unwrap_or(0);
+        eprintln!("[full-track] staged whole file: duration={dur}ms frames={frames}");
+        assert!(
+            dur > 120_000,
+            "staged source is a full track ({dur}ms > 2min), not a 1-minute stub"
+        );
+
+        // Seek to ~88 s. Then let the flushing seek land: drive ticks until the
+        // *real* pipeline position reflects the seek (~88 s). Reaching 88 s is
+        // itself decisive — a stream truncated at ~1 minute has no bytes there and
+        // could never position at 88 s.
+        app.audio.seek_ms(88_000);
+        let mut landed_ms = 0u64;
+        for _ in 0..1500 {
+            app.tick();
+            landed_ms = app.audio.position_ms().unwrap_or(0);
+            if landed_ms >= 86_000 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        eprintln!("[full-track] seek to 88s landed at position={landed_ms}ms");
+        assert!(
+            landed_ms >= 86_000,
+            "seek to 88s landed in the late part of the full track (position {landed_ms}ms) — \
+             a 1-minute-truncated stream could never reach here"
+        );
+
+        // …and playback *continues* past 90 s with decoded PCM still flowing.
+        let f0 = app.audio.frames_rendered();
+        let mut past = false;
+        for _ in 0..3000 {
+            app.tick();
+            if app.playhead_ms > 90_000.0 && app.audio.frames_rendered() > f0 {
+                past = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        eprintln!(
+            "[full-track] advanced past cutoff: playhead={:.0}ms frames {}->{}",
+            app.playhead_ms,
+            f0,
+            app.audio.frames_rendered()
+        );
+        assert!(
+            past,
+            "playback advanced past 90s (playhead {:.0}ms) while decoding — the full track \
+             streams past the 1-minute cutoff",
+            app.playhead_ms
+        );
     }
 
     // ---- 9. lyrics --------------------------------------------------------
