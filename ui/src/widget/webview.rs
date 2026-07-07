@@ -27,9 +27,8 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::webview::{
-    KeyInput, MouseButton, NamedKey, SharedEngine, WebViewCommand, WebViewEngine,
-};
+use crate::gesture::NavDirection;
+use crate::webview::{KeyInput, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 use crate::widget::Widget;
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
@@ -375,6 +374,22 @@ impl Widget for WebView {
         }
     }
 
+    /// Two-finger swipe / edge-pull → browser-style history navigation.
+    /// Overriding this here makes every embedder of the WebView component
+    /// swipe-navigable, not just the browser app.
+    fn on_nav_gesture(
+        &mut self,
+        dir: NavDirection,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.engine.send(match dir {
+            NavDirection::Back => WebViewCommand::GoBack,
+            NavDirection::Forward => WebViewCommand::GoForward,
+        });
+        true
+    }
+
     fn is_focusable(&self) -> bool {
         true
     }
@@ -394,6 +409,7 @@ impl Widget for WebView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use crate::webview::test_engine::TestEngine;
     use std::sync::Arc;
     use winit::event::{DeviceId, ElementState, WindowEvent};
@@ -615,6 +631,20 @@ mod tests {
         );
         // Modifier keys are not forwarded as page keys.
         assert_eq!(WebView::map_key(&WKey::Named(WNamedKey::Shift)), None);
+    }
+
+    #[test]
+    fn nav_gesture_sends_history_commands() {
+        use crate::gesture::NavDirection;
+        let engine = TestEngine::new();
+        let mut w = WebView::new(engine.clone());
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
+        assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+        let cmds = engine.commands();
+        assert!(cmds.contains(&WebViewCommand::GoBack));
+        assert!(cmds.contains(&WebViewCommand::GoForward));
     }
 
     #[test]
