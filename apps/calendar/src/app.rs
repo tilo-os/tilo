@@ -52,6 +52,11 @@ const TITLE_PLACEHOLDER: &str = "New event";
 /// disappears the moment the user types — never seeded as real body text).
 const NOTES_PLACEHOLDER: &str = "Add details…";
 
+/// First-run onboarding shown centered over an empty calendar (no events):
+/// a friendly headline + hint instead of a blank grid.
+const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
+const EMPTY_ONBOARDING_HINT: &str = "Click a day to add your first event";
+
 const SIDEBAR_W: f64 = 252.0;
 const TOPBAR_H: f64 = 60.0;
 const DETAIL_PAD: f64 = 22.0;
@@ -673,18 +678,18 @@ impl CalendarApp {
                 "Design review",
                 &[
                     "# Agenda",
-                    "Review the latest mockups.",
+                    "Walk through the latest mockups.",
                     "Open questions:",
-                    "Empty states for new users?",
-                    "Tighten dense-list spacing.",
+                    "Sign-off on the final layout?",
+                    "Confirm the launch timeline.",
                 ],
             ),
             (
                 "Team standup",
                 &[
                     "# Standup",
-                    "Wrapped up the import flow.",
-                    "Reviewing open PRs today.",
+                    "Wrapped up last week's report.",
+                    "Following up with the vendor today.",
                     "Blockers: none.",
                 ],
             ),
@@ -3367,6 +3372,56 @@ impl CalendarApp {
             tr.draw_text(scene, msg, 12.0, c.neutral[9], t * Affine::translate((pill.x0 + 12.0, pill.center().y - 7.0)), None);
         }
     }
+
+    /// The first-run onboarding prompt to show over an empty view, or `None`
+    /// once the calendar holds events. Returned as `(headline, hint)` so the
+    /// draw path and tests gate on the same real state.
+    pub fn empty_onboarding_prompt(&self) -> Option<(&'static str, &'static str)> {
+        if self.model.events.is_empty() {
+            Some((EMPTY_ONBOARDING_TITLE, EMPTY_ONBOARDING_HINT))
+        } else {
+            None
+        }
+    }
+
+    /// Paint the first-run onboarding: a centered headline + hint over an
+    /// otherwise-blank view. Colours come from the theme so it matches the OS.
+    fn draw_empty_onboarding(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        title: &str,
+        hint: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let title_size = 20.0_f32;
+        let hint_size = 14.0_f32;
+        let gap = 10.0_f64;
+        let title_w = tr.measure(title, title_size, None).0 as f64;
+        let hint_w = tr.measure(hint, hint_size, None).0 as f64;
+        let block_h = title_size as f64 + gap + hint_size as f64;
+        let cx = area.center().x;
+        let top = area.center().y - block_h / 2.0;
+        tr.draw_text(
+            scene,
+            title,
+            title_size,
+            c.neutral[8],
+            t * Affine::translate((cx - title_w / 2.0, top)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            hint,
+            hint_size,
+            c.text_dim,
+            t * Affine::translate((cx - hint_w / 2.0, top + title_size as f64 + gap)),
+            None,
+        );
+    }
 }
 
 impl Default for CalendarApp {
@@ -3522,6 +3577,14 @@ impl Widget for CalendarApp {
                     hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
                 }
                 View::Agenda => hits.extend(self.draw_agenda(scene, t, text_renderer, theme, area)),
+            }
+            // First-run onboarding: over an otherwise-blank Month/Week/Day view
+            // with no events, show a friendly prompt instead of an empty grid.
+            // Agenda carries its own inline empty-state.
+            if !matches!(self.view, View::Agenda) {
+                if let Some((title, hint)) = self.empty_onboarding_prompt() {
+                    self.draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
+                }
             }
             self.draw_status(scene, t, text_renderer, theme, self.content_rect.x0);
         }
@@ -4258,6 +4321,32 @@ mod tests {
         assert!(app.accounts.is_empty(), "no fabricated accounts");
         assert!(app.selection.is_none());
         assert!(!app.detail_open);
+    }
+
+    #[test]
+    fn empty_first_run_offers_onboarding_prompt() {
+        // A fresh machine with no events surfaces the friendly first-run prompt;
+        // the moment there is content it stands down.
+        let missing = std::env::temp_dir()
+            .join(format!("cal-onboard-{}", uuid::Uuid::new_v4()))
+            .join("calendar.automerge");
+        let mut app = CalendarApp::new_with_data_path(missing);
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        assert!(app.model.events.is_empty(), "precondition: no events");
+        let (title, hint) = app
+            .empty_onboarding_prompt()
+            .expect("empty calendar shows the onboarding prompt");
+        assert_eq!(title, EMPTY_ONBOARDING_TITLE);
+        assert!(!hint.trim().is_empty(), "hint guides the user to add an event");
+
+        // Seeded demo has events → no onboarding.
+        let demo = CalendarApp::new_demo();
+        assert!(!demo.model.events.is_empty());
+        assert!(
+            demo.empty_onboarding_prompt().is_none(),
+            "a populated calendar hides the onboarding prompt",
+        );
     }
 
     #[test]
