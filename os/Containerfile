@@ -55,7 +55,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-06-30.
 # Builder and final MUST share the SAME digest so glibc matches (the A1 reason).
 # Bump deliberately (re-resolve the tag → update both FROM lines).
-FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS builder
+FROM quay.io/fedora/fedora-bootc@sha256:418068a16be639037e8584ffc92d3919ea246e1234705b5d3bb21f91b12fd751 AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -169,7 +169,7 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d
+FROM quay.io/fedora/fedora-bootc@sha256:418068a16be639037e8584ffc92d3919ea246e1234705b5d3bb21f91b12fd751
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
