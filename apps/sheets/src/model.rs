@@ -90,6 +90,52 @@ pub fn a1_to_addr(s: &str) -> Option<Addr> {
     Some((col, row - 1))
 }
 
+/// A spreadsheet evaluation error, carried as a specific *kind* rather than
+/// a free string. Keeping the kind lets callers such as `IFNA`/`IFERROR`
+/// branch on the exact cause and guarantees the on-screen spelling is always
+/// the canonical Excel code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormulaError {
+    /// Division by zero — `#DIV/0!`.
+    Div0,
+    /// Unknown function or unrecognized name — `#NAME?`.
+    Name,
+    /// Invalid or broken cell reference — `#REF!`.
+    Ref,
+    /// Wrong type of argument or operand — `#VALUE!`.
+    Value,
+    /// A value is not available, e.g. a lookup miss — `#N/A`.
+    Na,
+    /// Invalid numeric argument or result — `#NUM!`.
+    Num,
+    /// Circular reference between cells — `#CYCLE!`.
+    Cycle,
+    /// A formula that could not be parsed — `#ERROR!`.
+    Error,
+}
+
+impl FormulaError {
+    /// The canonical Excel spelling of this error, as shown in the cell.
+    pub fn text(self) -> &'static str {
+        match self {
+            FormulaError::Div0 => "#DIV/0!",
+            FormulaError::Name => "#NAME?",
+            FormulaError::Ref => "#REF!",
+            FormulaError::Value => "#VALUE!",
+            FormulaError::Na => "#N/A",
+            FormulaError::Num => "#NUM!",
+            FormulaError::Cycle => "#CYCLE!",
+            FormulaError::Error => "#ERROR!",
+        }
+    }
+}
+
+impl std::fmt::Display for FormulaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
+}
+
 /// A fully-resolved cell value. The grid renders these; the formula
 /// engine produces them. Raw user input is stored separately as a
 /// string and only becomes a `CellValue` once parsed/evaluated.
@@ -99,8 +145,9 @@ pub enum CellValue {
     Number(f64),
     Text(String),
     Bool(bool),
-    /// A spreadsheet error like `#REF!`, `#DIV/0!`, `#CYCLE!`, `#ERR!`.
-    Error(String),
+    /// A spreadsheet error, rendered as its canonical Excel code
+    /// (`#DIV/0!`, `#NAME?`, `#REF!`, `#VALUE!`, `#N/A`, `#NUM!`, `#CYCLE!`).
+    Error(FormulaError),
 }
 
 impl CellValue {
@@ -133,7 +180,7 @@ impl CellValue {
             CellValue::Number(n) => format_number_general(*n),
             CellValue::Text(t) => t.clone(),
             CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
-            CellValue::Error(e) => e.clone(),
+            CellValue::Error(e) => e.text().to_string(),
         }
     }
 
@@ -422,7 +469,7 @@ fn time_style_from_code(s: &str) -> Option<TimeStyle> {
 pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
     match value {
         CellValue::Empty => String::new(),
-        CellValue::Error(e) => e.clone(),
+        CellValue::Error(e) => e.text().to_string(),
         CellValue::Text(t) => t.clone(),
         CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
         CellValue::Number(n) => match fmt {
