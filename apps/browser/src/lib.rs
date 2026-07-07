@@ -8,8 +8,11 @@
 //! `ui::webview::WebViewEngine`; there is no tab UI — tabbing is the
 //! compositor's WindowGroup frame primitive.
 
+pub mod address_overlay;
 pub mod blocker;
 pub mod browser_widget;
 pub mod extensions;
+pub mod history;
+pub mod settings;
 
 pub use browser_widget::BrowserWidget;
