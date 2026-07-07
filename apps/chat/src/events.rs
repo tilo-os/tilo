@@ -925,6 +925,35 @@ mod tests {
     }
 
     #[test]
+    fn live_sync_seeds_empty_starter_never_the_demo() {
+        use ui::Widget;
+        // Drive the real production `sync` for a live instance that has no
+        // persistence (no data dir → no saver). It must scaffold the honest
+        // empty starter — one local user, a `#general` with no messages — and
+        // never the fabricated demo (its people, channels, and the screenshare
+        // conversation thread).
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true; // a live view with no disk behind it
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let ws = ChatDoc::list_workspaces(&doc);
+        assert!(ws.iter().any(|w| w.id == "ws_home"), "the real starter workspace");
+        assert!(ws.iter().all(|w| w.id != "ws_acme"), "no fabricated demo workspace");
+
+        let chans = ChatDoc::list_channels(&doc);
+        assert!(chans.iter().all(|c| c.id != "c_crit"), "no fabricated demo channels");
+
+        assert!(
+            ChatDoc::list_messages(&doc, "c_general").is_empty(),
+            "a fresh live run has no fabricated conversation"
+        );
+        let users = ChatDoc::list_users(&doc);
+        assert_eq!(users.len(), 1, "only the local user — no fabricated people");
+        assert_eq!(users[0].id, model::ME);
+    }
+
+    #[test]
     fn typing_then_send_appends_a_message() {
         let (mut app, mut doc) = app_with_doc();
         let before = ChatDoc::list_messages(&doc, "c_crit").len();

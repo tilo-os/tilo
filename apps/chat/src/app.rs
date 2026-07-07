@@ -306,6 +306,12 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// True for the live binary (`ChatApp::new`). A live instance always seeds
+    /// the honest empty starter and never the fabricated demo workspace — even
+    /// when no data dir is available (so no saver could be wired). Only the
+    /// ephemeral `--shots`/test instances (`new_ephemeral`) leave this `false`
+    /// and may stage the rich demo.
+    pub(crate) is_live: bool,
 }
 
 impl Default for ChatApp {
@@ -321,6 +327,7 @@ impl ChatApp {
     /// genuinely different participants rather than two "u_me"s colliding.
     pub fn new() -> Self {
         let mut app = Self::bare();
+        app.is_live = true;
         app.me = LocalIdentity::resolve();
         // Author the local view state under the real identity from the start so
         // nothing is attributed to the demo `u_me`.
@@ -391,6 +398,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            is_live: false,
         }
     }
 
@@ -899,10 +907,12 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
 
 impl Widget for ChatApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
-        if self.saver.is_some() {
+        if self.is_live {
             // Live instance. Restore a persisted workspace if one exists so a
             // restart keeps prior messages/structure; otherwise scaffold a
             // real, empty starter workspace for this user — never the demo.
+            // Keyed off `is_live` (not the saver) so a live run with no data
+            // dir still gets the honest empty starter rather than the demo.
             if !ChatDoc::is_seeded(doc) {
                 if let Some(dir) = storage::data_dir() {
                     if let Ok(Some(bytes)) = storage::load_bytes(&dir) {
