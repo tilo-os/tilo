@@ -11,7 +11,9 @@
 //! [`Action`]; `handle_event` drains the queue, mutates the model, persists
 //! and flags a structural rebuild.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -25,13 +27,13 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{NavSplit, SplitMode, Widget};
+use ui::widget::{NavSplit, SplitMode, VideoPlayer, Widget};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
-use crate::api::{DecodedFrame, Request, Update, Worker};
+use crate::api::{Request, Update, Worker};
 use crate::model::{Route, TubeModel};
 use crate::screens;
-use crate::widgets::Flex;
+use crate::widgets::{Flex, SharedPlayer};
 
 const STATE_KEY: &str = "tube_state";
 const SEARCH_KEY: &str = "search_query";
@@ -103,16 +105,23 @@ pub struct TubeApp {
     /// exactly once, on the first `sync`, rather than every frame.
     kicked_off: bool,
 
-    /// The watch id we have already asked the worker to play, so a
-    /// [`Request::PlayVideo`] is sent exactly once per watch-open (not every
+    /// The watch id we have already asked the worker to resolve a stream for, so
+    /// a [`Request::PlayVideo`] is sent exactly once per watch-open (not every
     /// frame). Cleared implicitly by opening a *different* video.
     playing_id: Option<String>,
-    /// The most recent real decoded frame for the currently-open video. The
-    /// worker decodes off the UI thread and hands finished RGBA here via
-    /// [`Worker::poll_frames`]; the watch page paints it in place of the poster.
-    /// `None` until the first frame lands (poster shows), and dropped when a
-    /// different video opens so a stale picture never bleeds across videos.
-    current_frame: Option<DecodedFrame>,
+    /// The shared, persistent video player for the watch page — a real
+    /// [`ui::widget::VideoPlayer`] backed by a [`media::MediaEngine`] (GStreamer
+    /// decode + audio out with `--features media`, a synthesized frame otherwise).
+    /// It lives here, behind an `Rc<RefCell<_>>`, so it survives the whole-tree
+    /// rebuilds Tube does on every structural change — each rebuilt watch screen
+    /// mounts it via a cheap [`crate::widgets::PlayerHost`] rather than recreating
+    /// it (which would restart the video). The engine is opened on a resolved
+    /// stream URL when [`Update::StreamResolved`] lands.
+    player: SharedPlayer,
+    /// The video id whose stream URL is currently loaded into the player engine,
+    /// so we open a source exactly once per resolution and can mirror the engine
+    /// playhead back onto the model only while it's the open video.
+    player_video: Option<String>,
 
     /// Async image loader/cache for real thumbnails / avatars / banners, keyed
     /// by URL. `Some` when online (or seeded for a real-image `--shots` proof);
@@ -147,7 +156,10 @@ impl TubeApp {
             online: false,
             kicked_off: false,
             playing_id: None,
-            current_frame: None,
+            player: Rc::new(RefCell::new(
+                VideoPlayer::new().with_engine(media::MediaEngine::new()),
+            )),
+            player_video: None,
             images: None,
         }
     }
@@ -226,25 +238,36 @@ impl TubeApp {
         self
     }
 
-    /// Test/shots hook: open a video's watch page with a real decoded frame
-    /// already in hand, so a headless test can prove the watch view paints the
-    /// live-frame path ([`crate::widgets::VideoSurface`]) instead of the poster
-    /// — without a network or a decoder. Mirrors exactly what the worker's
-    /// `poll_frames` drain does on the live path.
-    pub fn with_decoded_frame_for_test(
-        mut self,
-        video: &str,
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    ) -> Self {
-        self.model.route = Route::Watch(video.to_string());
-        self.current_frame = Some(DecodedFrame {
-            video: video.to_string(),
-            width,
-            height,
-            rgba,
-        });
+    /// Test/shots hook: open a watch page with the shared [`VideoPlayer`] already
+    /// playing a demo source, so a headless `--shots` still captures the real
+    /// player surface (a frame + the transport controls) without a network or a
+    /// live decoder. Uses the media engine's synthesized-frame backend, which
+    /// seeds a frame on `open` — the exact surface the live decode path paints.
+    pub fn with_playing_demo_for_test(mut self) -> Self {
+        let id = self
+            .model
+            .videos
+            .first()
+            .map(|v| v.id.clone())
+            .unwrap_or_else(|| "vid_donut".to_string());
+        self.model.route = Route::Watch(id.clone());
+        {
+            let mut p = self.player.borrow_mut();
+            p.open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
+            // Seed a colourful mid-stream frame for the still, then pump the
+            // engine so the frame lands in the surface. The offscreen renderer
+            // syncs the app exactly once — *before* this player is mounted in the
+            // tree — so without pumping here the single shot would draw an empty
+            // (never-pumped) surface. A live run pumps every frame, so this is
+            // shots-only.
+            p.seek_to_ms(45_000);
+            p.play();
+            p.reveal_controls();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            p.sync(&mut doc, &root);
+        }
+        self.player_video = Some(id);
         self
     }
 
@@ -281,9 +304,15 @@ impl TubeApp {
             Route::Subscriptions => screens::subscriptions(m, theme, bus, imgs),
             Route::History => screens::history(m, theme, bus, imgs),
             Route::Settings => screens::settings(m, theme, bus),
-            Route::Watch(id) => {
-                screens::watch(m, theme, bus, imgs, id, self.content_width(), self.frame_for(id))
-            }
+            Route::Watch(id) => screens::watch(
+                m,
+                theme,
+                bus,
+                imgs,
+                id,
+                self.content_width(),
+                self.player.clone(),
+            ),
             Route::Channel(id) => screens::channel(m, theme, bus, imgs, id),
             Route::Search(q) => screens::search(m, theme, bus, imgs, q),
         };
@@ -385,13 +414,6 @@ impl TubeApp {
         }
     }
 
-    /// The decoded frame to paint for `id`, if the latest one we hold belongs
-    /// to it. Guards against a late frame for a since-closed video painting on
-    /// the wrong page.
-    fn frame_for(&self, id: &str) -> Option<&DecodedFrame> {
-        self.current_frame.as_ref().filter(|f| f.video == id)
-    }
-
     /// Whether any real image (thumbnail / avatar / banner) is still loading, so
     /// the app keeps redrawing/idle-syncing until each decoded image lands.
     fn images_pending(&self) -> bool {
@@ -414,18 +436,91 @@ impl TubeApp {
                     return;
                 }
                 self.playing_id = Some(id.clone());
-                self.current_frame = None;
+                // A fresh resolution is pending; drop the previously-loaded
+                // source so a new video starts clean once its URL lands.
+                self.player_video = None;
+                self.player.borrow_mut().pause();
                 self.request_live(Request::PlayVideo(id));
             }
-            // Left the watch page: stop the worker's playback thread so it isn't
-            // still downloading/decoding a video the user is no longer watching.
+            // Left the watch page: pause the engine so audio stops and it isn't
+            // still streaming a video the user is no longer watching.
             _ => {
                 if self.playing_id.take().is_some() {
-                    self.current_frame = None;
-                    self.request_live(Request::StopPlayback);
+                    self.player_video = None;
+                    self.player.borrow_mut().pause();
                 }
             }
         }
+    }
+
+    /// Per-frame playback bookkeeping: mirror the engine's playhead onto the
+    /// model (so SponsorBlock auto-skip + autoplay-next key off the real
+    /// position), auto-skip enabled segments by seeking the engine, and advance
+    /// to the next recommendation when the stream ends. Returns `true` only when
+    /// something *visible* changed (a skip notice or an autoplay navigation) so
+    /// it never dirties the tree merely because the playhead advanced. A no-op
+    /// off the watch route or before a stream has loaded.
+    fn tick_playback(&mut self) -> bool {
+        let Route::Watch(id) = self.model.route.clone() else {
+            return false;
+        };
+        if self.player_video.as_deref() != Some(id.as_str()) {
+            return false;
+        }
+        // Short borrow: read the engine's position/duration/playing, then drop
+        // the borrow before any seek (auto-skip re-borrows).
+        let (pos_ms, dur_ms, playing) = {
+            let p = self.player.borrow();
+            (p.position_ms(), p.duration_ms(), p.is_playing())
+        };
+        self.model.playhead = pos_ms as f64 / 1000.0;
+        self.model.playing = playing;
+
+        let mut changed = false;
+        // Auto-skip runs against the real playhead and seeks the engine.
+        if self.apply_auto_skip() {
+            changed = true;
+        }
+        // Reaching the end advances to the next "up next" when autoplay is on.
+        // `duration_ms` is the media duration once known; treat within 250ms of
+        // the end (or an explicitly non-playing engine at the end) as finished.
+        let known_dur = dur_ms > 0;
+        let at_end = known_dur && pos_ms + 250 >= dur_ms;
+        if at_end {
+            if self.maybe_autoplay_next() {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Load a resolved, directly-playable stream URL into the shared player
+    /// engine and start it — the real path both the worker's
+    /// [`Update::StreamResolved`] and the transport tests take. A resolution for
+    /// a video that is no longer the open watch page is dropped (returns `false`)
+    /// so audio never bleeds across pages.
+    fn load_resolved_stream(
+        &mut self,
+        video: String,
+        url: String,
+        has_audio: bool,
+        quality: String,
+    ) -> bool {
+        if !matches!(&self.model.route, Route::Watch(id) if *id == video) {
+            return false;
+        }
+        {
+            let mut p = self.player.borrow_mut();
+            p.open(media::Source::Remote { url });
+            p.play();
+        }
+        self.player_video = Some(video);
+        self.model.playing = true;
+        self.model.push_notice(format!(
+            "Playing · {quality}{}",
+            if has_audio { " · audio" } else { "" }
+        ));
+        true
     }
 
     /// Resolve the current watch video's duration, if any.
@@ -436,18 +531,19 @@ impl TubeApp {
         }
     }
 
-    /// If the playhead sits inside an enabled SponsorBlock segment, jump to
-    /// its end and log the skip. Mirrors the auto-skip behaviour as the
-    /// user scrubs.
-    fn apply_auto_skip(&mut self) {
+    /// If the playhead sits inside an enabled SponsorBlock segment, jump the
+    /// engine (and the model) to its end and log the skip. Returns `true` when a
+    /// skip actually happened. Runs both as the user scrubs and each frame from
+    /// [`Self::tick_playback`] against the real engine playhead.
+    fn apply_auto_skip(&mut self) -> bool {
         if !self.model.settings.auto_skip || !self.model.settings.sponsorblock_enabled {
-            return;
+            return false;
         }
         let Route::Watch(id) = self.model.route.clone() else {
-            return;
+            return false;
         };
         let (seg_end, label) = {
-            let Some(v) = self.model.video(&id) else { return };
+            let Some(v) = self.model.video(&id) else { return false };
             let mut found = None;
             for s in &v.sponsor {
                 if self.model.settings.category_enabled(s.category) && s.contains(self.model.playhead) {
@@ -465,11 +561,14 @@ impl TubeApp {
             }
             match found {
                 Some(f) => f,
-                None => return,
+                None => return false,
             }
         };
         self.model.playhead = seg_end;
+        // Seek the real stream past the segment (no-op when no source is loaded).
+        self.player.borrow_mut().seek_to_ms((seg_end * 1000.0) as u64);
         self.model.push_notice(label);
+        true
     }
 
     /// Open a video's watch page: record history, route to it, reset the
@@ -488,20 +587,21 @@ impl TubeApp {
     /// If autoplay is on and the playhead has reached the end of the current
     /// video, advance to the first "up next" recommendation — the real code
     /// path that consumes the [`Settings::autoplay`] flag. Reaching the end
-    /// happens when the user scrubs the [`crate::widgets::SeekBar`] to the
-    /// finish (or, live, when playback runs out).
-    fn maybe_autoplay_next(&mut self) {
+    /// happens when the engine's stream runs out (mirrored each frame by
+    /// [`Self::tick_playback`]) or when a test seeks the playhead to the finish.
+    /// Returns `true` when it navigated to a new video.
+    fn maybe_autoplay_next(&mut self) -> bool {
         if !self.model.settings.autoplay {
-            return;
+            return false;
         }
         let Route::Watch(id) = self.model.route.clone() else {
-            return;
+            return false;
         };
         let Some(dur) = self.model.video(&id).map(|v| v.duration as f64) else {
-            return;
+            return false;
         };
         if self.model.playhead < dur - 0.001 {
-            return;
+            return false;
         }
         let next = self
             .model
@@ -511,8 +611,10 @@ impl TubeApp {
         if let Some(next) = next {
             if next != id {
                 self.open_video(next);
+                return true;
             }
         }
+        false
     }
 
     /// Apply one drained action. Returns true if the model changed enough
@@ -548,17 +650,19 @@ impl TubeApp {
             Action::Seek(frac) => {
                 if let Some(d) = self.current_duration() {
                     self.model.playhead = (frac * d).clamp(0.0, d);
+                    // Seek the real stream (no-op when no source is loaded yet).
+                    self.player
+                        .borrow_mut()
+                        .seek_to_ms((self.model.playhead * 1000.0) as u64);
                     self.apply_auto_skip();
                     self.maybe_autoplay_next();
                 }
             }
             Action::TogglePlay => {
-                self.model.playing = !self.model.playing;
-                // Reflect the transport state onto the live playback thread so a
-                // pause actually holds the video (not just the playhead).
-                if matches!(&self.model.route, Route::Watch(_)) {
-                    self.request_live(Request::SetPlaying(self.model.playing));
-                }
+                // Drive the real media engine, then mirror its resulting state
+                // onto the model so the rest of the UI stays truthful.
+                self.player.borrow_mut().toggle_play();
+                self.model.playing = self.player.borrow().is_playing();
             }
             Action::ToggleCategory(c) => {
                 self.model.settings.toggle_category(c);
@@ -669,11 +773,7 @@ impl TubeApp {
             return false;
         };
         let updates = worker.poll();
-        // Drain any decoded video frames the worker finished this tick. Kept
-        // separate from `Update`s: frames are raw RGBA that must not enter the
-        // CRDT model (they'd bloat the document and don't replicate).
-        let frames = worker.poll_frames();
-        if updates.is_empty() && frames.is_empty() {
+        if updates.is_empty() {
             return false;
         }
         let mut changed = false;
@@ -744,23 +844,15 @@ impl TubeApp {
                         changed = true;
                     }
                 }
+                Update::StreamResolved { video, url, has_audio, quality } => {
+                    if self.load_resolved_stream(video, url, has_audio, quality) {
+                        changed = true;
+                    }
+                }
                 Update::Note(n) => {
                     self.model.push_notice(n);
                     changed = true;
                 }
-            }
-        }
-        // Adopt the newest decoded frame for the currently-open video. A frame
-        // for a different (since-closed) video is dropped. Setting it flags a
-        // change so the tree rebuilds and the watch page repaints the picture.
-        let watch_id = match &self.model.route {
-            Route::Watch(id) => Some(id.clone()),
-            _ => None,
-        };
-        for f in frames {
-            if watch_id.as_deref() == Some(f.video.as_str()) {
-                self.current_frame = Some(f);
-                changed = true;
             }
         }
         changed
@@ -851,6 +943,14 @@ impl Widget for TubeApp {
         }
         if let Some(c) = &mut self.root_child {
             c.sync(state, path);
+        }
+        // The watch page's player pumped its engine in the sync above; now mirror
+        // the engine playhead onto the model and run SponsorBlock auto-skip /
+        // autoplay-next against the real position. Only flags a rebuild when a
+        // skip notice or an autoplay navigation actually happens (not every
+        // advancing frame), so a playing video repaints without churning the tree.
+        if self.tick_playback() {
+            self.structure_dirty = true;
         }
     }
 
@@ -1096,12 +1196,14 @@ impl Widget for TubeApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // While a watch video is streaming, keep the event loop pumping redraws
-        // so the worker's decoded frames drain and the picture MOVES. winit's
-        // default `Wait` only wakes on input, so without this the video would
-        // freeze on the first frame until the next unrelated event. The redraws
-        // are vsync-throttled by the renderer, so this paces to the display, not
-        // a hot spin.
+        // Keep the event loop pumping redraws (and thus `sync`, which pumps the
+        // media engine) across two windows: while a watch stream is resolving
+        // (so the worker's `StreamResolved` folds in) and while the player is
+        // decoding (so the picture MOVES). winit's default `Wait` only wakes on
+        // input; the player's own `needs_animation_frame` covers the playing
+        // case via `root_child`, and this `streaming` gate covers the resolve
+        // gap before a source is loaded. Redraws are vsync-throttled by the
+        // renderer, so this paces to the display, not a hot spin.
         let streaming = self.online
             && matches!(&self.model.route, Route::Watch(id) if self.playing_id.as_deref() == Some(id.as_str()));
         streaming
@@ -1160,6 +1262,92 @@ mod tests {
         assert!(!app.model.is_subscribed("ch_synth"));
         app.apply(Action::ToggleSubscribe("ch_synth".into()), &mut doc, &r);
         assert!(app.model.is_subscribed("ch_synth"));
+    }
+
+    // --- media-engine transport wiring (the real playback path) ---
+
+    #[test]
+    fn resolved_stream_opens_and_plays_the_engine() {
+        // The worker's `StreamResolved` path (factored into `load_resolved_stream`)
+        // must open the rangeable URL into the shared player's media engine and
+        // start it — the exact code path the live app runs.
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_donut".into());
+        let ok = app.load_resolved_stream(
+            "vid_donut".into(),
+            "https://inv.example/latest_version?id=vid_donut&itag=18&local=true".into(),
+            true,
+            "360p".into(),
+        );
+        assert!(ok, "the resolved stream loaded for the open watch video");
+        assert!(app.player.borrow().is_playing(), "the engine is playing the stream");
+        let src = app.player.borrow().engine().and_then(|e| e.source().cloned());
+        match src {
+            Some(media::Source::Remote { url }) => {
+                assert!(url.contains("local=true"), "opened the rangeable proxy URL: {url}")
+            }
+            other => panic!("expected a remote source on the engine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolved_stream_for_a_different_video_is_dropped() {
+        // A late resolution for a since-closed video must not hijack the engine.
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_donut".into());
+        let ok = app.load_resolved_stream(
+            "some_other_id".into(),
+            "https://inv.example/x?local=true".into(),
+            true,
+            "360p".into(),
+        );
+        assert!(!ok, "a stream for a non-open video is dropped");
+        assert!(app.player.borrow().engine().and_then(|e| e.source()).is_none());
+    }
+
+    #[test]
+    fn toggle_play_drives_the_engine() {
+        let (mut app, mut doc) = fresh();
+        let r = automerge::ROOT;
+        app.model.route = Route::Watch("vid_donut".into());
+        app.load_resolved_stream(
+            "vid_donut".into(),
+            "https://inv.example/x?local=true".into(),
+            true,
+            "360p".into(),
+        );
+        assert!(app.player.borrow().is_playing());
+        app.apply(Action::TogglePlay, &mut doc, &r);
+        assert!(!app.player.borrow().is_playing(), "TogglePlay paused the engine");
+        assert!(!app.model.playing, "the model mirrors the paused engine");
+        app.apply(Action::TogglePlay, &mut doc, &r);
+        assert!(app.player.borrow().is_playing(), "TogglePlay resumed the engine");
+        assert!(app.model.playing, "the model mirrors the playing engine");
+    }
+
+    #[test]
+    fn auto_skip_seeks_the_engine_past_a_sponsor_segment() {
+        // Auto-skip runs against the real playhead and must seek the engine (not
+        // just the model). vid_rust_async has a Sponsor segment 1440..1570.
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_rust_async".into());
+        app.load_resolved_stream(
+            "vid_rust_async".into(),
+            "https://inv.example/x?local=true".into(),
+            true,
+            "360p".into(),
+        );
+        // Playhead inside the sponsor band.
+        app.model.playhead = 1500.0;
+        let skipped = app.apply_auto_skip();
+        assert!(skipped, "a skip happened");
+        assert!(app.model.playhead >= 1570.0, "model playhead jumped past the segment");
+        // The seek reached the engine (its position advanced off the start). The
+        // synthesized test engine caps its duration, so the exact target clamps —
+        // proving it moved is the honest real-path assertion.
+        let engine_pos = app.player.borrow().engine().map(|e| e.position_ms()).unwrap_or(0);
+        assert!(engine_pos > 0, "the auto-skip seeked the engine (pos={engine_pos})");
+        assert!(app.model.notices.iter().any(|n| n.contains("Sponsor")));
     }
 
     #[test]

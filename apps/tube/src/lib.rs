@@ -33,6 +33,20 @@ pub use app::TubeApp;
 
 use ui::widget::Widget;
 
+/// The searchable result types Tube contributes to qOS's global search. An OS
+/// search host registers these descriptors (id, display name, whether hits carry
+/// a thumbnail) so a video or a channel shows up in the OS-wide palette and
+/// activating it deep-links back into Tube's watch / channel page via
+/// [`search_type::SearchHit`]. Exposed here as the single registration point so
+/// the host's integration is a one-liner (`for t in tube::searchable_types() {
+/// registry.register(t) }`) with no reach into the app internals.
+pub fn searchable_types() -> Vec<search_type::SearchableType> {
+    vec![
+        search_type::video_searchable_type(),
+        search_type::channel_searchable_type(),
+    ]
+}
+
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(TubeApp::new())
@@ -53,4 +67,20 @@ pub fn app_root_narrow_shot() -> Box<dyn Widget> {
 /// state.
 pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_route_shot(route))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search_type::{CHANNEL_TYPE_ID, VIDEO_TYPE_ID};
+
+    #[test]
+    fn registers_video_and_channel_searchable_types() {
+        let types = searchable_types();
+        let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&VIDEO_TYPE_ID), "video type registered: {ids:?}");
+        assert!(ids.contains(&CHANNEL_TYPE_ID), "channel type registered: {ids:?}");
+        // Both carry a thumbnail, so an OS palette reserves image space for them.
+        assert!(types.iter().all(|t| t.has_thumbnail));
+    }
 }
