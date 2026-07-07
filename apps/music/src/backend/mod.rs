@@ -32,6 +32,7 @@
 pub mod offline;
 pub mod potoken;
 pub mod proxy;
+pub mod ytdlp;
 
 #[cfg(feature = "live")]
 pub mod live;
