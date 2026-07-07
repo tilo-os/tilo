@@ -26,7 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextWeight};
 use crate::text_selection::{
     clipboard_copy, clipboard_paste, extend_span_drag, next_char_boundary, next_word_boundary,
     prev_char_boundary, prev_word_boundary, word_boundaries,
@@ -184,6 +184,14 @@ pub struct TextInput {
     /// switch to `Family::Monospace`, so the caret/selection stay aligned.
     /// Default `false`; code-block cells opt in so code reads as code.
     mono: bool,
+    /// When `Some`, both measurement and draw shape the text in this explicit
+    /// [`FontChoice`] family (a serif book face, a named installed family, …)
+    /// rather than the default sans / mono. Because the per-char metrics
+    /// (`char_x_positions`) are measured with the same family the draw uses,
+    /// the caret + selection stay aligned. This is how a rename field can
+    /// render the edited value in its own typeface. Takes precedence over
+    /// `mono`. Default `None` (sans / mono per `mono`).
+    family: Option<FontChoice>,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -226,6 +234,7 @@ impl TextInput {
             context_actions: Vec::new(),
             placeholder: String::new(),
             mono: false,
+            family: None,
         }
     }
 
@@ -313,10 +322,35 @@ impl TextInput {
         self.mono
     }
 
-    /// Measure `s` with the family the draw path will use (mono when
-    /// `self.mono`), so `char_x_positions` and the drawn glyphs agree.
+    /// Builder-style: shape + draw + measure the text in an explicit
+    /// [`FontChoice`] family (a serif book face, a named installed family, …).
+    /// Takes precedence over the mono flag. Used by
+    /// [`crate::widget::EditableLabel`] so an inline rename field renders the
+    /// value in its own typeface. Passing [`FontChoice::SansSerif`] is
+    /// equivalent to the default.
+    pub fn with_font_family(mut self, family: FontChoice) -> Self {
+        self.family = Some(family);
+        self
+    }
+
+    /// Mutate the font-family override after construction. `None` restores the
+    /// default sans / mono behaviour.
+    pub fn set_font_family(&mut self, family: Option<FontChoice>) {
+        self.family = family;
+    }
+
+    /// The active font-family override, if any.
+    pub fn font_family(&self) -> Option<&FontChoice> {
+        self.family.as_ref()
+    }
+
+    /// Measure `s` with the family the draw path will use (an explicit
+    /// [`FontChoice`] override wins, else mono when `self.mono`, else sans), so
+    /// `char_x_positions` and the drawn glyphs agree.
     fn measure_str(&self, tr: &mut TextRenderer, s: &str, size: f32) -> (f32, f32) {
-        if self.mono {
+        if let Some(fam) = &self.family {
+            tr.measure_font(s, size, None, TextWeight::Regular, false, fam)
+        } else if self.mono {
             tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
         } else {
             tr.measure(s, size, None)
@@ -1050,17 +1084,33 @@ impl Widget for TextInput {
                 None,
             );
         }
-        text_renderer.draw_text_styled(
-            scene,
-            &display,
-            text_size,
-            text_color,
-            transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y)),
-            None,
-            TextWeight::Regular,
-            false,
-            self.mono,
-        );
+        let text_origin =
+            transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y));
+        if let Some(fam) = &self.family {
+            text_renderer.draw_text_font(
+                scene,
+                &display,
+                text_size,
+                text_color,
+                text_origin,
+                None,
+                TextWeight::Regular,
+                false,
+                fam,
+            );
+        } else {
+            text_renderer.draw_text_styled(
+                scene,
+                &display,
+                text_size,
+                text_color,
+                text_origin,
+                None,
+                TextWeight::Regular,
+                false,
+                self.mono,
+            );
+        }
 
         if self.is_focused && !self.disabled {
             // Same caret geometry peers render through `caret_rect`, just
@@ -2400,5 +2450,47 @@ mod tests {
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), &mods(false, false));
         assert_eq!(ti.selection_range(), Some((0, 11)), "triple-click selects the whole field");
+    }
+
+    /// A `with_font_family` override shapes the input's glyphs in that named
+    /// family: after the input draws its value once, re-shaping the same
+    /// string+size in the SAME family is a cache hit (the input already shaped
+    /// it there), while a DIFFERENT family is a distinct miss. This proves the
+    /// override reaches the renderer's family-aware path, not the sans default.
+    #[test]
+    fn font_family_override_shapes_in_named_family() {
+        let mut tr = TextRenderer::new();
+        let fams = tr.system_families();
+        assert!(!fams.is_empty(), "the system font db exposes some families");
+        let fam = fams[0].clone();
+
+        let mut ti = TextInput::local()
+            .with_initial_value("Reading")
+            .with_font_family(FontChoice::Named(fam.clone()));
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let theme = Theme::dark();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut scene = Scene::new();
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        // The input's draw shapes "Reading" at 16px in the named family. The
+        // char-metric pass measures per-prefix, so the full string's shaped
+        // glyph run is the one that lands in the shape cache.
+        let _ = tr.take_shape_stats();
+        // Same string+size+family as the input's body draw → a cache hit.
+        tr.draw_text_font(
+            &mut scene, "Reading", FONT_SIZE, theme.text_primary,
+            Affine::IDENTITY, None, TextWeight::Regular, false, &FontChoice::Named(fam),
+        );
+        let (hits, _m, _ns) = tr.take_shape_stats();
+        assert_eq!(hits, 1, "the input shaped its value in the named family");
+
+        // A sans render of the same string is a distinct shape (different family).
+        tr.draw_text_font(
+            &mut scene, "Reading", FONT_SIZE, theme.text_primary,
+            Affine::IDENTITY, None, TextWeight::Regular, false, &FontChoice::SansSerif,
+        );
+        let (_h, misses, _ns) = tr.take_shape_stats();
+        assert_eq!(misses, 1, "sans is a separate shape from the named family");
     }
 }
