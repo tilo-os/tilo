@@ -266,6 +266,14 @@ unsafe extern "C" {
     pub fn webkit_web_view_get_title(view: *mut WebKitWebView) -> *const c_char;
     pub fn webkit_web_view_get_estimated_load_progress(view: *mut WebKitWebView) -> c_double;
     pub fn webkit_web_view_get_settings(view: *mut WebKitWebView) -> *mut WebKitSettings;
+    /// Override the User-Agent. WPE's default advertises a stale Safari
+    /// version, which makes UA-sniffing sites (search engines, video
+    /// sites) serve degraded/non-responsive layouts; a modern UA gets
+    /// their normal responsive pages.
+    pub fn webkit_settings_set_user_agent(
+        settings: *mut WebKitSettings,
+        user_agent: *const c_char,
+    );
     pub fn webkit_web_view_get_user_content_manager(
         view: *mut WebKitWebView,
     ) -> *mut WebKitUserContentManager;
