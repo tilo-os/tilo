@@ -112,13 +112,22 @@ impl BrowserWidget {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        // Compact, square-ish icon buttons (44×40 — a comfortable touch
+        // target) instead of the toolkit's 120×40 label-button default,
+        // so three of them leave the address bar the rest of the width
+        // even on a narrow / mobile-width window.
+        const NAV_BTN: (f32, f32) = (44.0, 40.0);
         let back = Button::new("browser.back", "", Some(BACK_FLAG))
             .with_icon(Icon::ArrowLeft)
+            .with_size(NAV_BTN.0, NAV_BTN.1)
             .with_enabled(self.can_go_back);
         let forward = Button::new("browser.forward", "", Some(FORWARD_FLAG))
             .with_icon(Icon::ArrowRight)
+            .with_size(NAV_BTN.0, NAV_BTN.1)
             .with_enabled(self.can_go_forward);
-        let reload = Button::new("browser.reload", "", Some(RELOAD_FLAG)).with_icon(Icon::Refresh);
+        let reload = Button::new("browser.reload", "", Some(RELOAD_FLAG))
+            .with_icon(Icon::Refresh)
+            .with_size(NAV_BTN.0, NAV_BTN.1);
         let url_input = TextInput::new(vec![])
             .with_id(URL_INPUT_ID)
             .with_on_change_path(URL_PATH)
