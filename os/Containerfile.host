@@ -22,7 +22,7 @@ ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
 # ---- Stage 1: builder (same base + toolchain as the desktop image) ---------
-FROM quay.io/fedora/fedora-bootc@sha256:418068a16be639037e8584ffc92d3919ea246e1234705b5d3bb21f91b12fd751 AS builder
+FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53 AS builder
 
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache \
@@ -59,7 +59,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/
 
 # ---- Stage 2: runtime image ------------------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:418068a16be639037e8584ffc92d3919ea246e1234705b5d3bb21f91b12fd751
+FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53
 
 # Minimal runtime — no display stack, no PipeWire, no greetd. Just
 # what a headless network appliance needs: time sync, firewall,
