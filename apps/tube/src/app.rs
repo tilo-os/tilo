@@ -271,6 +271,39 @@ impl TubeApp {
         self
     }
 
+    /// `--live-shots` hook: open the shared player on a real, directly-playable
+    /// stream `url` and pump the media engine until a real frame decodes
+    /// (bounded), so an offscreen still captures the ACTUAL decoded picture — the
+    /// same `VideoPlayer` + `media::MediaEngine` the live app streams through.
+    /// Needs the `media` decode backend to produce a real frame; if none arrives
+    /// within the budget the surface stays as-is (the poster/backdrop shows).
+    pub fn with_live_frame_for_shot(mut self, video_id: &str, url: String) -> Self {
+        use std::time::{Duration, Instant};
+        self.model.route = Route::Watch(video_id.to_string());
+        {
+            let mut p = self.player.borrow_mut();
+            p.open(media::Source::Remote { url });
+            p.play();
+            p.reveal_controls();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            // Pump until the pipeline decodes its first frame (GStreamer prerolls
+            // + decodes on its own threads; give it real time). The offscreen
+            // renderer syncs the app only once, before this player is mounted, so
+            // the frame must already be in hand before the shot draws.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                p.sync(&mut doc, &root);
+                if p.latest_frame().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        self.player_video = Some(video_id.to_string());
+        self
+    }
+
     /// Test accessor: the current route (read-only).
     pub fn route_for_test(&self) -> &Route {
         &self.model.route
