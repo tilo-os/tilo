@@ -595,7 +595,24 @@ pub mod live {
         creds: &AuthCreds,
         mime: &[u8],
     ) -> Result<(), String> {
+        smtp_send_with_tls(account, draft, creds, mime, None).await
+    }
+
+    /// The submission path, with the TLS parameters injectable. Production passes
+    /// `None`, which resolves to the same implicit-TLS (465) / STARTTLS (else)
+    /// setup `lettre`'s `relay`/`starttls_relay` build with the bundled Mozilla
+    /// roots. A caller may pass explicit parameters (e.g. a test pinned to a
+    /// local server's certificate) so the real submission code is exercised over
+    /// a socket without reaching a public server.
+    async fn smtp_send_with_tls(
+        account: &AccountConfig,
+        draft: &Draft,
+        creds: &AuthCreds,
+        mime: &[u8],
+        tls_override: Option<lettre::transport::smtp::client::TlsParameters>,
+    ) -> Result<(), String> {
         use lettre::transport::smtp::authentication::{Credentials, Mechanism};
+        use lettre::transport::smtp::client::{Tls, TlsParameters};
         use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
         let host = account.smtp_host.trim();
@@ -603,13 +620,16 @@ pub mod live {
             return Err("no SMTP host".into());
         }
         let port = if account.smtp_port == 0 { 465 } else { account.smtp_port };
-        // 465 → implicit TLS; anything else (587/25) → STARTTLS upgrade.
-        let builder = if port == 465 {
-            AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-        } else {
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-        }
-        .map_err(|e| classify_conn_failure(&e.to_string()))?;
+        let params = match tls_override {
+            Some(p) => p,
+            None => TlsParameters::new(host.to_string())
+                .map_err(|e| classify_conn_failure(&e.to_string()))?,
+        };
+        // 465 → implicit TLS (Wrapper); anything else (587/25) → STARTTLS upgrade.
+        let tls = if port == 465 { Tls::Wrapper(params) } else { Tls::Required(params) };
+        let builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+            .port(port)
+            .tls(tls);
 
         let (creds_l, mech) = match creds {
             AuthCreds::Password { user, pass } => {
@@ -620,7 +640,6 @@ pub mod live {
             }
         };
         let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
-            .port(port)
             .credentials(creds_l)
             .authentication(vec![mech])
             .build();
@@ -652,6 +671,431 @@ pub mod live {
         }
         lettre::address::Envelope::new(Some(from), to).map_err(|e| e.to_string())
     }
+
+    // ---- real-path integration tests against local in-process servers ------
+    //
+    // These stand up a local IMAP and SMTP server over a genuine TLS socket
+    // (a throwaway self-signed certificate) and drive the *production* engine
+    // functions against them: `list_folders` / `fetch_folder` for receive,
+    // `smtp_send_with_tls` for send. They prove the two loops end to end over a
+    // real socket — TLS handshake, authentication, the exact IMAP command
+    // sequence, the `mail-parser` decode, and the `lettre` STARTTLS submission —
+    // with no public server and no live credentials. The only test shim is that
+    // the client accepts this one local certificate; the wire protocol and the
+    // parsing are the real ones.
+    #[cfg(test)]
+    mod live_tests {
+        use std::sync::{Arc, Mutex};
+
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::{TcpListener, TcpStream};
+
+        use super::{fetch_folder, list_folders, resolve_auth, smtp_send_with_tls};
+        use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
+        use crate::transport::build_mime;
+
+        /// A rustls client verifier that accepts the single local test server
+        /// certificate. Signature verification stays real (delegated to the ring
+        /// provider); only the chain-of-trust anchor is bypassed, exactly as any
+        /// local-server test must do for a self-signed cert.
+        #[derive(Debug)]
+        struct AcceptLocalCert(Arc<rustls::crypto::CryptoProvider>);
+
+        impl rustls::client::danger::ServerCertVerifier for AcceptLocalCert {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &rustls::pki_types::CertificateDer<'_>,
+                _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+                _server_name: &rustls::pki_types::ServerName<'_>,
+                _ocsp_response: &[u8],
+                _now: rustls::pki_types::UnixTime,
+            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+            fn verify_tls12_signature(
+                &self,
+                message: &[u8],
+                cert: &rustls::pki_types::CertificateDer<'_>,
+                dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                rustls::crypto::verify_tls12_signature(
+                    message,
+                    cert,
+                    dss,
+                    &self.0.signature_verification_algorithms,
+                )
+            }
+            fn verify_tls13_signature(
+                &self,
+                message: &[u8],
+                cert: &rustls::pki_types::CertificateDer<'_>,
+                dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                rustls::crypto::verify_tls13_signature(
+                    message,
+                    cert,
+                    dss,
+                    &self.0.signature_verification_algorithms,
+                )
+            }
+            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                self.0.signature_verification_algorithms.supported_schemes()
+            }
+        }
+
+        fn accepting_client_config() -> Arc<rustls::ClientConfig> {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let cfg = rustls::ClientConfig::builder_with_provider(provider.clone())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AcceptLocalCert(provider)))
+                .with_no_client_auth();
+            Arc::new(cfg)
+        }
+
+        /// A fresh self-signed cert + rustls server config for the mock servers.
+        fn server_tls_config() -> Arc<rustls::ServerConfig> {
+            let cert = rcgen::generate_simple_self_signed(vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+            ])
+            .unwrap();
+            let cert_der = cert.cert.der().clone();
+            let key_der =
+                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+            let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap();
+            Arc::new(cfg)
+        }
+
+        /// Bind a loopback listener on an ephemeral port; returns it plus the port.
+        async fn bind_local() -> (TcpListener, u16) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            (listener, port)
+        }
+
+        /// A scripted IMAP server serving exactly one message. It echoes each
+        /// command's tag, so it matches whatever tag async-imap generates, and
+        /// answers the LOGIN → LIST → SELECT → UID SEARCH → UID FETCH → LOGOUT
+        /// sequence the engine issues.
+        async fn serve_imap(tls: Arc<rustls::ServerConfig>, tcp: TcpStream, eml: Vec<u8>) {
+            let acceptor = tokio_rustls::TlsAcceptor::from(tls);
+            let stream = match acceptor.accept(tcp).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let (rd, mut wr) = tokio::io::split(stream);
+            let mut reader = BufReader::new(rd);
+            if wr
+                .write_all(b"* OK [CAPABILITY IMAP4rev1] test ready\r\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = wr.flush().await;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let tag = line.split_whitespace().next().unwrap_or("*").to_string();
+                let up = line.to_ascii_uppercase();
+                let mut resp: Vec<u8> = Vec::new();
+                if up.contains("LOGIN") {
+                    resp.extend_from_slice(format!("{tag} OK LOGIN completed\r\n").as_bytes());
+                } else if up.contains("LOGOUT") {
+                    resp.extend_from_slice(b"* BYE logging out\r\n");
+                    resp.extend_from_slice(format!("{tag} OK LOGOUT completed\r\n").as_bytes());
+                    let _ = wr.write_all(&resp).await;
+                    let _ = wr.flush().await;
+                    break;
+                } else if up.contains("LIST") {
+                    resp.extend_from_slice(b"* LIST (\\HasNoChildren) \".\" \"INBOX\"\r\n");
+                    resp.extend_from_slice(b"* LIST (\\HasNoChildren) \".\" \"Sent\"\r\n");
+                    resp.extend_from_slice(format!("{tag} OK LIST completed\r\n").as_bytes());
+                } else if up.contains("SELECT") || up.contains("EXAMINE") {
+                    resp.extend_from_slice(b"* 1 EXISTS\r\n");
+                    resp.extend_from_slice(b"* 0 RECENT\r\n");
+                    resp.extend_from_slice(b"* FLAGS (\\Seen \\Flagged)\r\n");
+                    resp.extend_from_slice(
+                        format!("{tag} OK [READ-WRITE] SELECT completed\r\n").as_bytes(),
+                    );
+                } else if up.contains("UID SEARCH") || up.contains("SEARCH") {
+                    resp.extend_from_slice(b"* SEARCH 1\r\n");
+                    resp.extend_from_slice(format!("{tag} OK SEARCH completed\r\n").as_bytes());
+                } else if up.contains("UID FETCH") || up.contains("FETCH") {
+                    let head = format!(
+                        "* 1 FETCH (UID 1 FLAGS (\\Seen) INTERNALDATE \"01-Jan-2021 09:30:00 +0000\" BODY[] {{{}}}\r\n",
+                        eml.len()
+                    );
+                    resp.extend_from_slice(head.as_bytes());
+                    resp.extend_from_slice(&eml);
+                    resp.extend_from_slice(b")\r\n");
+                    resp.extend_from_slice(format!("{tag} OK FETCH completed\r\n").as_bytes());
+                } else {
+                    resp.extend_from_slice(format!("{tag} OK completed\r\n").as_bytes());
+                }
+                if wr.write_all(&resp).await.is_err() {
+                    break;
+                }
+                let _ = wr.flush().await;
+            }
+        }
+
+        /// A scripted STARTTLS SMTP server — the path the engine drives for the
+        /// non-465 submission port (`Tls::Required`): a plaintext greeting +
+        /// EHLO advertising STARTTLS, the in-band TLS upgrade, then EHLO +
+        /// AUTH LOGIN + MAIL/RCPT/DATA over TLS, capturing the DATA payload.
+        async fn serve_smtp(
+            tls: Arc<rustls::ServerConfig>,
+            tcp: TcpStream,
+            captured: Arc<Mutex<Vec<u8>>>,
+        ) {
+            // ---- plaintext phase: greeting, EHLO, STARTTLS ----
+            let mut plain = BufReader::new(tcp);
+            if plain.write_all(b"220 localhost ESMTP test\r\n").await.is_err() {
+                return;
+            }
+            let _ = plain.flush().await;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match plain.read_line(&mut line).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+                let up = line.trim_end().to_ascii_uppercase();
+                if up.starts_with("EHLO") || up.starts_with("HELO") {
+                    let _ = plain
+                        .write_all(b"250-localhost\r\n250-STARTTLS\r\n250 8BITMIME\r\n")
+                        .await;
+                    let _ = plain.flush().await;
+                } else if up.starts_with("STARTTLS") {
+                    let _ = plain.write_all(b"220 2.0.0 Ready to start TLS\r\n").await;
+                    let _ = plain.flush().await;
+                    break;
+                } else if up.starts_with("QUIT") {
+                    let _ = plain.write_all(b"221 2.0.0 Bye\r\n").await;
+                    let _ = plain.flush().await;
+                    return;
+                } else {
+                    let _ = plain.write_all(b"250 2.0.0 Ok\r\n").await;
+                    let _ = plain.flush().await;
+                }
+            }
+
+            // The client waits for the "220 Ready" before its ClientHello, so no
+            // application bytes are buffered past STARTTLS: the raw socket can be
+            // handed to the TLS acceptor cleanly.
+            let tcp = plain.into_inner();
+            let acceptor = tokio_rustls::TlsAcceptor::from(tls);
+            let stream = match acceptor.accept(tcp).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let (rd, mut wr) = tokio::io::split(stream);
+            let mut reader = BufReader::new(rd);
+
+            // ---- encrypted phase: EHLO, AUTH LOGIN, MAIL/RCPT/DATA ----
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let up = line.trim_end().to_ascii_uppercase();
+                if up.starts_with("EHLO") || up.starts_with("HELO") {
+                    let _ = wr
+                        .write_all(b"250-localhost\r\n250-AUTH LOGIN\r\n250 8BITMIME\r\n")
+                        .await;
+                } else if up.starts_with("AUTH LOGIN") {
+                    // base64("Username:") then base64("Password:").
+                    let _ = wr.write_all(b"334 VXNlcm5hbWU6\r\n").await;
+                    let _ = wr.flush().await;
+                    line.clear();
+                    let _ = reader.read_line(&mut line).await;
+                    let _ = wr.write_all(b"334 UGFzc3dvcmQ6\r\n").await;
+                    let _ = wr.flush().await;
+                    line.clear();
+                    let _ = reader.read_line(&mut line).await;
+                    let _ = wr.write_all(b"235 2.7.0 Authentication successful\r\n").await;
+                } else if up.starts_with("MAIL FROM") {
+                    let _ = wr.write_all(b"250 2.1.0 Ok\r\n").await;
+                } else if up.starts_with("RCPT TO") {
+                    let _ = wr.write_all(b"250 2.1.5 Ok\r\n").await;
+                } else if up.starts_with("DATA") {
+                    let _ = wr
+                        .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
+                        .await;
+                    let _ = wr.flush().await;
+                    let mut data = Vec::new();
+                    loop {
+                        let mut dline = Vec::new();
+                        match reader.read_until(b'\n', &mut dline).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                        if dline == b".\r\n" {
+                            break;
+                        }
+                        data.extend_from_slice(&dline);
+                    }
+                    *captured.lock().unwrap() = data;
+                    let _ = wr.write_all(b"250 2.0.0 Ok: queued\r\n").await;
+                } else if up.starts_with("QUIT") {
+                    let _ = wr.write_all(b"221 2.0.0 Bye\r\n").await;
+                    let _ = wr.flush().await;
+                    break;
+                } else {
+                    let _ = wr.write_all(b"250 2.0.0 Ok\r\n").await;
+                }
+                let _ = wr.flush().await;
+            }
+        }
+
+        fn test_runtime() -> tokio::runtime::Runtime {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+        }
+
+        #[test]
+        fn imap_fetch_over_a_real_socket_parses_a_message() {
+            let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
+To: you@qos.example\r\n\
+Subject: Live inbox works\r\n\
+Date: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
+Message-ID: <live-1@analytical.example>\r\n\
+\r\n\
+This message was fetched over a real IMAP socket.\r\n"
+                .to_vec();
+
+            test_runtime().block_on(async move {
+                let server_tls = server_tls_config();
+                let (listener, port) = bind_local().await;
+                let eml_for_server = eml.clone();
+                let server = tokio::spawn(async move {
+                    while let Ok((tcp, _)) = listener.accept().await {
+                        let tls = server_tls.clone();
+                        let eml = eml_for_server.clone();
+                        tokio::spawn(async move { serve_imap(tls, tcp, eml).await });
+                    }
+                });
+
+                let account = AccountConfig {
+                    email: "me@example.com".into(),
+                    username: "me@example.com".into(),
+                    password: "app-password".into(),
+                    imap_host: "127.0.0.1".into(),
+                    imap_port: port,
+                    auth: AuthMethod::Password,
+                    ..Default::default()
+                };
+                let creds = resolve_auth(&account).unwrap();
+                let client_tls = accepting_client_config();
+
+                // Receive: LIST advertises the server's mailboxes …
+                let folders = list_folders(&account, &creds, client_tls.clone())
+                    .await
+                    .expect("list folders over TLS");
+                assert!(folders.iter().any(|f| f == "INBOX"), "server folders: {folders:?}");
+
+                // … and a real UID FETCH parses the RFC 5322 message into our model.
+                let msgs = fetch_folder(&account, Folder::Inbox, &creds, client_tls)
+                    .await
+                    .expect("fetch INBOX over TLS");
+                assert_eq!(msgs.len(), 1, "the one served message is fetched");
+                let m = &msgs[0];
+                assert_eq!(m.subject, "Live inbox works");
+                assert_eq!(m.from.email, "ada@analytical.example");
+                assert!(
+                    m.body.contains("fetched over a real IMAP socket"),
+                    "body: {:?}",
+                    m.body
+                );
+                assert!(m.read, "the server's \\Seen flag maps to read");
+                // The INTERNALDATE the server returned (2021-01-01 09:30 UTC) is
+                // what parse_fetched used for the timestamp.
+                assert_eq!(m.timestamp_min, 1_609_493_400 / 60);
+
+                server.abort();
+            });
+        }
+
+        #[test]
+        fn smtp_send_over_a_real_socket_delivers_the_mime() {
+            test_runtime().block_on(async move {
+                let server_tls = server_tls_config();
+                let (listener, port) = bind_local().await;
+                let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
+                let captured_srv = captured.clone();
+                let server = tokio::spawn(async move {
+                    while let Ok((tcp, _)) = listener.accept().await {
+                        let tls = server_tls.clone();
+                        let cap = captured_srv.clone();
+                        tokio::spawn(async move { serve_smtp(tls, tcp, cap).await });
+                    }
+                });
+
+                let account = AccountConfig {
+                    display_name: "Me".into(),
+                    email: "me@example.com".into(),
+                    username: "me@example.com".into(),
+                    password: "app-password".into(),
+                    smtp_host: "127.0.0.1".into(),
+                    smtp_port: port,
+                    auth: AuthMethod::Password,
+                    ..Default::default()
+                };
+                let draft = Draft {
+                    to: "rcpt@example.com".into(),
+                    subject: "SMTP loop works".into(),
+                    body: "Sent over a real SMTP socket.".into(),
+                    ..Default::default()
+                };
+                let from = Addr::new(account.display_name.clone(), account.email.clone());
+                let mime = build_mime(&from, &draft).expect("build MIME");
+                let creds = resolve_auth(&account).unwrap();
+
+                // Send: the production submission path over a real STARTTLS
+                // upgrade (the non-465 submission-port behaviour), authenticating
+                // with AUTH LOGIN and delivering via DATA.
+                let params = lettre::transport::smtp::client::TlsParameters::builder(
+                    "127.0.0.1".to_string(),
+                )
+                .dangerous_accept_invalid_certs(true)
+                .build()
+                .unwrap();
+                smtp_send_with_tls(&account, &draft, &creds, &mime, Some(params))
+                    .await
+                    .expect("SMTP submit over STARTTLS");
+
+                let received = captured.lock().unwrap().clone();
+                assert!(!received.is_empty(), "server captured the DATA payload");
+                let text = String::from_utf8_lossy(&received);
+                assert!(text.contains("Subject: SMTP loop works"), "payload: {text}");
+                assert!(text.contains("me@example.com"), "From reached the server");
+                assert!(text.contains("rcpt@example.com"), "To reached the server");
+                assert!(text.contains("Sent over a real SMTP socket."), "body reached the server");
+
+                server.abort();
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -660,7 +1104,7 @@ mod tests {
 
     #[test]
     fn stub_send_reports_wire_bytes() {
-        let (tx, rx) = spawn();
+        let (tx, rx) = spawn_with(Box::new(StubEngine));
         let account = AccountConfig {
             display_name: "Me".into(),
             email: "me@qos.example".into(),
@@ -677,7 +1121,7 @@ mod tests {
 
     #[test]
     fn stub_connect_acks() {
-        let (tx, rx) = spawn();
+        let (tx, rx) = spawn_with(Box::new(StubEngine));
         tx.send(EngineRequest::Connect {
             account: AccountConfig { email: "a@b.example".into(), ..Default::default() },
         })
