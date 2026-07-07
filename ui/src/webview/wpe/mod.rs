@@ -137,6 +137,15 @@ fn engine_thread(
     init_tx: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) {
     unsafe {
+        // The engine context must be this thread's default BEFORE the fdo
+        // backend initialises: wpe_fdo_initialize_shm() attaches its nested
+        // Wayland host as a source on the thread-default context, and only
+        // this context is ever iterated by the loop below. Initialising
+        // first would strand the host on a context nobody runs — the web
+        // process then dies with "Failed to bind wpe_bridge".
+        let ctx = ffi::g_main_context_new();
+        ffi::g_main_context_push_thread_default(ctx);
+
         let fdo_lib = CString::new("libWPEBackend-fdo-1.0.so.1").unwrap();
         if !ffi::wpe_loader_init(fdo_lib.as_ptr()) {
             let _ = init_tx.send(Err("wpe_loader_init(libWPEBackend-fdo) failed".into()));
@@ -146,9 +155,6 @@ fn engine_thread(
             let _ = init_tx.send(Err("wpe_fdo_initialize_shm failed".into()));
             return;
         }
-
-        let ctx = ffi::g_main_context_new();
-        ffi::g_main_context_push_thread_default(ctx);
 
         let state = Box::leak(Box::new(EngineState {
             shared,
