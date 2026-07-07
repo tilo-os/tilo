@@ -37,7 +37,16 @@ use crate::library;
 use crate::model::*;
 use crate::paint as p;
 
-const NAV_W: f64 = 78.0;
+/// Floating navigation rail geometry. The rail is a rounded glass panel that
+/// floats over the content with a uniform margin — on the Camera/Scanner
+/// screens it overlays the edge-to-edge viewfinder; on Gallery/Settings it
+/// floats over the base surface. Content screens inset past it by
+/// [`RAIL_INSET`].
+const RAIL_W: f64 = 68.0;
+const RAIL_MARGIN: f64 = 14.0;
+const CONTENT_GAP: f64 = 16.0;
+/// Left inset for content screens: margin + rail + gap.
+const RAIL_INSET: f64 = RAIL_MARGIN + RAIL_W + CONTENT_GAP;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;";
 /// Single decoded-size budget for gallery thumbnails/previews (one decode
@@ -802,14 +811,20 @@ impl Widget for CameraApp {
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
         self.regions.clear();
         p::fill_rect(scene, t, self.rect, theme.tokens.colors.surfaces.base);
-        let content = Rect::new(self.rect.x0 + NAV_W, self.rect.y0, self.rect.x1, self.rect.y1);
-        self.draw_nav(scene, t, tr, theme);
+        // Viewfinder screens are edge-to-edge (the rail floats over them);
+        // content screens inset past the rail.
+        let full = self.rect;
+        let content = self.content_rect();
         match self.screen {
-            Screen::Camera => self.draw_camera(scene, t, tr, theme, content),
-            Screen::Scanner => self.draw_scanner(scene, t, tr, theme, content),
+            Screen::Camera => self.draw_camera(scene, t, tr, theme, full),
+            Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Gallery => self.draw_gallery(scene, t, tr, theme, content),
             Screen::Settings => self.draw_settings(scene, t, tr, theme, content),
         }
+        // The rail is painted last so it floats above the viewfinder; its hit
+        // regions are pushed last too, so they win the reverse-order hit test
+        // where they overlap the screen's own controls.
+        self.draw_nav(scene, t, tr, theme);
         self.draw_toast(scene, t, tr, theme);
     }
 
@@ -918,18 +933,41 @@ impl Widget for CameraApp {
 // ====================================================================
 
 impl CameraApp {
+    /// The floating navigation rail's rectangle.
+    fn rail_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + RAIL_MARGIN,
+            self.rect.y0 + RAIL_MARGIN,
+            self.rect.x0 + RAIL_MARGIN + RAIL_W,
+            self.rect.y1 - RAIL_MARGIN,
+        )
+    }
+
+    /// The area content screens (Gallery/Settings) draw into, inset past the
+    /// floating rail.
+    fn content_rect(&self) -> Rect {
+        Rect::new(self.rect.x0 + RAIL_INSET, self.rect.y0, self.rect.x1, self.rect.y1)
+    }
+
+    /// Horizontal centre of the stage to the right of the rail — capture
+    /// controls and toasts centre here so the rail never crowds them.
+    fn stage_center_x(&self) -> f64 {
+        (self.rect.x0 + RAIL_INSET + self.rect.x1) / 2.0
+    }
+
     fn draw_nav(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let rail = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + NAV_W, self.rect.y1);
-        p::fill_rect(scene, t, rail, c.surfaces.raised);
-        p::line(scene, t, rail.x1, rail.y0, rail.x1, rail.y1, p::alpha(c.border_standard, 0.6), 1.0);
+        let rail = self.rail_rect();
+        let r = 26.0;
+        // Floating dark-glass panel: reads as a translucent overlay on the
+        // viewfinder and as a softly-recessed rail on the content surfaces.
+        p::fill_round(scene, t, rail, r, p::alpha(c.neutral[0], 0.62));
+        p::stroke_round(scene, t, rail, r, c.border_white_10, 1.0);
 
-        // Wordmark lens.
-        let lx = rail.center().x;
-        let ly = rail.y0 + 32.0;
-        p::circle(scene, t, lx, ly, 14.0, theme.accent_primary);
-        p::circle_stroke(scene, t, lx, ly, 14.0, p::alpha(white(), 0.85), 2.0);
-        p::circle(scene, t, lx, ly, 5.0, p::alpha(white(), 0.92));
+        // Brand aperture mark up top.
+        let bx = rail.center().x;
+        let by = rail.y0 + 30.0;
+        p::icon(scene, t, "aperture", Rect::new(bx - 13.0, by - 13.0, bx + 13.0, by + 13.0), theme.accent_primary, 2.0);
 
         let items = [
             (Screen::Camera, "camera"),
@@ -937,27 +975,25 @@ impl CameraApp {
             (Screen::Gallery, "gallery"),
             (Screen::Settings, "settings"),
         ];
-        let mut y = rail.y0 + 70.0;
-        let item_h = 74.0;
-        for (s, icon) in items {
-            let cell = Rect::new(rail.x0 + 8.0, y, rail.x1 - 8.0, y + item_h - 8.0);
+        // Centre the button stack in the space below the brand mark.
+        let slot = 62.0;
+        let stack_h = slot * items.len() as f64;
+        let top = (rail.y0 + 56.0 + rail.y1 - stack_h) / 2.0;
+        for (i, (s, icon)) in items.into_iter().enumerate() {
+            let cy = top + slot * i as f64 + slot / 2.0;
+            let btn = Rect::new(rail.center().x - 22.0, cy - 22.0, rail.center().x + 22.0, cy + 22.0);
             let active = self.screen == s;
             if active {
-                p::fill_round(scene, t, cell, 16.0, p::alpha(theme.accent_primary, 0.16));
-                let bar = Rect::new(rail.x0, cell.y0 + 14.0, rail.x0 + 4.0, cell.y1 - 14.0);
-                p::fill_round(scene, t, bar, 2.0, theme.accent_primary);
+                p::fill_round(scene, t, btn, 15.0, theme.accent_primary);
             }
-            let col = if active { theme.accent_primary } else { p::alpha(c.text_primary, 0.62) };
-            let icon_rect = Rect::new(cell.center().x - 15.0, cell.y0 + 11.0, cell.center().x + 15.0, cell.y0 + 41.0);
-            p::icon(scene, t, icon, icon_rect, col, 2.0);
-            p::text_center(scene, tr, cell.center().x, cell.y0 + 46.0, s.label(), 11.0, col);
-            self.push_region(cell, Action::Nav(s));
-            y += item_h;
+            let col = if active { white() } else { p::alpha(c.text_primary, 0.60) };
+            let ic = Rect::new(btn.center().x - 13.0, btn.center().y - 15.0, btn.center().x + 13.0, btn.center().y + 11.0);
+            p::icon(scene, t, icon, ic, col, 1.9);
+            let lbl_col = if active { p::alpha(white(), 0.95) } else { p::alpha(c.text_primary, 0.5) };
+            p::text_center(scene, tr, btn.center().x, btn.y1 - 12.0, s.label(), 9.0, lbl_col);
+            // A slightly taller hit target than the visual button.
+            self.push_region(Rect::new(rail.x0 + 4.0, cy - slot / 2.0, rail.x1 - 4.0, cy + slot / 2.0), Action::Nav(s));
         }
-
-        let by = rail.y1 - 30.0;
-        p::circle(scene, t, rail.center().x, by, 12.0, p::alpha(theme.status_success, 0.95));
-        p::icon(scene, t, "person", Rect::new(rail.center().x - 8.0, by - 8.0, rail.center().x + 8.0, by + 8.0), white(), 1.6);
     }
 
     fn segmented(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, items: Vec<(String, bool, Action)>) {
@@ -987,38 +1023,20 @@ impl CameraApp {
         self.push_region(rect, action);
     }
 
-    /// A small status/info chip with optional icon. Returns the x just past it.
-    fn chip(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, x: f64, y: f64, icon: Option<&str>, label: &str, bg: Color, fg: Color) -> f64 {
-        let pad = 9.0;
-        let icon_w = if icon.is_some() { 16.0 } else { 0.0 };
-        let tw = p::text_w(tr, label, 12.0) as f64;
-        let w = pad * 2.0 + icon_w + tw;
-        let h = 26.0;
-        let r = Rect::new(x, y, x + w, y + h);
-        p::fill_round(scene, t, r, h / 2.0, bg);
-        let mut cx = x + pad;
-        if let Some(ic) = icon {
-            p::icon(scene, t, ic, Rect::new(cx, y + 5.0, cx + 16.0, y + 21.0), fg, 1.6);
-            cx += icon_w + 3.0;
-        }
-        p::text(scene, tr, cx, y + 6.0, label, 12.0, fg);
-        x + w + 8.0
-    }
-
-    /// A centered "camera unavailable" placeholder for the camera/scanner
-    /// screens when no live feed is present.
+    /// A full-bleed "camera unavailable" placeholder for the camera screen
+    /// when no live feed is present. Near-black so it reads as "camera off",
+    /// honest rather than faking a feed.
     fn draw_no_feed(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, subtitle: &str) {
         let c = &theme.tokens.colors;
-        p::fill_round(scene, t, rect, 20.0, p::alpha(c.neutral[1], 0.9));
-        p::stroke_round(scene, t, rect, 20.0, p::alpha(c.border_standard, 0.4), 1.0);
-        let cx = rect.center().x;
+        p::fill_rect(scene, t, rect, c.neutral[0]);
+        let cx = (rect.x0 + RAIL_INSET + rect.x1) / 2.0;
         let cy = rect.center().y;
-        let ic = Rect::new(cx - 26.0, cy - 52.0, cx + 26.0, cy);
-        p::icon(scene, t, "camera", ic, p::alpha(c.text_primary, 0.55), 2.2);
+        let ic = Rect::new(cx - 26.0, cy - 58.0, cx + 26.0, cy - 6.0);
+        p::icon(scene, t, "camera", ic, p::alpha(white(), 0.5), 2.2);
         // Slash across the icon to read as "no camera".
-        p::line(scene, t, ic.x0 + 4.0, ic.y0 + 4.0, ic.x1 - 4.0, ic.y1 - 4.0, p::alpha(c.text_primary, 0.55), 2.2);
-        p::text_center(scene, tr, cx, cy + 10.0, "No camera connected", 16.0, c.text_primary);
-        p::text_center(scene, tr, cx, cy + 34.0, subtitle, 12.5, c.text_dim);
+        p::line(scene, t, ic.x0 + 4.0, ic.y0 + 4.0, ic.x1 - 4.0, ic.y1 - 4.0, p::alpha(white(), 0.5), 2.2);
+        p::text_center(scene, tr, cx, cy + 8.0, "No camera connected", 16.0, p::alpha(white(), 0.92));
+        p::text_center(scene, tr, cx, cy + 32.0, subtitle, 12.5, p::alpha(white(), 0.55));
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1026,7 +1044,7 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let tw = p::text_w(tr, &msg, 13.0) as f64;
         let w = tw + 56.0;
-        let cx = self.rect.x0 + NAV_W + (self.rect.x1 - self.rect.x0 - NAV_W) / 2.0;
+        let cx = self.stage_center_x();
         let r = Rect::new(cx - w / 2.0, self.rect.y1 - 64.0, cx + w / 2.0, self.rect.y1 - 28.0);
         p::fill_round(scene, t, r, 18.0, p::alpha(c.neutral[1], 0.96));
         p::stroke_round(scene, t, r, 18.0, p::alpha(theme.accent_primary, 0.5), 1.0);
@@ -1055,18 +1073,15 @@ impl CameraApp {
 // ====================================================================
 
 impl CameraApp {
-    fn draw_camera(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
-        let c = &theme.tokens.colors;
-        let pad = 22.0;
-
-        // Viewfinder — edge to edge above the control bar.
-        let bar_h = 138.0;
-        let vf = Rect::new(content.x0 + pad, content.y0 + pad, content.x1 - pad, content.y1 - bar_h);
+    fn draw_camera(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect) {
         let has_feed = self.feed_active();
+        let recording = self.is_recording();
+
+        // 1. Edge-to-edge viewfinder — the live preview bleeds to every window
+        // edge; every control floats over it rather than living in a panel.
         if has_feed {
-            let vw = vf.width().max(2.0) as u32;
-            let vh = vf.height().max(2.0) as u32;
-            p::push_clip_round(scene, t, vf, 20.0);
+            let vw = full.width().max(2.0) as u32;
+            let vh = full.height().max(2.0) as u32;
             match &self.storage {
                 Storage::Sample => {
                     let seed = Self::viewfinder_seed(self.facing);
@@ -1075,7 +1090,7 @@ impl CameraApp {
                         self.cam_view = Some((vw, vh, seed, frame_image_fill(frame::viewfinder(seed, vw, vh))));
                     }
                     if let Some((_, _, _, img)) = self.cam_view.as_mut() {
-                        img.paint_at(scene, t, vf);
+                        img.paint_at(scene, t, full);
                     }
                 }
                 Storage::Disk(_) => {
@@ -1086,37 +1101,120 @@ impl CameraApp {
                         }
                     }
                     if let Some((_, img)) = self.live_view.as_mut() {
-                        img.paint_at(scene, t, vf);
+                        img.paint_at(scene, t, full);
                     }
                 }
             }
-            self.draw_viewfinder_overlays(scene, t, theme, vf);
-            p::pop(scene);
-            self.draw_viewfinder_chips(scene, t, tr, theme, vf);
-            if self.is_recording() {
-                self.draw_rec_indicator(scene, t, tr, vf);
+            self.draw_viewfinder_overlays(scene, t, theme, full);
+            // Legibility washes: a soft dark fade top and bottom so white
+            // controls stay readable over any scene — no opaque panels.
+            let blk = Color::from_rgb8(0, 0, 0);
+            p::vscrim(scene, t, Rect::new(full.x0, full.y0, full.x1, full.y0 + 104.0), blk, 0.42, 0.0);
+            p::vscrim(scene, t, Rect::new(full.x0, full.y1 - 200.0, full.x1, full.y1), blk, 0.0, 0.6);
+            self.draw_camera_top_controls(scene, t, tr, theme, full);
+            if recording {
+                self.draw_rec_indicator(scene, t, tr, full);
             }
         } else {
-            self.draw_no_feed(scene, t, tr, theme, vf, "Connect a camera to start the viewfinder");
+            self.draw_no_feed(scene, t, tr, theme, full, "Connect a camera to start the viewfinder");
         }
 
-        // Control bar.
-        let bar = Rect::new(content.x0, content.y1 - bar_h, content.x1, content.y1);
-        let cy = bar.center().y + 10.0;
+        // 2. Bottom capture cluster (always drawn; disabled without a feed).
+        self.draw_capture_cluster(scene, t, tr, theme, full, has_feed, recording);
+    }
 
-        // Photo / Video mode toggle, centered above the shutter. While
-        // recording it's replaced by the elapsed-time pill (mode is locked).
-        let recording = self.is_recording();
-        let seg_w = 168.0;
-        let seg = Rect::new(content.center().x - seg_w / 2.0, bar.y0 + 8.0, content.center().x + seg_w / 2.0, bar.y0 + 38.0);
-        if recording {
-            let elapsed = (now_secs() - self.recording.as_ref().map(|s| s.started).unwrap_or(0)).max(0);
-            let label = format!("REC  {}", fmt_dur(elapsed * 1000));
-            let pill = Rect::new(content.center().x - 58.0, seg.y0, content.center().x + 58.0, seg.y1);
-            p::fill_round(scene, t, pill, pill.height() / 2.0, p::alpha(theme.tokens.colors.semantic.danger, 0.20));
-            p::circle(scene, t, pill.x0 + 18.0, pill.center().y, 5.0, theme.tokens.colors.semantic.danger);
-            p::text(scene, tr, pill.x0 + 30.0, pill.center().y - 8.0, &label, 13.0, theme.tokens.colors.semantic.danger);
+    fn draw_viewfinder_overlays(&self, scene: &mut Scene, t: Affine, theme: &Theme, vf: Rect) {
+        // Rule-of-thirds grid.
+        if self.settings.grid {
+            let gc = p::alpha(white(), 0.22);
+            for k in 1..3 {
+                let x = vf.x0 + vf.width() * k as f64 / 3.0;
+                p::line(scene, t, x, vf.y0, x, vf.y1, gc, 1.0);
+                let y = vf.y0 + vf.height() * k as f64 / 3.0;
+                p::line(scene, t, vf.x0, y, vf.x1, y, gc, 1.0);
+            }
+        }
+        // Level horizon indicator (only when enabled — no permanent reticle
+        // cluttering the centre of the frame).
+        if self.settings.level {
+            let y = vf.center().y;
+            p::line(scene, t, vf.center().x - 60.0, y, vf.center().x + 60.0, y, p::alpha(theme.status_success, 0.9), 2.0);
+            p::line(scene, t, vf.center().x - 92.0, y, vf.center().x - 70.0, y, p::alpha(white(), 0.55), 2.0);
+            p::line(scene, t, vf.center().x + 70.0, y, vf.center().x + 92.0, y, p::alpha(white(), 0.55), 2.0);
+        }
+    }
+
+    /// A floating glass control pill (leading icon optional). `active` fills it
+    /// with the accent; otherwise it's dark glass with a hairline border.
+    /// Returns the pill's rect so the caller can register a hit region.
+    fn ctrl_pill(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, x: f64, y: f64, icon: Option<&str>, label: &str, active: bool) -> Rect {
+        let c = &theme.tokens.colors;
+        let pad = 11.0;
+        let icon_w = if icon.is_some() { 17.0 } else { 0.0 };
+        let tw = if label.is_empty() { 0.0 } else { p::text_w(tr, label, 12.0) as f64 };
+        let gap = if icon.is_some() && !label.is_empty() { 5.0 } else { 0.0 };
+        let w = pad * 2.0 + icon_w + gap + tw;
+        let h = 30.0;
+        let r = Rect::new(x, y, x + w, y + h);
+        if active {
+            p::fill_round(scene, t, r, h / 2.0, theme.accent_primary);
         } else {
+            p::fill_round(scene, t, r, h / 2.0, p::alpha(c.neutral[0], 0.5));
+            p::stroke_round(scene, t, r, h / 2.0, c.border_white_10, 1.0);
+        }
+        let fg = if active { white() } else { p::alpha(white(), 0.92) };
+        let mut cx = x + pad;
+        if let Some(ic) = icon {
+            p::icon(scene, t, ic, Rect::new(cx, r.center().y - 8.5, cx + 17.0, r.center().y + 8.5), fg, 1.7);
+            cx += icon_w + gap;
+        }
+        if !label.is_empty() {
+            p::text(scene, tr, cx, r.center().y - 8.0, label, 12.0, fg);
+        }
+        r
+    }
+
+    /// The quick-control row floating along the top of the viewfinder:
+    /// resolution, HDR, self-timer and grid — each tappable, so the settings
+    /// most-used while shooting are one tap away rather than buried.
+    fn draw_camera_top_controls(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect) {
+        let mut x = self.rail_rect().x1 + 18.0;
+        let y = full.y0 + 20.0;
+        let gap = 9.0;
+
+        let r = self.ctrl_pill(scene, t, tr, theme, x, y, None, self.settings.resolution.label(), false);
+        self.push_region(r, Action::CycleResolution);
+        x = r.x1 + gap;
+
+        let r = self.ctrl_pill(scene, t, tr, theme, x, y, None, "HDR", self.settings.hdr);
+        self.push_region(r, Action::ToggleHdr);
+        x = r.x1 + gap;
+
+        let next_timer = cycle(&Timer::ALL, self.settings.timer);
+        let tlabel = if self.settings.timer == Timer::Off { "Timer".to_string() } else { self.settings.timer.label().to_string() };
+        let r = self.ctrl_pill(scene, t, tr, theme, x, y, Some("timer"), &tlabel, self.settings.timer != Timer::Off);
+        self.push_region(r, Action::SetTimer(next_timer));
+        x = r.x1 + gap;
+
+        let r = self.ctrl_pill(scene, t, tr, theme, x, y, Some("grid"), "", self.settings.grid);
+        self.push_region(r, Action::ToggleGrid);
+    }
+
+    /// The bottom capture cluster floating over the viewfinder: a gallery
+    /// thumbnail peek, the shutter, a lens switch, and — when idle — the
+    /// Photo/Video mode toggle above the shutter.
+    fn draw_capture_cluster(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect, has_feed: bool, recording: bool) {
+        let c = &theme.tokens.colors;
+        let scx = self.stage_center_x();
+        let cy = full.y1 - 64.0;
+        let rail = self.rail_rect();
+        let danger = c.semantic.danger;
+
+        // Photo / Video toggle above the shutter — hidden while recording
+        // (mode is locked; the stop-square shutter + REC badge carry the state).
+        if !recording {
+            let seg_w = 172.0;
+            let seg = Rect::new(scx - seg_w / 2.0, full.y1 - 132.0, scx + seg_w / 2.0, full.y1 - 98.0);
             let items: Vec<(String, bool, Action)> = [CaptureMode::Photo, CaptureMode::Video]
                 .into_iter()
                 .map(|m| {
@@ -1127,126 +1225,73 @@ impl CameraApp {
             self.segmented(scene, t, tr, theme, seg, items);
         }
 
-        // Last-capture thumbnail (left) — opens the gallery.
-        let thumb = Rect::new(bar.x0 + 36.0, cy - 28.0, bar.x0 + 92.0, cy + 28.0);
+        // Gallery thumbnail peek, bottom-left (clear of the rail).
+        let ts = 30.0;
+        let thumb = Rect::new(rail.x1 + 24.0, cy - ts, rail.x1 + 24.0 + ts * 2.0, cy + ts);
         if let Some(cap) = self.captures.first().cloned() {
             self.ensure_thumb(&cap);
-            p::push_clip_round(scene, t, thumb, 12.0);
+            p::push_clip_round(scene, t, thumb, 14.0);
             if let Some(img) = self.thumbs.get_mut(&cap.id) {
                 img.paint_at(scene, t, thumb);
             }
             p::pop(scene);
-            p::stroke_round(scene, t, thumb, 12.0, p::alpha(white(), 0.5), 1.5);
+            p::stroke_round(scene, t, thumb, 14.0, p::alpha(white(), 0.65), 1.5);
             let n = self.captures.len();
-            let bw = 24.0;
-            let badge = Rect::new(thumb.x1 - bw + 8.0, thumb.y0 - 8.0, thumb.x1 + 8.0, thumb.y0 + 14.0);
-            p::fill_round(scene, t, badge, 11.0, theme.accent_primary);
+            let badge = Rect::new(thumb.x1 - 15.0, thumb.y0 - 9.0, thumb.x1 + 9.0, thumb.y0 + 15.0);
+            p::fill_round(scene, t, badge, 12.0, theme.accent_primary);
             p::text_in(scene, tr, badge, &n.to_string(), 11.0, white());
         } else {
-            p::stroke_round(scene, t, thumb, 12.0, p::alpha(c.border_standard, 0.8), 1.5);
-            p::icon(scene, t, "gallery", shrink(thumb, 16.0), p::alpha(c.text_dim, 0.8), 1.6);
+            p::fill_round(scene, t, thumb, 14.0, p::alpha(c.neutral[0], 0.5));
+            p::stroke_round(scene, t, thumb, 14.0, c.border_white_10, 1.5);
+            p::icon(scene, t, "gallery", shrink(thumb, 16.0), p::alpha(white(), 0.7), 1.6);
         }
-        p::text_center(scene, tr, thumb.center().x, thumb.y1 + 8.0, "Library", 10.0, p::alpha(c.text_primary, 0.6));
         self.push_region(thumb, Action::Nav(Screen::Gallery));
 
-        // Shutter (center). Photo: white disc. Video: a red record dot that
-        // becomes a red stop-square while recording.
-        let sc = Point::new(content.center().x, cy);
-        let outer = 33.0;
-        let enabled = has_feed;
-        let danger = theme.tokens.colors.semantic.danger;
-        let ring = if recording {
-            danger
-        } else if enabled {
-            p::alpha(white(), 0.92)
-        } else {
-            p::alpha(white(), 0.4)
-        };
-        p::circle_stroke(scene, t, sc.x, sc.y, outer, ring, 4.0);
+        // Shutter (centre). Photo: white disc. Video: red dot → red stop-square
+        // while recording.
+        let outer = 34.0;
+        let ring = if recording { danger } else if has_feed { p::alpha(white(), 0.95) } else { p::alpha(white(), 0.4) };
+        p::circle_stroke(scene, t, scx, cy, outer, ring, 4.5);
         match self.mode {
             CaptureMode::Photo => {
-                let core = if enabled { white() } else { p::alpha(white(), 0.4) };
-                p::circle(scene, t, sc.x, sc.y, outer - 8.0, core);
+                let core = if has_feed { white() } else { p::alpha(white(), 0.4) };
+                p::circle(scene, t, scx, cy, outer - 8.0, core);
             }
             CaptureMode::Video if recording => {
-                // Rounded stop square.
-                let s = 15.0;
-                p::fill_round(scene, t, Rect::new(sc.x - s, sc.y - s, sc.x + s, sc.y + s), 5.0, danger);
+                let s = 14.0;
+                p::fill_round(scene, t, Rect::new(scx - s, cy - s, scx + s, cy + s), 5.0, danger);
             }
             CaptureMode::Video => {
-                let core = if enabled { danger } else { p::alpha(danger, 0.4) };
-                p::circle(scene, t, sc.x, sc.y, outer - 10.0, core);
+                let core = if has_feed { danger } else { p::alpha(danger, 0.4) };
+                p::circle(scene, t, scx, cy, outer - 10.0, core);
             }
         }
-        self.push_region(Rect::new(sc.x - outer, sc.y - outer, sc.x + outer, sc.y + outer), Action::Shutter);
+        self.push_region(Rect::new(scx - outer, cy - outer, scx + outer, cy + outer), Action::Shutter);
 
-        // Lens selector (right) — cycles rear / front / ultra-wide.
-        let fb = Point::new(content.x1 - 64.0, cy);
-        p::circle(scene, t, fb.x, fb.y, 26.0, p::alpha(c.neutral[3], 0.95));
-        p::circle_stroke(scene, t, fb.x, fb.y, 26.0, p::alpha(c.border_standard, 0.8), 1.0);
-        p::icon(scene, t, "switch", Rect::new(fb.x - 13.0, fb.y - 13.0, fb.x + 13.0, fb.y + 13.0), c.text_primary, 2.0);
-        p::text_center(scene, tr, fb.x, fb.y + 30.0, self.facing.label(), 10.0, p::alpha(c.text_primary, 0.6));
-        self.push_region(Rect::new(fb.x - 26.0, fb.y - 26.0, fb.x + 26.0, fb.y + 26.0), Action::CycleFacing);
+        // Lens switch (bottom-right) — cycles rear / front / ultra-wide.
+        let lx = full.x1 - 60.0;
+        p::circle(scene, t, lx, cy, 26.0, p::alpha(c.neutral[0], 0.5));
+        p::circle_stroke(scene, t, lx, cy, 26.0, c.border_white_10, 1.0);
+        p::icon(scene, t, "switch", Rect::new(lx - 13.0, cy - 13.0, lx + 13.0, cy + 13.0), white(), 2.0);
+        p::text_center(scene, tr, lx, cy + 34.0, self.facing.label(), 10.0, p::alpha(white(), 0.78));
+        self.push_region(Rect::new(lx - 26.0, cy - 26.0, lx + 26.0, cy + 26.0), Action::CycleFacing);
     }
 
-    fn draw_viewfinder_overlays(&self, scene: &mut Scene, t: Affine, theme: &Theme, vf: Rect) {
-        // Rule-of-thirds grid.
-        if self.settings.grid {
-            let gc = p::alpha(white(), 0.28);
-            for k in 1..3 {
-                let x = vf.x0 + vf.width() * k as f64 / 3.0;
-                p::line(scene, t, x, vf.y0, x, vf.y1, gc, 1.0);
-                let y = vf.y0 + vf.height() * k as f64 / 3.0;
-                p::line(scene, t, vf.x0, y, vf.x1, y, gc, 1.0);
-            }
-        }
-        // Level horizon indicator.
-        if self.settings.level {
-            let y = vf.center().y;
-            p::line(scene, t, vf.center().x - 60.0, y, vf.center().x + 60.0, y, p::alpha(theme.status_success, 0.9), 2.0);
-            p::line(scene, t, vf.center().x - 90.0, y, vf.center().x - 70.0, y, p::alpha(white(), 0.6), 2.0);
-            p::line(scene, t, vf.center().x + 70.0, y, vf.center().x + 90.0, y, p::alpha(white(), 0.6), 2.0);
-        }
-        // Focus reticle.
-        let rs = 46.0;
-        let fc = Point::new(vf.center().x, vf.center().y);
-        let ret = Rect::new(fc.x - rs, fc.y - rs, fc.x + rs, fc.y + rs);
-        p::stroke_round(scene, t, ret, 8.0, p::alpha(theme.accent_primary, 0.95), 1.6);
-        p::line(scene, t, fc.x - 6.0, fc.y, fc.x + 6.0, fc.y, p::alpha(theme.accent_primary, 0.9), 1.4);
-        p::line(scene, t, fc.x, fc.y - 6.0, fc.x, fc.y + 6.0, p::alpha(theme.accent_primary, 0.9), 1.4);
-    }
-
-    fn draw_viewfinder_chips(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, vf: Rect) {
-        let chx = vf.x0 + 14.0;
-        let chy = vf.y0 + 14.0;
-        let bg = p::alpha(Color::from_rgb8(0, 0, 0), 0.42);
-        let mut x = chx;
-        x = self.chip(scene, t, tr, x, chy, Some("camera"), self.settings.resolution.label(), bg, white());
-        if self.settings.hdr {
-            x = self.chip(scene, t, tr, x, chy, None, "HDR", bg, p::alpha(theme.tokens.colors.semantic.warning, 1.0));
-        }
-        if self.settings.timer != Timer::Off {
-            x = self.chip(scene, t, tr, x, chy, Some("timer"), self.settings.timer.label(), bg, white());
-        }
-        let _ = x;
-        let fl = self.facing.short();
-        let ftw = p::text_w(tr, fl, 12.0) as f64 + 22.0;
-        self.chip(scene, t, tr, vf.x1 - ftw - 14.0, chy, None, fl, bg, white());
-    }
-
-    /// A red "● REC m:ss" badge pinned to the top-center of the viewfinder
-    /// while a clip is recording.
-    fn draw_rec_indicator(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, vf: Rect) {
+    /// A red "● REC m:ss" badge floating at the top-centre of the stage while
+    /// a clip is recording.
+    fn draw_rec_indicator(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, full: Rect) {
+        let scx = self.stage_center_x();
         let started = self.recording.as_ref().map(|s| s.started).unwrap_or(0);
         let elapsed = (now_secs() - started).max(0);
-        let label = fmt_dur(elapsed * 1000);
+        let label = format!("REC  {}", fmt_dur(elapsed * 1000));
         let red = Color::from_rgb8(240, 60, 60);
-        let tw = p::text_w(tr, &label, 12.0) as f64;
-        let w = 20.0 + 10.0 + tw + 12.0;
-        let pill = Rect::new(vf.center().x - w / 2.0, vf.y0 + 14.0, vf.center().x + w / 2.0, vf.y0 + 40.0);
-        p::fill_round(scene, t, pill, 13.0, p::alpha(Color::from_rgb8(0, 0, 0), 0.5));
-        p::circle(scene, t, pill.x0 + 15.0, pill.center().y, 5.0, red);
-        p::text(scene, tr, pill.x0 + 26.0, pill.center().y - 8.0, &label, 12.0, white());
+        let tw = p::text_w(tr, &label, 12.5) as f64;
+        let w = 20.0 + 12.0 + tw + 14.0;
+        let pill = Rect::new(scx - w / 2.0, full.y0 + 18.0, scx + w / 2.0, full.y0 + 46.0);
+        p::fill_round(scene, t, pill, 14.0, p::alpha(Color::from_rgb8(0, 0, 0), 0.55));
+        p::stroke_round(scene, t, pill, 14.0, p::alpha(red, 0.55), 1.0);
+        p::circle(scene, t, pill.x0 + 17.0, pill.center().y, 5.0, red);
+        p::text(scene, tr, pill.x0 + 29.0, pill.center().y - 8.0, &label, 12.5, white());
     }
 
     fn ensure_thumb(&mut self, cap: &Capture) {
@@ -1270,42 +1315,57 @@ impl CameraApp {
 // ====================================================================
 
 impl CameraApp {
-    fn draw_scanner(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
-        let c = &theme.tokens.colors;
-        let pad = 22.0;
-        let wide = content.width() >= WIDE_MIN;
-        let panel_w = if wide { 318.0 } else { 0.0 };
-        let panel_gap = if wide { 16.0 } else { 0.0 };
-
+    fn draw_scanner(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect) {
         let live = self.feed_active();
-        p::text(scene, tr, content.x0 + pad, content.y0 + 16.0, "Scan a code", 19.0, c.text_primary);
+        let rail = self.rail_rect();
+        let wide = (full.width() - RAIL_INSET) >= WIDE_MIN;
+        let panel_w = if wide { 300.0 } else { 0.0 };
+        let panel_gap = if wide { 14.0 } else { 0.0 };
+        // The scan stage: the space between the rail and the optional recent
+        // panel. Controls (window, result card) centre here.
+        let stage = Rect::new(rail.x1 + 10.0, full.y0, full.x1 - RAIL_MARGIN - panel_w - panel_gap, full.y1);
+
+        if live {
+            self.draw_scanner_feed(scene, t, tr, theme, full, stage);
+        } else {
+            self.draw_scanner_offline(scene, t, tr, theme, full, stage);
+        }
+
+        // Floating title, top-left over the feed.
+        let title = if live { "Scan a code" } else { "Scan from a photo" };
         let subtitle = if live {
             "Point at any QR or barcode — detection is automatic"
         } else {
-            "No camera connected — pick a saved photo to scan a code from it"
+            "No camera — pick a saved photo to scan a code from it"
         };
-        p::text(scene, tr, content.x0 + pad, content.y0 + 42.0, subtitle, 12.5, c.text_dim);
+        self.draw_glass_header(scene, t, tr, theme, rail.x1 + 18.0, full.y0 + 18.0, title, subtitle);
 
-        let vf = Rect::new(content.x0 + pad, content.y0 + 70.0, content.x1 - pad - panel_w - panel_gap, content.y1 - pad);
-
-        if live {
-            self.draw_scanner_feed(scene, t, tr, theme, vf);
-        } else {
-            self.draw_scanner_offline(scene, t, tr, theme, vf);
-        }
-
-        // Right info panel (recent scans) — only when there's room.
+        // Recent scans, floating glass panel (wide only).
         if wide {
-            let panel = Rect::new(vf.x1 + panel_gap, vf.y0, content.x1 - pad, vf.y1);
+            let panel = Rect::new(full.x1 - RAIL_MARGIN - panel_w, full.y0 + RAIL_MARGIN, full.x1 - RAIL_MARGIN, full.y1 - RAIL_MARGIN);
             self.draw_scan_panel(scene, t, tr, theme, panel);
         }
     }
 
-    fn draw_scanner_feed(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, vf: Rect) {
-        let vw = vf.width().max(2.0) as u32;
-        let vh = vf.height().max(2.0) as u32;
+    /// A compact floating glass header (title + subtitle) used as an overlay
+    /// label on the scanner's edge-to-edge feed.
+    fn draw_glass_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, x: f64, y: f64, title: &str, subtitle: &str) {
+        let c = &theme.tokens.colors;
+        let tw = p::text_w(tr, title, 15.0) as f64;
+        let sw = p::text_w(tr, subtitle, 11.5) as f64;
+        let w = tw.max(sw) + 32.0;
+        let r = Rect::new(x, y, x + w, y + 52.0);
+        p::fill_round(scene, t, r, 16.0, p::alpha(c.neutral[0], 0.55));
+        p::stroke_round(scene, t, r, 16.0, c.border_white_10, 1.0);
+        p::text(scene, tr, x + 16.0, y + 12.0, title, 15.0, white());
+        p::text(scene, tr, x + 16.0, y + 32.0, subtitle, 11.5, p::alpha(white(), 0.7));
+    }
 
-        // Produce the viewfinder image + a real decode.
+    fn draw_scanner_feed(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect, stage: Rect) {
+        let vw = full.width().max(2.0) as u32;
+        let vh = full.height().max(2.0) as u32;
+
+        // Produce the viewfinder image + a real decode (keyed on the full size).
         match &self.storage {
             Storage::Sample => {
                 if self.scan_view.as_ref().map(|(w, h, _)| (*w, *h) != (vw, vh)).unwrap_or(true) {
@@ -1329,29 +1389,32 @@ impl CameraApp {
             }
         }
 
-        p::push_clip_round(scene, t, vf, 20.0);
+        // Edge-to-edge feed.
         match &self.storage {
             Storage::Sample => {
                 if let Some((_, _, img)) = self.scan_view.as_mut() {
-                    img.paint_at(scene, t, vf);
+                    img.paint_at(scene, t, full);
                 }
             }
             Storage::Disk(_) => {
                 if let Some((_, img)) = self.live_view.as_mut() {
-                    img.paint_at(scene, t, vf);
+                    img.paint_at(scene, t, full);
                 }
             }
         }
 
-        // Reticle window (centered square).
-        let side = vf.width().min(vf.height()) * 0.6;
-        let win = Rect::new(vf.center().x - side / 2.0, vf.center().y - side / 2.0, vf.center().x + side / 2.0, vf.center().y + side / 2.0);
+        // Darken everything but a scan window centred on the frame (where the
+        // subject — and the hermetic sample QR — actually is). Sized to sit
+        // clear of the rail and the recent-scans panel.
+        let side = (stage.width().min(stage.height()) * 0.62).clamp(180.0, 460.0);
+        let wc = Point::new(full.center().x, full.center().y);
+        let win = Rect::new(wc.x - side / 2.0, wc.y - side / 2.0, wc.x + side / 2.0, wc.y + side / 2.0);
         let dark = p::alpha(Color::from_rgb8(0, 0, 0), 0.5);
-        p::fill_rect(scene, t, Rect::new(vf.x0, vf.y0, vf.x1, win.y0), dark);
-        p::fill_rect(scene, t, Rect::new(vf.x0, win.y1, vf.x1, vf.y1), dark);
-        p::fill_rect(scene, t, Rect::new(vf.x0, win.y0, win.x0, win.y1), dark);
-        p::fill_rect(scene, t, Rect::new(win.x1, win.y0, vf.x1, win.y1), dark);
-        let blen = 26.0;
+        p::fill_rect(scene, t, Rect::new(full.x0, full.y0, full.x1, win.y0), dark);
+        p::fill_rect(scene, t, Rect::new(full.x0, win.y1, full.x1, full.y1), dark);
+        p::fill_rect(scene, t, Rect::new(full.x0, win.y0, win.x0, win.y1), dark);
+        p::fill_rect(scene, t, Rect::new(win.x1, win.y0, full.x1, win.y1), dark);
+        let blen = 28.0;
         let acc = theme.accent_primary;
         for &(sx, sy) in &[(-1.0_f64, -1.0_f64), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
             let ox = if sx < 0.0 { win.x0 } else { win.x1 };
@@ -1361,12 +1424,12 @@ impl CameraApp {
         }
         p::line(scene, t, win.x0 + 8.0, win.center().y, win.x1 - 8.0, win.center().y, p::alpha(acc, 0.7), 2.0);
 
-        // Detected bounding box (mapped from decode corners).
+        // Detected bounding box (decode corners → full-frame coords).
         if let Some(s) = self.scanned.clone() {
             let (gw, gh) = self.scan_gen;
-            let sx = vf.width() / gw.max(1) as f64;
-            let sy = vf.height() / gh.max(1) as f64;
-            let pt = |(x, y): (f32, f32)| Point::new(vf.x0 + x as f64 * sx, vf.y0 + y as f64 * sy);
+            let sx = full.width() / gw.max(1) as f64;
+            let sy = full.height() / gh.max(1) as f64;
+            let pt = |(x, y): (f32, f32)| Point::new(full.x0 + x as f64 * sx, full.y0 + y as f64 * sy);
             let mut bez = BezPath::new();
             let pts: Vec<Point> = s.corners.iter().map(|c| pt(*c)).collect();
             bez.move_to(pts[0]);
@@ -1383,18 +1446,17 @@ impl CameraApp {
             let cxy = s.center();
             let tag = format!("{}  detected", s.symbology);
             let tw = p::text_w(tr, &tag, 11.0) as f64 + 18.0;
-            let tagx = (vf.x0 + cxy.0 as f64 * sx) - tw / 2.0;
+            let tagx = (full.x0 + cxy.0 as f64 * sx) - tw / 2.0;
             let top = pts.iter().map(|q| q.y).fold(f64::MAX, f64::min);
             let tagr = Rect::new(tagx, top - 26.0, tagx + tw, top - 6.0);
             p::fill_round(scene, t, tagr, 10.0, green);
             p::text_in(scene, tr, tagr, &tag, 11.0, white());
         }
-        p::pop(scene);
 
-        // Floating result card.
+        // Floating result card, centred on the frame under the scan window.
         if let Some(s) = self.scanned.clone() {
             if !self.scan_dismissed {
-                self.draw_scan_card(scene, t, tr, theme, vf, &s);
+                self.draw_scan_card(scene, t, tr, theme, full, &s);
             }
         }
     }
@@ -1402,10 +1464,10 @@ impl CameraApp {
     /// No live camera: let the user scan a code out of a photo already in
     /// the library. Real decode — tapping a thumbnail runs the QR detector
     /// over the file's pixels.
-    fn draw_scanner_offline(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, vf: Rect) {
+    fn draw_scanner_offline(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect, stage: Rect) {
         let c = &theme.tokens.colors;
-        p::fill_round(scene, t, vf, 20.0, p::alpha(c.neutral[1], 0.9));
-        p::stroke_round(scene, t, vf, 20.0, p::alpha(c.border_standard, 0.4), 1.0);
+        // Full-bleed "camera off" backdrop; the photo picker floats over it.
+        p::fill_rect(scene, t, full, c.neutral[0]);
 
         let photos: Vec<Capture> = self
             .captures
@@ -1414,21 +1476,19 @@ impl CameraApp {
             .cloned()
             .collect();
 
+        let grid = Rect::new(stage.x0 + 8.0, full.y0 + 86.0, stage.x1 - 8.0, full.y1 - 20.0);
+
         if photos.is_empty() {
-            let cx = vf.center().x;
-            let cy = vf.center().y;
+            let cx = grid.center().x;
+            let cy = grid.center().y;
             let ic = Rect::new(cx - 24.0, cy - 58.0, cx + 24.0, cy - 10.0);
-            p::icon(scene, t, "scan", ic, p::alpha(c.text_primary, 0.55), 2.0);
-            p::text_center(scene, tr, cx, cy + 6.0, "No camera connected", 16.0, c.text_primary);
-            p::text_center(scene, tr, cx, cy + 30.0, "Save a photo of a QR or barcode and it can be scanned here", 12.5, c.text_dim);
+            p::icon(scene, t, "scan", ic, p::alpha(white(), 0.5), 2.0);
+            p::text_center(scene, tr, cx, cy + 6.0, "Nothing to scan yet", 16.0, p::alpha(white(), 0.9));
+            p::text_center(scene, tr, cx, cy + 30.0, "Save a photo of a QR or barcode and it can be scanned here", 12.5, p::alpha(white(), 0.55));
             return;
         }
 
-        let pad = 16.0;
-        p::text(scene, tr, vf.x0 + pad, vf.y0 + 14.0, "Tap a photo to scan it", 13.0, p::alpha(c.text_primary, 0.85));
-
-        let grid = Rect::new(vf.x0 + pad, vf.y0 + 40.0, vf.x1 - pad, vf.y1 - pad);
-        let target_w = 150.0;
+        let target_w = 156.0;
         let gap = 12.0;
         let cols = (((grid.width() + gap) / (target_w + gap)).floor() as usize).max(1);
         let cell_w = (grid.width() - gap * (cols - 1) as f64) / cols as f64;
@@ -1444,44 +1504,44 @@ impl CameraApp {
             }
             let card = Rect::new(x0, y0, x0 + cell_w, y0 + card_h);
             self.ensure_thumb(cap);
-            p::push_clip_round(scene, t, card, 12.0);
+            p::push_clip_round(scene, t, card, 14.0);
             if let Some(img) = self.thumbs.get_mut(&cap.id) {
                 img.paint_at(scene, t, card);
             }
             p::pop(scene);
-            p::stroke_round(scene, t, card, 12.0, p::alpha(c.border_standard, 0.5), 1.0);
+            p::stroke_round(scene, t, card, 14.0, c.border_white_10, 1.0);
             self.push_region(card, Action::ScanLibraryItem(cap.id.clone()));
         }
         p::pop(scene);
 
         if let Some(s) = self.scanned.clone() {
             if !self.scan_dismissed {
-                self.draw_scan_card(scene, t, tr, theme, vf, &s);
+                self.draw_scan_card(scene, t, tr, theme, stage, &s);
             }
         }
     }
 
-    fn draw_scan_card(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, vf: Rect, s: &ScannedCode) {
+    fn draw_scan_card(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, stage: Rect, s: &ScannedCode) {
         let c = &theme.tokens.colors;
-        let cw = vf.width().min(560.0) - 36.0;
+        let cw = stage.width().min(560.0) - 36.0;
         let ch = 122.0;
-        let card = Rect::new(vf.center().x - cw / 2.0, vf.y1 - ch - 18.0, vf.center().x + cw / 2.0, vf.y1 - 18.0);
-        p::fill_round(scene, t, card, 16.0, p::alpha(c.neutral[1], 0.97));
-        p::stroke_round(scene, t, card, 16.0, p::alpha(c.border_standard, 0.6), 1.0);
+        let card = Rect::new(stage.center().x - cw / 2.0, stage.y1 - ch - 20.0, stage.center().x + cw / 2.0, stage.y1 - 20.0);
+        p::fill_round(scene, t, card, 18.0, p::alpha(c.neutral[0], 0.92));
+        p::stroke_round(scene, t, card, 18.0, c.border_white_10, 1.0);
 
         let icon_name = code_icon(&s.kind);
         let badge = Rect::new(card.x0 + 16.0, card.y0 + 16.0, card.x0 + 60.0, card.y0 + 60.0);
-        p::fill_round(scene, t, badge, 12.0, p::alpha(theme.accent_primary, 0.18));
+        p::fill_round(scene, t, badge, 13.0, p::alpha(theme.accent_primary, 0.20));
         p::icon(scene, t, icon_name, shrink(badge, 11.0), theme.accent_primary, 2.0);
 
         let tx = badge.x1 + 14.0;
-        p::text(scene, tr, tx, card.y0 + 16.0, s.kind.title(), 15.0, c.text_primary);
+        p::text(scene, tr, tx, card.y0 + 16.0, s.kind.title(), 15.0, white());
         let summ = s.kind.summary(&s.raw);
         let summ = ellipsize(tr, &summ, 13.0, card.x1 - tx - 40.0);
-        p::text(scene, tr, tx, card.y0 + 39.0, &summ, 13.0, c.text_dim);
+        p::text(scene, tr, tx, card.y0 + 39.0, &summ, 13.0, p::alpha(white(), 0.7));
 
         let xr = Rect::new(card.x1 - 34.0, card.y0 + 12.0, card.x1 - 12.0, card.y0 + 34.0);
-        p::icon(scene, t, "close", xr, p::alpha(c.text_primary, 0.6), 1.8);
+        p::icon(scene, t, "close", xr, p::alpha(white(), 0.6), 1.8);
         self.push_region(xr, Action::DismissScan);
 
         let actions = s.kind.actions();
@@ -1495,8 +1555,8 @@ impl CameraApp {
                 p::fill_round(scene, t, br, 15.0, theme.accent_primary);
                 p::text_in(scene, tr, br, label, 13.0, white());
             } else {
-                p::stroke_round(scene, t, br, 15.0, p::alpha(c.border_standard, 0.9), 1.2);
-                p::text_in(scene, tr, br, label, 13.0, c.text_primary);
+                p::fill_round(scene, t, br, 15.0, c.surface_white_10);
+                p::text_in(scene, tr, br, label, 13.0, p::alpha(white(), 0.92));
             }
             self.push_region(br, Action::ScanAction(i));
             bx += bw + 10.0;
@@ -1505,32 +1565,32 @@ impl CameraApp {
 
     fn draw_scan_panel(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, panel: Rect) {
         let c = &theme.tokens.colors;
-        p::fill_round(scene, t, panel, 18.0, c.surfaces.raised);
-        p::stroke_round(scene, t, panel, 18.0, p::alpha(c.border_standard, 0.5), 1.0);
+        p::fill_round(scene, t, panel, 20.0, p::alpha(c.neutral[0], 0.55));
+        p::stroke_round(scene, t, panel, 20.0, c.border_white_10, 1.0);
         let px = panel.x0 + 18.0;
-        p::text(scene, tr, px, panel.y0 + 18.0, "Recent scans", 14.0, c.text_primary);
+        p::text(scene, tr, px, panel.y0 + 20.0, "Recent scans", 14.0, white());
 
         if self.scans.is_empty() {
             let cx = panel.center().x;
             let cy = panel.y0 + 120.0;
-            p::icon(scene, t, "scan", Rect::new(cx - 18.0, cy - 18.0, cx + 18.0, cy + 18.0), p::alpha(c.text_dim, 0.7), 1.8);
-            p::text_center(scene, tr, cx, cy + 28.0, "No codes scanned yet", 13.0, c.text_dim);
-            p::text_center(scene, tr, cx, cy + 48.0, "Scanned codes show up here", 11.5, p::alpha(c.text_dim, 0.8));
+            p::icon(scene, t, "scan", Rect::new(cx - 18.0, cy - 18.0, cx + 18.0, cy + 18.0), p::alpha(white(), 0.45), 1.8);
+            p::text_center(scene, tr, cx, cy + 28.0, "No codes scanned yet", 13.0, p::alpha(white(), 0.7));
+            p::text_center(scene, tr, cx, cy + 48.0, "Scanned codes show up here", 11.5, p::alpha(white(), 0.5));
             return;
         }
 
         let now = now_secs();
-        let mut y = panel.y0 + 46.0;
+        let mut y = panel.y0 + 50.0;
         for entry in self.scans.clone().iter().take(8) {
             if y + 44.0 > panel.y1 - 12.0 {
                 break;
             }
             let kind = classify(&entry.raw);
             let row = Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + 44.0);
-            p::icon(scene, t, code_icon(&kind), Rect::new(row.x0 + 8.0, row.center().y - 9.0, row.x0 + 26.0, row.center().y + 9.0), p::alpha(theme.accent_primary, 0.9), 1.8);
+            p::icon(scene, t, code_icon(&kind), Rect::new(row.x0 + 8.0, row.center().y - 9.0, row.x0 + 26.0, row.center().y + 9.0), p::alpha(c.accent[6], 0.95), 1.8);
             let summ = ellipsize(tr, &kind.summary(&entry.raw), 13.0, row.width() - 44.0);
-            p::text(scene, tr, row.x0 + 36.0, row.center().y - 14.0, &summ, 13.0, c.text_primary);
-            p::text(scene, tr, row.x0 + 36.0, row.center().y + 2.0, &ago(entry.ts, now), 11.0, c.text_dim);
+            p::text(scene, tr, row.x0 + 36.0, row.center().y - 14.0, &summ, 13.0, white());
+            p::text(scene, tr, row.x0 + 36.0, row.center().y + 2.0, &ago(entry.ts, now), 11.0, p::alpha(white(), 0.6));
             y += 46.0;
         }
     }
