@@ -622,6 +622,16 @@ impl PdfApp {
                 *handled = true;
             }
 
+            // Touchpad pinch: zoom toward the cursor. winit surfaces this on
+            // macOS/iOS; on Wayland a pinch usually arrives as ctrl+two-finger
+            // scroll (handled by `MouseWheel` above), so both gestures zoom.
+            WindowEvent::PinchGesture { delta, .. } => {
+                if delta.is_finite() && *delta != 0.0 {
+                    self.zoom_at(1.0 + *delta, self.last_mouse);
+                    *handled = true;
+                }
+            }
+
             WindowEvent::KeyboardInput { event: key_event, .. }
                 if key_event.state == ElementState::Pressed =>
             {
@@ -826,34 +836,32 @@ impl PdfApp {
                 self.dirty = true;
                 *handled = true;
             }
-            Key::Named(NamedKey::ArrowDown)
-            | Key::Named(NamedKey::PageDown)
-            | Key::Named(NamedKey::Space) => {
-                self.next_page();
+            // Arrows scroll the document smoothly (a small nudge), not a whole
+            // page jump. Page Up/Down (and Space) scroll a near-viewport-ful.
+            Key::Named(NamedKey::ArrowDown) => {
+                self.scroll_by(0.0, KEY_SCROLL_STEP);
                 *handled = true;
             }
-            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp) => {
-                self.prev_page();
+            Key::Named(NamedKey::ArrowUp) => {
+                self.scroll_by(0.0, -KEY_SCROLL_STEP);
                 *handled = true;
             }
-            // Left/Right pan horizontally when the zoomed page is wider than
-            // the viewport; otherwise they step pages.
             Key::Named(NamedKey::ArrowLeft) => {
-                if self.is_overflowing_x() {
-                    self.viewport.pan_by(-80.0, 0.0);
-                    self.dirty = true;
-                } else {
-                    self.prev_page();
-                }
+                self.scroll_by(-KEY_SCROLL_STEP, 0.0);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if self.is_overflowing_x() {
-                    self.viewport.pan_by(80.0, 0.0);
-                    self.dirty = true;
-                } else {
-                    self.next_page();
-                }
+                self.scroll_by(KEY_SCROLL_STEP, 0.0);
+                *handled = true;
+            }
+            Key::Named(NamedKey::PageDown) | Key::Named(NamedKey::Space) => {
+                let step = (self.canvas_rect.height() * 0.9).max(KEY_SCROLL_STEP);
+                self.scroll_by(0.0, step);
+                *handled = true;
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let step = (self.canvas_rect.height() * 0.9).max(KEY_SCROLL_STEP);
+                self.scroll_by(0.0, -step);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
@@ -1156,6 +1164,50 @@ mod event_tests {
             "the typed comment body landed in the shared document: {:?}",
             saved.iter().map(|c| c.body.clone()).collect::<Vec<_>>()
         );
+    }
+
+    /// Arrow keys scroll the document by a small nudge through the real key
+    /// path — not a whole-page jump — and PageDown scrolls much further.
+    #[test]
+    fn arrow_keys_scroll_smoothly_not_by_whole_pages() {
+        use ui::Widget as _;
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.tool = Tool::Select;
+        app.go_to_page(1);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        let sy0 = app.scroll_y();
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::ArrowDown)));
+        let after_down = app.scroll_y();
+        assert!(after_down > sy0, "ArrowDown scrolls down ({sy0} -> {after_down})");
+        assert!(
+            (after_down - sy0) <= KEY_SCROLL_STEP + 0.5,
+            "ArrowDown is a small nudge (~{KEY_SCROLL_STEP}px), not a page jump: moved {}",
+            after_down - sy0
+        );
+
+        // ArrowUp reverses it.
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::ArrowUp)));
+        assert!((app.scroll_y() - sy0).abs() < 0.5, "ArrowUp returns to the start");
+
+        // PageDown scrolls far more than a single arrow nudge.
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::PageDown)));
+        assert!(app.scroll_y() > sy0 + KEY_SCROLL_STEP, "PageDown scrolls a viewport-ful");
     }
 
     #[test]

@@ -69,6 +69,8 @@ const RASTER_SS: f64 = 2.0;
 /// How close (page points) a highlight drag must come to a text line before
 /// it snaps to text instead of falling back to a free-form rectangle.
 const SNAP_NEAR: f64 = 18.0;
+/// Screen-px a single arrow-key press scrolls the document.
+const KEY_SCROLL_STEP: f64 = 90.0;
 /// Fixed date stamped on the bundled demonstration signature. It is only
 /// ever read by [`PdfApp::seed`], which runs on the screenshot / test path,
 /// so the shots stay byte-for-byte deterministic. Signatures placed at
@@ -842,6 +844,15 @@ impl PdfApp {
         let target_y = (page - 1) as f64 * self.stack_unit() * self.viewport.zoom();
         self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
         self.current_page = page;
+        self.dirty = true;
+    }
+
+    /// Scroll the document by a screen-space delta (arrow-key / wheel nudge),
+    /// clamped by the shared viewport kernel, keeping the current-page readout
+    /// in sync.
+    fn scroll_by(&mut self, dx: f64, dy: f64) {
+        self.viewport.pan_by(dx, dy);
+        self.current_page = self.nearest_page();
         self.dirty = true;
     }
 
@@ -2505,6 +2516,47 @@ mod tests {
              (e.g. ~/.local/lib/pdfium/libpdfium.so) or set QOS_PDFIUM_LIB"
         );
         app
+    }
+
+    /// Measure the open path so regressions surface as numbers, not vibes.
+    /// Times: document open (load + page sizes, no rendering), first text-layer
+    /// extraction, a cold first-page rasterise, and a cache-hit rasterise
+    /// (the scroll-frame cost). Prints under `--nocapture`; the assertions are
+    /// loose sanity bounds, not perf gates.
+    #[test]
+    #[serial(pdfium)]
+    fn measure_open_and_render_perf() {
+        use std::time::Instant;
+
+        let t = Instant::now();
+        let mut app = PdfApp::open(SAMPLE_PDF);
+        let open_ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert!(app.raster.is_some(), "pdfium raster backend required for the perf measurement");
+        let pages = app.doc.page_count();
+
+        let t = Instant::now();
+        let layer = app.raster.as_mut().unwrap().page_text(0);
+        let text_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let glyphs = layer.chars.len();
+
+        // A fit-page render is ~US-Letter width (612pt) times the 2x supersample.
+        let bucket = 1224u32;
+        let t = Instant::now();
+        let img = app.raster.as_mut().unwrap().render(0, bucket);
+        let render_cold_ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert!(img.is_some(), "page 0 rasterises");
+
+        let t = Instant::now();
+        let _ = app.raster.as_mut().unwrap().render(0, bucket);
+        let render_cached_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        eprintln!(
+            "PERF pages={pages} glyphs={glyphs} | open={open_ms:.1}ms \
+             text_extract={text_ms:.1}ms render_cold={render_cold_ms:.1}ms \
+             render_cached(scroll-frame)={render_cached_ms:.3}ms"
+        );
+        assert!(open_ms < 5000.0, "open should not take seconds (was {open_ms:.0}ms)");
+        assert!(render_cached_ms < render_cold_ms.max(1.0), "cached render is faster than cold");
     }
 
     /// The first run of `min_len`+ alphabetic characters in `text`.
