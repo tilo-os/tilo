@@ -233,6 +233,15 @@ pub trait Widget {
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }
+
+    /// Whether this child floats above its in-flow siblings: it is drawn on
+    /// top of them and receives pointer events before them, but — unlike a
+    /// modal overlay ([`wants_pointer_capture`]) — it does NOT swallow events
+    /// that miss it, so clicks that fall outside the float still reach the
+    /// content beneath. Containers use this to give a small on-video affordance
+    /// (a "Skip" button) correct z-order and hit priority without deadening the
+    /// player under it. Default `false`.
+    fn is_floating(&self) -> bool { false }
     /// Whether this widget (or any descendant) is currently running a
     /// frame-driven animation and needs the host to keep pumping redraws
     /// until the transition settles. Default: opt-out (static widget).
@@ -328,6 +337,29 @@ pub trait Widget {
             true
         } else {
             self.children().iter().any(|c| c.is_layout_dirty())
+        }
+    }
+
+    /// Whether a frame that is only `layout_dirty` because of a change in
+    /// this subtree needs taffy to **re-solve** intrinsic sizes
+    /// (`compute_layout`), as opposed to merely re-running `apply_layout`
+    /// to reposition already-solved boxes.
+    ///
+    /// A scroll is the motivating case: the [`Scrollable`] moves its
+    /// child by translating its origin in `apply_layout`; the taffy sizes
+    /// and relative positions are unchanged, so re-running the (expensive)
+    /// `compute_layout` over the whole content each scroll frame is pure
+    /// waste. The App consults this to skip the solve on pure-reposition
+    /// frames. Default preserves the historical behaviour exactly (leaf =
+    /// its `is_layout_dirty`, container = any child), so no widget changes
+    /// behaviour unless it — like `Scrollable` — deliberately overrides to
+    /// drop a reposition-only signal.
+    fn layout_needs_measure(&self) -> bool {
+        let kids = self.children();
+        if kids.is_empty() {
+            self.is_layout_dirty()
+        } else {
+            kids.iter().any(|c| c.layout_needs_measure())
         }
     }
 
