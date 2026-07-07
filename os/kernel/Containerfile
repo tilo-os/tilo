@@ -176,10 +176,15 @@ RUN set -eux; \
     printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
     STAGE=/work/stage; \
     rm -rf "$STAGE"; \
-    mkdir -p "$STAGE/boot" "$STAGE/lib/modules/$KVER"; \
-    cp arch/x86/boot/bzImage "$STAGE/boot/vmlinuz-$KVER"; \
-    cp System.map "$STAGE/boot/System.map-$KVER"; \
-    cp .config "$STAGE/boot/config-$KVER"; \
+    mkdir -p "$STAGE/lib/modules/$KVER"; \
+    # bootc / ostree find the boot artifacts alongside the modules,
+    # NOT under /boot: `bootc install` fails "Failed to find kernel in
+    # /usr/lib/modules, /usr/lib/ostree-boot or /boot" if vmlinuz isn't
+    # co-located with the module tree. /boot itself is populated at
+    # deploy time from these files.
+    cp arch/x86/boot/bzImage "$STAGE/lib/modules/$KVER/vmlinuz"; \
+    cp System.map            "$STAGE/lib/modules/$KVER/System.map"; \
+    cp .config               "$STAGE/lib/modules/$KVER/config"; \
     make INSTALL_MOD_PATH="$STAGE" INSTALL_MOD_STRIP=1 modules_install; \
     # `depmod` builds modules.dep + friends inside the staging tree so
     # `dnf install` doesn't have to run scriptlets on the live system.
