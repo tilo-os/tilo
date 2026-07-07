@@ -38,7 +38,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_arg_value(&args, "--shots-live") {
         let url = parse_arg_value(&args, "--url")
             .unwrap_or_else(|| "https://example.org".to_string());
-        render_live_shot_to_png(&url, DEFAULT_SHOTS_VIEWPORT, std::path::Path::new(&out))?;
+        // `--size WxH` renders at an arbitrary viewport — used to inspect
+        // narrow / mobile widths headlessly.
+        let size = parse_arg_value(&args, "--size")
+            .and_then(|s| {
+                let (w, h) = s.split_once('x')?;
+                Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+            })
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_live_shot_to_png(&url, size, std::path::Path::new(&out))?;
         return Ok(());
     }
     if let Some(out) = parse_shots_arg(&args) {
@@ -162,11 +170,18 @@ fn render_live_shot_to_png(
         let frame = engine.frames().lock().unwrap().clone();
         if let Some(f) = frame {
             let painted = f.rgba.chunks_exact(4).any(|px| px[3] != 0);
-            // The engine's pre-resize default is 1024px wide; a frame
-            // wider than that means the layout-driven Resize took hold.
-            if painted && f.width > 1024 {
+            // Wait for a painted frame at the requested viewport width
+            // (edge-to-edge web view, scale 1.0 → frame width ≈ w), so
+            // the layout-driven Resize has taken hold rather than the
+            // engine's 1024×768 default. Works for any width, wide or
+            // narrow.
+            let sized = (f.width as i32 - w as i32).abs() <= 2;
+            if painted && sized {
                 let seen = *sized_frame_seen_at.get_or_insert_with(Instant::now);
-                if seen.elapsed() > Duration::from_secs(3) {
+                // Settle long enough that a UA-driven reload (the mobile/
+                // desktop switch fires one on the first resize) completes
+                // over the network before we capture.
+                if seen.elapsed() > Duration::from_secs(6) {
                     let mut scene = Scene::new();
                     widget.draw_with_presence(
                         &mut scene,
