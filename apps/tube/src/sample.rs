@@ -391,5 +391,21 @@ pub fn model() -> TubeModel {
         search_hits: Vec::new(),
         related_of: String::new(),
         related_hits: Vec::new(),
+        // A few crowdsourced dislike counts (Return YouTube Dislike) so the
+        // offline watch page shows a real dislikes pill from a cold start; live
+        // fetch folds in the true numbers on top.
+        dislikes: [
+            ("vid_rust_async", 1_240u64),
+            ("vid_black_holes", 8_400),
+            ("vid_donut", 2_300),
+            ("vid_privacy", 3_050),
+            ("vid_gpu", 410),
+        ]
+        .into_iter()
+        .map(|(id, n)| (id.to_string(), n))
+        .collect(),
+        // Offline: no real DeArrow community thumbnails (the sample has no
+        // network); live fetch populates this.
+        dearrow_thumb_url: std::collections::BTreeMap::new(),
     }
 }
