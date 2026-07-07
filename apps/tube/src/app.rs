@@ -290,14 +290,37 @@ impl TubeApp {
             // Pump until the pipeline decodes its first frame (GStreamer prerolls
             // + decodes on its own threads; give it real time). The offscreen
             // renderer syncs the app only once, before this player is mounted, so
-            // the frame must already be in hand before the shot draws.
+            // the frame must already be in hand before the shot draws. Poll at the
+            // live app's ~16ms cadence: the engine's appsink pull is non-blocking
+            // and the sink paces/drops frames to the clock, so a slow (100ms) poll
+            // misses them — matching the live rate reliably catches the picture.
+            eprintln!(
+                "shot-decode: engine real_decode={} decode_compiled={}",
+                p.engine().map(|e| e.is_real_decode()).unwrap_or(false),
+                media::MediaEngine::is_decode_compiled()
+            );
             let deadline = Instant::now() + Duration::from_secs(30);
+            let mut i = 0u32;
             while Instant::now() < deadline {
                 p.sync(&mut doc, &root);
+                if i % 33 == 0 {
+                    if let Some(e) = p.engine() {
+                        eprintln!(
+                            "shot-decode: pos={}ms dur={:?} buf={}% engine_frame={} player_frame={}",
+                            e.position_ms(),
+                            e.duration_ms(),
+                            e.buffering_percent(),
+                            e.latest_frame().is_some(),
+                            p.latest_frame().is_some(),
+                        );
+                    }
+                }
                 if p.latest_frame().is_some() {
+                    eprintln!("shot-decode: got a frame after {} polls", i + 1);
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                i += 1;
+                std::thread::sleep(Duration::from_millis(15));
             }
         }
         self.player_video = Some(video_id.to_string());
