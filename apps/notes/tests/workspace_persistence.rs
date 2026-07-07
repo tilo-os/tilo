@@ -46,14 +46,14 @@ fn missing_workspace_file_loads_as_none() {
 fn notes_app_spawn_restart_preserves_welcome_page() {
     use notes::NotesApp;
     let tmp = TempDir::new().unwrap();
-    let mut first = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut first = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = first.workspace_pages_for_test()[0].id;
     first.flush_saves();
     drop(first);
 
     // Second launch should rehydrate the same Welcome page rather
     // than seeding a fresh one (different UUID).
-    let second = NotesApp::spawn(tmp.path().into()).unwrap();
+    let second = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let pages = second.workspace_pages_for_test();
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].id, id, "rehydrated page must keep its UUID");

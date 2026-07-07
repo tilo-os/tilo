@@ -94,7 +94,7 @@ fn ghost_caret_repro() {
         .unwrap_or_else(|_| "/tmp/notes-peer-caret".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn ok");
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
     app.tick_for_test();
 
     // 1) Baseline: no presence at all. If a "ghost" caret appears here

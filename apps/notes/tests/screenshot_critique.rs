@@ -81,7 +81,7 @@ fn critique_state_dump() {
     let Ok(dir) = std::env::var("NOTES_CRITIQUE_DIR") else { return; };
     std::fs::create_dir_all(&dir).unwrap();
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn ok");
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
     app.tick_for_test();
 
     // 1) Default landing state — full Welcome page.
