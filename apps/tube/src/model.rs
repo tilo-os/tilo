@@ -224,10 +224,20 @@ pub struct Settings {
     pub categories: BTreeMap<String, bool>,
     pub dearrow_enabled: bool,
     pub dearrow_thumbnails: bool,
+    /// Show the crowdsourced dislike count (Return YouTube Dislike) on the watch
+    /// page alongside likes.
+    #[serde(default = "default_true")]
+    pub return_dislike_enabled: bool,
     pub autoplay: bool,
     pub show_comments: bool,
     pub preferred_quality: String,
     pub invidious_instance: String,
+}
+
+/// serde default helper (a `#[serde(default)]` bool defaults to `false`; several
+/// of our flags want to default *on* when absent from older persisted state).
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -244,6 +254,7 @@ impl Default for Settings {
             categories,
             dearrow_enabled: true,
             dearrow_thumbnails: true,
+            return_dislike_enabled: true,
             autoplay: true,
             show_comments: true,
             preferred_quality: "1080p".to_string(),
@@ -357,6 +368,15 @@ pub struct TubeModel {
     /// Ordered related-video ids returned by the live backend for [`related_of`].
     #[serde(default)]
     pub related_hits: Vec<VideoId>,
+    /// Crowdsourced dislike counts (Return YouTube Dislike), keyed by video id.
+    /// Kept off [`Video`] so the API result folds in without a catalogue rewrite.
+    #[serde(default)]
+    pub dislikes: BTreeMap<VideoId, u64>,
+    /// DeArrow community thumbnail URLs (a rendered frame at the top-voted
+    /// timestamp, or a submitted image), keyed by video id. Used in place of the
+    /// clickbait frame when DeArrow thumbnails are enabled.
+    #[serde(default)]
+    pub dearrow_thumb_url: BTreeMap<VideoId, String>,
 }
 
 impl Default for TubeModel {
@@ -380,6 +400,8 @@ impl Default for TubeModel {
             search_hits: Vec::new(),
             related_of: String::new(),
             related_hits: Vec::new(),
+            dislikes: BTreeMap::new(),
+            dearrow_thumb_url: BTreeMap::new(),
         }
     }
 }
@@ -421,6 +443,27 @@ impl TubeModel {
     /// user has liked it this session, so the pill's number tracks its state.
     pub fn display_likes(&self, v: &Video) -> u64 {
         v.likes + if self.is_liked(&v.id) { 1 } else { 0 }
+    }
+
+    /// The crowdsourced dislike count for a video (Return YouTube Dislike), once
+    /// fetched. `None` until it lands (or when disabled).
+    pub fn dislikes_of(&self, id: &str) -> Option<u64> {
+        self.dislikes.get(id).copied()
+    }
+
+    /// The thumbnail URL to display for `v`, honouring the DeArrow-thumbnails
+    /// setting: the community thumbnail when enabled and available, otherwise the
+    /// video's own thumbnail. Keeps the DeArrow/original choice in one place so
+    /// every card + poster stays consistent.
+    pub fn display_thumbnail_url<'a>(&'a self, v: &'a Video) -> &'a str {
+        if self.settings.dearrow_enabled && self.settings.dearrow_thumbnails {
+            if let Some(url) = self.dearrow_thumb_url.get(&v.id) {
+                if !url.is_empty() {
+                    return url;
+                }
+            }
+        }
+        &v.thumbnail_url
     }
 
     /// Push a transient notice onto the front of the toast stack (newest first,
