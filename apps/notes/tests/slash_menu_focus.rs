@@ -146,7 +146,7 @@ fn dispatch(
 #[test]
 fn slash_menu_arrows_navigate_the_menu_not_the_page_list() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     // A second page so a stray ArrowDown on the page list would be visible
     // (it would move the selection off Welcome).
@@ -201,7 +201,7 @@ fn slash_menu_arrows_navigate_the_menu_not_the_page_list() {
 #[test]
 fn slash_menu_enter_inserts_the_chosen_block() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     // A fresh empty child page gives a clean single-paragraph editor.
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
     app.sync_sidebar_for_test();

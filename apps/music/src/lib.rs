@@ -103,6 +103,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     // Hermetic: a headless shot never spawns a worker or fetches covers, so the
     // frame is deterministic and offline (bundled sample + placeholder tiles).
     app.set_offline_for_shot();
+    // A screenshot needs real content, so the shot path (unlike the live app)
+    // seeds the bundled sample catalog.
+    app.seed_sample_library();
     match scenario {
         "sidebar" => app.snap_sidebar(true),
         "collapsed" => app.snap_sidebar(false),

@@ -115,7 +115,7 @@ fn dispatch(
 #[test]
 fn narrow_window_collapses_sidebar_into_toggleable_drawer() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     // A second root page so a selection change is observable.
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });

@@ -86,7 +86,7 @@ fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
 #[test]
 fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     app.bypass_seed_grace_for_test();
     let mut state = ui::State::new();
     let theme = Theme::dark();

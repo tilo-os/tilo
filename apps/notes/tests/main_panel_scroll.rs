@@ -102,7 +102,7 @@ fn dispatch(
 #[test]
 fn mouse_wheel_scrolls_and_clamps_to_content() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.selected_for_test().unwrap();
     app.main_panel_mut().load_page(id, "Long page".into(), tall_body());
 
