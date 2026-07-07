@@ -40,6 +40,13 @@ pub struct MapPalette {
     pub route: Color,
     pub route_casing: Color,
     pub marker_ring: Color,
+    /// Pre-tiles / first-run loading surface: a calm DARK neutral pulled from
+    /// the theme (NOT the near-white cartographic `land`), so the map never
+    /// flashes bright before imagery arrives. Only the loading substrate uses
+    /// it; the tile land underlay stays light behind the real light OSM tiles.
+    pub substrate: Color,
+    /// The faint grid-line tint drawn over the loading substrate.
+    pub substrate_grid: Color,
 }
 
 impl MapPalette {
@@ -73,6 +80,16 @@ impl MapPalette {
             route: theme.accent_primary,
             route_casing: draw::mix(theme.accent_primary, w, 0.5),
             marker_ring: w,
+            // The loading substrate is a theme surface, not the paper land: dark
+            // under a dark theme so a first-run map is a quiet surface, not a
+            // bright flash. The grid is a faint step off it toward the raised
+            // surface, so it reads as texture without glowing.
+            substrate: theme.tokens.colors.surfaces.base,
+            substrate_grid: draw::mix(
+                theme.tokens.colors.surfaces.base,
+                theme.tokens.colors.surfaces.raised,
+                0.9,
+            ),
         }
     }
 }
@@ -251,11 +268,11 @@ pub fn draw_tiles(
 /// Paint a reference-grid substrate aligned to the slippy-map tile pyramid.
 ///
 /// Shown when there is neither real raster imagery nor a vector basemap yet —
-/// the live app's first frames and any offline gap. Instead of a flat black
-/// void, the viewport reads as a map substrate: land colour, a faint
-/// tile-boundary grid, and a lighter quarter-tile sub-grid for texture. The
-/// grid uses the exact same projection as [`draw_tiles`], so it lines up with
-/// the imagery that fades in on top of it.
+/// the live app's first frames and any offline gap. Instead of a flat void or a
+/// bright white flash, the viewport reads as a calm map substrate: a dark
+/// neutral theme surface, a faint tile-boundary grid, and a quarter-tile
+/// sub-grid for texture. The grid uses the exact same projection as
+/// [`draw_tiles`], so it lines up with the imagery that fades in on top of it.
 pub fn draw_grid_substrate(
     scene: &mut Scene,
     t: Affine,
@@ -264,10 +281,10 @@ pub fn draw_grid_substrate(
     view_center: Point,
     pal: &MapPalette,
 ) {
-    draw::fill_rect(scene, t, clip, pal.land);
+    draw::fill_rect(scene, t, clip, pal.substrate);
     let tiles = TileLayer::visible_tiles(model.center, model.zoom, view_center, clip);
-    let major = draw::mix(pal.land, pal.road_secondary, 0.6);
-    let minor = draw::mix(pal.land, pal.road_secondary, 0.28);
+    let major = draw::mix(pal.substrate, pal.substrate_grid, 0.85);
+    let minor = draw::mix(pal.substrate, pal.substrate_grid, 0.4);
     scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
     for (_, rect) in &tiles {
         // Quarter-tile minor grid for a paper-like texture.
@@ -478,6 +495,10 @@ pub fn draw_markers(
     clip: Rect,
 ) {
     let selected = model.selected.clone();
+    // Clip the whole marker layer to the map area so pins and their labels never
+    // bleed out from under an overlay drawer (the caller passes the visible map
+    // region as `clip` when the narrow drawer is open).
+    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
     // Origin marker, if a route/origin is set.
     if let Some(o) = model.origin {
         let p = proj.project(o);
@@ -514,27 +535,33 @@ pub fn draw_markers(
             let lx = p.x - lw / 2.0;
             let ly = p.y - 56.0;
             let rect = Rect::new(lx, ly, lx + lw, ly + lh);
-            draw::card(
-                scene,
-                t,
-                rect,
-                6.0,
-                theme.tokens.colors.surfaces.raised,
-                theme.tokens.colors.border_standard,
-            );
-            draw::text_w(
-                scene,
-                tr,
-                t,
-                label,
-                lx + pad,
-                ly + 4.0,
-                12.0,
-                theme.text_primary,
-                TextWeight::Semibold,
-            );
+            // Only draw the label if it fits inside the map area — otherwise it
+            // would be sliced at the drawer/panel edge into an unreadable
+            // fragment. The pin still shows; the drawer already names the place.
+            if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
+                draw::card(
+                    scene,
+                    t,
+                    rect,
+                    6.0,
+                    theme.tokens.colors.surfaces.raised,
+                    theme.tokens.colors.border_standard,
+                );
+                draw::text_w(
+                    scene,
+                    tr,
+                    t,
+                    label,
+                    lx + pad,
+                    ly + 4.0,
+                    12.0,
+                    theme.text_primary,
+                    TextWeight::Semibold,
+                );
+            }
         }
     }
+    scene.pop_layer();
 }
 
 /// Draw the live POI marker layer (Overpass results) over the basemap — OUR
@@ -571,13 +598,13 @@ pub fn draw_pois(
         if !clip.contains(p) {
             continue;
         }
-        draw_poi_dot(scene, t, tr, p, poi, theme, pal, false, show_labels, icons);
+        draw_poi_dot(scene, t, tr, p, poi, theme, pal, false, show_labels, icons, clip);
     }
     if let Some(sel) = selected {
         if let Some(poi) = pois.iter().find(|p| p.id == sel) {
             let p = proj.project(poi.pos);
             if clip.contains(p) {
-                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons);
+                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
             }
         }
     }
@@ -596,6 +623,7 @@ fn draw_poi_dot(
     selected: bool,
     label: bool,
     icons: bool,
+    clip: Rect,
 ) {
     let col = category_color(theme, poi.category);
     let r = match (icons, selected) {
@@ -621,8 +649,13 @@ fn draw_poi_dot(
         let lx = p.x + r + 6.0;
         let ly = p.y - size as f64 * 0.72;
         let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + size as f64 + 3.0);
-        draw::fill_rrect(scene, t, plate, 4.0, draw::alpha(theme.tokens.colors.surfaces.base, 0.74));
-        draw::text_w(scene, tr, t, &poi.name, lx, ly, size, theme.text_primary, TextWeight::Medium);
+        // Only draw the name plate when it fits in the map area, so it is never
+        // sliced at the drawer / screen edge into an unreadable fragment. The
+        // marker still shows; the info card / list already carries the name.
+        if plate.x0 >= clip.x0 && plate.x1 <= clip.x1 && plate.y0 >= clip.y0 {
+            draw::fill_rrect(scene, t, plate, 4.0, draw::alpha(theme.tokens.colors.surfaces.base, 0.74));
+            draw::text_w(scene, tr, t, &poi.name, lx, ly, size, theme.text_primary, TextWeight::Medium);
+        }
     }
 }
 
@@ -879,6 +912,30 @@ mod tests {
         // Light theme stays light too.
         let light = MapPalette::from_theme(&Theme::light());
         assert!(lum(light.land) > 220.0, "land near-white under a light theme too");
+    }
+
+    /// The pre-tiles loading substrate is a calm DARK neutral surface under the
+    /// dark theme — NOT the near-white cartographic land — so a first-run map
+    /// never flashes bright before imagery arrives. It must read clearly darker
+    /// than the (still-light) tile land underlay.
+    #[test]
+    fn loading_substrate_is_dark_and_not_white() {
+        let lum = |c: Color| {
+            let c = c.to_rgba8();
+            0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
+        };
+        let dark = MapPalette::from_theme(&Theme::dark());
+        assert!(
+            lum(dark.substrate) < 90.0,
+            "loading substrate is a dark surface, not a bright flash: {}",
+            lum(dark.substrate)
+        );
+        assert!(
+            lum(dark.substrate) + 100.0 < lum(dark.land),
+            "substrate ({}) is much darker than the tile land underlay ({})",
+            lum(dark.substrate),
+            lum(dark.land)
+        );
     }
 
     /// `draw_tiles` must NOT fetch or decode synchronously: when given an
