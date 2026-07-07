@@ -84,6 +84,15 @@ struct Inner {
     /// an undecodable stream). The transport reads it so it never *pretends* to
     /// play a dead pipeline (see [`AudioEngine::is_playing_real`]).
     errored: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The human-readable text of the last fatal bus error, so the transport can
+    /// surface a real message ("Can't stream: …") instead of silently freezing.
+    error_msg: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Set when the pipeline posts end-of-stream. A YouTube "free" (no-PoToken)
+    /// direct URL is SABR-gated to its first ~1-minute segment, so the staged
+    /// file ends early and the pipeline EOSes before the track's metadata
+    /// duration; the transport reads this to advance to the next track instead
+    /// of freezing at the truncation point.
+    eos: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// An in-flight HTTP stream being downloaded (bounded reqwest ranges) into a
     /// temp file before playback. `None` for a local (`file://`) uri, which is
     /// handed straight to playbin. Only present in a build that can fetch
@@ -102,9 +111,14 @@ struct Inner {
 struct Pending {
     /// Temp file the stream is downloaded into.
     path: std::path::PathBuf,
-    /// Set by the download thread when it has finished (fully, or stopped early
-    /// on a forbidden/short range) — playback may begin from whatever landed.
+    /// Set by the download thread after the first staged chunk lands — playback
+    /// may begin (progressively) from whatever is on disk so far.
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by the download thread once it has fetched the *entire* file (or given
+    /// up). Distinct from `ready` (first-chunk): a seek to a late position is only
+    /// safe once the bytes for it have landed, so the full-track proof waits on
+    /// this before scrubbing near the end.
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Whether the transport wants to be playing once the file is ready.
     want_play: bool,
     /// Whether playback has already been switched onto the temp file.
@@ -146,6 +160,8 @@ impl AudioEngine {
                             sink,
                             frames,
                             errored,
+                            error_msg: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                            eos: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                             #[cfg(feature = "live")]
                             pending: None,
                         },
@@ -164,6 +180,8 @@ impl AudioEngine {
                 sink: None,
                 frames: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 errored: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                error_msg: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                eos: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 #[cfg(feature = "live")]
                 pending: None,
             },
@@ -196,6 +214,11 @@ impl AudioEngine {
             self.inner
                 .errored
                 .store(false, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut m) = self.inner.error_msg.lock() {
+                *m = None;
+            }
+            self.inner.eos.store(false, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(target: "music::audio", %uri, "load: reset pipeline for new stream");
 
             // An http(s) stream can't be handed to playbin's `souphttpsrc`:
             // googlevideo 403s its open-ended range request. Stage it to a temp
@@ -261,6 +284,8 @@ impl AudioEngine {
         {
             use gstreamer::prelude::*;
             let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            self.inner.eos.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.inner.errored.store(false, std::sync::atomic::Ordering::Relaxed);
             #[cfg(feature = "live")]
             self.clear_pending();
         }
@@ -411,6 +436,8 @@ impl AudioEngine {
                         std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
                     if has_bytes {
                         let uri = format!("file://{}", path.display());
+                        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        tracing::info!(target: "music::audio", %uri, bytes, want_play = want, "staged file ready — switching playbin to local file and rolling");
                         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
                         self.inner.playbin.set_property("uri", &uri);
                         self.inner.playbin.set_property("mute", false);
@@ -421,9 +448,15 @@ impl AudioEngine {
                     } else {
                         // The fetch was forbidden before any bytes landed: honest
                         // silence, never a transport that pretends to play.
+                        tracing::warn!(target: "music::audio", "staged file has no bytes — no source served media; reporting error, not fake playback");
                         self.inner
                             .errored
                             .store(true, std::sync::atomic::Ordering::Relaxed);
+                        if let Ok(mut m) = self.inner.error_msg.lock() {
+                            if m.is_none() {
+                                *m = Some("no audio source served bytes".to_string());
+                            }
+                        }
                     }
                     if let Some(p) = &mut self.inner.pending {
                         p.started = true;
@@ -432,10 +465,30 @@ impl AudioEngine {
             }
             if let Some(bus) = self.inner.playbin.bus() {
                 while let Some(msg) = bus.pop() {
-                    if let gstreamer::MessageView::Error(_) = msg.view() {
-                        self.inner
-                            .errored
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    match msg.view() {
+                        gstreamer::MessageView::Error(err) => {
+                            tracing::error!(target: "music::audio", error = %err.error(), debug = ?err.debug(), "pipeline bus ERROR");
+                            self.inner
+                                .errored
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            if let Ok(mut m) = self.inner.error_msg.lock() {
+                                *m = Some(err.error().to_string());
+                            }
+                        }
+                        gstreamer::MessageView::Eos(_) => {
+                            tracing::info!(target: "music::audio", "pipeline bus EOS");
+                            self.inner.eos.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        gstreamer::MessageView::StateChanged(sc) => {
+                            // Only the playbin's own transitions are interesting
+                            // (match by element name to avoid a type mismatch on
+                            // the `Object`/`Element` comparison).
+                            let pb_name = self.inner.playbin.name();
+                            if sc.src().map(|s| s.name() == pb_name).unwrap_or(false) {
+                                tracing::debug!(target: "music::audio", from = ?sc.old(), to = ?sc.current(), pending = ?sc.pending(), "playbin state changed");
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -444,6 +497,55 @@ impl AudioEngine {
         #[cfg(not(feature = "audio"))]
         {
             false
+        }
+    }
+
+    /// Take (and clear) the last fatal pipeline error text, if any. The
+    /// transport calls this once it has seen [`Self::pump`] report an error, so
+    /// it can surface a real message to the user and stop pretending to play a
+    /// dead pipeline. Always `None` for the silent stub.
+    pub fn take_error(&self) -> Option<String> {
+        #[cfg(feature = "audio")]
+        {
+            self.inner.error_msg.lock().ok().and_then(|mut m| m.take())
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            None
+        }
+    }
+
+    /// Whether the pipeline has reached end-of-stream. A free (no-PoToken)
+    /// YouTube direct URL is SABR-gated to its first ~1-minute segment, so the
+    /// staged file ends before the track's metadata duration and the pipeline
+    /// EOSes early; the transport reads this to advance to the next track rather
+    /// than freeze at the truncation point. Always `false` for the silent stub.
+    pub fn reached_eos(&self) -> bool {
+        #[cfg(feature = "audio")]
+        {
+            self.inner.eos.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            false
+        }
+    }
+
+    /// Whether the staging download (if any) has fetched the **entire** file, so
+    /// a seek to a late position is backed by bytes on disk. `true` when there is
+    /// no in-flight staging (a local `file://` uri, or nothing loaded). Used by
+    /// the full-track proof to wait before scrubbing past the 1-minute mark.
+    pub fn staging_complete(&self) -> bool {
+        #[cfg(all(feature = "audio", feature = "live"))]
+        {
+            match &self.inner.pending {
+                Some(p) => p.done.load(std::sync::atomic::Ordering::Relaxed),
+                None => true,
+            }
+        }
+        #[cfg(not(all(feature = "audio", feature = "live")))]
+        {
+            true
         }
     }
 
@@ -543,8 +645,9 @@ impl AudioEngine {
             next_stream_id()
         ));
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        spawn_stream_download(uri.to_string(), fallback, path.clone(), ready.clone());
-        self.inner.pending = Some(Pending { path, ready, want_play: false, started: false });
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        spawn_stream_download(uri.to_string(), fallback, path.clone(), ready.clone(), done.clone());
+        self.inner.pending = Some(Pending { path, ready, done, want_play: false, started: false });
     }
 
     /// Drop any staged stream, removing its temp file.
@@ -611,12 +714,16 @@ fn spawn_stream_download(
     fallback: Option<String>,
     path: std::path::PathBuf,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     let _ = std::thread::Builder::new()
         .name("qos-music-stream-dl".into())
         .spawn(move || {
-            let finish = || ready.store(true, Relaxed);
+            let finish = || {
+                ready.store(true, Relaxed);
+                done.store(true, Relaxed);
+            };
             let mut file = match std::fs::File::create(&path) {
                 Ok(f) => f,
                 Err(_) => return finish(),
@@ -626,13 +733,15 @@ fn spawn_stream_download(
             // googlevideo URL so playback still works (at least its first
             // segment). Both stream progressively: `ready` flips after the first
             // staged chunk so audio starts without waiting for the full download.
+            tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
             let mut wrote = download_into(&uri, &mut file, &ready);
             if wrote == 0 {
                 if let Some(fb) = fallback {
+                    tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
                     wrote = download_into(&fb, &mut file, &ready);
                 }
             }
-            let _ = wrote;
+            tracing::info!(target: "music::audio", bytes = wrote, "stream staging: finished");
             let _ = std::io::Write::flush(&mut file);
             finish();
         });
@@ -675,12 +784,35 @@ fn download_into(
             .get(uri)
             .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
             .send();
-        let Ok(resp) = resp else { break };
+        let Ok(resp) = resp else {
+            tracing::debug!(target: "music::audio", %uri, off, "stream fetch: request failed");
+            break;
+        };
         if !resp.status().is_success() {
+            tracing::debug!(target: "music::audio", %uri, off, status = %resp.status(), "stream fetch: non-success status");
+            break;
+        }
+        // Guard against a proxy that answers 2xx with an HTML anti-bot / error
+        // page instead of media: staging that into the pipeline makes GStreamer
+        // error out and the transport freeze at 0:00. On the very first chunk we
+        // check the Content-Type and sniff the body; if it isn't media we write
+        // nothing and return 0 so the caller falls back to the direct URL.
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if off == 0 && !ct.is_empty() && !crate::backend::proxy::content_type_is_media(&ct) {
+            tracing::warn!(target: "music::audio", %uri, content_type = %ct, "stream fetch: non-media Content-Type — discarding, will try fallback");
             break;
         }
         let Ok(bytes) = resp.bytes() else { break };
         if bytes.is_empty() {
+            break;
+        }
+        if off == 0 && crate::backend::proxy::body_sniffs_as_html(&bytes) {
+            tracing::warn!(target: "music::audio", %uri, "stream fetch: body sniffs as HTML — discarding, will try fallback");
             break;
         }
         if std::io::Write::write_all(file, &bytes).is_err() {

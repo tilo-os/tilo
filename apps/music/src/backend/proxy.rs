@@ -187,10 +187,12 @@ pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
     for instance in instances() {
         for &(itag, mime, codec, format, bitrate) in KNOWN_AUDIO_ITAGS {
             if std::time::Instant::now() >= deadline {
+                tracing::debug!(target: "music::proxy", "resolve_rangeable: deadline reached, no working instance");
                 return None;
             }
             let url = proxy_media_url(&instance, video_id, itag);
             if proxy_serves_bytes(&client, &url) {
+                tracing::info!(target: "music::proxy", instance = %instance, itag, "resolve_rangeable: proxy serves real media");
                 return Some(ResolvedStream {
                     video_id: video_id.to_string(),
                     url,
@@ -216,8 +218,18 @@ pub(crate) const BROWSER_UA: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
 /// Probe a proxy media URL with a tiny range request: `true` only when the
-/// instance actually serves media bytes (2xx with a non-empty body), so a
-/// broken proxy (500/403/redirect-to-nothing) is skipped.
+/// instance actually serves **audio media bytes** — not merely `2xx + non-empty`.
+///
+/// Public Invidious instances routinely answer with an HTTP 200/206 *HTML* body:
+/// an anti-bot interstitial (nerdvpn's "gandalf" challenge), a Cloudflare page,
+/// a "hosted-service moved" blog, or an error page rendered as HTML. The old
+/// check (`status().is_success() && !bytes.is_empty()`) accepted all of those,
+/// so the resolver committed to a dead instance and the staging download fed
+/// **HTML** into GStreamer — the pipeline errored and the transport froze at
+/// 0:00 while the UI still said "playing". We therefore require the response to
+/// actually look like media: a success status, a media `Content-Type` (never
+/// `text/html` / `text/plain` / `application/json`), and a body that does not
+/// sniff as HTML.
 #[cfg(feature = "live")]
 fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
     match client
@@ -226,11 +238,61 @@ fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
         .send()
     {
         Ok(resp) => {
-            resp.status().is_success()
-                && resp.bytes().map(|b| !b.is_empty()).unwrap_or(false)
+            let status = resp.status();
+            let ct = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            if !status.is_success() || !content_type_is_media(&ct) {
+                tracing::debug!(target: "music::proxy", %url, %status, content_type = %ct, "proxy probe rejected (not media)");
+                return false;
+            }
+            let ok = resp
+                .bytes()
+                .map(|b| !b.is_empty() && !body_sniffs_as_html(&b))
+                .unwrap_or(false);
+            if !ok {
+                tracing::debug!(target: "music::proxy", %url, "proxy probe rejected (empty or HTML body)");
+            }
+            ok
         }
-        Err(_) => false,
+        Err(e) => {
+            tracing::debug!(target: "music::proxy", %url, error = %e, "proxy probe request failed");
+            false
+        }
     }
+}
+
+/// Whether a `Content-Type` header names playable audio media (rather than an
+/// HTML challenge / error page). An Invidious `local` proxy serving real media
+/// answers `audio/…` (or a generic `application/octet-stream`); a broken one
+/// answers `text/html` / `text/plain` / `application/json`.
+pub fn content_type_is_media(ct: &str) -> bool {
+    let ct = ct.trim().to_ascii_lowercase();
+    if ct.starts_with("text/") || ct.contains("application/json") || ct.contains("text/html") {
+        return false;
+    }
+    ct.starts_with("audio/")
+        || ct.starts_with("video/")
+        || ct.contains("application/octet-stream")
+        || ct.contains("mp4")
+        || ct.contains("webm")
+        || ct.contains("ogg")
+        || ct.contains("mpegurl")
+}
+
+/// Whether a response body sniffs as an HTML document (an anti-bot / error page
+/// masquerading as a media response). Cheap prefix check over the first bytes.
+pub fn body_sniffs_as_html(bytes: &[u8]) -> bool {
+    let n = bytes.len().min(256);
+    let head = String::from_utf8_lossy(&bytes[..n]);
+    let head = head.trim_start().to_ascii_lowercase();
+    head.starts_with("<!doctype html")
+        || head.starts_with("<html")
+        || head.starts_with("<head")
+        || head.starts_with("<!doctype")
 }
 
 #[cfg(test)]
@@ -333,6 +395,34 @@ mod tests {
             ),
             Err(_) => eprintln!("[proxy test] skipped — body read failed"),
         }
+    }
+
+    #[test]
+    fn media_content_type_accepts_audio_rejects_html() {
+        // Real proxied media.
+        assert!(content_type_is_media("audio/mp4"));
+        assert!(content_type_is_media("audio/webm; codecs=\"opus\""));
+        assert!(content_type_is_media("application/octet-stream"));
+        assert!(content_type_is_media("video/mp4"));
+        // Anti-bot / error pages an Invidious instance actually returns — these
+        // are the false-positives that made the resolver commit to a dead proxy.
+        assert!(!content_type_is_media("text/html; charset=utf-8"));
+        assert!(!content_type_is_media("text/plain; charset=utf-8"));
+        assert!(!content_type_is_media("application/json"));
+        assert!(!content_type_is_media(""));
+    }
+
+    #[test]
+    fn html_body_is_sniffed_and_rejected() {
+        // The exact shapes observed from public instances (gandalf challenge /
+        // Cloudflare / "500 Internal Server Error" HTML).
+        assert!(body_sniffs_as_html(b"<html>\r\n<head><title>gandalf"));
+        assert!(body_sniffs_as_html(b"<!DOCTYPE html>\n<html lang=\"en\">"));
+        assert!(body_sniffs_as_html(b"   \n<!doctype html>"));
+        // A real m4a fragment begins with an ISO-BMFF box (`....ftyp`/`....moov`)
+        // or arbitrary binary — never HTML.
+        assert!(!body_sniffs_as_html(&[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p']));
+        assert!(!body_sniffs_as_html(b"OggS\x00\x02"));
     }
 
     #[test]
