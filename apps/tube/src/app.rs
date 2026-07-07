@@ -128,6 +128,12 @@ pub struct TubeApp {
     /// `None` on the hermetic offline path, where every image lookup returns
     /// `None` and the procedural gradient/initials fallback shows.
     images: Option<ui::ImageStore>,
+
+    /// End (seconds) of the show-mode SponsorBlock segment the playhead is
+    /// currently inside, if any. The on-video "Skip" overlay is shown for it.
+    /// Tracked here so a *transition* (playhead entering/leaving the segment)
+    /// dirties the tree — the advancing playhead alone doesn't rebuild it.
+    show_skip_end: Option<f64>,
 }
 
 impl Default for TubeApp {
@@ -161,6 +167,7 @@ impl TubeApp {
             )),
             player_video: None,
             images: None,
+            show_skip_end: None,
         }
     }
 
@@ -172,6 +179,13 @@ impl TubeApp {
     /// "offline — sample data" and the bundled catalogue stays on screen.
     pub fn online(mut self) -> Self {
         self.online = true;
+        // No fabricated content: the real app starts with an EMPTY catalogue and
+        // populates only from live results (yt-dlp / rustypipe / trending). The
+        // bundled `sample` catalogue exists ONLY for the hermetic `--shots`/demo
+        // review path — never presented as real. Home shows a loading skeleton
+        // until the first live feed lands.
+        self.model = TubeModel::default();
+        self.model.feed_loading = true;
         // Real thumbnails / avatars / banners: an async image store backed by a
         // network fetcher. Kept off the offline/`--shots` path (which never
         // calls `online`) so screenshots stay hermetic.
@@ -192,6 +206,17 @@ impl TubeApp {
     /// from real yt-dlp data) so an offscreen render shows real content.
     pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
         self.model = model;
+        self
+    }
+
+    /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
+    /// captures the skeleton the real (online) app shows on a cold start before
+    /// live results land — proving the no-fake-content default reads as
+    /// "loading", not a blank page.
+    pub fn with_loading_home_shot(mut self) -> Self {
+        self.model = TubeModel::default();
+        self.model.feed_loading = true;
+        self.model.route = Route::Home;
         self
     }
 
@@ -541,6 +566,15 @@ impl TubeApp {
         if self.apply_auto_skip() {
             changed = true;
         }
+        // On-video "Skip" overlay visibility: recompute which (if any) show-mode
+        // segment the playhead sits in. A transition (enter/leave) must rebuild
+        // the tree so the overlay appears/dismisses — the advancing playhead by
+        // itself never dirties it.
+        let show_end = self.current_show_skip_end();
+        if show_end != self.show_skip_end {
+            self.show_skip_end = show_end;
+            changed = true;
+        }
         // Reaching the end advances to the next "up next" when autoplay is on.
         // `duration_ms` is the media duration once known; treat within 250ms of
         // the end (or an explicitly non-playing engine at the end) as finished.
@@ -576,10 +610,10 @@ impl TubeApp {
         }
         self.player_video = Some(video);
         self.model.playing = true;
-        self.model.push_notice(format!(
-            "Playing · {quality}{}",
-            if has_audio { " · audio" } else { "" }
-        ));
+        // No debug text under the player — the picture playing IS the feedback.
+        // Quality/audio provenance is a developer diagnostic, so it goes to the
+        // log, not an on-screen toast.
+        tracing::debug!(%quality, has_audio, "stream loaded into player");
         true
     }
 
@@ -589,6 +623,24 @@ impl TubeApp {
             Route::Watch(id) => self.model.video(id).map(|v| v.duration as f64),
             _ => None,
         }
+    }
+
+    /// The end (seconds) of the show-mode SponsorBlock segment the playhead is
+    /// currently inside, if any — what the on-video "Skip" overlay offers.
+    /// `None` off the watch route, when SponsorBlock is off, or when no show-mode
+    /// segment contains the playhead.
+    fn current_show_skip_end(&self) -> Option<f64> {
+        if !self.model.settings.sponsorblock_enabled {
+            return None;
+        }
+        let Route::Watch(id) = &self.model.route else {
+            return None;
+        };
+        let v = self.model.video(id)?;
+        v.sponsor
+            .iter()
+            .find(|s| self.model.settings.should_show_skip(s.category) && s.contains(self.model.playhead))
+            .map(|s| s.end)
     }
 
     /// If the playhead sits inside an enabled SponsorBlock segment, jump the
@@ -643,7 +695,30 @@ impl TubeApp {
         self.model.playhead = 0.0;
         self.model.playing = true;
         self.request(Request::Branding(id.clone()));
+        // Fetch the uploader's real avatar + subscriber count when we only hold a
+        // name stub (feed/search items don't carry the channel's avatar or subs),
+        // so the watch-page channel row shows a real photo + count rather than an
+        // initials chip and "0 subscribers".
+        if let Some(cid) = self.model.video(&id).map(|v| v.channel_id.clone()) {
+            self.request_channel_if_stub(&cid);
+        }
         self.request_live(Request::VideoMeta(id));
+    }
+
+    /// Ask the worker for a channel page (avatar + subscriber count + uploads)
+    /// when the store only holds a bare name stub for it. Online-only.
+    fn request_channel_if_stub(&mut self, channel_id: &str) {
+        if channel_id.is_empty() {
+            return;
+        }
+        let stub = self
+            .model
+            .channel(channel_id)
+            .map(|c| c.avatar_url.is_empty() || c.subscribers == 0)
+            .unwrap_or(true);
+        if stub {
+            self.request_live(Request::Channel(channel_id.to_string()));
+        }
     }
 
     /// If autoplay is on and the playhead has reached the end of the current
@@ -770,6 +845,11 @@ impl TubeApp {
                 self.model.route = Route::Search(q.clone());
                 if !q.is_empty() {
                     let instance = self.model.settings.invidious_instance.clone();
+                    // Show the results skeleton while the live fetch is in flight
+                    // (online only — the hermetic path resolves locally at once).
+                    if self.online {
+                        self.model.search_loading = true;
+                    }
                     self.request(Request::Search { instance, query: q });
                 }
             }
@@ -852,6 +932,10 @@ impl TubeApp {
             return false;
         }
         let mut changed = false;
+        // Channels whose real avatar + subscriber count we still need to fetch
+        // (a video-detail response tells us the uploader id but not its photo).
+        // Collected here and fired after the borrow of `self.worker` ends.
+        let mut fetch_channels: Vec<String> = Vec::new();
         for u in updates {
             match u {
                 Update::Sponsor(id, segs) => {
@@ -886,30 +970,45 @@ impl TubeApp {
                     }
                 }
                 Update::SearchResults(query, vids) => {
-                    if !vids.is_empty() {
-                        // Record the backend's exact ordered result set for this
-                        // query (so the search screen renders it verbatim), and
-                        // fold the videos + uploader stubs into the catalogue.
-                        let ids: Vec<String> = vids.iter().map(|v| v.id.clone()).collect();
-                        for nv in vids {
-                            self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
-                            self.model.upsert_video(nv);
-                        }
-                        self.model.search_hits_query = query.clone();
-                        self.model.search_hits = ids;
-                        self.model.route = Route::Search(query);
-                        changed = true;
+                    // A response landed (possibly empty) — drop the skeleton.
+                    self.model.search_loading = false;
+                    // Record the backend's exact ordered result set for this
+                    // query (so the search screen renders it verbatim), and
+                    // fold the videos + uploader stubs into the catalogue.
+                    let ids: Vec<String> = vids.iter().map(|v| v.id.clone()).collect();
+                    for nv in vids {
+                        self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
+                        self.model.upsert_video(nv);
                     }
+                    self.model.search_hits_query = query.clone();
+                    self.model.search_hits = ids;
+                    if matches!(&self.model.route, Route::Search(_)) {
+                        self.model.route = Route::Search(query);
+                    }
+                    changed = true;
                 }
                 Update::Feed(vids) => {
-                    // Real home/trending catalogue — replace the sample wholesale.
+                    // Real home/trending catalogue — replace whatever was there.
                     self.model.adopt_live_catalogue(vids, "live (rustypipe)");
+                    self.model.feed_loading = false;
                     changed = true;
                 }
                 Update::VideoMeta { video, related } => {
                     let id = video.id.clone();
+                    let channel_id = video.channel_id.clone();
                     self.model.ensure_channel_stub(&video.channel_id, &video.channel_name);
                     self.model.upsert_video(*video);
+                    // Now that we know the uploader, pull its avatar + subs if we
+                    // only have a name stub (drives the watch-page channel row).
+                    if !channel_id.is_empty()
+                        && self
+                            .model
+                            .channel(&channel_id)
+                            .map(|c| c.avatar_url.is_empty() || c.subscribers == 0)
+                            .unwrap_or(true)
+                    {
+                        fetch_channels.push(channel_id);
+                    }
                     let ids: Vec<String> = related.iter().map(|v| v.id.clone()).collect();
                     for rv in related {
                         self.model.ensure_channel_stub(&rv.channel_id, &rv.channel_name);
@@ -930,6 +1029,13 @@ impl TubeApp {
                     changed = true;
                 }
                 Update::Status { live, label } => {
+                    // A terminal offline/failure status means no live feed is
+                    // coming — stop showing the Home skeleton and let the empty
+                    // state explain it. "connecting…" keeps the skeleton up.
+                    if !live && label.to_lowercase().contains("offline") {
+                        self.model.feed_loading = false;
+                        self.model.search_loading = false;
+                    }
                     if self.model.data_source.live != live || self.model.data_source.label != label {
                         self.model.data_source = crate::model::DataSource { live, label };
                         changed = true;
@@ -941,10 +1047,18 @@ impl TubeApp {
                     }
                 }
                 Update::Note(n) => {
-                    self.model.push_notice(n);
-                    changed = true;
+                    // Worker status notes (backend ready, stream host, seed
+                    // failures, …) are developer diagnostics — log them, don't
+                    // clutter the watch page with debug toasts. Genuine
+                    // user-facing feedback (auto-skip, link copied) is pushed
+                    // as a notice directly from its action, not via `Note`.
+                    tracing::debug!(note = %n, "tube worker note");
                 }
             }
+        }
+        // Fire the deferred channel fetches now the `self.worker` borrow is done.
+        for cid in fetch_channels {
+            self.request_channel_if_stub(&cid);
         }
         changed
     }
@@ -1673,5 +1787,74 @@ mod tests {
         let r = automerge::ROOT;
         app.apply(Action::Navigate(Route::History), &mut doc, &r);
         assert!(app.sidebar_currently_open(), "the docked rail stays put when navigating");
+    }
+
+    // --- no fabricated content + loading states ---
+
+    #[test]
+    fn online_starts_empty_with_no_fabricated_sample() {
+        // The real (online) app must NOT present the bundled sample catalogue as
+        // if it were real data — it starts empty and shows a loading skeleton.
+        let app = TubeApp::new().online();
+        assert!(app.model.videos.is_empty(), "online start must seed no sample videos");
+        assert!(app.model.channels.is_empty(), "online start must seed no sample channels");
+        assert!(app.model.subscriptions.is_empty());
+        assert!(app.model.feed_loading, "cold Home shows a loading skeleton, not a blank page");
+    }
+
+    #[test]
+    fn submitting_a_search_enters_the_loading_state() {
+        use automerge::transaction::Transactable;
+        // A live search in flight shows a skeleton (search_loading) rather than a
+        // premature "No results" — the bug that shipped.
+        let mut app = TubeApp::new();
+        app.online = true; // online without spawning the image store's threads
+        let mut doc = AutoCommit::new();
+        let r = automerge::ROOT;
+        doc.put(&r, "search_query", "rust").unwrap();
+        assert!(!app.model.search_loading);
+        app.apply(Action::SubmitSearch, &mut doc, &r);
+        assert!(app.model.search_loading, "an in-flight search must show the skeleton");
+        assert!(matches!(&app.model.route, Route::Search(q) if q == "rust"));
+    }
+
+    #[test]
+    fn show_mode_segment_drives_the_in_video_skip_overlay() {
+        use crate::model::{Category, SkipMode};
+        // The on-video "Skip" overlay is settings-driven: it appears only for a
+        // Show-mode segment the playhead is inside, never for Auto-skip (which
+        // jumps on its own) or Off, and never when SponsorBlock is disabled.
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_rust_async".into()); // Sponsor 1440..1570
+        let key = Category::Sponsor.api_key().to_string();
+
+        app.model.settings.categories.insert(key.clone(), SkipMode::Skip);
+        app.model.playhead = 1500.0;
+        assert_eq!(app.current_show_skip_end(), None, "auto-skip shows no manual overlay");
+
+        app.model.settings.categories.insert(key.clone(), SkipMode::Show);
+        assert_eq!(app.current_show_skip_end(), Some(1570.0), "show-mode offers a Skip to the end");
+
+        app.model.playhead = 100.0;
+        assert_eq!(app.current_show_skip_end(), None, "no overlay outside the segment");
+
+        app.model.playhead = 1500.0;
+        app.model.settings.sponsorblock_enabled = false;
+        assert_eq!(app.current_show_skip_end(), None, "master off suppresses the overlay");
+    }
+
+    #[test]
+    fn channel_stub_qualifies_for_an_uploader_fetch() {
+        // The watch page's creator avatar + subscriber count come from a channel
+        // fetch kicked off when we only hold a name stub. Prove the gate: a bare
+        // `ensure_channel_stub` record has no avatar and 0 subscribers (so it
+        // qualifies), while a fetched channel would not.
+        let mut m = crate::model::TubeModel::default();
+        m.ensure_channel_stub("c1", "Chan");
+        let stub = m.channel("c1").expect("stub inserted");
+        assert!(
+            stub.avatar_url.is_empty() && stub.subscribers == 0,
+            "a name stub must be recognised as needing an avatar/subs fetch",
+        );
     }
 }

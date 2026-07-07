@@ -349,6 +349,9 @@ impl Widget for Icon {
     fn name(&self) -> &str {
         "Icon"
     }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -499,6 +502,9 @@ impl Widget for Switch {
     }
     fn name(&self) -> &str {
         "Switch"
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()

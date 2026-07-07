@@ -246,6 +246,9 @@ impl Widget for SeekBar {
     fn name(&self) -> &str {
         "SeekBar"
     }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
     }

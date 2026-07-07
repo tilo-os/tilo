@@ -7,11 +7,12 @@
 //! native `ui` toolkit, so subscriptions, settings and watch history live
 //! in the Automerge document and replicate / undo for free.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer. The whole UI is built
-//! from the offline [`sample`] catalogue so a cold screenshot is fully
-//! populated; live fetch (`api`) is gated behind a worker thread that only
-//! spawns on real interaction.
+//! The live (online) app starts with an EMPTY catalogue and populates only
+//! from real results (yt-dlp / rustypipe / trending) — it never presents the
+//! bundled [`sample`] as real data. That sample exists solely for the
+//! hermetic `--shots`/demo review path (and tests), where a cold screenshot
+//! needs to be fully populated. Live fetch (`api`) runs on a worker thread
+//! that spawns on launch (online) or on the first real interaction.
 
 pub mod action;
 pub mod api;
