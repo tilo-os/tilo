@@ -39,7 +39,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::gesture::{DragSelect, Granularity};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{EditableLabel, EditOutcome, FlapState, SplitLayout, Widget};
 use ui::ColorCompat;
 
 use crate::content::load_library;
@@ -101,11 +101,14 @@ enum SettingsTab {
     Colours,
 }
 
-/// An in-progress inline rename (font display name or scheme name).
-#[derive(Clone)]
+/// An in-progress inline rename (font display name or scheme name), backed by
+/// the toolkit's reusable [`ui::widget::EditableLabel`]. The embedded field
+/// gives the rename every text affordance for free (Ctrl+A/C/X/V, drag-select,
+/// word double-click, Shift+Arrow selection) and commits on Enter, on focus
+/// loss, or on a click outside — instead of a hand-rolled character buffer.
 struct Rename {
     target: RenameTarget,
-    buf: String,
+    field: ui::widget::EditableLabel,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -831,6 +834,32 @@ impl BooksApp {
                 ));
                 self.shot_fonts = Some(f);
             }
+            "settings-fonts-rename" => {
+                // The font manager with an inline rename in progress on the
+                // added system face: the real `ui::EditableLabel` (over a
+                // `TextInput`) is focused with its value selected, typeset in
+                // that font's own face. Proves the rename field is the toolkit
+                // widget — selection highlight and all — not a hand-rolled input.
+                self.view = View::Settings;
+                self.settings_tab = SettingsTab::Fonts;
+                let mut f = default_fonts();
+                f.push(FontEntry::new(
+                    "font1",
+                    FontKind::Named("DejaVu Serif".into()),
+                    "DejaVu Serif",
+                    1.08,
+                    true,
+                ));
+                self.shot_fonts = Some(f);
+                let mut field = EditableLabel::new("DejaVu Serif")
+                    .with_font_size(16.0)
+                    .with_font_family(FontChoice::Named("DejaVu Serif".into()));
+                field.begin_edit();
+                self.renaming = Some(Rename {
+                    target: RenameTarget::Font("font1".into()),
+                    field,
+                });
+            }
             "scheme-editor" => {
                 // The per-colour scheme editor open on a custom scheme.
                 self.view = View::Settings;
@@ -1419,7 +1448,12 @@ impl BooksApp {
                     .find(|s| s.id == id)
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
-                self.renaming = Some(Rename { target: RenameTarget::Scheme(id), buf: name });
+                // The name in the open scheme editor reads larger than the row
+                // in the list; size the field to match wherever it's drawn.
+                let size = if self.editing_scheme.is_some() { 20.0 } else { 15.0 };
+                let mut field = EditableLabel::new(&name).with_font_size(size);
+                field.begin_edit();
+                self.renaming = Some(Rename { target: RenameTarget::Scheme(id), field });
             }
 
             // --- settings screen: fonts ----------------------------------
@@ -1482,13 +1516,18 @@ impl BooksApp {
             }
             Action::BeginRenameFont(id) => {
                 self.commit_rename(doc);
-                let name = self
-                    .fonts
-                    .iter()
-                    .find(|e| e.id == id)
-                    .map(|e| e.name.clone())
-                    .unwrap_or_default();
-                self.renaming = Some(Rename { target: RenameTarget::Font(id), buf: name });
+                let entry = self.fonts.iter().find(|e| e.id == id);
+                let name = entry.map(|e| e.name.clone()).unwrap_or_default();
+                // Render the rename field in the font's own face, so the name
+                // is typeset in the typeface it selects while you edit it.
+                let fam = entry
+                    .map(|e| font_choice(&e.kind))
+                    .unwrap_or(FontChoice::SansSerif);
+                let mut field = EditableLabel::new(&name)
+                    .with_font_size(16.0)
+                    .with_font_family(fam);
+                field.begin_edit();
+                self.renaming = Some(Rename { target: RenameTarget::Font(id), field });
             }
 
             // --- library shelf -------------------------------------------
@@ -1577,17 +1616,46 @@ impl BooksApp {
         }
     }
 
-    /// Commit an in-progress inline rename to the CRDT (a blank name is ignored,
-    /// keeping the old one). Clears the rename regardless.
+    /// Force an in-progress inline rename to commit, then persist the result.
+    /// Called before an action that would replace or dismiss the rename (opening
+    /// another rename, switching tabs, closing settings). A blank name keeps the
+    /// old one. No-op when nothing is being renamed.
     fn commit_rename(&mut self, doc: &mut AutoCommit) {
-        let Some(r) = self.renaming.take() else {
+        if let Some(rn) = self.renaming.as_mut() {
+            rn.field.commit();
+        }
+        self.poll_rename_outcome(doc);
+    }
+
+    /// Drain the rename field's latest outcome: on commit, persist the new name;
+    /// on commit or cancel, clear the rename. This is the single place a rename
+    /// result is written, so Enter, blur, click-outside, and an explicit
+    /// [`commit_rename`](Self::commit_rename) all funnel through it.
+    fn poll_rename_outcome(&mut self, doc: &mut AutoCommit) {
+        let Some(rn) = self.renaming.as_mut() else {
             return;
         };
-        let name = r.buf.trim();
+        match rn.field.take_outcome() {
+            EditOutcome::Committed(name) => {
+                let target = rn.target.clone();
+                self.renaming = None;
+                self.apply_rename(target, &name, doc);
+            }
+            EditOutcome::Cancelled => {
+                self.renaming = None;
+            }
+            EditOutcome::None => {}
+        }
+    }
+
+    /// Write a committed rename to the CRDT. A blank name is ignored (keeps the
+    /// old one).
+    fn apply_rename(&mut self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
+        let name = name.trim();
         if name.is_empty() {
             return;
         }
-        match r.target {
+        match target {
             RenameTarget::Font(id) => {
                 let mut f = self.fonts.clone();
                 if let Some(e) = f.iter_mut().find(|e| e.id == id) {
@@ -2296,6 +2364,37 @@ impl Widget for BooksApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // An in-progress inline rename owns input first: forward the raw event
+        // to its embedded field so the real text-field affordances apply, then
+        // persist any commit/cancel it produced. A consumed event (typing,
+        // Enter, Esc, an in-field click/drag) stops here; an unconsumed one — a
+        // press OUTSIDE the field, which blur-commits — falls through so it
+        // still reaches whatever it landed on.
+        if self.renaming.is_some() {
+            let mut field_handled = false;
+            let mut field_focus = None;
+            if let Some(rn) = self.renaming.as_mut() {
+                rn.field.handle_event(
+                    event,
+                    scale_factor,
+                    _modifiers,
+                    doc,
+                    _path,
+                    &mut field_handled,
+                    &mut field_focus,
+                    _node_id,
+                    _taffy,
+                );
+            }
+            self.poll_rename_outcome(doc);
+            if field_handled {
+                self.refresh_from_doc(doc);
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -2677,38 +2776,10 @@ impl BooksApp {
             }
         }
 
-        // An inline rename (settings screen) captures typing first.
-        if self.renaming.is_some() {
-            match key {
-                Key::Named(NamedKey::Enter) => {
-                    self.commit_rename(doc);
-                    return true;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.renaming = None;
-                    return true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    if let Some(r) = &mut self.renaming {
-                        r.buf.pop();
-                    }
-                    return true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    if let Some(r) = &mut self.renaming {
-                        r.buf.push(' ');
-                    }
-                    return true;
-                }
-                Key::Character(c) => {
-                    if let Some(r) = &mut self.renaming {
-                        r.buf.push_str(c);
-                    }
-                    return true;
-                }
-                _ => return false,
-            }
-        }
+        // An in-progress inline rename owns the keyboard through its embedded
+        // field, driven from `handle_event` (which forwards the raw
+        // `WindowEvent` so Ctrl+A/C/X/V, selection, and typing all work). No
+        // key handling for it belongs here.
 
         // The settings screen has its own minimal key handling (Escape peels
         // back overlays, then leaves); no reader/library shortcuts apply there.
@@ -5176,19 +5247,30 @@ impl BooksApp {
             let card = Rect::new(x, y, x + w, y + row_h);
             paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
 
-            // Name rendered in its own face + a pencil affordance (tap to rename).
+            // Name rendered in its own face. When renaming, the real inline
+            // editor (a `ui::EditableLabel` over a `TextInput`) takes over the
+            // slot; otherwise a pencil affordance invites a tap to rename.
             let name_x = x + 20.0;
-            let renaming_this = matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
-            let name_disp = if renaming_this {
-                format!("{}\u{2502}", self.renaming.as_ref().map(|r| r.buf.as_str()).unwrap_or(""))
-            } else {
-                f.name.clone()
-            };
+            let renaming_this =
+                matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
             let fam = font_choice(&f.kind);
-            tr.draw_text_font(scene, &name_disp, 16.0, c.text_primary, t * Affine::translate((name_x, y + 12.0)), None, TextWeight::Semibold, false, &fam);
-            let (nw, _) = tr.measure_font(&name_disp, 16.0, None, TextWeight::Semibold, false, &fam);
-            let pencil = Rect::new(name_x + nw as f64 + 6.0, y + 12.0, name_x + nw as f64 + 26.0, y + 32.0);
-            paint::pencil(scene, t, pencil, c.text_dim.with_alpha_factor(if renaming_this { 0.9 } else { 0.5 }), 1.3);
+            if renaming_this {
+                // Editor spans from the name to just before the right controls,
+                // and typesets the edited value in the font's own face.
+                let field_x1 = (x + w - 210.0).max(name_x + 140.0);
+                let field_rect = Rect::new(name_x - 8.0, y + 8.0, field_x1, y + 8.0 + 30.0);
+                if let Some(rn) = self.renaming.as_mut() {
+                    rn.field.apply_layout_external(field_rect);
+                    rn.field
+                        .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+                }
+            } else {
+                tr.draw_text_font(scene, &f.name, 16.0, c.text_primary, t * Affine::translate((name_x, y + 12.0)), None, TextWeight::Semibold, false, &fam);
+                let (nw, _) = tr.measure_font(&f.name, 16.0, None, TextWeight::Semibold, false, &fam);
+                let pencil = Rect::new(name_x + nw as f64 + 6.0, y + 12.0, name_x + nw as f64 + 26.0, y + 32.0);
+                paint::pencil(scene, t, pencil, c.text_dim.with_alpha_factor(0.5), 1.3);
+                self.push_hit(Rect::new(name_x, y + 8.0, name_x + nw as f64 + 30.0, y + 34.0), Action::BeginRenameFont(f.id.clone()));
+            }
             let kind = match &f.kind {
                 FontKind::Default => "Default face".to_string(),
                 FontKind::Serif => "Serif book face".to_string(),
@@ -5196,7 +5278,6 @@ impl BooksApp {
                 FontKind::Named(n) => format!("System · {n}"),
             };
             tr.draw_text(scene, &kind, 12.0, c.text_dim, t * Affine::translate((name_x, y + 38.0)), None);
-            self.push_hit(Rect::new(name_x, y + 8.0, name_x + nw as f64 + 30.0, y + 34.0), Action::BeginRenameFont(f.id.clone()));
 
             // Right cluster, laid out right-to-left with a fixed delete column so
             // every row's size control lines up (built-ins reserve the column but
@@ -5344,15 +5425,14 @@ impl BooksApp {
                 swx += 30.0;
             }
 
-            // Name + status.
+            // Name + status. When renaming, the inline editor fills the name
+            // slot (drawn below, once its right bound is known).
             let name_x = swx + 16.0;
-            let renaming_this = matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(s.id.clone()));
-            let name_disp = if renaming_this {
-                format!("{}\u{2502}", self.renaming.as_ref().map(|r| r.buf.as_str()).unwrap_or(""))
-            } else {
-                s.name.clone()
-            };
-            tr.draw_text_weighted(scene, &name_disp, 15.0, c.text_primary, t * Affine::translate((name_x, y + 14.0)), None, TextWeight::Semibold);
+            let renaming_this =
+                matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(s.id.clone()));
+            if !renaming_this {
+                tr.draw_text_weighted(scene, &s.name, 15.0, c.text_primary, t * Affine::translate((name_x, y + 14.0)), None, TextWeight::Semibold);
+            }
             let sub = if s.builtin { "Built-in" } else if selected { "In use" } else { "Custom" };
             tr.draw_text(scene, sub, 12.0, if selected { theme.accent_primary } else { c.text_dim }, t * Affine::translate((name_x, y + 38.0)), None);
 
@@ -5381,9 +5461,17 @@ impl BooksApp {
             self.pill(scene, t, tr, theme, rx, cy - 13.0, 26.0, "Duplicate", 12.0, false, Some(Action::DuplicateScheme(s.id.clone())));
 
             // Name click: rename (custom) / apply (built-in), bounded before the
-            // right cluster.
+            // right cluster. When renaming, the inline editor fills the slot.
             let name_end = rx - 12.0;
-            if name_end > name_x {
+            if renaming_this {
+                let field_x1 = name_end.max(name_x + 120.0);
+                let field_rect = Rect::new(name_x - 6.0, y + 8.0, field_x1, y + 8.0 + 28.0);
+                if let Some(rn) = self.renaming.as_mut() {
+                    rn.field.apply_layout_external(field_rect);
+                    rn.field
+                        .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+                }
+            } else if name_end > name_x {
                 if s.builtin {
                     self.push_hit(Rect::new(name_x, y + 8.0, name_end, y + row_h - 8.0), use_action);
                 } else {
@@ -5420,14 +5508,19 @@ impl BooksApp {
         let mut y = py0 + 20.0;
         tr.draw_text_weighted(scene, "EDIT SCHEME", 11.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
         y += 18.0;
-        let renaming_this = matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(id.clone()));
-        let name_disp = if renaming_this {
-            format!("{}\u{2502}", self.renaming.as_ref().map(|r| r.buf.as_str()).unwrap_or(""))
+        let renaming_this =
+            matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(id.clone()));
+        if renaming_this {
+            let field_rect = Rect::new(ix0 - 6.0, y - 4.0, ix1 - 60.0, y + 30.0);
+            if let Some(rn) = self.renaming.as_mut() {
+                rn.field.apply_layout_external(field_rect);
+                rn.field
+                    .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+            }
         } else {
-            scheme.name.clone()
-        };
-        tr.draw_text_weighted(scene, &name_disp, 20.0, c.text_primary, t * Affine::translate((ix0, y)), None, TextWeight::Bold);
-        self.push_hit(Rect::new(ix0, y - 2.0, ix1 - 60.0, y + 26.0), Action::BeginRenameScheme(id.clone()));
+            tr.draw_text_weighted(scene, &scheme.name, 20.0, c.text_primary, t * Affine::translate((ix0, y)), None, TextWeight::Bold);
+            self.push_hit(Rect::new(ix0, y - 2.0, ix1 - 60.0, y + 26.0), Action::BeginRenameScheme(id.clone()));
+        }
         y += 40.0;
 
         tr.draw_text_weighted(scene, "COLOURS · tap a swatch to open the picker", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
@@ -5927,6 +6020,17 @@ mod interaction_tests {
         let mut handled = false;
         let mut focus = None;
         app.handle_event(&named_press(named), 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+    /// Feed a printable character with explicit modifiers (e.g. Ctrl+A).
+    fn key_char_mods(app: &mut BooksApp, doc: &mut AutoCommit, ch: &str, state: ModifiersState) -> bool {
+        let mods = Modifiers::from(state);
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&char_press(ch), 1.0, &mods, doc, &root, &mut handled, &mut focus, node, &taffy);
         handled
     }
 
@@ -7226,5 +7330,75 @@ mod interaction_tests {
             (0x0A, 0x22, 0x33),
             "the custom scheme's page colour is what the reading view paints",
         );
+    }
+
+    /// The font-rename field is the toolkit's real `TextInput` (embedded via
+    /// `ui::EditableLabel`), not a hand-rolled character buffer: Ctrl+A on the
+    /// production `handle_event` path selects the whole value (so the next
+    /// keystroke replaces it), and a click OUTSIDE the field blur-commits the
+    /// rename to the CRDT. Both are driven through the exact event path the
+    /// compositor uses.
+    #[test]
+    #[serial]
+    fn font_rename_uses_real_text_input_and_commits_on_blur() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Fonts;
+        frame(&mut app, &mut doc, 1000.0, 800.0);
+
+        // Begin an inline rename on the built-in serif face via the real action,
+        // then lay the editor out with another frame.
+        app.dispatch(Action::BeginRenameFont("serif".into()), &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 800.0);
+        assert!(app.renaming.is_some(), "a rename is in progress");
+
+        // `begin_edit` selects-all; collapse it (caret to end) so Ctrl+A is the
+        // ONLY thing that could re-select the whole value.
+        key_named(&mut app, &mut doc, NamedKey::ArrowRight);
+        let mut ctrl = ModifiersState::empty();
+        ctrl |= ModifiersState::CONTROL;
+        assert!(
+            key_char_mods(&mut app, &mut doc, "a", ctrl),
+            "Ctrl+A is consumed by the embedded field",
+        );
+        // Typing now replaces the whole (re-)selected value.
+        key_char(&mut app, &mut doc, "Z");
+        assert_eq!(
+            app.renaming.as_ref().unwrap().field.current_text(),
+            "Z",
+            "Ctrl+A selected all in the real TextInput, so the keystroke replaced it",
+        );
+
+        // A click far outside the field blur-commits the rename to the CRDT.
+        click(&mut app, &mut doc, Point::new(950.0, 24.0));
+        assert!(app.renaming.is_none(), "clicking outside ended the rename");
+        let fonts = crate::doc::BooksDoc::read_fonts(&doc);
+        let serif = fonts.iter().find(|f| f.id == "serif").expect("serif entry present");
+        assert_eq!(serif.name, "Z", "the blur committed the new name to the CRDT");
+    }
+
+    /// Esc cancels an inline font rename: the field closes and the CRDT keeps
+    /// the original name — proven on the real `handle_event` path.
+    #[test]
+    #[serial]
+    fn font_rename_escape_cancels_without_writing() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Fonts;
+        frame(&mut app, &mut doc, 1000.0, 800.0);
+
+        app.dispatch(Action::BeginRenameFont("serif".into()), &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 800.0);
+        key_char(&mut app, &mut doc, "Q"); // would-be new value
+        assert!(
+            key_named(&mut app, &mut doc, NamedKey::Escape),
+            "Esc is consumed by the editor",
+        );
+        assert!(app.renaming.is_none(), "Esc closed the rename");
+        let fonts = crate::doc::BooksDoc::read_fonts(&doc);
+        let serif = fonts.iter().find(|f| f.id == "serif").expect("serif entry present");
+        assert_eq!(serif.name, "Serif", "cancel kept the original name");
     }
 }
