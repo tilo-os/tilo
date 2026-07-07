@@ -434,7 +434,7 @@ impl VideoPlayer {
             &self.rect,
         );
 
-        // 2) Latest frame, contain-fit.
+        // 2) Latest frame, contain-fit — or a placeholder when nothing is loaded.
         if let Some(img) = self.latest_frame.clone() {
             let iw = img.width as f64;
             let ih = img.height as f64;
@@ -452,6 +452,8 @@ impl VideoPlayer {
                 let image_brush = vello::peniko::ImageBrush::new(img);
                 scene.fill(Fill::NonZero, transform, &image_brush, Some(brush_transform), &dest);
             }
+        } else {
+            self.paint_empty_placeholder(scene, transform, theme);
         }
 
         // 3) Controls overlay — only within the auto-hide window.
@@ -604,6 +606,29 @@ impl VideoPlayer {
 
         // Outline so the bar reads as a distinct surface.
         scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &bar);
+    }
+
+    /// Paint the empty-surface placeholder: a dim ringed play glyph centred in
+    /// the letterbox, so a player with no media reads as intentionally empty
+    /// ("nothing loaded — Open a video") rather than a blank/broken black rect.
+    fn paint_empty_placeholder(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let dim = theme.tokens.colors.text_dim;
+        let cx = self.rect.center().x;
+        let cy = self.rect.center().y;
+        let r = (self.rect.width().min(self.rect.height()) * 0.08).clamp(16.0, 44.0);
+        if r <= 0.0 {
+            return;
+        }
+        // Faint ring.
+        scene.stroke(&Stroke::new(2.0), transform, dim, None, &Circle::new((cx, cy), r));
+        // Play triangle inside it, nudged right so it reads centred.
+        let s = r * 0.62;
+        let mut p = BezPath::new();
+        p.move_to((cx - s * 0.35, cy - s * 0.62));
+        p.line_to((cx + s * 0.7, cy));
+        p.line_to((cx - s * 0.35, cy + s * 0.62));
+        p.close_path();
+        scene.fill(Fill::NonZero, transform, dim, None, &p);
     }
 
     fn draw_play_glyph(&self, scene: &mut Scene, transform: Affine, r: Rect, color: Color) {
@@ -1137,6 +1162,32 @@ mod tests {
         let mut vp = VideoPlayer::new();
         assert!(vp.feed_frame(&encoded), "decoder consumed the frame");
         assert!(vp.latest_frame().is_some());
+    }
+
+    #[test]
+    fn empty_surface_paints_a_placeholder_and_no_image() {
+        use vello_encoding::DrawTag;
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 320.0, 240.0);
+        // No frame loaded: the empty state must draw a placeholder, never an image.
+        assert!(vp.latest_frame().is_none());
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let image_count = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::IMAGE)
+            .count();
+        assert_eq!(image_count, 0, "no frame → no image draw in the empty state");
+        // The letterbox fill + the ring + the play triangle are all painted.
+        assert!(
+            scene.encoding().draw_tags.len() >= 2,
+            "empty state still paints a visible placeholder"
+        );
     }
 
     #[test]
