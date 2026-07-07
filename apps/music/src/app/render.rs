@@ -64,6 +64,75 @@ fn human_count(n: u64) -> String {
     }
 }
 
+/// Column x-positions for a single track row within its usable `[left, right]`
+/// span. The duration / download / like controls form a cluster pinned to the
+/// right; the album sits in a *centred* column, clamped so it neither crowds
+/// the title nor collides with that cluster. This keeps every row reading as
+/// three balanced zones — title · album · controls — instead of the title
+/// hugging the left with a cavernous gap across to everything bunched right.
+pub(super) struct TrackColumns {
+    pub text_x: f64,
+    pub album_x: f64,
+    pub like_x: f64,
+    pub dl_x: f64,
+    pub dur_x: f64,
+}
+
+pub(super) fn track_row_columns(left: f64, right: f64, number_col: bool) -> TrackColumns {
+    let dur_x = right - 56.0;
+    let dl_x = right - 96.0;
+    let like_x = dl_x - 34.0;
+    let text_x = if number_col { left + 38.0 } else { left + 8.0 };
+    // Centre the album column, but keep it clear of the title (a minimum title
+    // width) and of the right-hand control cluster. When the row is too narrow
+    // to honour both bounds they cross, so fall back to sitting just left of
+    // the cluster (avoids a panicking `clamp`, degrades to a sensible column).
+    let target = left + (right - left) * 0.46;
+    let lo = text_x + 200.0;
+    let hi = like_x - 176.0;
+    let album_x = if hi >= lo { target.clamp(lo, hi) } else { hi.max(text_x + 60.0) };
+    TrackColumns { text_x, album_x, like_x, dl_x, dur_x }
+}
+
+/// Two-column geometry for the lyrics view. On wide bodies a now-playing card
+/// (cover art + track info) fills the left column and the lyric lines centre
+/// within the remaining right column — so the view reads as a balanced pair
+/// instead of a centred column with a large empty left half. Narrow bodies
+/// keep a single full-width centred column (no art).
+pub(super) struct LyricsLayout {
+    /// Cover-art square for the left card, or `None` on narrow layouts.
+    pub art: Option<Rect>,
+    /// Horizontal band the lyric lines are centred within.
+    pub lyrics: Rect,
+}
+
+pub(super) fn lyrics_layout(body: Rect, band_top: f64, band_bottom: f64) -> LyricsLayout {
+    let pad = 28.0;
+    if body.width() >= 760.0 {
+        let col_w = (body.width() * 0.36).clamp(280.0, 420.0);
+        let card_x0 = body.x0 + pad;
+        let card_x1 = card_x0 + col_w;
+        let art_side = (col_w - 48.0).clamp(180.0, 300.0);
+        let art_cx = (card_x0 + card_x1) / 2.0;
+        let art_cy = (band_top + band_bottom) / 2.0 - 30.0;
+        let art = Rect::new(
+            art_cx - art_side / 2.0,
+            art_cy - art_side / 2.0,
+            art_cx + art_side / 2.0,
+            art_cy + art_side / 2.0,
+        );
+        LyricsLayout {
+            art: Some(art),
+            lyrics: Rect::new(card_x1 + 24.0, body.y0, body.x1 - pad, body.y1),
+        }
+    } else {
+        LyricsLayout {
+            art: None,
+            lyrics: Rect::new(body.x0, body.y0, body.x1, body.y1),
+        }
+    }
+}
+
 /// A monotonic wall-clock phase in `[0,1)` for shimmer/pulse animations
 /// (~1.3s period). Process-relative so every skeleton sweeps in lockstep.
 fn anim_phase() -> f64 {
@@ -1335,13 +1404,19 @@ impl MusicApp {
         let left = body.x0 + pad;
         let right = body.x1 - pad;
         let row_h = 52.0;
-        let dur_x = right - 56.0;
-        let dl_x = right - 96.0;
-        let album_x = (right - 320.0).max(left + 360.0);
+        // Balanced column geometry: a right-pinned duration/download/like
+        // cluster, a centred album column, and the title starting at `text_x`
+        // — so a row reads as one connected line rather than title-left with a
+        // cavern across to everything bunched on the right.
+        let cols = track_row_columns(left, right, number_col);
+        let text_x = cols.text_x;
+        let album_x = cols.album_x;
+        let dl_x = cols.dl_x;
+        let dur_x = cols.dur_x;
+        let like_x = cols.like_x;
         let n = rows.len();
         // Playlist reorder/remove cluster, tucked in the gap left of the like
         // control (only drawn on hover, below).
-        let like_x = dl_x - 34.0;
         let pl_rm_x = like_x - 34.0;
         let pl_dn_x = pl_rm_x - 28.0;
         let pl_up_x = pl_dn_x - 28.0;
@@ -1386,7 +1461,6 @@ impl MusicApp {
                         draw_text(tr, scene, t, &num, left + 8.0, vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
                     }
                 }
-                let text_x = if number_col { left + 38.0 } else { left + 8.0 };
                 let title_col = if is_current { c.accent } else { c.text };
                 let title = elide(tr, &tk.title, 14.0, TextWeight::Medium, album_x - text_x - 16.0);
                 draw_text(tr, scene, t, &title, text_x, y + 9.0, 14.0, title_col, TextWeight::Medium, None);
@@ -1971,9 +2045,7 @@ impl MusicApp {
             return bottom;
         };
 
-        // Header: current track + a small "Synced" tag when time-stamped.
-        draw_text(tr, scene, t, &tk.title, body.x0 + pad, top, 22.0, c.text, TextWeight::Bold, None);
-        draw_text(tr, scene, t, &tk.artist, body.x0 + pad, top + 30.0, 14.0, c.dim, TextWeight::Regular, None);
+        // Time-synced badge (top-right).
         if self.lyrics_synced && !self.lyrics.is_empty() {
             let tag = "SYNCED";
             let (tw, _) = tr.measure_weighted(tag, 10.0, None, TextWeight::Semibold);
@@ -1981,7 +2053,29 @@ impl MusicApp {
             fill_rrect(scene, t, pill, 9.0, c.accent.multiply_alpha(0.16));
             draw_text(tr, scene, t, tag, pill.x0 + 10.0, vy(pill.y0, 20.0, 10.0), 10.0, c.accent, TextWeight::Semibold, None);
         }
+
         let band_top = top + 70.0;
+        let band_bot = bottom;
+
+        // Two-column composition on wide bodies: a now-playing card (cover art +
+        // track info) fills the left column and the lyric lines centre within
+        // the right column — so the view is balanced instead of a centred column
+        // with a large empty left half. Narrow bodies keep one full-width
+        // centred column with the track title top-left.
+        let layout = lyrics_layout(body, band_top, band_bot);
+        let region = layout.lyrics;
+        if let Some(art) = layout.art {
+            let cover = self.best_cover_id(&tk.id, &tk.album_id);
+            self.draw_cover(scene, t, art, &cover, &tk.title, tr, 18.0);
+            let cx = art.center().x;
+            let (tw, _) = tr.measure_weighted(&tk.title, 20.0, None, TextWeight::Bold);
+            draw_text(tr, scene, t, &tk.title, cx - tw as f64 / 2.0, art.y1 + 30.0, 20.0, c.text, TextWeight::Bold, None);
+            let (aw, _) = tr.measure_weighted(&tk.artist, 14.0, None, TextWeight::Regular);
+            draw_text(tr, scene, t, &tk.artist, cx - aw as f64 / 2.0, art.y1 + 56.0, 14.0, c.dim, TextWeight::Regular, None);
+        } else {
+            draw_text(tr, scene, t, &tk.title, body.x0 + pad, top, 22.0, c.text, TextWeight::Bold, None);
+            draw_text(tr, scene, t, &tk.artist, body.x0 + pad, top + 30.0, 14.0, c.dim, TextWeight::Regular, None);
+        }
 
         if self.lyrics.is_empty() {
             // Clean empty state — NO dev/compile-feature text.
@@ -1991,7 +2085,7 @@ impl MusicApp {
                 "No lyrics found for this track."
             };
             let (tw, _) = tr.measure_weighted(msg, 15.0, None, TextWeight::Regular);
-            draw_text(tr, scene, t, msg, body.x0 + (body.width() - tw as f64) / 2.0, (band_top + bottom) / 2.0, 15.0, c.dim, TextWeight::Regular, None);
+            draw_text(tr, scene, t, msg, region.x0 + (region.width() - tw as f64) / 2.0, (band_top + band_bot) / 2.0, 15.0, c.dim, TextWeight::Regular, None);
             return bottom;
         }
 
@@ -2005,7 +2099,6 @@ impl MusicApp {
 
         let line_h = 34.0;
         let n = self.lyrics.len();
-        let band_bot = bottom;
         let band_h = (band_bot - band_top).max(1.0);
         // Auto-scroll so the active line sits ~42% down the band and moves in
         // time with playback; plain (unsynced) lyrics anchor to the top.
@@ -2017,10 +2110,11 @@ impl MusicApp {
             0.0
         };
 
-        // Clip the scrolling band so lines never spill onto the header / bar.
-        let clip = Rect::new(body.x0, band_top - 6.0, body.x1, band_bot);
+        // Clip the scrolling band to the lyrics column so lines never spill onto
+        // the header / card / bar.
+        let clip = Rect::new(region.x0, band_top - 6.0, region.x1, band_bot);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        let maxw = (body.width() - 2.0 * pad).min(620.0);
+        let maxw = (region.width() - 2.0 * pad).clamp(1.0, 620.0);
         for (i, line) in self.lyrics.iter().enumerate() {
             let ly = band_top + i as f64 * line_h - auto;
             if ly < band_top - line_h || ly > band_bot {
@@ -2039,7 +2133,7 @@ impl MusicApp {
             };
             let text = if line.text.trim().is_empty() { "\u{266a}" } else { line.text.as_str() };
             let (tw, _) = tr.measure_weighted(text, size, Some(maxw as f32), weight);
-            let x = body.x0 + (body.width() - tw as f64) / 2.0;
+            let x = region.x0 + (region.width() - tw as f64) / 2.0;
             draw_text(tr, scene, t, text, x, ly, size, col, weight, Some(maxw as f32));
         }
         scene.pop_layer();
@@ -2386,17 +2480,34 @@ impl MusicApp {
     fn draw_nowplaying_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
         let cur = self.pb.current.clone().and_then(|id| self.gather_tracks(&[id]).into_iter().next());
 
-        // Progress bar rendered BELOW the whole status bar (a full-width strip
-        // along the bar's bottom edge); the strip is also the scrubber.
+        // Scrub / progress track: a proper rounded bar lifted off the very
+        // bottom edge so it's clearly visible and grabbable — not a hairline
+        // glued to the window edge. The hit strip still reaches the bottom edge
+        // so an edge-of-window press seeks too, while its top clears the
+        // transport buttons.
         let dur = self.current_duration_ms();
         let pos = self.playhead_ms.min(dur as f64).max(0.0);
         let frac = if dur > 0 { pos / dur as f64 } else { 0.0 };
-        let pbar_top = r.y1 - 3.0;
-        scene.fill(Fill::NonZero, t, c.white10, None, &Rect::new(r.x0, pbar_top, r.x1, r.y1));
-        if frac > 0.0 {
-            scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(r.x0, pbar_top, r.x0 + r.width() * frac, r.y1));
+        let inset = 14.0;
+        let track_h = 6.0;
+        let track_x0 = r.x0 + inset;
+        let track_x1 = r.x1 - inset;
+        let track_bottom = r.y1 - 9.0;
+        let track_top = track_bottom - track_h;
+        let track = Rect::new(track_x0, track_top, track_x1, track_bottom);
+        fill_rrect(scene, t, track, track_h / 2.0, c.white10);
+        let fillx = track_x0 + (track_x1 - track_x0) * frac;
+        if fillx > track_x0 {
+            fill_rrect(scene, t, Rect::new(track_x0, track_top, fillx, track_bottom), track_h / 2.0, c.accent);
         }
-        self.scrubber_rect = Rect::new(r.x0, pbar_top - 8.0, r.x1, r.y1);
+        // Grabbable hit strip: from just above the track down to the bottom edge.
+        self.scrubber_rect = Rect::new(track_x0, track_top - 6.0, track_x1, r.y1);
+        // Knob for a clear grab affordance (on hover / drag, or whenever there
+        // is progress to grab).
+        let sc_active = self.scrubber_rect.contains(self.mouse) || self.drag == Some(Drag::Scrubber);
+        if sc_active || frac > 0.0 {
+            scene.fill(Fill::NonZero, t, c.text, None, &Circle::new(Point::new(fillx, (track_top + track_bottom) / 2.0), 6.0));
+        }
         self.volume_rect = Rect::ZERO;
         self.volume_btn_rect = Rect::ZERO;
 
