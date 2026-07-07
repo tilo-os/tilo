@@ -392,14 +392,26 @@ impl Worker {
                             }
                         }
                         Request::Search { query, .. } => {
-                            // Live first, then fall back to the offline sample so
-                            // search always returns something usable.
-                            if let Some((BackendResult::Videos(vs), used_live)) =
-                                fetch(&live, offline.as_ref(), Query::Search(query.clone()), true, &up_tx)
-                            {
-                                send_status(&up_tx, used_live);
-                                let _ = up_tx.send(Update::SearchResults(query, vs));
-                            }
+                            // Live only — NEVER fall back to the bundled sample:
+                            // presenting fabricated videos as real search results
+                            // is exactly what the "no fake content" rule forbids.
+                            // Always emit a (possibly empty) result so the UI can
+                            // drop its loading skeleton and show either real hits
+                            // or an honest "no results".
+                            let vs = match fetch(
+                                &live,
+                                offline.as_ref(),
+                                Query::Search(query.clone()),
+                                false,
+                                &up_tx,
+                            ) {
+                                Some((BackendResult::Videos(vs), used_live)) => {
+                                    send_status(&up_tx, used_live);
+                                    vs
+                                }
+                                _ => Vec::new(),
+                            };
+                            let _ = up_tx.send(Update::SearchResults(query, vs));
                         }
                         Request::Feed => {
                             // Live only: an offline feed is the sample already on

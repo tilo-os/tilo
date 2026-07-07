@@ -88,6 +88,20 @@ fn perf_enabled() -> bool {
     })
 }
 
+/// Cached `QUICK_UI_NO_SCROLL_OPT=1` escape hatch. When set, the frame loop
+/// always runs a full `compute_layout` on any `layout_dirty` frame (the pre-
+/// optimisation behaviour), disabling the scroll-reposition fast path. Kept as
+/// a safety valve for the shared toolkit: if a subtree ever repositions in a
+/// way that genuinely needs a re-solve without reporting `layout_needs_measure`,
+/// this restores the always-solve semantics with one env var.
+fn scroll_opt_disabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("QUICK_UI_NO_SCROLL_OPT").map(|s| !s.is_empty()).unwrap_or(false)
+    })
+}
+
 /// The next UTF-8 char boundary at or after `byte` in `s` (clamped to the
 /// length). Used by caret-review to recognise a single-character move.
 fn next_boundary(s: &str, byte: usize) -> usize {
@@ -226,6 +240,13 @@ pub struct App {
     /// and reflow responsive layouts on the next tick instead of waiting
     /// on stray input. `None` until the first frame is drawn.
     last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
+    /// Physical `(width, height)` the taffy tree was last `compute_layout`'d
+    /// against. Used by the scroll-reposition fast path: a frame that is only
+    /// `layout_dirty` because content scrolled needs `apply_layout` but not a
+    /// full re-solve — unless the window size changed since the last solve, in
+    /// which case available space changed and we must recompute. `None` until
+    /// the first solve.
+    last_layout_px: Option<(u32, u32)>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
@@ -383,6 +404,7 @@ impl App {
             // driven low-vision preferences are folded in once all the
             // fields they depend on (base_theme, a11y, text_scale) exist.
             last_frame_size: None,
+            last_layout_px: None,
             theme: Theme::dark(),
             debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
@@ -2277,6 +2299,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // the new widgets get node ids and the layout
                 // pass below sees them.
                 app.structure_dirty |= app.root_widget.take_structure_dirty();
+                // Capture BEFORE `rebuild_structure` clears it: a fresh taffy
+                // tree always needs a full solve regardless of the scroll fast
+                // path below.
+                let structure_rebuilt = app.structure_dirty;
                 if app.structure_dirty {
                     // Rebuild the taffy tree, re-establishing keyboard focus
                     // AND (for `autofocus_on_structure_change` apps) the
@@ -2298,26 +2324,45 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let root_node = app.root_node.unwrap();
                 if app.layout_dirty {
                     t_relayout_branch = true;
-                    let node_map = &app.node_map;
-                    let text_renderer = &mut app.text_renderer;
-                    let t0 = std::time::Instant::now();
-                    app.taffy
-                        .compute_layout_with_measure(
-                            root_node,
-                            taffy::Size {
-                                width: AvailableSpace::Definite((width as f32) / scale_factor),
-                                height: AvailableSpace::Definite((height as f32) / scale_factor),
-                            },
-                            |known, available, node_id, _, _| {
-                                if let Some(&widget_ptr) = node_map.get(&node_id) {
-                                    unsafe { (*widget_ptr).measure(known, available, text_renderer) }
-                                } else {
-                                    taffy::Size::ZERO
-                                }
-                            },
-                        )
-                        .unwrap();
-                    t_compute_us = t0.elapsed().as_micros();
+                    // Scroll-reposition fast path: a frame that is `layout_dirty`
+                    // only because content scrolled needs `apply_layout` to push
+                    // the new offset down to the children, but NOT a full taffy
+                    // `compute_layout` — the intrinsic sizes and relative boxes
+                    // are unchanged. Re-solving the whole content tree on every
+                    // scroll frame was the dominant per-frame cost on long lists
+                    // and grids. We still force a full solve whenever the tree
+                    // was just rebuilt, the window changed size (available space
+                    // differs), or any widget genuinely needs re-measuring
+                    // (`layout_needs_measure`). `QUICK_UI_NO_SCROLL_OPT=1`
+                    // disables the fast path (always solve) as a safety escape.
+                    let size_changed = app.last_layout_px != Some((width, height));
+                    let must_compute = structure_rebuilt
+                        || size_changed
+                        || scroll_opt_disabled()
+                        || app.root_widget.layout_needs_measure();
+                    if must_compute {
+                        let node_map = &app.node_map;
+                        let text_renderer = &mut app.text_renderer;
+                        let t0 = std::time::Instant::now();
+                        app.taffy
+                            .compute_layout_with_measure(
+                                root_node,
+                                taffy::Size {
+                                    width: AvailableSpace::Definite((width as f32) / scale_factor),
+                                    height: AvailableSpace::Definite((height as f32) / scale_factor),
+                                },
+                                |known, available, node_id, _, _| {
+                                    if let Some(&widget_ptr) = node_map.get(&node_id) {
+                                        unsafe { (*widget_ptr).measure(known, available, text_renderer) }
+                                    } else {
+                                        taffy::Size::ZERO
+                                    }
+                                },
+                            )
+                            .unwrap();
+                        t_compute_us = t0.elapsed().as_micros();
+                        app.last_layout_px = Some((width, height));
+                    }
                     let t1 = std::time::Instant::now();
                     app.root_widget.apply_layout(
                         &app.taffy,
@@ -2326,7 +2371,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                     t_apply_us = t1.elapsed().as_micros();
                     app.layout_dirty = false;
-                    app.update_focusable_order();
+                    if must_compute {
+                        app.update_focusable_order();
+                    }
                 }
 
                 let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };

@@ -208,6 +208,10 @@ impl Widget for VideoSurface {
         Some(VIDEO_SURFACE_ID)
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }

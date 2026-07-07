@@ -459,6 +459,16 @@ pub struct TubeModel {
     /// clickbait frame when DeArrow thumbnails are enabled.
     #[serde(default)]
     pub dearrow_thumb_url: BTreeMap<VideoId, String>,
+    /// Whether the home/trending feed is currently being fetched from the live
+    /// backend. Drives the Home skeleton so a cold, empty catalogue reads as
+    /// "loading" rather than a blank page. The real app starts `true` (it fetches
+    /// on launch); the hermetic `--shots`/sample path leaves it `false`.
+    #[serde(default)]
+    pub feed_loading: bool,
+    /// Whether a search is in flight, so the results screen shows a skeleton
+    /// instead of a premature "No results".
+    #[serde(default)]
+    pub search_loading: bool,
 }
 
 impl Default for TubeModel {
@@ -484,6 +494,8 @@ impl Default for TubeModel {
             related_hits: Vec::new(),
             dislikes: BTreeMap::new(),
             dearrow_thumb_url: BTreeMap::new(),
+            feed_loading: false,
+            search_loading: false,
         }
     }
 }
