@@ -314,8 +314,20 @@ impl FileExplorerWidget {
                     .push(Box::new(retry)),
             ));
         }
+        // The list/grid scrolls: pin the scroll viewport to the *remaining*
+        // height of the content column (grow-from-zero) rather than letting it
+        // claim `percent(1.0)`. The surrounding chrome columns/rows use
+        // `flex_shrink: 0`, so a `percent(1.0)` viewport would resolve against
+        // an effectively unconstrained height and expand to the full content
+        // extent — viewport == content, nothing to scroll. `fill_parent_height`
+        // takes exactly the space left under the toolbar/breadcrumb (and the
+        // optional error row) so a long directory overflows the viewport and
+        // the wheel + scrollbar thumb move the list. The header/toolbar stay
+        // fixed above it; only this pane scrolls.
         view_col = view_col.push(Box::new(
-            Scrollable::new(ScrollAxis::Vertical).with_child(view_child),
+            Scrollable::new(ScrollAxis::Vertical)
+                .fill_parent_height()
+                .with_child(view_child),
         ));
 
         // Body: a full-height sidebar hugging the window's left edge (it owns

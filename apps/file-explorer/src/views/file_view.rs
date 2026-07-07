@@ -481,9 +481,21 @@ impl Widget for FileView {
         // Fill the parent width (so the grid's column count is derived from the
         // real pane width, never collapsing to one column) and measure the
         // content height.
+        //
+        // `align_self: Start` is load-bearing for scrolling: the enclosing
+        // `Scrollable` is a default flex container (row direction,
+        // `align-items: stretch`), which would otherwise stretch this leaf's
+        // cross axis (its height) to the viewport. Stretched to the viewport,
+        // the view reports a height equal to the visible area, so the
+        // Scrollable sees `content == viewport` and a long directory can't
+        // scroll at all. Opting out of the stretch lets the leaf take its
+        // *measured* content height (all the rows / every grid row), so the
+        // Scrollable's content overflows the viewport and the wheel +
+        // scrollbar thumb move the list.
         let node = taffy
             .new_leaf(Style {
                 size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                align_self: Some(taffy::AlignSelf::Start),
                 ..Default::default()
             })
             .unwrap();
