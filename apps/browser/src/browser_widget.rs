@@ -37,12 +37,20 @@ use ui::widget::{
     WebView, Widget,
 };
 
+use crate::address_overlay::AddressSuggestions;
+use crate::history::History;
+use crate::settings::{Settings, SettingsPane};
+
 /// CRDT path for the address-bar text.
 const URL_PATH: &str = "browser.url";
 /// CRDT flags the toolbar buttons write `true` to on click.
 const BACK_FLAG: &str = "browser.back_clicked";
 const FORWARD_FLAG: &str = "browser.forward_clicked";
 const RELOAD_FLAG: &str = "browser.reload_clicked";
+/// Gear button → toggle the settings pane.
+const SETTINGS_FLAG: &str = "browser.settings_clicked";
+/// How many address-bar suggestions to show.
+const SUGGESTION_LIMIT: usize = 8;
 
 /// e2e id of the address input (also used internally to detect whether
 /// the user is editing it).
@@ -70,6 +78,23 @@ pub struct BrowserWidget {
     /// `1.0` when idle; anything below shows the progress bar.
     progress: f64,
     title: String,
+    /// Most recent URI the engine reported — recorded into history on
+    /// load-finished.
+    current_uri: String,
+
+    // User-facing browser state.
+    settings: Settings,
+    history: History,
+    /// Fuzzy suggestion dropdown under the address bar (a field, not a
+    /// tree child: driven here and painted in `draw_overlay`).
+    suggestions: AddressSuggestions,
+    /// Whether the settings pane replaces the page surface.
+    show_settings: bool,
+    /// Set when `show_settings` flips, so the host rebuilds the tree.
+    structure_dirty: bool,
+    /// Last address-bar text a suggestion query ran for, to avoid
+    /// re-querying every frame.
+    last_query: Option<String>,
 }
 
 impl BrowserWidget {
@@ -97,6 +122,10 @@ impl BrowserWidget {
 
     /// Widget over an explicit engine — used by tests.
     pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
+        // Persisted state; `load()` returns defaults/empty when absent, so
+        // `--shots` runs are unaffected by (and don't write) real files.
+        let settings = if headless { Settings::default() } else { Settings::load() };
+        let history = if headless { History::default() } else { History::load() };
         Self {
             rect: Rect::ZERO,
             engine,
@@ -108,6 +137,13 @@ impl BrowserWidget {
             can_go_forward: false,
             progress: 1.0,
             title: String::new(),
+            current_uri: String::new(),
+            settings,
+            history,
+            suggestions: AddressSuggestions::new(),
+            show_settings: false,
+            structure_dirty: false,
+            last_query: None,
         }
     }
 
@@ -132,6 +168,9 @@ impl BrowserWidget {
             .with_id(URL_INPUT_ID)
             .with_on_change_path(URL_PATH)
             .with_placeholder("Search or enter address");
+        let settings_btn = Button::new("browser.settings", "", Some(SETTINGS_FLAG))
+            .with_icon(Icon::Settings)
+            .with_size(NAV_BTN.0, NAV_BTN.1);
 
         // `no_wrap` keeps the address input on the same line as the
         // buttons (a wrapping row would push the 100%-width input onto
@@ -141,7 +180,8 @@ impl BrowserWidget {
             .push(Box::new(back))
             .push(Box::new(forward))
             .push(Box::new(reload))
-            .push(Box::new(url_input));
+            .push(Box::new(url_input))
+            .push(Box::new(settings_btn));
 
         // The web view must reach the window edges — no border, no gap.
         // Only the toolbar keeps an inset (its wrapping Container's
@@ -152,12 +192,16 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
-        if self.progress < 1.0 {
+        if !self.show_settings && self.progress < 1.0 {
             column = column.push(Box::new(ProgressBar::new(self.progress as f32)));
         }
-        column = column.push(Box::new(
-            WebView::new(self.engine.clone()).with_test_id("browser.surface"),
-        ));
+        // The content region is either the settings pane or the live page.
+        let content: Box<dyn Widget> = if self.show_settings {
+            Box::new(SettingsPane::with_settings(self.settings.clone()))
+        } else {
+            Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
+        };
+        column = column.push(content);
         Box::new(column)
     }
 
@@ -169,7 +213,7 @@ impl BrowserWidget {
                 let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
             }
         }
-        for flag in [BACK_FLAG, FORWARD_FLAG, RELOAD_FLAG] {
+        for flag in [BACK_FLAG, FORWARD_FLAG, RELOAD_FLAG, SETTINGS_FLAG] {
             if state.get(root, flag).ok().flatten().is_none() {
                 let _ = state.put(root, flag, false);
             }
@@ -232,10 +276,21 @@ impl BrowserWidget {
                     if !editing {
                         ui::put_text_diffed(state, root, URL_PATH, &uri);
                     }
+                    self.current_uri = uri;
                 }
                 WebViewEvent::TitleChanged(title) => self.title = title,
                 WebViewEvent::LoadProgress(p) => self.progress = p,
-                WebViewEvent::LoadFinished => self.progress = 1.0,
+                WebViewEvent::LoadFinished => {
+                    self.progress = 1.0;
+                    // Record the finished page in persistent history
+                    // (real pages only — skip about:/data: and blanks).
+                    if !self.headless
+                        && self.current_uri.starts_with("http")
+                    {
+                        self.history.record(&self.current_uri, &self.title);
+                        let _ = self.history.save();
+                    }
+                }
                 WebViewEvent::LoadFailed { uri, error } => {
                     self.progress = 1.0;
                     tracing::warn!("load failed for {uri}: {error}");
@@ -261,6 +316,82 @@ impl BrowserWidget {
                     .send(WebViewCommand::Navigate(normalise_url(trimmed)));
             }
         }
+    }
+
+    /// Enable or disable ad blocking on the engine (filter + scriptlets).
+    fn set_adblock(&self, enabled: bool) {
+        if enabled {
+            crate::blocker::spawn_filter_loader(self.engine.clone());
+            self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                crate::blocker::user_scripts(),
+            )));
+        } else {
+            self.engine.send(WebViewCommand::SetContentFilter(None));
+            self.engine
+                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(Vec::new())));
+        }
+    }
+
+    /// Poll the settings pane's one-shot + level intents and act on them.
+    fn apply_settings_intents(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let intents = SettingsPane::take_pending(state, root);
+        if intents.clear_cookies {
+            self.engine.send(WebViewCommand::ClearWebsiteData);
+        }
+        if intents.clear_history {
+            self.history.clear();
+            let _ = self.history.save();
+            self.suggestions.clear();
+            self.last_query = None;
+        }
+        let mut changed = false;
+        if let Some(v) = intents.adblock_enabled {
+            if v != self.settings.adblock_enabled {
+                self.settings.adblock_enabled = v;
+                self.set_adblock(v);
+                changed = true;
+            }
+        }
+        if let Some(v) = intents.clear_on_exit {
+            if v != self.settings.clear_on_exit {
+                self.settings.clear_on_exit = v;
+                changed = true;
+            }
+        }
+        if changed && !self.headless {
+            self.settings.save();
+        }
+    }
+
+    /// Refresh the address-bar suggestion list from history while the
+    /// address input is focused; hide it otherwise.
+    fn update_suggestions(&mut self, state: &AutoCommit, root: &ObjId) {
+        if self.show_settings || !self.url_input_focused() {
+            if self.last_query.is_some() {
+                self.suggestions.clear();
+                self.last_query = None;
+            }
+            return;
+        }
+        let text = Self::read_url(state, root).unwrap_or_default();
+        if self.last_query.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        self.last_query = Some(text.clone());
+        self.suggestions
+            .set_suggestions(self.history.suggest(&text, SUGGESTION_LIMIT));
+    }
+
+    /// Rect of the address `TextInput` in the composed tree, for anchoring
+    /// the suggestion overlay under it.
+    fn address_input_rect(&self) -> Option<Rect> {
+        fn walk(w: &dyn Widget) -> Option<Rect> {
+            if w.test_id() == Some(URL_INPUT_ID) {
+                return Some(w.get_rect());
+            }
+            w.children().iter().find_map(|c| walk(*c))
+        }
+        self.composed.as_ref().and_then(|c| walk(c.as_ref()))
     }
 }
 
@@ -290,12 +421,22 @@ impl Widget for BrowserWidget {
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, path);
             if !self.headless {
-                crate::blocker::spawn_filter_loader(self.engine.clone());
-                // Scriptlet-style blocking (YouTube ad-skip etc.) the
-                // declarative content filter can't express.
-                self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                    crate::blocker::user_scripts(),
-                )));
+                // Privacy: "clear on exit" is honoured by clearing the
+                // previous session's data at startup — reliable, unlike a
+                // teardown hook the windowing layer doesn't expose.
+                if self.settings.clear_on_exit {
+                    self.engine.send(WebViewCommand::ClearWebsiteData);
+                    self.history.clear();
+                    let _ = self.history.save();
+                }
+                if self.settings.adblock_enabled {
+                    crate::blocker::spawn_filter_loader(self.engine.clone());
+                    // Scriptlet-style blocking (YouTube ad-skip etc.) the
+                    // declarative content filter can't express.
+                    self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                        crate::blocker::user_scripts(),
+                    )));
+                }
                 self.engine
                     .send(WebViewCommand::Navigate(self.initial_url.to_string()));
             }
@@ -313,6 +454,14 @@ impl Widget for BrowserWidget {
         if Self::take_flag(state, path, RELOAD_FLAG) {
             self.engine.send(WebViewCommand::Reload);
         }
+        if Self::take_flag(state, path, SETTINGS_FLAG) {
+            self.show_settings = !self.show_settings;
+            self.structure_dirty = true;
+            self.suggestions.clear();
+        }
+
+        self.apply_settings_intents(state, path);
+        self.update_suggestions(state, path);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, path);
@@ -358,6 +507,11 @@ impl Widget for BrowserWidget {
                 }
             }
         }
+        // Anchor the suggestion dropdown flush under the address input.
+        if let Some(r) = self.address_input_rect() {
+            self.suggestions
+                .set_anchor(Point::new(r.x0, r.y1 + 2.0), r.width() as f32);
+        }
     }
 
     fn draw(
@@ -373,6 +527,30 @@ impl Widget for BrowserWidget {
         }
     }
 
+    /// The suggestion dropdown is a field, not a tree child, so paint it
+    /// in the overlay pass here (above the page) after the composed tree's
+    /// own overlays.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(c) = &mut self.composed {
+            c.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.suggestions
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // Toggling the settings pane swaps the content widget → rebuild.
+        std::mem::take(&mut self.structure_dirty)
+            || self.composed.as_mut().is_some_and(|c| c.take_structure_dirty())
+    }
+
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -385,6 +563,37 @@ impl Widget for BrowserWidget {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // The suggestion dropdown gets first crack at input while it's up
+        // (address bar focused): arrow keys move the selection, Enter/click
+        // pick a suggestion, Escape dismisses — ahead of the text field.
+        if self.suggestions.is_visible() && !self.show_settings {
+            let mut ov_handled = false;
+            self.suggestions.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut ov_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(entry) = self.suggestions.take_chosen() {
+                self.suggestions.clear();
+                self.last_query = None;
+                ui::put_text_diffed(state, path, URL_PATH, &entry.url);
+                self.engine
+                    .send(WebViewCommand::Navigate(normalise_url(&entry.url)));
+                *handled = true;
+                return;
+            }
+            if ov_handled {
+                *handled = true;
+                return;
+            }
+        }
+
         if let Some(c) = &mut self.composed {
             if let Ok(children) = taffy.children(node_id) {
                 if let Some(&child_node) = children.first() {
@@ -403,13 +612,15 @@ impl Widget for BrowserWidget {
             }
         }
 
-        // Enter in the focused address bar submits it.
+        // Enter in the focused address bar submits it (no suggestion picked).
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             if key.state == ElementState::Pressed
                 && key.logical_key == WKey::Named(WNamedKey::Enter)
                 && self.url_input_focused()
             {
                 self.navigate_to_input(state, path);
+                self.suggestions.clear();
+                self.last_query = None;
                 *handled = true;
             }
         }
