@@ -1811,6 +1811,7 @@ impl Widget for PdfApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn app_with_state() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
@@ -1899,6 +1900,7 @@ mod tests {
     /// frame path and shot to `/tmp/pdf_repro`. Proves zoom actually changes
     /// the on-screen page size and that horizontal pan reaches new content.
     #[test]
+    #[serial(pdfium)]
     fn drive_review_zoom_pan_annotate_shots() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
         let mut app = PdfApp::open(path);
@@ -2460,6 +2462,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pdfium)]
     fn loading_a_second_document_clears_the_prior_documents_markup() {
         let (mut app, mut st) = app_with_state(); // seeded sample, has markup
         assert!(!app.annotations.is_empty(), "sample starts with seeded markup");
@@ -2521,6 +2524,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pdfium)]
     fn raster_text_layer_hit_tests_real_glyphs_and_search_finds_them() {
         let mut app = open_raster_sample();
 
@@ -2569,6 +2573,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(pdfium)]
     fn save_back_flattens_markup_into_a_reopenable_pdf() {
         let mut app = open_raster_sample();
         let mut st = ui::State::new();
@@ -2639,6 +2644,7 @@ mod tests {
     /// flattened markup baked in. PNGs are written only under `PDF_SHOTS=1`
     /// (to `$PDF_SHOT_DIR`, default a temp dir); the assertions always run.
     #[test]
+    #[serial(pdfium)]
     fn drive_real_pdf_search_highlight_save_shots() {
         let shot_dir = std::env::var("PDF_SHOT_DIR").unwrap_or_else(|_| {
             std::env::temp_dir().join("qos_pdf_review").to_string_lossy().into_owned()
