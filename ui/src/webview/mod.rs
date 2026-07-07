@@ -17,6 +17,7 @@
 //! translation so engines never see toolkit layout space.
 
 pub mod test_engine;
+pub mod profile;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;

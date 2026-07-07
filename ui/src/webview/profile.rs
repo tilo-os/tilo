@@ -1,0 +1,271 @@
+//! Lightweight, always-compiled instrumentation for the WebView
+//! pipeline. Off by default at zero cost; enabled by setting
+//! `QOS_WEBVIEW_PROFILE` in the environment.
+//!
+//! What it measures, from the engine thread and the widget:
+//!  * **frame throughput** — inter-frame intervals → frames/sec,
+//!  * **input→paint latency** — time from an interactive command being
+//!    sent to the next distinct frame arriving (the number that governs
+//!    how responsive scrolling / clicking feels),
+//!  * **SHM swizzle cost** — the per-frame BGRA→RGBA copy time,
+//!  * **geometry** — each frame's pixel size and each draw's rect, so a
+//!    size/rect mismatch (a stretched or mispositioned frame) is visible.
+//!
+//! A summary prints to stderr every [`SUMMARY_EVERY`] frames and once
+//! more when the process exits. With `QOS_WEBVIEW_PROFILE=trace` the
+//! first [`TRACE_FRAMES`] frames and draws are logged individually — the
+//! fast path to diagnosing a visual glitch.
+//!
+//! All timing uses `std::time::Instant`; the whole module is a no-op
+//! (one relaxed atomic load) when disabled.
+
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// Frames between periodic stderr summaries.
+const SUMMARY_EVERY: u64 = 120;
+/// Individual frame/draw lines printed at the start in `trace` mode.
+const TRACE_FRAMES: u64 = 48;
+/// Ring-buffer capacity for the latency / interval samples.
+const SAMPLES: usize = 512;
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static TRACE: AtomicBool = AtomicBool::new(false);
+static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+
+/// Read the env once and latch the on/off + trace flags. Called from
+/// every hook; the first call resolves it, the rest are a relaxed load.
+#[inline]
+pub fn enabled() -> bool {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        match std::env::var("QOS_WEBVIEW_PROFILE") {
+            Ok(v) if !v.is_empty() && v != "0" => {
+                ENABLED.store(true, Ordering::Relaxed);
+                if v == "trace" {
+                    TRACE.store(true, Ordering::Relaxed);
+                }
+            }
+            _ => {}
+        }
+    });
+    ENABLED.load(Ordering::Relaxed)
+}
+
+fn state() -> &'static Mutex<State> {
+    STATE.get_or_init(|| Mutex::new(State::new()))
+}
+
+struct State {
+    /// Wall clock the profiler started (first frame).
+    started: Option<Instant>,
+    /// Timestamp of the previous frame, for inter-frame intervals.
+    last_frame: Option<Instant>,
+    /// An interactive command was sent at this time and no frame has
+    /// arrived since — the next frame closes the latency measurement.
+    pending_input: Option<(Instant, &'static str)>,
+    frame_count: u64,
+    draw_count: u64,
+    /// Most recent frame dimensions, to detect alternation (flicker).
+    last_dims: Option<(u32, u32)>,
+    dims_changes: u64,
+    intervals_ms: Ring,
+    latency_ms: Ring,
+    swizzle_us: Ring,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            started: None,
+            last_frame: None,
+            pending_input: None,
+            frame_count: 0,
+            draw_count: 0,
+            last_dims: None,
+            dims_changes: 0,
+            intervals_ms: Ring::new(),
+            latency_ms: Ring::new(),
+            swizzle_us: Ring::new(),
+        }
+    }
+}
+
+/// Note that an interactive command was just sent. `kind` is a short
+/// static label (`"scroll"`, `"mouse"`, `"key"`). Only the first input
+/// after a paint opens a latency window, so a burst reports the latency
+/// of the burst's leading edge to its first repaint.
+#[inline]
+pub fn record_input(kind: &'static str) {
+    if !enabled() {
+        return;
+    }
+    let mut s = state().lock().unwrap();
+    if s.pending_input.is_none() {
+        s.pending_input = Some((Instant::now(), kind));
+    }
+}
+
+/// Record a frame the engine just produced: its pixel dimensions and the
+/// time spent converting it (SHM BGRA → RGBA).
+pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
+    if !enabled() {
+        return;
+    }
+    let now = Instant::now();
+    let mut s = state().lock().unwrap();
+    s.started.get_or_insert(now);
+
+    if let Some(prev) = s.last_frame {
+        s.intervals_ms.push(now.duration_since(prev).as_secs_f64() * 1000.0);
+    }
+    s.last_frame = Some(now);
+    s.swizzle_us.push(swizzle.as_secs_f64() * 1_000_000.0);
+
+    if let Some((sent, kind)) = s.pending_input.take() {
+        let ms = now.duration_since(sent).as_secs_f64() * 1000.0;
+        s.latency_ms.push(ms);
+        if TRACE.load(Ordering::Relaxed) && s.frame_count < TRACE_FRAMES {
+            eprintln!("[webview-profile] input({kind})→paint {ms:.1}ms");
+        }
+    }
+
+    match s.last_dims {
+        Some(d) if d != (width, height) => s.dims_changes += 1,
+        _ => {}
+    }
+    s.last_dims = Some((width, height));
+
+    s.frame_count += 1;
+    let n = s.frame_count;
+    if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
+        eprintln!("[webview-profile] frame #{n} {width}x{height} swizzle {:.0}us", swizzle.as_secs_f64() * 1e6);
+    }
+    if n % SUMMARY_EVERY == 0 {
+        s.print_summary();
+    }
+}
+
+/// Record a draw pass: the widget's rect and the frame dimensions it
+/// painted (`None` = placeholder, no frame yet). A rect whose aspect
+/// ratio diverges from the frame's, or a placeholder appearing after
+/// real frames, points at a layout/caching glitch.
+pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
+    if !enabled() {
+        return;
+    }
+    let mut s = state().lock().unwrap();
+    s.draw_count += 1;
+    let n = s.draw_count;
+    if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
+        match frame_dims {
+            Some((w, h)) => eprintln!(
+                "[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} frame {w}x{h}"
+            ),
+            None => eprintln!(
+                "[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} PLACEHOLDER (no frame)"
+            ),
+        }
+    }
+}
+
+impl State {
+    fn print_summary(&self) {
+        let elapsed = self.started.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+        let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
+        eprintln!(
+            "[webview-profile] === {frames} frames in {elapsed:.1}s ({fps:.1} fps), {draws} draws, {dims} size-changes ===",
+            frames = self.frame_count,
+            draws = self.draw_count,
+            dims = self.dims_changes,
+        );
+        self.intervals_ms.report("frame interval (ms)");
+        self.latency_ms.report("input→paint (ms)");
+        self.swizzle_us.report("SHM swizzle (us)");
+    }
+}
+
+/// Fixed-capacity sample buffer with percentile reporting. Overwrites
+/// oldest on overflow — the summary reflects a recent window, not the
+/// whole run, which is what matters for a live feel.
+struct Ring {
+    buf: Vec<f64>,
+    next: usize,
+    len: usize,
+}
+
+impl Ring {
+    fn new() -> Self {
+        Self { buf: vec![0.0; SAMPLES], next: 0, len: 0 }
+    }
+
+    fn push(&mut self, v: f64) {
+        self.buf[self.next] = v;
+        self.next = (self.next + 1) % SAMPLES;
+        self.len = (self.len + 1).min(SAMPLES);
+    }
+
+    fn report(&self, label: &str) {
+        if self.len == 0 {
+            return;
+        }
+        let mut sorted: Vec<f64> = self.buf[..self.len].to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pct = |p: f64| sorted[((sorted.len() as f64 * p) as usize).min(sorted.len() - 1)];
+        let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+        eprintln!(
+            "[webview-profile]   {label:<22} n={n} mean {mean:.1} p50 {p50:.1} p95 {p95:.1} p99 {p99:.1} max {max:.1}",
+            n = sorted.len(),
+            p50 = pct(0.50),
+            p95 = pct(0.95),
+            p99 = pct(0.99),
+            max = sorted[sorted.len() - 1],
+        );
+    }
+}
+
+/// Print a final summary. Call from a process-exit path (the browser
+/// binary installs it) so a run that never hits [`SUMMARY_EVERY`] still
+/// reports.
+pub fn print_final_summary() {
+    if !enabled() {
+        return;
+    }
+    if let Some(m) = STATE.get() {
+        eprintln!("[webview-profile] --- final ---");
+        m.lock().unwrap().print_summary();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_percentiles_are_ordered() {
+        let mut r = Ring::new();
+        for i in 0..100 {
+            r.push(i as f64);
+        }
+        let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // p50 of 0..100 sits mid-range, p95 near the top.
+        let pct = |p: f64| sorted[((sorted.len() as f64 * p) as usize).min(sorted.len() - 1)];
+        assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
+        assert!(pct(0.95) >= 90.0);
+    }
+
+    #[test]
+    fn ring_wraps_and_keeps_recent() {
+        let mut r = Ring::new();
+        for i in 0..(SAMPLES + 10) {
+            r.push(i as f64);
+        }
+        assert_eq!(r.len, SAMPLES);
+        // Oldest ten were overwritten; the minimum retained is >= 10.
+        let min = r.buf.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(min >= 10.0);
+    }
+}
