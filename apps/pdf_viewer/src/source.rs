@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{anyhow, Context};
 use pdfium_render::prelude::*;
@@ -93,11 +93,42 @@ pub struct Rasterizer {
     text_cache: HashMap<usize, Arc<PageText>>,
 }
 
+/// The process-wide pdfium handle, bound exactly once.
+///
+/// pdfium's `FPDF_InitLibrary` must run once per process, and pdfium-render's
+/// default thread-safety marshalling takes a global `Mutex` on that first init
+/// and only releases it on `FPDF_DestroyLibrary`. A process-lifetime handle is
+/// never destroyed, so a *second* `Pdfium` would call `FPDF_InitLibrary` again
+/// and block forever waiting for that never-released lock. Binding once and
+/// sharing the handle sidesteps this entirely — opening any number of PDFs (and
+/// the save-back reopen) uses the same library. Our pdfium access is confined
+/// to the UI thread, so the single shared handle is never touched concurrently.
+fn shared_pdfium() -> Option<&'static Pdfium> {
+    // `Pdfium` wraps a raw library handle and is `!Sync`, so it can't sit in a
+    // `static` directly. Leak one behind the `OnceLock` (it lives for the whole
+    // process anyway) and cache its address as a `usize`, which is `Sync`. The
+    // `OnceLock` guarantees the leak happens exactly once; `0` records "no
+    // pdfium available" so the fallback text backend still engages.
+    static PDFIUM_ADDR: OnceLock<usize> = OnceLock::new();
+    let addr = *PDFIUM_ADDR.get_or_init(|| match find_pdfium() {
+        Some(bindings) => {
+            let handle: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
+            handle as *const Pdfium as usize
+        }
+        None => 0,
+    });
+    if addr == 0 {
+        None
+    } else {
+        // SAFETY: `addr` is the address of a `Box::leak`'d `Pdfium` that lives
+        // for the entire process, so the reference is valid for `'static`.
+        Some(unsafe { &*(addr as *const Pdfium) })
+    }
+}
+
 impl Rasterizer {
     fn open(bytes: Vec<u8>) -> Option<Self> {
-        let bindings = find_pdfium()?;
-        // One process-lifetime handle; leaking avoids a self-referential struct.
-        let pdfium: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
+        let pdfium = shared_pdfium()?;
         let original = Arc::new(bytes.clone());
         let doc = pdfium.load_pdf_from_byte_vec(bytes, None).ok()?;
         let mut page_sizes = Vec::new();
