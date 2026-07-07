@@ -31,7 +31,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
-use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent, normalise_url};
+use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent, normalise_url};
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, IconDescriptor, ProgressBar, Row, TextInput,
     WebView, Widget,
@@ -460,6 +460,32 @@ mod tests {
         let root = automerge::ROOT;
         widget.sync(&mut state, &root);
         (state, root)
+    }
+
+    #[test]
+    fn nav_gesture_drives_engine_history() {
+        use ui::gesture::NavDirection;
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut state, root) = synced(&mut w);
+        // Build the composed tree so the gesture forwards down to the
+        // WebView — this exercises the real trait-forwarding path
+        // (BrowserWidget → Column → WebView), not a shortcut.
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        w.build_layout(&mut tree, &theme, &mut node_map);
+
+        engine.send(WebViewCommand::Navigate("https://a.test".into()));
+        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+
+        assert!(
+            w.on_nav_gesture(NavDirection::Back, &mut state, &root),
+            "a back gesture is consumed by the embedded WebView",
+        );
+        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+        w.on_nav_gesture(NavDirection::Forward, &mut state, &root);
+        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
     }
 
     #[test]

@@ -173,6 +173,33 @@ pub trait Widget {
     /// surface the change on the next frame.
     fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
 
+    /// Handle a global back/forward navigation gesture — a two-finger
+    /// horizontal swipe (touchpad) or an edge-pull swipe (touchscreen) —
+    /// recognised by [`crate::gesture::NavGestureRecognizer`] in the host
+    /// [`crate::app::App`] and delivered to the whole tree. Return `true`
+    /// once a widget consumes it.
+    ///
+    /// The **default forwards to children**, so any widget that owns
+    /// history (a browser's [`WebView`](crate::widget::WebView), a wizard,
+    /// a pane stack) becomes swipe-navigable just by overriding this — the
+    /// containers above it pass the gesture down for free, and every app
+    /// built on the toolkit gets back/forward gestures without wiring up
+    /// input plumbing. `state`/`path` are the same CRDT handles as
+    /// [`handle_event`](Widget::handle_event).
+    fn on_nav_gesture(
+        &mut self,
+        dir: crate::gesture::NavDirection,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        for child in self.children_mut() {
+            if child.on_nav_gesture(dir, state, path) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// One-shot signal that the host should move keyboard focus to this
     /// subtree's first focusable widget after the next structural
     /// rebuild. Reading the flag MUST clear it (rising-edge semantics).

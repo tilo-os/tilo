@@ -249,6 +249,11 @@ pub struct App {
     pub autofocus_on_structure_change: bool,
     modifiers: winit::event::Modifiers,
 
+    /// Recognises back/forward navigation gestures (two-finger touchpad
+    /// swipe, touchscreen edge pull) from scroll/touch events and hands
+    /// the result to the widget tree via [`Widget::on_nav_gesture`].
+    nav_gestures: crate::gesture::NavGestureRecognizer,
+
     // Stable state for Undo/Redo tracking
     last_stable_focus_idx: Option<usize>,
     last_stable_metadata: Option<String>,
@@ -378,6 +383,7 @@ impl App {
             node_map: std::collections::HashMap::new(),
             layout_dirty: true,
             structure_dirty: false,
+            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             needs_sync: true,
             // Theme is finalised right after this struct literal — the env-
             // driven low-vision preferences are folded in once all the
@@ -2795,6 +2801,59 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             (dir, app.modifiers.state().alt_key(), modal_rect.is_none())
                         {
                             app.navigate_focus(d);
+                            handled = true;
+                        }
+                    }
+                }
+
+                // Global back/forward navigation gestures: two-finger
+                // horizontal swipe (precise touchpad scroll) and
+                // touchscreen edge pulls. Recognised here so every app
+                // gets them; delivered to the widget tree via
+                // `on_nav_gesture` (the WebView, a wizard, a pane stack —
+                // whatever owns history — consumes it).
+                if !handled {
+                    use crate::gesture::GesturePhase;
+                    let map_phase = |p: winit::event::TouchPhase| match p {
+                        winit::event::TouchPhase::Started => GesturePhase::Begin,
+                        winit::event::TouchPhase::Moved => GesturePhase::Update,
+                        winit::event::TouchPhase::Ended
+                        | winit::event::TouchPhase::Cancelled => GesturePhase::End,
+                    };
+                    let nav = match &event {
+                        WindowEvent::MouseWheel { delta, phase, .. } => {
+                            let (dx, dy, precise) = match delta {
+                                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y, true),
+                                winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                                    (*x as f64, *y as f64, false)
+                                }
+                            };
+                            app.nav_gestures.on_scroll(dx, dy, map_phase(*phase), precise)
+                        }
+                        WindowEvent::PanGesture { delta, phase, .. } => app
+                            .nav_gestures
+                            .on_scroll(delta.x as f64, delta.y as f64, map_phase(*phase), true),
+                        WindowEvent::Touch(t) => {
+                            let width = window.inner_size().width as f64;
+                            app.nav_gestures.on_touch(
+                                t.id,
+                                t.location.x,
+                                t.location.y,
+                                map_phase(t.phase),
+                                width,
+                            )
+                        }
+                        _ => None,
+                    };
+                    if let Some(dir) = nav {
+                        let consumed = app.root_widget.on_nav_gesture(
+                            dir,
+                            &mut app.state.doc,
+                            &app.state.root,
+                        );
+                        if consumed {
+                            app.needs_sync = true;
+                            window.request_redraw();
                             handled = true;
                         }
                     }
