@@ -4,7 +4,7 @@ use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size};
 use crate::widget::Widget;
-use crate::text_render::TextRenderer;
+use crate::text_render::{FontChoice, TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::permissions::PermissionScope;
@@ -24,6 +24,13 @@ pub struct Text {
     /// per-field helper text in `theme.text_dim`) without hard-coding a
     /// colour at the call site — they still pass a Theme token.
     color: Option<vello::peniko::Color>,
+    /// Optional font-family override. `None` (the default) shapes the label in
+    /// the system sans face; `Some(family)` renders it in an explicit
+    /// [`FontChoice`] — a serif book face or a named installed family —
+    /// resolved through the same cosmic-text font system the renderer uses.
+    /// This is the first-class way to typeset a label in a chosen family (e.g.
+    /// a font-picker row previewing each family in its own face).
+    family: Option<FontChoice>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -52,6 +59,7 @@ impl Text {
             args: Vec::new(),
             size: 16.0,
             color: None,
+            family: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -93,6 +101,40 @@ impl Text {
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
         self
+    }
+
+    /// Render this label in an explicit [`FontChoice`] family (a serif book
+    /// face, a named installed family, …) instead of the default sans. Both
+    /// the intrinsic measurement and the draw shape in the same family, so a
+    /// label previewing a font in its own face lays out correctly. The family
+    /// is resolved through the renderer's cosmic-text font system.
+    pub fn with_font_family(mut self, family: FontChoice) -> Self {
+        self.family = Some(family);
+        self.dirty = true;
+        self
+    }
+
+    /// Mutate the font-family override after construction. `None` restores the
+    /// default sans face.
+    pub fn set_font_family(&mut self, family: Option<FontChoice>) {
+        if self.family != family {
+            self.family = family;
+            self.dirty = true;
+        }
+    }
+
+    /// External-layout assignment for callers that place this label outside the
+    /// taffy tree (an app drawing its own immediate-mode chrome). Mirrors
+    /// [`crate::widget::TextInput::apply_layout_external`]: the caller asserts
+    /// it has done what `apply_layout` would — today, just establishing
+    /// `self.rect`.
+    pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
+        let size_changed = rect.width() != self.cache_rect.width()
+            || rect.height() != self.cache_rect.height();
+        self.rect = rect;
+        if size_changed {
+            self.dirty = true;
+        }
     }
 
     /// Render this text in an explicit colour instead of the theme's
@@ -150,9 +192,14 @@ impl Widget for Text {
             }
         };
 
-        // 2. Measure with that constraint
-        let (w, h) = text_renderer.measure(&label, self.size, max_w);
-        
+        // 2. Measure with that constraint — through the family-aware path when
+        //    an override is set so the reserved box matches the drawn face.
+        let (w, h) = if let Some(fam) = &self.family {
+            text_renderer.measure_font(&label, self.size, max_w, TextWeight::Regular, false, fam)
+        } else {
+            text_renderer.measure(&label, self.size, max_w)
+        };
+
         // 3. Return the measured size. 
         // We add a tiny 0.1 epsilon to width to prevent rounding errors in Row/Column
         // from thinking the text is "just a bit too big" and wrapping it unnecessarily.
@@ -186,14 +233,29 @@ impl Widget for Text {
             let label = self.resolved_label();
             let max_width = self.rect.width() as f32;
             let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
-            text_renderer.draw_text(
-                &mut self.cached,
-                &label,
-                self.size,
-                color,
-                Affine::translate((self.rect.x0, self.rect.y0)),
-                Some(max_width + 1.0),
-            );
+            let origin = Affine::translate((self.rect.x0, self.rect.y0));
+            if let Some(fam) = &self.family {
+                text_renderer.draw_text_font(
+                    &mut self.cached,
+                    &label,
+                    self.size,
+                    color,
+                    origin,
+                    Some(max_width + 1.0),
+                    TextWeight::Regular,
+                    false,
+                    fam,
+                );
+            } else {
+                text_renderer.draw_text(
+                    &mut self.cached,
+                    &label,
+                    self.size,
+                    color,
+                    origin,
+                    Some(max_width + 1.0),
+                );
+            }
             self.cache_rect = self.rect;
         }
         // Per-frame translation between cache emit-time origin
@@ -364,5 +426,45 @@ mod tests {
         let t = Text::new("totally-unknown-key").with_arg("x", 1);
         let node = Widget::accessibility(&t).expect("resolved");
         assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));
+    }
+
+    /// A label with a font-family override resolves to that family: after the
+    /// label draws once, re-shaping the same string+size+width in the SAME
+    /// named family is a shape-cache hit (the label already shaped it there),
+    /// while the sans default is a distinct miss. This proves the override
+    /// reaches the renderer's family-aware path rather than the sans default.
+    #[test]
+    fn font_family_override_label_resolves_to_named_family() {
+        use crate::presence::PresenceCtx;
+        let mut tr = TextRenderer::new();
+        let fams = tr.system_families();
+        assert!(!fams.is_empty(), "the system font db exposes some families");
+        let fam = fams[0].clone();
+
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+
+        let mut label = Text::new("Reading").with_font_family(FontChoice::Named(fam.clone()));
+        // The label draws with a max_width of `rect.width() + 1.0`.
+        label.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 40.0));
+        let mut scene = Scene::new();
+        label.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        // Same string, size (16 default), wrap width (401.0) and family → a hit.
+        let _ = tr.take_shape_stats();
+        tr.draw_text_font(
+            &mut scene, "Reading", 16.0, theme.tokens.colors.text_primary, Affine::IDENTITY,
+            Some(401.0), TextWeight::Regular, false, &FontChoice::Named(fam),
+        );
+        let (hits, _m, _ns) = tr.take_shape_stats();
+        assert_eq!(hits, 1, "the label shaped its text in the named family");
+
+        // Sans of the same string is a separate shape entry.
+        tr.draw_text_font(
+            &mut scene, "Reading", 16.0, theme.tokens.colors.text_primary, Affine::IDENTITY,
+            Some(401.0), TextWeight::Regular, false, &FontChoice::SansSerif,
+        );
+        let (_h, misses, _ns) = tr.take_shape_stats();
+        assert_eq!(misses, 1, "sans is a separate shape from the named family");
     }
 }
