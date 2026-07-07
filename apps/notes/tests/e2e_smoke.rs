@@ -32,7 +32,7 @@ fn full_lifecycle_round_trips_through_disk() {
     let root = tmp.path().to_path_buf();
 
     // ---- Phase A: spawn + seed a fresh page ----
-    let mut app = NotesApp::spawn(root.clone()).expect("spawn ok");
+    let mut app = NotesApp::spawn_with_starter_page(root.clone()).expect("spawn ok");
     // First-launch seeded the Welcome page; keep it and add a child
     // page that we'll write into.
     let welcome_id = app.workspace_pages_for_test()[0].id;
@@ -144,7 +144,7 @@ fn full_lifecycle_round_trips_through_disk() {
     );
 
     // ---- Phase E: re-spawn from the same root + verify reload ----
-    let mut app2 = NotesApp::spawn(root.clone()).expect("reload spawn ok");
+    let mut app2 = NotesApp::spawn_with_starter_page(root.clone()).expect("reload spawn ok");
     let pages = app2.workspace_pages_for_test();
     assert!(
         pages.len() >= 2,

@@ -7,7 +7,7 @@ use tempfile::TempDir;
 #[test]
 fn cmd_k_palette_lists_workspace_pages() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     // After spawn the workspace has the Welcome page; the palette
     // should have it seeded.
     let pal = app.palette_mut();
@@ -21,7 +21,7 @@ fn cmd_k_palette_lists_workspace_pages() {
 fn selecting_a_page_changes_app_selected() {
     use notes::sidebar::OutEvent;
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let root_id = app.workspace_pages_for_test()[0].id;
     // Create a second page so the palette has two entries.
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
