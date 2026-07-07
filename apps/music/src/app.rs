@@ -3853,6 +3853,99 @@ mod tests {
     }
 
     #[test]
+    fn compact_scrubber_is_grabbable_not_a_hairline() {
+        // At narrow width the scrub bar must be a real, grabbable track — not a
+        // 1-2px hairline glued to the window edge.
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact bar
+        let sr = app.scrubber_rect;
+        assert!(
+            sr.height() >= 16.0,
+            "the narrow scrub bar has a grabbable hit height (was {})",
+            sr.height()
+        );
+        assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
+        // The hit strip still reaches the window's bottom edge (edge press seeks)…
+        assert!(sr.y1 >= app.rect.y1 - 1.0, "the scrub hit strip reaches the bottom edge");
+        // …but its top clears the transport row, so a play/pause press never seeks.
+        assert!(
+            sr.y0 > app.rect.y1 - NOWPLAYING_H / 2.0,
+            "the scrub strip stays below the transport buttons"
+        );
+    }
+
+    #[test]
+    fn songs_row_columns_are_balanced_not_cavernous() {
+        // A wide row: the album should sit near the row's horizontal middle
+        // (not bunched against the right-hand control cluster) and the title
+        // column must be bounded — so a row reads as one connected line instead
+        // of "title-left / everything-right" with a cavern between.
+        let left = 260.0;
+        let right = 1372.0;
+        let cols = render::track_row_columns(left, right, true);
+        let mid = (left + right) / 2.0;
+        assert!(
+            (cols.album_x - mid).abs() < 130.0,
+            "album sits near the row middle (album {} vs mid {mid})",
+            cols.album_x
+        );
+        assert!(
+            cols.album_x + 150.0 < cols.like_x,
+            "album column leaves room before the control cluster (album {} / like {})",
+            cols.album_x,
+            cols.like_x
+        );
+        let title_col = cols.album_x - cols.text_x;
+        assert!(
+            (200.0..=520.0).contains(&title_col),
+            "title column is bounded, not stretched across the row (was {title_col})"
+        );
+        // Regression guard: the album is pulled well left of the old
+        // right-hugging position (`right - 320`) that left the cavern.
+        assert!(
+            cols.album_x < right - 380.0,
+            "album is not bunched against the right edge (album {})",
+            cols.album_x
+        );
+        // Mid-width rows keep the album ahead of the controls too.
+        let m = render::track_row_columns(60.0, 720.0, true);
+        assert!(m.album_x >= m.text_x + 190.0 && m.album_x <= m.like_x - 150.0);
+    }
+
+    #[test]
+    fn lyrics_wide_layout_is_balanced_with_left_art() {
+        // Wide: cover art fills the left column and the lyric band shifts right
+        // to balance it — not a centred column with an empty left half.
+        let body = Rect::new(232.0, 72.0, 1280.0, 708.0);
+        let band_top = body.y0 + 92.0;
+        let band_bot = body.y1 - 24.0;
+        let layout = render::lyrics_layout(body, band_top, band_bot);
+        let art = layout.art.expect("wide layout shows cover art on the left");
+        let body_mid = (body.x0 + body.x1) / 2.0;
+        assert!(art.center().x < body_mid, "cover art sits in the left half");
+        assert!(art.width() >= 180.0, "the cover art is a substantial square");
+        assert!(
+            layout.lyrics.center().x > body_mid,
+            "the lyrics column shifts right to balance the art"
+        );
+        assert!(layout.lyrics.x1 <= body.x1, "the lyrics column stays within the body");
+        assert!(art.x1 < layout.lyrics.x0, "art and lyrics columns don't overlap");
+
+        // Narrow: a single full-width centred column, no side art.
+        let narrow = Rect::new(0.0, 72.0, 700.0, 708.0);
+        let nl = render::lyrics_layout(narrow, 164.0, 684.0);
+        assert!(nl.art.is_none(), "narrow layout has no side art");
+        assert!(
+            (nl.lyrics.x0 - narrow.x0).abs() < 1.0 && (nl.lyrics.x1 - narrow.x1).abs() < 1.0,
+            "narrow lyrics span the full width"
+        );
+    }
+
+    #[test]
     fn swiping_the_bar_left_plays_next() {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
