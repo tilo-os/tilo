@@ -287,40 +287,44 @@ impl TubeApp {
             p.reveal_controls();
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
-            // Pump until the pipeline decodes its first frame (GStreamer prerolls
-            // + decodes on its own threads; give it real time). The offscreen
-            // renderer syncs the app only once, before this player is mounted, so
-            // the frame must already be in hand before the shot draws. Poll at the
-            // live app's ~16ms cadence: the engine's appsink pull is non-blocking
-            // and the sink paces/drops frames to the clock, so a slow (100ms) poll
-            // misses them — matching the live rate reliably catches the picture.
-            eprintln!(
-                "shot-decode: engine real_decode={} decode_compiled={}",
-                p.engine().map(|e| e.is_real_decode()).unwrap_or(false),
-                media::MediaEngine::is_decode_compiled()
-            );
-            let deadline = Instant::now() + Duration::from_secs(30);
-            let mut i = 0u32;
-            while Instant::now() < deadline {
-                p.sync(&mut doc, &root);
-                if i % 33 == 0 {
-                    if let Some(e) = p.engine() {
-                        eprintln!(
-                            "shot-decode: pos={}ms dur={:?} buf={}% engine_frame={} player_frame={}",
-                            e.position_ms(),
-                            e.duration_ms(),
-                            e.buffering_percent(),
-                            e.latest_frame().is_some(),
-                            p.latest_frame().is_some(),
-                        );
+            // The offscreen renderer syncs the app only once — before this player
+            // is mounted in the tree — so the frame must already be in hand before
+            // the shot draws. Poll at the live app's ~16ms cadence: the engine's
+            // appsink pull is non-blocking and the sink paces/drops frames to the
+            // clock, so a slow poll misses them.
+            let pump = |p: &mut ui::widget::VideoPlayer,
+                        doc: &mut automerge::AutoCommit,
+                        until: &dyn Fn(&ui::widget::VideoPlayer) -> bool,
+                        budget: Duration| {
+                let deadline = Instant::now() + budget;
+                while Instant::now() < deadline {
+                    p.sync(doc, &root);
+                    if until(p) {
+                        return true;
                     }
+                    std::thread::sleep(Duration::from_millis(15));
                 }
-                if p.latest_frame().is_some() {
-                    eprintln!("shot-decode: got a frame after {} polls", i + 1);
-                    break;
-                }
-                i += 1;
-                std::thread::sleep(Duration::from_millis(15));
+                false
+            };
+            // Phase 1: preroll — wait for the first decoded frame (proves the
+            // pipeline is live and surfaces the real duration).
+            pump(
+                &mut p,
+                &mut doc,
+                &|p| p.latest_frame().is_some(),
+                Duration::from_secs(25),
+            );
+            // Phase 2: seek past a typical fade-from-black intro to a colourful
+            // scene, then pump until a post-seek frame at/after ~30s is decoded, so
+            // the still shows real picture rather than the opening black frame.
+            if p.duration_ms() > 40_000 {
+                p.seek_to_ms(32_000);
+                pump(
+                    &mut p,
+                    &mut doc,
+                    &|p| p.engine().map(|e| e.position_ms()).unwrap_or(0) >= 30_000,
+                    Duration::from_secs(15),
+                );
             }
         }
         self.player_video = Some(video_id.to_string());
@@ -1301,6 +1305,18 @@ mod tests {
         (TubeApp::new(), AutoCommit::new())
     }
 
+    /// A fresh app whose player uses the deterministic **synthesized** media
+    /// engine, so the transport-wiring tests behave identically whether or not
+    /// the `media` (real GStreamer) backend is compiled in — a real pipeline
+    /// can't preroll/seek the fake test URLs, so its position would stay 0.
+    fn fresh_synth() -> (TubeApp, AutoCommit) {
+        let (app, doc) = fresh();
+        app.player
+            .borrow_mut()
+            .set_engine(media::MediaEngine::new_synthesized());
+        (app, doc)
+    }
+
     #[test]
     fn open_video_navigates_and_records_history() {
         let (mut app, mut doc) = fresh();
@@ -1327,7 +1343,7 @@ mod tests {
         // The worker's `StreamResolved` path (factored into `load_resolved_stream`)
         // must open the rangeable URL into the shared player's media engine and
         // start it — the exact code path the live app runs.
-        let (mut app, _doc) = fresh();
+        let (mut app, _doc) = fresh_synth();
         app.model.route = Route::Watch("vid_donut".into());
         let ok = app.load_resolved_stream(
             "vid_donut".into(),
@@ -1349,7 +1365,7 @@ mod tests {
     #[test]
     fn resolved_stream_for_a_different_video_is_dropped() {
         // A late resolution for a since-closed video must not hijack the engine.
-        let (mut app, _doc) = fresh();
+        let (mut app, _doc) = fresh_synth();
         app.model.route = Route::Watch("vid_donut".into());
         let ok = app.load_resolved_stream(
             "some_other_id".into(),
@@ -1363,7 +1379,7 @@ mod tests {
 
     #[test]
     fn toggle_play_drives_the_engine() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, mut doc) = fresh_synth();
         let r = automerge::ROOT;
         app.model.route = Route::Watch("vid_donut".into());
         app.load_resolved_stream(
@@ -1385,7 +1401,7 @@ mod tests {
     fn auto_skip_seeks_the_engine_past_a_sponsor_segment() {
         // Auto-skip runs against the real playhead and must seek the engine (not
         // just the model). vid_rust_async has a Sponsor segment 1440..1570.
-        let (mut app, _doc) = fresh();
+        let (mut app, _doc) = fresh_synth();
         app.model.route = Route::Watch("vid_rust_async".into());
         app.load_resolved_stream(
             "vid_rust_async".into(),
