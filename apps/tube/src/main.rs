@@ -62,6 +62,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe_trending();
     }
 
+    // `--probe-engine [id]` — prove REAL playback through the shared media engine
+    // (the exact production path): resolve a stream, open a `media::MediaEngine`,
+    // and decode a sequence of frames, printing engine events + motion evidence.
+    if let Some(id) = parse_flag_id(&args, "--probe-engine", "aqz-KE-bpKQ") {
+        return run_probe_engine(&id);
+    }
+
     // `--live-shots <dir> [query]` — render REAL offscreen stills: a search page
     // with real YouTube results + fetched thumbnails, and a watch page with a
     // real frame decoded through the media engine from a rangeable proxy stream.
@@ -159,6 +166,113 @@ fn parse_probe_arg(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Parse `--<flag> [id]` / `--<flag>=<id>` with a default id.
+fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return Some(match iter.next() {
+                Some(id) if !id.starts_with("--") => id.clone(),
+                _ => default.to_string(),
+            });
+        }
+        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
+            return Some(if rest.is_empty() { default.to_string() } else { rest.to_string() });
+        }
+    }
+    None
+}
+
+/// `--probe-engine [id]`: prove real playback through the shared `media::MediaEngine`
+/// — the exact path the watch page streams through. Resolves a directly-playable
+/// stream (direct extractor first, then the rangeable Invidious proxy), opens the
+/// engine, plays, and decodes a sequence of frames; prints engine events + a
+/// per-frame checksum proving motion. Exits non-zero if no frame decodes.
+#[cfg(all(feature = "live", feature = "media"))]
+fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+    use tube::backend::{proxy, ytdlp::YtDlpBackend, YtBackend};
+
+    eprintln!("probe-engine: constructing the yt-dlp backend…");
+    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+    let (url, quality) = backend
+        .resolve_playback_source(id)
+        .ok()
+        .map(|s| (s.url, s.quality))
+        .or_else(|| proxy::resolve_rangeable(id).map(|r| (r.url, r.quality)))
+        .ok_or("no directly-playable stream resolved")?;
+    println!("probe-engine: resolved {quality}; url(host)={}", short_url(&url));
+
+    let mut engine = media::MediaEngine::new();
+    println!(
+        "probe-engine: engine real_decode={} (decode compiled={})",
+        engine.is_real_decode(),
+        media::MediaEngine::is_decode_compiled()
+    );
+    engine.open(media::Source::Remote { url });
+    engine.play();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut sums: HashSet<u64> = HashSet::new();
+    let mut distinct = 0u64;
+    let mut errored = false;
+    while Instant::now() < deadline {
+        for ev in engine.poll() {
+            match ev {
+                media::MediaEvent::Error(e) => {
+                    eprintln!("probe-engine: ENGINE ERROR: {e}");
+                    errored = true;
+                }
+                media::MediaEvent::DurationKnown { ms } => {
+                    println!("probe-engine: duration known = {ms} ms");
+                }
+                media::MediaEvent::Buffering { percent } => {
+                    if percent % 25 == 0 {
+                        println!("probe-engine: buffering {percent}%");
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(f) = engine.latest_frame() {
+            let s = checksum(&f.rgba);
+            if sums.insert(s) {
+                distinct += 1;
+                if distinct <= 3 {
+                    println!(
+                        "  frame {distinct}: {}x{} pts={}ms checksum=0x{:016x}",
+                        f.width, f.height, f.pts_ms, s
+                    );
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    println!(
+        "probe-engine: {distinct} DISTINCT frames; final pos={}ms dur={:?}ms buffering={}%",
+        engine.position_ms(),
+        engine.duration_ms(),
+        engine.buffering_percent()
+    );
+    if distinct == 0 {
+        eprintln!(
+            "probe-engine: the media engine produced NO frame (errored={errored}) — reported \
+             honestly, not faked."
+        );
+        std::process::exit(3);
+    }
+    println!("probe-engine: REAL playback through the media engine — {distinct} distinct pictures.");
+    Ok(())
+}
+
+#[cfg(not(all(feature = "live", feature = "media")))]
+fn run_probe_engine(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("probe-engine: needs `--features \"live media\"` (real resolve + media-engine decode).");
+    Ok(())
 }
 
 /// Parse `--live-shots <dir> [query]`. Returns the output directory and the
@@ -617,6 +731,71 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
     std::fs::create_dir_all(out_dir).ok();
     let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
 
+    // ---- Real watch page with a real decoded frame ----
+    //
+    // Rendered FIRST on purpose: the media engine's GStreamer decode must run
+    // before any offscreen `render_shot_to_png` initialises the process-wide
+    // wgpu/EGL context — that context otherwise grabs GPU/EGL resources and
+    // starves the decode pipeline, so a search render done first would leave the
+    // watch surface black. (Proven with `--probe-engine`, which decodes fine with
+    // no wgpu in the process.)
+    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY) — long + stable.
+    println!("live-shots[watch]: metadata + rangeable stream for [{watch_id}]…");
+    let video = match backend.video(watch_id) {
+        Ok(BackendResult::Video(v)) => *v,
+        _ => Video {
+            id: watch_id.to_string(),
+            title: "Big Buck Bunny".into(),
+            dearrow_title: None,
+            channel_id: String::new(),
+            channel_name: "Blender".into(),
+            channel_seed: watch_id.to_string(),
+            views: 0,
+            published: String::new(),
+            duration: 0,
+            description: String::new(),
+            likes: 0,
+            seed: watch_id.to_string(),
+            thumbnail_url: yt_thumb_url(watch_id),
+            category: "Video".into(),
+            dearrow_thumb: false,
+            sponsor: Vec::new(),
+            comments: Vec::new(),
+            live: false,
+        },
+    };
+    // For a single-frame still, decode the yt-dlp direct progressive URL first
+    // (small + fast to preroll — the live app instead uses the rangeable
+    // Invidious proxy for seekable, full-length playback), falling back to the
+    // proxy if the direct extractor is unavailable.
+    let resolved = backend
+        .resolve_playback_source(watch_id)
+        .ok()
+        .map(|s| (s.url, s.quality))
+        .or_else(|| proxy::resolve_rangeable(watch_id).map(|r| (r.url, r.quality)));
+    match resolved {
+        Some((url, quality)) => {
+            println!("  resolved {quality} stream; decoding a real frame via the media engine…");
+            let mut wmodel = TubeModel::default();
+            wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
+            wmodel.upsert_video(video.clone());
+            wmodel.data_source = DataSource { live: true, label: "live".into() };
+            let watch_app = tube::TubeApp::new()
+                .with_viewport(1280.0, 860.0)
+                .with_model_for_test(wmodel)
+                .with_live_frame_for_shot(watch_id, url);
+            let watch_png = out_dir.join("watch.png");
+            render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
+            println!("  wrote {}", watch_png.display());
+        }
+        None => {
+            eprintln!(
+                "live-shots[watch]: no Invidious proxy served bytes and no direct URL resolved \
+                 — skipped the watch still (reported honestly, not faked)."
+            );
+        }
+    }
+
     // ---- Real search page with real thumbnails ----
     println!("live-shots[search]: searching YouTube for {query:?}…");
     let videos = match backend.search(query)? {
@@ -655,65 +834,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
         let search_png = out_dir.join("search.png");
         render_shot_to_png(Box::new(search_app) as Box<dyn Widget>, (1280, 860), &search_png)?;
         println!("  wrote {}", search_png.display());
-    }
-
-    // ---- Real watch page with a real decoded frame ----
-    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY) — long + stable.
-    println!("live-shots[watch]: metadata + rangeable stream for [{watch_id}]…");
-    let video = match backend.video(watch_id) {
-        Ok(BackendResult::Video(v)) => *v,
-        _ => Video {
-            id: watch_id.to_string(),
-            title: "Big Buck Bunny".into(),
-            dearrow_title: None,
-            channel_id: String::new(),
-            channel_name: "Blender".into(),
-            channel_seed: watch_id.to_string(),
-            views: 0,
-            published: String::new(),
-            duration: 0,
-            description: String::new(),
-            likes: 0,
-            seed: watch_id.to_string(),
-            thumbnail_url: yt_thumb_url(watch_id),
-            category: "Video".into(),
-            dearrow_thumb: false,
-            sponsor: Vec::new(),
-            comments: Vec::new(),
-            live: false,
-        },
-    };
-    // Resolve a fully-rangeable stream (Invidious proxy first, then the direct
-    // backend URL) — the exact production resolution path.
-    let resolved = proxy::resolve_rangeable(watch_id)
-        .map(|r| (r.url, r.quality))
-        .or_else(|| {
-            backend
-                .resolve_playback_source(watch_id)
-                .ok()
-                .map(|s| (s.url, s.quality))
-        });
-    match resolved {
-        Some((url, quality)) => {
-            println!("  resolved {quality} stream; decoding a real frame via the media engine…");
-            let mut wmodel = TubeModel::default();
-            wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
-            wmodel.upsert_video(video.clone());
-            wmodel.data_source = DataSource { live: true, label: "live".into() };
-            let watch_app = tube::TubeApp::new()
-                .with_viewport(1280.0, 860.0)
-                .with_model_for_test(wmodel)
-                .with_live_frame_for_shot(watch_id, url);
-            let watch_png = out_dir.join("watch.png");
-            render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
-            println!("  wrote {}", watch_png.display());
-        }
-        None => {
-            eprintln!(
-                "live-shots[watch]: no Invidious proxy served bytes and no direct URL resolved \
-                 — skipped the watch still (reported honestly, not faked)."
-            );
-        }
     }
 
     println!("live-shots: done ({})", out_dir.display());
