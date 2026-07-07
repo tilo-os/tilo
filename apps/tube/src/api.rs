@@ -10,10 +10,9 @@
 //! Endpoints (researched, current as of 2026):
 //!   * Invidious   `GET {instance}/api/v1/search?q=&type=video`
 //!                 `GET {instance}/api/v1/videos/{id}`
-//!   * SponsorBlock (privacy hash-prefix mode — only the first 4 hex of
-//!                 sha256(videoID) leave the device):
-//!                 `GET https://sponsor.ajay.app/api/skipSegments/{prefix}`
-//!   * DeArrow     `GET https://sponsor.ajay.app/api/branding/{prefix}`
+//!   * SponsorBlock `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
+//!   * DeArrow     `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
+//!   * Dislikes    `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
 //!
 //! Real video playback resolves to a **fully-rangeable** proxied stream URL that
 //! the shared media engine plays. [`crate::backend::proxy::resolve_rangeable`]
@@ -28,10 +27,8 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
-
 use crate::backend::{BackendResult, Query, YtBackend};
-use crate::model::{Category, Channel, Segment, Video};
+use crate::model::{Category, Channel, Comment, Segment, Video};
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -82,6 +79,12 @@ pub enum Update {
         video: Box<Video>,
         related: Vec<Video>,
     },
+    /// Real top comments for a video (fetched via rustypipe), folded onto the
+    /// watch page.
+    Comments {
+        video: String,
+        comments: Vec<Comment>,
+    },
     /// Live channel page + uploads.
     ChannelPage {
         channel: Box<Channel>,
@@ -105,17 +108,6 @@ pub enum Update {
     Note(String),
 }
 
-/// First 4 lowercase hex chars of sha256(video_id) — the SponsorBlock /
-/// DeArrow privacy prefix.
-pub fn hash_prefix(video_id: &str) -> String {
-    let digest = Sha256::digest(video_id.as_bytes());
-    let mut s = String::with_capacity(4);
-    for b in digest.iter().take(2) {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
 fn client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .user_agent("tube/0.1 (+qos)")
@@ -124,39 +116,42 @@ fn client() -> reqwest::blocking::Client {
         .expect("reqwest client")
 }
 
-/// Fetch SponsorBlock segments using the privacy-preserving hash prefix.
+/// Fetch SponsorBlock segments for a video via the direct
+/// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
+/// API's "no segments for this video" response) is treated as an empty list
+/// rather than an error.
 pub fn fetch_sponsor(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<Vec<Segment>> {
-    let prefix = hash_prefix(video_id);
-    let url = format!("https://sponsor.ajay.app/api/skipSegments/{prefix}");
-    let resp: serde_json::Value = client
-        .get(&url)
-        .query(&[("categories", category_json())])
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let cats = category_json();
+    let resp = client
+        .get("https://sponsor.ajay.app/api/skipSegments")
+        .query(&[("videoID", video_id), ("categories", cats.as_str())])
+        .send()?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    let val: serde_json::Value = resp.error_for_status()?.json()?;
+    Ok(parse_skip_segments(&val))
+}
 
+/// Parse a SponsorBlock `/api/skipSegments?videoID=<id>` response (a flat JSON
+/// array of segment objects) into sorted [`Segment`]s. Pure (no I/O) so it is
+/// unit-tested directly. Unknown categories and malformed rows are skipped.
+pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
     let mut out = Vec::new();
     if let Some(arr) = resp.as_array() {
-        for entry in arr {
-            if entry.get("videoID").and_then(|v| v.as_str()) != Some(video_id) {
-                continue;
-            }
-            if let Some(segs) = entry.get("segments").and_then(|s| s.as_array()) {
-                for s in segs {
-                    let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
-                    let times = s.get("segment").and_then(|t| t.as_array());
-                    if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
-                        let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
-                        let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
-                        out.push(Segment { category: cat, start, end, votes });
-                    }
-                }
+        for s in arr {
+            let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
+            let times = s.get("segment").and_then(|t| t.as_array());
+            if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
+                let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
+                let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
+                out.push(Segment { category: cat, start, end, votes });
             }
         }
     }
     out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(out)
+    out
 }
 
 fn category_json() -> String {
@@ -349,6 +344,10 @@ impl Worker {
                 // orthogonal to the InnerTube source).
                 let offline = crate::backend::default_backend();
                 let live = try_live_backend(&up_tx);
+                // Comments come from rustypipe specifically (see `try_comments_backend`);
+                // constructed lazily on the first watch-open so a session that only
+                // browses never pays for it. Outer `Option` = "attempted yet?".
+                let mut comments_src: Option<Option<Box<dyn YtBackend>>> = None;
                 // Announce the starting posture honestly: even with a live
                 // backend constructed we don't claim "live" until a real fetch
                 // returns, because construction doesn't touch the network.
@@ -437,6 +436,23 @@ impl Worker {
                             {
                                 send_status(&up_tx, used_live);
                                 let _ = up_tx.send(Update::VideoMeta { video: v, related });
+                            }
+                            // Real top comments — always via rustypipe, regardless of
+                            // which backend answered the metadata above.
+                            let cb = comments_src.get_or_insert_with(|| try_comments_backend(&up_tx));
+                            if let Some(b) = cb.as_ref() {
+                                match b.comments(&id) {
+                                    Ok(cs) if !cs.is_empty() => {
+                                        let _ = up_tx.send(Update::Comments {
+                                            video: id.clone(),
+                                            comments: cs,
+                                        });
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                                    }
+                                }
                             }
                         }
                         Request::Channel(id) => {
@@ -571,6 +587,26 @@ fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     None
 }
 
+/// Construct the dedicated **rustypipe** comments source. Comments specifically
+/// come from rustypipe's InnerTube `next`/comments continuation — the primary
+/// yt-dlp path does not extract them cheaply — so this is a separate backend
+/// from [`try_live_backend`], regardless of which one answers metadata.
+#[cfg(feature = "live")]
+fn try_comments_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+    match crate::backend::live::RustyPipeBackend::new() {
+        Ok(b) => Some(Box::new(b)),
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("comments source unavailable ({e})")));
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "live"))]
+fn try_comments_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+    None
+}
+
 /// Run `query` against the live backend first (when present); on a live error,
 /// optionally fall back to the offline sample. Returns the result together with
 /// whether the *live* backend produced it — that boolean drives the on-screen
@@ -680,16 +716,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hash_prefix_is_4_hex() {
-        let p = hash_prefix("dQw4w9WgXcQ");
-        assert_eq!(p.len(), 4);
-        assert!(p.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
     fn category_json_lists_all() {
         let j = category_json();
         assert!(j.contains("sponsor"));
         assert!(j.contains("music_offtopic"));
+    }
+
+    #[test]
+    fn parse_skip_segments_maps_and_sorts() {
+        // The shape the direct `?videoID=` endpoint returns: a flat array of
+        // segment objects. Unknown categories are dropped; the rest come back
+        // sorted by start time.
+        let resp = serde_json::json!([
+            {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
+            {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
+            {"category": "not_a_real_category", "segment": [1.0, 2.0], "votes": 0},
+            {"category": "intro", "segment": [0.0, 12.0], "votes": 1}
+        ]);
+        let segs = parse_skip_segments(&resp);
+        assert_eq!(segs.len(), 3, "unknown category dropped");
+        assert_eq!(segs[0].category, Category::Intro);
+        assert_eq!(segs[1].category, Category::Sponsor);
+        assert!((segs[1].start - 30.5).abs() < 1e-9);
+        assert_eq!(segs[2].category, Category::Outro);
+        assert_eq!(segs[1].votes, 10);
+    }
+
+    #[test]
+    fn parse_skip_segments_empty_on_non_array() {
+        assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
+    }
+
+    /// Real-path check: actually call SponsorBlock, DeArrow and Return YouTube
+    /// Dislike and assert the parsed shapes. Honestly gated — it only touches
+    /// the network when `TUBE_NET_TESTS=1`, so offline/CI runs pass trivially
+    /// rather than being silently `#[ignore]`d. Run with:
+    /// `TUBE_NET_TESTS=1 cargo test -p tube live_branding_apis`.
+    #[test]
+    fn live_branding_apis_reachable_when_enabled() {
+        if std::env::var("TUBE_NET_TESTS").is_err() {
+            eprintln!("skipping live branding test (set TUBE_NET_TESTS=1 to run it)");
+            return;
+        }
+        let c = client();
+        // Despacito — stable, carries locked SponsorBlock segments, DeArrow
+        // branding, and a large crowdsourced dislike count.
+        let vid = "kJQP7kiw5Fk";
+        let segs = fetch_sponsor(&c, vid).expect("real SponsorBlock call");
+        assert!(!segs.is_empty(), "Despacito has community segments");
+        let (title, thumb) = fetch_dearrow(&c, vid).expect("real DeArrow call");
+        assert!(
+            title.is_some() || thumb.is_some(),
+            "DeArrow returns community branding for Despacito"
+        );
+        let dislikes = fetch_dislikes(&c, vid).expect("real RYD call");
+        assert!(dislikes > 0, "Despacito has crowdsourced dislikes ({dislikes})");
     }
 }

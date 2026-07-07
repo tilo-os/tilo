@@ -53,7 +53,7 @@ pub mod ytdlp;
 #[cfg(feature = "media")]
 pub mod gst_playback;
 
-use crate::model::{Channel, Video};
+use crate::model::{Channel, Comment, Video};
 
 /// Canonical i.ytimg.com thumbnail URL for a video id. `hqdefault.jpg` is the
 /// stable 480×360 still every public video serves, so a real card image is
@@ -199,6 +199,15 @@ pub trait YtBackend: Send + Sync {
 
     /// Region trending.
     fn trending(&self) -> BackendOutcome;
+
+    /// Top comments for a video. The default returns none — only a backend that
+    /// can reach YouTube's `next`/comments continuation (the live rustypipe one)
+    /// produces real comments; the offline sample carries its own, and the
+    /// yt-dlp path leaves comments to rustypipe (yt-dlp's own comment extraction
+    /// is slow and unreliable). The UI degrades to "no comments" when empty.
+    fn comments(&self, _id: &str) -> Result<Vec<Comment>, BackendError> {
+        Ok(Vec::new())
+    }
 
     /// Popular recent videos matching `query`, used to compose a real "popular"
     /// home feed when YouTube's dedicated trending browse is unavailable. The

@@ -233,6 +233,42 @@ fn transport_settings_gear_navigates_to_settings() {
 }
 
 #[test]
+fn watch_page_lays_out_dislikes_pill_and_sponsorblock_timeline() {
+    // The Return YouTube Dislike pill and the SponsorBlock segment timeline are
+    // both real widgets on the watch page (WATCH_ID carries sponsor segments and
+    // a seeded dislike count). Assert they're laid out in the real tree.
+    let h = Harness::new(watch_app(), VIEWPORT);
+    assert!(
+        h.has_id("dislike_pill"),
+        "the watch page lays out the Return YouTube Dislike pill"
+    );
+    assert!(
+        h.has_id("sb_timeline"),
+        "the watch page lays out the SponsorBlock segment timeline"
+    );
+}
+
+#[test]
+fn settings_category_mode_pill_cycles_the_skip_mode_through_a_real_click() {
+    use tube::model::{Category, SkipMode};
+    let app = TubeApp::new()
+        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_route_shot(Route::Settings);
+    let mut h = Harness::new(app, VIEWPORT);
+    // Sponsor defaults to Auto-skip; clicking its mode pill cycles it to Show.
+    assert_eq!(
+        h.app.model_for_test().settings.mode_of(Category::Sponsor),
+        SkipMode::Skip
+    );
+    h.click_id(&format!("mode_{}", Category::Sponsor.api_key()));
+    assert_eq!(
+        h.app.model_for_test().settings.mode_of(Category::Sponsor),
+        SkipMode::Show,
+        "clicking the mode pill cycles Auto-skip → Show"
+    );
+}
+
+#[test]
 fn subscribe_pill_toggles_subscription_through_a_real_click() {
     let mut h = Harness::new(watch_app(), VIEWPORT);
     let channel = h
