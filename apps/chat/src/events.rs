@@ -15,7 +15,7 @@ use crate::app::{
 };
 use crate::call::{CallAction, OverlayDrag};
 use crate::doc::{ChatDoc, NewMessage, NOW};
-use crate::model::{self, ChannelKind, Id};
+use crate::model::{ChannelKind, Id};
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -895,6 +895,7 @@ impl ChatApp {
 mod tests {
     use super::*;
     use crate::doc::ChatDoc;
+    use crate::model;
 
     fn app_with_doc() -> (ChatApp, AutoCommit) {
         let mut doc = AutoCommit::new();
@@ -1741,8 +1742,8 @@ mod tests {
         let mut b = peer("u_bob", "Bob", "BO", 1);
         a.reload(&doc_a);
         b.reload(&doc_b);
-        assert_eq!(a.me_id(), "u_alice");
-        assert_eq!(b.me_id(), "u_bob");
+        assert_eq!(a.me.id, "u_alice");
+        assert_eq!(b.me.id, "u_bob");
 
         // Structure converges: a channel Alice creates shows up for Bob.
         let chan = ChatDoc::create_channel(&mut doc_a, "ws_home", "cat_home_text", "planning", ChannelKind::Text);
