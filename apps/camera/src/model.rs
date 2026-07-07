@@ -201,40 +201,40 @@ impl Timer {
     }
 }
 
-/// Photo storage format.
+/// Photo storage format. Limited to the two formats the app can genuinely
+/// encode on disk — a real JPEG or a real PNG. (HEIF/RAW would need encoders
+/// the app doesn't ship, so they're not offered rather than faked.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhotoFormat {
     Jpeg,
-    Heif,
     Png,
-    RawDng,
 }
 
 impl PhotoFormat {
-    pub const ALL: [PhotoFormat; 4] =
-        [PhotoFormat::Heif, PhotoFormat::Jpeg, PhotoFormat::Png, PhotoFormat::RawDng];
+    pub const ALL: [PhotoFormat; 2] = [PhotoFormat::Jpeg, PhotoFormat::Png];
     pub fn label(self) -> &'static str {
         match self {
             PhotoFormat::Jpeg => "JPEG",
-            PhotoFormat::Heif => "HEIF",
             PhotoFormat::Png => "PNG",
-            PhotoFormat::RawDng => "RAW",
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
             PhotoFormat::Jpeg => "jpeg",
-            PhotoFormat::Heif => "heif",
             PhotoFormat::Png => "png",
-            PhotoFormat::RawDng => "raw",
+        }
+    }
+    /// The file extension a photo in this format is saved under.
+    pub fn extension(self) -> &'static str {
+        match self {
+            PhotoFormat::Jpeg => "jpg",
+            PhotoFormat::Png => "png",
         }
     }
     pub fn from_str(s: &str) -> PhotoFormat {
         match s {
-            "jpeg" => PhotoFormat::Jpeg,
             "png" => PhotoFormat::Png,
-            "raw" => PhotoFormat::RawDng,
-            _ => PhotoFormat::Heif,
+            _ => PhotoFormat::Jpeg,
         }
     }
 }
@@ -257,7 +257,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             resolution: Resolution::R12MP,
-            photo_format: PhotoFormat::Heif,
+            photo_format: PhotoFormat::Jpeg,
             timer: Timer::Off,
             grid: true,
             level: false,

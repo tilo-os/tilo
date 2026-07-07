@@ -307,6 +307,18 @@ pub fn luma(buf: &FrameBuf) -> Vec<u8> {
     to_luma(buf)
 }
 
+/// Drop the alpha channel: tightly-packed RGBA8 → tightly-packed RGB8. Used
+/// by the photo (JPEG) and video (MJPEG) encoders, which have no alpha.
+pub fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len() / 4 * 3);
+    for px in rgba.chunks_exact(4) {
+        out.push(px[0]);
+        out.push(px[1]);
+        out.push(px[2]);
+    }
+    out
+}
+
 /// BT.601 luma of an RGBA buffer.
 fn to_luma(buf: &FrameBuf) -> Vec<u8> {
     let n = (buf.w * buf.h) as usize;

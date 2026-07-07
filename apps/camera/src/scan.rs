@@ -1,8 +1,8 @@
 //! QR encode + decode glue.
 //!
-//! * [`encode`] turns a payload string into a square module matrix — used
-//!   both to synthesize the offline sample frame and to render the in-app
-//!   "share my Wi-Fi" QR.
+//! * [`encode`] turns a payload string into a square module matrix — used to
+//!   synthesize the sample scanner poster so the offline scanner has a real,
+//!   decodable code to work against.
 //! * [`decode_greyscale`] runs the real [`rqrr`] detector over a greyscale
 //!   buffer and returns every code it finds with its decoded text and the
 //!   four corner points. The scanner UI draws its bounding box from these
