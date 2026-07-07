@@ -904,15 +904,23 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Release keyboard focus from every editor field (title, location, notes)
+    /// and drop any open popover. Called whenever the editor leaves the screen
+    /// so keystrokes meant for the calendar can't leak into a hidden field.
+    fn blur_editor(&mut self) {
+        self.notes_editor.set_focus(false);
+        self.title_input.set_focus(false);
+        self.location_input.set_focus(false);
+        self.popover = FormPopover::None;
+    }
+
     /// Shared teardown after deleting the on-screen item: drop the selection,
     /// close the editor, and return to the calendar.
     fn close_after_delete(&mut self) {
         self.selection = None;
         self.detail_open = false;
         self.narrow_screen = NarrowScreen::Calendar;
-        self.notes_editor.set_focus(false);
-        self.title_input.set_focus(false);
-        self.location_input.set_focus(false);
+        self.blur_editor();
     }
 
     /// Resolve the delete outbox into concrete CalDAV delete jobs: each queued
@@ -975,6 +983,15 @@ impl CalendarApp {
         self.model.events.push(ev);
         self.model.events.sort_by_key(|e| e.start);
         self.select_event(id);
+        // Land the caret in the title so the very next keystroke names the
+        // event — the "create → type the title" flow every calendar has. Seed
+        // the empty field + focus now (rather than only on the next sync's
+        // `ensure_form_bound`) so typing works immediately, even before a frame
+        // has re-bound the form. `ensure_form_bound` still runs next sync to
+        // seed the date/time pickers; it leaves the focus we set here alone.
+        self.title_input.set_text("");
+        self.location_input.set_text("");
+        self.focus_field(FormField::Title);
         self.status = Some("New event".into());
     }
 
@@ -1632,7 +1649,9 @@ impl CalendarApp {
         y += field_h + 18.0;
 
         f.chips_y = y;
-        y += 34.0 + 20.0;
+        // Chip row (28px) plus a comfortable gap before the NOTES divider so
+        // the section header doesn't hug the chips.
+        y += 34.0 + 36.0;
 
         f.notes_top = y - r.y0;
         f
@@ -1711,11 +1730,18 @@ impl CalendarApp {
                 self.detail_open = false;
                 self.selection = None;
                 self.narrow_screen = NarrowScreen::Calendar;
+                self.blur_editor();
             }
             Action::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             Action::DismissSidebar => self.sidebar_open = false,
             Action::ToggleSidebarCollapsed => self.sidebar_collapsed = !self.sidebar_collapsed,
-            Action::BackToCalendar => self.narrow_screen = NarrowScreen::Calendar,
+            Action::BackToCalendar => {
+                self.narrow_screen = NarrowScreen::Calendar;
+                // The calendar screen owns the keyboard once the editor is off
+                // it; release the form fields so keystrokes don't leak into the
+                // now-hidden title/location/notes.
+                self.blur_editor();
+            }
             Action::ToggleCalendarVisible(id) => {
                 for acc in &mut self.accounts.accounts {
                     if let Some(cal) = acc.calendars.iter_mut().find(|c| c.id == id) {
@@ -3816,6 +3842,21 @@ impl Widget for CalendarApp {
             || self.location_input.needs_redraw()
     }
 
+    /// While the event/task editor is open it OWNS the keyboard. Reporting the
+    /// editor's box here makes the host [`ui::App`] stand down: it stops running
+    /// its built-in Tab focus cycling (which would otherwise cycle to the notes
+    /// editor node and never reach the form's own title → location → notes
+    /// traversal) and swallows click-through so a press outside the card can't
+    /// reach the calendar behind it. The form's own `handle_event` still routes
+    /// each key/click; this only tells the App to stop competing for input.
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.detail_open && self.detail_rect.area() > 0.0 {
+            Some(self.detail_rect)
+        } else {
+            None
+        }
+    }
+
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -4765,6 +4806,17 @@ mod tests {
             hn
         }
 
+        /// A live (persisted, no sample content) app driven through the same
+        /// production event path — used to prove edits reach disk.
+        fn live(w: u32, h: u32, path: PathBuf) -> Self {
+            let mut app = CalendarApp::new_with_data_path(path);
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let mut hn = Harness { app, doc, taffy: TaffyTree::new(), node: NodeId::new(0), w, h };
+            hn.relayout();
+            hn
+        }
+
         fn relayout(&mut self) {
             use taffy::prelude::*;
             let theme = Theme::dark();
@@ -5419,6 +5471,12 @@ mod tests {
         h.type_char("n");
         assert_eq!(h.app.model.events.len(), before + 1, "'n' created an event");
 
+        // Creating an event lands the caret in its title, so the calendar no
+        // longer owns the keyboard; close the editor to make the next shortcut a
+        // global key again rather than a keystroke into the title.
+        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        h.relayout();
+
         // 'e' exports through the keyboard: a real .ics lands in the transfer dir.
         h.type_char("e");
         assert!(
@@ -5479,6 +5537,11 @@ mod tests {
         let node = app.build_layout(&mut taffy, &theme, &mut node_map);
         // Bind the editor to the event's notes, then focus it.
         app.sync(&mut doc, &root);
+        // Creating the event landed the caret in its title; focusing the notes
+        // editor must take the keyboard from it (exactly what clicking into the
+        // notes region does live), so the marker below types into the notes.
+        app.title_input.set_focus(false);
+        app.location_input.set_focus(false);
         app.notes_editor.set_focus(true);
 
         // Type a distinctive marker through the real Widget::handle_event path.
@@ -5622,10 +5685,15 @@ mod tests {
             .join("");
         assert!(joined.trim().is_empty(), "notes start empty, not seeded: {joined:?}");
         assert!(!joined.contains("Add details"), "the hint is a placeholder, not body text");
-        // The title field paints its placeholder while empty and unfocused.
+        // The title field carries NO seeded text and is focused, ready to name
+        // the event on the next keystroke; its placeholder is the untitled hint.
         h.relayout();
-        assert!(h.app.title_input.shows_placeholder(), "empty title shows its placeholder");
+        assert!(h.app.title_input.value().is_empty(), "new event's title starts with no seeded text");
+        assert!(h.app.title_input.is_focused(), "the title is focused so typing names the event");
         assert_eq!(h.app.title_input.placeholder(), TITLE_PLACEHOLDER);
+        // Blurring the empty field reveals the placeholder hint (never literal body text).
+        h.app.title_input.set_focus(false);
+        assert!(h.app.title_input.shows_placeholder(), "empty + unfocused title shows its placeholder");
     }
 
     #[test]
@@ -5860,5 +5928,150 @@ mod tests {
         assert!(h.app.title_input.is_focused());
         h.press_named(winit::keyboard::NamedKey::Delete);
         assert!(h.app.model.event(id).is_some(), "Delete in a text field kept the event");
+    }
+
+    // --- create → name → persist flow ----------------------------------
+
+    #[test]
+    fn typing_right_after_creating_an_event_names_it() {
+        // The reported break: create an event, start typing — the keystrokes
+        // must land in the TITLE, not vanish (or trip a view shortcut) because
+        // no field was focused. Drive the real button + key path.
+        let mut h = Harness::new(1280, 800);
+        // Create from the calendar screen so the New button isn't under the
+        // demo's open modal.
+        h.app.shots_show_calendar();
+        h.relayout();
+        let p = h.hit_center(|a| matches!(a, Action::NewEvent)).expect("New button");
+        h.click(p);
+        let id = selected_event_id(&h.app);
+        assert!(
+            h.app.title_input.is_focused(),
+            "a freshly created event opens with its title focused, ready to type"
+        );
+        for ch in ["S", "t", "a", "n", "d", "u", "p"] {
+            h.type_char(ch);
+        }
+        assert_eq!(
+            h.app.model.event(id).unwrap().title,
+            "Standup",
+            "typing right after Create named the event's title"
+        );
+        // And the view did NOT switch (a stray letter must not be swallowed as
+        // a view shortcut while the title owns the keyboard).
+        assert_eq!(h.app.view, View::Month, "letters typed into the title never trip a view shortcut");
+    }
+
+    #[test]
+    fn edited_title_survives_close_and_reopen() {
+        // Flow 1, end to end: open an event, edit its title, close the editor,
+        // reopen the SAME event — the new title is there, both in the model and
+        // reseeded into the field the reopened editor shows.
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let before = h.app.model.event(id).unwrap().title.clone();
+        let p = h
+            .hit_center(|a| matches!(a, Action::FocusField(FormField::Title)))
+            .expect("title target");
+        h.click(p);
+        h.type_char("!");
+        let edited = h.app.model.event(id).unwrap().title.clone();
+        assert_ne!(edited, before, "typing changed the title");
+        assert!(edited.contains('!'));
+
+        // Close the editor through the production action, then let a frame settle
+        // so the form unbinds (form_event clears) — exactly the live sequence.
+        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        h.app.sync(&mut h.doc, &automerge::ROOT);
+        assert!(!h.app.detail_open, "editor closed");
+
+        // Reopen the same event (the OpenEvent action's production entry point)
+        // and run a sync so the form rebinds from the model.
+        h.app.apply_action(Action::OpenEvent(id), &mut h.doc);
+        h.app.sync(&mut h.doc, &automerge::ROOT);
+        h.relayout();
+        assert_eq!(
+            h.app.model.event(id).unwrap().title,
+            edited,
+            "the edited title is still on the event after reopen"
+        );
+        assert_eq!(
+            h.app.title_input.value(),
+            edited,
+            "the reopened editor's title field shows the edited title"
+        );
+    }
+
+    #[test]
+    fn edited_title_persists_across_restart() {
+        // The full real backend: a title typed into the field reaches the CRDT
+        // and the on-disk document, so a fresh instance loads it back.
+        let dir = std::env::temp_dir().join(format!("cal-title-persist-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calendar.automerge");
+
+        let mut h = Harness::live(1280, 800, path.clone());
+        let p = h.hit_center(|a| matches!(a, Action::NewEvent)).expect("New button");
+        h.click(p);
+        let id = selected_event_id(&h.app);
+        assert!(h.app.title_input.is_focused(), "the new event opens with the title focused");
+        for ch in ["R", "o", "a", "d", "m", "a", "p"] {
+            h.type_char(ch);
+        }
+        assert_eq!(h.app.model.event(id).unwrap().title, "Roadmap");
+        // Persist runs on the next sync (writes because the heads changed).
+        h.app.sync(&mut h.doc, &automerge::ROOT);
+        assert!(path.exists(), "the document was written to disk");
+
+        // Fresh instance + fresh doc must load the named event back.
+        let mut app2 = CalendarApp::new_with_data_path(path.clone());
+        let mut doc2 = AutoCommit::new();
+        app2.sync(&mut doc2, &automerge::ROOT);
+        let ev = app2
+            .model
+            .events
+            .iter()
+            .find(|e| e.id == id)
+            .expect("the created event survived the restart");
+        assert_eq!(ev.title, "Roadmap", "the edited title persisted across the restart");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_editor_captures_the_keyboard_and_release_on_close() {
+        // The seam that makes the form's OWN Tab/field routing reachable in the
+        // live app: while open, the editor reports a modal capture so the host
+        // App suspends its built-in Tab focus cycling; closing releases it.
+        let mut h = Harness::new(1280, 800);
+        assert!(h.app.detail_open);
+        assert!(
+            h.app.modal_capture().is_some(),
+            "an open editor captures the keyboard so the App yields Tab to the form"
+        );
+        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        h.relayout();
+        assert!(
+            h.app.modal_capture().is_none(),
+            "a closed editor releases the keyboard back to the App"
+        );
+    }
+
+    #[test]
+    fn closing_the_editor_releases_field_focus_so_shortcuts_work() {
+        // Bug: opening/creating an event focuses the title; closing the editor
+        // must blur it so the next keystroke drives the calendar (a shortcut),
+        // not a hidden title field that silently swallows keys.
+        let mut h = Harness::new(1280, 800);
+        h.app.focus_field(FormField::Title);
+        assert!(h.app.title_input.is_focused());
+        h.app.apply_action(Action::CloseDetail, &mut h.doc);
+        assert!(!h.app.title_input.is_focused(), "closing the editor blurs the title");
+        assert!(!h.app.location_input.is_focused(), "…and the location");
+        assert!(!h.app.notes_editor.is_focused(), "…and the notes editor");
+        // A view shortcut now lands — it would be eaten by the title otherwise.
+        h.relayout();
+        h.type_char("w");
+        assert_eq!(h.app.view, View::Week, "a shortcut works once the editor has closed");
     }
 }
