@@ -58,6 +58,26 @@ pub fn alpha(c: Color, a: f32) -> Color {
     c.multiply_alpha(a)
 }
 
+/// A soft vertical scrim: stacked translucent bands fading `color` from alpha
+/// `a0` at the top edge to `a1` at the bottom edge. A cheap, allocation-free
+/// approximation of a linear gradient — used to keep white controls legible
+/// over an arbitrarily bright viewfinder without boxing them in a panel.
+pub fn vscrim(scene: &mut Scene, t: Affine, rect: Rect, color: Color, a0: f32, a1: f32) {
+    let steps = 18usize;
+    let bh = rect.height() / steps as f64;
+    for i in 0..steps {
+        let f = i as f32 / (steps - 1).max(1) as f32;
+        let a = a0 + (a1 - a0) * f;
+        if a <= 0.001 {
+            continue;
+        }
+        let y0 = rect.y0 + i as f64 * bh;
+        // Overlap bands slightly so no hairline seams show between them.
+        let band = Rect::new(rect.x0, y0, rect.x1, y0 + bh + 1.0);
+        scene.fill(Fill::NonZero, t, color.multiply_alpha(a), None, &band);
+    }
+}
+
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let a = a.to_rgba8();
@@ -285,6 +305,32 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
         "close" => {
             line(scene, t, cx - h * 0.6, cy - h * 0.6, cx + h * 0.6, cy + h * 0.6, color, w);
             line(scene, t, cx + h * 0.6, cy - h * 0.6, cx - h * 0.6, cy + h * 0.6, color, w);
+        }
+        "aperture" => {
+            // Camera iris: a ring with six blade spokes struck from points on
+            // the circle — the universally-legible "camera lens" brand glyph.
+            let r = h * 0.92;
+            circle_stroke(scene, t, cx, cy, r, color, w);
+            for k in 0..6 {
+                let a = k as f64 * std::f64::consts::PI / 3.0 + 0.35;
+                let a2 = a + 2.0 * std::f64::consts::PI / 3.0;
+                let x0 = cx + r * a.cos();
+                let y0 = cy + r * a.sin();
+                let x1 = cx + r * a2.cos();
+                let y1 = cy + r * a2.sin();
+                line(scene, t, x0, y0, x1, y1, color, w * 0.72);
+            }
+        }
+        "bolt" => {
+            let mut p = BezPath::new();
+            p.move_to((cx + h * 0.18, cy - h));
+            p.line_to((cx - h * 0.55, cy + h * 0.15));
+            p.line_to((cx - h * 0.02, cy + h * 0.15));
+            p.line_to((cx - h * 0.18, cy + h));
+            p.line_to((cx + h * 0.55, cy - h * 0.15));
+            p.line_to((cx + h * 0.02, cy - h * 0.15));
+            p.close_path();
+            scene.stroke(&stroke, t, color, None, &p);
         }
         _ => {
             circle_stroke(scene, t, cx, cy, h * 0.7, color, w);
