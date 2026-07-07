@@ -317,17 +317,26 @@ impl SettingsPane {
                 "settings.clear_on_exit",
             ))
             .push(Box::new(
+                // Explicit widths: the toolkit's 120px button default is
+                // narrower than these labels, which would overflow and
+                // overlap.
                 Row::new()
-                    .push(Box::new(Button::new(
-                        "settings.clear_history",
-                        "Clear history now",
-                        Some(CLEAR_HISTORY_FLAG),
-                    )))
-                    .push(Box::new(Button::new(
-                        "settings.clear_cookies",
-                        "Clear cookies & site data now",
-                        Some(CLEAR_COOKIES_FLAG),
-                    ))),
+                    .push(Box::new(
+                        Button::new(
+                            "settings.clear_history",
+                            "Clear history now",
+                            Some(CLEAR_HISTORY_FLAG),
+                        )
+                        .with_size(180.0, 40.0),
+                    ))
+                    .push(Box::new(
+                        Button::new(
+                            "settings.clear_cookies",
+                            "Clear cookies & site data now",
+                            Some(CLEAR_COOKIES_FLAG),
+                        )
+                        .with_size(260.0, 40.0),
+                    )),
             ))
             .push(labeled_field(
                 "Search engine",
