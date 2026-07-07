@@ -203,10 +203,10 @@ impl Rasterizer {
             // bands.
             let rect = match ch.loose_bounds() {
                 Ok(b) => {
-                    let left = b.left.value as f64;
-                    let right = b.right.value as f64;
-                    let top_pdf = b.top.value as f64;
-                    let bottom_pdf = b.bottom.value as f64;
+                    let left = b.left().value as f64;
+                    let right = b.right().value as f64;
+                    let top_pdf = b.top().value as f64;
+                    let bottom_pdf = b.bottom().value as f64;
                     PtRect::new(
                         left,
                         page_h - top_pdf,
@@ -614,9 +614,9 @@ mod tests {
         // pdfium's bottom-left space.
         let r = PtRect::new(20.0, 5.0, 30.0, 10.0);
         let pr = rect_tl_to_pdf(&r, 800.0);
-        assert!((pr.left.value - 20.0).abs() < 0.01);
-        assert!((pr.right.value - 50.0).abs() < 0.01);
-        assert!((pr.top.value - 795.0).abs() < 0.01);
-        assert!((pr.bottom.value - 785.0).abs() < 0.01);
+        assert!((pr.left().value - 20.0).abs() < 0.01);
+        assert!((pr.right().value - 50.0).abs() < 0.01);
+        assert!((pr.top().value - 795.0).abs() < 0.01);
+        assert!((pr.bottom().value - 785.0).abs() < 0.01);
     }
 }
