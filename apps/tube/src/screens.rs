@@ -15,7 +15,7 @@ use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
     subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, ImageBox, IntoElement,
-    Justify, Len, SeekBar, Surface, Switch, Thumbnail, VideoSurface,
+    Justify, Len, PlayerHost, SharedPlayer, Surface, Switch, Thumbnail,
 };
 
 use crate::contrast::SelectedStyle;
@@ -744,7 +744,7 @@ pub fn watch(
     imgs: Imgs,
     id: &str,
     content_w: f64,
-    frame: Option<&crate::api::DecodedFrame>,
+    player: SharedPlayer,
 ) -> Scrollable {
     let Some(v) = model.video(id) else {
         return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Video unavailable", "")));
@@ -764,55 +764,25 @@ pub fn watch(
     };
     let player_h = ((player_col_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
 
-    // Player surface. Once the live worker decodes a real H.264 frame for this
-    // video (drained from `Worker::poll_frames`, see api.rs / app.rs), we paint
-    // that RGBA picture cover-fit into the player rect; until then — and always
-    // on the offline `--shots`/test path — we show the deterministic poster.
-    // Height tracks the column width at a 16:9 ratio so the player fits the
-    // content column at every window size instead of being a fixed box.
-    let player = if let Some(f) = frame {
-        Flex::col()
-            .fill_w()
-            .push(VideoSurface::new(f.rgba.clone(), f.width, f.height, player_h))
-    } else {
-        Flex::col().fill_w().push(
-            Thumbnail::new(&v.seed, v.duration)
-                .height(player_h)
-                .image(imgs.get(&v.thumbnail_url))
-                .hero()
-                .live(v.live),
-        )
-    };
-
-    let enabled: Vec<bool> = v
-        .sponsor
-        .iter()
-        .map(|s| model.settings.category_enabled(s.category))
-        .collect();
-    let seek = SeekBar::new(bus, v.duration as f64, model.playhead, v.sponsor.clone(), enabled)
-        .id("seek_bar");
-    let transport = Flex::row()
+    // The player surface is the app's persistent, shared `ui::widget::VideoPlayer`
+    // (real GStreamer decode + audio under `--features media`, a synthesized frame
+    // otherwise) mounted here via a cheap `PlayerHost`, so it survives the
+    // whole-tree rebuild without restarting the video. Its overlaid controls bar
+    // (play/pause, scrub, volume, fullscreen) is the transport. Height tracks the
+    // column width at a 16:9 ratio.
+    let player_view = Flex::col()
         .fill_w()
-        .gap(14.0)
+        .push(PlayerHost::new(player, player_h));
+
+    // A compact row under the player for app-level playback affordances that the
+    // shared player doesn't own: the preferred-quality selector and a gear that
+    // opens Settings (playback / SponsorBlock / DeArrow / source).
+    let player_actions = Flex::row()
+        .fill_w()
+        .gap(12.0)
         .align(Align::Center)
-        .push(
-            icon_button(
-                theme,
-                bus,
-                if model.playing { IconKind::Pause } else { IconKind::Play },
-                Action::TogglePlay,
-            )
-            .id("play_pause"),
-        )
-        .push(text_c(
-            &format!("{} / {}", clock(model.playhead), clock(v.duration as f64)),
-            13.0,
-            theme.text_dim,
-        ))
-        .push(spring())
         .push(quality_menu(model, theme, bus))
-        // The gear opens the app's Settings screen (playback / SponsorBlock /
-        // DeArrow / source) — a real destination, not a dead ornament.
+        .push(spring())
         .push(
             icon_button(theme, bus, IconKind::Settings, Action::Navigate(Route::Settings))
                 .id("watch_settings"),
@@ -898,8 +868,8 @@ pub fn watch(
 
     let left = Flex::col()
         .gap(14.0)
-        .push(player)
-        .push(Flex::col().fill_w().gap(8.0).push(seek).push(transport))
+        .push(player_view)
+        .push(player_actions)
         .push_if(!model.notices.is_empty(), notices_view(theme, model))
         .push(title)
         .push(meta)
