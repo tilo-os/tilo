@@ -394,12 +394,6 @@ impl ChatApp {
         }
     }
 
-    /// The local peer's stable id — how it authors messages, reactions, voice
-    /// membership, and its own read watermark.
-    pub(crate) fn me_id(&self) -> &str {
-        &self.me.id
-    }
-
     /// Whether a call action is permitted, routed through the real OS
     /// permission gate for the active workspace. A View-only / ungranted peer
     /// is blocked from join/speak/camera/screen-share; leaving is always

@@ -496,6 +496,16 @@ impl ChatDoc {
         let _ = doc.put(&c, "topic", topic);
         let _ = doc.put(&c, "kind", kind.as_str());
         let _ = doc.put(&c, "order", order as i64);
+        // Pre-create the shared, empty voice-membership map for a voice channel
+        // at creation time. Without this, two peers who join the same call
+        // before syncing each independently create the `voice→channel` map, and
+        // an Automerge merge keeps only one — silently dropping a participant.
+        // Seeding one shared map object means concurrent joins add distinct
+        // user keys to the *same* map and converge to the full roster.
+        if kind == ChannelKind::Voice {
+            let voice = get_or_map(doc, &ROOT, "voice");
+            let _ = get_or_map(doc, &voice, id);
+        }
     }
 
     fn messages_list_mut(doc: &mut AutoCommit, channel: &str) -> ObjId {
@@ -1482,6 +1492,29 @@ mod tests {
         let heads = doc.get_heads();
         ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
         assert_eq!(doc.get_heads(), heads, "a no-op mark_read writes nothing");
+    }
+
+    #[test]
+    fn concurrent_voice_joins_converge_to_the_full_roster() {
+        // Two peers join the same voice channel before syncing. Because the
+        // voice-membership map is pre-created with the channel (shared object),
+        // their concurrent joins add distinct user keys to the *same* map and a
+        // merge keeps BOTH — no silently-dropped participant.
+        let mut a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut a, "u_alice", "Alice", "AL");
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        // Concurrent, un-synced joins.
+        ChatDoc::voice_join(&mut a, "c_lounge", "u_alice");
+        ChatDoc::voice_set_ticket(&mut a, "c_lounge", "u_alice", "iroh://alice");
+        ChatDoc::voice_join(&mut b, "c_lounge", "u_bob");
+        ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_bob", "iroh://bob");
+        // Merge both ways.
+        let mut b2 = AutoCommit::load(&b.save()).unwrap();
+        a.merge(&mut b2).unwrap();
+        let members = ChatDoc::list_voice_members(&a, "c_lounge");
+        assert_eq!(members.len(), 2, "both concurrent joiners survive the merge");
+        assert!(members.iter().any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice")));
+        assert!(members.iter().any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob")));
     }
 
     #[test]
