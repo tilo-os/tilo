@@ -44,24 +44,35 @@ pub struct MapPalette {
 
 impl MapPalette {
     pub fn from_theme(theme: &Theme) -> Self {
-        let n = &theme.tokens.colors.neutral;
+        // The map is its own light cartographic surface, independent of the
+        // (possibly dark) OS chrome — exactly like the light raster OSM tiles it
+        // underlays, whose on-map labels/pills already assume a light backdrop.
+        // Lightness is fixed light so the default map never reads murky under a
+        // dark OS theme; hues still track the theme (water = info, parks =
+        // success) and the route/markers track the accent. A genuinely dark map
+        // would be a separate cartography variant keyed off a map-style
+        // preference — not something a dark chrome theme forces on the map.
         let sem = &theme.tokens.colors.semantic;
-        let base = theme.tokens.colors.surfaces.base;
+        let w = Color::WHITE;
+        let k = Color::BLACK;
+        // Warm near-white land: nudged off the theme surface toward white so it
+        // stays essentially paper-coloured whatever the surface hue is.
+        let land = draw::mix(theme.tokens.colors.surfaces.base, w, 0.94);
         Self {
-            land: base,
-            building: draw::mix(n[2], base, 0.35),
-            building_edge: draw::mix(n[3], base, 0.4),
-            park: draw::mix(sem.success, base, 0.66),
-            park_edge: draw::mix(sem.success, base, 0.5),
-            water: draw::mix(sem.info, base, 0.55),
-            road_res: draw::mix(n[4], base, 0.25),
-            road_res_casing: draw::mix(n[1], base, 0.2),
-            road_secondary: draw::mix(n[6], base, 0.15),
-            road_primary: draw::mix(n[7], base, 0.1),
-            road_label: theme.text_dim,
+            land,
+            building: draw::mix(land, k, 0.10),
+            building_edge: draw::mix(land, k, 0.20),
+            park: draw::mix(w, sem.success, 0.30),
+            park_edge: draw::mix(w, sem.success, 0.45),
+            water: draw::mix(w, sem.info, 0.34),
+            road_res: w,
+            road_res_casing: draw::mix(land, k, 0.16),
+            road_secondary: draw::mix(w, sem.warning, 0.28),
+            road_primary: draw::mix(w, sem.warning, 0.48),
+            road_label: draw::mix(w, k, 0.62),
             route: theme.accent_primary,
-            route_casing: draw::mix(theme.accent_primary, Color::BLACK, 0.5),
-            marker_ring: draw::mix(base, Color::WHITE, 0.85),
+            route_casing: draw::mix(theme.accent_primary, w, 0.5),
+            marker_ring: w,
         }
     }
 }
@@ -848,6 +859,26 @@ mod tests {
         let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
         let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
         assert!(ids_sel.contains(&"shop"), "the selected POI is always kept: {ids_sel:?}");
+    }
+
+    /// The default map cartography reads as a light map even under the dark OS
+    /// theme (the theme the shots and the default live session use). This is the
+    /// fix for the "map too dark" murk: the map is its own light surface, not
+    /// tinted down by the dark chrome. A genuinely dark map would be a separate
+    /// cartography style, never forced onto the map by a dark chrome theme.
+    #[test]
+    fn default_map_palette_is_light() {
+        let lum = |c: Color| {
+            let c = c.to_rgba8();
+            0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
+        };
+        let dark = MapPalette::from_theme(&Theme::dark());
+        assert!(lum(dark.land) > 220.0, "land near-white under a dark theme: {}", lum(dark.land));
+        assert!(lum(dark.road_res) > 220.0, "residential roads read light");
+        assert!(lum(dark.water) > 170.0, "water is a light tint, not a dark slab");
+        // Light theme stays light too.
+        let light = MapPalette::from_theme(&Theme::light());
+        assert!(lum(light.land) > 220.0, "land near-white under a light theme too");
     }
 
     /// `draw_tiles` must NOT fetch or decode synchronously: when given an
