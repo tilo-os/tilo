@@ -224,8 +224,10 @@ pub fn search_pages(pages: &[PageText], query: &str, opts: SearchOptions) -> Vec
 mod tests {
     use super::*;
 
-    /// Two rows of glyphs: "PDF text" on row 1 (y≈10) and "layer" on row 2
-    /// (y≈30). Each glyph is 8pt wide, advancing left-to-right.
+    /// Two rows of glyphs: "PDF text " on row 1 (y≈10) and "layer" on row 2
+    /// (y≈30). Each glyph is 8pt wide, advancing left-to-right. A space glyph
+    /// ends row 1 so "text" and "layer" are distinct words (a real extracted
+    /// layer carries the inter-word space), which the whole-word test needs.
     fn sample_layer() -> PageText {
         let mut glyphs = Vec::new();
         let mut x = 10.0;
@@ -233,6 +235,9 @@ mod tests {
             glyphs.push((ch, PtRect::new(x, 10.0, 8.0, 12.0)));
             x += 8.0;
         }
+        // Inter-word space on row 1 (a real word boundary between "text" and
+        // "layer").
+        glyphs.push((' ', PtRect::new(x, 10.0, 8.0, 12.0)));
         x = 10.0;
         for ch in "layer".chars() {
             glyphs.push((ch, PtRect::new(x, 30.0, 8.0, 12.0)));
@@ -244,7 +249,7 @@ mod tests {
     #[test]
     fn from_glyphs_builds_aligned_text_and_offsets() {
         let pt = sample_layer();
-        assert_eq!(pt.text, "PDF textlayer");
+        assert_eq!(pt.text, "PDF text layer");
         assert_eq!(pt.chars.len(), pt.text.chars().count());
         // Byte offsets are contiguous and index the concatenated text.
         for c in &pt.chars {

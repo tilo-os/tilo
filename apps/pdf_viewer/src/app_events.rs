@@ -877,6 +877,7 @@ impl PdfApp {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+    use serial_test::serial;
 
     fn app() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
@@ -1236,6 +1237,7 @@ mod event_tests {
     /// `sync` — the portal result is injected (no real dialog) and the next
     /// frame must load the document.
     #[test]
+    #[serial(pdfium)]
     fn portal_open_result_loads_document_via_frame_drain() {
         let mut app = PdfApp::empty();
         let mut st = ui::State::new();
@@ -1491,7 +1493,11 @@ mod event_tests {
     /// Ctrl+C / Ctrl+X in the inline editor are real clipboard chords, not
     /// typed characters — driven through `handle_event`. The cut's field-clear
     /// is deterministic regardless of platform-clipboard availability.
+    ///
+    /// `#[serial]` because it *writes* the shared system clipboard, which would
+    /// otherwise race the paste test's read of it.
     #[test]
+    #[serial]
     fn editor_ctrl_chords_are_not_typed_and_cut_clears_the_field() {
         use ui::Widget as _;
 
@@ -1527,31 +1533,44 @@ mod event_tests {
     }
 
     /// Paste inserts the system clipboard's text at the caret via the real
-    /// editor path. Guarded on clipboard availability: where the platform
-    /// clipboard works the round-trip is asserted; where it is unavailable
-    /// (headless CI) paste must be a safe no-op that never corrupts the field.
+    /// editor path. `#[serial]` so no other clipboard-touching test runs
+    /// concurrently — the clipboard is a shared, process-external resource.
+    ///
+    /// The expectation is derived from the clipboard's *actual* content at
+    /// paste time (read back with no concurrent writer under `#[serial]`), not
+    /// from the value we tried to copy, so the assertion is exact whether or
+    /// not the platform clipboard is available: where it round-trips our write,
+    /// the buffer becomes "AB" + that text at the caret; where it is
+    /// unavailable (headless CI), paste is a safe no-op leaving "AB".
     #[test]
+    #[serial]
     fn editor_paste_inserts_clipboard_text_at_caret() {
         let (mut app, _st) = app();
         let cid = app.comments[0].id.clone();
         app.begin_edit(EditTarget::CommentBody(cid), "AB".into()); // caret at end
 
         ui::clipboard_copy("XY");
-        if ui::clipboard_paste().as_deref() == Some("XY") {
-            app.edit_clipboard_paste();
-            assert_eq!(
-                app.editing.as_ref().unwrap().buffer,
-                "ABXY",
-                "paste inserts the clipboard text at the caret"
-            );
+        // Paste reads the clipboard and inserts it at the caret (end of "AB").
+        app.edit_clipboard_paste();
+        let after = app.editing.as_ref().unwrap().buffer.clone();
+
+        // What paste actually inserts is the clipboard's current text with
+        // control chars stripped (matching `edit_insert`). Read it back — no
+        // other test writes it under `#[serial]`, so this equals what paste saw.
+        let clip: String = ui::clipboard_paste()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+
+        if clip.is_empty() {
+            assert_eq!(after, "AB", "paste with no clipboard is a safe no-op");
         } else {
-            // No usable platform clipboard here — paste must leave the field intact.
-            app.edit_clipboard_paste();
-            assert_eq!(
-                app.editing.as_ref().unwrap().buffer,
-                "AB",
-                "paste with no clipboard is a safe no-op"
-            );
+            assert_eq!(after, format!("AB{clip}"), "paste inserts the clipboard text at the caret");
+            // Where a working clipboard round-trips our own write, it is "XY".
+            if ui::clipboard_paste().as_deref() == Some("XY") {
+                assert_eq!(after, "ABXY", "the pasted text is exactly what was copied");
+            }
         }
     }
 }
