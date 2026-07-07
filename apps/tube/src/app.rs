@@ -845,14 +845,24 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::DeArrow { video, title, has_thumbnail } => {
+                Update::DeArrow { video, title, thumbnail_url } => {
                     if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video) {
                         if title.is_some() {
                             v.dearrow_title = title;
                         }
-                        v.dearrow_thumb = has_thumbnail;
+                        v.dearrow_thumb = thumbnail_url.is_some();
                         changed = true;
                     }
+                    if let Some(url) = thumbnail_url {
+                        if !url.is_empty() {
+                            self.model.dearrow_thumb_url.insert(video, url);
+                            changed = true;
+                        }
+                    }
+                }
+                Update::Dislikes { video, count } => {
+                    self.model.dislikes.insert(video, count);
+                    changed = true;
                 }
                 Update::SearchResults(query, vids) => {
                     if !vids.is_empty() {
