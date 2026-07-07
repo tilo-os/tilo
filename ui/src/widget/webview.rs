@@ -210,6 +210,11 @@ impl Widget for WebView {
 
         if let Some(img) = self.cached_image.clone() {
             let (_, iw, ih) = self.cached_key;
+            crate::webview::profile::record_draw(
+                self.rect.width(),
+                self.rect.height(),
+                Some((iw, ih)),
+            );
             if iw == 0 || ih == 0 {
                 return;
             }
@@ -229,13 +234,7 @@ impl Widget for WebView {
                 &self.rect,
             );
         } else {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &self.rect,
-            );
+            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
         }
     }
 
@@ -290,6 +289,7 @@ impl Widget for WebView {
                         if down && mapped == MouseButton::Left {
                             *focus_target = Some(node_id);
                         }
+                        crate::webview::profile::record_input("mouse");
                         self.engine.send(WebViewCommand::MouseButton {
                             button: mapped,
                             down,
@@ -328,6 +328,7 @@ impl Widget for WebView {
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
                 };
                 let (x, y) = self.to_engine(self.last_mouse);
+                crate::webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *handled = true;
             }
@@ -336,6 +337,7 @@ impl Widget for WebView {
                     return;
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
+                    crate::webview::profile::record_input("key");
                     self.engine.send(WebViewCommand::Key {
                         key,
                         down: key_event.state == ElementState::Pressed,
