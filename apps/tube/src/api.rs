@@ -63,8 +63,16 @@ pub enum Update {
     Sponsor(String, Vec<Segment>),
     DeArrow {
         video: String,
+        /// Top-voted crowdsourced title, when one outranks the original.
         title: Option<String>,
-        has_thumbnail: bool,
+        /// Community thumbnail URL (a frame rendered at the top-voted timestamp),
+        /// when one exists.
+        thumbnail_url: Option<String>,
+    },
+    /// Crowdsourced dislike count for a video (Return YouTube Dislike).
+    Dislikes {
+        video: String,
+        count: u64,
     },
     SearchResults(String, Vec<Video>),
     /// Live home/trending catalogue — replaces the on-screen set.
@@ -156,29 +164,96 @@ fn category_json() -> String {
     serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Fetch DeArrow branding (top title + whether a community thumbnail
-/// exists).
+/// Fetch DeArrow branding for a video: the top-voted crowdsourced title (when it
+/// outranks the original) and a community thumbnail URL (a frame rendered at the
+/// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
 pub fn fetch_dearrow(
     client: &reqwest::blocking::Client,
     video_id: &str,
-) -> anyhow::Result<(Option<String>, bool)> {
-    let prefix = hash_prefix(video_id);
-    let url = format!("https://sponsor.ajay.app/api/branding/{prefix}");
-    let resp: serde_json::Value = client.get(&url).send()?.error_for_status()?.json()?;
-    let entry = resp.get(video_id);
-    let title = entry
-        .and_then(|e| e.get("titles"))
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    let resp: serde_json::Value = client
+        .get("https://sponsor.ajay.app/api/branding")
+        .query(&[("videoID", video_id)])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    Ok(parse_dearrow(&resp, video_id))
+}
+
+/// Parse a DeArrow `/api/branding?videoID=<id>` response into `(title,
+/// thumbnail_url)`. Picks the highest-scored non-original entry (a locked entry
+/// wins over vote count, matching DeArrow's own precedence), and skips entries
+/// the community has voted down. Pure (no I/O) so it is unit-tested directly.
+pub fn parse_dearrow(
+    resp: &serde_json::Value,
+    video_id: &str,
+) -> (Option<String>, Option<String>) {
+    // Score an entry: locked entries win outright; otherwise by vote count.
+    // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
+    let score = |e: &serde_json::Value| -> Option<i64> {
+        let original = e.get("original").and_then(|o| o.as_bool()).unwrap_or(false);
+        if original {
+            return None;
+        }
+        let votes = e.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
+        let locked = e.get("locked").and_then(|l| l.as_bool()).unwrap_or(false);
+        if votes < 0 && !locked {
+            return None;
+        }
+        Some(if locked { votes + 1_000_000 } else { votes })
+    };
+
+    let title = resp
+        .get("titles")
         .and_then(|t| t.as_array())
-        .and_then(|a| a.first())
-        .and_then(|t| t.get("title"))
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string());
-    let has_thumb = entry
-        .and_then(|e| e.get("thumbnails"))
+        .and_then(|arr| {
+            arr.iter()
+                .filter_map(|e| Some((score(e)?, e)))
+                .max_by_key(|(s, _)| *s)
+                .and_then(|(_, e)| e.get("title").and_then(|s| s.as_str()))
+                .map(|s| s.to_string())
+        });
+
+    let thumbnail_url = resp
+        .get("thumbnails")
         .and_then(|t| t.as_array())
-        .map(|a| !a.is_empty())
-        .unwrap_or(false);
-    Ok((title, has_thumb))
+        .and_then(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    let s = score(e)?;
+                    let ts = e.get("timestamp").and_then(|v| v.as_f64())?;
+                    Some((s, ts))
+                })
+                .max_by_key(|(s, _)| *s)
+                .map(|(_, ts)| {
+                    format!(
+                        "https://dearrow-thumb.ajay.app/api/v1/getThumbnail?videoID={video_id}&time={ts}"
+                    )
+                })
+        });
+
+    (title, thumbnail_url)
+}
+
+/// Fetch the crowdsourced dislike count for a video via Return YouTube Dislike
+/// (`GET /votes?videoId=<id>`).
+pub fn fetch_dislikes(
+    client: &reqwest::blocking::Client,
+    video_id: &str,
+) -> anyhow::Result<u64> {
+    let resp: serde_json::Value = client
+        .get("https://returnyoutubedislikeapi.com/votes")
+        .query(&[("videoId", video_id)])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
+}
+
+/// Parse a Return YouTube Dislike `/votes` response's dislike count. Pure (no
+/// I/O) so it is unit-tested directly.
+pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
+    resp.get("dislikes").and_then(|v| v.as_u64())
 }
 
 /// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
@@ -297,15 +372,23 @@ impl Worker {
                                 }
                             }
                             match fetch_dearrow(&client, &id) {
-                                Ok((title, has)) => {
+                                Ok((title, thumbnail_url)) => {
                                     let _ = up_tx.send(Update::DeArrow {
-                                        video: id,
+                                        video: id.clone(),
                                         title,
-                                        has_thumbnail: has,
+                                        thumbnail_url,
                                     });
                                 }
                                 Err(e) => {
                                     let _ = up_tx.send(Update::Note(format!("DeArrow: {e}")));
+                                }
+                            }
+                            match fetch_dislikes(&client, &id) {
+                                Ok(count) => {
+                                    let _ = up_tx.send(Update::Dislikes { video: id, count });
+                                }
+                                Err(e) => {
+                                    let _ = up_tx.send(Update::Note(format!("Dislikes: {e}")));
                                 }
                             }
                         }
