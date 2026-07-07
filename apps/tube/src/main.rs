@@ -62,13 +62,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe_trending();
     }
 
-    // `--live-shots <dir>` — render REAL offscreen proof stills: a watch page
-    // with a real GStreamer-decoded video frame, and a creator page with real
-    // fetched thumbnails/avatar/banner. Requires `--features "live media"`.
-    if let Some(dir) = parse_two_arg(&args, "--live-shots") {
-        return run_live_shots(&dir);
-    }
-
     // `--probe-ytdlp [query]` — prove the yt-dlp extractor: search + video +
     // channel (with avatar/banner urls). Requires `--features live`.
     if let Some(query) = parse_opt_query(&args, "--probe-ytdlp", "blender open movie") {
@@ -105,12 +98,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (vw, vh) = viewport;
         let narrow = args.iter().any(|a| a == "--narrow");
         let palette = args.iter().any(|a| a == "--palette");
-        // `--frame-demo`: open a watch page with a synthetic decoded frame
-        // already in hand, so the still captures the real on-screen paint path
-        // (VideoSurface, cover-fit) rather than the poster — a visual companion
-        // to `--probe-play` (which proves the *decode*) for eyeballing the paint
-        // geometry without a network or a live decoder.
-        let frame_demo = args.iter().any(|a| a == "--frame-demo");
+        // `--play-demo`: open a watch page with the shared `VideoPlayer` already
+        // playing (a synthesized frame + revealed controls), so the still
+        // captures the real player surface + transport — a visual companion to
+        // `--probe-gst` (which proves the *decode*) for eyeballing the on-screen
+        // player without a network or a live decoder.
+        let play_demo = args.iter().any(|a| a == "--play-demo");
         // Seed the app with the render viewport so the single offscreen frame
         // resolves the responsive layout (rail default, grid columns, watch
         // player size) from the true width instead of the unknown-width
@@ -121,9 +114,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Ctrl+K overlay with live results.
             let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
             app = app.with_palette_open_for_test(&q);
-        } else if frame_demo {
-            let (fw, fh, rgba) = demo_frame();
-            app = app.with_decoded_frame_for_test("vid_donut", fw, fh, rgba);
+        } else if play_demo {
+            app = app.with_playing_demo_for_test();
         } else if narrow {
             app = app.with_open_sidebar_shot();
         } else if let Some(route) = parse_route_arg(&args) {
@@ -180,20 +172,6 @@ fn parse_probe_play_arg(args: &[String]) -> Option<String> {
     None
 }
 
-/// Parse a `--flag VALUE` / `--flag=VALUE` two-token argument.
-fn parse_two_arg(args: &[String], flag: &str) -> Option<String> {
-    let eq = format!("{flag}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
 
 /// Parse `--flag [query]` / `--flag=<query>` with a default when the flag is
 /// present but no value follows.
@@ -751,120 +729,6 @@ fn run_probe_gst(_id: &str, _seconds: u64) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Pick the decoded frame with the most non-trivial pixels, so a real-frame
-/// shot isn't an initial black/blank frame.
-#[cfg(all(feature = "live", feature = "media"))]
-fn pick_interesting_frame(
-    frames: &[(u32, u32, Vec<u8>)],
-) -> Option<(u32, u32, Vec<u8>)> {
-    frames
-        .iter()
-        .max_by_key(|(_, _, rgba)| rgba.iter().step_by(37).filter(|&&b| b > 16).count())
-        .cloned()
-}
-
-/// `--live-shots <dir>`: render REAL offscreen proof stills — a watch page with
-/// a real GStreamer-decoded video frame, and a creator page with real fetched
-/// thumbnails/avatar/banner. Everything is live data + real decode; nothing is
-/// sample content.
-#[cfg(all(feature = "live", feature = "media"))]
-fn run_live_shots(dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Duration;
-    use tube::backend::{gst_playback, ytdlp::YtDlpBackend, BackendResult, YtBackend};
-    use tube::model::{Route, TubeModel};
-
-    let out_dir = std::path::Path::new(dir);
-    std::fs::create_dir_all(out_dir).ok();
-    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
-
-    // ---- Watch page with a REAL decoded frame ----
-    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY)
-    println!("live-shots[watch]: metadata + stream for [{watch_id}]…");
-    let video = match backend.video(watch_id)? {
-        BackendResult::Video(v) => *v,
-        _ => return Err("no video".into()),
-    };
-    let src = backend
-        .resolve_playback_source(watch_id)
-        .map_err(|e| format!("resolve: {e}"))?;
-    println!(
-        "  stream {} {}x{}@{}fps audio={}",
-        src.quality, src.width, src.height, src.fps, src.has_audio
-    );
-    let frames = gst_playback::decode_frames(&src.url, 60, Duration::from_secs(45))
-        .map_err(|e| format!("gstreamer decode: {e}"))?;
-    let (fw, fh, rgba) = pick_interesting_frame(&frames).ok_or("no decoded frames")?;
-    println!("  decoded {} frames; painting a real {fw}x{fh} frame", frames.len());
-
-    let mut wmodel = TubeModel::default();
-    wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
-    wmodel.upsert_video(video.clone());
-    let watch_app = tube::TubeApp::new()
-        .with_viewport(1280.0, 860.0)
-        .with_model_for_test(wmodel)
-        .with_decoded_frame_for_test(watch_id, fw, fh, rgba);
-    let watch_png = out_dir.join("watch.png");
-    render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
-
-    // ---- Creator page with REAL images ----
-    let channel_ref = if video.channel_id.is_empty() {
-        "@BlenderStudio".to_string()
-    } else {
-        video.channel_id.clone()
-    };
-    println!("live-shots[creator]: channel [{channel_ref}]…");
-    let (channel, uploads) = match backend.channel(&channel_ref)? {
-        BackendResult::Channel { channel, uploads } => (*channel, uploads),
-        _ => return Err("no channel".into()),
-    };
-    println!(
-        "  {} ({} subs); {} uploads; avatar={} banner={}",
-        channel.name,
-        channel.subscribers,
-        uploads.len(),
-        !channel.avatar_url.is_empty(),
-        !channel.banner_url.is_empty()
-    );
-
-    let mut cmodel = TubeModel::default();
-    let cid = channel.id.clone();
-    cmodel.upsert_channel(channel.clone());
-    for u in &uploads {
-        cmodel.ensure_channel_stub(&u.channel_id, &u.channel_name);
-        cmodel.upsert_video(u.clone());
-    }
-    cmodel.route = Route::Channel(cid);
-
-    let store = tube::images::image_store();
-    store.get(&channel.avatar_url);
-    store.get(&channel.banner_url);
-    for u in &uploads {
-        store.get(&u.thumbnail_url);
-    }
-    println!("  prewarming {} images…", uploads.len() + 2);
-    store.block_until_idle(Duration::from_secs(45));
-    println!("  images settled: {} still pending", store.pending());
-
-    let creator_app = tube::TubeApp::new()
-        .with_viewport(1280.0, 900.0)
-        .with_model_for_test(cmodel)
-        .with_image_store(store);
-    let creator_png = out_dir.join("creator.png");
-    render_shot_to_png(Box::new(creator_app) as Box<dyn Widget>, (1280, 900), &creator_png)?;
-
-    println!(
-        "live-shots: wrote\n  {}\n  {}",
-        watch_png.display(),
-        creator_png.display()
-    );
-    Ok(())
-}
-
-#[cfg(not(all(feature = "live", feature = "media")))]
-fn run_live_shots(_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("live-shots: needs `--features \"live media\"` (real data + decode + images).");
-    Ok(())
-}
 
 /// `--probe-play <id>`: prove real playback end-to-end. Resolves a real
 /// googlevideo H.264 stream, downloads a bounded prefix, demuxes it to Annex-B,
@@ -1068,37 +932,6 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
          YouTube data."
     );
     Ok(())
-}
-
-/// A synthetic RGBA frame for `--frame-demo`: a deliberately SQUARE (200×200)
-/// source with four coloured quadrants and a centred white cross. Painted
-/// cover-fit into the 16:9 player it must fill the full width undistorted and
-/// crop the top+bottom of the square — so the still visibly proves cover-fit
-/// (crop, not stretch) and the rounded-corner clip. Not a real decode: the real
-/// decode is proven by `--probe-play` / the tests; this only exercises the
-/// on-screen paint geometry.
-fn demo_frame() -> (u32, u32, Vec<u8>) {
-    let (w, h) = (200u32, 200u32);
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let cx = (x as i32 - 100).abs();
-            let cy = (y as i32 - 100).abs();
-            let (r, g, b) = if cx < 6 || cy < 6 {
-                (255, 255, 255) // centred cross
-            } else if x < 100 && y < 100 {
-                (0xE5, 0x3E, 0x3E) // TL red
-            } else if y < 100 {
-                (0x3E, 0xC5, 0x6B) // TR green
-            } else if x < 100 {
-                (0x3E, 0x7B, 0xE5) // BL blue
-            } else {
-                (0xE5, 0xC7, 0x3E) // BR amber
-            };
-            rgba.extend_from_slice(&[r, g, b, 255]);
-        }
-    }
-    (w, h, rgba)
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
