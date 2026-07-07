@@ -831,27 +831,11 @@ impl PdfApp {
         let hair = Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1);
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
-        // Wordmark: a little document glyph + name + doc title.
-        let cy = (tb.y0 + tb.y1) / 2.0;
+        // Wordmark: the document name + page count. (No decorative glyph — it
+        // read as a redundant, meaningless icon next to the filename.)
         let gx = tb.x0 + 16.0;
-        let glyph = Rect::new(gx, cy - 11.0, gx + 17.0, cy + 11.0);
-        scene.fill(Fill::NonZero, base, theme.accent_primary, None, &RoundedRect::from_rect(glyph, 3.0));
-        let fold = {
-            let mut p = BezPath::new();
-            p.move_to((glyph.x1 - 6.0, glyph.y0));
-            p.line_to((glyph.x1, glyph.y0 + 6.0));
-            p.line_to((glyph.x1 - 6.0, glyph.y0 + 6.0));
-            p.close_path();
-            p
-        };
-        scene.fill(Fill::NonZero, base, Color::from_rgba8(255, 255, 255, 120), None, &fold);
-        for i in 0..3 {
-            let ly = glyph.y0 + 8.0 + i as f64 * 4.0;
-            let line = Line::new((glyph.x0 + 4.0, ly), (glyph.x1 - 4.0, ly));
-            scene.stroke(&Stroke::new(1.0), base, Color::from_rgba8(255, 255, 255, 200), None, &line);
-        }
         if self.tb_show_wordmark() {
-            let max = 124.0;
+            let max = 148.0;
             let name = if self.doc_name.is_empty() { "PDF".to_string() } else { self.doc_name.clone() };
             let name = truncate_to_width(tr, &name, 13.0, max);
             tr.draw_text_weighted(
@@ -859,7 +843,7 @@ impl PdfApp {
                 &name,
                 13.0,
                 theme.text_primary,
-                base * Affine::translate((gx + 24.0, vcenter(tb, 13.0) - 6.0)),
+                base * Affine::translate((gx, vcenter(tb, 13.0) - 6.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -874,7 +858,7 @@ impl PdfApp {
                 &subtitle,
                 10.0,
                 theme.text_dim,
-                base * Affine::translate((gx + 24.0, vcenter(tb, 10.0) + 7.0)),
+                base * Affine::translate((gx, vcenter(tb, 10.0) + 7.0)),
                 None,
             );
         }
