@@ -60,3 +60,9 @@ futures = { version = "0.3", optional = true, default-features = false, features
 # Compile the real IMAP/SMTP engine backend + remote avatar fetch. Requires
 # network + a TLS/async stack; not used by the headless build or `--shots`.
 live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:webpki-roots", "dep:futures"]
+
+[dev-dependencies]
+# Generates a throwaway self-signed certificate so the `live` engine tests can
+# stand up local IMAP/SMTP servers over a real TLS socket. Uses the ring backend
+# already in the tree (no aws-lc). Only compiled for tests, never shipped.
+rcgen = "0.13"
