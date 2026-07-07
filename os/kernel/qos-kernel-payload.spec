@@ -35,7 +35,4 @@ cp -a %{stage}/. %{buildroot}/
 
 %files
 %defattr(-,root,root,-)
-/boot/vmlinuz-%{kver}
-/boot/System.map-%{kver}
-/boot/config-%{kver}
 /lib/modules/%{kver}
