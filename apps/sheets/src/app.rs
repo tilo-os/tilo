@@ -931,8 +931,11 @@ impl SheetsApp {
                 for (c, cell) in row.iter().enumerate() {
                     let Some(cell) = cell else { continue };
                     let addr = (c as u32, r as u32);
-                    // Re-infer to normalize, but respect the imported format.
-                    SheetsDoc::set_cell_raw(doc, idx, addr, &cell.raw);
+                    // A formula cell restores its live formula; a value cell
+                    // stores its (re-inferred) value. The format still derives
+                    // from the imported value, not the formula text.
+                    let raw_to_store = cell.formula.as_deref().unwrap_or(cell.raw.as_str());
+                    SheetsDoc::set_cell_raw(doc, idx, addr, raw_to_store);
                     let fmt = if cell.format == CellFormat::General {
                         infer_entry(&cell.raw, cur).format
                     } else {
@@ -3728,6 +3731,35 @@ mod tests {
         }
         // The gap column between the two ranges is untouched (still currency).
         assert!(matches!(snap.fmt.get(&(2, 1)), Some(CellFormat::Currency(_))));
+    }
+
+    /// The real export → import path for a workbook of formulas: the active
+    /// sheet is exported to a `.xlsx`, read back, and imported into a fresh
+    /// document. Formula cells restore their formula *text* (not a frozen
+    /// value) and recompute to the original results.
+    #[test]
+    fn xlsx_export_import_restores_live_formulas() {
+        let (app, mut doc) = seeded_app();
+        // Budget!E2 = =SUM(B2:D2) = 3600 in the seed.
+        let table = app.active_table(&mut doc);
+        let path = std::env::temp_dir().join("sheets-app-formula-rt.xlsx");
+        crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
+        let tables = crate::xlsx::read_xlsx(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // Import into a brand-new, empty document via the real import path.
+        let mut fresh = SheetsApp::new();
+        let mut doc2 = AutoCommit::new();
+        fresh.import_tables(&mut doc2, tables, "test.xlsx");
+
+        // The formula came back as a formula, not its computed value.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (4, 1)), "=SUM(B2:D2)");
+        // …and it recomputes to the original result.
+        let snap = SheetsDoc::snapshot_sheet(&mut doc2, 0, Currency::USD);
+        let values = formula::recalculate(&snap.raw);
+        assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
+        // A non-formula neighbour still round-trips as a plain value.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (1, 1)), "1200");
     }
 
     /// Fill-down copies the top cell of the selection down, shifting relative
