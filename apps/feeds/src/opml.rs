@@ -167,6 +167,25 @@ fn feed_outline(feed: &Feed, indent: usize) -> String {
     )
 }
 
+/// A small representative OPML document (a folder with two nested feeds plus a
+/// top-level feed) shared by `--shots` staging and the import tests, so the
+/// screenshot and the tests exercise the same parse path.
+pub fn sample_opml() -> &'static str {
+    // Feeds deliberately distinct from the bundled sample subscriptions so an
+    // import genuinely adds every one (nothing is deduped away).
+    r#"<?xml version="1.0"?>
+<opml version="2.0">
+  <head><title>subscriptions</title></head>
+  <body>
+    <outline text="Reading" title="Reading">
+      <outline type="rss" text="LWN" title="LWN" xmlUrl="https://lwn.net/headlines/rss" htmlUrl="https://lwn.net"/>
+      <outline type="atom" text="Simon Willison" title="Simon Willison" xmlUrl="https://simonwillison.net/atom/everything/" htmlUrl="https://simonwillison.net"/>
+    </outline>
+    <outline type="rss" text="Julia Evans" title="Julia Evans" xmlUrl="https://jvns.ca/atom.xml" htmlUrl="https://jvns.ca"/>
+  </body>
+</opml>"#
+}
+
 /// Merge parsed OPML feeds into a store, creating folders as needed.
 /// Returns the number of feeds added.
 pub fn import_into(store: &mut Store, parsed: &[OpmlFeed]) -> usize {
