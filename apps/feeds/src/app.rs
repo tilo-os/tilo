@@ -29,6 +29,7 @@ use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::doc::FeedsDoc;
@@ -38,6 +39,7 @@ use crate::model::{
     relative_time, Article, BlockKind, Feed, FeedKind, Filter, Id, ReadFont, ReadSettings,
     ReadTheme, Store,
 };
+use crate::portal::{self, ImportOutcome};
 use crate::reader_theme::ReaderPalette;
 use crate::{opml, sample};
 
@@ -99,7 +101,18 @@ enum ToolbarAction {
     AddSubscription,
     Refresh,
     MarkAllRead,
+    ImportOpml,
     ExportOpml,
+}
+
+/// An entry in the per-feed right-click context menu. Aligned by index with
+/// the [`ContextMenu`]'s action rows so a drained selection maps straight back
+/// to the mutation to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FeedMenuAction {
+    MarkAllRead,
+    Rename,
+    Unsubscribe,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +141,7 @@ struct ListRow {
 /// A transient modal overlay.
 enum Modal {
     AddSubscription { input: String },
+    RenameFeed { feed_id: Id, input: String },
 }
 
 /// Live progress for an in-flight (or just-finished) "Refresh all". Shown as a
@@ -214,6 +228,24 @@ pub struct FeedsApp {
     modal: Option<Modal>,
     toast: Option<(String, Instant)>,
 
+    // --- OPML import (XDG portal) ---------------------------------------
+    /// In-flight import file-chooser: the portal worker's receiver, drained
+    /// once per frame in `sync`. `None` when no picker is open.
+    import_rx: Option<portal::ImportChannel>,
+
+    // --- per-feed context menu ------------------------------------------
+    /// Right-click menu over a sidebar feed. Uses the shared `ui` primitive so
+    /// the popover matches the rest of the OS; the app owns open/close + action
+    /// routing (via `take_selection`) since actions mutate the CRDT store.
+    feed_menu: ContextMenu,
+    /// The feed the open context menu targets.
+    feed_menu_target: Option<Id>,
+    /// Menu actions aligned by index with `feed_menu`'s action rows.
+    feed_menu_actions: Vec<FeedMenuAction>,
+    /// `--shots` staging: open the context menu over the first feed row once
+    /// geometry is known (the single-frame renderer can't reach it via input).
+    stage_menu_shot: bool,
+
     // --- article reading settings (reader pane) -------------------------
     settings: ReadSettings,
     /// Whether the reader's reading-settings popover is open.
@@ -285,6 +317,11 @@ impl FeedsApp {
             last_mouse: Point::ZERO,
             modal: None,
             toast: None,
+            import_rx: None,
+            feed_menu: ContextMenu::new(),
+            feed_menu_target: None,
+            feed_menu_actions: Vec::new(),
+            stage_menu_shot: false,
             settings: ReadSettings::default(),
             show_reader_settings: false,
             settings_btn_rect: Rect::ZERO,
@@ -333,6 +370,21 @@ impl FeedsApp {
     /// scenario, which the single-frame renderer can't reach via live input).
     pub fn force_reader_settings_open(&mut self) {
         self.show_reader_settings = true;
+    }
+
+    /// Stage the per-feed context menu open (for the `--shots` context-menu
+    /// scenario). The menu is anchored over the first feed row in `paint` once
+    /// the sidebar geometry is known.
+    pub fn force_feed_menu_open(&mut self) {
+        self.stage_menu_shot = true;
+    }
+
+    /// Merge the bundled sample OPML into the store so a `--shots` capture shows
+    /// the sidebar right after an import — the freshly-created folder and its
+    /// feeds folded in (the shot renders straight from the store).
+    pub fn stage_post_import(&mut self) {
+        let parsed = opml::parse(opml::sample_opml());
+        opml::import_into(&mut self.store, &parsed);
     }
 
     /// Stage a refresh as mid-flight so the single-frame `--shots` renderer can
@@ -627,6 +679,220 @@ impl FeedsApp {
         match std::fs::write(&path, xml) {
             Ok(_) => self.set_toast(format!("Exported OPML → {}", path.display())),
             Err(e) => self.set_toast(format!("Export failed: {e}")),
+        }
+    }
+
+    // --- OPML import (XDG portal) ----------------------------------------
+
+    /// Ask the host desktop portal to pick an `.opml` file. Non-blocking — the
+    /// D-Bus round-trip + host dialog run on a worker thread; the chosen path
+    /// arrives over a channel drained by [`Self::drain_import`]. An in-flight
+    /// request is not re-opened.
+    fn request_import(&mut self) {
+        if self.import_rx.is_some() {
+            return;
+        }
+        self.import_rx = Some(portal::request_import());
+        self.set_toast("Choose an OPML file…");
+    }
+
+    /// Drain an in-flight import portal request. Called once per frame from
+    /// `sync` (which holds the document). When the user picked a file we read
+    /// it, parse the OPML, subscribe to every feed, and kick a background fetch
+    /// so the new feeds populate. Returns true if anything changed.
+    fn drain_import(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(rx) = &self.import_rx else {
+            return false;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.import_rx = None;
+                return false;
+            }
+        };
+        self.import_rx = None;
+        match outcome {
+            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let new_ids = self.apply_opml_import(&text, doc);
+                    if new_ids.is_empty() {
+                        self.set_toast("No new feeds in that OPML");
+                    } else {
+                        let plural = if new_ids.len() == 1 { "" } else { "s" };
+                        self.set_toast(format!("Imported {} feed{plural}", new_ids.len()));
+                        // Fetch the freshly-subscribed feeds so articles appear.
+                        self.refresh_feeds(&new_ids);
+                    }
+                    true
+                }
+                Err(e) => {
+                    self.set_toast(format!("Import failed: {e}"));
+                    true
+                }
+            },
+            ImportOutcome::Cancelled => false,
+            ImportOutcome::Failed(reason) => {
+                self.set_toast(format!("Import failed: {reason}"));
+                true
+            }
+        }
+    }
+
+    /// Parse OPML `text`, merge it into the store (creating folders as needed,
+    /// de-duplicating by URL), and persist the folders + feeds to the document.
+    /// Hermetic — performs no network I/O. Returns the ids of the feeds that
+    /// were newly subscribed (so the caller can fetch just those).
+    fn apply_opml_import(&mut self, text: &str, doc: &mut AutoCommit) -> Vec<Id> {
+        let parsed = opml::parse(text);
+        let before: std::collections::HashSet<Id> =
+            self.store.feeds.iter().map(|f| f.id).collect();
+        opml::import_into(&mut self.store, &parsed);
+        // Persist all folders + feeds. The upserts are change-guarded, so
+        // re-writing entries that already existed is a no-op on the document.
+        let folders = self.store.folders.clone();
+        for f in &folders {
+            FeedsDoc::upsert_folder(doc, f);
+        }
+        let feeds = self.store.feeds.clone();
+        for f in &feeds {
+            FeedsDoc::upsert_feed(doc, f);
+        }
+        doc.commit();
+        self.store
+            .feeds
+            .iter()
+            .filter(|f| !before.contains(&f.id))
+            .map(|f| f.id)
+            .collect()
+    }
+
+    /// Enqueue a background refresh for a specific set of feeds (used right
+    /// after an OPML import). Non-blocking — only queues on the worker channel.
+    fn refresh_feeds(&mut self, ids: &[Id]) {
+        let reqs: Vec<FetchRequest> = ids
+            .iter()
+            .filter_map(|id| {
+                self.store.feed(*id).map(|f| FetchRequest::Refresh {
+                    feed_id: f.id,
+                    url: f.url.clone(),
+                    kind: f.kind,
+                })
+            })
+            .collect();
+        if reqs.is_empty() {
+            return;
+        }
+        let n = reqs.len();
+        let w = self.worker();
+        for r in reqs {
+            w.send(r);
+        }
+        self.refresh = RefreshState { total: n, ..Default::default() };
+    }
+
+    // --- per-feed context menu -------------------------------------------
+
+    /// The feed whose sidebar row is under `p`, if any (folders/smart rows and
+    /// section headers have no per-feed menu).
+    fn feed_at(&self, p: Point) -> Option<Id> {
+        self.sidebar_rows.iter().find_map(|row| {
+            if row.rect.contains(p) {
+                if let RowRole::Feed { id, .. } = row.role {
+                    return Some(id);
+                }
+            }
+            None
+        })
+    }
+
+    /// Open the per-feed context menu targeting `feed_id`, anchored near `at`
+    /// (clamped so the popover stays within the widget).
+    fn open_feed_menu(&mut self, feed_id: Id, at: Point) {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Mark all as read", || {}));
+        menu.push(MenuItem::action("Rename…", || {}));
+        menu.push(MenuItem::action("Unsubscribe", || {}));
+        // Keep the menu inside the widget (rough size: 220 wide, ~96 tall).
+        let x = at.x.min((self.rect.x1 - 224.0).max(self.rect.x0));
+        let y = at.y.min((self.rect.y1 - 108.0).max(self.rect.y0));
+        menu.open_at([x as f32, y as f32]);
+        self.feed_menu = menu;
+        self.feed_menu_target = Some(feed_id);
+        self.feed_menu_actions = vec![
+            FeedMenuAction::MarkAllRead,
+            FeedMenuAction::Rename,
+            FeedMenuAction::Unsubscribe,
+        ];
+    }
+
+    fn close_feed_menu(&mut self) {
+        self.feed_menu.close();
+        self.feed_menu_target = None;
+    }
+
+    fn apply_feed_menu_action(
+        &mut self,
+        action: FeedMenuAction,
+        feed_id: Id,
+        doc: &mut AutoCommit,
+    ) {
+        match action {
+            FeedMenuAction::MarkAllRead => {
+                let ids = self.store.mark_all_read(Filter::Feed(feed_id));
+                for id in &ids {
+                    FeedsDoc::set_read(doc, *id, true);
+                }
+                self.set_toast(format!("Marked {} read", ids.len()));
+            }
+            FeedMenuAction::Rename => {
+                let title = self
+                    .store
+                    .feed(feed_id)
+                    .map(|f| f.title.clone())
+                    .unwrap_or_default();
+                self.modal = Some(Modal::RenameFeed { feed_id, input: title });
+            }
+            FeedMenuAction::Unsubscribe => self.unsubscribe_feed(feed_id, doc),
+        }
+    }
+
+    /// Delete a feed and its articles from the store **and** the document, and
+    /// recover the selection / filter if they pointed at the removed feed.
+    fn unsubscribe_feed(&mut self, feed_id: Id, doc: &mut AutoCommit) {
+        let title = self
+            .store
+            .feed(feed_id)
+            .map(|f| f.title.clone())
+            .unwrap_or_default();
+        let removed = self.store.remove_feed(feed_id);
+        FeedsDoc::remove_feed(doc, feed_id);
+        doc.commit();
+        // If we were viewing the removed feed, fall back to All.
+        if matches!(self.filter, Filter::Feed(id) if id == feed_id) {
+            self.set_filter(Filter::All);
+        }
+        // Clear a selection that pointed at one of the removed articles.
+        if self.selected.map(|s| removed.contains(&s)).unwrap_or(false) {
+            self.selected = None;
+        }
+        self.ensure_selection();
+        self.set_toast(format!("Unsubscribed from {title}"));
+    }
+
+    /// Rename a feed in the store and persist the new title to the document.
+    fn rename_feed(&mut self, feed_id: Id, name: String, doc: &mut AutoCommit) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
+            f.title = name;
+            let feed = f.clone();
+            FeedsDoc::upsert_feed(doc, &feed);
+            doc.commit();
+            self.set_toast("Renamed feed");
         }
     }
 
@@ -1013,6 +1279,7 @@ impl FeedsApp {
             (ToolbarAction::AddSubscription, "Add subscription"),
             (ToolbarAction::Refresh, "Refresh all"),
             (ToolbarAction::MarkAllRead, "Mark all read"),
+            (ToolbarAction::ImportOpml, "Import OPML"),
             (ToolbarAction::ExportOpml, "Export OPML"),
         ];
         for (action, tip) in specs {
@@ -1049,6 +1316,18 @@ impl FeedsApp {
         self.sidebar.reconcile(self.nav_layout());
         self.sidebar.tick(self.nav_layout(), dt);
         self.recompute_geometry();
+
+        // `--shots` staging: with the sidebar geometry now known, open the
+        // per-feed context menu over the first feed row so the single-frame
+        // renderer captures it.
+        if self.stage_menu_shot && !self.feed_menu.is_open() {
+            if let Some((id, rect)) = self.sidebar_rows.iter().find_map(|r| match r.role {
+                RowRole::Feed { id, .. } => Some((id, r.rect)),
+                _ => None,
+            }) {
+                self.open_feed_menu(id, Point::new(rect.x0 + 40.0, rect.y0 + 6.0));
+            }
+        }
 
         let c = &theme.tokens.colors;
         let base = c.surfaces.base;
@@ -1136,6 +1415,13 @@ impl FeedsApp {
             draw_chrome_button(scene, t, theme, &self.hamburger_rect, glyph, self.last_mouse);
         }
 
+        // Per-feed context menu (popover over the sidebar). Drawn through the
+        // shared `ui` primitive so it matches the rest of the OS.
+        if self.feed_menu.is_open() {
+            let presence = PresenceCtx::empty();
+            self.feed_menu.draw(scene, t, tr, theme, &presence);
+        }
+
         // Toast (auto-expires after 4s).
         if let Some((msg, since)) = &self.toast {
             if since.elapsed().as_secs_f32() < 4.0 {
@@ -1143,8 +1429,32 @@ impl FeedsApp {
             }
         }
 
-        if let Some(Modal::AddSubscription { input }) = &self.modal {
-            draw_add_modal(scene, t, tr, theme, &self.rect, input);
+        match &self.modal {
+            Some(Modal::AddSubscription { input }) => draw_input_modal(
+                scene,
+                t,
+                tr,
+                theme,
+                &self.rect,
+                "Add subscription",
+                "Paste a feed or site URL (RSS, Atom, or gemini://).",
+                "https://",
+                input,
+                "Enter to subscribe · Esc to cancel",
+            ),
+            Some(Modal::RenameFeed { input, .. }) => draw_input_modal(
+                scene,
+                t,
+                tr,
+                theme,
+                &self.rect,
+                "Rename feed",
+                "Enter a new name for this feed.",
+                "Feed name",
+                input,
+                "Enter to save · Esc to cancel",
+            ),
+            None => {}
         }
     }
 
@@ -1328,6 +1638,26 @@ impl FeedsApp {
             return true;
         }
 
+        // Open feed context menu: a click on a row runs its action, a click
+        // off the menu dismisses it. Either way the click is consumed so it
+        // never falls through to the panes behind the popover.
+        if self.feed_menu.is_open() {
+            if let Some(idx) = self.feed_menu.item_at([p.x, p.y]) {
+                self.feed_menu.click_item(idx);
+                if let Some(sel) = self.feed_menu.take_selection() {
+                    let action = self.feed_menu_actions.get(sel).copied();
+                    let target = self.feed_menu_target;
+                    if let (Some(action), Some(fid)) = (action, target) {
+                        self.apply_feed_menu_action(action, fid, doc);
+                    }
+                }
+                self.feed_menu_target = None;
+            } else {
+                self.close_feed_menu();
+            }
+            return true;
+        }
+
         // --- responsive chrome (handled before the panes) ----------------
         // Back: return from the pushed reader to the list (narrow only).
         if self.back_rect.area() > 0.0 && self.back_rect.contains(p) {
@@ -1379,6 +1709,7 @@ impl FeedsApp {
                     }
                     ToolbarAction::Refresh => self.refresh_all(),
                     ToolbarAction::MarkAllRead => self.mark_all_read(doc),
+                    ToolbarAction::ImportOpml => self.request_import(),
                     ToolbarAction::ExportOpml => self.export_opml(),
                 }
                 return true;
@@ -2172,6 +2503,7 @@ fn draw_toolbar(
             ToolbarAction::AddSubscription => icons::plus(scene, t, center, 7.0, c.accent[6]),
             ToolbarAction::Refresh => icons::refresh(scene, t, center, 8.0, col),
             ToolbarAction::MarkAllRead => icons::check(scene, t, center, 7.0, col),
+            ToolbarAction::ImportOpml => icons::import_arrow(scene, t, center, 6.0, col),
             ToolbarAction::ExportOpml => icons::external_link(scene, t, center, 6.0, col),
         }
         let _ = tr; // tooltips are not drawn statically
@@ -2241,13 +2573,21 @@ fn draw_toast(
     tr.draw_text(scene, msg, 13.0, c.text_primary, t * Affine::translate((x + 18.0, y + 11.0)), None);
 }
 
-fn draw_add_modal(
+/// A centred single-input modal card over a scrim. Shared by the
+/// "Add subscription" and "Rename feed" flows — only the title, helper line,
+/// placeholder and footer hint differ.
+#[allow(clippy::too_many_arguments)]
+fn draw_input_modal(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
     theme: &Theme,
     rect: &Rect,
+    title: &str,
+    helper: &str,
+    placeholder: &str,
     input: &str,
+    footer: &str,
 ) {
     let c = &theme.tokens.colors;
     // Scrim.
@@ -2264,7 +2604,7 @@ fn draw_add_modal(
 
     tr.draw_text_weighted(
         scene,
-        "Add subscription",
+        title,
         18.0,
         c.text_primary,
         t * Affine::translate((x + 24.0, y + 20.0)),
@@ -2273,7 +2613,7 @@ fn draw_add_modal(
     );
     tr.draw_text(
         scene,
-        "Paste a feed or site URL (RSS, Atom, or gemini://).",
+        helper,
         13.0,
         c.text_dim,
         t * Affine::translate((x + 24.0, y + 48.0)),
@@ -2285,7 +2625,7 @@ fn draw_add_modal(
     scene.fill(Fill::NonZero, t, c.surfaces.base, None, &RoundedRect::from_rect(field, 8.0));
     scene.stroke(&Stroke::new(1.5), t, c.border_focus, None, &RoundedRect::from_rect(field, 8.0));
     let shown = if input.is_empty() {
-        "https://".to_string()
+        placeholder.to_string()
     } else {
         input.to_string()
     };
@@ -2300,7 +2640,7 @@ fn draw_add_modal(
     // Hint.
     tr.draw_text(
         scene,
-        "Enter to subscribe · Esc to cancel",
+        footer,
         12.0,
         c.text_dim,
         t * Affine::translate((x + 24.0, y + h - 26.0)),
@@ -2419,6 +2759,9 @@ impl Widget for FeedsApp {
         self.flush_doc_writes(state);
         self.drain_fetches_live();
         self.flush_doc_writes(state);
+        // Drain an in-flight OPML import portal request (holds the doc so the
+        // parsed subscriptions persist the moment the user picks a file).
+        self.drain_import(state);
     }
 
     fn build_layout(
@@ -2517,6 +2860,22 @@ impl Widget for FeedsApp {
                     *handled = true;
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                // Right-click on a sidebar feed opens its context menu; a
+                // right-click anywhere else dismisses any open menu.
+                let p = self.last_mouse;
+                if let Some(id) = self.feed_at(p) {
+                    self.open_feed_menu(id, p);
+                    *handled = true;
+                } else if self.feed_menu.is_open() {
+                    self.close_feed_menu();
+                    *handled = true;
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
@@ -2562,6 +2921,9 @@ impl Widget for FeedsApp {
             || self.worker.as_ref().map(|w| w.pending() > 0).unwrap_or(false)
             || self.refresh.visible()
             || !self.pending_doc_writes.is_empty()
+            // Keep frames flowing while a file-chooser portal is open so its
+            // outcome is drained (in `sync`) the moment the user picks a file.
+            || self.import_rx.is_some()
             || self
                 .toast
                 .as_ref()
@@ -2577,28 +2939,45 @@ impl FeedsApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        // Modal: capture text entry.
-        if let Some(Modal::AddSubscription { input }) = &mut self.modal {
-            match &key_event.logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    self.modal = None;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    let url = input.clone();
-                    self.modal = None;
-                    self.subscribe(url);
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    input.pop();
-                }
-                Key::Named(NamedKey::Space) => {
-                    input.push(' ');
-                }
-                Key::Character(s) => {
-                    input.push_str(s.as_str());
-                }
-                _ => {}
+        // Modal: capture text entry (shared by Add-subscription + Rename).
+        if self.modal.is_some() {
+            let mut cancel = false;
+            let mut submit = false;
+            match &mut self.modal {
+                Some(Modal::AddSubscription { input })
+                | Some(Modal::RenameFeed { input, .. }) => match &key_event.logical_key {
+                    Key::Named(NamedKey::Escape) => cancel = true,
+                    Key::Named(NamedKey::Enter) => submit = true,
+                    Key::Named(NamedKey::Backspace) => {
+                        input.pop();
+                    }
+                    Key::Named(NamedKey::Space) => input.push(' '),
+                    Key::Character(s) => input.push_str(s.as_str()),
+                    _ => {}
+                },
+                None => {}
             }
+            if cancel {
+                self.modal = None;
+            } else if submit {
+                // Take the modal out first so the follow-up mutation is free of
+                // the `&mut self.modal` borrow.
+                match self.modal.take() {
+                    Some(Modal::AddSubscription { input }) => self.subscribe(input),
+                    Some(Modal::RenameFeed { feed_id, input }) => {
+                        self.rename_feed(feed_id, input, state)
+                    }
+                    None => {}
+                }
+            }
+            *handled = true;
+            return;
+        }
+
+        // Esc closes an open feed context menu before anything else.
+        if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) && self.feed_menu.is_open()
+        {
+            self.close_feed_menu();
             *handled = true;
             return;
         }
@@ -2664,6 +3043,10 @@ impl FeedsApp {
                     }
                     "e" => {
                         self.export_opml();
+                        *handled = true;
+                    }
+                    "i" => {
+                        self.request_import();
                         *handled = true;
                     }
                     "1" => {
@@ -3317,5 +3700,337 @@ mod tests {
     fn lay_out_keep(app: &mut FeedsApp, w: f64, h: f64) {
         app.rect = Rect::new(0.0, 0.0, w, h);
         app.recompute_geometry();
+    }
+
+    // --- OPML import + per-feed context menu ------------------------------
+
+    fn synth_device() -> winit::event::DeviceId {
+        winit::event::DeviceId::dummy()
+    }
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn right_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+        }
+    }
+    /// Drive the app's real `handle_event` dispatch (same path the winit loop
+    /// uses), returning whether the event was consumed.
+    fn dispatch(a: &mut FeedsApp, doc: &mut AutoCommit, event: &WindowEvent) -> bool {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        a.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    /// Open the per-feed context menu for the first sidebar feed row via the
+    /// real right-click path, returning that feed's id.
+    fn open_first_feed_menu(a: &mut FeedsApp, doc: &mut AutoCommit) -> Id {
+        let (id, center) = a
+            .sidebar_rows
+            .iter()
+            .find_map(|r| match r.role {
+                RowRole::Feed { id, .. } => Some((id, r.rect.center())),
+                _ => None,
+            })
+            .expect("a feed row exists in the sidebar");
+        dispatch(a, doc, &cursor_at(center));
+        assert!(dispatch(a, doc, &right_press()), "right-click on a feed is consumed");
+        assert!(a.feed_menu.is_open(), "right-click opens the context menu");
+        assert_eq!(a.feed_menu_target, Some(id), "the menu targets the clicked feed");
+        id
+    }
+
+    /// A logical point that the open menu's hit-test maps to action row `idx`.
+    /// Probes the real `item_at` so it never couples to the popover's private
+    /// row metrics.
+    fn menu_point_for(a: &FeedsApp, idx: usize) -> Point {
+        let r = a.feed_menu.get_rect();
+        let x = r.x0 + 20.0;
+        let mut y = r.y0;
+        while y < r.y1 {
+            if a.feed_menu.item_at([x, y]) == Some(idx) {
+                return Point::new(x, y);
+            }
+            y += 1.0;
+        }
+        panic!("no point maps to menu item {idx}");
+    }
+
+    #[test]
+    fn opml_import_adds_all_feeds_and_persists() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+
+        let feeds_before = a.store.feeds.len();
+        let new_ids = a.apply_opml_import(opml::sample_opml(), &mut doc);
+
+        // All three OPML feeds are new subscriptions (none deduped away).
+        assert_eq!(new_ids.len(), 3, "every OPML feed was subscribed");
+        assert_eq!(a.store.feeds.len(), feeds_before + 3);
+        for url in [
+            "https://lwn.net/headlines/rss",
+            "https://simonwillison.net/atom/everything/",
+            "https://jvns.ca/atom.xml",
+        ] {
+            assert!(
+                a.store.feeds.iter().any(|f| f.url == url),
+                "store gained a subscription for {url}"
+            );
+        }
+        // The OPML folder was created.
+        assert!(a.store.folders.iter().any(|f| f.name == "Reading"));
+
+        // Persisted to the document (the real convergence path).
+        let loaded = FeedsDoc::load(&doc);
+        for url in [
+            "https://lwn.net/headlines/rss",
+            "https://simonwillison.net/atom/everything/",
+            "https://jvns.ca/atom.xml",
+        ] {
+            assert!(
+                loaded.feeds.iter().any(|f| f.url == url),
+                "document persisted the subscription for {url}"
+            );
+        }
+        assert!(loaded.folders.iter().any(|f| f.name == "Reading"));
+
+        // Re-importing the same OPML is a no-op (dedup by URL).
+        let again = a.apply_opml_import(opml::sample_opml(), &mut doc);
+        assert!(again.is_empty(), "re-import adds nothing");
+    }
+
+    #[test]
+    fn portal_import_drain_reads_file_and_subscribes() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        // A no-thread worker so the post-import background refresh only records
+        // pending requests (no network, no spawned thread).
+        let _tx = a.install_test_worker();
+
+        // Write a real OPML file to a scratch path and hand the app the outcome
+        // the portal worker would deliver, then run one `sync` — the exact
+        // per-frame drain the live portal feeds.
+        let dir = std::env::temp_dir().join(format!("feeds-opml-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("subs.opml");
+        std::fs::write(&path, opml::sample_opml()).unwrap();
+
+        let feeds_before = a.store.feeds.len();
+        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path.clone())));
+        assert!(a.import_rx.is_some(), "a request is in flight until drained");
+
+        a.sync(&mut doc, &automerge::ROOT);
+
+        assert!(a.import_rx.is_none(), "draining the outcome clears the request");
+        assert_eq!(a.store.feeds.len(), feeds_before + 3, "all OPML feeds subscribed");
+        assert!(a.store.feeds.iter().any(|f| f.url == "https://jvns.ca/atom.xml"));
+        // Persisted on the real path.
+        assert!(FeedsDoc::load(&doc)
+            .feeds
+            .iter()
+            .any(|f| f.url == "https://lwn.net/headlines/rss"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cancelled_import_leaves_store_untouched() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let before = a.store.feeds.len();
+        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Cancelled));
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.import_rx.is_none(), "cancel clears the request");
+        assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");
+    }
+
+    #[test]
+    fn right_click_feed_opens_context_menu_with_actions() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+
+        let id = open_first_feed_menu(&mut a, &mut doc);
+        assert_eq!(a.feed_menu_target, Some(id));
+        // Three actions: mark-all-read, rename, unsubscribe.
+        assert_eq!(
+            a.feed_menu_actions,
+            vec![
+                FeedMenuAction::MarkAllRead,
+                FeedMenuAction::Rename,
+                FeedMenuAction::Unsubscribe
+            ]
+        );
+
+        // A right-click on empty (non-feed) space dismisses the menu.
+        let off = a.reader_rect.center();
+        dispatch(&mut a, &mut doc, &cursor_at(off));
+        assert!(dispatch(&mut a, &mut doc, &right_press()));
+        assert!(!a.feed_menu.is_open(), "right-click off a feed closes the menu");
+    }
+
+    #[test]
+    fn context_menu_unsubscribe_removes_feed_and_persists() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+
+        let id = open_first_feed_menu(&mut a, &mut doc);
+        assert!(a.store.feed(id).is_some());
+        let had_articles = a.store.unread_for_feed(id) + a
+            .store
+            .articles
+            .iter()
+            .filter(|x| x.feed_id == id)
+            .count();
+        assert!(had_articles > 0, "the target feed has articles to remove");
+
+        // Click the Unsubscribe row (index 2) via the real click path.
+        let p = menu_point_for(&a, 2);
+        assert!(a.click(p, &mut doc), "unsubscribe click is consumed");
+
+        assert!(!a.feed_menu.is_open(), "the menu closes after the action");
+        assert!(a.store.feed(id).is_none(), "the feed is removed from the store");
+        assert!(
+            !a.store.articles.iter().any(|x| x.feed_id == id),
+            "the feed's articles are removed too"
+        );
+        // Persisted: the document no longer carries the feed or its articles.
+        let loaded = FeedsDoc::load(&doc);
+        assert!(!loaded.feeds.iter().any(|f| f.id == id));
+        assert!(!loaded.articles.iter().any(|x| x.feed_id == id));
+    }
+
+    #[test]
+    fn context_menu_mark_all_read_marks_the_feed_read() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+
+        let id = open_first_feed_menu(&mut a, &mut doc);
+        assert!(a.store.unread_for_feed(id) > 0, "the feed starts with unread items");
+
+        // Click the Mark-all-read row (index 0).
+        let p = menu_point_for(&a, 0);
+        assert!(a.click(p, &mut doc));
+
+        assert_eq!(a.store.unread_for_feed(id), 0, "every article in the feed is read");
+        // Persisted: the document's articles for this feed are all read.
+        let loaded = FeedsDoc::load(&doc);
+        assert!(
+            loaded
+                .articles
+                .iter()
+                .filter(|x| x.feed_id == id)
+                .all(|x| x.read),
+            "the read flags persisted to the document"
+        );
+    }
+
+    #[test]
+    fn context_menu_rename_opens_prefilled_modal_and_persists() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+
+        let id = open_first_feed_menu(&mut a, &mut doc);
+        let old_title = a.store.feed(id).unwrap().title.clone();
+
+        // Click the Rename row (index 1) — opens the rename modal prefilled with
+        // the current title.
+        let p = menu_point_for(&a, 1);
+        assert!(a.click(p, &mut doc));
+        match &a.modal {
+            Some(Modal::RenameFeed { feed_id, input }) => {
+                assert_eq!(*feed_id, id);
+                assert_eq!(input, &old_title, "the field is prefilled with the title");
+            }
+            _ => panic!("rename opens the rename modal"),
+        }
+
+        // Commit a new name through the production mutation and assert it lands
+        // in both the store and the document.
+        a.rename_feed(id, "My Renamed Feed".into(), &mut doc);
+        assert_eq!(a.store.feed(id).unwrap().title, "My Renamed Feed");
+        let loaded = FeedsDoc::load(&doc);
+        assert_eq!(
+            loaded.feeds.iter().find(|f| f.id == id).unwrap().title,
+            "My Renamed Feed",
+            "the rename persisted to the document"
+        );
+    }
+
+    #[test]
+    fn fetched_articles_render_through_the_store() {
+        // A real fetch result (as the worker posts it) folds into the store and
+        // renders — the article carries laid-out content blocks.
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let tx = a.install_test_worker();
+
+        let feed_id = a.store.feeds[0].id;
+        let before = a.store.articles_for(Filter::Feed(feed_id)).len();
+        let art = Article {
+            id: Uuid::new_v4(),
+            feed_id,
+            title: "Fresh headline".into(),
+            author: "Reporter".into(),
+            url: "https://example.com/fresh".into(),
+            published: a.now,
+            summary: "A summary".into(),
+            blocks: vec![crate::model::ContentBlock::new(
+                BlockKind::Paragraph,
+                "The body text renders as a block.",
+            )],
+            read: false,
+            starred: false,
+        };
+        tx.send(FetchResult::Articles {
+            feed_id,
+            title: None,
+            articles: vec![art.clone()],
+        })
+        .unwrap();
+
+        // The live (doc-less) drain folds it into the store immediately.
+        assert!(a.drain_fetches_live(), "the fetched article drains into the store");
+        a.flush_doc_writes(&mut doc);
+
+        let after = a.store.articles_for(Filter::Feed(feed_id));
+        assert_eq!(after.len(), before + 1, "the article joins the feed's list");
+        let fresh = a.store.article(art.id).expect("the article is in the store");
+        assert!(!fresh.blocks.is_empty(), "the article body renders as blocks");
+        // Persisted to the document with its content.
+        assert!(FeedsDoc::load(&doc)
+            .articles
+            .iter()
+            .any(|x| x.id == art.id && !x.blocks.is_empty()));
     }
 }
