@@ -32,6 +32,8 @@ pub enum IconKind {
     Settings,
     Search,
     Like,
+    /// Thumbs-down — the Return YouTube Dislike pill on the watch page.
+    Dislike,
     Bell,
     Play,
     Pause,
@@ -182,6 +184,22 @@ impl Icon {
                 p.close_path();
                 scene.fill(Fill::NonZero, transform, self.color, None, &p);
                 let base = RoundedRect::new(u(0.12, 0.45).x, u(0.12, 0.45).y, u(0.3, 0.88).x, u(0.3, 0.88).y, sw);
+                scene.fill(Fill::NonZero, transform, self.color, None, &base);
+            }
+            IconKind::Dislike => {
+                // The Like glyph flipped vertically (thumb points down).
+                let d = |x: f64, y: f64| u(x, 1.0 - y);
+                let mut p = BezPath::new();
+                p.move_to(d(0.3, 0.45));
+                p.line_to(d(0.5, 0.15));
+                p.curve_to(d(0.62, 0.12), d(0.66, 0.28), d(0.55, 0.42));
+                p.line_to(d(0.85, 0.42));
+                p.curve_to(d(0.93, 0.42), d(0.93, 0.52), d(0.85, 0.85));
+                p.line_to(d(0.4, 0.85));
+                p.line_to(d(0.3, 0.78));
+                p.close_path();
+                scene.fill(Fill::NonZero, transform, self.color, None, &p);
+                let base = RoundedRect::new(d(0.12, 0.45).x, d(0.3, 0.88).y, d(0.3, 0.88).x, d(0.12, 0.45).y, sw);
                 scene.fill(Fill::NonZero, transform, self.color, None, &base);
             }
             IconKind::Bell => {

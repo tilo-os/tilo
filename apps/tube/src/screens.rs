@@ -10,12 +10,12 @@ use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
 use crate::images::Imgs;
-use crate::model::{Category, Route, TubeModel, Video};
+use crate::model::{Category, Route, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
     subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, ImageBox, IntoElement,
-    Justify, Len, PlayerHost, SharedPlayer, Surface, Switch, Thumbnail,
+    Justify, Len, PlayerHost, SeekBar, SharedPlayer, Surface, Switch, Thumbnail,
 };
 
 use crate::contrast::SelectedStyle;
@@ -161,6 +161,22 @@ fn pill(
         .on_click(bus, action)
 }
 
+/// A non-interactive stat pill (leading icon + label) — the outlined-pill look
+/// without a click handler. Used for the read-only dislike count.
+fn stat_pill(theme: &Theme, label: &str, leading: IconKind) -> Flex {
+    Flex::row()
+        .gap(8.0)
+        .pad_xy(16.0, 9.0)
+        .align(Align::Center)
+        .surface(Surface {
+            fill: Some(subtle_fill(theme)),
+            radius: theme.tokens.radii.full as f64,
+            border: Some((1.0, theme.border_standard)),
+        })
+        .push(icon(leading, 16.0, theme.text_primary))
+        .push(text_c(label, 14.0, theme.text_primary))
+}
+
 /// A small icon-only round button.
 fn icon_button(theme: &Theme, bus: &ActionBus, kind: IconKind, action: Action) -> Flex {
     Flex::row()
@@ -205,13 +221,13 @@ fn section_header(theme: &Theme, kind: IconKind, title: &str, subtitle: &str) ->
 // ---------------------------------------------------------------------------
 
 fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: &Video) -> Flex {
-    let dearrow = model.settings.dearrow_enabled;
+    let dearrow = model.settings.dearrow_titles_on();
     let active_dearrow = v.dearrow_active(dearrow);
     let progress = model.history.first().filter(|h| **h == v.id).map(|_| 0.35);
     let mut thumb = Thumbnail::new(&v.seed, v.duration)
         .height(THUMB_H)
         .image(imgs.get(model.display_thumbnail_url(v)))
-        .dearrow(active_dearrow && model.settings.dearrow_thumbnails)
+        .dearrow(v.dearrow_thumb && model.settings.dearrow_thumbs_on())
         .live(v.live);
     if let Some(p) = progress {
         thumb = thumb.progress(p);
@@ -273,7 +289,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
 
 /// Compact horizontal card for the "Up next" rail + history rows.
 fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: &Video) -> Flex {
-    let dearrow = model.settings.dearrow_enabled;
+    let dearrow = model.settings.dearrow_titles_on();
     Flex::row()
         .fill_w()
         .gap(10.0)
@@ -749,7 +765,7 @@ pub fn watch(
     let Some(v) = model.video(id) else {
         return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Video unavailable", "")));
     };
-    let dearrow = model.settings.dearrow_enabled;
+    let dearrow = model.settings.dearrow_titles_on();
 
     // Responsive watch geometry. Below `WATCH_TWO_COL_MIN` the "Up next" rail
     // stacks under the player instead of sitting beside it, so neither column
@@ -790,7 +806,7 @@ pub fn watch(
 
     let title = text(v.display_title(dearrow), 22.0);
     let liked = model.is_liked(&v.id);
-    let meta = Flex::row()
+    let mut meta = Flex::row()
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
@@ -806,11 +822,21 @@ pub fn watch(
                 liked,
             )
             .id("like_btn"),
-        )
-        .push(
-            pill(theme, bus, "Share", Some(IconKind::Chevron), Action::Share(v.id.clone()), false)
-                .id("share_btn"),
         );
+    // Return YouTube Dislike: a read-only crowdsourced dislike count beside the
+    // like pill. Shows the real number once fetched, an em-dash placeholder
+    // until it lands.
+    if model.settings.return_dislike_enabled {
+        let label = model
+            .dislikes_of(&v.id)
+            .map(human_count)
+            .unwrap_or_else(|| "—".to_string());
+        meta = meta.push(stat_pill(theme, &label, IconKind::Dislike).id("dislike_pill"));
+    }
+    let meta = meta.push(
+        pill(theme, bus, "Share", Some(IconKind::Chevron), Action::Share(v.id.clone()), false)
+            .id("share_btn"),
+    );
 
     let ch_sub = model.is_subscribed(&v.channel_id);
     let channel_row = Flex::row()
@@ -844,6 +870,61 @@ pub fn watch(
 
     let sb_card = sponsor_summary(model, theme, bus, v);
 
+    // SponsorBlock timeline: a segment-marked scrubber under the player. Each
+    // community segment is painted inline in its category colour over the full
+    // duration, so the sponsor/intro/outro spans are visible before playback;
+    // click or drag anywhere to seek. Only the enabled (non-Off) categories are
+    // marked.
+    let sb_segments: Vec<crate::model::Segment> = if model.settings.sponsorblock_enabled {
+        v.sponsor
+            .iter()
+            .filter(|s| model.settings.category_enabled(s.category))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let has_sb_timeline = !sb_segments.is_empty();
+    let sb_enabled = vec![true; sb_segments.len()];
+    let sb_timeline = Flex::col()
+        .id("sb_timeline")
+        .fill_w()
+        .gap(4.0)
+        .push(SeekBar::new(
+            bus,
+            v.duration.max(1) as f64,
+            model.playhead,
+            sb_segments,
+            sb_enabled,
+        ))
+        .push(
+            Flex::row()
+                .gap(6.0)
+                .align(Align::Center)
+                .push(icon(IconKind::Shield, 12.0, theme.accent_primary))
+                .push(dim(theme, "SponsorBlock timeline", 11.0)),
+        );
+
+    // Manual "Skip" button for a Show-mode segment the playhead is inside (the
+    // suggest-don't-auto-skip path). Auto-skip categories jump on their own; a
+    // Show category waits for this tap.
+    let manual = v.sponsor.iter().find(|s| {
+        model.settings.should_show_skip(s.category) && s.contains(model.playhead)
+    });
+    let show_skip = manual.is_some();
+    let skip_btn = match manual {
+        Some(s) => pill(
+            theme,
+            bus,
+            &format!("Skip {}", s.category.label()),
+            Some(IconKind::Skip),
+            Action::SkipSegment(s.end),
+            true,
+        )
+        .id("sb_skip_btn"),
+        None => pill(theme, bus, "Skip", Some(IconKind::Skip), Action::SkipSegment(0.0), true),
+    };
+
     let desc = Flex::col()
         .fill_w()
         .gap(6.0)
@@ -869,6 +950,8 @@ pub fn watch(
     let left = Flex::col()
         .gap(14.0)
         .push(player_view)
+        .push_if(has_sb_timeline, sb_timeline)
+        .push_if(show_skip, skip_btn)
         .push(player_actions)
         .push_if(!model.notices.is_empty(), notices_view(theme, model))
         .push(title)
@@ -949,7 +1032,11 @@ fn sponsor_summary(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video)
             .push(spring())
             .push(dim(
                 theme,
-                if model.settings.auto_skip { "Auto-skip on" } else { "Manual" },
+                if v.sponsor.is_empty() {
+                    "no segments".to_string()
+                } else {
+                    format!("{} segments", v.sponsor.len())
+                },
                 12.0,
             ))
             .push(Switch::new(
@@ -1095,6 +1182,41 @@ fn settings_card(theme: &Theme, title: &str, rows: Vec<Flex>) -> Flex {
     col
 }
 
+/// A clickable three-state mode selector for a SponsorBlock category. Cycles
+/// Auto-skip → Show → Off on click. The label + fill reflect the *stored*
+/// per-category mode (independent of the master switch) so the user always sees
+/// their choice.
+fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> Flex {
+    let sel = selected_accent_fill(theme);
+    let (fill, fg, border) = match mode {
+        SkipMode::Skip => (Some(sel.bg), sel.fg, None),
+        SkipMode::Show => (
+            Some(subtle_fill(theme)),
+            theme.text_primary,
+            Some((1.0, theme.border_standard)),
+        ),
+        SkipMode::Disabled => (None, theme.text_dim, Some((1.0, theme.border_standard))),
+    };
+    Flex::row()
+        .id(&format!("mode_{}", cat.api_key()))
+        .w(Len::Px(104.0))
+        .pad_xy(12.0, 7.0)
+        .justify(Justify::Center)
+        .align(Align::Center)
+        .surface(Surface {
+            fill,
+            radius: theme.tokens.radii.full as f64,
+            border,
+        })
+        .hover_surface(Surface {
+            fill: Some(hover_fill(theme)),
+            radius: theme.tokens.radii.full as f64,
+            border,
+        })
+        .on_click(bus, Action::ToggleCategory(cat))
+        .push(text_c(mode.label(), 12.5, fg))
+}
+
 pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
     let s = &model.settings;
 
@@ -1106,6 +1228,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                 Switch::new(s.autoplay, bus, Action::ToggleSetting(SettingFlag::Autoplay)).id("switch_autoplay")),
             setting_row(theme, "Show comments", "Load the comment section on the watch page.",
                 Switch::new(s.show_comments, bus, Action::ToggleSetting(SettingFlag::ShowComments)).id("switch_comments")),
+            setting_row(theme, "Show dislikes", "Display the crowdsourced dislike count (Return YouTube Dislike).",
+                Switch::new(s.return_dislike_enabled, bus, Action::ToggleSetting(SettingFlag::ReturnDislike)).id("switch_dislikes")),
             setting_row(theme, "Preferred quality", "Highest resolution to request when available.",
                 quality_menu(model, theme, bus)),
         ],
@@ -1115,8 +1239,6 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         let mut rows = vec![
             setting_row(theme, "Enable SponsorBlock", "Use community segment data to mark and skip parts of videos.",
                 Switch::new(s.sponsorblock_enabled, bus, Action::ToggleSetting(SettingFlag::SponsorBlock)).id("switch_sponsorblock")),
-            setting_row(theme, "Auto-skip", "Skip enabled categories automatically instead of just marking them.",
-                Switch::new(s.auto_skip, bus, Action::ToggleSetting(SettingFlag::AutoSkip)).id("switch_autoskip")),
         ];
         for cat in Category::ALL {
             let (r, g, b) = cat.rgb();
@@ -1136,6 +1258,9 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                         .push(text(cat.label(), 14.0))
                         .push(dim(theme, cat.blurb(), 12.0)),
                 );
+            // The stored per-category mode (not the master-gated one) so the
+            // selector shows the user's choice even when SponsorBlock is off.
+            let stored = s.categories.get(cat.api_key()).copied().unwrap_or(SkipMode::Skip);
             rows.push(
                 Flex::row()
                     .fill_w()
@@ -1143,11 +1268,7 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     .pad_xy(0.0, 8.0)
                     .align(Align::Center)
                     .push(label)
-                    .push(Switch::new(
-                        *s.categories.get(cat.api_key()).unwrap_or(&true),
-                        bus,
-                        Action::ToggleCategory(cat),
-                    )),
+                    .push(mode_pill(theme, bus, cat, stored)),
             );
         }
         settings_card(theme, "SponsorBlock", rows)
@@ -1157,8 +1278,10 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         theme,
         "DeArrow",
         vec![
-            setting_row(theme, "Replace clickbait titles", "Show community-submitted, factual titles instead of clickbait.",
+            setting_row(theme, "Enable DeArrow", "Use community branding in place of clickbait.",
                 Switch::new(s.dearrow_enabled, bus, Action::ToggleSetting(SettingFlag::DeArrow)).id("switch_dearrow")),
+            setting_row(theme, "Replace clickbait titles", "Show community-submitted, factual titles instead of clickbait.",
+                Switch::new(s.dearrow_titles, bus, Action::ToggleSetting(SettingFlag::DeArrowTitles)).id("switch_dearrow_titles")),
             setting_row(theme, "Replace thumbnails", "Use neutral community thumbnails in place of clickbait frames.",
                 Switch::new(s.dearrow_thumbnails, bus, Action::ToggleSetting(SettingFlag::DeArrowThumbnails)).id("switch_dearrow_thumbs")),
         ],
@@ -1253,7 +1376,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
 
     let backend = crate::backend::offline::OfflineBackend::with_model(model.clone());
     let provider =
-        crate::search_type::VideoSearchProvider::new(&backend, model.settings.dearrow_enabled);
+        crate::search_type::VideoSearchProvider::new(&backend, model.settings.dearrow_titles_on());
     let hits = crate::search_type::palette_hits(&provider, model, &model.palette_query);
 
     // Always-present, placeholder-backed input (same reachability fix as the
