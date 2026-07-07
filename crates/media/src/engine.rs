@@ -272,6 +272,10 @@ impl Default for MediaEngine {
 // =====================================================================
 
 struct SynthState {
+    /// Whether a source has been opened. Until it has, the backend produces no
+    /// frame at all so a freshly launched player shows a clean empty surface
+    /// rather than a synthesized test pattern.
+    opened: bool,
     playing: bool,
     position: u64,
     duration: u64,
@@ -293,6 +297,7 @@ struct SynthState {
 impl SynthState {
     fn new() -> Self {
         Self {
+            opened: false,
             playing: false,
             position: 0,
             duration: DEFAULT_SYNTH_DURATION_MS,
@@ -307,6 +312,7 @@ impl SynthState {
     }
 
     fn open(&mut self, source: &Source, _volume: f32) {
+        self.opened = true;
         self.playing = false;
         self.position = 0;
         self.ended = false;
@@ -348,7 +354,9 @@ impl SynthState {
         self.position = ms.min(self.duration);
         self.ended = self.position >= self.duration;
         self.last_tick = None;
-        self.render_frame();
+        if self.opened {
+            self.render_frame();
+        }
     }
 
     fn buffering_percent(&self) -> u8 {
@@ -392,8 +400,9 @@ impl SynthState {
         }
         self.last_tick = Some(now_ms);
 
-        // 4. Refresh the frame if the playhead moved.
-        if self.last_frame_pos != Some(self.position) {
+        // 4. Refresh the frame if the playhead moved — but only once a source is
+        //    open, so a never-opened engine stays a clean empty surface.
+        if self.opened && self.last_frame_pos != Some(self.position) {
             self.render_frame();
         }
 
@@ -723,6 +732,19 @@ mod tests {
         let f = e.latest_frame().expect("a seed frame exists after open");
         assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
         assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
+    }
+
+    #[test]
+    fn no_frame_is_produced_until_a_source_is_opened() {
+        let mut e = MediaEngine::new_synthesized();
+        // Pumping a never-opened engine must not fabricate a picture — the
+        // player's empty state stays a clean surface, not a test pattern.
+        e.poll_at(0);
+        e.poll_at(100);
+        assert!(e.latest_frame().is_none(), "empty state carries no synthesized frame");
+        // Opening a source seeds the first frame.
+        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        assert!(e.latest_frame().is_some(), "a frame appears once media is opened");
     }
 
     #[test]

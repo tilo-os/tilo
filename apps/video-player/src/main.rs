@@ -36,7 +36,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        render_shot_to_png(video_player::app_root_for_shot(open), viewport, &out)?;
+        // Build the staged player and warm it up: real decode prerolls its first
+        // frame asynchronously, so pump `sync` until a picture is on the surface
+        // (the synthesized fallback produces one on the first pump). This makes a
+        // `--features decode --open <file>` capture a genuine decoded frame.
+        let mut app = video_player::PlayerApp::for_shot(open);
+        {
+            let mut warm = ui::State::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                app.sync(&mut warm.doc, &warm.root);
+                if app.has_media_frame() || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+        }
+        render_shot_to_png(Box::new(app), viewport, &out)?;
         return Ok(());
     }
 

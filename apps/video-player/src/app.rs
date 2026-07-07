@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -110,6 +110,19 @@ impl PlayerApp {
         self.collab = Some(CollabPlayback::new(Role::from_env()));
         self.manager = Some(CollaborationManager::new());
         self
+    }
+
+    /// Shared read access to the inner video surface (for the headless shot
+    /// warm-up and integration tests that assert a decoded frame landed).
+    pub fn player(&self) -> &VideoPlayer {
+        &self.player
+    }
+
+    /// Whether a decoded picture is currently on the surface. The `--shots`
+    /// path pumps `sync` until this is true so a real (asynchronously prerolled)
+    /// decode is captured, not a blank frame.
+    pub fn has_media_frame(&self) -> bool {
+        self.player.latest_frame().is_some()
     }
 
     fn open_path(&mut self, path: PathBuf) {
@@ -445,5 +458,129 @@ mod tests {
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
         assert!(app.portal_rx.is_none(), "channel cleared after the outcome");
+    }
+
+    fn root() -> ObjId {
+        automerge::ROOT
+    }
+
+    #[test]
+    fn fresh_player_shows_a_clean_empty_state_with_no_frame() {
+        let mut app = PlayerApp::new();
+        let mut doc = AutoCommit::new();
+        // Pumping the app before any file is opened must not fabricate a frame.
+        app.sync(&mut doc, &root());
+        app.sync(&mut doc, &root());
+        assert!(
+            app.player.latest_frame().is_none(),
+            "empty state: no picture until a file is opened"
+        );
+        assert_eq!(app.title, "No media");
+        assert!(!app.player.is_playing());
+    }
+
+    /// A player pinned to the deterministic synthesized backend, so the app's
+    /// open/transport wiring is exercised hermetically regardless of build
+    /// features (real GStreamer decode is proven separately by the
+    /// `--features decode` integration test with a real generated file).
+    fn synth_app() -> PlayerApp {
+        let mut app = PlayerApp::new();
+        app.player.set_engine(media::MediaEngine::new_synthesized());
+        app
+    }
+
+    #[test]
+    fn opening_a_file_then_syncing_lands_a_frame_and_duration() {
+        let mut app = synth_app();
+        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &root());
+        assert!(app.player.latest_frame().is_some(), "a frame is produced once opened");
+        assert!(app.player.duration_ms() > 0, "duration mirrored from the engine");
+        assert!(app.player.is_playing(), "autoplay after open");
+    }
+
+    #[test]
+    fn playhead_advances_while_playing_and_a_mid_play_seek_holds() {
+        let mut app = synth_app();
+        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &root()); // baseline the synth clock
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        app.sync(&mut doc, &root());
+        assert!(app.player.position_ms() > 0, "playhead advanced while playing");
+
+        // Seek mid-play: the target lands in both the widget cache and the engine.
+        app.player.seek_to_ms(50_000);
+        assert_eq!(app.player.position_ms(), 50_000);
+        assert_eq!(app.player.engine().unwrap().position_ms(), 50_000);
+
+        // Playback continues forward from the seek target, not back to the start.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        app.sync(&mut doc, &root());
+        assert!(app.player.position_ms() >= 50_000, "seek stuck; playback rode on from it");
+    }
+
+    #[test]
+    fn volume_and_mute_propagate_to_the_engine() {
+        let mut app = synth_app();
+        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.player.set_volume(0.3);
+        assert!((app.player.volume() - 0.3).abs() < 1e-6);
+        assert!((app.player.engine().unwrap().volume() - 0.3).abs() < 1e-6);
+        app.player.toggle_mute();
+        assert!(
+            (app.player.engine().unwrap().volume() - 0.0).abs() < 1e-6,
+            "mute drops the engine volume to zero"
+        );
+    }
+
+    #[test]
+    fn space_key_routed_through_the_app_toggles_playback() {
+        let mut app = synth_app();
+        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+
+        // Lay the app out so `handle_event` can find the player child node.
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::Definite(480.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        app.player.set_focus(true);
+
+        let was_playing = app.player.is_playing();
+        let mut doc = AutoCommit::new();
+        let r = root();
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus_target = None;
+        let space = {
+            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space);
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = None;
+            WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            }
+        };
+        app.handle_event(&space, 1.0, &mods, &mut doc, &r, &mut handled, &mut focus_target, node, &taffy);
+        assert!(handled, "the app forwarded the key to the player");
+        assert_ne!(app.player.is_playing(), was_playing, "Space toggled playback via the app");
     }
 }
