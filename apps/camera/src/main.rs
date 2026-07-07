@@ -95,14 +95,17 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 /// poster the offline scanner can decode. Timestamped writes are spaced so
 /// each lands with a distinct name. Headless dev/test tooling only.
 fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use camera::model::PhotoFormat;
     std::fs::create_dir_all(dir)?;
     for seed in 0..5u8 {
         let fb = camera::frame::thumbnail(seed, 960, 640);
-        camera::library::write_photo(dir, &fb)?;
+        camera::library::write_photo(dir, &fb, PhotoFormat::Jpeg)?;
         std::thread::sleep(std::time::Duration::from_millis(4));
     }
+    // The QR poster is written lossless (PNG) so the offline scanner decodes
+    // it cleanly.
     let (qr, _) = camera::frame::scanner_frame(4, 900, 640, "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;");
-    camera::library::write_photo(dir, &qr)?;
+    camera::library::write_photo(dir, &qr, PhotoFormat::Png)?;
     Ok(())
 }
 

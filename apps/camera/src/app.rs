@@ -63,10 +63,18 @@ enum Storage {
     Sample,
 }
 
+/// An in-progress video recording: the encoder accumulating frames plus the
+/// epoch second it started (for the on-screen elapsed timer).
+struct RecState {
+    rec: crate::video::Recorder,
+    started: i64,
+}
+
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
     Shutter,
+    SetMode(CaptureMode),
     CycleFacing,
     SetFilter(GalleryFilter),
     SelectCapture(String),
@@ -99,6 +107,7 @@ pub struct CameraApp {
 
     // CRDT-backed caches (refreshed every sync)
     screen: Screen,
+    mode: CaptureMode,
     facing: Facing,
     settings: Settings,
     favorites: HashSet<String>,
@@ -119,11 +128,19 @@ pub struct CameraApp {
     gallery_scroll: f64,
     settings_scroll: f64,
 
+    // In-progress video recording (None unless the shutter is armed in video
+    // mode). The encoder is fed real frames as they arrive.
+    recording: Option<RecState>,
+
     // Live camera frame (populated by the live-capture worker / tests).
     latest_frame: Option<FrameBuf>,
     frame_gen: u64,
     #[cfg(feature = "live-capture")]
     camera: Option<crate::capture::Capture>,
+    /// The `(device, width, height)` the live pipeline is currently open on,
+    /// so device/resolution changes trigger a re-open.
+    #[cfg(feature = "live-capture")]
+    cam_config: Option<(String, u32, u32)>,
 
     // render caches
     cam_view: Option<(u32, u32, u8, Image)>,
@@ -161,6 +178,7 @@ impl CameraApp {
             storage,
             initial_screen,
             screen: initial_screen,
+            mode: CaptureMode::Photo,
             facing: Facing::Back,
             settings: Settings::default(),
             favorites: HashSet::new(),
@@ -176,10 +194,13 @@ impl CameraApp {
             last_mouse: Point::ZERO,
             gallery_scroll: 0.0,
             settings_scroll: 0.0,
+            recording: None,
             latest_frame: None,
             frame_gen: 0,
             #[cfg(feature = "live-capture")]
             camera: None,
+            #[cfg(feature = "live-capture")]
+            cam_config: None,
             cam_view: None,
             live_view: None,
             scan_view: None,
@@ -191,11 +212,78 @@ impl CameraApp {
     }
 
     /// Hand a freshly captured RGBA frame to the app (live-capture worker or
-    /// tests). This is what the viewfinder shows and what the shutter saves.
+    /// tests). This is what the viewfinder shows, what the shutter saves, and
+    /// — while recording — what the video encoder is fed.
     pub fn push_camera_frame(&mut self, frame: FrameBuf) {
+        if let Some(state) = &mut self.recording {
+            state.rec.push(&frame);
+        }
         self.latest_frame = Some(frame);
         self.frame_gen = self.frame_gen.wrapping_add(1);
         self.dirty = true;
+    }
+
+    /// True while a video recording is in progress.
+    fn is_recording(&self) -> bool {
+        self.recording.is_some()
+    }
+
+    /// Begin a recording. Honest about missing hardware: with no live feed the
+    /// disk/live source can't record, so it says so instead of faking a clip.
+    fn start_recording(&mut self) {
+        if !self.feed_active() {
+            self.toast = Some("Connect a camera to record".into());
+            return;
+        }
+        let mut rec = crate::video::Recorder::new(crate::video::FPS);
+        // Seed with the frame already on screen so a clip is never empty.
+        if let Some(fb) = &self.latest_frame {
+            rec.push(fb);
+        }
+        self.recording = Some(RecState { rec, started: now_secs() });
+        self.dirty = true;
+    }
+
+    /// Finish the recording: mux the frames into a real MJPEG/AVI clip and
+    /// save it (disk) or append an in-memory sample entry (hermetic).
+    fn stop_recording(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
+        let Some(state) = self.recording.take() else { return };
+        let dur = state.rec.duration_ms();
+        let Some(bytes) = state.rec.finish() else {
+            self.toast = Some("Nothing recorded".into());
+            return;
+        };
+        match &self.storage {
+            Storage::Disk(dir) => match crate::video::write_clip(dir, &bytes, &library::timestamp_name()) {
+                Ok(name) => {
+                    self.lib_dirty = true;
+                    self.selected_capture = Some(name);
+                    self.toast = Some(format!("Video saved · {}", fmt_dur(dur)));
+                }
+                Err(e) => self.toast = Some(format!("Save failed: {e}")),
+            },
+            Storage::Sample => {
+                // Hermetic path (no disk): register the real clip's length as a
+                // gallery entry so the recording round-trips visibly.
+                let id = format!("VID_{}.avi", now_secs());
+                let cap = Capture {
+                    id: id.clone(),
+                    kind: CaptureKind::Video,
+                    ts: now_secs(),
+                    w: self.latest_frame.as_ref().map(|f| f.w).unwrap_or(0),
+                    h: self.latest_frame.as_ref().map(|f| f.h).unwrap_or(0),
+                    dur_ms: dur,
+                    label: "New clip".into(),
+                    favorite: false,
+                    facing: self.facing,
+                    scene: Self::viewfinder_seed(self.facing),
+                    path: None,
+                };
+                self.captures.insert(0, cap);
+                self.selected_capture = Some(id);
+                self.toast = Some(format!("Video saved · {}", fmt_dur(dur)));
+            }
+        }
     }
 
     /// Whether a live viewfinder feed is currently available.
@@ -236,7 +324,23 @@ impl CameraApp {
                 self.screen = s;
                 doc::write_screen(doc, root, s);
             }
-            Action::Shutter => self.capture(doc, root),
+            Action::Shutter => match self.mode {
+                CaptureMode::Photo => self.capture(doc, root),
+                CaptureMode::Video => {
+                    if self.is_recording() {
+                        self.stop_recording(doc, root);
+                    } else {
+                        self.start_recording();
+                    }
+                }
+            },
+            Action::SetMode(m) => {
+                // Switching mode mid-record would strand the clip; ignore.
+                if !self.is_recording() {
+                    self.mode = m;
+                    doc::write_mode(doc, root, m);
+                }
+            }
             Action::CycleFacing => {
                 self.facing = self.facing.next();
                 doc::write_facing(doc, root, self.facing);
@@ -341,7 +445,7 @@ impl CameraApp {
     fn capture(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
         match &self.storage {
             Storage::Sample => {
-                let id = format!("IMG_{}.png", now_secs());
+                let id = format!("IMG_{}.{}", now_secs(), self.settings.photo_format.extension());
                 let cap = Capture {
                     id: id.clone(),
                     kind: CaptureKind::Photo,
@@ -364,7 +468,7 @@ impl CameraApp {
                     self.toast = Some("Connect a camera to capture".into());
                     return;
                 };
-                match library::write_photo(dir, &frame) {
+                match library::write_photo(dir, &frame, self.settings.photo_format) {
                     Ok(name) => {
                         self.lib_dirty = true;
                         self.selected_capture = Some(name);
@@ -450,11 +554,32 @@ impl CameraApp {
 
     #[cfg(feature = "live-capture")]
     fn poll_camera(&mut self) {
-        if self.camera.is_none() {
-            // 1280x720 is a broadly-supported webcam mode; the pipeline
-            // negotiates the nearest.
-            self.camera = crate::capture::Capture::open("/dev/video0", 1280, 720).ok();
+        // Pick a device for the selected lens: enumerate /dev/video* and index
+        // by facing (rear/front/wide → 0/1/2), clamped to what's present.
+        let devices = crate::capture::list_devices();
+        let idx = match self.facing {
+            Facing::Back => 0,
+            Facing::Front => 1,
+            Facing::Wide => 2,
+        };
+        let device = devices.get(idx).or_else(|| devices.first()).cloned();
+        let (rw, rh) = capture_request_dims(self.settings.resolution);
+        let want = device.map(|d| (d, rw, rh));
+
+        // (Re)open when the desired device or resolution changes. Recording
+        // holds the current pipeline so a clip isn't cut by a settings poke.
+        if want != self.cam_config && !self.is_recording() {
+            self.camera = None;
+            if let Some((d, w, h)) = &want {
+                // Try the requested size, then fall back to a broadly-supported
+                // mode so the feed stays alive on modest webcams.
+                self.camera = crate::capture::Capture::open(d, *w, *h)
+                    .or_else(|_| crate::capture::Capture::open(d, 1280, 720))
+                    .ok();
+            }
+            self.cam_config = want;
         }
+
         if let Some(cam) = &self.camera {
             let mut latest = None;
             while let Ok(f) = cam.frames.try_recv() {
@@ -470,6 +595,19 @@ impl CameraApp {
 fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
     let i = all.iter().position(|x| *x == cur).unwrap_or(0);
     all[(i + 1) % all.len()]
+}
+
+/// The frame size to request from a webcam for a chosen resolution preset.
+/// Sensor-still presets (12 MP) exceed what a UVC video stream delivers, so
+/// they're capped at a 4K video request; the pipeline negotiates the nearest
+/// supported mode and the actual frame size is taken from the buffer.
+#[cfg(feature = "live-capture")]
+fn capture_request_dims(res: Resolution) -> (u32, u32) {
+    match res {
+        Resolution::R720p => (1280, 720),
+        Resolution::R1080p => (1920, 1080),
+        Resolution::R4K | Resolution::R12MP => (3840, 2160),
+    }
 }
 
 fn now_secs() -> i64 {
@@ -559,6 +697,10 @@ impl Widget for CameraApp {
                 self.screen = sc;
             }
         }
+        // Don't let a persisted mode flip mid-record.
+        if self.recording.is_none() {
+            self.mode = doc::read_mode(state, path);
+        }
         self.facing = doc::read_facing(state, path);
         self.settings = doc::read_settings(state, path);
         self.favorites = doc::read_favorites(state, path);
@@ -566,6 +708,18 @@ impl Widget for CameraApp {
 
         #[cfg(feature = "live-capture")]
         self.poll_camera();
+
+        // Hermetic path has no frame clock: while recording, synthesize a
+        // procedural frame each tick so a real multi-frame clip accumulates.
+        if self.recording.is_some() && matches!(self.storage, Storage::Sample) {
+            let n = self.recording.as_ref().map(|s| s.rec.frame_count()).unwrap_or(0);
+            let seed = Self::viewfinder_seed(self.facing).wrapping_add((n as u8) & 3);
+            let fb = frame::viewfinder(seed, 480, 270);
+            if let Some(state) = &mut self.recording {
+                state.rec.push(&fb);
+            }
+            self.dirty = true;
+        }
 
         if self.lib_dirty {
             self.reload_library();
@@ -738,7 +892,9 @@ impl Widget for CameraApp {
         self.rect
     }
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        // Keep animating while recording so the elapsed timer advances and the
+        // hermetic frame-synth keeps feeding the encoder.
+        self.dirty || self.recording.is_some()
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -937,13 +1093,39 @@ impl CameraApp {
             self.draw_viewfinder_overlays(scene, t, theme, vf);
             p::pop(scene);
             self.draw_viewfinder_chips(scene, t, tr, theme, vf);
+            if self.is_recording() {
+                self.draw_rec_indicator(scene, t, tr, vf);
+            }
         } else {
             self.draw_no_feed(scene, t, tr, theme, vf, "Connect a camera to start the viewfinder");
         }
 
         // Control bar.
         let bar = Rect::new(content.x0, content.y1 - bar_h, content.x1, content.y1);
-        let cy = bar.center().y + 4.0;
+        let cy = bar.center().y + 10.0;
+
+        // Photo / Video mode toggle, centered above the shutter. While
+        // recording it's replaced by the elapsed-time pill (mode is locked).
+        let recording = self.is_recording();
+        let seg_w = 168.0;
+        let seg = Rect::new(content.center().x - seg_w / 2.0, bar.y0 + 8.0, content.center().x + seg_w / 2.0, bar.y0 + 38.0);
+        if recording {
+            let elapsed = (now_secs() - self.recording.as_ref().map(|s| s.started).unwrap_or(0)).max(0);
+            let label = format!("REC  {}", fmt_dur(elapsed * 1000));
+            let pill = Rect::new(content.center().x - 58.0, seg.y0, content.center().x + 58.0, seg.y1);
+            p::fill_round(scene, t, pill, pill.height() / 2.0, p::alpha(theme.tokens.colors.semantic.danger, 0.20));
+            p::circle(scene, t, pill.x0 + 18.0, pill.center().y, 5.0, theme.tokens.colors.semantic.danger);
+            p::text(scene, tr, pill.x0 + 30.0, pill.center().y - 8.0, &label, 13.0, theme.tokens.colors.semantic.danger);
+        } else {
+            let items: Vec<(String, bool, Action)> = [CaptureMode::Photo, CaptureMode::Video]
+                .into_iter()
+                .map(|m| {
+                    let lbl = if matches!(m, CaptureMode::Photo) { "Photo" } else { "Video" };
+                    (lbl.to_string(), m == self.mode, Action::SetMode(m))
+                })
+                .collect();
+            self.segmented(scene, t, tr, theme, seg, items);
+        }
 
         // Last-capture thumbnail (left) — opens the gallery.
         let thumb = Rect::new(bar.x0 + 36.0, cy - 28.0, bar.x0 + 92.0, cy + 28.0);
@@ -967,14 +1149,35 @@ impl CameraApp {
         p::text_center(scene, tr, thumb.center().x, thumb.y1 + 8.0, "Library", 10.0, p::alpha(c.text_primary, 0.6));
         self.push_region(thumb, Action::Nav(Screen::Gallery));
 
-        // Shutter (center).
+        // Shutter (center). Photo: white disc. Video: a red record dot that
+        // becomes a red stop-square while recording.
         let sc = Point::new(content.center().x, cy);
-        let outer = 35.0;
+        let outer = 33.0;
         let enabled = has_feed;
-        let ring = if enabled { p::alpha(white(), 0.92) } else { p::alpha(white(), 0.4) };
+        let danger = theme.tokens.colors.semantic.danger;
+        let ring = if recording {
+            danger
+        } else if enabled {
+            p::alpha(white(), 0.92)
+        } else {
+            p::alpha(white(), 0.4)
+        };
         p::circle_stroke(scene, t, sc.x, sc.y, outer, ring, 4.0);
-        let core = if enabled { white() } else { p::alpha(white(), 0.4) };
-        p::circle(scene, t, sc.x, sc.y, outer - 8.0, core);
+        match self.mode {
+            CaptureMode::Photo => {
+                let core = if enabled { white() } else { p::alpha(white(), 0.4) };
+                p::circle(scene, t, sc.x, sc.y, outer - 8.0, core);
+            }
+            CaptureMode::Video if recording => {
+                // Rounded stop square.
+                let s = 15.0;
+                p::fill_round(scene, t, Rect::new(sc.x - s, sc.y - s, sc.x + s, sc.y + s), 5.0, danger);
+            }
+            CaptureMode::Video => {
+                let core = if enabled { danger } else { p::alpha(danger, 0.4) };
+                p::circle(scene, t, sc.x, sc.y, outer - 10.0, core);
+            }
+        }
         self.push_region(Rect::new(sc.x - outer, sc.y - outer, sc.x + outer, sc.y + outer), Action::Shutter);
 
         // Lens selector (right) — cycles rear / front / ultra-wide.
@@ -1029,6 +1232,21 @@ impl CameraApp {
         let fl = self.facing.short();
         let ftw = p::text_w(tr, fl, 12.0) as f64 + 22.0;
         self.chip(scene, t, tr, vf.x1 - ftw - 14.0, chy, None, fl, bg, white());
+    }
+
+    /// A red "● REC m:ss" badge pinned to the top-center of the viewfinder
+    /// while a clip is recording.
+    fn draw_rec_indicator(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, vf: Rect) {
+        let started = self.recording.as_ref().map(|s| s.started).unwrap_or(0);
+        let elapsed = (now_secs() - started).max(0);
+        let label = fmt_dur(elapsed * 1000);
+        let red = Color::from_rgb8(240, 60, 60);
+        let tw = p::text_w(tr, &label, 12.0) as f64;
+        let w = 20.0 + 10.0 + tw + 12.0;
+        let pill = Rect::new(vf.center().x - w / 2.0, vf.y0 + 14.0, vf.center().x + w / 2.0, vf.y0 + 40.0);
+        p::fill_round(scene, t, pill, 13.0, p::alpha(Color::from_rgb8(0, 0, 0), 0.5));
+        p::circle(scene, t, pill.x0 + 15.0, pill.center().y, 5.0, red);
+        p::text(scene, tr, pill.x0 + 26.0, pill.center().y - 8.0, &label, 12.0, white());
     }
 
     fn ensure_thumb(&mut self, cap: &Capture) {
@@ -1758,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_shutter_writes_a_real_png_via_handle_event() {
+    fn disk_shutter_writes_a_real_jpeg_via_handle_event() {
         use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
         use winit::keyboard::{Key, NamedKey, PhysicalKey};
 
@@ -1769,6 +1987,7 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         assert_eq!(app.screen, Screen::Camera);
+        assert_eq!(app.settings.photo_format, PhotoFormat::Jpeg, "default format is JPEG");
         // Simulate a camera frame arriving.
         app.push_camera_frame(frame::viewfinder(1, 64, 48));
 
@@ -1795,13 +2014,15 @@ mod tests {
         app.handle_event(&event, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
         assert!(handled, "space should be handled on the camera screen");
 
-        // A real PNG landed on disk and a rescan finds it.
+        // A real JPEG landed on disk and a rescan finds it.
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .filter(|e| e.path().extension().map(|x| x == "jpg").unwrap_or(false))
             .collect();
-        assert_eq!(files.len(), 1, "shutter wrote exactly one PNG");
+        assert_eq!(files.len(), 1, "shutter wrote exactly one JPEG");
+        let bytes = std::fs::read(files[0].path()).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "genuine JPEG (SOI marker)");
         app.sync(&mut doc, &root);
         assert_eq!(app.captures.len(), 1);
         assert!(app.captures[0].path.is_some());
@@ -1821,6 +2042,104 @@ mod tests {
         assert!(app.captures.is_empty());
         assert_eq!(app.toast.as_deref(), Some("Connect a camera to capture"));
         assert!(!dir.exists(), "no directory created when there is nothing to save");
+    }
+
+    #[test]
+    fn set_mode_persists_and_locks_while_recording() {
+        let (mut app, mut doc, root) = sample_app();
+        assert_eq!(app.mode, CaptureMode::Photo);
+        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+        assert_eq!(app.mode, CaptureMode::Video);
+        assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Video);
+
+        // Shutter in video mode starts recording; mode can't be flipped while
+        // a clip is in progress.
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(app.is_recording());
+        app.apply(Action::SetMode(CaptureMode::Photo), &mut doc, &root);
+        assert_eq!(app.mode, CaptureMode::Video, "mode locked while recording");
+    }
+
+    #[test]
+    fn sample_video_record_round_trips_into_gallery() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+        let before = app.captures.len();
+
+        // Start; the hermetic frame-synth runs on each sync tick.
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(app.is_recording());
+        for _ in 0..6 {
+            app.sync(&mut doc, &root);
+        }
+        assert!(app.recording.as_ref().unwrap().rec.frame_count() >= 6);
+
+        // Stop → a real clip length lands as a new gallery video.
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(!app.is_recording());
+        assert_eq!(app.captures.len(), before + 1);
+        assert!(app.captures[0].is_video());
+        assert!(app.captures[0].dur_ms > 0, "clip has a real duration");
+        assert!(app.toast.as_deref().unwrap_or("").starts_with("Video saved"));
+    }
+
+    #[test]
+    fn disk_video_recording_writes_a_real_avi() {
+        let dir = std::env::temp_dir().join(format!("camera-vidrec-test-{}", std::process::id()));
+        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+
+        // A frame arrives, then record: start seeds with it, further frames are
+        // fed straight into the encoder.
+        app.push_camera_frame(frame::viewfinder(0, 128, 96));
+        assert!(app.feed_active());
+        app.apply(Action::Shutter, &mut doc, &root); // start
+        assert!(app.is_recording());
+        for i in 1..6u8 {
+            app.push_camera_frame(frame::viewfinder(i % 6, 128, 96));
+        }
+        app.apply(Action::Shutter, &mut doc, &root); // stop → write clip
+        assert!(!app.is_recording());
+
+        // Exactly one real AVI on disk; it's a RIFF/AVI container that probes.
+        let avis: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().map(|x| x == "avi").unwrap_or(false))
+            .collect();
+        assert_eq!(avis.len(), 1, "recording wrote exactly one AVI");
+        let bytes = std::fs::read(avis[0].path()).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"AVI ");
+        let (w, h, dur) = crate::video::probe_avi(&avis[0].path()).expect("probe recorded clip");
+        assert_eq!((w, h), (128, 96));
+        assert!(dur > 0);
+
+        // The gallery rescans it as a video with dimensions + duration.
+        app.sync(&mut doc, &root);
+        assert_eq!(app.captures.len(), 1);
+        assert!(app.captures[0].is_video());
+        assert_eq!((app.captures[0].w, app.captures[0].h), (128, 96));
+        assert!(app.captures[0].dur_ms > 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn disk_video_record_without_feed_is_honest() {
+        let dir = std::env::temp_dir().join(format!("camera-vidrec-noframe-{}", std::process::id()));
+        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+        assert!(!app.feed_active());
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(!app.is_recording(), "no feed → recording never starts");
+        assert_eq!(app.toast.as_deref(), Some("Connect a camera to record"));
+        assert!(!dir.exists());
     }
 
     #[test]
@@ -1861,6 +2180,36 @@ mod tests {
         assert_eq!(scans.len(), 1);
         assert_eq!(scans[0].raw, SCAN_PAYLOAD);
         assert_eq!(app.scans.len(), 1);
+    }
+
+    #[test]
+    fn wifi_scan_parses_and_primary_action_copies_password() {
+        // The Wi-Fi payload is parsed into its fields and the primary action
+        // ("Connect") copies the password — the parse+copy path, end to end.
+        let payload = "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;";
+        let kind = classify(payload);
+        match &kind {
+            CodeKind::Wifi { ssid, auth, password, hidden } => {
+                assert_eq!(ssid, "qOS Lounge");
+                assert_eq!(auth, "WPA2");
+                assert_eq!(password, "welcome-aboard");
+                assert!(!hidden);
+                assert_eq!(kind.actions()[0], "Connect");
+            }
+            other => panic!("expected wifi, got {other:?}"),
+        }
+        let mut app = CameraApp::sample();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.scanned = Some(ScannedCode {
+            raw: payload.to_string(),
+            kind,
+            symbology: "QR Code".into(),
+            corners: [(0.0, 0.0); 4],
+        });
+        app.apply(Action::ScanAction(0), &mut doc, &root); // "Connect"
+        assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
     }
 
     #[test]
@@ -2019,7 +2368,8 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("camera-scan-lib-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        library::write_photo(&dir, &fb).unwrap();
+        // Lossless PNG so the QR survives the write for a clean decode.
+        library::write_photo(&dir, &fb, PhotoFormat::Png).unwrap();
 
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Scanner);
         let mut doc = AutoCommit::new();

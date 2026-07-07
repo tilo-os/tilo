@@ -16,6 +16,7 @@ pub mod library;
 pub mod model;
 pub mod paint;
 pub mod scan;
+pub mod video;
 
 #[cfg(feature = "live-capture")]
 pub mod capture;

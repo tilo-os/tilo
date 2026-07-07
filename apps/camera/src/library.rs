@@ -9,7 +9,7 @@
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
 //!   * [`scan`]          — list the directory into [`Capture`] metadata.
-//!   * [`write_photo`]   — encode an RGBA frame to a timestamped PNG.
+//!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
 //!   * [`load_thumb`]    — decode + downscale a file for the gallery.
 //!   * [`delete`]        — remove a backing file.
 
@@ -17,12 +17,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::frame::FrameBuf;
-use crate::model::{Capture, CaptureKind, Facing};
+use crate::frame::{self, FrameBuf};
+use crate::model::{Capture, CaptureKind, Facing, PhotoFormat};
+use crate::video;
 
-/// File extensions we surface as photos / videos.
+/// File extensions we surface as photos / videos. `avi` is included because
+/// the recorder writes Motion-JPEG AVI clips (see [`crate::video`]).
 const PHOTO_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
-const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v"];
+const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi"];
 
 /// Resolve the capture directory. Honors `CAMERA_DIR` (used by tests and to
 /// point the app at the P2P workspace), otherwise `$XDG_PICTURES_DIR/Camera`,
@@ -79,11 +81,26 @@ pub fn scan(dir: &Path, favorites: &HashSet<String>) -> Vec<Capture> {
             Some(n) => n.to_string(),
             None => continue,
         };
-        let (w, h) = if matches!(kind, CaptureKind::Photo) {
-            image::image_dimensions(&path).unwrap_or((0, 0))
-        } else {
-            (0, 0)
-        };
+        // Photos: read dimensions from the header. Videos: best-effort probe
+        // of a recorded AVI for its real dimensions + duration.
+        let (mut w, mut h, mut dur_ms) = (0u32, 0u32, 0i64);
+        match kind {
+            CaptureKind::Photo => {
+                if let Ok((pw, ph)) = image::image_dimensions(&path) {
+                    w = pw;
+                    h = ph;
+                }
+            }
+            CaptureKind::Video => {
+                if ext == "avi" {
+                    if let Some((vw, vh, d)) = video::probe_avi(&path) {
+                        w = vw;
+                        h = vh;
+                        dur_ms = d;
+                    }
+                }
+            }
+        }
         let label = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -95,7 +112,7 @@ pub fn scan(dir: &Path, favorites: &HashSet<String>) -> Vec<Capture> {
             ts: mtime_secs(&path),
             w,
             h,
-            dur_ms: 0,
+            dur_ms,
             label,
             favorite: favorites.contains(&id),
             facing: Facing::Back,
@@ -124,20 +141,40 @@ fn prettify_stem(stem: &str) -> String {
     }
 }
 
-/// Encode `frame` to a PNG in `dir`, creating the directory on first use.
-/// Returns the written file name (the capture id) on success.
-pub fn write_photo(dir: &Path, frame: &FrameBuf) -> std::io::Result<String> {
+/// Encode `frame` to `dir` in the requested `format` (a real JPEG or a real
+/// PNG), creating the directory on first use. Returns the written file name
+/// (the capture id) on success.
+pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<String> {
     std::fs::create_dir_all(dir)?;
-    let name = format!("IMG_{}.png", timestamp_name());
+    let name = format!("IMG_{}.{}", timestamp_name(), format.extension());
     let path = dir.join(&name);
-    let file = std::fs::File::create(&path)?;
+    match format {
+        PhotoFormat::Png => write_png(&path, frame)?,
+        PhotoFormat::Jpeg => write_jpeg(&path, frame)?,
+    }
+    Ok(name)
+}
+
+fn write_png(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
+    let file = std::fs::File::create(path)?;
     let w = std::io::BufWriter::new(file);
     let mut encoder = png::Encoder::new(w, frame.w, frame.h);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(png_io)?;
     writer.write_image_data(&frame.rgba).map_err(png_io)?;
-    Ok(name)
+    Ok(())
+}
+
+fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
+    use image::{ExtendedColorType, ImageEncoder};
+    let rgb = frame::rgba_to_rgb(&frame.rgba);
+    let file = std::fs::File::create(path)?;
+    let w = std::io::BufWriter::new(file);
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(w, 90);
+    enc.write_image(&rgb, frame.w, frame.h, ExtendedColorType::Rgb8)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    Ok(())
 }
 
 fn png_io(e: png::EncodingError) -> std::io::Error {
@@ -177,8 +214,9 @@ pub fn delete(dir: &Path, id: &str) -> std::io::Result<()> {
     }
 }
 
-/// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`.
-fn timestamp_name() -> String {
+/// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
+/// photo and video writers so capture file names are consistent.
+pub fn timestamp_name() -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs();
     let millis = now.subsec_millis();
@@ -222,8 +260,9 @@ mod tests {
     fn write_then_scan_round_trips() {
         let dir = tmp();
         let frame = crate::frame::viewfinder(1, 48, 32);
-        let name = write_photo(&dir, &frame).expect("write");
+        let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
         assert!(dir.join(&name).exists());
+        assert!(name.ends_with(".png"));
         let caps = scan(&dir, &HashSet::new());
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].id, name);
@@ -234,10 +273,29 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_format_writes_a_real_jpeg() {
+        let dir = tmp();
+        let frame = crate::frame::viewfinder(3, 64, 48);
+        let name = write_photo(&dir, &frame, PhotoFormat::Jpeg).expect("write");
+        assert!(name.ends_with(".jpg"));
+        // The bytes are a genuine JPEG (SOI marker) and decode at full size.
+        let bytes = std::fs::read(dir.join(&name)).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
+        let (w, h) = image::image_dimensions(dir.join(&name)).unwrap();
+        assert_eq!((w, h), (64, 48));
+        // The scan surfaces it as a photo with its dimensions.
+        let caps = scan(&dir, &HashSet::new());
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].kind, CaptureKind::Photo);
+        assert_eq!((caps[0].w, caps[0].h), (64, 48));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn thumb_downscales_below_box() {
         let dir = tmp();
         let frame = crate::frame::viewfinder(2, 200, 120);
-        let name = write_photo(&dir, &frame).unwrap();
+        let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
         let (rgba, tw, th) = load_thumb(&dir.join(&name), 50, 50).expect("thumb");
         assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
         assert_eq!(rgba.len(), (tw * th * 4) as usize);
@@ -247,11 +305,34 @@ mod tests {
     #[test]
     fn delete_removes_file_and_is_idempotent() {
         let dir = tmp();
-        let name = write_photo(&dir, &crate::frame::viewfinder(0, 16, 16)).unwrap();
+        let name = write_photo(&dir, &crate::frame::viewfinder(0, 16, 16), PhotoFormat::Png).unwrap();
         assert!(dir.join(&name).exists());
         delete(&dir, &name).unwrap();
         assert!(!dir.join(&name).exists());
         delete(&dir, &name).unwrap(); // second delete is a no-op
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_lists_a_recorded_video_with_duration() {
+        // A recorded MJPEG/AVI clip must surface in the library as a video
+        // with real dimensions and a probed duration — not a photo.
+        let dir = tmp();
+        let mut rec = crate::video::Recorder::new(crate::video::FPS);
+        for _ in 0..15 {
+            rec.push(&crate::frame::viewfinder(2, 64, 48));
+        }
+        let bytes = rec.finish().unwrap();
+        let name = crate::video::write_clip(&dir, &bytes, &timestamp_name()).unwrap();
+        assert!(name.ends_with(".avi"));
+
+        let caps = scan(&dir, &HashSet::new());
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].kind, CaptureKind::Video);
+        assert!(caps[0].is_video());
+        assert_eq!((caps[0].w, caps[0].h), (64, 48));
+        // 15 frames at 30 fps ≈ 500 ms.
+        assert_eq!(caps[0].dur_ms, 500);
         std::fs::remove_dir_all(&dir).ok();
     }
 
