@@ -596,7 +596,7 @@ impl TubeApp {
     /// skip actually happened. Runs both as the user scrubs and each frame from
     /// [`Self::tick_playback`] against the real engine playhead.
     fn apply_auto_skip(&mut self) -> bool {
-        if !self.model.settings.auto_skip || !self.model.settings.sponsorblock_enabled {
+        if !self.model.settings.sponsorblock_enabled {
             return false;
         }
         let Route::Watch(id) = self.model.route.clone() else {
@@ -606,7 +606,9 @@ impl TubeApp {
             let Some(v) = self.model.video(&id) else { return false };
             let mut found = None;
             for s in &v.sponsor {
-                if self.model.settings.category_enabled(s.category) && s.contains(self.model.playhead) {
+                // Only Auto-skip-mode categories skip on their own; Show-mode
+                // segments wait for the manual skip button.
+                if self.model.settings.should_auto_skip(s.category) && s.contains(self.model.playhead) {
                     found = Some((
                         s.end,
                         format!(
@@ -725,15 +727,28 @@ impl TubeApp {
                 self.model.playing = self.player.borrow().is_playing();
             }
             Action::ToggleCategory(c) => {
-                self.model.settings.toggle_category(c);
+                self.model.settings.cycle_category(c);
+            }
+            Action::SkipSegment(to) => {
+                // Manual skip button for a Show-mode segment: jump the model +
+                // engine playhead to the segment end and confirm with a toast.
+                if let Some(d) = self.current_duration() {
+                    let to = to.clamp(0.0, d);
+                    self.model.playhead = to;
+                    self.player.borrow_mut().seek_to_ms((to * 1000.0) as u64);
+                    self.model.push_notice(format!("Skipped to {}", crate::util::clock(to)));
+                }
             }
             Action::ToggleSetting(flag) => {
                 let s = &mut self.model.settings;
                 match flag {
                     SettingFlag::SponsorBlock => s.sponsorblock_enabled = !s.sponsorblock_enabled,
-                    SettingFlag::AutoSkip => s.auto_skip = !s.auto_skip,
                     SettingFlag::DeArrow => s.dearrow_enabled = !s.dearrow_enabled,
+                    SettingFlag::DeArrowTitles => s.dearrow_titles = !s.dearrow_titles,
                     SettingFlag::DeArrowThumbnails => s.dearrow_thumbnails = !s.dearrow_thumbnails,
+                    SettingFlag::ReturnDislike => {
+                        s.return_dislike_enabled = !s.return_dislike_enabled
+                    }
                     SettingFlag::Autoplay => s.autoplay = !s.autoplay,
                     SettingFlag::ShowComments => s.show_comments = !s.show_comments,
                 }
@@ -863,6 +878,12 @@ impl TubeApp {
                 Update::Dislikes { video, count } => {
                     self.model.dislikes.insert(video, count);
                     changed = true;
+                }
+                Update::Comments { video, comments } => {
+                    if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video) {
+                        v.comments = comments;
+                        changed = true;
+                    }
                 }
                 Update::SearchResults(query, vids) => {
                     if !vids.is_empty() {
@@ -1511,12 +1532,43 @@ mod tests {
     }
 
     #[test]
-    fn toggling_category_flips_enabled() {
+    fn cycling_category_walks_the_three_modes() {
+        use crate::model::SkipMode;
         let (mut app, mut doc) = fresh();
         let r = automerge::ROOT;
-        let before = app.model.settings.category_enabled(Category::Intro);
+        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
         app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
-        assert_ne!(before, app.model.settings.category_enabled(Category::Intro));
+        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
+        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Disabled);
+        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
+    }
+
+    #[test]
+    fn show_mode_segment_does_not_auto_skip_but_manual_skip_seeks() {
+        use crate::model::SkipMode;
+        let (mut app, _doc) = fresh_synth();
+        app.model.route = Route::Watch("vid_rust_async".into());
+        app.load_resolved_stream(
+            "vid_rust_async".into(),
+            "https://inv.example/x?local=true".into(),
+            true,
+            "360p".into(),
+        );
+        // Put the Sponsor category into Show mode, then park inside its segment.
+        app.model
+            .settings
+            .categories
+            .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
+        app.model.playhead = 1500.0;
+        assert!(!app.apply_auto_skip(), "Show mode must NOT auto-skip");
+        assert_eq!(app.model.playhead, 1500.0, "playhead untouched by auto-skip");
+        // The manual skip button jumps to the segment end.
+        let mut doc = AutoCommit::new();
+        let r = automerge::ROOT;
+        app.apply(Action::SkipSegment(1570.0), &mut doc, &r);
+        assert!(app.model.playhead >= 1570.0, "manual skip advanced the playhead");
     }
 
     #[test]

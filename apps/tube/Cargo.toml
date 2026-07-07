@@ -33,8 +33,6 @@ anyhow = "1.0"
 # from a background worker thread; never touched on the `--shots` path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# blake3 used by the SponsorBlock privacy-preserving hash-prefix query.
-sha2 = "0.10"
 # H.264 decode for real video playback. Same pin + `source` feature as `ui`'s
 # `VideoPlayer`, so this reuses the already-compiled artifact (no extra build).
 # Tube drives the decoder directly (not through `VideoPlayer`) so it can disable
