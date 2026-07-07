@@ -1,18 +1,20 @@
 //! LibreOffice Calc `.ods` import and export.
 //!
 //! Reading reuses [`calamine`] (it understands ODS as well as XLSX), so the
-//! import path shares [`crate::xlsx::SheetTable`]. Writing is hand-rolled:
-//! an ODS file is just a ZIP archive of flat XML, so we emit the three
-//! members LibreOffice needs — the uncompressed `mimetype` marker, a
-//! `META-INF/manifest.xml`, and the `content.xml` spreadsheet body — using
-//! the `zip` crate already in the dependency tree. This keeps the writer
-//! dependency-light while round-tripping values and basic number/currency/
-//! percent/date styling via `office:value` + a small set of named styles.
+//! import path shares [`crate::xlsx::SheetTable`] — including the formula text
+//! it lifts from each cell's `table:formula`. Writing is hand-rolled: an ODS
+//! file is just a ZIP archive of flat XML, so we emit the three members
+//! LibreOffice needs — the uncompressed `mimetype` marker, a
+//! `META-INF/manifest.xml`, and the `content.xml` spreadsheet body — using the
+//! `zip` crate already in the dependency tree. This keeps the writer
+//! dependency-light while round-tripping values, basic number/currency/
+//! percent/date styling (`office:value` + a small set of named styles), and
+//! live formulas (`table:formula`, in ODF `of:=SUM([.A1:.A3])` form).
 
 use std::io::Write;
 use std::path::Path;
 
-use crate::model::CellFormat;
+use crate::model::{addr_to_a1, CellFormat};
 use crate::xlsx::{ImportedCell, SheetTable};
 
 /// Read every sheet of an `.ods` document into tables (via calamine).
@@ -91,10 +93,19 @@ fn content_xml(tables: &[SheetTable]) -> String {
 /// A handful of named data styles for the formatted numeric kinds.
 const NUMBER_STYLES: &str = r#"<number:currency-style style:name="ceUSD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:percentage-style style:name="cePct"><number:number number:decimal-places="2" number:min-integer-digits="1"/><number:text>%</number:text></number:percentage-style><number:date-style style:name="ceDate"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/></number:date-style><style:style style:name="coCur" style:family="table-cell" style:data-style-name="ceUSD"/><style:style style:name="coPct" style:family="table-cell" style:data-style-name="cePct"/><style:style style:name="coDate" style:family="table-cell" style:data-style-name="ceDate"/>"#;
 
-/// Emit one `<table:table-cell>` (or an empty one).
+/// Emit one `<table:table-cell>` (or an empty one). A cell holding a formula
+/// carries a `table:formula` attribute (ODF `of:=…` form) alongside its cached
+/// value so LibreOffice shows a live formula and our importer can recover it.
 fn cell_xml(cell: &Option<ImportedCell>) -> String {
     let Some(cell) = cell else {
         return "<table:table-cell/>".into();
+    };
+    let formula_attr = match &cell.formula {
+        Some(f) => format!(
+            r#" table:formula="{}""#,
+            xml_escape_attr(&to_ods_formula(f))
+        ),
+        None => String::new(),
     };
     // Numeric cells carry office:value + a value-type so Calc treats them
     // as numbers; we also attach a cell style for currency/percent/date.
@@ -113,8 +124,9 @@ fn cell_xml(cell: &Option<ImportedCell>) -> String {
         if !matches!(cell.format, CellFormat::Text) {
             let display = crate::model::format_value(&crate::model::CellValue::Number(n), cell.format);
             return format!(
-                r#"<table:table-cell{style} office:value-type="{vt}" office:value="{val}"><text:p>{disp}</text:p></table:table-cell>"#,
+                r#"<table:table-cell{style}{formula} office:value-type="{vt}" office:value="{val}"><text:p>{disp}</text:p></table:table-cell>"#,
                 style = style_attr,
+                formula = formula_attr,
                 vt = value_type,
                 val = n,
                 disp = xml_escape_text(&display),
@@ -124,15 +136,59 @@ fn cell_xml(cell: &Option<ImportedCell>) -> String {
     if matches!(cell.format, CellFormat::Boolean) {
         let b = cell.raw.eq_ignore_ascii_case("true");
         return format!(
-            r#"<table:table-cell office:value-type="boolean" office:boolean-value="{b}"><text:p>{}</text:p></table:table-cell>"#,
-            if b { "TRUE" } else { "FALSE" }
+            r#"<table:table-cell{formula} office:value-type="boolean" office:boolean-value="{b}"><text:p>{disp}</text:p></table:table-cell>"#,
+            formula = formula_attr,
+            b = b,
+            disp = if b { "TRUE" } else { "FALSE" }
         );
     }
-    // String cell.
+    // String cell (also the home of formulas whose result is text).
     format!(
-        r#"<table:table-cell office:value-type="string"><text:p>{}</text:p></table:table-cell>"#,
-        xml_escape_text(&cell.raw)
+        r#"<table:table-cell{formula} office:value-type="string"><text:p>{disp}</text:p></table:table-cell>"#,
+        formula = formula_attr,
+        disp = xml_escape_text(&cell.raw)
     )
+}
+
+/// Convert one of our A1 formulas (`=SUM(A1:A3)`) into ODF form
+/// (`of:=SUM([.A1:.A3])`): rewrite each cell/range reference into a bracketed,
+/// current-table `[.…]` reference and prefix the OpenFormula namespace.
+fn to_ods_formula(app_formula: &str) -> String {
+    let body = app_formula.strip_prefix('=').unwrap_or(app_formula);
+    format!("of:={}", rewrite_refs_to_ods(body))
+}
+
+/// Rewrite the A1 references inside a formula body into ODF `[.A1]` /
+/// `[.A1:.B3]` form, leaving operators, numbers, strings and function names
+/// alone. Reuses the shared reference scanner so string literals and function
+/// names are correctly skipped.
+fn rewrite_refs_to_ods(body: &str) -> String {
+    let spans = crate::formula::references(body);
+    if spans.is_empty() {
+        return body.to_string();
+    }
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = String::new();
+    let mut cursor = 0;
+    for span in &spans {
+        if span.start > cursor {
+            out.extend(chars[cursor..span.start].iter());
+        }
+        if span.tl == span.br {
+            out.push_str(&format!("[.{}]", addr_to_a1(span.tl.0, span.tl.1)));
+        } else {
+            out.push_str(&format!(
+                "[.{}:.{}]",
+                addr_to_a1(span.tl.0, span.tl.1),
+                addr_to_a1(span.br.0, span.br.1)
+            ));
+        }
+        cursor = span.end;
+    }
+    if cursor < chars.len() {
+        out.extend(chars[cursor..].iter());
+    }
+    out
 }
 
 fn xml_escape_text(s: &str) -> String {
@@ -147,26 +203,31 @@ fn xml_escape_attr(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Currency;
+    use crate::model::{CellValue, Currency};
+
+    fn cell(raw: &str, format: CellFormat) -> Option<ImportedCell> {
+        Some(ImportedCell {
+            raw: raw.into(),
+            format,
+            formula: None,
+        })
+    }
 
     fn sample_table() -> SheetTable {
         SheetTable {
             name: "Budget".into(),
             rows: vec![
                 vec![
-                    Some(ImportedCell { raw: "Item".into(), format: CellFormat::Text }),
-                    Some(ImportedCell { raw: "Cost".into(), format: CellFormat::Text }),
+                    cell("Item", CellFormat::Text),
+                    cell("Cost", CellFormat::Text),
                 ],
                 vec![
-                    Some(ImportedCell { raw: "Rent".into(), format: CellFormat::Text }),
-                    Some(ImportedCell {
-                        raw: "1200".into(),
-                        format: CellFormat::Currency(Currency::USD),
-                    }),
+                    cell("Rent", CellFormat::Text),
+                    cell("1200", CellFormat::Currency(Currency::USD)),
                 ],
                 vec![
-                    Some(ImportedCell { raw: "Tax rate".into(), format: CellFormat::Text }),
-                    Some(ImportedCell { raw: "0.21".into(), format: CellFormat::Percent }),
+                    cell("Tax rate", CellFormat::Text),
+                    cell("0.21", CellFormat::Percent),
                 ],
             ],
         }
@@ -189,6 +250,64 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Formulas written into `.ods` (as `table:formula`) come back with their
+    /// text intact and recompute to the original results — the real
+    /// `from_cells` → `write_ods` → `read_ods` → engine path.
+    #[test]
+    fn ods_round_trips_formulas() {
+        use crate::model::Addr;
+        use std::collections::HashMap;
+
+        let mut raw: HashMap<Addr, String> = HashMap::new();
+        raw.insert((0, 0), "5".into());
+        raw.insert((0, 1), "7".into());
+        raw.insert((0, 2), "=SUM(A1:A2)".into()); // 12
+        raw.insert((0, 3), "=A3*2".into()); // 24
+        let fmt: HashMap<Addr, CellFormat> = HashMap::new();
+        let values = crate::formula::recalculate(&raw);
+        let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
+
+        let path = std::env::temp_dir().join("sheets-ods-formula-rt.ods");
+        write_ods(&path, std::slice::from_ref(&table)).unwrap();
+        let back = read_ods(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // Formula text (normalized back to A1) survived the ODF round-trip.
+        assert_eq!(
+            back[0].rows[2][0].as_ref().unwrap().formula.as_deref(),
+            Some("=SUM(A1:A2)")
+        );
+        assert_eq!(
+            back[0].rows[3][0].as_ref().unwrap().formula.as_deref(),
+            Some("=A3*2")
+        );
+
+        // Re-evaluating the imported formulas reproduces the results.
+        let mut reimported: HashMap<Addr, String> = HashMap::new();
+        for (r, row) in back[0].rows.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if let Some(cell) = cell {
+                    let raw = cell.formula.clone().unwrap_or_else(|| cell.raw.clone());
+                    if !raw.is_empty() {
+                        reimported.insert((c as u32, r as u32), raw);
+                    }
+                }
+            }
+        }
+        let recomputed = crate::formula::recalculate(&reimported);
+        assert_eq!(recomputed.get(&(0, 2)), Some(&CellValue::Number(12.0)));
+        assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(24.0)));
+    }
+
+    #[test]
+    fn ods_formula_syntax() {
+        // A1 refs become bracketed current-table refs under the of: namespace.
+        assert_eq!(to_ods_formula("=SUM(A1:A3)"), "of:=SUM([.A1:.A3])");
+        assert_eq!(to_ods_formula("=B2+C2"), "of:=[.B2]+[.C2]");
+        // Function names and numeric literals are left alone.
+        assert_eq!(to_ods_formula("=A1*2"), "of:=[.A1]*2");
+    }
+
     #[test]
     fn content_xml_is_well_formed_enough() {
         let xml = content_xml(std::slice::from_ref(&sample_table()));
@@ -196,6 +315,25 @@ mod tests {
         assert!(xml.contains(r#"table:name="Budget""#));
         // The currency cell carries a numeric office:value.
         assert!(xml.contains(r#"office:value="1200""#));
+    }
+
+    #[test]
+    fn content_xml_emits_table_formula() {
+        let table = SheetTable {
+            name: "S".into(),
+            rows: vec![vec![Some(ImportedCell {
+                raw: "12".into(),
+                format: CellFormat::General,
+                formula: Some("=SUM(A1:A2)".into()),
+            })]],
+        };
+        let xml = content_xml(std::slice::from_ref(&table));
+        assert!(
+            xml.contains(r#"table:formula="of:=SUM([.A1:.A2])""#),
+            "missing formula attr in: {xml}"
+        );
+        // The cached value is still present so a non-recalc viewer shows it.
+        assert!(xml.contains(r#"office:value="12""#));
     }
 
     #[test]
