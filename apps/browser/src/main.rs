@@ -49,6 +49,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_live_shot_to_png(&url, size, std::path::Path::new(&out))?;
         return Ok(());
     }
+    if let Some(out) = parse_arg_value(&args, "--shots-suggestions") {
+        render_suggestions_shot(std::path::Path::new(&out))?;
+        return Ok(());
+    }
+    if let Some(out) = parse_arg_value(&args, "--shots-settings") {
+        // Render the settings pane standalone, to inspect its layout.
+        render_shot_to_png(
+            Box::new(browser::settings::SettingsPane::new()),
+            (900, 700),
+            std::path::Path::new(&out),
+        )?;
+        return Ok(());
+    }
     if let Some(out) = parse_shots_arg(&args) {
         let widget = BrowserWidget::new_headless();
         render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
@@ -68,6 +81,38 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
         }));
     });
+    Ok(())
+}
+
+/// Render the address-suggestion overlay with sample entries, to inspect
+/// its rows + selection highlight (it paints in the overlay pass, which
+/// the normal shot path doesn't drive).
+fn render_suggestions_shot(out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use browser::address_overlay::AddressSuggestions;
+    use browser::history::HistoryEntry;
+    let (w, h) = (900u32, 360u32);
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let mut text_renderer = TextRenderer::new();
+
+    let mut overlay = AddressSuggestions::new();
+    overlay.set_suggestions(vec![
+        HistoryEntry { url: "https://github.com/qos/qos".into(), title: "qOS — code.sandbox.example".into(), last_visit: 3, visit_count: 12 },
+        HistoryEntry { url: "https://en.wikipedia.org/wiki/Web_browser".into(), title: "Web browser - Wikipedia".into(), last_visit: 2, visit_count: 5 },
+        HistoryEntry { url: "https://duckduckgo.com/?q=rust".into(), title: "rust at DuckDuckGo".into(), last_visit: 1, visit_count: 3 },
+    ]);
+    overlay.move_selection(1); // highlight the 2nd row
+    overlay.set_anchor(Point::new(24.0, 24.0), (w as f32) - 48.0);
+
+    let mut scene = Scene::new();
+    overlay.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, theme.bg_app, out);
+    println!("browser: wrote suggestions shot to {}", out.display());
     Ok(())
 }
 
@@ -288,7 +333,10 @@ fn render_shot_to_png(
         std::fs::create_dir_all(parent).ok();
     }
     let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    // Clear to the app background (as the live App does) so a widget that
+    // doesn't paint its own backdrop — e.g. the settings pane — shows its
+    // theme-coloured text instead of vanishing on transparent.
+    renderer.render_png(&scene, theme.bg_app, out);
     println!("browser: wrote shot to {}", out.display());
     Ok(())
 }
