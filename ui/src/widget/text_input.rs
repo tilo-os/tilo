@@ -1466,6 +1466,16 @@ impl Widget for TextInput {
         self.rect
     }
 
+    /// A single-line field scrolls its content horizontally rather than growing,
+    /// so once laid out its box never needs a taffy re-solve on a mere
+    /// reposition (e.g. a sibling scroll). It reports needing a measure only
+    /// before its first layout, or right after a user edit (which `dirty`
+    /// marks) in case a host auto-sizes it — so it never blocks the App's
+    /// scroll fast path while idle.
+    fn layout_needs_measure(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty
+    }
+
     /// An editable text field shows the I-beam over its area. A disabled
     /// input is inert (it swallows no input) so it claims no cursor and
     /// defers to the host default. `point` is in the same logical space

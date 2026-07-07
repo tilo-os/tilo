@@ -119,6 +119,11 @@ pub struct VideoPlayer {
     dirty: bool,
     /// Stable e2e/test identifier, when set by the host.
     test_id: Option<&'static str>,
+    /// Optional coloured marks painted onto the scrub track as fractions of the
+    /// duration — used by clients (e.g. Tube's SponsorBlock) to show community
+    /// segments inline on the ONE timeline. Empty by default, so every other
+    /// consumer (camera, music, editor preview) is unaffected.
+    scrub_marks: Vec<(f32, f32, Color)>,
 }
 
 impl VideoPlayer {
@@ -149,6 +154,21 @@ impl VideoPlayer {
             focused: false,
             dirty: true,
             test_id: None,
+            scrub_marks: Vec::new(),
+        }
+    }
+
+    /// Replace the coloured scrub-track marks (fractions `0.0..=1.0` of the
+    /// duration, each with an RGB colour). Painted on the single timeline so a
+    /// client can show community segments (SponsorBlock) inline. A no-op-looking
+    /// empty vec clears them. Only repaints when the set actually changes, so
+    /// setting it every rebuild is cheap.
+    pub fn set_sponsor_marks(&mut self, marks: Vec<(f32, f32, Color)>) {
+        if marks.len() != self.scrub_marks.len()
+            || marks.iter().zip(&self.scrub_marks).any(|(a, b)| a.0 != b.0 || a.1 != b.1)
+        {
+            self.scrub_marks = marks;
+            self.dirty = true;
         }
     }
 
@@ -591,6 +611,28 @@ impl VideoPlayer {
                 None,
                 &RoundedRect::from_rect(played, SCRUB_TRACK_HEIGHT * 0.5),
             );
+            // Community (SponsorBlock) marks, painted as slightly-taller bands in
+            // their category colours over the whole track so the sponsor / intro
+            // / outro spans are visible on the ONE timeline before playback.
+            let mid_y = track.center().y;
+            let band_h = SCRUB_TRACK_HEIGHT + 3.0;
+            for (s, e, color) in &self.scrub_marks {
+                let s = (*s).clamp(0.0, 1.0) as f64;
+                let e = (*e).clamp(0.0, 1.0) as f64;
+                if e <= s {
+                    continue;
+                }
+                let x0 = track.x0 + track.width() * s;
+                let x1 = (track.x0 + track.width() * e).max(x0 + 2.0);
+                let band = Rect::new(x0, mid_y - band_h * 0.5, x1, mid_y + band_h * 0.5);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    *color,
+                    None,
+                    &RoundedRect::from_rect(band, 1.5),
+                );
+            }
             // Thumb.
             let thumb_cx = track.x0 + track.width() * frac;
             scene.fill(
@@ -821,13 +863,9 @@ impl Widget for VideoPlayer {
                 }
                 // Clicking the surface focuses it for keyboard shortcuts.
                 *focus_target = Some(node_id);
-                if !self.controls_visible_now() {
-                    // First click just reveals the controls.
-                    self.show_controls();
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
+                // Control hit regions are ZERO while the controls are hidden, so
+                // these `contains` checks naturally fall through to the surface
+                // play/pause toggle when nothing is on screen.
                 if self.play_button_rect.contains(self.last_cursor) {
                     self.toggle_play();
                     *handled = true;
@@ -847,6 +885,11 @@ impl Widget for VideoPlayer {
                 {
                     self.scrubbing = true;
                     self.seek_from_cursor();
+                    *handled = true;
+                } else {
+                    // A plain click on the video surface toggles play/pause — the
+                    // basic affordance every player has.
+                    self.toggle_play();
                     *handled = true;
                 }
                 self.show_controls();
@@ -1118,6 +1161,95 @@ mod tests {
         assert!(handled, "scrub press handled");
         let pos = vp.position_ms();
         assert!((45_000..=55_000).contains(&pos), "seeked to ~50%: {pos}ms");
+    }
+
+    #[test]
+    fn clicking_the_video_surface_toggles_play_pause() {
+        // A plain click on the surface (not on any control) must toggle
+        // play/pause — the basic affordance, exercised through the real
+        // handle_event path.
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        vp.show_controls();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(!vp.is_playing());
+        // Click near the top-centre of the surface — clear of the bottom controls
+        // bar, the scrub track and every button.
+        dispatch(&mut vp, &cursor_moved(320.0, 40.0));
+        assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
+        assert!(vp.is_playing(), "surface click started playback");
+        dispatch(&mut vp, &mouse_press());
+        assert!(!vp.is_playing(), "a second surface click paused it");
+    }
+
+    #[test]
+    fn sponsor_marks_emit_bands_on_the_single_timeline() {
+        // Marks set via `set_sponsor_marks` must paint onto the one scrub track,
+        // proving the SponsorBlock segments render inline on the shared timeline
+        // (not a second bar).
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        vp.duration_ms = 100_000;
+        vp.show_controls();
+        let baseline = {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            scene.encoding().draw_tags.len()
+        };
+        vp.set_sponsor_marks(vec![
+            (0.2, 0.3, Color::from_rgb8(0, 0xd4, 0)),
+            (0.6, 0.72, Color::from_rgb8(0, 0xff, 0xff)),
+        ]);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(
+            scene.encoding().draw_tags.len() > baseline,
+            "two sponsor bands add fills to the timeline ({} vs {baseline})",
+            scene.encoding().draw_tags.len(),
+        );
+    }
+
+    #[test]
+    fn dragging_the_scrub_track_seeks_continuously() {
+        // Press on the track then drag: the playhead must follow the cursor the
+        // whole way (drag-to-seek on the ONE timeline), through real events.
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        vp.duration_ms = 100_000;
+        vp.show_controls();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let track = vp.scrub_track_rect;
+        assert!(track.width() > 0.0);
+        let y = track.center().y;
+        // Press near the start of the track.
+        dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.1, y));
+        assert!(dispatch(&mut vp, &mouse_press()), "press on track begins a scrub");
+        assert!(vp.scrubbing, "press started a drag");
+        assert!(vp.wants_pointer_capture(), "a scrub owns the pointer");
+        let near = vp.position_ms();
+        // Drag toward the far end — the playhead tracks the cursor.
+        dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.9, y));
+        let far = vp.position_ms();
+        assert!(far > near, "dragging right advanced the playhead ({near} → {far})");
+        assert!((85_000..=95_000).contains(&far), "drag to ~90%: {far}ms");
     }
 
     #[test]

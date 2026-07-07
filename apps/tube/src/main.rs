@@ -108,6 +108,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe(&query);
     }
 
+    // `--bench-scroll [frames]` — headless scroll-performance benchmark. Times
+    // the exact per-frame passes the live event loop runs (compute_layout /
+    // apply_layout / draw) over a large Home grid, in two modes — the pre-fix
+    // "always re-solve" baseline and the scroll-reposition fast path — and
+    // prints the numbers. No window, no GPU present (matches the QUICK_UI_PERF
+    // main-thread breakdown, which excludes the render worker).
+    if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
+        return run_bench_scroll(frames);
+    }
+
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let (vw, vh) = viewport;
@@ -119,12 +129,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--probe-gst` (which proves the *decode*) for eyeballing the on-screen
         // player without a network or a live decoder.
         let play_demo = args.iter().any(|a| a == "--play-demo");
+        // `--empty`: the cold-start loading skeleton (no fabricated sample).
+        let empty_loading = args.iter().any(|a| a == "--empty");
         // Seed the app with the render viewport so the single offscreen frame
         // resolves the responsive layout (rail default, grid columns, watch
         // player size) from the true width instead of the unknown-width
         // fallback. Shots-only — the live event loop below is untouched.
         let mut app = tube::TubeApp::new().with_viewport(vw as f64, vh as f64);
-        if palette {
+        if empty_loading {
+            app = app.with_loading_home_shot();
+        } else if palette {
             // Open the command palette pre-seeded so the still captures the
             // Ctrl+K overlay with live results.
             let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
@@ -1203,6 +1217,215 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
          backend is compiled in. Rebuild with `--features live` to probe real \
          YouTube data."
     );
+    Ok(())
+}
+
+/// Parse `--flag [n]` / `--flag=<n>` into a `usize`, with `default` when the
+/// flag is present but no numeric value follows.
+fn parse_flag_usize(args: &[String], flag: &str, default: usize) -> Option<usize> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return Some(iter.next().and_then(|s| s.parse().ok()).unwrap_or(default));
+        }
+        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
+            return Some(rest.parse().ok().unwrap_or(default));
+        }
+    }
+    None
+}
+
+/// Median of a slice of microsecond samples (sorted copy).
+fn median_us(samples: &[u128]) -> u128 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut s = samples.to_vec();
+    s.sort_unstable();
+    s[s.len() / 2]
+}
+
+fn max_us(samples: &[u128]) -> u128 {
+    samples.iter().copied().max().unwrap_or(0)
+}
+
+fn avg_us(samples: &[u128]) -> u128 {
+    if samples.is_empty() {
+        0
+    } else {
+        samples.iter().sum::<u128>() / samples.len() as u128
+    }
+}
+
+/// `--bench-scroll [frames]`: measure the per-frame main-thread cost of
+/// scrolling a large Home grid, in two modes, and report the numbers.
+fn run_bench_scroll(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Instant;
+    use tube::model::{Route, TubeModel};
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+
+    const CARDS: usize = 80;
+    let (w, h) = (1280u32, 900u32);
+
+    // A large, realistic Home catalogue: grow the sample by cloning cards with
+    // fresh ids so the grid actually stresses layout (the composed live
+    // "popular" feed is this size or larger).
+    let big_model = || -> TubeModel {
+        let mut m = tube::sample::model();
+        let base = m.videos.clone();
+        let mut i = 0usize;
+        while m.videos.len() < CARDS && !base.is_empty() {
+            let mut v = base[i % base.len()].clone();
+            v.id = format!("{}_{i}", v.id);
+            v.seed = v.id.clone();
+            m.videos.push(v);
+            i += 1;
+        }
+        m.route = Route::Home;
+        m
+    };
+
+    // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
+    // taffy every frame). `false` = the scroll fast path (apply_layout only when
+    // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
+    let run_pass = |force_compute: bool| -> (Vec<u128>, Vec<u128>, Vec<u128>, bool) {
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut widget: Box<dyn Widget> = Box::new(
+            tube::TubeApp::new()
+                .with_viewport(w as f64, h as f64)
+                .with_model_for_test(big_model()),
+        );
+        let mut state = ui::State::new();
+        widget.sync(&mut state.doc, &state.root);
+        let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: length(w as f32), height: length(h as f32) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+
+        let solve = |taffy: &mut TaffyTree<()>,
+                     node_map: &HashMap<NodeId, *mut dyn Widget>,
+                     tr: &mut TextRenderer| {
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(w as f32),
+                        height: AvailableSpace::Definite(h as f32),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = node_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, tr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        };
+
+        // Initial full solve + layout + a warm draw (fills the Text/scene caches
+        // so the timed frames measure steady-state scroll, not first-paint).
+        solve(&mut taffy, &node_map, &mut tr);
+        widget.apply_layout(&taffy, child, Point::ORIGIN);
+        {
+            let mut scene = Scene::new();
+            widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+            widget.mark_drawn();
+        }
+
+        let mods = winit::event::Modifiers::default();
+        let mut compute = Vec::with_capacity(frames);
+        let mut apply = Vec::with_capacity(frames);
+        let mut draw = Vec::with_capacity(frames);
+        let mut ever_reposition_only = false;
+
+        for _ in 0..frames {
+            // Real scroll: a wheel notch routed through the widget tree, exactly
+            // as the live event loop delivers it.
+            let wheel = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: TouchPhase::Moved,
+            };
+            let mut handled = false;
+            let mut focus_target = None;
+            widget.handle_event(&wheel, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus_target, child, &taffy);
+
+            // The fast path skips the solve when nothing needs re-measuring.
+            let needs_measure = widget.layout_needs_measure();
+            if !needs_measure {
+                ever_reposition_only = true;
+            }
+            if force_compute || needs_measure {
+                let t = Instant::now();
+                solve(&mut taffy, &node_map, &mut tr);
+                compute.push(t.elapsed().as_micros());
+            } else {
+                compute.push(0);
+            }
+            let t = Instant::now();
+            widget.apply_layout(&taffy, child, Point::ORIGIN);
+            apply.push(t.elapsed().as_micros());
+
+            let t = Instant::now();
+            let mut scene = Scene::new();
+            let prev = presence.push_viewport(vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
+            widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+            presence.pop_viewport(prev);
+            widget.mark_drawn();
+            draw.push(t.elapsed().as_micros());
+        }
+        (compute, apply, draw, ever_reposition_only)
+    };
+
+    let report = |label: &str, c: &[u128], a: &[u128], d: &[u128]| {
+        let total: Vec<u128> = (0..c.len()).map(|i| c[i] + a[i] + d[i]).collect();
+        println!(
+            "  {label:<20} frame(total)  median {:>5.2}ms  avg {:>5.2}ms  max {:>5.2}ms",
+            median_us(&total) as f64 / 1000.0,
+            avg_us(&total) as f64 / 1000.0,
+            max_us(&total) as f64 / 1000.0,
+        );
+        println!(
+            "  {:<20}   compute median {:>5.2}ms | apply median {:>5.2}ms | draw median {:>5.2}ms",
+            "",
+            median_us(c) as f64 / 1000.0,
+            median_us(a) as f64 / 1000.0,
+            median_us(d) as f64 / 1000.0,
+        );
+    };
+
+    println!("tube scroll bench: {CARDS} Home cards, {w}x{h}, {frames} scroll frames\n");
+    let (bc, ba, bd, _) = run_pass(true);
+    report("BASELINE (re-solve)", &bc, &ba, &bd);
+    let (fc, fa, fd, repos) = run_pass(false);
+    report("FAST (reposition)", &fc, &fa, &fd);
+    println!(
+        "\n  scroll frames took the reposition-only fast path: {}",
+        if repos { "yes (compute_layout skipped)" } else { "NO — investigate" }
+    );
+    let base_med = median_us(&(0..bc.len()).map(|i| bc[i] + ba[i] + bd[i]).collect::<Vec<_>>());
+    let fast_med = median_us(&(0..fc.len()).map(|i| fc[i] + fa[i] + fd[i]).collect::<Vec<_>>());
+    if fast_med > 0 {
+        println!(
+            "  median frame: {:.2}ms → {:.2}ms  ({:.1}x faster)",
+            base_med as f64 / 1000.0,
+            fast_med as f64 / 1000.0,
+            base_med as f64 / fast_med as f64,
+        );
+    }
     Ok(())
 }
 

@@ -597,6 +597,16 @@ impl Widget for Scrollable {
         self.scroll_dirty || self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
     }
 
+    /// A scroll only *repositions* the child (via the offset applied in
+    /// `apply_layout`); the intrinsic taffy layout is identical, so
+    /// `scroll_dirty` alone must NOT force a full `compute_layout`. Only a
+    /// genuinely measure-dirty descendant does. This is what lets the App
+    /// re-run `apply_layout` (cheap) without re-solving the whole content
+    /// tree (expensive) on every scroll frame.
+    fn layout_needs_measure(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.layout_needs_measure())
+    }
+
     fn mark_drawn(&mut self) {
         self.scroll_dirty = false;
         if let Some(c) = &mut self.child {
@@ -927,6 +937,57 @@ mod tests {
         );
         assert!((vh - 300.0).abs() < 0.5, "viewport pinned to 300, got {vh}");
         assert!(scrolled, "a pinned-viewport pane with tall content must scroll");
+    }
+
+    #[test]
+    fn scroll_is_layout_dirty_but_needs_no_remeasure() {
+        // The scroll fast path: after a wheel scroll the Scrollable IS
+        // layout-dirty (children must be repositioned by `apply_layout`) but does
+        // NOT need a taffy re-solve — `layout_needs_measure` stays false. The App
+        // reads exactly this to skip `compute_layout` on scroll frames.
+        use std::collections::HashMap;
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let mut scroll =
+            Scrollable::new_vertical().with_child(tall_child()).with_height(300.0);
+        let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(400.0),
+                        height: Dimension::length(300.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                parent,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        scroll.apply_layout(&taffy, node, Point::ZERO);
+        scroll.scroll_by(0.0, 40.0);
+        assert!(scroll.is_layout_dirty(), "a scroll needs apply_layout to reposition");
+        assert!(
+            !scroll.layout_needs_measure(),
+            "a laid-out subtree needs no taffy re-solve on a pure scroll",
+        );
     }
 
     #[test]
