@@ -35,6 +35,9 @@
 pub mod mp4;
 pub mod offline;
 pub mod potoken;
+/// Fully-rangeable stream resolution through public Invidious `local=true`
+/// proxies — the reliable, seekable playback URL for the media engine.
+pub mod proxy;
 pub mod stream;
 
 #[cfg(feature = "live")]
