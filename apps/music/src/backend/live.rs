@@ -303,19 +303,46 @@ impl MusicBackend for RustyPipeBackend {
         let best = best_audio(&player.audio_streams)
             .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
         let direct = map_stream(video_id, best);
+        tracing::info!(
+            target: "music::resolve",
+            video_id,
+            itag = direct.itag,
+            codec = %direct.codec,
+            bitrate = direct.bitrate,
+            size_bytes = direct.size_bytes,
+            "resolved direct googlevideo audio stream"
+        );
 
-        // Prefer a fully-rangeable Invidious `local` proxy so the WHOLE track
-        // streams (it serves arbitrary byte ranges over the complete file). Keep
-        // the direct URL as a fallback the engine uses if the (public, sometimes
-        // flaky) proxy yields no bytes — so playback always works.
+        // 1. Prefer a **fully-rangeable full-track** URL from `yt-dlp` when it is
+        // installed. rustypipe's iOS/TV URL is SABR-gated to its first ~1-minute
+        // segment (playback stops after ~1 min); yt-dlp resolves through the
+        // `android_vr` client, which serves the whole file over arbitrary byte
+        // ranges. Runtime-optional: absent yt-dlp → fall through. The direct URL
+        // rides along as the engine's last-resort fallback.
+        if let Some(mut full) = crate::backend::ytdlp::resolve_full_audio(video_id) {
+            if full.size_bytes == 0 {
+                full.size_bytes = direct.size_bytes;
+            }
+            full.duration_ms = direct.duration_ms;
+            full.fallback_url = Some(direct.url);
+            tracing::info!(target: "music::resolve", url = %full.url, itag = full.itag, "using yt-dlp full-track URL (whole song streams)");
+            return Ok(full);
+        }
+
+        // 2. Otherwise a fully-rangeable Invidious `local` proxy, but only if that
+        // proxy genuinely serves media (validated). Public instances are mostly
+        // dead / anti-bot-gated, so this usually returns `None`.
+        // The direct URL is always carried as the engine's fallback too.
         if let Some(mut proxy) = crate::backend::proxy::resolve_rangeable(video_id) {
             proxy.duration_ms = direct.duration_ms;
             if proxy.size_bytes == 0 {
                 proxy.size_bytes = direct.size_bytes;
             }
             proxy.fallback_url = Some(direct.url);
+            tracing::info!(target: "music::resolve", url = %proxy.url, "using rangeable proxy (direct URL as fallback)");
             return Ok(proxy);
         }
+        tracing::info!(target: "music::resolve", url = %direct.url, "no working proxy — playing direct googlevideo URL");
         Ok(direct)
     }
 
