@@ -98,13 +98,25 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         EngineEvent::Sent { wire_bytes } => wire_bytes,
         other => panic!("expected Sent, got {other:?}"),
     };
-    assert!(wire > 0, "the engine built and measured a real MIME payload");
+    assert!(wire > 0, "the engine built and measured a real MIME payload on Send");
 
-    // The same MIME the engine sends, inspected directly: headers + recipients
-    // are present and parse back cleanly.
+    // A compose produces a well-formed SMTP payload. Build the same draft's MIME
+    // (the exact function the engine's Send uses) and check it directly. Note:
+    // two independent builds are NOT byte-identical — RFC 5322 requires a unique
+    // Message-ID and a current Date, which mail-builder auto-generates per call,
+    // so the payload is verified by structure and content, not by comparing the
+    // length of a second build to the engine's. The exact bytes the engine puts
+    // on the wire are asserted by the `--features live` SMTP socket test, which
+    // captures the server-side DATA.
     let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
     let mime = build_mime(&from, &draft).expect("build MIME");
-    assert_eq!(mime.len(), wire, "the payload the engine reported matches the built MIME");
+    let text = String::from_utf8_lossy(&mime);
+    assert!(text.contains("Subject: Loop check"), "subject header present: {text}");
+    assert!(text.contains("ada@analytical.example"), "From address present in the payload");
+    assert!(text.contains("you@qos.example"), "To recipient present in the payload");
+    assert!(text.contains("cc@qos.example"), "Cc recipient present in the payload");
+    assert!(text.contains("This travels through the engine."), "body present in the payload");
+    // And it parses back cleanly as a real RFC 5322 message.
     let round = parse_eml(&mime, 0, Folder::Sent).expect("parse built MIME");
     assert_eq!(round.subject, "Loop check");
     assert_eq!(round.from.email, "ada@analytical.example");
