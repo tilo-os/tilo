@@ -430,10 +430,7 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # ones — dnf handles the unprotected ones on the same pass.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
-    && rpm -e --nodeps \
-        shim-x64 grub2-efi-x64 grub2-pc \
-        grub2-tools grub2-tools-minimal grub2-tools-extra \
-        grub2-pc-modules grub2-efi-x64-modules grub2-common \
+    && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && dnf clean all
 
 # The install-config drop-in that flips bootc's bootloader choice to
@@ -477,7 +474,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # module header). The drop-in runs fs.service in the domain via SELinuxContext.
 COPY os/usr/share/qos/selinux/qos-base.cil /usr/share/qos/selinux/qos-base.cil
 COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/system/fs.service.d/20-selinux.conf
-RUN semodule -i /usr/share/qos/selinux/qos-base.cil && echo "qos-base SELinux module loaded"
+# `libsemanage` writes a sandbox at /etc/selinux/targeted/tmp during
+# install and fails "File exists" if any prior partial state carried
+# forward (a caching quirk under rootless podman that CI's docker
+# daemon happens to sidestep). Clear it first.
+RUN rm -rf /etc/selinux/targeted/tmp \
+ && semodule -i /usr/share/qos/selinux/qos-base.cil \
+ && echo "qos-base SELinux module loaded"
 
 # ---------------------------------------------------------------------------
 # Enable services
