@@ -159,7 +159,13 @@ mod tests {
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
-        ev.text = None;
+        // Real winit delivers the committed text alongside a character key; the
+        // terminal encodes that into the PTY bytes (and typing snaps the
+        // scrollback back to the live bottom). Named keys carry no `text`.
+        ev.text = match &ev.logical_key {
+            winit::keyboard::Key::Character(s) => Some(s.clone()),
+            _ => None,
+        };
 
         let win_ev = WindowEvent::KeyboardInput {
             device_id: fake_device_id(),
