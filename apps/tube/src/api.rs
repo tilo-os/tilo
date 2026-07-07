@@ -429,18 +429,23 @@ fn resolve_stream_url(
     live: &Option<Box<dyn YtBackend>>,
     id: &str,
 ) -> Option<(String, bool, String)> {
-    if let Some(r) = crate::backend::proxy::resolve_rangeable(id) {
-        return Some((r.url, r.has_audio, r.quality));
-    }
-    // Fallback: whatever the live backend can resolve directly. This may be a
-    // raw googlevideo URL that truncates after ~1 minute, but a minute of real
-    // playback beats a black poster when every Invidious proxy is down.
+    // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
+    // `android_vr` client) that streams the WHOLE video+audio without the
+    // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
+    // play the full length and seek. (Proven with `--probe-engine`: full
+    // duration, buffered to 100%.)
     if let Some(b) = live.as_ref() {
         if let Ok(src) = b.resolve_playback_source(id) {
             if !src.url.is_empty() {
                 return Some((src.url, src.has_audio, src.quality));
             }
         }
+    }
+    // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
+    // instance network has largely collapsed, so this is a last resort for when
+    // yt-dlp is unavailable.
+    if let Some(r) = crate::backend::proxy::resolve_rangeable(id) {
+        return Some((r.url, r.has_audio, r.quality));
     }
     None
 }
