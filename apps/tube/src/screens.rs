@@ -210,7 +210,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
     let progress = model.history.first().filter(|h| **h == v.id).map(|_| 0.35);
     let mut thumb = Thumbnail::new(&v.seed, v.duration)
         .height(THUMB_H)
-        .image(imgs.get(&v.thumbnail_url))
+        .image(imgs.get(model.display_thumbnail_url(v)))
         .dearrow(active_dearrow && model.settings.dearrow_thumbnails)
         .live(v.live);
     if let Some(p) = progress {
@@ -289,7 +289,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
             Flex::col().w(Len::Px(160.0)).push(
                 Thumbnail::new(&v.seed, v.duration)
                     .height(90.0)
-                    .image(imgs.get(&v.thumbnail_url))
+                    .image(imgs.get(model.display_thumbnail_url(v)))
                     .live(v.live),
             ),
         )
