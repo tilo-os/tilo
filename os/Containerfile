@@ -64,7 +64,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM quay.io/fedora/fedora-bootc@sha256:12dcad9c7e187ff9b62065132360d74eb5223ac86dcba09088d2d0fb44dc978d AS wpe-builder
+FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53 AS wpe-builder
 
 RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf builddep -y webkitgtk6.0 \
