@@ -36,6 +36,22 @@ use super::{
 /// Command-drain cadence on the engine thread's GLib loop.
 const DRAIN_INTERVAL_MS: c_uint = 8;
 
+/// Desktop User-Agent — a current Safari string, truthful about the
+/// engine (we are WebKit) so feature detection matches, recent enough
+/// that UA-sniffing sites serve their modern responsive layouts.
+const USER_AGENT_DESKTOP: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15";
+/// Mobile User-Agent — a current mobile Safari (iPhone) string. At
+/// narrow widths sites that ignore CSS width and sniff the UA (search
+/// engines, video sites) then serve their phone layout, which uses a
+/// `width=device-width` viewport and fits any narrow window instead of
+/// overflowing a min-width desktop layout.
+const USER_AGENT_MOBILE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) \
+AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1";
+/// Below this logical CSS width the view presents the mobile UA — the
+/// point where desktop SERPs start overflowing and phone layouts fit.
+const MOBILE_BREAKPOINT_PX: u32 = 600;
+
 /// `wl_shm` formats we understand (both 32-bit little-endian, i.e. BGRA
 /// / BGRX byte order in memory).
 const WL_SHM_FORMAT_ARGB8888: u32 = 0;
@@ -144,6 +160,9 @@ struct EngineState {
     /// `wpe_input_modifier` bits for currently-held mouse buttons.
     button_modifiers: u32,
     scale_factor: f32,
+    /// Whether the mobile UA is currently presented (see the Resize
+    /// handler's breakpoint switch).
+    mobile_mode: bool,
 }
 
 fn engine_thread(
@@ -182,6 +201,7 @@ fn engine_thread(
             filter_store: std::ptr::null_mut(),
             button_modifiers: 0,
             scale_factor: 1.0,
+            mobile_mode: false,
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
 
@@ -219,6 +239,13 @@ fn engine_thread(
             state.backend,
             ffi::WPE_VIEW_ACTIVITY_STATE_VISIBLE | ffi::WPE_VIEW_ACTIVITY_STATE_IN_WINDOW,
         );
+
+        // Advertise a modern desktop Safari UA (honest about the WebKit
+        // engine) so UA-sniffing sites serve their normal responsive
+        // layouts instead of the degraded one WPE's stale default
+        // triggers. The Resize handler swaps to the mobile UA at narrow
+        // widths.
+        set_user_agent(state.view, USER_AGENT_DESKTOP);
 
         // Content-filter store lives under the user cache dir.
         let store_dir = filter_store_dir();
@@ -279,6 +306,22 @@ unsafe fn connect(
 
 unsafe fn state_from(data: *mut c_void) -> &'static mut EngineState {
     unsafe { &mut *(data as *mut EngineState) }
+}
+
+/// Whether a view of this logical CSS width should present the mobile UA.
+fn wants_mobile(logical_width: u32) -> bool {
+    logical_width < MOBILE_BREAKPOINT_PX
+}
+
+/// Set the view's User-Agent on its settings object. Takes effect on the
+/// next page load, so callers reload if they need it applied now.
+fn set_user_agent(view: *mut ffi::WebKitWebView, ua: &str) {
+    unsafe {
+        let settings = ffi::webkit_web_view_get_settings(view);
+        if let Ok(c) = CString::new(ua) {
+            ffi::webkit_settings_set_user_agent(settings, c.as_ptr());
+        }
+    }
 }
 
 fn cstr_to_string(ptr: *const c_char) -> Option<String> {
@@ -488,6 +531,21 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     state.scale_factor,
                 );
                 ffi::wpe_view_backend_dispatch_set_size(state.backend, lw, lh);
+
+                // Present a phone UA below the breakpoint so UA-sniffing
+                // sites serve their fits-any-width mobile layout. Only
+                // reload when the mode actually flips (the UA change only
+                // takes effect on the next load), so dragging within one
+                // side of the breakpoint costs nothing.
+                let want_mobile = wants_mobile(lw);
+                if want_mobile != state.mobile_mode {
+                    state.mobile_mode = want_mobile;
+                    set_user_agent(
+                        state.view,
+                        if want_mobile { USER_AGENT_MOBILE } else { USER_AGENT_DESKTOP },
+                    );
+                    ffi::webkit_web_view_reload(state.view);
+                }
             }
             WebViewCommand::MouseMove { x, y } => {
                 let mut event = ffi::wpe_input_pointer_event {
@@ -627,6 +685,14 @@ fn keysyms(key: &KeyInput) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_ua_engages_only_below_the_breakpoint() {
+        assert!(wants_mobile(390), "phone width → mobile UA");
+        assert!(wants_mobile(MOBILE_BREAKPOINT_PX - 1));
+        assert!(!wants_mobile(MOBILE_BREAKPOINT_PX), "at the breakpoint → desktop");
+        assert!(!wants_mobile(1280), "desktop width → desktop UA");
+    }
 
     #[test]
     fn keysym_mapping_is_stable() {
