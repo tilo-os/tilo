@@ -424,10 +424,11 @@ impl TransitTime {
     }
 }
 
-/// Which side panel is currently active. Two surfaces, modelled on Apple/Google
-/// Maps: `Explore` searches and browses places (results, saved, recents);
-/// `Directions` routes between two points, with the travel mode — including
-/// public `Transit` — chosen inside it.
+/// Which view the collapsible side panel is showing. Not a user-facing tab: the
+/// panel defaults to `Explore` (search, nearby, saved, recents, the selected
+/// place card) and switches to `Directions` only as an action reached from a
+/// place/POI card — routing between two points, with the travel mode (including
+/// public `Transit`) chosen inside it. A back control returns to `Explore`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Panel {
     Explore,

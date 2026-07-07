@@ -50,7 +50,8 @@ enum EndField {
 const MARGIN: f64 = 16.0;
 const SEARCH_H: f64 = 48.0;
 const GAP: f64 = 10.0;
-const TAB_H: f64 = 34.0;
+/// Height of the side panel's header bar (back / title / collapse toggle).
+const PANEL_HEADER_H: f64 = 40.0;
 const CTRL_SIZE: f64 = 40.0;
 const ROW_H: f64 = 56.0;
 /// Below this window width the side panel stops being docked and becomes a
@@ -83,7 +84,10 @@ enum Hit {
     ClearSearch,
     /// Choose the Nth result from the floating search-results overlay.
     PickSearch(usize),
-    Tab(Panel),
+    /// Collapse / expand the side panel (docked layouts).
+    ToggleCollapse,
+    /// Return from the Directions view to the plain places list.
+    PanelBack,
     Mode(TravelMode),
     SelectPlace(String),
     /// Select a nearby POI from the Explore list: centre the map on it and open
@@ -157,6 +161,15 @@ pub struct MapsApp {
     /// keystroke, fired once from `sync` when it elapses so we query Nominatim
     /// after typing settles rather than on every character.
     search_debounce: Option<Instant>,
+    /// Debounce deadline for the live endpoint (From/To) geocode. Same shape as
+    /// `search_debounce`: armed on each keystroke, fired once typing settles so
+    /// the start/end fields search-as-you-type (no Enter) just like the top bar.
+    endpoint_debounce: Option<Instant>,
+    /// Screen rects of the last-drawn From / To endpoint fields, so the floating
+    /// endpoint results overlay can anchor directly under whichever is focused
+    /// (a dropdown over the map — it never reflows the panel). Render caches.
+    origin_field_rect: Option<Rect>,
+    dest_field_rect: Option<Rect>,
     left_down: bool,
     dragging: bool,
     drag_last: Point,
@@ -211,6 +224,11 @@ pub struct MapsApp {
     /// overlay layout; when docked the panel is always shown. Re-evaluated
     /// against the live window width every frame — never cached at startup.
     nav_open: bool,
+
+    /// Whether the docked side panel is collapsed to its header bar (an
+    /// expand/collapse toggle, not a tab). Only meaningful in the docked
+    /// layout; the narrow layout hides/shows the whole drawer instead.
+    panel_collapsed: bool,
 }
 
 impl Default for MapsApp {
@@ -255,6 +273,9 @@ impl MapsApp {
             dest_results: Vec::new(),
             search_results: Vec::new(),
             search_debounce: None,
+            endpoint_debounce: None,
+            origin_field_rect: None,
+            dest_field_rect: None,
             left_down: false,
             dragging: false,
             drag_last: Point::ZERO,
@@ -282,6 +303,7 @@ impl MapsApp {
             poi_debounce: None,
             poi_fetched_bounds: None,
             poi_generation: 0,
+            panel_collapsed: false,
         }
     }
 
@@ -456,6 +478,13 @@ impl MapsApp {
     /// when the drawer is open in the overlay layout.
     fn panel_visible(&self) -> bool {
         !self.overlay_mode() || self.nav_open
+    }
+
+    /// Whether the docked panel column is occupying space with content (docked
+    /// and expanded). Bottom map cards keep clear of it; when collapsed the map
+    /// reclaims the column so they may use the full width.
+    fn panel_docked_expanded(&self) -> bool {
+        !self.overlay_mode() && !self.panel_collapsed
     }
 
     /// Panel width for the current window: a docked column proportional to the
@@ -779,6 +808,7 @@ impl MapsApp {
     fn focus_endpoint(&mut self, field: EndField) {
         self.edit_field = Some(field);
         self.search_focused = false;
+        self.endpoint_debounce = None;
         match field {
             EndField::Origin => {
                 self.model.origin_query.clear();
@@ -816,9 +846,43 @@ impl MapsApp {
         }
     }
 
-    /// Run a live Nominatim geocode for an endpoint field (on Enter), folding in
-    /// the instant offline matches first so the dropdown is never briefly empty.
+    /// Handle one edit to an endpoint (From/To) field: refresh the instant
+    /// offline dropdown and (re)arm the debounce so a live geocode fires once
+    /// typing settles. This is the endpoint search-as-you-type entry point —
+    /// no Enter required, mirroring the top search field.
+    fn on_endpoint_input(&mut self, origin: bool) {
+        self.update_endpoint_local(origin);
+        let q = if origin {
+            self.model.origin_query.trim().to_string()
+        } else {
+            self.model.dest_query.trim().to_string()
+        };
+        if q.is_empty() {
+            self.endpoint_debounce = None;
+        } else {
+            self.endpoint_debounce = Some(Instant::now() + SEARCH_DEBOUNCE);
+        }
+        self.mark_dirty();
+    }
+
+    /// Fire the debounced live endpoint geocode once the quiet period elapses.
+    /// Called once per frame from `sync`. Targets whichever endpoint field is
+    /// currently focused; a focus change or commit clears the debounce.
+    fn tick_endpoint_debounce(&mut self, now: Instant) {
+        let Some(deadline) = self.endpoint_debounce else { return };
+        if now < deadline {
+            return;
+        }
+        self.endpoint_debounce = None;
+        let Some(field) = self.edit_field else { return };
+        self.run_endpoint_search(field == EndField::Origin);
+    }
+
+    /// Run a live Nominatim geocode for an endpoint field, folding in the
+    /// instant offline matches first so the dropdown is never briefly empty.
+    /// Reached both from the settled debounce and from an explicit Enter.
     fn run_endpoint_search(&mut self, origin: bool) {
+        self.endpoint_debounce = None;
         self.update_endpoint_local(origin);
         let q = if origin {
             self.model.origin_query.trim().to_string()
@@ -1497,7 +1561,20 @@ impl MapsApp {
                 self.mark_dirty();
             }
             Hit::PickSearch(i) => self.pick_search_result(*i),
-            Hit::Tab(p) => self.set_panel(*p),
+            Hit::ToggleCollapse => {
+                self.panel_collapsed = !self.panel_collapsed;
+                self.mark_dirty();
+            }
+            Hit::PanelBack => {
+                // Return from the Directions view to the plain places list. The
+                // route stays in the model (it keeps drawing on the map); only
+                // the panel view changes — this is navigation, not a tab.
+                self.model.panel = Panel::Explore;
+                self.edit_field = None;
+                self.endpoint_debounce = None;
+                self.scroll = 0.0;
+                self.mark_dirty();
+            }
             Hit::Mode(m) => self.set_mode(*m),
             Hit::SelectPlace(id) => {
                 self.select_place(id);
@@ -1714,6 +1791,9 @@ impl MapsApp {
         // Floating search-results dropdown, above the chrome so it overlays the
         // map/panel rather than reflowing them.
         self.draw_search_overlay(scene, t, tr, theme);
+        // Floating Directions From/To results dropdown — same idiom, anchored
+        // under the focused endpoint field so the panel below never reflows.
+        self.draw_endpoint_overlay(scene, t, tr, theme);
         if self.offline_open {
             self.draw_offline_overlay(scene, t, tr, theme);
         }
@@ -1854,6 +1934,79 @@ impl MapsApp {
         }
     }
 
+    /// Whether the floating endpoint (From/To) results overlay is on screen.
+    fn endpoint_overlay_active(&self) -> bool {
+        let Some(field) = self.edit_field else { return false };
+        if !matches!(self.model.panel, Panel::Directions) {
+            return false;
+        }
+        let (anchor, results) = match field {
+            EndField::Origin => (self.origin_field_rect, &self.origin_results),
+            EndField::Dest => (self.dest_field_rect, &self.dest_results),
+        };
+        anchor.is_some() && !results.is_empty()
+    }
+
+    /// Floating results dropdown for the focused Directions endpoint, anchored
+    /// directly under its From/To field and drawn OVER the map — the exact same
+    /// dropdown idiom as the top search overlay. It deliberately never reflows
+    /// the panel below (mode control, route, steps stay put whether or not the
+    /// dropdown is open), which was the old inline-list bug.
+    fn draw_endpoint_overlay(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let Some(field) = self.edit_field else { return };
+        if !matches!(self.model.panel, Panel::Directions) {
+            return;
+        }
+        let (anchor, results, origin) = match field {
+            EndField::Origin => (self.origin_field_rect, self.origin_results.clone(), true),
+            EndField::Dest => (self.dest_field_rect, self.dest_results.clone(), false),
+        };
+        let Some(fr) = anchor else { return };
+        let c = &theme.tokens.colors;
+        let x = fr.x0;
+        let w = fr.width();
+        let top = fr.y1 + 6.0;
+
+        if results.is_empty() {
+            // While the live geocode is still resolving, show a "Searching…"
+            // hint so the field reads as actively searching — no Enter needed.
+            let q = if origin { &self.model.origin_query } else { &self.model.dest_query };
+            if q.trim().is_empty() {
+                return;
+            }
+            let card = Rect::new(x, top, x + w, top + 34.0);
+            draw::card(scene, t, card, 12.0, c.surfaces.raised, c.border_standard);
+            self.click_targets.push((card, Hit::Consume));
+            draw::text(scene, tr, t, "Searching…", card.x0 + 12.0, vmid(card.y0, card.height(), 12.0), 12.0, theme.text_dim);
+            return;
+        }
+
+        let row_h = 46.0;
+        let pad = 6.0;
+        let n = results.len().min(SEARCH_OVERLAY_MAX);
+        let h = pad * 2.0 + n as f64 * row_h;
+        let card = Rect::new(x, top, x + w, top + h);
+        draw::card(scene, t, card, 12.0, c.surfaces.raised, c.border_standard);
+        self.click_targets.push((card, Hit::Consume));
+
+        let anchor_pt = self.search_anchor();
+        let mut y = top + pad;
+        for (i, p) in results.iter().enumerate().take(n) {
+            let r = Rect::new(x + pad, y, x + w - pad, y + row_h - 2.0);
+            let cat_col = canvas::category_color(theme, p.category);
+            draw::fill_circle(scene, t, Point::new(r.x0 + 14.0, r.center().y), 6.0, cat_col);
+            let tx = r.x0 + 30.0;
+            let dist = geo::fmt_distance(geo::haversine_m(p.pos, anchor_pt));
+            let dw = draw::measure_w(tr, &dist, 11.0) + 8.0;
+            draw::text_clip(scene, tr, t, &p.name, tx, r.y0 + 6.0, 13.0, theme.text_primary, r.x1 - tx - dw);
+            draw::text_clip(scene, tr, t, &p.address, tx, r.y0 + 24.0, 11.0, theme.text_dim, r.x1 - tx - dw);
+            draw::text_right(scene, tr, t, &dist, r.x1 - 8.0, r.y0 + 8.0, 11.0, theme.accent_primary);
+            let hit = if origin { Hit::PickOrigin(i) } else { Hit::PickDest(i) };
+            self.click_targets.push((r, hit));
+            y += row_h;
+        }
+    }
+
     /// Floating info card for the selected POI, anchored at the bottom of the
     /// visible map area (clear of the docked panel and the right-hand controls).
     /// Surfaces the readable OSM tags — address, opening hours, phone, website —
@@ -1879,7 +2032,7 @@ impl MapsApp {
             rows.push(("⚓", web.clone(), true));
         }
 
-        let area_x0 = if self.panel_visible() && !self.overlay_mode() {
+        let area_x0 = if self.panel_docked_expanded() {
             self.panel_rect().x1 + GAP
         } else {
             self.rect.x0 + MARGIN
@@ -2107,7 +2260,7 @@ impl MapsApp {
             "Loading map…"
         };
         // Centre within the map area (right of the docked panel when present).
-        let area_x0 = if self.panel_visible() && !self.overlay_mode() {
+        let area_x0 = if self.panel_docked_expanded() {
             self.panel_rect().x1 + GAP
         } else {
             self.rect.x0
@@ -2131,29 +2284,57 @@ impl MapsApp {
             return;
         }
         let c = &theme.tokens.colors;
+        let inset = 10.0;
+        let docked = !self.overlay_mode();
+        let directions = matches!(self.model.panel, Panel::Directions);
+
+        // Collapsed (docked only): show just a header bar with an expand
+        // affordance so the map reclaims the column. A plain collapse/expand
+        // toggle — not a mode/tab.
+        if self.panel_collapsed && docked {
+            let bar = Rect::new(pr.x0, pr.y0, pr.x1, pr.y0 + PANEL_HEADER_H + 2.0 * inset);
+            draw::card(scene, t, bar, 14.0, c.surfaces.raised, c.border_standard);
+            self.click_targets.push((bar, Hit::Consume));
+            let by = vmid(bar.y0 + inset, PANEL_HEADER_H, 15.0);
+            draw::text_w(scene, tr, t, "Places", bar.x0 + inset + 4.0, by, 15.0, theme.text_primary, TextWeight::Semibold);
+            let btn = Rect::new(bar.x1 - inset - PANEL_HEADER_H, bar.y0 + inset, bar.x1 - inset, bar.y1 - inset);
+            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
+            draw::text_center(scene, tr, t, "»", btn.x0, btn.x1, vmid(btn.y0, btn.height(), 16.0), 16.0, theme.text_primary);
+            self.click_targets.push((btn, Hit::ToggleCollapse));
+            self.content_view_h = 0.0;
+            self.content_h = 0.0;
+            return;
+        }
+
         draw::card(scene, t, pr, 14.0, c.surfaces.raised, c.border_standard);
         // Swallow background clicks.
         self.click_targets.push((pr, Hit::Consume));
 
-        // Segmented tabs.
-        let inset = 10.0;
-        let tabs_rect = Rect::new(pr.x0 + inset, pr.y0 + inset, pr.x1 - inset, pr.y0 + inset + TAB_H);
-        draw::fill_rrect(scene, t, tabs_rect, 9.0, c.surfaces.base);
-        let seg_w = tabs_rect.width() / Panel::ALL.len() as f64;
-        for (i, p) in Panel::ALL.iter().enumerate() {
-            let x0 = tabs_rect.x0 + i as f64 * seg_w;
-            let seg = Rect::new(x0, tabs_rect.y0, x0 + seg_w, tabs_rect.y1);
-            let active = self.model.panel == *p;
-            if active {
-                draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
-            }
-            let col = if active { Color::WHITE } else { theme.text_dim };
-            draw::text_center(scene, tr, t, p.label(), seg.x0, seg.x1, vmid(seg.y0, seg.height(), 13.0), 13.0, col);
-            self.click_targets.push((seg, Hit::Tab(*p)));
+        // Header row: an optional back button (Directions view), the title, and
+        // — when docked — a collapse toggle. This replaces the old
+        // Explore/Directions tab strip: the panel is a plain collapsible
+        // surface, and Directions is an action reached from a place/POI card,
+        // never a top-level tab the user toggles.
+        let header = Rect::new(pr.x0 + inset, pr.y0 + inset, pr.x1 - inset, pr.y0 + inset + PANEL_HEADER_H);
+        let mut hx = header.x0;
+        if directions {
+            let back = Rect::new(hx, header.y0, hx + PANEL_HEADER_H, header.y1);
+            draw::fill_rrect(scene, t, back, 8.0, c.surfaces.base);
+            draw::text_center(scene, tr, t, "‹", back.x0, back.x1, vmid(back.y0, back.height(), 18.0), 18.0, theme.text_primary);
+            self.click_targets.push((back, Hit::PanelBack));
+            hx = back.x1 + 8.0;
+        }
+        let title = if directions { "Directions" } else { "Places" };
+        draw::text_w(scene, tr, t, title, hx + 2.0, vmid(header.y0, header.height(), 16.0), 16.0, theme.text_primary, TextWeight::Bold);
+        if docked {
+            let btn = Rect::new(header.x1 - PANEL_HEADER_H, header.y0, header.x1, header.y1);
+            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
+            draw::text_center(scene, tr, t, "«", btn.x0, btn.x1, vmid(btn.y0, btn.height(), 16.0), 16.0, theme.text_dim);
+            self.click_targets.push((btn, Hit::ToggleCollapse));
         }
 
-        // Content region (below tabs), clipped + scrolled.
-        let content = Rect::new(pr.x0 + inset, tabs_rect.y1 + 10.0, pr.x1 - inset, pr.y1 - 10.0);
+        // Content region (below the header), clipped + scrolled.
+        let content = Rect::new(pr.x0 + inset, header.y1 + 10.0, pr.x1 - inset, pr.y1 - 10.0);
         self.content_view_h = content.height();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &content);
         let cy = content.y0 - self.scroll;
@@ -2432,6 +2613,7 @@ impl MapsApp {
             String::new()
         };
         let from_r = Rect::new(x, y, fields_right, y + field_h);
+        self.origin_field_rect = Some(from_r);
         self.draw_endpoint_field(
             scene, t, tr, theme, from_r, theme.accent_primary, &from_text, from_editing,
             "Choose starting point", Hit::EditOrigin,
@@ -2439,6 +2621,7 @@ impl MapsApp {
 
         let to_y = y + field_h + 8.0;
         let to_r = Rect::new(x, to_y, fields_right, to_y + field_h);
+        self.dest_field_rect = Some(to_r);
         let to_editing = self.edit_field == Some(EndField::Dest);
         let to_text = if to_editing {
             self.model.dest_query.clone()
@@ -2482,33 +2665,11 @@ impl MapsApp {
         self.click_targets.push((loc_r, if self.locating { Hit::Consume } else { Hit::UseMyLocation }));
         y += loc_h + 12.0;
 
-        // Geocoded dropdown for whichever endpoint field is being edited.
-        if let Some(field) = self.edit_field {
-            let results = match field {
-                EndField::Origin => self.origin_results.clone(),
-                EndField::Dest => self.dest_results.clone(),
-            };
-            if results.is_empty() {
-                draw::text(scene, tr, t, "Type a place or address, then press Enter.", x, y, 12.0, theme.text_dim);
-                y += 22.0;
-            } else {
-                for (i, p) in results.iter().enumerate().take(6) {
-                    let rr = Rect::new(x, y, right, y + ROW_H - 12.0);
-                    let cat_col = canvas::category_color(theme, p.category);
-                    draw::fill_circle(scene, t, Point::new(rr.x0 + 14.0, rr.center().y), 6.0, cat_col);
-                    let tx = rr.x0 + 28.0;
-                    draw::text_clip(scene, tr, t, &p.name, tx, rr.y0 + 4.0, 13.0, theme.text_primary, right - tx - 8.0);
-                    draw::text_clip(scene, tr, t, &p.address, tx, rr.y0 + 22.0, 11.0, theme.text_dim, right - tx - 8.0);
-                    let hit = match field {
-                        EndField::Origin => Hit::PickOrigin(i),
-                        EndField::Dest => Hit::PickDest(i),
-                    };
-                    self.click_targets.push((rr, hit));
-                    y += ROW_H - 8.0;
-                }
-            }
-            y += 8.0;
-        }
+        // NOTE: the geocoded results for the focused endpoint are NOT drawn
+        // inline here — that reflowed the mode control and route below every
+        // keystroke. They render in `draw_endpoint_overlay` as a floating
+        // dropdown anchored under the field, over the map, so the panel below
+        // stays put whether or not the dropdown is showing.
 
         // Mode segmented control — Drive / Transit / Cycle / Walk. Transit is
         // a mode here, not a separate tab: selecting it swaps the route summary
@@ -2834,6 +2995,8 @@ impl Widget for MapsApp {
         self.drain_location();
         // Fire a debounced search-as-you-type geocode once typing settles.
         self.tick_search_debounce(Instant::now());
+        // Same for the Directions From/To fields (start/end search-as-you-type).
+        self.tick_endpoint_debounce(Instant::now());
         // Refetch viewport POIs once a pan/zoom settles.
         self.tick_poi_debounce(Instant::now());
         // Fold in any tiles / download progress the worker finished. This is a
@@ -3071,6 +3234,7 @@ impl Widget for MapsApp {
         self.pending > 0
             || self.search_focused
             || self.search_debounce.is_some()
+            || self.endpoint_debounce.is_some()
             || self.poi_debounce.is_some()
             || self.edit_field.is_some()
             || self.locating
@@ -3111,20 +3275,17 @@ impl MapsApp {
                 }
                 Key::Named(NamedKey::Backspace) => {
                     self.endpoint_query_mut(origin).pop();
-                    self.update_endpoint_local(origin);
-                    self.mark_dirty();
+                    self.on_endpoint_input(origin);
                     true
                 }
                 Key::Named(NamedKey::Space) => {
                     self.endpoint_query_mut(origin).push(' ');
-                    self.update_endpoint_local(origin);
-                    self.mark_dirty();
+                    self.on_endpoint_input(origin);
                     true
                 }
                 Key::Character(s) => {
                     self.endpoint_query_mut(origin).push_str(s);
-                    self.update_endpoint_local(origin);
-                    self.mark_dirty();
+                    self.on_endpoint_input(origin);
                     true
                 }
                 _ => false,
@@ -4105,28 +4266,165 @@ mod tests {
         assert!(a.model.zoom > before, "scroll up should zoom in");
     }
 
-    /// Clicking the Directions tab through the real event path (draw records
-    /// the tab rects; a press hit-tests them) switches the active panel.
+    /// There is no Explore/Directions tab strip: the panel is a plain
+    /// collapsible surface. Directions is reached as an action on a place card
+    /// (not a top-level tab), and clicking that action through the real
+    /// draw → hit-test → dispatch path opens the Directions view.
     #[test]
-    fn tab_click_switches_panel_via_handle_event() {
+    fn directions_reached_via_card_action_not_a_tab() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 720.0);
         a.model.panel = Panel::Explore;
-        // Draw once so the tab hot-regions are recorded.
+        // Select a place so its Explore card (with the Directions action) shows.
+        a.select_place("marienplatz");
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let tab = a
+
+        // The docked panel exposes a collapse/expand toggle — a plain
+        // collapsible panel, never a tab strip.
+        assert!(
+            a.click_targets.iter().any(|(_, h)| matches!(h, Hit::ToggleCollapse)),
+            "the panel has a collapse toggle"
+        );
+
+        // Directions is a card action, reached by clicking it — not a tab.
+        let dir = a
             .click_targets
             .iter()
-            .find(|(_, h)| matches!(h, Hit::Tab(Panel::Directions)))
+            .find(|(_, h)| matches!(h, Hit::Directions))
             .map(|(r, _)| r.center())
-            .expect("Directions tab hot-region recorded");
-
-        move_to(&mut a, tab.x, tab.y);
+            .expect("the selected place card exposes a Directions action");
+        move_to(&mut a, dir.x, dir.y);
         let handled = press_left(&mut a);
-        assert!(handled, "tab click must be handled");
-        assert_eq!(a.model.panel, Panel::Directions, "panel switched to Directions");
+        assert!(handled, "the Directions action is handled");
+        assert_eq!(
+            a.model.panel,
+            Panel::Directions,
+            "the card action opens the Directions view (no tab toggle)"
+        );
+
+        // Back returns to the plain list view.
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        let back = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::PanelBack))
+            .map(|(r, _)| r.center())
+            .expect("Directions view has a back button");
+        move_to(&mut a, back.x, back.y);
+        assert!(press_left(&mut a), "back is handled");
+        assert_eq!(a.model.panel, Panel::Explore, "back returns to the list view");
+    }
+
+    /// Clicking a POI marker on the map opens its info card directly — no tab or
+    /// travel-mode switch. The side panel view is unchanged; the map just gains
+    /// the floating info card. Exercises the real press → hit-test path.
+    #[test]
+    fn poi_click_opens_info_card_without_mode_change() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.places.clear(); // no place pins to intercept the press
+        let panel_before = a.model.panel;
+        let mode_before = a.model.mode;
+        let anchor = Point::new(900.0, 380.0);
+        let pos = a.projection().unproject(anchor);
+        a.pois = vec![demo_poi("p1", pos.lat, pos.lon)];
+        a.selected_poi = None;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        move_to(&mut a, anchor.x, anchor.y);
+        assert!(press_left(&mut a), "a POI press is handled");
+        assert_eq!(a.selected_poi.as_deref(), Some("p1"), "clicking a POI opens its info card");
+        assert_eq!(a.model.panel, panel_before, "no tab/view switch on a POI click");
+        assert_eq!(a.model.mode, mode_before, "no travel-mode switch on a POI click");
+
+        // Redraw with the card open: the info card is present.
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.click_targets.iter().any(|(_, h)| matches!(h, Hit::ClosePoi)),
+            "the POI info card is open"
+        );
+    }
+
+    /// The start/end (From/To) fields search-as-you-type: typing arms a live
+    /// geocode without Enter, results render in a floating dropdown anchored
+    /// under the focused field, and the panel below (the mode control) does NOT
+    /// reflow when the dropdown appears. Drives the real key + draw path.
+    #[test]
+    fn endpoint_search_is_live_and_overlay_floats_without_reflow() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        assert_eq!(a.model.panel, Panel::Directions);
+
+        // Baseline draw with no endpoint focused: record the mode control's rect.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mode_rect_before = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Mode(TravelMode::Car)))
+            .map(|(r, _)| *r)
+            .expect("mode control recorded");
+
+        // Focus the From field via the real hit-test, then type — no Enter.
+        let from = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::EditOrigin))
+            .map(|(r, _)| r.center())
+            .expect("From field recorded");
+        move_to(&mut a, from.x, from.y);
+        assert!(press_left(&mut a), "focusing the From field is handled");
+        assert_eq!(a.edit_field, Some(EndField::Origin), "the From field is focused");
+
+        for ch in ["h", "a", "u", "p", "t", "b", "a", "h", "n", "h", "o", "f"] {
+            assert!(key_char(&mut a, ch), "typing into the From field is handled");
+        }
+        // Live: instant local matches populate WITHOUT any Enter, and a live
+        // geocode is armed to fire once typing settles.
+        assert!(!a.origin_results.is_empty(), "typing surfaces matches live (no Enter)");
+        assert!(a.endpoint_debounce.is_some(), "a live geocode is armed on input");
+
+        // Redraw: the floating overlay records pick targets anchored UNDER the
+        // From field, and the mode control below has NOT moved (no reflow).
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.endpoint_overlay_active(), "the endpoint dropdown is showing");
+        let pick = a
+            .click_targets
+            .iter()
+            .rev()
+            .find(|(_, h)| matches!(h, Hit::PickOrigin(_)))
+            .map(|(r, _)| *r)
+            .expect("overlay records PickOrigin hot-regions");
+        let field = a.origin_field_rect.expect("From field rect cached");
+        assert!(pick.y0 >= field.y1, "overlay sits under the From field (a dropdown)");
+        let mode_rect_after = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Mode(TravelMode::Car)))
+            .map(|(r, _)| *r)
+            .expect("mode control still recorded");
+        assert_eq!(
+            mode_rect_before, mode_rect_after,
+            "opening the endpoint dropdown must NOT reflow the panel below it"
+        );
+        // The overlay row wins the hit-test over the panel it overlays.
+        let topmost = a
+            .click_targets
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(pick.center()))
+            .map(|(_, h)| h.clone());
+        assert!(matches!(topmost, Some(Hit::PickOrigin(_))), "overlay row is topmost");
     }
 
     /// Clicking the Transit segment of the Directions mode row (through the real
@@ -4338,15 +4636,15 @@ mod tests {
         );
     }
 
-    /// `1`/`2` switch the Explore/Directions tabs; `m` toggles the offline
-    /// overlay; Escape deselects.
+    /// `1`/`2` switch the panel view (list / directions); `m` toggles the
+    /// offline overlay; Escape deselects.
     #[test]
     fn panel_offline_escape_keys_via_key_event() {
         let mut a = app_at(1280.0, 720.0);
         key_char(&mut a, "1");
-        assert_eq!(a.model.panel, Panel::Explore, "'1' selects Explore");
+        assert_eq!(a.model.panel, Panel::Explore, "'1' selects the list view");
         key_char(&mut a, "2");
-        assert_eq!(a.model.panel, Panel::Directions, "'2' selects Directions");
+        assert_eq!(a.model.panel, Panel::Directions, "'2' selects the directions view");
 
         assert!(!a.offline_open);
         key_char(&mut a, "m");
