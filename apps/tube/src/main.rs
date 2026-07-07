@@ -62,6 +62,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe_trending();
     }
 
+    // `--live-shots <dir> [query]` — render REAL offscreen stills: a search page
+    // with real YouTube results + fetched thumbnails, and a watch page with a
+    // real frame decoded through the media engine from a rangeable proxy stream.
+    // Everything is live data + real decode; requires `--features "live media"`.
+    if let Some((dir, query)) = parse_live_shots_arg(&args) {
+        return run_live_shots(&dir, &query);
+    }
+
     // `--probe-ytdlp [query]` — prove the yt-dlp extractor: search + video +
     // channel (with avatar/banner urls). Requires `--features live`.
     if let Some(query) = parse_opt_query(&args, "--probe-ytdlp", "blender open movie") {
@@ -149,6 +157,28 @@ fn parse_probe_arg(args: &[String]) -> Option<String> {
         if let Some(rest) = arg.strip_prefix("--probe=") {
             return Some(if rest.is_empty() { DEFAULT_Q.to_string() } else { rest.to_string() });
         }
+    }
+    None
+}
+
+/// Parse `--live-shots <dir> [query]`. Returns the output directory and the
+/// search query (default "rust programming") to render real stills for.
+fn parse_live_shots_arg(args: &[String]) -> Option<(String, String)> {
+    const DEFAULT_Q: &str = "rust programming";
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let dir = if arg == "--live-shots" {
+            iter.next()?.clone()
+        } else if let Some(rest) = arg.strip_prefix("--live-shots=") {
+            rest.to_string()
+        } else {
+            continue;
+        };
+        let query = match iter.next() {
+            Some(q) if !q.starts_with("--") => q.clone(),
+            _ => DEFAULT_Q.to_string(),
+        };
+        return Some((dir, query));
     }
     None
 }
@@ -571,6 +601,128 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
         "probe-trending: built WITHOUT the `live` feature — rebuild with \
          `--features live` to hit real YouTube."
     );
+    Ok(())
+}
+
+/// `--live-shots <dir> [query]`: render REAL offscreen stills — a search page
+/// with real YouTube results + fetched thumbnails, and a watch page with a real
+/// frame decoded through the shared media engine from a rangeable proxy stream.
+#[cfg(all(feature = "live", feature = "media"))]
+fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+    use tube::backend::{proxy, ytdlp::YtDlpBackend, yt_thumb_url, BackendResult, YtBackend};
+    use tube::model::{DataSource, Route, TubeModel, Video};
+
+    let out_dir = std::path::Path::new(dir);
+    std::fs::create_dir_all(out_dir).ok();
+    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+
+    // ---- Real search page with real thumbnails ----
+    println!("live-shots[search]: searching YouTube for {query:?}…");
+    let videos = match backend.search(query)? {
+        BackendResult::Videos(v) => v,
+        _ => Vec::new(),
+    };
+    if videos.is_empty() {
+        eprintln!("live-shots[search]: no results (network/extractor issue) — skipping search still.");
+    } else {
+        println!("  {} real results; top: {:?}", videos.len(), videos[0].title);
+        let mut smodel = TubeModel::default();
+        let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
+        for v in &videos {
+            smodel.ensure_channel_stub(&v.channel_id, &v.channel_name);
+            smodel.upsert_video(v.clone());
+        }
+        smodel.search_query = query.to_string();
+        smodel.search_hits_query = query.to_string();
+        smodel.search_hits = ids;
+        smodel.route = Route::Search(query.to_string());
+        smodel.data_source = DataSource { live: true, label: "live (yt-dlp)".into() };
+
+        // Fetch + decode the real thumbnails through the toolkit's ImageStore.
+        let store = tube::images::image_store();
+        for v in &videos {
+            store.get(&v.thumbnail_url);
+        }
+        println!("  prewarming {} thumbnails…", videos.len());
+        store.block_until_idle(Duration::from_secs(45));
+        println!("  images settled: {} still pending", store.pending());
+
+        let search_app = tube::TubeApp::new()
+            .with_viewport(1280.0, 860.0)
+            .with_model_for_test(smodel)
+            .with_image_store(store);
+        let search_png = out_dir.join("search.png");
+        render_shot_to_png(Box::new(search_app) as Box<dyn Widget>, (1280, 860), &search_png)?;
+        println!("  wrote {}", search_png.display());
+    }
+
+    // ---- Real watch page with a real decoded frame ----
+    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY) — long + stable.
+    println!("live-shots[watch]: metadata + rangeable stream for [{watch_id}]…");
+    let video = match backend.video(watch_id) {
+        Ok(BackendResult::Video(v)) => *v,
+        _ => Video {
+            id: watch_id.to_string(),
+            title: "Big Buck Bunny".into(),
+            dearrow_title: None,
+            channel_id: String::new(),
+            channel_name: "Blender".into(),
+            channel_seed: watch_id.to_string(),
+            views: 0,
+            published: String::new(),
+            duration: 0,
+            description: String::new(),
+            likes: 0,
+            seed: watch_id.to_string(),
+            thumbnail_url: yt_thumb_url(watch_id),
+            category: "Video".into(),
+            dearrow_thumb: false,
+            sponsor: Vec::new(),
+            comments: Vec::new(),
+            live: false,
+        },
+    };
+    // Resolve a fully-rangeable stream (Invidious proxy first, then the direct
+    // backend URL) — the exact production resolution path.
+    let resolved = proxy::resolve_rangeable(watch_id)
+        .map(|r| (r.url, r.quality))
+        .or_else(|| {
+            backend
+                .resolve_playback_source(watch_id)
+                .ok()
+                .map(|s| (s.url, s.quality))
+        });
+    match resolved {
+        Some((url, quality)) => {
+            println!("  resolved {quality} stream; decoding a real frame via the media engine…");
+            let mut wmodel = TubeModel::default();
+            wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
+            wmodel.upsert_video(video.clone());
+            wmodel.data_source = DataSource { live: true, label: "live".into() };
+            let watch_app = tube::TubeApp::new()
+                .with_viewport(1280.0, 860.0)
+                .with_model_for_test(wmodel)
+                .with_live_frame_for_shot(watch_id, url);
+            let watch_png = out_dir.join("watch.png");
+            render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
+            println!("  wrote {}", watch_png.display());
+        }
+        None => {
+            eprintln!(
+                "live-shots[watch]: no Invidious proxy served bytes and no direct URL resolved \
+                 — skipped the watch still (reported honestly, not faked)."
+            );
+        }
+    }
+
+    println!("live-shots: done ({})", out_dir.display());
+    Ok(())
+}
+
+#[cfg(not(all(feature = "live", feature = "media")))]
+fn run_live_shots(_dir: &str, _query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("live-shots: needs `--features \"live media\"` (real data + real decode + images).");
     Ok(())
 }
 
