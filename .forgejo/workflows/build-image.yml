@@ -150,6 +150,13 @@ jobs:
           image: code.sandbox.example/qos/qos@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
+          # Skip the workflow-artifact upload: forgejo's action runner doesn't
+          # implement the GitHub Actions Artifact API v2 that upload-artifact@v4
+          # (which sbom-action calls internally) requires. The SBOM only needs
+          # to reach the next step's cosign attest — no artifact upload needed.
+          upload-artifact: false
+          # Same for release assets — we don't cut GitHub releases on forgejo.
+          upload-release-assets: false
 
       - name: Attest the SBOM to the image (signed)
         if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
