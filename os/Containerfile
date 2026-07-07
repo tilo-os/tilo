@@ -576,7 +576,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         > /etc/qos-swap.d/frozen.repo; \
     printf '[qos-kernel]\nname=qos-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
         > /etc/qos-swap.d/qos-kernel.repo; \
-    dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck \
+    # --allowerasing lets the swap drop the base's `kernel` meta-package
+    # (it hard-requires kernel-core-uname-r = <exact-fedora-version>,
+    # which our qos-kernel-core doesn't satisfy since it carries a
+    # different Release tag). qos-kernel-core Provides: kernel so nothing
+    # downstream loses a dependency.
+    dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck --allowerasing \
         kernel-core qos-kernel-core; \
     rm -rf /etc/qos-swap.d; \
     # If any initramfs was produced by the swap's %post scripts, drop it —
