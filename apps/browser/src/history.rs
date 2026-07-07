@@ -71,6 +71,11 @@ impl History {
         Self { entries: Vec::new() }
     }
 
+    /// Drop all history (the settings "clear history" action).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// All entries, unordered (insertion order). Mostly for inspection
     /// and tests — the address bar goes through [`History::suggest`].
     pub fn entries(&self) -> &[HistoryEntry] {
