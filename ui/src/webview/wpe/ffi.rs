@@ -42,6 +42,10 @@ pub struct GErrorRepr {
 unsafe extern "C" {
     pub fn g_main_context_new() -> *mut GMainContext;
     pub fn g_main_context_push_thread_default(ctx: *mut GMainContext);
+    /// Thread-safe: wakes a context blocked in its poll so a command
+    /// pushed from another thread is drained now, not on the next timer
+    /// tick. This is what keeps input latency off the drain cadence.
+    pub fn g_main_context_wakeup(ctx: *mut GMainContext);
     pub fn g_main_loop_new(ctx: *mut GMainContext, is_running: gboolean) -> *mut GMainLoop;
     pub fn g_main_loop_run(l: *mut GMainLoop);
     pub fn g_timeout_source_new(interval_ms: c_uint) -> *mut GSource;
