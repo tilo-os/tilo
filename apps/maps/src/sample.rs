@@ -87,6 +87,75 @@ fn cell(nx: f64, ny: f64) -> LatLon {
     LatLon::new(CENTER.lat + ny * DLAT, CENTER.lon + nx * DLON)
 }
 
+/// Minutes-past-midnight base the offline demo / `--shots` clocks all derive
+/// from — a fixed 09:00 local morning. Both the road-trip clock (see the app)
+/// and the sample transit departures below anchor here, so the Drive summary
+/// and the Transit departures read from one coherent time instead of a
+/// nondeterministic wall clock. Live sessions use the real `Local::now()`.
+pub const DEMO_CLOCK_BASE_MIN: i64 = 9 * 60;
+
+/// The demo clock base as a concrete local wall-clock instant (today's date at
+/// [`DEMO_CLOCK_BASE_MIN`]). Only the offline demo/screenshot/test path uses
+/// this; the live app anchors trip times to the real `Local::now()`.
+pub fn demo_clock_base() -> chrono::DateTime<chrono::Local> {
+    use chrono::TimeZone;
+    let today = chrono::Local::now().date_naive();
+    let hh = (DEMO_CLOCK_BASE_MIN / 60) as u32;
+    let mm = (DEMO_CLOCK_BASE_MIN % 60) as u32;
+    let naive = today
+        .and_hms_opt(hh, mm, 0)
+        .expect("demo clock base is a valid wall-clock time");
+    match chrono::Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => chrono::Local::now(),
+    }
+}
+
+/// Walk the integer grid lines strictly between `a` and `b` in the travel
+/// direction, then land exactly on `b`. Empty when `a == b`. The building block
+/// for [`grid_path`].
+fn axis_steps(a: f64, b: f64) -> Vec<f64> {
+    let mut out = Vec::new();
+    if (b - a).abs() < 1e-9 {
+        return out;
+    }
+    if b > a {
+        let mut n = a.floor() + 1.0;
+        while n < b - 1e-9 {
+            out.push(n);
+            n += 1.0;
+        }
+    } else {
+        let mut n = a.ceil() - 1.0;
+        while n > b + 1e-9 {
+            out.push(n);
+            n -= 1.0;
+        }
+    }
+    out.push(b);
+    out
+}
+
+/// A polyline between two grid-cell coordinates that follows the street grid —
+/// horizontally along the start row, then vertically along the destination
+/// column — instead of cutting a diagonal across the blocks. This keeps the
+/// sample transit legs sitting on the drawn roads (the only routing graph the
+/// offline basemap has), mirroring how [`sample_route`] walks the grid. Live
+/// data supplies real `legGeometry`; this is only the offline stand-in.
+fn grid_path(from: (f64, f64), to: (f64, f64)) -> Vec<LatLon> {
+    let (x0, y0) = from;
+    let (x1, y1) = to;
+    let mut pts = vec![cell(x0, y0)];
+    for x in axis_steps(x0, x1) {
+        pts.push(cell(x, y0));
+    }
+    for y in axis_steps(y0, y1) {
+        pts.push(cell(x1, y));
+    }
+    pts
+}
+
 /// Build the stylised basemap.
 pub fn basemap() -> Basemap {
     let mut rng = Rng(0x51ED_2026_C0FF_EE01);
@@ -494,18 +563,20 @@ pub fn fallback_route(from: LatLon, to: LatLon, mode: TravelMode) -> Route {
 /// hermetic tests exercise the real on-map itinerary rendering (the live app
 /// gets these from the planner's `legGeometry`).
 pub fn sample_transit() -> Vec<TransitJourney> {
-    // Short polyline along the sample street grid between two grid cells.
-    let seg = |a: (f64, f64), b: (f64, f64)| -> Vec<LatLon> {
-        vec![cell(a.0, a.1), cell((a.0 + b.0) / 2.0, a.1), cell(b.0, b.1)]
+    // All departure/arrival clocks derive from the one shared demo base so the
+    // Transit departures stay consistent with the Drive summary's clock.
+    let clk = |off: i64| -> String {
+        let m = DEMO_CLOCK_BASE_MIN + off;
+        format!("{:02}:{:02}", m / 60, m % 60)
     };
-    let walk = |from: &str, to: &str, dep: &str, arr: &str, min: u32, geom: Vec<LatLon>| TransitLeg {
+    let walk = |from: &str, to: &str, dep: i64, arr: i64, min: u32, geom: Vec<LatLon>| TransitLeg {
         mode: TransitMode::Walk,
         line: String::new(),
         headsign: String::new(),
         from_name: from.to_string(),
         to_name: to.to_string(),
-        dep: dep.to_string(),
-        arr: arr.to_string(),
+        dep: clk(dep),
+        arr: clk(arr),
         duration_min: min,
         num_stops: 0,
         geometry: geom,
@@ -517,49 +588,49 @@ pub fn sample_transit() -> Vec<TransitJourney> {
 
     vec![
         TransitJourney {
-            dep: "09:12".to_string(),
-            arr: "09:26".to_string(),
+            dep: clk(12),
+            arr: clk(26),
             duration_min: 14,
             transfers: 0,
             legs: vec![
-                walk("Your location", "Goetheplatz", "09:12", "09:16", 4, seg((-6.5, -6.0), (-5.0, -5.0))),
+                walk("Your location", "Goetheplatz", 12, 16, 4, grid_path((-6.5, -6.0), (-5.0, -5.0))),
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3".to_string(),
                     headsign: "→ Moosach".to_string(),
                     from_name: "Goetheplatz".to_string(),
                     to_name: "Marienplatz".to_string(),
-                    dep: "09:17".to_string(),
-                    arr: "09:23".to_string(),
+                    dep: clk(17),
+                    arr: clk(23),
                     duration_min: 6,
                     num_stops: 3,
-                    geometry: vec![cell(-5.0, -5.0), cell(-3.0, -3.0), cell(-1.0, -1.0), cell(0.0, 0.0)],
+                    geometry: grid_path((-5.0, -5.0), (0.0, 0.0)),
                     color: Some("eb690b".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
                     realtime: true,
                 },
-                walk("Marienplatz", "Marienplatz", "09:24", "09:26", 2, seg((0.0, 0.0), (0.2, -0.2))),
+                walk("Marienplatz", "Marienplatz", 24, 26, 2, grid_path((0.0, 0.0), (0.2, -0.2))),
             ],
         },
         TransitJourney {
-            dep: "09:08".to_string(),
-            arr: "09:27".to_string(),
+            dep: clk(8),
+            arr: clk(27),
             duration_min: 19,
             transfers: 1,
             legs: vec![
-                walk("Your location", "Sendlinger Tor", "09:08", "09:11", 3, seg((-6.5, -6.0), (-4.0, -4.0))),
+                walk("Your location", "Sendlinger Tor", 8, 11, 3, grid_path((-6.5, -6.0), (-4.0, -4.0))),
                 TransitLeg {
                     mode: TransitMode::Tram,
                     line: "17".to_string(),
                     headsign: "→ Schwanseestraße".to_string(),
                     from_name: "Sendlinger Tor".to_string(),
                     to_name: "Reichenbachplatz".to_string(),
-                    dep: "09:12".to_string(),
-                    arr: "09:16".to_string(),
+                    dep: clk(12),
+                    arr: clk(16),
                     duration_min: 4,
                     num_stops: 2,
-                    geometry: vec![cell(-4.0, -4.0), cell(-3.0, -2.5), cell(-2.0, -1.5)],
+                    geometry: grid_path((-4.0, -4.0), (-2.0, -1.5)),
                     color: Some("e30613".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
@@ -571,37 +642,37 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     headsign: "→ Tierpark".to_string(),
                     from_name: "Reichenbachplatz".to_string(),
                     to_name: "Marienplatz".to_string(),
-                    dep: "09:19".to_string(),
-                    arr: "09:25".to_string(),
+                    dep: clk(19),
+                    arr: clk(25),
                     duration_min: 6,
                     num_stops: 3,
-                    geometry: vec![cell(-2.0, -1.5), cell(-1.0, -0.5), cell(0.0, 0.0)],
+                    geometry: grid_path((-2.0, -1.5), (0.0, 0.0)),
                     color: Some("005e82".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
                     realtime: false,
                 },
-                walk("Marienplatz", "Marienplatz", "09:25", "09:27", 2, seg((0.0, 0.0), (0.2, -0.2))),
+                walk("Marienplatz", "Marienplatz", 25, 27, 2, grid_path((0.0, 0.0), (0.2, -0.2))),
             ],
         },
         TransitJourney {
-            dep: "09:05".to_string(),
-            arr: "09:29".to_string(),
+            dep: clk(5),
+            arr: clk(29),
             duration_min: 24,
             transfers: 1,
             legs: vec![
-                walk("Your location", "Poccistraße", "09:05", "09:10", 5, seg((-6.5, -6.0), (-6.0, -4.5))),
+                walk("Your location", "Poccistraße", 5, 10, 5, grid_path((-6.5, -6.0), (-6.0, -4.5))),
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3/U6".to_string(),
                     headsign: "→ Garching".to_string(),
                     from_name: "Poccistraße".to_string(),
                     to_name: "Odeonsplatz".to_string(),
-                    dep: "09:13".to_string(),
-                    arr: "09:21".to_string(),
+                    dep: clk(13),
+                    arr: clk(21),
                     duration_min: 8,
                     num_stops: 4,
-                    geometry: vec![cell(-6.0, -4.5), cell(-4.0, -2.0), cell(-1.0, 2.0), cell(1.5, 5.0)],
+                    geometry: grid_path((-6.0, -4.5), (1.5, 5.0)),
                     color: Some("0065ae".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
@@ -613,17 +684,17 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     headsign: "→ Ostbahnhof".to_string(),
                     from_name: "Odeonsplatz".to_string(),
                     to_name: "Marienplatz".to_string(),
-                    dep: "09:24".to_string(),
-                    arr: "09:27".to_string(),
+                    dep: clk(24),
+                    arr: clk(27),
                     duration_min: 3,
                     num_stops: 1,
-                    geometry: vec![cell(1.5, 5.0), cell(0.5, 2.0), cell(0.0, 0.0)],
+                    geometry: grid_path((1.5, 5.0), (0.0, 0.0)),
                     color: Some("16bae7".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "DB Regio AG S-Bahn München".to_string(),
                     realtime: true,
                 },
-                walk("Marienplatz", "Marienplatz", "09:27", "09:29", 2, seg((0.0, 0.0), (0.2, -0.2))),
+                walk("Marienplatz", "Marienplatz", 27, 29, 2, grid_path((0.0, 0.0), (0.2, -0.2))),
             ],
         },
     ]
@@ -698,5 +769,71 @@ mod tests {
         assert!(r.duration_s > 0.0);
         assert!(r.geometry.len() >= 3);
         assert_eq!(r.steps.last().unwrap().maneuver, Maneuver::Arrive);
+    }
+
+    /// Every drawn transit leg follows the street grid: each segment runs along
+    /// a grid line (constant lat OR constant lon), never a crow-flies diagonal
+    /// across the blocks, and a ride leg bends at least once (so it is provably
+    /// not a 2-point straight line). This guards the old fake-diagonal route.
+    #[test]
+    fn transit_legs_follow_grid_not_diagonal() {
+        let journeys = sample_transit();
+        assert!(!journeys.is_empty());
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let mut exercised_ride = false;
+        for j in &journeys {
+            for leg in &j.legs {
+                let g = &leg.geometry;
+                assert!(g.len() >= 2, "a drawn leg has a real polyline, not a point");
+                for seg in g.windows(2) {
+                    let axis_aligned = approx(seg[0].lat, seg[1].lat) || approx(seg[0].lon, seg[1].lon);
+                    assert!(
+                        axis_aligned,
+                        "leg segment cuts a diagonal across blocks: {:?} -> {:?}",
+                        seg[0], seg[1]
+                    );
+                }
+                if leg.mode != TransitMode::Walk {
+                    assert!(
+                        g.len() >= 3,
+                        "a ride leg follows multiple grid segments, not a straight 2-point line"
+                    );
+                    exercised_ride = true;
+                }
+            }
+        }
+        assert!(exercised_ride, "at least one non-walk transit leg was checked");
+    }
+
+    /// `grid_path` never emits a diagonal segment and keeps the exact endpoints
+    /// as the first/last vertex (the transfer pucks anchor on them).
+    #[test]
+    fn grid_path_is_axis_aligned_and_keeps_endpoints() {
+        let p = grid_path((-5.0, -5.0), (0.0, 0.0));
+        assert_eq!(p.first().copied(), Some(cell(-5.0, -5.0)));
+        assert_eq!(p.last().copied(), Some(cell(0.0, 0.0)));
+        assert!(p.len() >= 3, "a two-axis path bends through the grid");
+        for seg in p.windows(2) {
+            let aligned = (seg[0].lat - seg[1].lat).abs() < 1e-9
+                || (seg[0].lon - seg[1].lon).abs() < 1e-9;
+            assert!(aligned, "grid_path emitted a diagonal segment");
+        }
+    }
+
+    /// The sample departures derive from the shared demo base minute, so every
+    /// clock reads the same 09:00 morning the Drive summary uses.
+    #[test]
+    fn transit_clocks_derive_from_demo_base() {
+        let base_hh = format!("{:02}", DEMO_CLOCK_BASE_MIN / 60);
+        let journeys = sample_transit();
+        for j in &journeys {
+            assert!(j.dep.starts_with(&base_hh), "journey departs the base hour: {}", j.dep);
+            assert!(j.arr.starts_with(&base_hh), "journey arrives the base hour: {}", j.arr);
+            for leg in &j.legs {
+                assert!(leg.dep.starts_with(&base_hh), "leg departs the base hour: {}", leg.dep);
+            }
+        }
+        // The concrete base instant reads the same wall clock.
+        assert_eq!(demo_clock_base().format("%H:%M").to_string(), "09:00");
     }
 }
