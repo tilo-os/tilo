@@ -215,6 +215,11 @@ pub struct MusicApp {
     cover_pick: Option<portal::CoverChannel>,
 
     seeded: bool,
+    /// When `true`, a first `sync` onto an empty document writes the bundled
+    /// sample catalog instead of an empty library. Only the `--shots` renderer
+    /// and tests set this (see [`MusicApp::seed_sample_library`]); the live app
+    /// starts with an empty library and fills it from real playback + search.
+    seed_samples: bool,
     /// Whether the initial playback snapshot has been adopted from the
     /// document. After the first load, playback is authoritative in-memory
     /// (persisted out to the doc on each event) so the smoothly-advancing
@@ -434,6 +439,7 @@ impl MusicApp {
             mpris_last: None,
             cover_pick: None,
             seeded: false,
+            seed_samples: false,
             playback_loaded: false,
             bound_track: None,
             playhead_ms: 0.0,
@@ -503,6 +509,13 @@ impl MusicApp {
     /// placeholders render deterministically.
     pub fn set_offline_for_shot(&mut self) {
         self.allow_network = false;
+    }
+
+    /// Seed the bundled sample catalog on the first `sync` instead of starting
+    /// with an empty library. Only the `--shots` renderer and tests call this —
+    /// the live app never fabricates a library.
+    pub fn seed_sample_library(&mut self) {
+        self.seed_samples = true;
     }
 
     /// Whether every live fetch this frame needs has settled — used by the
@@ -604,9 +617,19 @@ impl MusicApp {
             return;
         }
         if !doc::is_seeded(state) {
-            let lib = seed::sample_library();
-            let pb = seed::sample_playback(&lib);
-            doc::seed(state, &lib, &pb);
+            if self.seed_samples {
+                // `--shots` / tests: the bundled sample catalog so a headless
+                // frame (and the deterministic tests) have real content.
+                let lib = seed::sample_library();
+                let pb = seed::sample_playback(&lib);
+                doc::seed(state, &lib, &pb);
+            } else {
+                // Live default: an empty library. The document structure is
+                // still initialised (so `is_seeded`, persistence and sync all
+                // work) but carries no fabricated tracks/playlists — the real
+                // library fills in from playback and search.
+                doc::seed(state, &Library::default(), &Playback::default());
+            }
         }
         self.seeded = true;
     }
@@ -2403,6 +2426,11 @@ mod tests {
 
     fn app_with_doc() -> (MusicApp, AutoCommit) {
         let mut app = MusicApp::new();
+        // The behaviour tests exercise playback, queueing and playlists against
+        // the bundled catalog, so — like `--shots` — they opt into the sample
+        // library. The live default (no opt-in) starts empty; see
+        // `default_startup_has_empty_library`.
+        app.seed_sample_library();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
         app.reload(&doc);
@@ -2508,6 +2536,22 @@ mod tests {
         // A fresh launch is idle: nothing is playing until the user starts it.
         assert!(app.pb.current.is_none(), "no fabricated now-playing track on startup");
         assert!(!app.pb.playing, "transport is not playing on startup");
+    }
+
+    #[test]
+    fn default_startup_has_empty_library() {
+        // The live app (no `seed_sample_library` opt-in) must NOT fabricate a
+        // catalog: a fresh document seeds an empty library + playlists.
+        let mut app = MusicApp::new();
+        let mut doc = AutoCommit::new();
+        app.ensure_seeded(&mut doc);
+        app.reload(&doc);
+        assert_eq!(app.lib.total_tracks(), 0, "no fabricated tracks on a fresh launch");
+        assert!(app.lib.playlists.is_empty(), "no fabricated playlists on a fresh launch");
+        assert!(app.pb.current.is_none(), "nothing playing on a fresh launch");
+        // The document is still initialised (so persistence + sync work), just
+        // empty — a second launch adopts it without re-seeding.
+        assert!(doc::is_seeded(&doc), "the empty library still initialises the doc structure");
     }
 
     #[test]

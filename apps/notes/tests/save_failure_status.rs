@@ -18,7 +18,7 @@ use ui::widget::Widget;
 #[test]
 fn status_bar_surfaces_page_save_failure() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
 
     // Fresh page → CreateChild writes an empty body file for it.
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
