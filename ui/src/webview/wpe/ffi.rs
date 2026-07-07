@@ -239,6 +239,20 @@ pub enum WebKitUserContentManager {}
 pub enum WebKitUserContentFilterStore {}
 pub enum WebKitUserContentFilter {}
 pub enum WebKitNetworkSession {}
+pub enum WebKitUserScript {}
+pub enum WebKitWebsiteDataManager {}
+
+/// `WebKitUserContentInjectedFrames::ALL_FRAMES`
+pub const WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES: c_uint = 0;
+/// `WebKitUserScriptInjectionTime::AT_DOCUMENT_START` — run before the
+/// page's own scripts, so an ad-skip script wins the race.
+pub const WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START: c_uint = 0;
+/// `WebKitWebsiteDataTypes::ALL` — cookies, caches, storage, service
+/// workers, the lot. `(1 << 12) - 1` in the 2.52 header.
+pub const WEBKIT_WEBSITE_DATA_ALL: c_uint = (1 << 12) - 1;
+
+/// `GTimeSpan` (microseconds); `0` for `clear` means "all time".
+pub type GTimeSpan = i64;
 
 /// `WebKitLoadEvent`
 pub const WEBKIT_LOAD_STARTED: c_uint = 0;
@@ -283,6 +297,38 @@ unsafe extern "C" {
         filter: *mut WebKitUserContentFilter,
     );
     pub fn webkit_user_content_manager_remove_all_filters(ucm: *mut WebKitUserContentManager);
+
+    // ── injected user scripts (scriptlet-style blocking, e.g. YouTube ads) ──
+    pub fn webkit_user_script_new(
+        source: *const c_char,
+        injected_frames: c_uint,
+        injection_time: c_uint,
+        allow_list: *const *const c_char,
+        block_list: *const *const c_char,
+    ) -> *mut WebKitUserScript;
+    pub fn webkit_user_script_unref(script: *mut WebKitUserScript);
+    pub fn webkit_user_content_manager_add_script(
+        ucm: *mut WebKitUserContentManager,
+        script: *mut WebKitUserScript,
+    );
+    pub fn webkit_user_content_manager_remove_all_scripts(ucm: *mut WebKitUserContentManager);
+
+    // ── website data (clear cookies / cache / storage) ──
+    pub fn webkit_web_view_get_network_session(
+        view: *mut WebKitWebView,
+    ) -> *mut WebKitNetworkSession;
+    pub fn webkit_network_session_get_website_data_manager(
+        session: *mut WebKitNetworkSession,
+    ) -> *mut WebKitWebsiteDataManager;
+    /// Async; pass a null callback for fire-and-forget.
+    pub fn webkit_website_data_manager_clear(
+        manager: *mut WebKitWebsiteDataManager,
+        types: c_uint,
+        timespan: GTimeSpan,
+        cancellable: *mut GCancellable,
+        callback: *const c_void,
+        user_data: *mut c_void,
+    );
 
     pub fn webkit_user_content_filter_store_new(
         storage_path: *const c_char,

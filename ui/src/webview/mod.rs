@@ -116,6 +116,14 @@ pub enum WebViewCommand {
     /// Compiled WebKit content-blocker JSON (`None` clears the filter).
     /// Backends without native content filtering ignore this.
     SetContentFilter(Option<Arc<String>>),
+    /// Inject JavaScript user scripts (replacing any previously set) —
+    /// scriptlet-style blocking the declarative content filter can't
+    /// express, e.g. skipping YouTube video ads. Run at document-start in
+    /// all frames.
+    SetUserScripts(Arc<Vec<String>>),
+    /// Clear all persistent website data (cookies, caches, storage,
+    /// service workers). Backends without a data store ignore this.
+    ClearWebsiteData,
 }
 
 /// Navigation / UI state changes from the engine to the host app. The

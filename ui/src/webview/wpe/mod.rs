@@ -640,6 +640,41 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
                 ffi::webkit_user_content_manager_remove_all_filters(ucm);
             }
+            WebViewCommand::SetUserScripts(scripts) => {
+                let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
+                ffi::webkit_user_content_manager_remove_all_scripts(ucm);
+                for src in scripts.iter() {
+                    if let Ok(c) = CString::new(src.as_str()) {
+                        let script = ffi::webkit_user_script_new(
+                            c.as_ptr(),
+                            ffi::WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                            ffi::WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                            std::ptr::null(),
+                            std::ptr::null(),
+                        );
+                        if !script.is_null() {
+                            ffi::webkit_user_content_manager_add_script(ucm, script);
+                            ffi::webkit_user_script_unref(script);
+                        }
+                    }
+                }
+            }
+            WebViewCommand::ClearWebsiteData => {
+                let session = ffi::webkit_web_view_get_network_session(state.view);
+                if !session.is_null() {
+                    let mgr = ffi::webkit_network_session_get_website_data_manager(session);
+                    if !mgr.is_null() {
+                        ffi::webkit_website_data_manager_clear(
+                            mgr,
+                            ffi::WEBKIT_WEBSITE_DATA_ALL,
+                            0, // all time
+                            std::ptr::null_mut(),
+                            std::ptr::null(), // fire-and-forget
+                            std::ptr::null_mut(),
+                        );
+                    }
+                }
+            }
         }
     }
 }
