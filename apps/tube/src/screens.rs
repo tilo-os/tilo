@@ -15,7 +15,7 @@ use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
     subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, ImageBox, IntoElement,
-    Justify, Len, PlayerHost, SeekBar, SharedPlayer, Surface, Switch, Thumbnail,
+    Justify, Len, PlayerHost, SharedPlayer, Surface, Switch, Thumbnail,
 };
 
 use crate::contrast::SelectedStyle;
@@ -332,6 +332,49 @@ fn grid(cards: Vec<Flex>) -> Flex {
 }
 
 // ---------------------------------------------------------------------------
+// loading skeletons
+// ---------------------------------------------------------------------------
+
+/// A neutral placeholder block used to compose loading skeletons.
+fn skeleton_block(theme: &Theme, width: Len, height: f32, radius: f64) -> Flex {
+    Flex::row().w(width).h(Len::Px(height)).surface(Surface {
+        fill: Some(subtle_fill(theme)),
+        radius,
+        border: None,
+    })
+}
+
+/// One skeleton video card: a placeholder thumbnail + avatar dot + text lines,
+/// matching the real `video_card` footprint so results don't jump when they
+/// land. Shown while a fetch is in flight instead of a premature empty state.
+fn skeleton_card(theme: &Theme) -> Flex {
+    Flex::col()
+        .w(Len::Px(CARD_W))
+        .gap(9.0)
+        .pad(6.0)
+        .push(skeleton_block(theme, Len::Fill, THUMB_H, theme.tokens.radii.lg as f64))
+        .push(
+            Flex::row()
+                .gap(10.0)
+                .fill_w()
+                .align(Align::Start)
+                .push(skeleton_block(theme, Len::Px(36.0), 36.0, 18.0))
+                .push(
+                    Flex::col()
+                        .grow(1.0)
+                        .gap(7.0)
+                        .push(skeleton_block(theme, Len::Pct(0.92), 12.0, 4.0))
+                        .push(skeleton_block(theme, Len::Pct(0.6), 11.0, 4.0))
+                        .push(skeleton_block(theme, Len::Pct(0.4), 11.0, 4.0)),
+                ),
+        )
+}
+
+fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
+    grid((0..n).map(|_| skeleton_card(theme)).collect())
+}
+
+// ---------------------------------------------------------------------------
 // chrome: nav rail + top bar
 // ---------------------------------------------------------------------------
 
@@ -433,12 +476,14 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .with_font_size(15.0)
         .with_placeholder("Search");
 
+    // A single search lens (leading) — Enter submits, so there is no second
+    // trailing lens/button cluttering the field.
     let search = Flex::row()
         .grow(1.0)
         .max_w(560.0)
         .h(Len::Px(42.0))
-        .gap(8.0)
-        .pad_xy(14.0, 0.0)
+        .gap(10.0)
+        .pad_xy(16.0, 0.0)
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
@@ -446,8 +491,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             border: Some((1.0, theme.border_standard)),
         })
         .push(icon(IconKind::Search, 18.0, theme.text_dim))
-        .push(Flex::row().grow(1.0).push(search_input))
-        .push(icon_button(theme, bus, IconKind::Search, Action::SubmitSearch));
+        .push(Flex::row().grow(1.0).push(search_input));
 
     // Only surface the data-source indicator when we're NOT on live data
     // (connecting or offline) — in the normal live case the top bar stays clean.
@@ -476,6 +520,9 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                 .push(text_c("Tube", 22.0, theme.text_primary)),
         )
         .push(search)
+        // Push the status + account avatar hard to the right edge for a
+        // balanced bar (search sits centre-left, account is top-right).
+        .push(spring())
         .push(status)
         .push(avatar("You", 36.0))
 }
@@ -563,7 +610,21 @@ fn scroll(content: Flex) -> Scrollable {
 }
 
 pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
-    let cards: Vec<Flex> = model.videos.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
+    // Cold start shows a skeleton (loading) or an honest empty state — never a
+    // fabricated sample catalogue presented as real. Real cards only.
+    let body = if model.videos.is_empty() {
+        if model.feed_loading {
+            skeleton_grid(theme, 12)
+        } else {
+            empty_state(
+                theme,
+                "Nothing to show yet",
+                "Search for something, or check back when the trending feed loads.",
+            )
+        }
+    } else {
+        grid(model.videos.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect())
+    };
     scroll(
         Flex::col()
             .fill_w()
@@ -571,7 +632,7 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
             .gap(18.0)
             .push(chip_bar(model, theme, bus))
             .push(section_header(theme, IconKind::Fire, "Trending", ""))
-            .push(grid(cards)),
+            .push(body),
     )
 }
 
@@ -655,7 +716,22 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
 pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, query: &str) -> Scrollable {
     let results = model.search_display(query);
     let cards: Vec<Flex> = results.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
-    let header = format!("{} results", cards.len());
+    // While a fetch is in flight, show a skeleton — NEVER a premature "No
+    // results" (the bug that shipped). An empty query invites a search.
+    let header = if model.search_loading {
+        "Searching…".to_string()
+    } else {
+        format!("{} results", cards.len())
+    };
+    let body = if model.search_loading {
+        skeleton_grid(theme, 8)
+    } else if query.trim().is_empty() {
+        empty_state(theme, "Search Tube", "Type a query above to find videos and channels.")
+    } else if cards.is_empty() {
+        empty_state(theme, "No results", "Nothing matched that search — try different words.")
+    } else {
+        grid(cards)
+    };
     let col = Flex::col()
         .fill_w()
         .pad(24.0)
@@ -666,16 +742,12 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
                 .gap(10.0)
                 .align(Align::Center)
                 .push(icon(IconKind::Search, 20.0, theme.accent_primary))
-                .push(text(if query.is_empty() { "All videos" } else { query }, 21.0))
+                .push(text(if query.is_empty() { "Search" } else { query }, 21.0))
                 .push(spring())
                 .push(dim(theme, &header, 13.0)),
         )
         .push(chip_bar(model, theme, bus))
-        .push(if cards.is_empty() {
-            empty_state(theme, "No matches", "Try a different search.")
-        } else {
-            grid(cards)
-        });
+        .push(body);
     scroll(col)
 }
 
@@ -780,19 +852,78 @@ pub fn watch(
     };
     let player_h = ((player_col_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
 
+    // ONE timeline: feed the enabled community SponsorBlock segments to the
+    // shared player so they render inline on its own scrub track (the app no
+    // longer draws a second timeline below). Marks are fractions of the known
+    // video length so they line up on the bar regardless of engine timing.
+    let dur = v.duration.max(1) as f32;
+    let marks: Vec<(f32, f32, Color)> = if model.settings.sponsorblock_enabled {
+        v.sponsor
+            .iter()
+            .filter(|s| model.settings.category_enabled(s.category))
+            .map(|s| {
+                let (r, g, b) = s.category.rgb();
+                (s.start as f32 / dur, s.end as f32 / dur, Color::from_rgb8(r, g, b))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    player.borrow_mut().set_sponsor_marks(marks);
+
+    // A show-mode segment the playhead is currently inside gets a small,
+    // unintrusive "Skip" button floated over the video (bottom-right, above the
+    // controls bar). It dismisses itself when the playhead leaves the segment.
+    let manual = v.sponsor.iter().find(|s| {
+        model.settings.should_show_skip(s.category) && s.contains(model.playhead)
+    });
+
     // The player surface is the app's persistent, shared `ui::widget::VideoPlayer`
     // (real GStreamer decode + audio under `--features media`, a synthesized frame
     // otherwise) mounted here via a cheap `PlayerHost`, so it survives the
     // whole-tree rebuild without restarting the video. Its overlaid controls bar
-    // (play/pause, scrub, volume, fullscreen) is the transport. Height tracks the
-    // column width at a 16:9 ratio.
-    let player_view = Flex::col()
+    // (play/pause, the single scrub timeline carrying the SponsorBlock marks,
+    // volume, fullscreen) is the transport; clicking the surface toggles
+    // play/pause. Height tracks the column width at a 16:9 ratio.
+    let mut stage = Flex::col()
         .fill_w()
+        .h(Len::Px(player_h))
         .push(PlayerHost::new(player, player_h));
+    if let Some(s) = manual {
+        stage = stage.push(
+            Flex::col()
+                .float()
+                .fill_w()
+                .fill_h()
+                .align(Align::End)
+                .justify(Justify::End)
+                .pad_each(0.0, 0.0, 16.0, 52.0)
+                .push(
+                    Flex::row()
+                        .id("sb_skip_btn")
+                        .gap(6.0)
+                        .pad_xy(13.0, 8.0)
+                        .align(Align::Center)
+                        .surface(Surface {
+                            fill: Some(Color::from_rgba8(0, 0, 0, 200)),
+                            radius: theme.tokens.radii.full as f64,
+                            border: Some((1.0, Color::from_rgba8(255, 255, 255, 40))),
+                        })
+                        .hover_surface(Surface {
+                            fill: Some(theme.accent_primary),
+                            radius: theme.tokens.radii.full as f64,
+                            border: None,
+                        })
+                        .on_click(bus, Action::SkipSegment(s.end))
+                        .push(text_c(&format!("Skip {}", s.category.label()), 13.0, Color::WHITE))
+                        .push(icon(IconKind::Skip, 14.0, Color::WHITE)),
+                ),
+        );
+    }
+    let player_view = Flex::col().fill_w().push(stage);
 
-    // A compact row under the player for app-level playback affordances that the
-    // shared player doesn't own: the preferred-quality selector and a gear that
-    // opens Settings (playback / SponsorBlock / DeArrow / source).
+    // A compact row under the player: the preferred-quality selector (left) + a
+    // gear that opens Settings (right). Clean and small.
     let player_actions = Flex::row()
         .fill_w()
         .gap(12.0)
@@ -868,63 +999,6 @@ pub fn watch(
             .id("subscribe_btn"),
         );
 
-    let sb_card = sponsor_summary(model, theme, bus, v);
-
-    // SponsorBlock timeline: a segment-marked scrubber under the player. Each
-    // community segment is painted inline in its category colour over the full
-    // duration, so the sponsor/intro/outro spans are visible before playback;
-    // click or drag anywhere to seek. Only the enabled (non-Off) categories are
-    // marked.
-    let sb_segments: Vec<crate::model::Segment> = if model.settings.sponsorblock_enabled {
-        v.sponsor
-            .iter()
-            .filter(|s| model.settings.category_enabled(s.category))
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let has_sb_timeline = !sb_segments.is_empty();
-    let sb_enabled = vec![true; sb_segments.len()];
-    let sb_timeline = Flex::col()
-        .id("sb_timeline")
-        .fill_w()
-        .gap(4.0)
-        .push(SeekBar::new(
-            bus,
-            v.duration.max(1) as f64,
-            model.playhead,
-            sb_segments,
-            sb_enabled,
-        ))
-        .push(
-            Flex::row()
-                .gap(6.0)
-                .align(Align::Center)
-                .push(icon(IconKind::Shield, 12.0, theme.accent_primary))
-                .push(dim(theme, "SponsorBlock timeline", 11.0)),
-        );
-
-    // Manual "Skip" button for a Show-mode segment the playhead is inside (the
-    // suggest-don't-auto-skip path). Auto-skip categories jump on their own; a
-    // Show category waits for this tap.
-    let manual = v.sponsor.iter().find(|s| {
-        model.settings.should_show_skip(s.category) && s.contains(model.playhead)
-    });
-    let show_skip = manual.is_some();
-    let skip_btn = match manual {
-        Some(s) => pill(
-            theme,
-            bus,
-            &format!("Skip {}", s.category.label()),
-            Some(IconKind::Skip),
-            Action::SkipSegment(s.end),
-            true,
-        )
-        .id("sb_skip_btn"),
-        None => pill(theme, bus, "Skip", Some(IconKind::Skip), Action::SkipSegment(0.0), true),
-    };
-
     let desc = Flex::col()
         .fill_w()
         .gap(6.0)
@@ -950,15 +1024,12 @@ pub fn watch(
     let left = Flex::col()
         .gap(14.0)
         .push(player_view)
-        .push_if(has_sb_timeline, sb_timeline)
-        .push_if(show_skip, skip_btn)
         .push(player_actions)
         .push_if(!model.notices.is_empty(), notices_view(theme, model))
         .push(title)
         .push(meta)
         .push(divider(theme))
         .push(channel_row)
-        .push(sb_card)
         .push(desc)
         .push(divider(theme))
         .push(comments);
@@ -1018,66 +1089,6 @@ fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .align(Align::Center)
         .push(dim(theme, "Autoplay", 12.5))
         .push(Switch::new(model.settings.autoplay, bus, Action::ToggleSetting(SettingFlag::Autoplay)))
-}
-
-fn sponsor_summary(model: &TubeModel, theme: &Theme, bus: &ActionBus, v: &Video) -> Flex {
-    let mut col = Flex::col().fill_w().gap(10.0).pad(14.0).surface(card_surface(theme));
-    col = col.push(
-        Flex::row()
-            .fill_w()
-            .gap(8.0)
-            .align(Align::Center)
-            .push(icon(IconKind::Shield, 18.0, theme.accent_primary))
-            .push(text("SponsorBlock", 15.0))
-            .push(spring())
-            .push(dim(
-                theme,
-                if v.sponsor.is_empty() {
-                    "no segments".to_string()
-                } else {
-                    format!("{} segments", v.sponsor.len())
-                },
-                12.0,
-            ))
-            .push(Switch::new(
-                model.settings.sponsorblock_enabled,
-                bus,
-                Action::ToggleSetting(SettingFlag::SponsorBlock),
-            )),
-    );
-    if v.sponsor.is_empty() {
-        col = col.push(dim(theme, "No community segments for this video yet.", 12.5));
-    } else {
-        let mut legend = Flex::row().fill_w().wrap().gap(8.0);
-        for s in &v.sponsor {
-            let (r, g, b) = s.category.rgb();
-            let on = model.settings.category_enabled(s.category);
-            legend = legend.push(
-                Flex::row()
-                    .gap(6.0)
-                    .pad_xy(9.0, 5.0)
-                    .align(Align::Center)
-                    .surface(Surface {
-                        fill: Some(subtle_fill(theme)),
-                        radius: theme.tokens.radii.full as f64,
-                        border: None,
-                    })
-                    .on_click(bus, Action::ToggleCategory(s.category))
-                    .push(Flex::row().fixed(10.0, 10.0).surface(Surface {
-                        fill: Some(Color::from_rgba8(r, g, b, if on { 255 } else { 90 })),
-                        radius: 5.0,
-                        border: None,
-                    }))
-                    .push(text_c(
-                        &format!("{} · {}", s.category.label(), clock(s.start)),
-                        12.0,
-                        if on { theme.text_primary } else { theme.text_dim },
-                    )),
-            );
-        }
-        col = col.push(legend);
-    }
-    col
 }
 
 /// The toast stack of transient notices (auto-skip confirmations, "link
@@ -1150,17 +1161,36 @@ fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
 // ---------------------------------------------------------------------------
 
 fn setting_row(theme: &Theme, title: &str, desc: &str, control: impl IntoElement) -> Flex {
+    setting_row_gated(theme, title, desc, control, true)
+}
+
+/// A settings row whose label + description dim when `active` is false — used to
+/// show that a sub-setting is currently gated by a master switch (e.g. the
+/// DeArrow title/thumbnail toggles while DeArrow itself is off), so its state
+/// stays reviewable without looking live.
+fn setting_row_gated(
+    theme: &Theme,
+    title: &str,
+    desc: &str,
+    control: impl IntoElement,
+    active: bool,
+) -> Flex {
+    let (title_c, desc_c) = if active {
+        (theme.text_primary, theme.text_dim)
+    } else {
+        (theme.text_dim, theme.text_dim)
+    };
     Flex::row()
         .fill_w()
         .gap(16.0)
-        .pad_xy(0.0, 8.0)
+        .pad_xy(0.0, 10.0)
         .align(Align::Center)
         .push(
             Flex::col()
                 .grow(1.0)
-                .gap(2.0)
-                .push(text(title, 14.5))
-                .push(dim(theme, desc, 12.5)),
+                .gap(3.0)
+                .push(text_c(title, 14.5, title_c))
+                .push(text_c(desc, 12.5, desc_c)),
         )
         .push(control)
 }
@@ -1169,10 +1199,10 @@ fn settings_card(theme: &Theme, title: &str, rows: Vec<Flex>) -> Flex {
     let mut col = Flex::col()
         .fill_w()
         .gap(2.0)
-        .pad(18.0)
+        .pad_each(20.0, 16.0, 20.0, 16.0)
         .surface(card_surface(theme))
-        .push(text(title, 16.0))
-        .push(gap(1.0, 6.0));
+        .push(text(title, 16.5))
+        .push(gap(1.0, 8.0));
     for (i, r) in rows.into_iter().enumerate() {
         if i > 0 {
             col = col.push(divider(theme));
@@ -1180,6 +1210,13 @@ fn settings_card(theme: &Theme, title: &str, rows: Vec<Flex>) -> Flex {
         col = col.push(r);
     }
     col
+}
+
+/// Full-width vertical spacer. Used between settings sections because their
+/// scroll wrapper lays out as a CSS block, and block layout ignores flex `gap`
+/// — so the cards would otherwise stack flush against each other.
+fn vspace(px: f32) -> Flex {
+    Flex::row().fill_w().h(Len::Px(px))
 }
 
 /// A clickable three-state mode selector for a SponsorBlock category. Cycles
@@ -1280,10 +1317,16 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         vec![
             setting_row(theme, "Enable DeArrow", "Use community branding in place of clickbait.",
                 Switch::new(s.dearrow_enabled, bus, Action::ToggleSetting(SettingFlag::DeArrow)).id("switch_dearrow")),
-            setting_row(theme, "Replace clickbait titles", "Show community-submitted, factual titles instead of clickbait.",
-                Switch::new(s.dearrow_titles, bus, Action::ToggleSetting(SettingFlag::DeArrowTitles)).id("switch_dearrow_titles")),
-            setting_row(theme, "Replace thumbnails", "Use neutral community thumbnails in place of clickbait frames.",
-                Switch::new(s.dearrow_thumbnails, bus, Action::ToggleSetting(SettingFlag::DeArrowThumbnails)).id("switch_dearrow_thumbs")),
+            // The two sub-toggles are gated by the master switch: they dim while
+            // DeArrow is off (their stored choice is still shown + editable), and
+            // only take effect once it's on. `dearrow_titles_on()` /
+            // `dearrow_thumbs_on()` read exactly this combination on every card.
+            setting_row_gated(theme, "Replace clickbait titles", "Show community-submitted, factual titles instead of clickbait.",
+                Switch::new(s.dearrow_titles, bus, Action::ToggleSetting(SettingFlag::DeArrowTitles)).id("switch_dearrow_titles"),
+                s.dearrow_enabled),
+            setting_row_gated(theme, "Replace thumbnails", "Use neutral community thumbnails in place of clickbait frames.",
+                Switch::new(s.dearrow_thumbnails, bus, Action::ToggleSetting(SettingFlag::DeArrowThumbnails)).id("switch_dearrow_thumbs"),
+                s.dearrow_enabled),
         ],
     );
 
@@ -1306,17 +1349,23 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         ],
     );
 
+    // Explicit spacers between sections: the scroll wrapper lays out as a block,
+    // which ignores flex `gap`, so without these the cards would touch.
     scroll(
         Flex::col()
             .fill_w()
             .max_w(820.0)
             .pad(24.0)
-            .gap(18.0)
             .push(section_header(theme, IconKind::Settings, "Settings", ""))
+            .push(vspace(18.0))
             .push(playback)
+            .push(vspace(16.0))
             .push(sponsorblock)
+            .push(vspace(16.0))
             .push(dearrow)
-            .push(privacy),
+            .push(vspace(16.0))
+            .push(privacy)
+            .push(vspace(24.0)),
     )
 }
 
