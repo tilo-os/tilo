@@ -1,11 +1,23 @@
-//! Built-in ad blocking: fetch Brave-compatible filter lists (EasyList +
-//! EasyPrivacy), cache them on disk, compile them to WebKit
-//! content-blocker JSON via [`ui::webview::adblock`], and hand the
-//! result to the engine. Blocking then runs natively inside the
-//! engine's network process — no per-request work in the app.
+//! Built-in ad blocking. Two complementary mechanisms:
 //!
-//! Everything happens on a spawned thread so a cold cache / slow
-//! network never delays first paint; pages loaded before the filter
+//! 1. **Content filter** — fetch Brave/EasyList-syntax filter lists,
+//!    cache them on disk, compile them to WebKit content-blocker JSON via
+//!    [`ui::webview::adblock`], and hand the result to the engine
+//!    ([`spawn_filter_loader`]). Blocking then runs natively inside the
+//!    engine's network process — no per-request work in the app. This
+//!    covers network blocking + cosmetic (`css-display-none`) hiding for
+//!    ordinary sites.
+//!
+//! 2. **User scripts** — [`user_scripts`] returns JavaScript injected at
+//!    document-start into every frame. WebKit content filters are purely
+//!    *declarative* (block + hide only); they cannot run scriptlets. Sites
+//!    that serve their ads same-origin and need JS to defeat — YouTube
+//!    being the canonical case — are handled here instead. `user_scripts`
+//!    is consumed separately by the app: the orchestrator sends each
+//!    string to the engine as a document-start, all-frames user script.
+//!
+//! The content-filter path happens on a spawned thread so a cold cache /
+//! slow network never delays first paint; pages loaded before the filter
 //! compiles simply go unfiltered once.
 
 use std::path::PathBuf;
@@ -13,11 +25,52 @@ use std::time::Duration;
 
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
 
-/// Filter lists to fetch, as `(cache file name, URL)`. EasyList +
-/// EasyPrivacy are the backbone of Brave's default blocking.
+/// Filter lists to fetch, as `(cache file name, URL)`.
+///
+/// A "proper" blocker set, mirroring what uBlock Origin enables by
+/// default plus AdGuard's base list, all in EasyList syntax that
+/// adblock-rust's content-blocking converter understands:
+///
+/// - **EasyList** / **EasyPrivacy** — the network + tracker backbone.
+/// - **EasyList Cookie List** — cookie/consent banner annoyances.
+/// - **uBlock Origin** `filters`, `privacy`, `badware`, `resource-abuse`,
+///   `quick-fixes` — uBO's own maintained supplements (the general set,
+///   privacy, known-bad domains, resource abuse, and hot fixes).
+/// - **AdGuard Base** — AdGuard's flagship list in uBlock-optimised form.
 const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
-    ("easyprivacy.txt", "https://easylist.to/easylist/easyprivacy.txt"),
+    (
+        "easyprivacy.txt",
+        "https://easylist.to/easylist/easyprivacy.txt",
+    ),
+    (
+        "easylist-cookie.txt",
+        "https://easylist.to/easylist/easylist-cookie.txt",
+    ),
+    (
+        "ublock-filters.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt",
+    ),
+    (
+        "ublock-privacy.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt",
+    ),
+    (
+        "ublock-badware.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt",
+    ),
+    (
+        "ublock-resource-abuse.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt",
+    ),
+    (
+        "ublock-quick-fixes.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt",
+    ),
+    (
+        "adguard-base.txt",
+        "https://filters.adtidy.org/extension/ublock/filters/2.txt",
+    ),
 ];
 
 /// Re-download a cached list after this age.
@@ -25,6 +78,10 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Load + compile the filter lists in the background and install the
 /// compiled content filter into `engine` when ready.
+///
+/// This is only the declarative content-filter path. The scriptlet path
+/// ([`user_scripts`]) is installed separately by the app, since it maps
+/// to a different engine capability (user scripts, not content filters).
 pub fn spawn_filter_loader(engine: SharedEngine) {
     std::thread::Builder::new()
         .name("filter-loader".into())
@@ -40,6 +97,161 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
             Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
         })
         .expect("spawn filter-loader thread");
+}
+
+/// JavaScript user scripts for scriptlet-style blocking that the
+/// declarative content filter cannot express.
+///
+/// Each entry is a standalone, self-contained script meant to be injected
+/// at **document-start** into **all frames**. They are defensive (feature
+/// detection, no throwing) so an injection into an unexpected page is
+/// harmless. The app/orchestrator owns delivery to the engine — this
+/// function is a pure catalogue with no engine dependency, which keeps it
+/// trivially unit-testable.
+///
+/// The YouTube ad-skip script is the priority: YouTube stitches video ads
+/// into the same origin as the player, so no network rule can drop them —
+/// only page-side JS can mute, fast-forward, and click past them.
+pub fn user_scripts() -> Vec<String> {
+    vec![
+        youtube_ad_skip_script().to_string(),
+        generic_ad_cosmetic_script().to_string(),
+    ]
+}
+
+/// Robust YouTube video-ad skipper.
+///
+/// Detection + skip strategy (kept resilient to YouTube's frequent markup
+/// churn by matching on several class/selector variants and re-running on
+/// every DOM mutation plus a short interval, so it survives SPA
+/// navigation between videos without a full reload):
+///
+/// - **Ad in progress?** `#movie_player` carries the `ad-showing` class
+///   while a video ad plays.
+/// - **Skip button** — click any of the known skip-button variants the
+///   moment it appears (`.ytp-ad-skip-button`,
+///   `.ytp-ad-skip-button-modern`, `.ytp-skip-ad-button`, …).
+/// - **Unskippable portion** — mute the `<video>` (recording that *we*
+///   muted it so the user's own mute is never clobbered), crank
+///   `playbackRate`, and seek `currentTime` to `duration` to fast-forward
+///   the ad to its end; restore audio + rate once the ad clears.
+/// - **Overlays/banners** — inject CSS hiding the in-player ad modules,
+///   overlay slots, and feed/masthead ad renderers that the declarative
+///   filter can't target on this same-origin markup, and click the
+///   overlay close button.
+fn youtube_ad_skip_script() -> &'static str {
+    r#"(function () {
+  'use strict';
+  var host = location.hostname;
+  if (!/(^|\.)youtube(-nocookie)?\.com$/.test(host) &&
+      !/(^|\.)youtube\.googleapis\.com$/.test(host)) {
+    return;
+  }
+
+  // Hide ad overlays/banners the declarative filter can't reach on
+  // YouTube's same-origin markup.
+  var css =
+    '.ad-showing .video-ads, .ytp-ad-module, .ytp-ad-overlay-slot,' +
+    '.ytp-ad-image-overlay, .ytp-ad-overlay-container,' +
+    'ytd-ad-slot-renderer, ytd-in-feed-ad-layout-renderer,' +
+    'ytd-banner-promo-renderer-background, ytd-display-ad-renderer,' +
+    'ytd-promoted-video-renderer, ytd-companion-slot-renderer,' +
+    '#masthead-ad, #player-ads { display: none !important; }';
+  function injectStyle() {
+    if (document.getElementById('qos-yt-adblock')) return;
+    var el = document.createElement('style');
+    el.id = 'qos-yt-adblock';
+    el.textContent = css;
+    (document.head || document.documentElement).appendChild(el);
+  }
+
+  function skip() {
+    injectStyle();
+    var player = document.getElementById('movie_player');
+    var video = document.querySelector('video');
+    var adShowing = !!(player && player.classList.contains('ad-showing'));
+
+    // Click any skip-button variant as soon as it is present.
+    var skipBtn = document.querySelector(
+      '.ytp-ad-skip-button, .ytp-ad-skip-button-modern,' +
+      '.ytp-skip-ad-button, .ytp-ad-skip-button-modern .ytp-button,' +
+      '.ytp-ad-skip-button-container button'
+    );
+    if (skipBtn) {
+      try { skipBtn.click(); } catch (e) {}
+    }
+
+    // Dismiss overlay/interstitial close buttons.
+    var close = document.querySelector(
+      '.ytp-ad-overlay-close-button, .ytp-ad-overlay-close-container'
+    );
+    if (close) {
+      try { close.click(); } catch (e) {}
+    }
+
+    if (adShowing && video) {
+      // Only mute if the user hadn't already muted the video.
+      if (!video.muted) {
+        video.muted = true;
+        video.dataset.qosAdMuted = '1';
+      }
+      try { video.playbackRate = 16; } catch (e) {}
+      if (isFinite(video.duration) && video.duration > 0) {
+        // Seek to the end: fast-forwards the unskippable portion away.
+        video.currentTime = video.duration;
+      }
+    } else if (video && video.dataset.qosAdMuted === '1') {
+      // Ad cleared — restore only what we changed.
+      video.muted = false;
+      try { video.playbackRate = 1; } catch (e) {}
+      delete video.dataset.qosAdMuted;
+    }
+  }
+
+  function start() {
+    skip();
+    if (document.body) {
+      new MutationObserver(skip).observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    }
+  }
+
+  if (document.body) {
+    start();
+  } else {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
+  // Interval backstop for SPA navigations that don't mutate <body>.
+  setInterval(skip, 500);
+})();
+"#
+}
+
+/// Generic cosmetic belt-and-suspenders: hide the most common ad-slot
+/// containers at document-start, before the content filter's CSS lands.
+///
+/// Conservative on purpose — it only matches attribute/id shapes that are
+/// unambiguously ad slots (AdSense, Google Publisher Tag, generic
+/// `data-ad-*` slots), never generic layout, so it can't hide real
+/// content. Injecting the rule from JS lets it apply inside frames the
+/// declarative filter may reach later.
+fn generic_ad_cosmetic_script() -> &'static str {
+    r#"(function () {
+  'use strict';
+  var css =
+    'ins.adsbygoogle, .adsbygoogle,' +
+    'iframe[id^="google_ads_iframe"], iframe[id^="aswift_"],' +
+    'div[id^="div-gpt-ad"], div[id^="google_ads_"],' +
+    'div[data-ad-slot], div[data-ad-client],' +
+    '[aria-label="Advertisement"], [aria-label="advertisement"]' +
+    ' { display: none !important; }';
+  var el = document.createElement('style');
+  el.textContent = css;
+  (document.head || document.documentElement).appendChild(el);
+})();
+"#
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -96,4 +308,65 @@ fn load_and_compile() -> Result<ui::webview::adblock::CompiledFilter, String> {
     }
     ui::webview::adblock::compile_filter_lists(texts.iter().map(String::as_str))
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_scripts_are_present_and_non_empty() {
+        let scripts = user_scripts();
+        assert!(!scripts.is_empty(), "expected at least one user script");
+        for (i, s) in scripts.iter().enumerate() {
+            assert!(!s.trim().is_empty(), "user script {i} is empty");
+        }
+    }
+
+    #[test]
+    fn youtube_ad_skip_script_is_included_and_functional() {
+        let scripts = user_scripts();
+        let yt = scripts
+            .iter()
+            .find(|s| s.contains("ytp-ad"))
+            .expect("a YouTube ad-skip script referencing ytp-ad");
+
+        assert!(!yt.trim().is_empty(), "YouTube script is empty");
+        // References the skip logic the content filter can't express.
+        assert!(yt.contains("ytp-ad-skip-button"), "no skip-button click");
+        assert!(
+            yt.to_lowercase().contains("skip"),
+            "no skip logic in YouTube script"
+        );
+        // Detects an ad in progress and fast-forwards past it.
+        assert!(yt.contains("ad-showing"), "no ad-in-progress detection");
+        assert!(yt.contains("currentTime"), "no fast-forward seek");
+        // Survives SPA navigation.
+        assert!(
+            yt.contains("MutationObserver") && yt.contains("setInterval"),
+            "no SPA-navigation resilience",
+        );
+    }
+
+    #[test]
+    fn filter_list_set_covers_the_expected_sources() {
+        let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
+        for expected in [
+            "easylist.txt",
+            "easyprivacy.txt",
+            "easylist-cookie.txt",
+            "ublock-filters.txt",
+            "ublock-privacy.txt",
+            "ublock-badware.txt",
+            "ublock-resource-abuse.txt",
+            "ublock-quick-fixes.txt",
+            "adguard-base.txt",
+        ] {
+            assert!(names.contains(&expected), "missing filter list {expected}");
+        }
+        // Every entry points at an https raw source.
+        for (_, url) in LISTS {
+            assert!(url.starts_with("https://"), "non-https list URL: {url}");
+        }
+    }
 }
