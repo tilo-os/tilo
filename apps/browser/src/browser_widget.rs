@@ -291,6 +291,11 @@ impl Widget for BrowserWidget {
             self.bootstrap_crdt(state, path);
             if !self.headless {
                 crate::blocker::spawn_filter_loader(self.engine.clone());
+                // Scriptlet-style blocking (YouTube ad-skip etc.) the
+                // declarative content filter can't express.
+                self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                    crate::blocker::user_scripts(),
+                )));
                 self.engine
                     .send(WebViewCommand::Navigate(self.initial_url.to_string()));
             }
