@@ -92,6 +92,10 @@ gstreamer-video = { version = "0.24", optional = true }
 # actually emits an IMAGE draw command into the scene (mirrors ui's own
 # VideoPlayer paint test). Same version as the `vello` above.
 vello_encoding = "0.9"
+# Encode a tiny valid PNG so a test can seed the `ui::ImageStore` with a
+# decodable thumbnail (no network) and prove a search-result row paints the real
+# still. Same crate ui uses for the equivalent image-store test.
+png = "0.17"
 
 [features]
 default = []
