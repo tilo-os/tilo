@@ -88,7 +88,14 @@ impl PlayerApp {
     /// and playing (so a frame is produced) with the controls revealed. Opens
     /// `open` when given, else a synthesized demo clip. Never attaches a collab
     /// socket, so no thread/portal is created.
-    pub fn for_shot(open: Option<PathBuf>) -> Self {
+    ///
+    /// `scenario` selects an optional demo overlay for the capture:
+    ///   * `"settings"` — register app player-settings (priority icons + a
+    ///     couple under the gear) and open the settings-gear menu.
+    ///   * `"fullscreen"` — register the same settings and toggle fullscreen so
+    ///     the control bar shows the immersive (exit-fullscreen) state.
+    ///   * anything else / `None` — a plain player.
+    pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
         match open {
             Some(path) => app.open_path(path),
@@ -99,8 +106,44 @@ impl PlayerApp {
                 app.player.play();
             }
         }
+        if matches!(scenario, Some("settings") | Some("fullscreen")) {
+            app.register_demo_settings();
+        }
+        match scenario {
+            Some("settings") => app.player.open_settings_menu(None),
+            Some("fullscreen") => app.player.toggle_fullscreen(),
+            _ => {}
+        }
         app.player.reveal_controls();
         app
+    }
+
+    /// Register a representative set of app player-settings so a capture (or a
+    /// demo) shows the control-bar priority icons and the gear menu together:
+    /// three high-priority controls (resolution, captions, speed) as their own
+    /// icons and two low-priority ones (autoplay, loop) tucked under the gear.
+    pub fn register_demo_settings(&mut self) {
+        use ui::icons::Icon;
+        use ui::widget::video_player::PlayerSetting;
+        self.player.set_setting(PlayerSetting::choice(
+            "resolution",
+            Icon::Monitor,
+            "Resolution",
+            3,
+            vec!["1080p".into(), "720p".into(), "480p".into(), "Auto".into()],
+            0,
+        ));
+        self.player.set_setting(PlayerSetting::toggle("captions", Icon::FileText, "Captions", 2, true));
+        self.player.set_setting(PlayerSetting::choice(
+            "speed",
+            Icon::List,
+            "Speed",
+            1,
+            vec!["0.5×".into(), "1×".into(), "1.5×".into(), "2×".into()],
+            1,
+        ));
+        self.player.set_setting(PlayerSetting::toggle("autoplay", Icon::Play, "Autoplay", 0, true));
+        self.player.set_setting(PlayerSetting::button("loop", Icon::Refresh, "Loop", 0));
     }
 
     /// Attach collaborative playback: a live collab socket plus the host/
@@ -414,6 +457,10 @@ impl Widget for PlayerApp {
 
     fn fullscreen_intent(&self) -> Option<bool> {
         self.player.fullscreen_intent()
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        self.player.fullscreen_params()
     }
 
     fn on_fullscreen_changed(&mut self, active: bool) {

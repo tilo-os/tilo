@@ -26,6 +26,7 @@ pub fn app_root(open: Option<PathBuf>) -> Box<dyn Widget> {
 
 /// The headless `--shots` root: a player staged with a frame + revealed
 /// controls, no collab socket. Opens `open` when given, else a demo clip.
-pub fn app_root_for_shot(open: Option<PathBuf>) -> Box<dyn Widget> {
-    Box::new(PlayerApp::for_shot(open))
+/// `scenario` selects a demo overlay (see [`PlayerApp::for_shot`]).
+pub fn app_root_for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Box<dyn Widget> {
+    Box::new(PlayerApp::for_shot(open, scenario))
 }

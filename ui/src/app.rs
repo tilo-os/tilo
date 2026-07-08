@@ -816,13 +816,36 @@ impl App {
         // (1) App-driven: honor the root's desired state.
         let want = self.root_widget.fullscreen_intent();
         if let Some(new_state) = fullscreen_request_decision(self.fullscreen_requested, want) {
-            window.set_fullscreen(if new_state {
-                // `Borderless(None)` = "fill whatever output the compositor
-                // decides"; the compositor owns output selection.
-                Some(Fullscreen::Borderless(None))
+            if new_state {
+                // The root names *which* output it wants (e.g. the largest
+                // monitor for a presentation / immersive video). Enumerate the
+                // live monitors, pick the target via the shared selection logic,
+                // and fullscreen onto that specific output. When the host
+                // exposes no monitors (the current qOS compositor) the list is
+                // empty and `select_output` returns `None`, so we fall back to
+                // `Borderless(None)` — still a genuine full-output surface, just
+                // compositor-placed.
+                let params = self.root_widget.fullscreen_params();
+                let monitors: Vec<winit::monitor::MonitorHandle> =
+                    window.available_monitors().collect();
+                let primary = window.primary_monitor();
+                let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| crate::fullscreen::MonitorInfo {
+                        index: i as u32,
+                        width: m.size().width,
+                        height: m.size().height,
+                        primary: primary.as_ref() == Some(m),
+                        scale: m.scale_factor(),
+                    })
+                    .collect();
+                let chosen = crate::fullscreen::select_output(&infos, params.target)
+                    .and_then(|idx| monitors.get(idx as usize).cloned());
+                window.set_fullscreen(Some(Fullscreen::Borderless(chosen)));
             } else {
-                None
-            });
+                window.set_fullscreen(None);
+            }
             self.fullscreen_requested = new_state;
             changed = true;
         }
