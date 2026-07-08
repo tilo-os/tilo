@@ -233,6 +233,44 @@ fn transport_settings_gear_navigates_to_settings() {
 }
 
 #[test]
+fn watch_player_is_flush_to_the_content_edges() {
+    // Issue 4: the embedded player must sit flush to the top/left/right of the
+    // content area — no page-padding gap to the window edge or the nav rail. At
+    // 1280px the rail is docked (86px), so the content area is x∈[86,1280],
+    // y starting just below the 66px top bar; the player must fill that exactly.
+    let h = Harness::new(watch_app(), VIEWPORT);
+    let player = h
+        .rect_by_id("watch_video_surface")
+        .expect("the watch page lays out the shared video-player surface");
+
+    let content_left = tube::screens::NAV_RAIL_W; // docked rail width
+    let top_bar_h = 66.0; // top_bar fixed height
+    let content_w = VIEWPORT.0 as f64 - content_left;
+
+    assert!(
+        (player.x0 - content_left).abs() < 1.5,
+        "player flush-left to the content area (x0={}, expected {content_left})",
+        player.x0
+    );
+    assert!(
+        (player.x1 - VIEWPORT.0 as f64).abs() < 1.5,
+        "player flush-right to the window edge (x1={}, expected {})",
+        player.x1,
+        VIEWPORT.0
+    );
+    assert!(
+        player.y0 < top_bar_h + 6.0,
+        "player flush to the top — no padding gap (y0={}, top bar {top_bar_h})",
+        player.y0
+    );
+    assert!(
+        (player.width() - content_w).abs() < 1.5,
+        "player spans the full content width, not inset by page padding (w={}, expected {content_w})",
+        player.width()
+    );
+}
+
+#[test]
 fn watch_page_lays_out_dislikes_pill_and_sponsorblock_timeline() {
     // The Return YouTube Dislike pill and the SponsorBlock segment timeline are
     // both real widgets on the watch page (WATCH_ID carries sponsor segments and
