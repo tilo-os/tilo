@@ -119,8 +119,18 @@ pub enum WebViewCommand {
     /// Several compiled content-blocker JSON blobs, installed as separate
     /// filters (replacing any previously set). Used because the full
     /// filter-list rule set exceeds WebKit's per-filter cap and must be
-    /// split. An empty vec clears all filters.
-    SetContentFilters(Arc<Vec<Arc<String>>>),
+    /// split. An empty `chunks` clears all filters.
+    ///
+    /// `version` is a stable hash of the *source* filter lists: the engine
+    /// caches each compiled filter under `version`+index so an unchanged
+    /// rule set is loaded back from disk instead of recompiled (WebKit's
+    /// compile of ~280k rules costs several seconds). It must key on the
+    /// source, not the compiled JSON, because the compiler's rule ordering
+    /// is not stable across runs.
+    SetContentFilters {
+        version: u64,
+        chunks: Arc<Vec<Arc<String>>>,
+    },
     /// Inject JavaScript user scripts (replacing any previously set) —
     /// scriptlet-style blocking the declarative content filter can't
     /// express, e.g. skipping YouTube video ads. Run at document-start in
