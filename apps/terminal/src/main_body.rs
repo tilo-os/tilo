@@ -121,6 +121,10 @@ pub struct Attr {
     pub italic: bool,
     pub underline: bool,
     pub reverse: bool,
+    /// SGR 2 — faint / dim: the foreground is drawn at reduced opacity.
+    pub dim: bool,
+    /// SGR 9 — crossed-out (strikethrough).
+    pub strike: bool,
     pub is_wide_cont: bool,
 }
 
@@ -132,11 +136,13 @@ impl Attr {
         let f = self.fg.pack();
         let b = self.bg.pack();
         let mut flags = 0u8;
-        if self.bold { flags |= 0b0_0001; }
-        if self.italic { flags |= 0b0_0010; }
-        if self.underline { flags |= 0b0_0100; }
-        if self.reverse { flags |= 0b0_1000; }
-        if self.is_wide_cont { flags |= 0b1_0000; }
+        if self.bold { flags |= 0b000_0001; }
+        if self.italic { flags |= 0b000_0010; }
+        if self.underline { flags |= 0b000_0100; }
+        if self.reverse { flags |= 0b000_1000; }
+        if self.is_wide_cont { flags |= 0b001_0000; }
+        if self.dim { flags |= 0b010_0000; }
+        if self.strike { flags |= 0b100_0000; }
         [f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags]
     }
     pub fn unpack(bytes: &[u8]) -> Self {
@@ -145,11 +151,13 @@ impl Attr {
         Self {
             fg: CellColor::unpack(&bytes[0..4]),
             bg: CellColor::unpack(&bytes[4..8]),
-            bold: flags & 0b0_0001 != 0,
-            italic: flags & 0b0_0010 != 0,
-            underline: flags & 0b0_0100 != 0,
-            reverse: flags & 0b0_1000 != 0,
-            is_wide_cont: flags & 0b1_0000 != 0,
+            bold: flags & 0b000_0001 != 0,
+            italic: flags & 0b000_0010 != 0,
+            underline: flags & 0b000_0100 != 0,
+            reverse: flags & 0b000_1000 != 0,
+            is_wide_cont: flags & 0b001_0000 != 0,
+            dim: flags & 0b010_0000 != 0,
+            strike: flags & 0b100_0000 != 0,
         }
     }
 }
@@ -163,6 +171,8 @@ impl Default for Attr {
             italic: false,
             underline: false,
             reverse: false,
+            dim: false,
+            strike: false,
             is_wide_cont: false,
         }
     }
@@ -314,6 +324,35 @@ pub struct TerminalWidget {
     /// into viewport-local grid rows (the selection model lives in
     /// viewport space). Defaults to 0 until the first frame paints.
     viewport_start_y: usize,
+
+    /// Horizontal glyph gutter used by the most recent `draw`, cached so
+    /// pointer hit-testing in `handle_event` (which has no `Theme`) lands on
+    /// the same column the glyphs were painted at even if the theme retunes
+    /// the spacing. Seeded to the default `spacing.s1` (4px).
+    last_padding_x: f64,
+
+    /// Number of oldest scrollback lines dropped from the front of the main
+    /// buffer since the last `sync` mirrored the grid. `sync` uses it to keep
+    /// the render mirror (`grid`/`grid_attrs`) index-aligned with the CRDT
+    /// line list without re-reading every retained line each frame.
+    trimmed_front: usize,
+    /// True once `grid`/`grid_attrs` have been fully populated from the CRDT.
+    /// While false (first frame, or after a buffer swap) `sync` does a full
+    /// re-read; afterwards it only re-reads the lines the emulator actually
+    /// touches (the live screen + freshly appended rows), which is what keeps
+    /// heavy output from re-scanning the whole scrollback every frame.
+    mirror_valid: bool,
+    /// Set by `feed` when the emulator itself mutated the grid. `sync` reads
+    /// it to decide between the cheap incremental re-read (our own writes only
+    /// touch the live screen + appended tail) and a full re-read (a remote
+    /// collaborator may have edited anywhere, so nothing can be assumed).
+    pending_local_edit: bool,
+    /// CRDT line count captured at the previous `sync`. The incremental
+    /// re-read starts from that frame's screen top (`synced_len - height`),
+    /// because the rows that scrolled off during a burst of output were the
+    /// live screen *at the time they were written* — re-reading only the
+    /// current screen would miss them.
+    synced_len: usize,
 }
 
 impl TerminalWidget {
@@ -368,6 +407,11 @@ impl TerminalWidget {
             dragging: false,
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
+            last_padding_x: 4.0,
+            trimmed_front: 0,
+            mirror_valid: false,
+            pending_local_edit: false,
+            synced_len: 0,
         }
     }
 
@@ -558,15 +602,24 @@ impl TerminalWidget {
             saved_cursor: &mut self.saved_cursor,
             scroll_top: self.scroll_top,
             scroll_bottom: self.scroll_bottom,
+            trimmed_front: &mut self.trimmed_front,
         };
         // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
         self.parser.advance(&mut performer, bytes);
+        // Write the cursor into the CRDT exactly once per feed rather than on
+        // every printed cell — the per-cell `put` was pure churn (the cursor
+        // is read back only by `sync`/`init_crdt`).
+        performer.flush_cursor();
         self.cursor_x = performer.cursor_x;
         self.cursor_y = performer.cursor_y;
         self.current_attr = performer.current_attr;
         self.pending_wrap = performer.pending_wrap;
         self.scroll_top = performer.scroll_top;
         self.scroll_bottom = performer.scroll_bottom;
+
+        // We just mutated the grid: let `sync` take the cheap incremental
+        // re-read path (only the live screen + appended tail changed).
+        self.pending_local_edit = true;
 
         // A buffer flip must force `sync` to re-read even if heads match.
         if self.alt_active != was_alt {
@@ -719,7 +772,21 @@ impl TerminalWidget {
     }
 }
 
-const MAX_HISTORY: usize = 1000;
+/// Retained scrollback lines for the main buffer. Sized for a daily-driver
+/// terminal; the incremental `sync` re-read means a deep history no longer
+/// costs anything per frame. Under `cfg(test)` it is small so the trim path
+/// is reachable without feeding thousands of lines through the (much slower)
+/// unoptimised automerge build.
+#[cfg(not(test))]
+const MAX_HISTORY: usize = 5000;
+#[cfg(test)]
+const MAX_HISTORY: usize = 120;
+/// The main buffer is allowed to overrun `MAX_HISTORY` by this many lines
+/// before a batched front-trim runs, amortising the trim's cost.
+#[cfg(not(test))]
+const HISTORY_TRIM_SLACK: usize = 256;
+#[cfg(test)]
+const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
     fn measure(&mut self, _known: taffy::Size<Option<f32>>, _available: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
@@ -749,10 +816,20 @@ impl Widget for TerminalWidget {
         self.pump(state, root);
 
         let current_heads = state.get_heads();
-        if !self.force_resync && !self.last_sync_heads.is_empty() && current_heads == self.last_sync_heads {
+        let heads_unchanged = current_heads == self.last_sync_heads;
+        if !self.force_resync && self.mirror_valid && heads_unchanged {
+            self.pending_local_edit = false;
             return;
         }
+        // Choose the re-read strategy. A full re-read is required whenever the
+        // mirror can't be trusted line-for-line: the first frame, a main↔alt
+        // buffer swap (`force_resync`), or heads that moved without our own
+        // `feed` (a remote collaborator could have edited any line). The
+        // emulator's *own* writes only ever touch the live screen and the
+        // freshly appended tail, so those take the cheap incremental path.
+        let full_reread = !self.mirror_valid || self.force_resync || !self.pending_local_edit;
         self.force_resync = false;
+        self.pending_local_edit = false;
         self.last_sync_heads = current_heads;
 
         self.init_crdt(state, root);
@@ -770,10 +847,33 @@ impl Widget for TerminalWidget {
         };
 
         let len = state.length(&grid_id);
+
+        // Choose the first line to re-read. A full pass rebuilds the mirror;
+        // the incremental pass keeps the mirror aligned by dropping the oldest
+        // lines that were trimmed off the CRDT front, then re-reads from the
+        // *previous* frame's screen top through the end — that spans every row
+        // the emulator could have touched (the old screen scrolled into
+        // history plus everything freshly appended).
+        let start = if full_reread {
+            self.grid.clear();
+            self.grid_attrs.clear();
+            self.trimmed_front = 0;
+            0
+        } else {
+            let trimmed = self.trimmed_front;
+            let drop = trimmed.min(self.grid.len());
+            self.grid.drain(0..drop);
+            self.grid_attrs.drain(0..drop);
+            self.trimmed_front = 0;
+            self.synced_len
+                .saturating_sub(self.height)
+                .saturating_sub(trimmed)
+                .min(self.grid.len())
+        };
         self.grid.resize(len, String::new());
         self.grid_attrs.resize(len, Vec::new());
 
-        for i in 0..len.min(line_ids.len()) {
+        for i in start..len.min(line_ids.len()) {
             if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(&line_ids[i], "text") {
                 if let Ok(text) = state.text(&text_id) {
                     self.grid[i] = text;
@@ -785,6 +885,8 @@ impl Widget for TerminalWidget {
                 }
             }
         }
+        self.mirror_valid = true;
+        self.synced_len = len;
 
         let active_len = line_ids.len();
         if let Some(cursor_id) = self.cursor_id.as_ref() {
@@ -844,6 +946,9 @@ impl Widget for TerminalWidget {
         // glyph column. Sourced from the shared spacing scale (`s1` == 4px
         // in the default tokens) so the OS can tune it centrally.
         let padding_x = theme.tokens.spacing.s1 as f64;
+        // Cache the real gutter so pointer hit-testing (which has no `Theme`)
+        // maps clicks to the same column the glyphs were painted at.
+        self.last_padding_x = padding_x;
 
         // Cache the theme-derived font size so `measure` (which runs before
         // `draw` each frame and does not receive a theme) can size the grid
@@ -918,19 +1023,23 @@ impl Widget for TerminalWidget {
             }
         }
 
-        // Cursor color is derived from the palette's default foreground at a
-        // reduced opacity so it reads as a translucent block. Using the
-        // palette makes the cursor follow theme swaps automatically. These
-        // caches update every frame regardless of whether the cursor is
-        // actually painted (hidden by `?25l` or scrolled off screen).
+        // Cursor color is derived from the palette's default foreground so it
+        // tracks theme swaps automatically. These caches update every frame
+        // regardless of whether the cursor is actually painted (hidden by
+        // `?25l` or scrolled off screen).
         let cursor_color = cursor_from_palette(palette);
         self.last_cursor_color = cursor_color;
         self.last_fg_default = palette.fg_default;
         self.last_bg_default = palette.bg_default;
 
         // Absolute grid row of the cursor → visible row (may be scrolled off).
+        // The block cursor only makes sense pinned to the live output; while
+        // the user has scrolled back into history we hide it (matching xterm/
+        // kitty), so it doesn't imply the caret is somewhere on an old line.
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
+        let scrolled_back = !self.alt_active && scroll > 0;
         if self.modes.cursor_visible
+            && !scrolled_back
             && cursor_abs >= start_y
             && cursor_abs < start_y + visible_rows.max(1)
         {
@@ -939,6 +1048,30 @@ impl Widget for TerminalWidget {
             let cy = (self.rect.y0 + cy_local as f64 * self.char_h).floor();
             let cursor_rect = Rect::new(cx, cy, cx + self.char_w, cy + self.char_h);
             scene.fill(vello::peniko::Fill::NonZero, transform, cursor_color, None, &cursor_rect);
+
+            // Re-punch the glyph beneath the block in the background color so
+            // the character under the caret stays legible (a solid block that
+            // hides its own cell reads as a blank cursor). This is the standard
+            // "inverted cell" block cursor.
+            if let Some(ch) = self
+                .grid
+                .get(cursor_abs)
+                .and_then(|line| cell_char_at(line, self.cursor_x))
+            {
+                if !ch.is_whitespace() {
+                    text_renderer.draw_text_styled(
+                        scene,
+                        &ch.to_string(),
+                        font_size,
+                        palette.bg_default,
+                        transform * Affine::translate((cx, cy)),
+                        None,
+                        TextWeight::Regular,
+                        false,
+                        true,
+                    );
+                }
+            }
         }
     }
 
@@ -956,7 +1089,14 @@ impl Widget for TerminalWidget {
                 if self.alt_active && !self.modes.mouse_report {
                     // In the alternate screen (pager / editor) forward wheel
                     // notches as arrow keys so `less`/`man` scroll naturally.
-                    let seq: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
+                    // Honour DECCKM so apps that requested application cursor
+                    // keys (`vim`, `less -R`) receive the SS3 form they expect.
+                    let seq: &[u8] = match (lines > 0, self.modes.app_cursor_keys) {
+                        (true, false) => b"\x1b[A",
+                        (false, false) => b"\x1b[B",
+                        (true, true) => b"\x1bOA",
+                        (false, true) => b"\x1bOB",
+                    };
                     let reps = lines.unsigned_abs() as usize;
                     let mut out = Vec::new();
                     for _ in 0..reps { out.extend_from_slice(seq); }
@@ -1096,7 +1236,13 @@ impl TerminalWidget {
         font_size: f32,
         palette: &ui::tokens::TerminalPalette,
     ) {
-        let (fg, bg_opt) = resolve_pair(attr, palette);
+        let (mut fg, bg_opt) = resolve_pair(attr, palette);
+        // SGR 2 (faint): blend the foreground toward the background so it
+        // reads as dimmed, matching xterm/kitty. Applied after reverse so a
+        // dimmed reverse cell dims its (swapped) text too.
+        if attr.dim {
+            fg = fg.with_alpha_factor(0.55);
+        }
         let tx = self.rect.x0 + rx;
 
         let mut visual_width = 0.0;
@@ -1127,6 +1273,12 @@ impl TerminalWidget {
             let line = Rect::new(tx, uy, tx + visual_width, uy + 1.0);
             scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
         }
+        if attr.strike {
+            // A crossed-out line through the vertical centre of the cell.
+            let sy = (py + self.char_h * 0.5).floor();
+            let line = Rect::new(tx, sy, tx + visual_width, sy + 1.0);
+            scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
+        }
     }
 
     /// Convert a logical pointer position into a viewport-local
@@ -1151,14 +1303,12 @@ impl TerminalWidget {
         }
     }
 
-    /// Best-effort recovery of the padding used in the last `draw`. The
-    /// theme isn't available in `handle_event`, so we approximate with
-    /// the same default the OS ships (`spacing.s1` = 4px). If the theme
-    /// changes the value, the worst-case is a one-cell hit-test offset
-    /// at the leftmost column until the next frame syncs the value
-    /// through some shared state — acceptable for v1.
+    /// The horizontal glyph gutter the last `draw` actually used. Cached from
+    /// the theme each frame so pointer hit-testing (which never receives a
+    /// `Theme`) stays pixel-aligned with the painted columns even if the OS
+    /// retunes `spacing.s1`.
     fn last_padding_x(&self) -> f64 {
-        4.0
+        self.last_padding_x
     }
 
     /// Walk the selected cells across grid rows and return the joined
@@ -1199,41 +1349,115 @@ impl TerminalWidget {
 
     fn map_key(&self, key: &Key, modifiers: &winit::event::Modifiers) -> Option<Vec<u8>> {
         let mods = modifiers.state();
-        // DECCKM: application cursor keys send SS3-prefixed sequences.
-        let cursor_prefix: &[u8] = if self.modes.app_cursor_keys { b"\x1bO" } else { b"\x1b[" };
-        let cursor_seq = |final_byte: u8| {
-            let mut v = cursor_prefix.to_vec();
-            v.push(final_byte);
-            v
+        let shift = mods.shift_key();
+        let alt = mods.alt_key();
+        let ctrl = mods.control_key();
+
+        // xterm modifier parameter: 1 + (shift?1) + (alt?2) + (ctrl?4). Only
+        // meaningful when at least one is held.
+        let mod_param: Option<u8> = {
+            let mut m = 0u8;
+            if shift { m |= 1; }
+            if alt { m |= 2; }
+            if ctrl { m |= 4; }
+            if m == 0 { None } else { Some(m + 1) }
         };
+
+        // Cursor/edit keys: unmodified use the DECCKM-aware SS3/CSI prefix; a
+        // held modifier forces the CSI `1;<mod><final>` form (xterm behaviour),
+        // which is what shells and editors decode for word-wise motion and
+        // in-app selection.
+        let csi_final = |final_byte: u8| -> Vec<u8> {
+            match mod_param {
+                Some(m) => format!("\x1b[1;{m}{}", final_byte as char).into_bytes(),
+                None => {
+                    let prefix: &[u8] = if self.modes.app_cursor_keys { b"\x1bO" } else { b"\x1b[" };
+                    let mut v = prefix.to_vec();
+                    v.push(final_byte);
+                    v
+                }
+            }
+        };
+        // Keypad-style `CSI <n> ~` keys, with the optional modifier parameter.
+        let csi_tilde = |n: u8| -> Vec<u8> {
+            match mod_param {
+                Some(m) => format!("\x1b[{n};{m}~").into_bytes(),
+                None => format!("\x1b[{n}~").into_bytes(),
+            }
+        };
+        // F1..F4 use SS3 finals P/Q/R/S when unmodified, CSI `1;<mod><final>`
+        // when modified.
+        let fkey_ss3 = |final_byte: u8| -> Vec<u8> {
+            match mod_param {
+                Some(m) => format!("\x1b[1;{m}{}", final_byte as char).into_bytes(),
+                None => format!("\x1bO{}", final_byte as char).into_bytes(),
+            }
+        };
+
         match key {
             Key::Named(named) => match named {
                 NamedKey::Enter => Some(vec![b'\r']),
                 NamedKey::Backspace => Some(vec![127]),
+                // Shift+Tab is back-tab (CSI Z) — reverse field / completion.
+                NamedKey::Tab if shift => Some(b"\x1b[Z".to_vec()),
                 NamedKey::Tab => Some(vec![b'\t']),
                 NamedKey::Escape => Some(vec![27]),
-                NamedKey::ArrowUp => Some(cursor_seq(b'A')),
-                NamedKey::ArrowDown => Some(cursor_seq(b'B')),
-                NamedKey::ArrowRight => Some(cursor_seq(b'C')),
-                NamedKey::ArrowLeft => Some(cursor_seq(b'D')),
-                NamedKey::Home => Some(cursor_seq(b'H')),
-                NamedKey::End => Some(cursor_seq(b'F')),
-                NamedKey::PageUp => Some(vec![27, b'[', b'5', b'~']),
-                NamedKey::PageDown => Some(vec![27, b'[', b'6', b'~']),
-                NamedKey::Insert => Some(vec![27, b'[', b'2', b'~']),
-                NamedKey::Delete => Some(vec![27, b'[', b'3', b'~']),
+                NamedKey::ArrowUp => Some(csi_final(b'A')),
+                NamedKey::ArrowDown => Some(csi_final(b'B')),
+                NamedKey::ArrowRight => Some(csi_final(b'C')),
+                NamedKey::ArrowLeft => Some(csi_final(b'D')),
+                NamedKey::Home => Some(csi_final(b'H')),
+                NamedKey::End => Some(csi_final(b'F')),
+                NamedKey::PageUp => Some(csi_tilde(5)),
+                NamedKey::PageDown => Some(csi_tilde(6)),
+                NamedKey::Insert => Some(csi_tilde(2)),
+                NamedKey::Delete => Some(csi_tilde(3)),
+                NamedKey::F1 => Some(fkey_ss3(b'P')),
+                NamedKey::F2 => Some(fkey_ss3(b'Q')),
+                NamedKey::F3 => Some(fkey_ss3(b'R')),
+                NamedKey::F4 => Some(fkey_ss3(b'S')),
+                NamedKey::F5 => Some(csi_tilde(15)),
+                NamedKey::F6 => Some(csi_tilde(17)),
+                NamedKey::F7 => Some(csi_tilde(18)),
+                NamedKey::F8 => Some(csi_tilde(19)),
+                NamedKey::F9 => Some(csi_tilde(20)),
+                NamedKey::F10 => Some(csi_tilde(21)),
+                NamedKey::F11 => Some(csi_tilde(23)),
+                NamedKey::F12 => Some(csi_tilde(24)),
                 _ => None,
             },
-            Key::Character(c) if mods.control_key() => {
-                // Ctrl+letter → the corresponding C0 control code.
+            Key::Character(c) if ctrl => {
+                // Ctrl+letter → the corresponding C0 control code. When Alt is
+                // also held, prefix ESC (Alt-as-Meta) so e.g. Alt+Ctrl+F works.
                 let s = c.as_str();
                 let ch = s.chars().next()?;
                 let up = ch.to_ascii_uppercase();
-                match up {
-                    'A'..='Z' => Some(vec![(up as u8) - b'A' + 1]),
-                    // Ctrl+Space → NUL, common shell binding.
-                    ' ' => Some(vec![0]),
-                    _ => None,
+                let code = match up {
+                    'A'..='Z' => (up as u8) - b'A' + 1,
+                    ' ' | '@' => 0,   // Ctrl+Space / Ctrl+@ → NUL
+                    '[' => 27,
+                    '\\' => 28,
+                    ']' => 29,
+                    '^' => 30,
+                    '_' => 31,
+                    _ => return None,
+                };
+                if alt { Some(vec![27, code]) } else { Some(vec![code]) }
+            }
+            // Alt-as-Meta for plain alphanumerics (readline word ops: Alt-f,
+            // Alt-b, Alt-d, numeric arguments). Restricted to ASCII
+            // alphanumeric logical keys so AltGr-composed symbols on layouts
+            // like de_DE (AltGr+q=@, AltGr+e=€, AltGr+7={ …) are never poached
+            // — those resolve to non-alphanumeric logical keys and fall
+            // through to their composed `text`.
+            Key::Character(c) if alt && !ctrl && !mods.super_key() => {
+                let s = c.as_str();
+                if s.chars().count() == 1 && s.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                    let mut v = vec![27u8];
+                    v.extend_from_slice(s.as_bytes());
+                    Some(v)
+                } else {
+                    None
                 }
             }
             _ => None,
@@ -1259,6 +1483,10 @@ pub struct TerminalPerformer<'a> {
     pub saved_cursor: &'a mut Option<(usize, usize, Attr)>,
     pub scroll_top: usize,
     pub scroll_bottom: usize,
+    /// Accumulates the count of oldest lines trimmed off the main buffer's
+    /// front this feed, so the widget's `sync` can keep its render mirror
+    /// aligned without a full re-read.
+    pub trimmed_front: &'a mut usize,
 }
 
 impl<'a> Perform for TerminalPerformer<'a> {
@@ -1473,12 +1701,19 @@ impl<'a> TerminalPerformer<'a> {
             let _ = self.state.put(&line_id, "attrs", attr_bytes);
             self.main_line_ids.push(line_id);
 
-            if self.main_line_ids.len() > MAX_HISTORY {
+            // Bound the retained scrollback. Trimming one line at a time on
+            // every append made `Vec::remove(0)` an O(n) shift per output line
+            // (O(n²) over a flood); instead let history overrun by a slack
+            // margin and drop the overflow in a single `drain`. The trimmed
+            // count feeds the widget's incremental `sync` so the render mirror
+            // stays aligned.
+            if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
                 let overflow = self.main_line_ids.len() - MAX_HISTORY;
                 for _ in 0..overflow {
                     let _ = self.state.delete(&grid_id, 0);
-                    self.main_line_ids.remove(0);
                 }
+                self.main_line_ids.drain(0..overflow);
+                *self.trimmed_front += overflow;
             }
         }
     }
@@ -1754,13 +1989,18 @@ impl<'a> TerminalPerformer<'a> {
             match code {
                 0 => self.current_attr = Attr::default(),
                 1 => self.current_attr.bold = true,
+                2 => self.current_attr.dim = true,
                 3 => self.current_attr.italic = true,
                 4 => self.current_attr.underline = true,
                 7 => self.current_attr.reverse = true,
-                22 => self.current_attr.bold = false,
+                9 => self.current_attr.strike = true,
+                // SGR 22 turns off both bold *and* faint (they share the
+                // intensity axis in the spec).
+                22 => { self.current_attr.bold = false; self.current_attr.dim = false; }
                 23 => self.current_attr.italic = false,
                 24 => self.current_attr.underline = false,
                 27 => self.current_attr.reverse = false,
+                29 => self.current_attr.strike = false,
                 30..=37 => self.current_attr.fg = CellColor::Indexed((code - 30) as u8),
                 39 => self.current_attr.fg = CellColor::Default,
                 40..=47 => self.current_attr.bg = CellColor::Indexed((code - 40) as u8),
@@ -1807,7 +2047,16 @@ impl<'a> TerminalPerformer<'a> {
         history_offset + self.cursor_y
     }
 
-    fn update_cursor(&mut self) {
+    /// Cursor position is tracked in the `cursor_x`/`cursor_y` fields as the
+    /// stream is parsed; the CRDT copy is written once per feed by
+    /// [`flush_cursor`](Self::flush_cursor) rather than on every cell, so this
+    /// is intentionally a no-op kept only so the call sites read naturally.
+    fn update_cursor(&mut self) {}
+
+    /// Persist the final cursor position into the CRDT. Called once at the end
+    /// of a feed — the cursor is read back only by `sync`/`init_crdt`, so a
+    /// single write per batch is enough and avoids per-cell `put` churn.
+    pub fn flush_cursor(&mut self) {
         let x = self.cursor_x as u64;
         let y = self.absolute_y() as u64;
         let _ = self.state.put(&self.cursor_id, "x", x);
@@ -1867,6 +2116,25 @@ pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, u
     spans
 }
 
+/// The character occupying cell column `col` of `line`, honouring wide
+/// (double-width) glyphs. Columns that land on a wide glyph's trailing
+/// continuation cell report a space. Returns `None` past the line's end.
+pub(crate) fn cell_char_at(line: &str, col: usize) -> Option<char> {
+    let mut idx = 0usize;
+    for c in line.chars() {
+        let w = c.width().unwrap_or(1).max(1);
+        if idx == col {
+            return Some(c);
+        }
+        if idx + w > col {
+            // Inside a wide glyph's continuation cell.
+            return Some(' ');
+        }
+        idx += w;
+    }
+    None
+}
+
 pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> Color {
     if code < 16 {
         palette.ansi[code as usize]
@@ -1922,9 +2190,11 @@ pub(crate) fn resolve_pair(attr: Attr, palette: &ui::tokens::TerminalPalette) ->
 /// Kept as a free function so the rule "the cursor always tracks the theme"
 /// is a single obvious call site and tests can invoke it directly.
 pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Color {
-    // 59% alpha (150/255) preserves the legacy translucent-block feel while
-    // sourcing the hue from the theme rather than a hard-coded grey.
-    palette.fg_default.with_alpha_factor(150.0 / 255.0)
+    // A near-solid block (90% alpha) reads as a firm caret while the glyph
+    // beneath it is re-drawn in the background color for an inverted-cell look.
+    // The hue comes from the theme's default foreground so the cursor tracks
+    // palette swaps rather than a hard-coded grey.
+    palette.fg_default.with_alpha_factor(230.0 / 255.0)
 }
 
 pub struct TerminalBackend { pub writer: Box<dyn Write + Send>, pub reader: Box<dyn Read + Send>, pub master: Box<dyn MasterPty + Send>, pub shell_name: String }
