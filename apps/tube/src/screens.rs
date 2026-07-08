@@ -845,10 +845,13 @@ pub fn watch(
     // its column's width and capped so it never dominates a tall window.
     let inner = (content_w - WATCH_PAD * 2.0).max(0.0);
     let two_col = inner >= WATCH_TWO_COL_MIN;
+    // Single column: the player is full-bleed (edge-to-edge, no side padding),
+    // so its width is the whole content width. Two column: it fills its column
+    // beside the "Up next" rail, inset by the watch padding.
     let player_col_w = if two_col {
         (inner - WATCH_COL_GAP - UP_NEXT_W).max(0.0)
     } else {
-        inner
+        content_w.max(0.0)
     };
     let player_h = ((player_col_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
 
@@ -873,6 +876,26 @@ pub fn watch(
     // timeline — used to make the segment-carrying timeline addressable below.
     let has_sb_timeline = !marks.is_empty();
     player.borrow_mut().set_sponsor_marks(marks);
+
+    // The resolution selector lives ON the player now, registered as a
+    // player-setting (its own priority icon in the control bar) instead of a
+    // separate row below the video. Picking a value round-trips back to the
+    // model via `take_setting_events` (drained in `TubeApp::sync`).
+    {
+        let qualities: Vec<String> = crate::app::QUALITIES.iter().map(|q| q.to_string()).collect();
+        let sel = crate::app::QUALITIES
+            .iter()
+            .position(|q| *q == model.settings.preferred_quality)
+            .unwrap_or(0);
+        player.borrow_mut().set_setting(ui::widget::video_player::PlayerSetting::choice(
+            "resolution",
+            ui::icons::Icon::Monitor,
+            "Resolution",
+            1,
+            qualities,
+            sel,
+        ));
+    }
 
     // A show-mode segment the playhead is currently inside gets a small,
     // unintrusive "Skip" button floated over the video (bottom-right, above the
@@ -933,13 +956,13 @@ pub fn watch(
         if has_sb_timeline { col.id("sb_timeline") } else { col }
     };
 
-    // A compact row under the player: the preferred-quality selector (left) + a
-    // gear that opens Settings (right). Clean and small.
+    // A compact row under the player: just a gear that opens the app's Settings
+    // (right). The resolution selector moved onto the player itself, so there's
+    // no separate quality row here anymore.
     let player_actions = Flex::row()
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
-        .push(quality_menu(model, theme, bus))
         .push(spring())
         .push(
             icon_button(theme, bus, IconKind::Settings, Action::Navigate(Route::Settings))
@@ -1032,9 +1055,10 @@ pub fn watch(
         comments = comments.push(dim(theme, "Comments hidden (enable in settings).", 13.0));
     }
 
-    let left = Flex::col()
+    // Everything in the left column *except* the player surface, so the player
+    // can go full-bleed above a padded content block in single-column mode.
+    let left_content = Flex::col()
         .gap(14.0)
-        .push(player_view)
         .push(player_actions)
         .push_if(!model.notices.is_empty(), notices_view(theme, model))
         .push(title)
@@ -1059,24 +1083,34 @@ pub fn watch(
         up = up.push(compact_card(model, theme, bus, imgs, r));
     }
 
-    // Wide: player column grows beside a fixed-width "Up next" rail. Narrow:
-    // the rail stacks below the player so both keep a readable width.
+    // Wide: player column grows beside a fixed-width "Up next" rail, the whole
+    // body inset by the watch padding. Narrow: the player is full-bleed
+    // (edge-to-edge) above a padded content block, with the rail stacked below.
     let body = if two_col {
-        Flex::row()
-            .fill_w()
-            .gap(WATCH_COL_GAP as f32)
-            .align(Align::Start)
-            .push(left.grow(1.0))
-            .push(up.w(Len::Px(UP_NEXT_W as f32)))
+        let left = Flex::col().gap(14.0).push(player_view).push(left_content);
+        Flex::col().fill_w().pad(WATCH_PAD as f32).push(
+            Flex::row()
+                .fill_w()
+                .gap(WATCH_COL_GAP as f32)
+                .align(Align::Start)
+                .push(left.grow(1.0))
+                .push(up.w(Len::Px(UP_NEXT_W as f32))),
+        )
     } else {
         Flex::col()
             .fill_w()
-            .gap(WATCH_COL_GAP as f32)
-            .push(left.fill_w())
-            .push(up)
+            .push(player_view)
+            .push(
+                Flex::col()
+                    .fill_w()
+                    .pad(WATCH_PAD as f32)
+                    .gap(WATCH_COL_GAP as f32)
+                    .push(left_content)
+                    .push(up),
+            )
     };
 
-    scroll(Flex::col().fill_w().pad(WATCH_PAD as f32).push(body))
+    scroll(Flex::col().fill_w().push(body))
 }
 
 fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
