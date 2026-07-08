@@ -86,7 +86,7 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
     std::thread::Builder::new()
         .name("filter-loader".into())
         .spawn(move || match load_and_compile() {
-            Ok(filter) => {
+            Ok((version, filter)) => {
                 tracing::info!(
                     rules = filter.rule_count,
                     chunks = filter.chunks.len(),
@@ -94,10 +94,13 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
                     "content filter compiled"
                 );
                 // Installed as several filters — the full rule set exceeds
-                // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`).
-                engine.send(WebViewCommand::SetContentFilters(std::sync::Arc::new(
-                    filter.chunks,
-                )));
+                // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
+                // `version` (hash of the source lists) lets the engine reuse
+                // previously compiled filters when the lists are unchanged.
+                engine.send(WebViewCommand::SetContentFilters {
+                    version,
+                    chunks: std::sync::Arc::new(filter.chunks),
+                });
             }
             Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
         })
@@ -303,7 +306,7 @@ fn load_list(name: &str, url: &str) -> Option<String> {
     }
 }
 
-fn load_and_compile() -> Result<ui::webview::adblock::ChunkedFilter, String> {
+fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), String> {
     let texts: Vec<String> = LISTS
         .iter()
         .filter_map(|(name, url)| load_list(name, url))
@@ -311,11 +314,27 @@ fn load_and_compile() -> Result<ui::webview::adblock::ChunkedFilter, String> {
     if texts.is_empty() {
         return Err("no filter lists available (offline with an empty cache)".into());
     }
-    ui::webview::adblock::compile_filter_lists_chunked(
+    // A stable id of the *source* rule set, so the engine can reuse the
+    // previously compiled WebKit filters when the lists haven't changed.
+    let version = source_version(&texts);
+    let filter = ui::webview::adblock::compile_filter_lists_chunked(
         texts.iter().map(String::as_str),
         ui::webview::adblock::MAX_RULES_PER_FILTER,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    Ok((version, filter))
+}
+
+/// FNV-1a over the concatenated source lists — the cache version tag.
+fn source_version(texts: &[String]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for t in texts {
+        for &b in t.as_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
 }
 
 #[cfg(test)]
