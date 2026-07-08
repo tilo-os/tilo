@@ -343,4 +343,18 @@ unsafe extern "C" {
         result: *mut GAsyncResult,
         error: *mut *mut GError,
     ) -> *mut WebKitUserContentFilter;
+    /// Retrieve a *previously compiled* filter by identifier without
+    /// recompiling — the fast path when the source is unchanged.
+    pub fn webkit_user_content_filter_store_load(
+        store: *mut WebKitUserContentFilterStore,
+        identifier: *const c_char,
+        cancellable: *mut GCancellable,
+        callback: GAsyncReadyCallback,
+        user_data: *mut c_void,
+    );
+    pub fn webkit_user_content_filter_store_load_finish(
+        store: *mut WebKitUserContentFilterStore,
+        result: *mut GAsyncResult,
+        error: *mut *mut GError,
+    ) -> *mut WebKitUserContentFilter;
 }
