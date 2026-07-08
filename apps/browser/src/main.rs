@@ -76,7 +76,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // publishes a frame or a navigation event, so pages animate and
     // finish loading without waiting for user input.
     app.run_with_setup(move |proxy| {
-        use ui::webview::WebViewEngine;
         engine.set_waker(Box::new(move || {
             let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
         }));
@@ -148,7 +147,7 @@ fn render_live_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
-    use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
+    use ui::webview::{SharedEngine, WebViewCommand};
 
     // Dev environments (containers) can't nest WebKit's bubblewrap
     // sandbox; on qOS the cluster sandbox is the outer boundary anyway.
