@@ -297,6 +297,18 @@ impl PdfApp {
             self.page_sidebar.set_aspect(self.ph() / self.pw());
             let cur = self.current_page.saturating_sub(1);
             self.page_sidebar.begin_frame(self.rail_rect, self.doc.page_count(), cur);
+            // Screenshot hook: stage a live reorder drag so a still frame shows
+            // the floating ghost + the reflow gap. Never armed at runtime.
+            if self.shots_rail_drag {
+                let rects = self.page_sidebar.thumb_rects();
+                if rects.len() >= 3 {
+                    let from = rects[0].1.center();
+                    let to = rects[2].1.center();
+                    self.page_sidebar.on_press(from);
+                    self.page_sidebar.on_motion(to);
+                    let _ = self.page_sidebar.take_events();
+                }
+            }
         }
 
         // Rasterise the pages + thumbnails on screen once, up front.
