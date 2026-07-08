@@ -231,6 +231,17 @@ pub struct NavSplit {
     inner_taffy: Option<TaffyTree<()>>,
     sidebar_node: Option<NodeId>,
     content_node: Option<NodeId>,
+    /// The `(sidebar_rect, content_rect)` the inner tree was last *solved* at.
+    /// A full re-solve (`place_children` — rebuild + `compute_layout` + text
+    /// re-measure) is only needed when the pane geometry actually changes
+    /// (first layout, resize, flap slide). When it hasn't — the overwhelmingly
+    /// common case of a **scroll inside the content pane**, which repositions
+    /// but does not resize — `apply_layout` merely re-applies the children on
+    /// the cached tree so the inner `Scrollable` pushes its new offset down,
+    /// with no rebuild and no re-measure. Without this, every scroll frame
+    /// re-solved the entire content pane (all cards/comments + all text),
+    /// which dominated the per-frame cost.
+    solved_rects: Option<(Rect, Rect)>,
     /// `true` while the reveal/push animation is settling — read by
     /// `needs_animation_frame`.
     animating: bool,
@@ -265,6 +276,7 @@ impl NavSplit {
             inner_taffy: None,
             sidebar_node: None,
             content_node: None,
+            solved_rects: None,
             animating: false,
             dirty: false,
             last_tick: None,
@@ -459,6 +471,34 @@ impl NavSplit {
         self.inner_taffy = Some(taffy);
         self.sidebar_node = Some(s_node);
         self.content_node = Some(c_node);
+        self.solved_rects = Some((self.sidebar_rect, self.content_rect));
+    }
+
+    /// Re-apply the children onto the **cached** inner tree at the current
+    /// sub-rects, without rebuilding or re-solving it. This is the scroll fast
+    /// path: the pane geometry is unchanged, so the intrinsic layout in the
+    /// inner tree is still valid; re-running `apply_layout` just lets a
+    /// descendant `Scrollable` push its new offset down to its children. Falls
+    /// back to a full `place_children` if no cached tree exists yet.
+    fn reapply_children(&mut self) {
+        if self.inner_taffy.is_none() || self.sidebar_node.is_none() || self.content_node.is_none() {
+            // No cached tree yet (shouldn't happen on a reposition, but be safe):
+            // fall back to a full solve, paying for the `TextRenderer` only here.
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            self.place_children(&theme, &mut tr);
+            return;
+        }
+        // Take the tree out so the children (other fields) can be borrowed
+        // mutably alongside it, then put it straight back.
+        let taffy = self.inner_taffy.take().unwrap();
+        let s_node = self.sidebar_node.unwrap();
+        let c_node = self.content_node.unwrap();
+        let s_origin = Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0);
+        let c_origin = Point::new(self.content_rect.x0, self.content_rect.y0);
+        self.sidebar.apply_layout(&taffy, s_node, s_origin);
+        self.content.apply_layout(&taffy, c_node, c_origin);
+        self.inner_taffy = Some(taffy);
     }
 
     /// Advance the reveal + push animations off a real wall-clock delta,
@@ -506,6 +546,18 @@ impl NavSplit {
     }
 }
 
+/// Cached `QUICK_UI_NO_SPLIT_CACHE=1` check: when set, `apply_layout` always
+/// re-solves the content pane (the pre-cache behaviour), as a safety escape and
+/// a perf baseline. Read once and cached so the hot layout path never touches an
+/// env var.
+fn split_cache_disabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("QUICK_UI_NO_SPLIT_CACHE").map(|s| !s.is_empty()).unwrap_or(false)
+    })
+}
+
 impl Widget for NavSplit {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.sidebar.sync(state, path);
@@ -542,12 +594,36 @@ impl Widget for NavSplit {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Reconcile + recompute geometry, then lay out children.
+        // Reconcile + recompute geometry, then lay out children. A full
+        // (re)solve of the inner tree is only needed when the pane geometry
+        // changed (first layout, resize, flap slide); a pure reposition — the
+        // common case of a scroll inside the content pane — just re-applies the
+        // children on the cached tree, skipping the expensive rebuild +
+        // `compute_layout` + text re-measure that otherwise ran every frame.
         self.flap.reconcile(self.layout_mode());
         self.recompute_rects();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        self.place_children(&theme, &mut tr);
+        // Re-solve only when the pane geometry moved (first layout / resize /
+        // flap slide) or a descendant genuinely needs re-measuring (an intrinsic
+        // size changed). A pure scroll reports neither — `Scrollable` overrides
+        // `layout_needs_measure` to `false` for a reposition — so it takes the
+        // cheap re-apply path, which crucially does NOT build a `TextRenderer`
+        // (a cosmic-text `FontSystem`, expensive to construct) that only the
+        // re-solve path actually needs.
+        let geometry_changed = self.solved_rects != Some((self.sidebar_rect, self.content_rect));
+        let needs_resolve = geometry_changed
+            || self.content.layout_needs_measure()
+            || self.sidebar.layout_needs_measure()
+            // `QUICK_UI_NO_SPLIT_CACHE=1` forces the old always-re-solve
+            // behaviour (a safety escape + a before/after perf baseline),
+            // mirroring the App's `QUICK_UI_NO_SCROLL_OPT`.
+            || split_cache_disabled();
+        if needs_resolve {
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            self.place_children(&theme, &mut tr);
+        } else {
+            self.reapply_children();
+        }
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
@@ -1048,6 +1124,140 @@ mod tests {
             &mut focus_target,
             node,
             &taffy,
+        );
+    }
+
+    /// Scroll-perf regression guard: after the first layout, a second
+    /// `apply_layout` at the SAME pane geometry (what happens on every scroll
+    /// frame, where the content only repositions) must NOT rebuild + re-solve
+    /// the content pane. Re-solving it every frame — a full `build_layout` +
+    /// `compute_layout` + text re-measure of the whole content — was the
+    /// dominant per-frame cost that made scrolling long lists / the watch page
+    /// crawl. A resize DOES re-solve (the geometry genuinely changed).
+    #[test]
+    fn pure_reposition_reuses_the_inner_layout_instead_of_re_solving() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        // Content spy: counts its `build_layout` calls — the expensive rebuild
+        // `place_children` performs. Reports `layout_needs_measure() == false`
+        // once laid out (a laid-out subtree being repositioned by a scroll needs
+        // no re-solve), exactly like `Scrollable`.
+        struct Spy {
+            builds: Rc<Cell<usize>>,
+            rect: Rect,
+        }
+        impl Widget for Spy {
+            fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+            fn build_layout(
+                &mut self,
+                taffy: &mut TaffyTree<()>,
+                _t: &Theme,
+                node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                self.builds.set(self.builds.get() + 1);
+                let n = taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::percent(1.0),
+                        },
+                        ..Default::default()
+                    })
+                    .unwrap();
+                node_map.insert(n, self as *mut dyn Widget);
+                n
+            }
+            fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+                let l = taffy.layout(node).unwrap();
+                self.rect = Rect::new(
+                    origin.x + l.location.x as f64,
+                    origin.y + l.location.y as f64,
+                    origin.x + l.location.x as f64 + l.size.width as f64,
+                    origin.y + l.location.y as f64 + l.size.height as f64,
+                );
+            }
+            fn draw(
+                &mut self,
+                _s: &mut Scene,
+                _t: Affine,
+                _tr: &mut TextRenderer,
+                _th: &Theme,
+                _p: &PresenceCtx,
+            ) {
+            }
+            fn handle_event(
+                &mut self,
+                _e: &WindowEvent,
+                _sf: f64,
+                _m: &winit::event::Modifiers,
+                _s: &mut AutoCommit,
+                _p: &ObjId,
+                _h: &mut bool,
+                _ft: &mut Option<NodeId>,
+                _n: NodeId,
+                _t: &TaffyTree<()>,
+            ) {
+            }
+            fn is_layout_dirty(&self) -> bool {
+                self.rect == Rect::ZERO
+            }
+            fn layout_needs_measure(&self) -> bool {
+                false
+            }
+            fn name(&self) -> &str {
+                "Spy"
+            }
+            fn get_rect(&self) -> Rect {
+                self.rect
+            }
+        }
+
+        let builds = Rc::new(Cell::new(0usize));
+        let mut ns = NavSplit::new(
+            Box::new(Text::new("sidebar")),
+            Box::new(Spy { builds: builds.clone(), rect: Rect::ZERO }),
+        )
+        .with_mode(SplitMode::AlwaysDocked);
+
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut node_map);
+
+        let solve = |taffy: &mut TaffyTree<()>, w: f32| {
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(w),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+        };
+
+        // First layout: the content pane is built + solved once.
+        solve(&mut taffy, 1200.0);
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        assert_eq!(builds.get(), 1, "first layout builds the content pane once");
+
+        // A scroll frame — apply_layout again at the identical geometry — must
+        // re-apply on the cached inner tree, NOT rebuild it.
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        assert_eq!(
+            builds.get(),
+            1,
+            "a pure reposition must not rebuild/re-solve the content pane"
+        );
+
+        // A resize genuinely changes the pane geometry → a full re-solve.
+        solve(&mut taffy, 900.0);
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        assert!(
+            builds.get() > 1,
+            "a resize re-solves the content pane (build count {})",
+            builds.get()
         );
     }
 }

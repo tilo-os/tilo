@@ -139,6 +139,26 @@ pub struct TubeApp {
     /// up. Spawned once, on the first real stream load in the online app, so the
     /// system top-bar widget + media keys drive playback. Never in `--shots`/tests.
     mpris_started: bool,
+
+    /// In-flight image count observed on the previous frame. Cards/avatars grab
+    /// their decoded image from the [`ui::ImageStore`] at BUILD time, so an image
+    /// that finishes loading *after* the tree was built would never appear unless
+    /// something re-runs `build_layout`. When this count changes (a thumbnail /
+    /// avatar started or — crucially — finished loading) we flag a structural
+    /// rebuild so the freshly-decoded image folds into the tree. See
+    /// [`images_need_refresh`].
+    images_pending_prev: usize,
+}
+
+/// Whether a change in the number of in-flight image loads should trigger a
+/// structural rebuild so freshly-decoded thumbnails/avatars get captured into
+/// the widget tree. Cards read `imgs.get(url)` at build time, so an image that
+/// lands after the last build is invisible until the next rebuild — this returns
+/// `true` on any change to the pending count (a load began, or one settled), so
+/// search results (which otherwise stop rebuilding once their one worker
+/// response has folded in) show their thumbnails the moment they decode.
+fn images_need_refresh(prev_pending: usize, pending: usize) -> bool {
+    pending != prev_pending
 }
 
 impl Default for TubeApp {
@@ -174,6 +194,7 @@ impl TubeApp {
             images: None,
             show_skip_end: None,
             mpris_started: false,
+            images_pending_prev: 0,
         }
     }
 
@@ -1418,6 +1439,16 @@ impl Widget for TubeApp {
         if self.pump() {
             dirty = true;
         }
+        // Rebuild while thumbnails/avatars are still settling so each decoded
+        // image gets captured into the tree (they're grabbed at build time).
+        // Without this a search page — which stops rebuilding once its single
+        // worker response has folded in — would keep showing gradient posters
+        // even after its real thumbnails finished downloading.
+        let pending = self.images.as_ref().map(|s| s.pending()).unwrap_or(0);
+        if images_need_refresh(self.images_pending_prev, pending) {
+            self.images_pending_prev = pending;
+            dirty = true;
+        }
         if let Some(c) = &mut self.root_child {
             dirty |= c.take_structure_dirty();
         }
@@ -1456,16 +1487,20 @@ impl Widget for TubeApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping redraws (and thus `sync`, which pumps the
-        // media engine) across two windows: while a watch stream is resolving
-        // (so the worker's `StreamResolved` folds in) and while the player is
-        // decoding (so the picture MOVES). winit's default `Wait` only wakes on
-        // input; the player's own `needs_animation_frame` covers the playing
-        // case via `root_child`, and this `streaming` gate covers the resolve
-        // gap before a source is loaded. Redraws are vsync-throttled by the
-        // renderer, so this paces to the display, not a hot spin.
-        let streaming = self.online
-            && matches!(&self.model.route, Route::Watch(id) if self.playing_id.as_deref() == Some(id.as_str()));
-        streaming
+        // media engine) ONLY while a watch stream is still *resolving* — armed
+        // (`playing_id`) but with no source loaded into the engine yet
+        // (`player_video` not this id) — so the worker's `StreamResolved` folds
+        // in without waiting for stray input. Once a source is loaded, the
+        // player's own `needs_animation_frame` (via `root_child` — is_playing or
+        // controls fading) governs, so a **paused-but-loaded** video lets the
+        // loop go idle instead of spinning at 60 Hz forever (which kept the app
+        // needlessly busy and made scrolling feel heavy). Redraws are
+        // vsync-throttled by the renderer regardless.
+        let resolving = self.online
+            && matches!(&self.model.route, Route::Watch(id)
+                if self.playing_id.as_deref() == Some(id.as_str())
+                    && self.player_video.as_deref() != Some(id.as_str()));
+        resolving
             || self.images_pending()
             || self
                 .root_child
@@ -1966,6 +2001,84 @@ mod tests {
         assert!(
             stub.avatar_url.is_empty() && stub.subscribers == 0,
             "a name stub must be recognised as needing an avatar/subs fetch",
+        );
+    }
+
+    // --- issue 2: thumbnails/avatars fold in as they finish loading ---
+
+    #[test]
+    fn image_loads_trigger_a_rebuild_so_they_fold_in() {
+        // Cards grab their thumbnail/avatar from the image store at BUILD time,
+        // so an image that finishes loading *after* the tree was built must
+        // trigger a rebuild to be captured. `images_need_refresh` fires on any
+        // change to the in-flight count — a load starting OR, crucially,
+        // finishing — which is what makes a search page (that stops rebuilding
+        // once its one worker response folded in) show its thumbnails the moment
+        // they decode.
+        assert!(images_need_refresh(0, 3), "new loads started → rebuild to capture them");
+        assert!(images_need_refresh(3, 0), "all loads settled → a rebuild captures the final images");
+        assert!(images_need_refresh(2, 1), "one of several settled → fold it in");
+        assert!(!images_need_refresh(2, 2), "mid-flight but unchanged → no needless rebuild");
+        assert!(!images_need_refresh(0, 0), "idle → no rebuild");
+    }
+
+    // --- issue 3: the stream loads on OPEN, not on first Play ---
+
+    #[test]
+    fn opening_a_watch_page_arms_stream_resolution_on_open() {
+        // The resolve/buffer must start when the watch page OPENS — not on a
+        // later Play click. `ensure_playback` (run right after the open action
+        // drains, and on the boot-into-watch sync) arms it; `playing_id`
+        // latching to the opened video proves the `PlayVideo` resolve request
+        // went out, so playback is loading before any Play is pressed.
+        let (mut app, mut doc) = fresh_synth();
+        app.online = true; // online so `ensure_playback` actually resolves
+        let r = automerge::ROOT;
+        assert!(app.playing_id.is_none(), "nothing armed before opening");
+        app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
+        app.ensure_playback();
+        assert_eq!(
+            app.playing_id.as_deref(),
+            Some("vid_donut"),
+            "opening a watch page arms stream resolution (no Play click needed)"
+        );
+    }
+
+    // --- issue 5: a paused-but-loaded watch page lets the loop idle ---
+
+    #[test]
+    fn watch_animates_while_resolving_then_idles_once_paused_and_loaded() {
+        // While the stream is still resolving (armed but no source loaded) the
+        // loop must keep pumping so `StreamResolved` folds in. Once a source is
+        // loaded and the video is PAUSED, the app must let the event loop idle
+        // rather than spin at 60fps forever — the needless busy-loop that made
+        // scrolling on a paused-but-loaded watch page feel heavy.
+        let (mut app, _doc) = fresh_synth();
+        app.online = true;
+        app.model.route = Route::Watch("vid_donut".into());
+        app.playing_id = Some("vid_donut".into());
+
+        // Resolving: no source loaded yet → keep pumping.
+        app.player_video = None;
+        assert!(
+            app.needs_animation_frame(),
+            "while the stream is resolving the loop keeps pumping so it folds in"
+        );
+
+        // Loaded + paused → the loop may idle (the paused player asks for none).
+        let ok = app.load_resolved_stream(
+            "vid_donut".into(),
+            "https://inv.example/x?local=true".into(),
+            true,
+            "360p".into(),
+        );
+        assert!(ok && app.player_video.as_deref() == Some("vid_donut"), "source loaded");
+        app.player.borrow_mut().pause();
+        app.model.playing = false;
+        assert!(!app.player.borrow().is_playing(), "precondition: paused");
+        assert!(
+            !app.needs_animation_frame(),
+            "a paused, loaded watch page lets the event loop idle (issue 5)"
         );
     }
 }

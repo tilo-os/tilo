@@ -115,7 +115,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // prints the numbers. No window, no GPU present (matches the QUICK_UI_PERF
     // main-thread breakdown, which excludes the render worker).
     if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
-        return run_bench_scroll(frames);
+        // `--watch` benches the watch page (full-bleed player + a long comment
+        // list) instead of the Home grid, so the reported numbers cover the
+        // screen the scroll-perf complaint was about.
+        let watch = args.iter().any(|a| a == "--watch");
+        return run_bench_scroll(frames, watch);
     }
 
     if let Some(out) = parse_shots_arg(&args) {
@@ -1258,9 +1262,10 @@ fn avg_us(samples: &[u128]) -> u128 {
     }
 }
 
-/// `--bench-scroll [frames]`: measure the per-frame main-thread cost of
-/// scrolling a large Home grid, in two modes, and report the numbers.
-fn run_bench_scroll(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
+/// `--bench-scroll [frames] [--watch]`: measure the per-frame main-thread cost
+/// of scrolling either a large Home grid or the watch page (full-bleed player +
+/// a long comment list), in two modes, and report the numbers.
+fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Instant;
     use tube::model::{Route, TubeModel};
     use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
@@ -1271,7 +1276,7 @@ fn run_bench_scroll(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
     // A large, realistic Home catalogue: grow the sample by cloning cards with
     // fresh ids so the grid actually stresses layout (the composed live
     // "popular" feed is this size or larger).
-    let big_model = || -> TubeModel {
+    let home_model = || -> TubeModel {
         let mut m = tube::sample::model();
         let base = m.videos.clone();
         let mut i = 0usize;
@@ -1284,6 +1289,32 @@ fn run_bench_scroll(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
         }
         m.route = Route::Home;
         m
+    };
+
+    // The watch page the scroll-perf complaint was about: a full-bleed player
+    // over a long comment list (the real content that makes the scroll tree
+    // deep). Grow the chosen video's comments to a realistic count.
+    let watch_model = || -> TubeModel {
+        let mut m = tube::sample::model();
+        let id = m
+            .videos
+            .iter()
+            .find(|v| !v.comments.is_empty())
+            .map(|v| v.id.clone())
+            .unwrap_or_else(|| m.videos[0].id.clone());
+        if let Some(v) = m.videos.iter_mut().find(|v| v.id == id) {
+            let base = v.comments.clone();
+            let mut i = 0usize;
+            while v.comments.len() < 60 && !base.is_empty() {
+                v.comments.push(base[i % base.len()].clone());
+                i += 1;
+            }
+        }
+        m.route = Route::Watch(id);
+        m
+    };
+    let big_model = || -> TubeModel {
+        if watch { watch_model() } else { home_model() }
     };
 
     // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
@@ -1407,7 +1438,8 @@ fn run_bench_scroll(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
         );
     };
 
-    println!("tube scroll bench: {CARDS} Home cards, {w}x{h}, {frames} scroll frames\n");
+    let scene_label = if watch { "watch page (player + 60 comments)".to_string() } else { format!("{CARDS} Home cards") };
+    println!("tube scroll bench: {scene_label}, {w}x{h}, {frames} scroll frames\n");
     let (bc, ba, bd, _) = run_pass(true);
     report("BASELINE (re-solve)", &bc, &ba, &bd);
     let (fc, fa, fd, repos) = run_pass(false);
