@@ -185,7 +185,7 @@ fn question_mark_types_into_focused_note_and_does_not_open_help() {
     // editor holds focus after load, so the global help shortcut must
     // yield to typing.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
     assert!(app.main_panel_mut().editor_mut().is_focused());
@@ -209,7 +209,7 @@ fn question_mark_types_into_focused_note_and_does_not_open_help() {
 fn question_mark_opens_help_when_no_note_is_focused() {
     // With the tree (not the editor) focused, `?` is the help shortcut.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
 
@@ -232,7 +232,7 @@ fn question_mark_opens_help_when_no_note_is_focused() {
 #[test]
 fn open_help_overlay_blocks_the_editor() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
 
@@ -260,7 +260,7 @@ fn cmd_n_creates_child_even_while_editor_is_focused() {
     // was focused, but the editor holds focus on load. Handled at the
     // app level it must work regardless.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let root = app.workspace_pages_for_test()[0].id;
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
@@ -286,7 +286,7 @@ fn cmd_n_creates_child_even_while_editor_is_focused() {
 #[test]
 fn plus_button_creates_a_root_page() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
     assert_eq!(app.workspace_pages_for_test().len(), 1);
@@ -310,7 +310,7 @@ fn plus_button_creates_a_root_page() {
 #[test]
 fn delete_key_removes_selected_page_after_focusing_tree() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
     let victim = app.selected_for_test().unwrap();
@@ -342,7 +342,7 @@ fn delete_key_is_gated_on_tree_focus() {
     // must NOT delete a page — it belongs to the editor. This proves the
     // focus gate is real, not bypassed.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
     app.sync_sidebar_for_test();
     let before = app.workspace_pages_for_test().len();
@@ -362,7 +362,7 @@ fn delete_key_is_gated_on_tree_focus() {
 #[test]
 fn f2_opens_inline_rename_after_focusing_tree() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
 
@@ -382,7 +382,7 @@ fn f2_opens_inline_rename_after_focusing_tree() {
 #[test]
 fn arrow_keys_move_selection_after_focusing_tree() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
     let second = app.selected_for_test().unwrap();
@@ -412,7 +412,7 @@ fn arrow_keys_move_selection_after_focusing_tree() {
 #[test]
 fn disclosure_triangle_click_toggles_child_visibility() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     // Give `welcome` a child so it becomes a collapsible branch.
     app.apply_event_for_test(OutEvent::CreateChild { parent: Some(welcome) });
@@ -454,7 +454,7 @@ fn disclosure_triangle_click_toggles_child_visibility() {
 #[test]
 fn double_click_row_opens_inline_rename() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
 
@@ -478,7 +478,7 @@ fn multiline_code_block_renders_as_one_contiguous_unit() {
     // fenced block must render as ONE contiguous unit — consecutive code
     // lines butt together (no inter-line gap), each in the monospace face.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     let body = "Intro line.\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n\nAfter.\n";
     app.main_panel_mut().load_page(id, "T".into(), body.to_string());
@@ -533,7 +533,7 @@ fn backspace_at_note_start_does_not_delete_or_switch_page() {
     // used to fall through to the tree's page-delete binding, deleting the
     // note and jumping the user to another one. It must be a no-op now.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     // A second root page so a stray delete would visibly "switch" pages.
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
@@ -572,7 +572,7 @@ fn right_click_row_opens_context_menu_and_new_child_action_works() {
     // Bug: right-click on a page row did nothing. It must open the context
     // menu, and its actions must actually run.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
@@ -610,7 +610,7 @@ fn nested_child_renders_indented_under_its_parent() {
     // Bug: the sidebar rendered a flat list despite the model's hierarchy.
     // A child of the selected page must show one indent level below it.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     // Creating a child auto-selects it, so revealing it proves the tree
     // expands its ancestors (not a collapsed flat list).
@@ -638,7 +638,7 @@ fn inline_rename_is_plain_and_commits_on_click_outside() {
     // Bug: the rename field was a jarring boxed input that never deselected.
     // It must be plain-chrome (styled like the row) and commit on focus-out.
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     // Second root page so we can click a DIFFERENT row to blur + commit.
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
@@ -683,7 +683,7 @@ fn inline_rename_is_plain_and_commits_on_click_outside() {
 #[test]
 fn alt_arrow_reorders_selected_page_among_siblings() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
     let p1 = app.selected_for_test().unwrap();

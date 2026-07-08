@@ -13,6 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# Shared streaming + playback layer. The watch page's video surface is a
+# `ui::widget::VideoPlayer` driven by a `media::MediaEngine`, so real decode +
+# audio out land through the same engine the local video player and the editor
+# preview use. Real GStreamer decode is behind this crate's `decode` feature,
+# pulled in by Tube's own `media` feature below.
+media = { path = "../../crates/media" }
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -27,8 +33,6 @@ anyhow = "1.0"
 # from a background worker thread; never touched on the `--shots` path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# blake3 used by the SponsorBlock privacy-preserving hash-prefix query.
-sha2 = "0.10"
 # H.264 decode for real video playback. Same pin + `source` feature as `ui`'s
 # `VideoPlayer`, so this reuses the already-compiled artifact (no extra build).
 # Tube drives the decoder directly (not through `VideoPlayer`) so it can disable
@@ -96,11 +100,18 @@ default = []
 # keeps `rustypipe` compiled as a fallback source. `--features live` must
 # check-compile; it is never part of the shots path.
 live = ["dep:rustypipe", "dep:tokio"]
-# Real video decode + playback through GStreamer (replaces the openh264-only
-# path). Pulls in gstreamer + gstreamer-app + gstreamer-video. Compiles the
-# `backend::gst_playback` module; the default build keeps only the hermetic
-# poster path, so nothing here can touch the `--shots`/test screenshot.
-media = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+# Real video decode + playback + audio out. Turns on the shared media engine's
+# GStreamer backend (`media/decode`) that the watch-page `VideoPlayer` streams
+# through, and keeps the direct `gstreamer` deps that the `backend::gst_playback`
+# diagnostic + `--probe-gst` use (same 0.24 pin, so cargo links one copy). The
+# default build keeps the synthesized-frame fallback, so `--shots`/tests need no
+# gstreamer stack.
+media = [
+    "media/decode",
+    "dep:gstreamer",
+    "dep:gstreamer-app",
+    "dep:gstreamer-video",
+]
 # Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
 # the live `GrayjaySyncTransport`; the default build keeps only the deterministic
 # `StubTransport`, so nothing here can touch the hermetic path.

@@ -32,10 +32,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::VideoPlayer;
 
-use crate::call::{AllowAll, CallPermissions, CallState, OverlayDrag, SoundEngine};
+use crate::call::{CallState, OverlayDrag, SoundEngine};
 use crate::doc::ChatDoc;
+use crate::identity::LocalIdentity;
 use crate::media::MediaEngine;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
+use crate::permissions::ChatPermissions;
 use crate::responsive::{FlapMode, FlapState, LEFT_BREAKPOINT, RIGHT_BREAKPOINT};
 use crate::storage::{self, Saver};
 
@@ -268,10 +270,20 @@ pub struct ChatApp {
     pub(crate) left_mode: FlapMode,
     pub(crate) right_mode: FlapMode,
 
-    // Engines (call sounds + media transport + the call permission seam).
+    // The local peer's identity: how this peer authors messages, reactions,
+    // voice membership, and its own read watermark in the shared document.
+    // Distinct + stable per real peer (see [`crate::identity`]) so genuine
+    // multi-participant chat attributes and de-duplicates correctly.
+    pub(crate) me: LocalIdentity,
+
+    // Engines (call sounds + media transport).
     pub(crate) sound: SoundEngine,
     pub(crate) media: MediaEngine,
-    pub(crate) permissions: AllowAll,
+
+    // The OS permission gate: routes channel participation + file-embed
+    // hydration through the toolkit's permission model. Refreshed from the
+    // `PermissionContext` the compositor passes into `draw`.
+    pub(crate) perms: ChatPermissions,
 
     // Persistence (None for ephemeral / `--shots` instances).
     saver: Option<Saver>,
@@ -294,6 +306,12 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// True for the live binary (`ChatApp::new`). A live instance always seeds
+    /// the honest empty starter and never the fabricated demo workspace — even
+    /// when no data dir is available (so no saver could be wired). Only the
+    /// ephemeral `--shots`/test instances (`new_ephemeral`) leave this `false`
+    /// and may stage the rich demo.
+    pub(crate) is_live: bool,
 }
 
 impl Default for ChatApp {
@@ -303,10 +321,19 @@ impl Default for ChatApp {
 }
 
 impl ChatApp {
-    /// The persistent, live instance: loads the saved workspace from disk
-    /// (if any) and wires the background saver.
+    /// The persistent, live instance: resolves this peer's real identity,
+    /// loads the saved workspace from disk (if any) and wires the background
+    /// saver. The resolved identity is what makes two running instances
+    /// genuinely different participants rather than two "u_me"s colliding.
     pub fn new() -> Self {
         let mut app = Self::bare();
+        app.is_live = true;
+        app.me = LocalIdentity::resolve();
+        // Author the local view state under the real identity from the start so
+        // nothing is attributed to the demo `u_me`.
+        app.active_ws.clear();
+        app.active_channel.clear();
+        app.thread_open = None;
         if let Some(dir) = storage::data_dir() {
             app.saver = Some(Saver::spawn(dir, Duration::from_millis(400)));
         }
@@ -356,9 +383,10 @@ impl ChatApp {
             right_flap: FlapState::closed_by_default(),
             left_mode: FlapMode::Docked,
             right_mode: FlapMode::Docked,
+            me: LocalIdentity::demo(),
             sound: SoundEngine::new(),
             media: MediaEngine::new(),
-            permissions: AllowAll,
+            perms: ChatPermissions::permissive(),
             saver: None,
             images: ui::ImageStore::new(crate::images::fetcher()),
             rect: Rect::ZERO,
@@ -370,14 +398,30 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            is_live: false,
         }
     }
 
-    /// Whether a call action is permitted by the (currently default-allow)
-    /// permission seam. The single gate the call UI consults before a
-    /// privileged action; swap [`AllowAll`] for the real OS checker later.
+    /// Whether a call action is permitted, routed through the real OS
+    /// permission gate for the active workspace. A View-only / ungranted peer
+    /// is blocked from join/speak/camera/screen-share; leaving is always
+    /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.permissions.allows(action)
+        self.perms.allows(&self.active_ws, action)
+    }
+
+    /// Whether the local peer may post / react / start a call in the active
+    /// workspace (an Edit grant). The permissive default allows; a restricted
+    /// context gates writes while still letting the peer read.
+    pub(crate) fn can_participate(&self) -> bool {
+        self.perms.can_participate(&self.active_ws)
+    }
+
+    /// Whether the local peer may hydrate + render the bytes behind an
+    /// attachment. An ungranted embed shows a locked card and never touches
+    /// the file — the permission boundary for a projected FUSE share.
+    pub(crate) fn embed_allowed(&self, path: &str) -> bool {
+        self.perms.can_embed(path)
     }
 
     /// Persist the current document. Called after every mutation; a no-op
@@ -442,11 +486,13 @@ impl ChatApp {
                         path: crate::images::DEMO_CALL_GRID.into(),
                         name: "call-overlay-v3.png".into(),
                         size: 84_992,
+                        is_video: false,
                     },
                     crate::picker::PickEntry {
                         path: crate::images::DEMO_SHARED_SHOT.into(),
                         name: "design-handoff.png".into(),
                         size: 132_480,
+                        is_video: false,
                     },
                 ];
                 self.attach_open = true;
@@ -529,6 +575,13 @@ impl ChatApp {
         self.voice_members.get(channel).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// The media routing for the current call, chosen from the live participant
+    /// count: peer-to-peer below the mesh threshold, host-relay above it. A
+    /// call transparently promotes from P2P to host-based as people join.
+    pub(crate) fn call_session(&self) -> crate::model::CallSession {
+        crate::model::CallSession::select(self.voice_in(&self.call.channel).len().max(1))
+    }
+
     /// Channels in `category` within the active workspace, ordered.
     pub(crate) fn category_channels(&self, category: &str) -> Vec<&Channel> {
         let mut v: Vec<&Channel> = self
@@ -581,7 +634,7 @@ impl ChatApp {
             c.unread = if c.id == self.active_channel {
                 0
             } else {
-                ChatDoc::unread_count(doc, &c.id)
+                ChatDoc::unread_count(doc, &c.id, &self.me.id)
             };
         }
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
@@ -615,7 +668,7 @@ impl ChatApp {
     /// safe to call every frame.
     pub(crate) fn mark_active_read(&self, doc: &mut AutoCommit) {
         if !self.active_channel.is_empty() {
-            ChatDoc::mark_read(doc, &self.active_channel);
+            ChatDoc::mark_read(doc, &self.active_channel, &self.me.id);
         }
     }
 
@@ -811,7 +864,10 @@ impl ChatApp {
         // the timeline and the open thread panel.
         for m in &self.messages {
             if let Some(crate::model::Attachment::Image { path, .. }) = &m.attachment {
-                let _ = self.images.get(path);
+                // Never hydrate the bytes of an embed this peer isn't granted.
+                if self.embed_allowed(path) {
+                    let _ = self.images.get(path);
+                }
             }
         }
         // Also warm any thumbnails visible in an open attachment picker.
@@ -842,42 +898,6 @@ impl ChatApp {
     }
 }
 
-/// Resolve the local user's identity for the first-run starter workspace from
-/// the environment (`$USER` / `$USERNAME`), falling back to a neutral "You".
-/// Keeps the stable id [`model::ME`] so authored messages and reactions bind
-/// to the right person across renames.
-fn local_identity() -> (String, String, String) {
-    let raw = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "You".to_string());
-    // Present a tidy display name: capitalise the login and split on common
-    // separators so "ada.lovelace" → "Ada Lovelace".
-    let display: String = raw
-        .split(|c: char| c == '.' || c == '_' || c == '-' || c == ' ')
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            let mut ch = p.chars();
-            match ch.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    let display = if display.is_empty() { "You".to_string() } else { display };
-    let initials: String = display
-        .split_whitespace()
-        .filter_map(|w| w.chars().next())
-        .take(2)
-        .collect::<String>()
-        .to_uppercase();
-    let initials = if initials.is_empty() { "Y".to_string() } else { initials };
-    (model::ME.to_string(), display, initials)
-}
-
 /// Compute an absolute rect from window-relative fractions.
 pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     let x0 = win.x0 + f.0 * win.width();
@@ -887,10 +907,12 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
 
 impl Widget for ChatApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
-        if self.saver.is_some() {
+        if self.is_live {
             // Live instance. Restore a persisted workspace if one exists so a
             // restart keeps prior messages/structure; otherwise scaffold a
             // real, empty starter workspace for this user — never the demo.
+            // Keyed off `is_live` (not the saver) so a live run with no data
+            // dir still gets the honest empty starter rather than the demo.
             if !ChatDoc::is_seeded(doc) {
                 if let Some(dir) = storage::data_dir() {
                     if let Ok(Some(bytes)) = storage::load_bytes(&dir) {
@@ -901,13 +923,26 @@ impl Widget for ChatApp {
                 }
             }
             if !ChatDoc::is_seeded(doc) {
-                let (id, name, initials) = local_identity();
-                ChatDoc::seed_starter(doc, &id, &name, &initials);
+                ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
+            }
+            // Announce this peer into the shared roster so every other
+            // participant sees its real name/colour — whether we seeded the
+            // workspace or adopted a peer's shared document. Guarded so it
+            // writes once and doesn't churn the doc (which would spam empty
+            // collab deltas) on subsequent frames.
+            if ChatDoc::ensure_user(
+                doc,
+                &self.me.id,
+                &self.me.name,
+                &self.me.initials,
+                self.me.color_idx,
+                model::Presence::Online,
+            ) {
+                self.persist(doc);
             }
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
-            let (id, name, initials) = local_identity();
-            ChatDoc::seed_starter(doc, &id, &name, &initials);
+            ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
         } else {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
@@ -920,6 +955,11 @@ impl Widget for ChatApp {
         // The channel in view is read: advance its watermark (no-op when
         // nothing new arrived) so its unread badge stays cleared.
         self.mark_active_read(doc);
+        // While in a call, keep the media signalling handshake current: dial
+        // any peer that has joined since the last frame (idempotent).
+        if self.call.active {
+            self.connect_call_peers(doc);
+        }
     }
 
     fn build_layout(
@@ -1114,8 +1154,12 @@ impl Widget for ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &PermissionContext,
+        permissions: &PermissionContext,
     ) {
+        // Adopt the OS-provided permission context so channel participation and
+        // file-embed hydration are gated by the real grant policy (the
+        // compositor hands each app its context here every frame).
+        self.perms = ChatPermissions::from_context(permissions.clone());
         // Root spans the whole window — always paint.
         self.draw(scene, tf, tr, theme, presence);
     }

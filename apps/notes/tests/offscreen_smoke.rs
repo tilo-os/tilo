@@ -22,7 +22,7 @@ use vello::peniko::Color;
 #[test]
 fn render_one_frame_against_seeded_workspace() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn ok");
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
 
     // v0.1: reload a short demo so the snapshot stays small enough
     // for the status bar to be visible at the bottom. The full

@@ -13,7 +13,8 @@
 
 use automerge::AutoCommit;
 
-use crate::{doc, seed, storage, sync};
+use crate::model::{Library, Playback};
+use crate::{doc, storage, sync};
 
 /// The headless server: an authoritative document + its sync transport.
 pub struct Relay {
@@ -23,18 +24,21 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Load (or seed) the authoritative document from disk and bind a sync
-    /// transport. The transport is the live iroh engine when the `p2p` feature
-    /// is on and the environment supports it, otherwise the loopback (so the
-    /// relay always starts, even headless in CI).
+    /// Load (or initialise) the authoritative document from disk and bind a
+    /// sync transport. The transport is the live iroh engine when the `p2p`
+    /// feature is on and the environment supports it, otherwise the loopback
+    /// (so the relay always starts, even headless in CI).
+    ///
+    /// A brand-new server starts with an **empty** library — it never
+    /// fabricates a catalog. Real tracks arrive when clients sync their library
+    /// up to it.
     pub fn new() -> Self {
         let path = storage::doc_path();
         let mut doc = match storage::load_from(&path) {
             Some(d) => d,
             None => {
                 let mut d = AutoCommit::new();
-                let lib = seed::sample_library();
-                doc::seed(&mut d, &lib, &seed::sample_playback(&lib));
+                doc::seed(&mut d, &Library::default(), &Playback::default());
                 d
             }
         };
@@ -115,9 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn relay_seeds_and_serves_the_library() {
+    fn relay_starts_empty_and_serves() {
         let (relay, dir, _path) = isolated_relay();
-        assert!(relay.track_count() >= 20, "headless relay seeds the catalog");
+        // A fresh headless server fabricates no catalog — real tracks arrive
+        // when clients sync their library up to it.
+        assert_eq!(relay.track_count(), 0, "a fresh relay serves an empty library");
         // Without the p2p feature the transport is the loopback (not live) but
         // still advertises a ticket — the seam is wired.
         assert!(relay.ticket().is_some());

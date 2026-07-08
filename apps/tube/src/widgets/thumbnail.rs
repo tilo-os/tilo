@@ -308,6 +308,12 @@ impl Widget for Thumbnail {
     fn name(&self) -> &str {
         "Thumbnail"
     }
+    /// Fixed intrinsic size (percent width, fixed height) — never changes
+    /// after the first layout, so it doesn't force a taffy re-solve when an
+    /// unrelated sibling (e.g. the enclosing scroll list) repositions.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }

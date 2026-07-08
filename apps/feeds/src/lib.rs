@@ -21,6 +21,7 @@ pub mod html;
 pub mod icons;
 pub mod model;
 pub mod opml;
+pub mod portal;
 pub mod reader_theme;
 pub mod sample;
 
@@ -64,6 +65,12 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         // Long feed titles to verify the sidebar elides to a single line with a
         // fade instead of wrapping into the next row.
         "long-titles" => app.stage_long_sidebar_titles(),
+        // The per-feed right-click context menu open over the sidebar (the
+        // single-frame renderer can't reach it through live input).
+        "context-menu" => app.force_feed_menu_open(),
+        // The subscriptions list after an OPML import folds new folders + feeds
+        // into the sidebar.
+        "post-import" => app.stage_post_import(),
         _ => {}
     }
     Box::new(app)

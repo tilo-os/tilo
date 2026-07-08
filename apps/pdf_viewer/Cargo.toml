@@ -35,3 +35,8 @@ pdf-extract = "0.7.12"
 ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
 url = "2"
+
+[dev-dependencies]
+# Serialise the tests that touch the shared system clipboard so they never race
+# each other for it (arboard talks to the real Wayland/X11 clipboard).
+serial_test = "3"

@@ -18,7 +18,7 @@ fn read_body(root: &Path, id: uuid::Uuid) -> String {
 #[test]
 fn editing_a_page_through_the_block_editor_persists_to_disk() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn");
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn");
 
     // Seed page: the Welcome page lives there from the first-run
     // hook. Grab its id off the workspace.
@@ -60,7 +60,7 @@ fn editing_a_page_through_the_block_editor_persists_to_disk() {
 #[test]
 fn split_and_save_round_trip_through_disk() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn");
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn");
     let welcome_id = app.workspace_pages_for_test()[0].id;
 
     // Reset the welcome page to a single empty paragraph so the
@@ -106,7 +106,7 @@ fn split_and_save_round_trip_through_disk() {
 #[test]
 fn heading_promotion_survives_save_reload() {
     let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn");
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn");
     let welcome_id = app.workspace_pages_for_test()[0].id;
 
     // Reset to an empty body — Phase 3's welcome seed pre-fills
@@ -138,7 +138,7 @@ fn heading_promotion_survives_save_reload() {
     assert_eq!(body, "## Heading two\n");
 
     // Reload the app from disk and assert the heading parsed back.
-    let mut app2 = NotesApp::spawn(tmp.path().into()).expect("reload");
+    let mut app2 = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("reload");
     let panel = app2.main_panel_mut();
     assert_eq!(panel.editor().blocks().len(), 1);
     assert!(matches!(

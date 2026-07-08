@@ -79,6 +79,9 @@ pub struct PreviewPane {
     sel_cursor: usize,
     /// A text-selection drag is in progress.
     selecting: bool,
+    /// A drag-to-pan (hand-tool) gesture is in progress. Only begins when the
+    /// page is zoomed past fit-width and therefore overflows the pane.
+    panning: bool,
     /// A scrollbar thumb drag is in progress.
     dragging_bar: bool,
     /// Whether "fit width" is the active zoom intent (vs. a pinned custom zoom).
@@ -107,6 +110,7 @@ impl Default for PreviewPane {
             sel_anchor: 0,
             sel_cursor: 0,
             selecting: false,
+            panning: false,
             dragging_bar: false,
             fit_width: true,
             current: 0,
@@ -346,6 +350,15 @@ impl PreviewPane {
             self.dragging_bar = true;
             return true;
         }
+        // Zoomed past fit-width the page overflows the pane, so a drag is a
+        // hand-tool pan (the same gesture the PDF/ebook/maps viewers use). At
+        // fit-width there's nothing to pan, so a drag selects text instead —
+        // keeping both gestures reachable without a modifier key.
+        if self.viewport.overflows_x() {
+            self.viewport.begin_pan(p);
+            self.panning = true;
+            return true;
+        }
         // Begin / extend a text selection.
         if let Some(b) = self.boundary_at(p) {
             if shift {
@@ -366,6 +379,11 @@ impl PreviewPane {
             self.recompute_current();
             return;
         }
+        if self.panning {
+            self.viewport.update_pan(p);
+            self.recompute_current();
+            return;
+        }
         if self.selecting {
             if let Some(b) = self.boundary_at(p) {
                 self.sel_cursor = b;
@@ -377,6 +395,10 @@ impl PreviewPane {
         if self.dragging_bar {
             self.viewport.release_scrollbar();
             self.dragging_bar = false;
+        }
+        if self.panning {
+            self.viewport.end_pan();
+            self.panning = false;
         }
         self.selecting = false;
     }
@@ -518,6 +540,20 @@ impl PreviewPane {
         let max = self.viewport.max_scroll_y();
         self.viewport
             .set_scroll(self.viewport.scroll_x(), max * scroll_frac.clamp(0.0, 1.0));
+        self.recompute_current();
+    }
+
+    /// Zoom past fit-width and pan to `(sx_frac, sy_frac)` of the reachable
+    /// scroll range, so an offscreen capture can prove the page pans on both
+    /// axes once it overflows the pane. Used only by the `--shots` renderer.
+    pub fn demo_pan_view(&mut self, display_zoom: f64, sx_frac: f64, sy_frac: f64) {
+        self.fit_width = false;
+        let fw = self.viewport.fit_width_zoom();
+        self.viewport.set_zoom(fw * display_zoom);
+        let mx = self.viewport.max_scroll_x();
+        let my = self.viewport.max_scroll_y();
+        self.viewport
+            .set_scroll(mx * sx_frac.clamp(0.0, 1.0), my * sy_frac.clamp(0.0, 1.0));
         self.recompute_current();
     }
 
@@ -800,6 +836,47 @@ mod tests {
             1.0,
         );
         assert_ne!(p.viewport.scroll_y(), y0, "tilt wheel moves a tall page vertically");
+    }
+
+    #[test]
+    fn drag_pans_when_zoomed_past_fit() {
+        let mut p = pane();
+        // Zoom in past fit-width so the page overflows horizontally.
+        p.demo_set_view(1.6, 0.3);
+        assert!(
+            p.viewport.overflows_x(),
+            "zoomed past fit-width the page overflows horizontally"
+        );
+        let sx0 = p.viewport.scroll_x();
+        let start = p.viewport.rect().center();
+        // A press while zoomed begins a pan drag (not a text selection).
+        assert!(p.on_mouse_down(start, false), "a press while zoomed pans");
+        p.on_mouse_drag(Point::new(start.x - 60.0, start.y - 20.0));
+        assert!(!p.has_selection(), "a pan drag never selects text");
+        assert!(
+            p.viewport.scroll_x() > sx0,
+            "dragging left reveals content to the right (scroll_x grew: {} -> {})",
+            sx0,
+            p.viewport.scroll_x()
+        );
+        p.on_mouse_up();
+        assert!(!p.viewport.is_panning(), "releasing ends the pan");
+    }
+
+    #[test]
+    fn tilt_wheel_pans_horizontally_when_zoomed_past_fit() {
+        let mut p = pane();
+        p.demo_set_view(1.6, 0.3);
+        assert!(p.viewport.overflows_x(), "page overflows sideways when zoomed");
+        let x0 = p.viewport.scroll_x();
+        // A tilt (horizontal) wheel pans the page sideways once it overflows.
+        p.on_wheel(
+            &MouseScrollDelta::LineDelta(-1.0, 0.0),
+            &ModifiersState::empty(),
+            p.viewport.rect().center(),
+            1.0,
+        );
+        assert_ne!(p.viewport.scroll_x(), x0, "tilt wheel pans a wide zoomed page sideways");
     }
 
     #[test]
