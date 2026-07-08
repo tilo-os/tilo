@@ -479,9 +479,12 @@ impl Widget for MainPanel {
                 self.editor.draw_overlay(scene, transform, text_renderer, theme);
             }
             None => {
+                // Empty state: no note is open. This is what a fresh, unseeded
+                // workspace shows — point the user at the "+" that creates their
+                // first note rather than looking broken.
                 text_renderer.draw_text(
                     scene,
-                    "No page selected",
+                    "No note open yet — press + in the sidebar to create one.",
                     HINT_SIZE,
                     tokens.colors.text_dim,
                     transform * Affine::translate((inner_x, inner_y)),

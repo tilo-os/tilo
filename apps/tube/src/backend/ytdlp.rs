@@ -370,13 +370,104 @@ fn f64_field(v: &Value, key: &str) -> f64 {
     v.get(key).and_then(|n| n.as_f64()).unwrap_or(0.0)
 }
 
-/// Format a yt-dlp `upload_date` (`YYYYMMDD`) as `YYYY-MM-DD`; pass anything
-/// else through unchanged (empty stays empty).
+/// Days since the civil epoch (1970-01-01) for a proleptic-Gregorian date.
+/// Howard Hinnant's `days_from_civil` — exact, no leap-year special-casing bugs.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as i64; // [0, 399]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// Today, as days since the civil epoch (UTC).
+fn today_days() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_secs() / 86_400) as i64)
+        .unwrap_or(0)
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Turn a yt-dlp `upload_date` (`YYYYMMDD`) into a human relative age
+/// ("3 days ago", "2 weeks ago", "5 months ago") for anything within the last
+/// year, and a tidy absolute date ("Nov 3, 2023") beyond that. Anything that
+/// isn't an 8-digit date (other backends already hand back "3 days ago" text)
+/// passes through unchanged; empty stays empty.
 fn humanize_date(d: &str) -> String {
-    if d.len() == 8 && d.chars().all(|c| c.is_ascii_digit()) {
-        format!("{}-{}-{}", &d[0..4], &d[4..6], &d[6..8])
-    } else {
-        d.to_string()
+    if d.len() != 8 || !d.chars().all(|c| c.is_ascii_digit()) {
+        return d.to_string();
+    }
+    let (y, m, day) = (
+        d[0..4].parse::<i64>().unwrap_or(0),
+        d[4..6].parse::<i64>().unwrap_or(0),
+        d[6..8].parse::<i64>().unwrap_or(0),
+    );
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+        return d.to_string();
+    }
+    let absolute = format!("{} {}, {}", MONTHS[(m - 1) as usize], day, y);
+    let age = today_days() - days_from_civil(y, m, day);
+    age_label(age, &absolute)
+}
+
+/// Pure age-in-days → human label. Split out so the relative wording is unit-
+/// tested without depending on the system clock.
+fn age_label(age: i64, absolute: &str) -> String {
+    match age {
+        a if a < 0 => absolute.to_string(), // clock skew / future date
+        0 => "today".to_string(),
+        1 => "1 day ago".to_string(),
+        2..=6 => format!("{age} days ago"),
+        7..=13 => "1 week ago".to_string(),
+        14..=59 => format!("{} weeks ago", age / 7),
+        60..=364 => {
+            let months = (age / 30).max(1);
+            if months == 1 { "1 month ago".to_string() } else { format!("{months} months ago") }
+        }
+        _ => absolute.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+
+    #[test]
+    fn days_from_civil_matches_known_anchors() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1970, 1, 2), 1);
+        assert_eq!(days_from_civil(2000, 1, 1), 10957);
+    }
+
+    #[test]
+    fn relative_ages_read_naturally() {
+        assert_eq!(age_label(0, "x"), "today");
+        assert_eq!(age_label(1, "x"), "1 day ago");
+        assert_eq!(age_label(3, "x"), "3 days ago");
+        assert_eq!(age_label(10, "x"), "1 week ago");
+        assert_eq!(age_label(21, "x"), "3 weeks ago");
+        assert_eq!(age_label(30, "x"), "1 month ago");
+        assert_eq!(age_label(75, "x"), "2 months ago");
+        assert_eq!(age_label(800, "Nov 3, 2023"), "Nov 3, 2023");
+        assert_eq!(age_label(-5, "Nov 3, 2023"), "Nov 3, 2023");
+    }
+
+    #[test]
+    fn full_yyyymmdd_absolute_beyond_a_year() {
+        // A date well over a year old renders as a tidy absolute date, never a
+        // raw ISO string.
+        assert_eq!(humanize_date("20200704"), "Jul 4, 2020");
+    }
+
+    #[test]
+    fn non_date_passes_through() {
+        assert_eq!(humanize_date("3 days ago"), "3 days ago");
+        assert_eq!(humanize_date(""), "");
     }
 }
 

@@ -7,11 +7,12 @@
 //! native `ui` toolkit, so subscriptions, settings and watch history live
 //! in the Automerge document and replicate / undo for free.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer. The whole UI is built
-//! from the offline [`sample`] catalogue so a cold screenshot is fully
-//! populated; live fetch (`api`) is gated behind a worker thread that only
-//! spawns on real interaction.
+//! The live (online) app starts with an EMPTY catalogue and populates only
+//! from real results (yt-dlp / rustypipe / trending) — it never presents the
+//! bundled [`sample`] as real data. That sample exists solely for the
+//! hermetic `--shots`/demo review path (and tests), where a cold screenshot
+//! needs to be fully populated. Live fetch (`api`) runs on a worker thread
+//! that spawns on launch (online) or on the first real interaction.
 
 pub mod action;
 pub mod api;
@@ -33,6 +34,20 @@ pub use app::TubeApp;
 
 use ui::widget::Widget;
 
+/// The searchable result types Tube contributes to qOS's global search. An OS
+/// search host registers these descriptors (id, display name, whether hits carry
+/// a thumbnail) so a video or a channel shows up in the OS-wide palette and
+/// activating it deep-links back into Tube's watch / channel page via
+/// [`search_type::SearchHit`]. Exposed here as the single registration point so
+/// the host's integration is a one-liner (`for t in tube::searchable_types() {
+/// registry.register(t) }`) with no reach into the app internals.
+pub fn searchable_types() -> Vec<search_type::SearchableType> {
+    vec![
+        search_type::video_searchable_type(),
+        search_type::channel_searchable_type(),
+    ]
+}
+
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(TubeApp::new())
@@ -53,4 +68,20 @@ pub fn app_root_narrow_shot() -> Box<dyn Widget> {
 /// state.
 pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_route_shot(route))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search_type::{CHANNEL_TYPE_ID, VIDEO_TYPE_ID};
+
+    #[test]
+    fn registers_video_and_channel_searchable_types() {
+        let types = searchable_types();
+        let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&VIDEO_TYPE_ID), "video type registered: {ids:?}");
+        assert!(ids.contains(&CHANNEL_TYPE_ID), "channel type registered: {ids:?}");
+        // Both carry a thumbnail, so an OS palette reserves image space for them.
+        assert!(types.iter().all(|t| t.has_thumbnail));
+    }
 }

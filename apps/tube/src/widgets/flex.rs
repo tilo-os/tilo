@@ -117,6 +117,11 @@ pub struct Flex {
     /// block (inset 0 on all sides) so it stacks *over* its siblings — used for
     /// the command-palette overlay on top of the shell.
     overlay: bool,
+    /// Like `overlay` for positioning (absolute, fills the containing block and
+    /// stacks over siblings) but WITHOUT the modal pointer capture: events that
+    /// miss this box's interactive children fall through to the content beneath.
+    /// Used for a small on-video affordance (the SponsorBlock "Skip" button).
+    float: bool,
 
     surface: Option<Surface>,
     hover_surface: Option<Surface>,
@@ -153,6 +158,7 @@ impl Flex {
             block: false,
             clip: false,
             overlay: false,
+            float: false,
             surface: None,
             hover_surface: None,
             bus: None,
@@ -272,6 +278,15 @@ impl Flex {
         self
     }
 
+    /// Float this box above its in-flow siblings (absolute, fills the containing
+    /// block) with correct z-order + hit priority but no modal capture — clicks
+    /// that miss its children pass through to the content beneath. For a small
+    /// on-video affordance like the "Skip" button.
+    pub fn float(mut self) -> Self {
+        self.float = true;
+        self
+    }
+
     pub fn surface(mut self, s: Surface) -> Self {
         self.surface = Some(s);
         self
@@ -345,14 +360,14 @@ impl Widget for Flex {
             } else {
                 taffy::Display::Flex
             },
-            position: if self.overlay {
+            position: if self.overlay || self.float {
                 taffy::Position::Absolute
             } else {
                 taffy::Position::Relative
             },
             // Absolute + inset 0 => fill the containing block, stacking over
             // in-flow siblings.
-            inset: if self.overlay {
+            inset: if self.overlay || self.float {
                 taffy::Rect {
                     left: length(0.0),
                     right: length(0.0),
@@ -465,7 +480,11 @@ impl Widget for Flex {
         if self.clip {
             scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &self.rect);
         }
-        for c in &mut self.children {
+        // In-flow children first, then floating children on top (z-order).
+        for c in self.children.iter_mut().filter(|c| !c.is_floating()) {
+            c.draw(scene, transform, text_renderer, theme, presence);
+        }
+        for c in self.children.iter_mut().filter(|c| c.is_floating()) {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
         if self.clip {
@@ -496,7 +515,10 @@ impl Widget for Flex {
         if self.clip {
             scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &self.rect);
         }
-        for c in &mut self.children {
+        for c in self.children.iter_mut().filter(|c| !c.is_floating()) {
+            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        }
+        for c in self.children.iter_mut().filter(|c| c.is_floating()) {
             c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
         if self.clip {
@@ -525,12 +547,31 @@ impl Widget for Flex {
                 );
                 return;
             }
+            // Floating children (e.g. an on-video "Skip" button) get first dibs
+            // so a click on them isn't stolen by the surface beneath; a miss
+            // falls through to the in-flow children below.
             for (cw, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
+                if !cw.is_floating() {
+                    continue;
+                }
                 cw.handle_event(
                     event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
                 );
                 if *handled {
                     break;
+                }
+            }
+            if !*handled {
+                for (cw, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
+                    if cw.is_floating() {
+                        continue;
+                    }
+                    cw.handle_event(
+                        event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                    );
+                    if *handled {
+                        break;
+                    }
                 }
             }
         }
@@ -588,8 +629,13 @@ impl Widget for Flex {
     fn wants_pointer_capture(&self) -> bool {
         // An overlay captures all pointer events so it behaves modally — the
         // parent routes exclusively to it, keeping clicks off the shell beneath
-        // (e.g. the top-bar menu button under the command-palette scrim).
+        // (e.g. the top-bar menu button under the command-palette scrim). A
+        // `float` deliberately does NOT capture (see `is_floating`).
         self.overlay || self.children.iter().any(|c| c.wants_pointer_capture())
+    }
+
+    fn is_floating(&self) -> bool {
+        self.float
     }
 
     fn needs_redraw(&self) -> bool {

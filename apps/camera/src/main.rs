@@ -55,8 +55,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             unsafe { std::env::set_var("CAMERA_SCAN_FIRST", "1") };
         }
         let (dw, dh) = DEFAULT_SHOTS_VIEWPORT;
-        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(dw);
-        let h = parse_flag(&args, "--height").and_then(|s| s.parse().ok()).unwrap_or(dh);
+        // `--viewport WxH` is a convenience alias other apps accept; it seeds
+        // the width/height, which `--width`/`--height` can still override.
+        let (vw, vh) = parse_flag(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or((dw, dh));
+        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(vw);
+        let h = parse_flag(&args, "--height").and_then(|s| s.parse().ok()).unwrap_or(vh);
         // Screenshots + tests default to the hermetic sample source — never
         // the disk or a camera device. `--disk` (or `CAMERA_SHOTS_DISK`) opts
         // into the real live source (honoring `--dir`/`CAMERA_DIR`) to capture
@@ -107,6 +112,18 @@ fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
     let (qr, _) = camera::frame::scanner_frame(4, 900, 640, "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;");
     camera::library::write_photo(dir, &qr, PhotoFormat::Png)?;
     Ok(())
+}
+
+/// Parse a `WxH` viewport spec (e.g. `1280x800`) into `(width, height)`.
+/// Accepts a lowercase `x` separator; both halves must be positive integers.
+fn parse_viewport(spec: &str) -> Option<(u32, u32)> {
+    let (w, h) = spec.split_once('x')?;
+    let w: u32 = w.trim().parse().ok()?;
+    let h: u32 = h.trim().parse().ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some((w, h))
 }
 
 /// Read `--flag VALUE` or `--flag=VALUE` from the argument list.
@@ -191,4 +208,51 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("camera: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_alias_parses_width_and_height() {
+        assert_eq!(parse_viewport("1280x800"), Some((1280, 800)));
+        assert_eq!(parse_viewport("1900x1000"), Some((1900, 1000)));
+    }
+
+    #[test]
+    fn viewport_rejects_malformed_specs() {
+        assert_eq!(parse_viewport("1280"), None);
+        assert_eq!(parse_viewport("1280x"), None);
+        assert_eq!(parse_viewport("x800"), None);
+        assert_eq!(parse_viewport("0x800"), None);
+        assert_eq!(parse_viewport("1280x0"), None);
+        assert_eq!(parse_viewport("abc"), None);
+    }
+
+    #[test]
+    fn viewport_flag_seeds_dimensions_and_width_height_override() {
+        let args: Vec<String> = ["camera", "--shots", "out.png", "--viewport", "1280x800"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (dw, dh) = DEFAULT_SHOTS_VIEWPORT;
+        let (vw, vh) = parse_flag(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or((dw, dh));
+        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(vw);
+        let h = parse_flag(&args, "--height").and_then(|s| s.parse::<u32>().ok()).unwrap_or(vh);
+        assert_eq!((w, h), (1280, 800));
+
+        // An explicit --width still wins over the alias.
+        let args2: Vec<String> = ["camera", "--viewport", "1280x800", "--width", "640"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (vw2, _vh2) = parse_flag(&args2, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or((dw, dh));
+        let w2 = parse_flag(&args2, "--width").and_then(|s| s.parse().ok()).unwrap_or(vw2);
+        assert_eq!(w2, 640);
+    }
 }

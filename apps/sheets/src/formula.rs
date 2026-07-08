@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{a1_to_addr, addr_to_a1, Addr, CellFormat, CellValue, FormatCategory};
+use crate::model::{a1_to_addr, addr_to_a1, Addr, CellFormat, CellValue, FormatCategory, FormulaError};
 
 // ---------------------------------------------------------------------------
 // Reference extraction (for editor highlighting + click-to-insert)
@@ -162,7 +162,7 @@ enum Token {
     Ne,
 }
 
-fn tokenize(input: &str) -> Result<Vec<Token>, String> {
+fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;
     let mut out = Vec::new();
@@ -196,7 +196,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     }
                 }
                 let s: String = chars[start..i].iter().collect();
-                let n = s.parse::<f64>().map_err(|_| format!("bad number {s}"))?;
+                let n = s.parse::<f64>().map_err(|_| FormulaError::Error)?;
                 out.push(Token::Num(n));
             }
             '"' => {
@@ -207,7 +207,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     i += 1;
                 }
                 if i >= chars.len() {
-                    return Err("unterminated string".into());
+                    return Err(FormulaError::Error);
                 }
                 i += 1; // closing quote
                 out.push(Token::Str(s));
@@ -256,7 +256,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 out.push(Token::Op(c));
                 i += 1;
             }
-            _ => return Err(format!("unexpected char '{c}'")),
+            _ => return Err(FormulaError::Error),
         }
     }
     Ok(out)
@@ -316,15 +316,15 @@ impl Parser {
         t
     }
 
-    fn parse(&mut self) -> Result<Expr, String> {
+    fn parse(&mut self) -> Result<Expr, FormulaError> {
         let e = self.parse_comparison()?;
         if self.pos != self.tokens.len() {
-            return Err("trailing tokens after expression".into());
+            return Err(FormulaError::Error);
         }
         Ok(e)
     }
 
-    fn parse_comparison(&mut self) -> Result<Expr, String> {
+    fn parse_comparison(&mut self) -> Result<Expr, FormulaError> {
         let mut left = self.parse_concat()?;
         loop {
             let op = match self.peek() {
@@ -343,7 +343,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_concat(&mut self) -> Result<Expr, String> {
+    fn parse_concat(&mut self) -> Result<Expr, FormulaError> {
         let mut left = self.parse_add()?;
         while matches!(self.peek(), Some(Token::Op('&'))) {
             self.next();
@@ -353,7 +353,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_add(&mut self) -> Result<Expr, String> {
+    fn parse_add(&mut self) -> Result<Expr, FormulaError> {
         let mut left = self.parse_mul()?;
         loop {
             let op = match self.peek() {
@@ -368,7 +368,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_mul(&mut self) -> Result<Expr, String> {
+    fn parse_mul(&mut self) -> Result<Expr, FormulaError> {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
@@ -383,7 +383,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, String> {
+    fn parse_unary(&mut self) -> Result<Expr, FormulaError> {
         if let Some(Token::Op(c @ ('-' | '+'))) = self.peek().cloned() {
             self.next();
             let e = self.parse_unary()?;
@@ -392,7 +392,7 @@ impl Parser {
         self.parse_power()
     }
 
-    fn parse_power(&mut self) -> Result<Expr, String> {
+    fn parse_power(&mut self) -> Result<Expr, FormulaError> {
         let base = self.parse_postfix()?;
         if matches!(self.peek(), Some(Token::Op('^'))) {
             self.next();
@@ -403,7 +403,7 @@ impl Parser {
         Ok(base)
     }
 
-    fn parse_postfix(&mut self) -> Result<Expr, String> {
+    fn parse_postfix(&mut self) -> Result<Expr, FormulaError> {
         let mut e = self.parse_primary()?;
         // Percent literal suffix: `50%` -> 0.5.
         while matches!(self.peek(), Some(Token::Op('%'))) {
@@ -417,7 +417,7 @@ impl Parser {
         Ok(e)
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, String> {
+    fn parse_primary(&mut self) -> Result<Expr, FormulaError> {
         match self.next() {
             Some(Token::Num(n)) => Ok(Expr::Num(n)),
             Some(Token::Str(s)) => Ok(Expr::Str(s)),
@@ -425,7 +425,7 @@ impl Parser {
                 let e = self.parse_comparison()?;
                 match self.next() {
                     Some(Token::Op(')')) => Ok(e),
-                    _ => Err("expected ')'".into()),
+                    _ => Err(FormulaError::Error),
                 }
             }
             Some(Token::Ident(id)) => {
@@ -446,7 +446,7 @@ impl Parser {
                     }
                     match self.next() {
                         Some(Token::Op(')')) => {}
-                        _ => return Err("expected ')' after args".into()),
+                        _ => return Err(FormulaError::Error),
                     }
                     return Ok(Expr::Call(id.to_uppercase(), args));
                 }
@@ -461,27 +461,28 @@ impl Parser {
                     self.next();
                     let end = match self.next() {
                         Some(Token::Ident(e)) => e,
-                        _ => return Err("expected ref after ':'".into()),
+                        _ => return Err(FormulaError::Ref),
                     };
-                    let a = a1_to_addr(&id).ok_or_else(|| format!("#REF: {id}"))?;
-                    let b = a1_to_addr(&end).ok_or_else(|| format!("#REF: {end}"))?;
+                    let a = a1_to_addr(&id).ok_or(FormulaError::Ref)?;
+                    let b = a1_to_addr(&end).ok_or(FormulaError::Ref)?;
                     return Ok(Expr::Range(a, b));
                 }
-                // Single cell reference.
-                let addr = a1_to_addr(&id).ok_or_else(|| format!("#NAME?: {id}"))?;
+                // Single cell reference; an identifier that isn't a valid A1
+                // reference is an unknown name.
+                let addr = a1_to_addr(&id).ok_or(FormulaError::Name)?;
                 Ok(Expr::Ref(addr))
             }
-            other => Err(format!("unexpected token {other:?}")),
+            _ => Err(FormulaError::Error),
         }
     }
 }
 
 /// Parse a formula body (without the leading `=`) into an `Expr`. The
 /// returned tree can be evaluated repeatedly against changing cell data.
-fn parse(formula: &str) -> Result<Expr, String> {
+fn parse(formula: &str) -> Result<Expr, FormulaError> {
     let tokens = tokenize(formula)?;
     if tokens.is_empty() {
-        return Err("empty formula".into());
+        return Err(FormulaError::Error);
     }
     Parser::new(tokens).parse()
 }
@@ -528,7 +529,7 @@ impl<'a> Engine<'a> {
             return v.clone();
         }
         if self.visiting.contains(&addr) {
-            return CellValue::Error("#CYCLE!".into());
+            return CellValue::Error(FormulaError::Cycle);
         }
         let raw = match self.raw.get(&addr) {
             Some(r) if !r.is_empty() => r.clone(),
@@ -539,7 +540,7 @@ impl<'a> Engine<'a> {
             self.visiting.insert(addr);
             let v = match parse(body) {
                 Ok(expr) => self.eval_expr(&expr),
-                Err(_) => CellValue::Error("#ERR!".into()),
+                Err(e) => CellValue::Error(e),
             };
             self.visiting.remove(&addr);
             v
@@ -556,7 +557,7 @@ impl<'a> Engine<'a> {
             Expr::Str(s) => CellValue::Text(s.clone()),
             Expr::Bool(b) => CellValue::Bool(*b),
             Expr::Ref(addr) => self.eval_cell(*addr),
-            Expr::Range(_, _) => CellValue::Error("#VALUE!".into()),
+            Expr::Range(_, _) => CellValue::Error(FormulaError::Value),
             Expr::Unary(op, inner) => {
                 let v = self.eval_expr(inner);
                 if v.is_error() {
@@ -564,7 +565,7 @@ impl<'a> Engine<'a> {
                 }
                 match v.as_number() {
                     Some(n) => CellValue::Number(if *op == '-' { -n } else { n }),
-                    None => CellValue::Error("#VALUE!".into()),
+                    None => CellValue::Error(FormulaError::Value),
                 }
             }
             Expr::Binary(op, l, r) => self.eval_binary(*op, l, r),
@@ -597,7 +598,7 @@ impl<'a> Engine<'a> {
         }
         let (a, b) = match (lv.as_number(), rv.as_number()) {
             (Some(a), Some(b)) => (a, b),
-            _ => return CellValue::Error("#VALUE!".into()),
+            _ => return CellValue::Error(FormulaError::Value),
         };
         let result = match op {
             BinOp::Add => a + b,
@@ -605,7 +606,7 @@ impl<'a> Engine<'a> {
             BinOp::Mul => a * b,
             BinOp::Div => {
                 if b == 0.0 {
-                    return CellValue::Error("#DIV/0!".into());
+                    return CellValue::Error(FormulaError::Div0);
                 }
                 a / b
             }
@@ -622,7 +623,7 @@ impl<'a> Engine<'a> {
             _ => Some(lv.to_plain_string().cmp(&rv.to_plain_string())),
         };
         let Some(ord) = ord else {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         };
         use std::cmp::Ordering::*;
         let res = match op {
@@ -692,7 +693,7 @@ impl<'a> Engine<'a> {
                 Ok(ns) if !ns.is_empty() => {
                     CellValue::Number(ns.iter().sum::<f64>() / ns.len() as f64)
                 }
-                Ok(_) => CellValue::Error("#DIV/0!".into()),
+                Ok(_) => CellValue::Error(FormulaError::Div0),
                 Err(e) => e,
             },
             "MEDIAN" => match self.numeric_args(args) {
@@ -706,7 +707,7 @@ impl<'a> Engine<'a> {
                     };
                     CellValue::Number(m)
                 }
-                Ok(_) => CellValue::Error("#NUM!".into()),
+                Ok(_) => CellValue::Error(FormulaError::Num),
                 Err(e) => e,
             },
             "MIN" => match self.numeric_args(args) {
@@ -755,7 +756,7 @@ impl<'a> Engine<'a> {
             }
             "IF" => {
                 if args.len() < 2 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let cond = self.eval_expr(&args[0]);
                 if cond.is_error() {
@@ -781,11 +782,11 @@ impl<'a> Engine<'a> {
                     }
                     i += 2;
                 }
-                CellValue::Error("#N/A".into())
+                CellValue::Error(FormulaError::Na)
             }
             "IFERROR" => {
                 if args.len() < 2 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let v = self.eval_expr(&args[0]);
                 if v.is_error() {
@@ -796,10 +797,10 @@ impl<'a> Engine<'a> {
             }
             "IFNA" => {
                 if args.len() < 2 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let v = self.eval_expr(&args[0]);
-                if matches!(&v, CellValue::Error(e) if e == "#N/A") {
+                if matches!(&v, CellValue::Error(FormulaError::Na)) {
                     self.eval_expr(&args[1])
                 } else {
                     v
@@ -807,7 +808,7 @@ impl<'a> Engine<'a> {
             }
             "SWITCH" => {
                 if args.is_empty() {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let target = self.eval_expr(&args[0]);
                 let mut i = 1;
@@ -822,7 +823,7 @@ impl<'a> Engine<'a> {
                 if i < args.len() {
                     self.eval_expr(&args[i])
                 } else {
-                    CellValue::Error("#N/A".into())
+                    CellValue::Error(FormulaError::Na)
                 }
             }
             "TRUE" => CellValue::Bool(true),
@@ -847,12 +848,12 @@ impl<'a> Engine<'a> {
             }
             "NOT" => {
                 if args.len() != 1 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let v = self.eval_expr(&args[0]);
                 match v.as_number() {
                     Some(n) => CellValue::Bool(n == 0.0),
-                    None => CellValue::Error("#VALUE!".into()),
+                    None => CellValue::Error(FormulaError::Value),
                 }
             }
             "ABS" => self.unary_num(args, |n| n.abs()),
@@ -868,7 +869,7 @@ impl<'a> Engine<'a> {
                     return v;
                 }
                 let Some(n) = v.as_number() else {
-                    return CellValue::Error("#VALUE!".into());
+                    return CellValue::Error(FormulaError::Value);
                 };
                 let base = args
                     .get(1)
@@ -934,12 +935,12 @@ impl<'a> Engine<'a> {
                 let core = cleaned.trim_end_matches('%');
                 match core.parse::<f64>() {
                     Ok(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
-                    Err(_) => CellValue::Error("#VALUE!".into()),
+                    Err(_) => CellValue::Error(FormulaError::Value),
                 }
             }
             "EXACT" => {
                 if args.len() < 2 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let a = self.eval_expr(&args[0]).to_plain_string();
                 let b = self.eval_expr(&args[1]).to_plain_string();
@@ -951,7 +952,7 @@ impl<'a> Engine<'a> {
                     .unwrap_or(0.0) as u32;
                 match char::from_u32(n) {
                     Some(c) => CellValue::Text(c.to_string()),
-                    None => CellValue::Error("#VALUE!".into()),
+                    None => CellValue::Error(FormulaError::Value),
                 }
             }
             "CODE" => {
@@ -959,13 +960,13 @@ impl<'a> Engine<'a> {
                     .to_plain_string();
                 match s.chars().next() {
                     Some(c) => CellValue::Number(c as u32 as f64),
-                    None => CellValue::Error("#VALUE!".into()),
+                    None => CellValue::Error(FormulaError::Value),
                 }
             }
             "TEXTJOIN" => self.textjoin(args),
             "TEXT" => {
                 if args.len() < 2 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let v = self.eval_expr(&args[0]);
                 if v.is_error() {
@@ -997,7 +998,7 @@ impl<'a> Engine<'a> {
             },
             "SUMIFS" => {
                 if args.is_empty() {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let vals = self.collect_values(&args[0]);
                 match self.criteria_mask(&args[1..]) {
@@ -1017,7 +1018,7 @@ impl<'a> Engine<'a> {
             }
             "AVERAGEIFS" => {
                 if args.is_empty() {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let vals = self.collect_values(&args[0]);
                 match self.criteria_mask(&args[1..]) {
@@ -1032,7 +1033,7 @@ impl<'a> Engine<'a> {
                             }
                         }
                         if cnt == 0 {
-                            CellValue::Error("#DIV/0!".into())
+                            CellValue::Error(FormulaError::Div0)
                         } else {
                             CellValue::Number(sum / cnt as f64)
                         }
@@ -1051,12 +1052,12 @@ impl<'a> Engine<'a> {
                 if idx >= 1 && (idx as usize) < args.len() {
                     self.eval_expr(&args[idx as usize])
                 } else {
-                    CellValue::Error("#VALUE!".into())
+                    CellValue::Error(FormulaError::Value)
                 }
             }
             "DATE" => {
                 if args.len() < 3 {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let y = self.eval_expr(&args[0]).as_number();
                 let m = self.eval_expr(&args[1]).as_number();
@@ -1071,12 +1072,12 @@ impl<'a> Engine<'a> {
                             crate::model::date_to_serial(year, month, 1) + (d as i64 - 1) as f64;
                         CellValue::Number(serial)
                     }
-                    _ => CellValue::Error("#VALUE!".into()),
+                    _ => CellValue::Error(FormulaError::Value),
                 }
             }
             "TIME" => {
                 if args.is_empty() {
-                    return CellValue::Error("#ERR!".into());
+                    return CellValue::Error(FormulaError::Error);
                 }
                 let h = self.eval_expr(&args[0]).as_number().unwrap_or(0.0);
                 let mi = args.get(1).and_then(|a| self.eval_expr(a).as_number()).unwrap_or(0.0);
@@ -1097,7 +1098,7 @@ impl<'a> Engine<'a> {
                     return v;
                 }
                 let Some(n) = v.as_number() else {
-                    return CellValue::Error("#VALUE!".into());
+                    return CellValue::Error(FormulaError::Value);
                 };
                 let wd = crate::model::weekday_from_serial(n); // 1=Sun..7=Sat
                 let t = args
@@ -1112,7 +1113,7 @@ impl<'a> Engine<'a> {
                 };
                 CellValue::Number(out as f64)
             }
-            _ => CellValue::Error("#NAME?".into()),
+            _ => CellValue::Error(FormulaError::Name),
         }
     }
 
@@ -1134,7 +1135,7 @@ impl<'a> Engine<'a> {
 
     fn unary_num(&mut self, args: &[Expr], f: impl Fn(f64) -> f64) -> CellValue {
         let Some(a) = args.first() else {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         };
         let v = self.eval_expr(a);
         if v.is_error() {
@@ -1142,7 +1143,7 @@ impl<'a> Engine<'a> {
         }
         match v.as_number() {
             Some(n) => CellValue::Number(f(n)),
-            None => CellValue::Error("#VALUE!".into()),
+            None => CellValue::Error(FormulaError::Value),
         }
     }
 
@@ -1152,7 +1153,7 @@ impl<'a> Engine<'a> {
         f: impl Fn(f64, f64) -> Option<f64>,
     ) -> CellValue {
         if args.len() != 2 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let a = self.eval_expr(&args[0]);
         let b = self.eval_expr(&args[1]);
@@ -1165,22 +1166,22 @@ impl<'a> Engine<'a> {
         match (a.as_number(), b.as_number()) {
             (Some(x), Some(y)) => match f(x, y) {
                 Some(r) => CellValue::Number(r),
-                None => CellValue::Error("#DIV/0!".into()),
+                None => CellValue::Error(FormulaError::Div0),
             },
-            _ => CellValue::Error("#VALUE!".into()),
+            _ => CellValue::Error(FormulaError::Value),
         }
     }
 
     fn round_fn(&mut self, args: &[Expr], mode: RoundMode) -> CellValue {
         if args.is_empty() {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let v = self.eval_expr(&args[0]);
         if v.is_error() {
             return v;
         }
         let Some(n) = v.as_number() else {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         };
         let digits = if args.len() >= 2 {
             self.eval_expr(&args[1]).as_number().unwrap_or(0.0) as i32
@@ -1205,7 +1206,7 @@ impl<'a> Engine<'a> {
 
     fn unary_text(&mut self, args: &[Expr], f: impl Fn(&str) -> String) -> CellValue {
         let Some(a) = args.first() else {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         };
         let v = self.eval_expr(a);
         if v.is_error() {
@@ -1216,7 +1217,7 @@ impl<'a> Engine<'a> {
 
     fn substr_fn(&mut self, args: &[Expr], from_left: bool) -> CellValue {
         if args.is_empty() {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let s = self.eval_expr(&args[0]).to_plain_string();
         let n = if args.len() >= 2 {
@@ -1236,7 +1237,7 @@ impl<'a> Engine<'a> {
 
     fn mid_fn(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let s = self.eval_expr(&args[0]).to_plain_string();
         let start = self.eval_expr(&args[1]).as_number().unwrap_or(1.0).max(1.0) as usize - 1;
@@ -1252,7 +1253,7 @@ impl<'a> Engine<'a> {
     /// SUMIF(range, criterion, [sum_range]).
     fn sumif(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let probe = self.collect_values(&args[0]);
         let crit = self.eval_expr(&args[1]);
@@ -1275,7 +1276,7 @@ impl<'a> Engine<'a> {
     /// COUNTIF(range, criterion).
     fn countif(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let probe = self.collect_values(&args[0]);
         let crit = self.eval_expr(&args[1]);
@@ -1286,7 +1287,7 @@ impl<'a> Engine<'a> {
     /// AVERAGEIF(range, criterion, [average_range]).
     fn averageif(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let probe = self.collect_values(&args[0]);
         let crit = self.eval_expr(&args[1]);
@@ -1305,7 +1306,7 @@ impl<'a> Engine<'a> {
             }
         }
         if cnt == 0 {
-            CellValue::Error("#DIV/0!".into())
+            CellValue::Error(FormulaError::Div0)
         } else {
             CellValue::Number(sum / cnt as f64)
         }
@@ -1341,7 +1342,7 @@ impl<'a> Engine<'a> {
     /// only the `instance`-th (1-based) when given.
     fn substitute(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let text = self.eval_expr(&args[0]).to_plain_string();
         let old = self.eval_expr(&args[1]).to_plain_string();
@@ -1378,7 +1379,7 @@ impl<'a> Engine<'a> {
     /// REPLACE(old_text, start, num_chars, new_text) — positional replacement.
     fn replace_fn(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 4 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let chars: Vec<char> = self.eval_expr(&args[0]).to_plain_string().chars().collect();
         let start =
@@ -1396,7 +1397,7 @@ impl<'a> Engine<'a> {
     /// case-sensitive for FIND and case-insensitive for SEARCH.
     fn find_fn(&mut self, args: &[Expr], case_sensitive: bool) -> CellValue {
         if args.len() < 2 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let needle = self.eval_expr(&args[0]).to_plain_string();
         let hay = self.eval_expr(&args[1]).to_plain_string();
@@ -1414,7 +1415,7 @@ impl<'a> Engine<'a> {
         };
         let hchars: Vec<char> = h.chars().collect();
         if start > hchars.len() {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         }
         let hsub: String = hchars[start..].iter().collect();
         match hsub.find(&n) {
@@ -1422,14 +1423,14 @@ impl<'a> Engine<'a> {
                 let char_off = hsub[..byte_pos].chars().count();
                 CellValue::Number((start + char_off + 1) as f64)
             }
-            None => CellValue::Error("#VALUE!".into()),
+            None => CellValue::Error(FormulaError::Value),
         }
     }
 
     /// TEXTJOIN(delimiter, ignore_empty, values…).
     fn textjoin(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let delim = self.eval_expr(&args[0]).to_plain_string();
         let ignore_empty = cond_truthy(&self.eval_expr(&args[1]));
@@ -1452,25 +1453,25 @@ impl<'a> Engine<'a> {
     /// `range_lookup` is FALSE; otherwise an ascending approximate match.
     fn vlookup(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let key = self.eval_expr(&args[0]);
         if key.is_error() {
             return key;
         }
         let Some((tl, br)) = range_bounds(&args[1]) else {
-            return CellValue::Error("#REF!".into());
+            return CellValue::Error(FormulaError::Ref);
         };
         let Some(col_index) = self.eval_expr(&args[2]).as_number() else {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         };
         let col_index = col_index as i64;
         if col_index < 1 {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         }
         let target_col = tl.0 as i64 + col_index - 1;
         if target_col > br.0 as i64 {
-            return CellValue::Error("#REF!".into());
+            return CellValue::Error(FormulaError::Ref);
         }
         let approx = args
             .get(3)
@@ -1491,32 +1492,32 @@ impl<'a> Engine<'a> {
         }
         match best {
             Some(r) => self.eval_cell((target_col as u32, r)),
-            None => CellValue::Error("#N/A".into()),
+            None => CellValue::Error(FormulaError::Na),
         }
     }
 
     /// HLOOKUP(lookup, table, row_index, [range_lookup]).
     fn hlookup(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 3 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let key = self.eval_expr(&args[0]);
         if key.is_error() {
             return key;
         }
         let Some((tl, br)) = range_bounds(&args[1]) else {
-            return CellValue::Error("#REF!".into());
+            return CellValue::Error(FormulaError::Ref);
         };
         let Some(row_index) = self.eval_expr(&args[2]).as_number() else {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         };
         let row_index = row_index as i64;
         if row_index < 1 {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         }
         let target_row = tl.1 as i64 + row_index - 1;
         if target_row > br.1 as i64 {
-            return CellValue::Error("#REF!".into());
+            return CellValue::Error(FormulaError::Ref);
         }
         let approx = args
             .get(3)
@@ -1537,7 +1538,7 @@ impl<'a> Engine<'a> {
         }
         match best {
             Some(c) => self.eval_cell((c, target_row as u32)),
-            None => CellValue::Error("#N/A".into()),
+            None => CellValue::Error(FormulaError::Na),
         }
     }
 
@@ -1545,7 +1546,7 @@ impl<'a> Engine<'a> {
     /// takes one index; a rectangle takes both.
     fn index_fn(&mut self, args: &[Expr]) -> CellValue {
         let Some((tl, br)) = args.first().and_then(range_bounds) else {
-            return CellValue::Error("#REF!".into());
+            return CellValue::Error(FormulaError::Ref);
         };
         let rows = br.1 - tl.1 + 1;
         let cols = br.0 - tl.0 + 1;
@@ -1561,12 +1562,12 @@ impl<'a> Engine<'a> {
             None => (a1, 1),
         };
         if row_i < 1 || col_i < 1 {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         }
         let cc = tl.0 as i64 + col_i - 1;
         let rr = tl.1 as i64 + row_i - 1;
         if cc > br.0 as i64 || rr > br.1 as i64 {
-            return CellValue::Error("#REF!".into());
+            return CellValue::Error(FormulaError::Ref);
         }
         self.eval_cell((cc as u32, rr as u32))
     }
@@ -1575,11 +1576,11 @@ impl<'a> Engine<'a> {
     /// default), `-1` smallest ≥ (descending).
     fn match_fn(&mut self, args: &[Expr]) -> CellValue {
         if args.len() < 2 {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         }
         let key = self.eval_expr(&args[0]);
         let Some((tl, br)) = range_bounds(&args[1]) else {
-            return CellValue::Error("#N/A".into());
+            return CellValue::Error(FormulaError::Na);
         };
         let match_type = args
             .get(2)
@@ -1618,7 +1619,7 @@ impl<'a> Engine<'a> {
         }
         match best {
             Some(i) => CellValue::Number((i + 1) as f64),
-            None => CellValue::Error("#N/A".into()),
+            None => CellValue::Error(FormulaError::Na),
         }
     }
 
@@ -1626,7 +1627,7 @@ impl<'a> Engine<'a> {
     /// projects out one calendar component.
     fn date_part(&mut self, args: &[Expr], f: impl Fn((i64, u32, u32)) -> f64) -> CellValue {
         let Some(a) = args.first() else {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         };
         let v = self.eval_expr(a);
         if v.is_error() {
@@ -1634,21 +1635,21 @@ impl<'a> Engine<'a> {
         }
         match v.as_number() {
             Some(n) => CellValue::Number(f(crate::model::serial_to_ymd(n))),
-            None => CellValue::Error("#VALUE!".into()),
+            None => CellValue::Error(FormulaError::Value),
         }
     }
 
     /// Shared body for HOUR/MINUTE/SECOND (`which` = 0/1/2).
     fn time_part(&mut self, args: &[Expr], which: u8) -> CellValue {
         let Some(a) = args.first() else {
-            return CellValue::Error("#ERR!".into());
+            return CellValue::Error(FormulaError::Error);
         };
         let v = self.eval_expr(a);
         if v.is_error() {
             return v;
         }
         let Some(n) = v.as_number() else {
-            return CellValue::Error("#VALUE!".into());
+            return CellValue::Error(FormulaError::Value);
         };
         let (h, mi, s) = time_parts(n);
         CellValue::Number(match which {
@@ -2186,8 +2187,44 @@ mod tests {
     #[test]
     fn div_zero_and_cycle() {
         let m = run(&[("A1", "=1/0"), ("B1", "=B2"), ("B2", "=B1")]);
-        assert_eq!(val(&m, "A1"), CellValue::Error("#DIV/0!".into()));
+        assert_eq!(val(&m, "A1"), CellValue::Error(FormulaError::Div0));
         assert!(val(&m, "B1").is_error());
+    }
+
+    #[test]
+    fn specific_excel_error_codes() {
+        use crate::model::{format_value, CellFormat};
+        // Each formula triggers one specific cause. Assert both the typed
+        // error kind *and* the exact canonical string the grid renders
+        // (through the real `recalculate` + `format_value` path).
+        let m = run(&[
+            ("A1", "=1/0"),                // division by zero        → #DIV/0!
+            ("A2", "=FOOBAR()"),           // unknown function        → #NAME?
+            ("A3", "=NOTACELL"),           // unrecognized bare name  → #NAME?
+            ("A4", "=VLOOKUP(1,B1:B3,5)"), // column outside table    → #REF!
+            ("A5", "=\"a\"+1"),            // text where number wanted → #VALUE!
+            ("A6", "=MATCH(999,B1:B3,0)"), // lookup with no match    → #N/A
+            ("B1", "10"),
+            ("B2", "20"),
+            ("B3", "30"),
+        ]);
+        let cases = [
+            ("A1", FormulaError::Div0, "#DIV/0!"),
+            ("A2", FormulaError::Name, "#NAME?"),
+            ("A3", FormulaError::Name, "#NAME?"),
+            ("A4", FormulaError::Ref, "#REF!"),
+            ("A5", FormulaError::Value, "#VALUE!"),
+            ("A6", FormulaError::Na, "#N/A"),
+        ];
+        for (cell, kind, text) in cases {
+            let v = val(&m, cell);
+            assert_eq!(v, CellValue::Error(kind), "{cell} error kind");
+            assert_eq!(
+                format_value(&v, CellFormat::General),
+                text,
+                "{cell} rendered as canonical Excel code",
+            );
+        }
     }
 
     #[test]

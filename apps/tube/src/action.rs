@@ -23,8 +23,12 @@ pub enum Action {
     /// Seek to a fraction [0,1] of the current video's duration.
     Seek(f64),
     TogglePlay,
-    /// Toggle a SponsorBlock category on the settings page.
+    /// Cycle a SponsorBlock category's mode (auto-skip → show → off) on the
+    /// settings page.
     ToggleCategory(Category),
+    /// Manually skip the current watch video past a segment, to `to` seconds —
+    /// the button offered for a `Show`-mode segment the playhead is inside.
+    SkipSegment(f64),
     /// Flip a named boolean setting.
     ToggleSetting(SettingFlag),
     /// Run a search using the current contents of the search box.
@@ -55,9 +59,10 @@ pub enum Action {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingFlag {
     SponsorBlock,
-    AutoSkip,
     DeArrow,
+    DeArrowTitles,
     DeArrowThumbnails,
+    ReturnDislike,
     Autoplay,
     ShowComments,
 }

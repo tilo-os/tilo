@@ -104,6 +104,46 @@ impl Category {
     }
 }
 
+/// How Tube treats a SponsorBlock category, per-category. This is the
+/// Grayjay-style three-way mode (not a plain on/off): each category can be
+/// auto-skipped, merely marked with a manual skip button, or ignored entirely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SkipMode {
+    /// Seek past the segment automatically as the playhead enters it.
+    Skip,
+    /// Mark it on the timeline and offer a manual "Skip" button, but never
+    /// skip on its own.
+    Show,
+    /// Ignore the category — not marked on the timeline, never skipped.
+    Disabled,
+}
+
+impl SkipMode {
+    /// Short label for the settings mode selector.
+    pub fn label(self) -> &'static str {
+        match self {
+            SkipMode::Skip => "Auto-skip",
+            SkipMode::Show => "Show",
+            SkipMode::Disabled => "Off",
+        }
+    }
+
+    /// Cycle order for the settings selector: Auto-skip → Show → Off → …
+    pub fn next(self) -> Self {
+        match self {
+            SkipMode::Skip => SkipMode::Show,
+            SkipMode::Show => SkipMode::Disabled,
+            SkipMode::Disabled => SkipMode::Skip,
+        }
+    }
+
+    /// Whether the category is considered at all (marked on the timeline /
+    /// queried). `Disabled` is the only mode that is not.
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, SkipMode::Disabled)
+    }
+}
+
 /// One SponsorBlock segment within a video, in seconds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Segment {
@@ -218,32 +258,53 @@ impl Video {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub sponsorblock_enabled: bool,
-    pub auto_skip: bool,
-    /// Per-category enable map. Absent key = enabled (matches the
-    /// upstream extension default of "skip everything but filler").
-    pub categories: BTreeMap<String, bool>,
+    /// Per-category [`SkipMode`] (auto-skip / show / off). Absent key defaults
+    /// to auto-skip (matches the upstream extension default of "skip everything
+    /// but filler").
+    pub categories: BTreeMap<String, SkipMode>,
+    /// DeArrow master switch. When off, neither titles nor thumbnails are
+    /// replaced regardless of the two sub-toggles below.
     pub dearrow_enabled: bool,
+    /// Replace clickbait titles with the community-sourced factual one.
+    #[serde(default = "default_true")]
+    pub dearrow_titles: bool,
     pub dearrow_thumbnails: bool,
+    /// Show the crowdsourced dislike count (Return YouTube Dislike) on the watch
+    /// page alongside likes.
+    #[serde(default = "default_true")]
+    pub return_dislike_enabled: bool,
     pub autoplay: bool,
     pub show_comments: bool,
     pub preferred_quality: String,
     pub invidious_instance: String,
 }
 
+/// serde default helper (a `#[serde(default)]` bool defaults to `false`; several
+/// of our flags want to default *on* when absent from older persisted state).
+fn default_true() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let mut categories = BTreeMap::new();
         for c in Category::ALL {
-            // Filler off by default, everything else on — the SponsorBlock
-            // community default.
-            categories.insert(c.api_key().to_string(), c != Category::Filler);
+            // Filler ignored by default, everything else auto-skipped — the
+            // SponsorBlock community default.
+            let mode = if c == Category::Filler {
+                SkipMode::Disabled
+            } else {
+                SkipMode::Skip
+            };
+            categories.insert(c.api_key().to_string(), mode);
         }
         Self {
             sponsorblock_enabled: true,
-            auto_skip: true,
             categories,
             dearrow_enabled: true,
+            dearrow_titles: true,
             dearrow_thumbnails: true,
+            return_dislike_enabled: true,
             autoplay: true,
             show_comments: true,
             preferred_quality: "1080p".to_string(),
@@ -253,13 +314,45 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub fn category_enabled(&self, c: Category) -> bool {
-        self.sponsorblock_enabled && *self.categories.get(c.api_key()).unwrap_or(&true)
+    /// The effective [`SkipMode`] for a category: the master switch forces
+    /// `Disabled` when SponsorBlock is off; otherwise the stored per-category
+    /// mode (defaulting to auto-skip for an absent key).
+    pub fn mode_of(&self, c: Category) -> SkipMode {
+        if !self.sponsorblock_enabled {
+            return SkipMode::Disabled;
+        }
+        self.categories.get(c.api_key()).copied().unwrap_or(SkipMode::Skip)
     }
 
-    pub fn toggle_category(&mut self, c: Category) {
-        let e = self.categories.entry(c.api_key().to_string()).or_insert(true);
-        *e = !*e;
+    /// Whether the category is marked/considered at all (Show or Auto-skip).
+    pub fn category_enabled(&self, c: Category) -> bool {
+        self.mode_of(c).is_enabled()
+    }
+
+    /// Whether the playhead entering this category should auto-skip it.
+    pub fn should_auto_skip(&self, c: Category) -> bool {
+        matches!(self.mode_of(c), SkipMode::Skip)
+    }
+
+    /// Whether this category should offer a manual "Skip" button (Show mode).
+    pub fn should_show_skip(&self, c: Category) -> bool {
+        matches!(self.mode_of(c), SkipMode::Show)
+    }
+
+    /// Cycle a category's mode: Auto-skip → Show → Off → Auto-skip.
+    pub fn cycle_category(&mut self, c: Category) {
+        let cur = self.categories.get(c.api_key()).copied().unwrap_or(SkipMode::Skip);
+        self.categories.insert(c.api_key().to_string(), cur.next());
+    }
+
+    /// Whether DeArrow title replacement is active (master + titles sub-toggle).
+    pub fn dearrow_titles_on(&self) -> bool {
+        self.dearrow_enabled && self.dearrow_titles
+    }
+
+    /// Whether DeArrow thumbnail replacement is active (master + thumbs toggle).
+    pub fn dearrow_thumbs_on(&self) -> bool {
+        self.dearrow_enabled && self.dearrow_thumbnails
     }
 }
 
@@ -357,6 +450,25 @@ pub struct TubeModel {
     /// Ordered related-video ids returned by the live backend for [`related_of`].
     #[serde(default)]
     pub related_hits: Vec<VideoId>,
+    /// Crowdsourced dislike counts (Return YouTube Dislike), keyed by video id.
+    /// Kept off [`Video`] so the API result folds in without a catalogue rewrite.
+    #[serde(default)]
+    pub dislikes: BTreeMap<VideoId, u64>,
+    /// DeArrow community thumbnail URLs (a rendered frame at the top-voted
+    /// timestamp, or a submitted image), keyed by video id. Used in place of the
+    /// clickbait frame when DeArrow thumbnails are enabled.
+    #[serde(default)]
+    pub dearrow_thumb_url: BTreeMap<VideoId, String>,
+    /// Whether the home/trending feed is currently being fetched from the live
+    /// backend. Drives the Home skeleton so a cold, empty catalogue reads as
+    /// "loading" rather than a blank page. The real app starts `true` (it fetches
+    /// on launch); the hermetic `--shots`/sample path leaves it `false`.
+    #[serde(default)]
+    pub feed_loading: bool,
+    /// Whether a search is in flight, so the results screen shows a skeleton
+    /// instead of a premature "No results".
+    #[serde(default)]
+    pub search_loading: bool,
 }
 
 impl Default for TubeModel {
@@ -380,6 +492,10 @@ impl Default for TubeModel {
             search_hits: Vec::new(),
             related_of: String::new(),
             related_hits: Vec::new(),
+            dislikes: BTreeMap::new(),
+            dearrow_thumb_url: BTreeMap::new(),
+            feed_loading: false,
+            search_loading: false,
         }
     }
 }
@@ -421,6 +537,27 @@ impl TubeModel {
     /// user has liked it this session, so the pill's number tracks its state.
     pub fn display_likes(&self, v: &Video) -> u64 {
         v.likes + if self.is_liked(&v.id) { 1 } else { 0 }
+    }
+
+    /// The crowdsourced dislike count for a video (Return YouTube Dislike), once
+    /// fetched. `None` until it lands (or when disabled).
+    pub fn dislikes_of(&self, id: &str) -> Option<u64> {
+        self.dislikes.get(id).copied()
+    }
+
+    /// The thumbnail URL to display for `v`, honouring the DeArrow-thumbnails
+    /// setting: the community thumbnail when enabled and available, otherwise the
+    /// video's own thumbnail. Keeps the DeArrow/original choice in one place so
+    /// every card + poster stays consistent.
+    pub fn display_thumbnail_url<'a>(&'a self, v: &'a Video) -> &'a str {
+        if self.settings.dearrow_thumbs_on() {
+            if let Some(url) = self.dearrow_thumb_url.get(&v.id) {
+                if !url.is_empty() {
+                    return url;
+                }
+            }
+        }
+        &v.thumbnail_url
     }
 
     /// Push a transient notice onto the front of the toast stack (newest first,
@@ -610,8 +747,12 @@ mod tests {
     #[test]
     fn default_categories_match_sponsorblock_defaults() {
         let s = Settings::default();
+        // Sponsor auto-skips by default; Filler is off.
         assert!(s.category_enabled(Category::Sponsor));
+        assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Skip);
+        assert!(s.should_auto_skip(Category::Sponsor));
         assert!(!s.category_enabled(Category::Filler));
+        assert_eq!(s.mode_of(Category::Filler), SkipMode::Disabled);
     }
 
     #[test]
@@ -619,6 +760,33 @@ mod tests {
         let mut s = Settings::default();
         s.sponsorblock_enabled = false;
         assert!(!s.category_enabled(Category::Sponsor));
+        assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
+        assert!(!s.should_auto_skip(Category::Sponsor));
+    }
+
+    #[test]
+    fn cycle_category_walks_skip_show_off() {
+        let mut s = Settings::default();
+        assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
+        s.cycle_category(Category::Intro);
+        assert_eq!(s.mode_of(Category::Intro), SkipMode::Show);
+        assert!(s.should_show_skip(Category::Intro));
+        assert!(s.category_enabled(Category::Intro), "Show is still enabled");
+        s.cycle_category(Category::Intro);
+        assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
+        assert!(!s.category_enabled(Category::Intro));
+        s.cycle_category(Category::Intro);
+        assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip, "cycles back to Auto-skip");
+    }
+
+    #[test]
+    fn dearrow_sub_toggles_gate_titles_and_thumbnails() {
+        let mut s = Settings::default();
+        assert!(s.dearrow_titles_on() && s.dearrow_thumbs_on());
+        s.dearrow_titles = false;
+        assert!(!s.dearrow_titles_on() && s.dearrow_thumbs_on());
+        s.dearrow_enabled = false;
+        assert!(!s.dearrow_titles_on() && !s.dearrow_thumbs_on(), "master gates both");
     }
 
     #[test]

@@ -3351,7 +3351,10 @@ impl BooksApp {
 
         // The shelf can hold more books than fit, so it scrolls. Work out the
         // total content height and clamp the offset to what's reachable.
-        let rows = order.len().div_ceil(cols);
+        // One extra grid cell trails the last book: the persistent "Add books"
+        // tile (a standing import affordance + drop-target hint), so the scroll
+        // extent is sized to include it.
+        let rows = (order.len() + 1).div_ceil(cols);
         let row_pitch = card_h + gap;
         let content_h = if rows == 0 {
             0.0
@@ -3393,6 +3396,17 @@ impl BooksApp {
             }
             let focused = i == self.shelf_cursor;
             self.draw_book_card(scene, t, tr, theme, book, orig, x, y, card_w, cover_h, focused);
+        }
+        // Trailing "Add books" tile in the next free grid cell.
+        {
+            let i = order.len();
+            let col = i % cols;
+            let row = i / cols;
+            let x = start_x + col as f64 * (card_w + gap);
+            let y = start_y + row as f64 * row_pitch - scroll;
+            if !(y > r.y1 || y + card_h + 84.0 < r.y0 + TOP_BAR) {
+                self.draw_add_book_card(scene, t, tr, theme, x, y, card_w, cover_h);
+            }
         }
         scene.pop_layer();
 
@@ -3517,8 +3531,13 @@ impl BooksApp {
         paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 60));
 
         // Real cover art when the EPUB carries one; otherwise a generated spine
-        // built from theme hues + the title/author set in type.
-        if let Some(img) = self.cover_image(book) {
+        // built from theme hues + the title/author set in type. A generated
+        // cover already sets the title in display type, so the under-cover shelf
+        // label is drawn only for real cover art — the title reads exactly once
+        // per card either way.
+        let real_cover = self.cover_image(book);
+        let title_on_cover = real_cover.is_none();
+        if let Some(img) = real_cover {
             blit_cover(scene, t, img, cover, 12.0);
             // Faint inner edge to seat the art against the shelf.
             paint::stroke_round(scene, t, cover, 12.0, Color::from_rgba8(0, 0, 0, 40), 1.0);
@@ -3595,15 +3614,20 @@ impl BooksApp {
         let frac = self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0);
         let anno = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
         let meta_y = y + cover_h + 14.0;
-        tr.draw_text_weighted(
-            scene,
-            &book.title,
-            14.0,
-            c.text_primary,
-            t * Affine::translate((x + 2.0, meta_y)),
-            Some((w - 4.0) as f32),
-            TextWeight::Semibold,
-        );
+        // The generated cover already carries the title in display type; drawing
+        // it again here would show the same title twice on one card. Only label
+        // real cover art (whose embedded title may not be legible on the shelf).
+        if !title_on_cover {
+            tr.draw_text_weighted(
+                scene,
+                &book.title,
+                14.0,
+                c.text_primary,
+                t * Affine::translate((x + 2.0, meta_y)),
+                Some((w - 4.0) as f32),
+                TextWeight::Semibold,
+            );
+        }
         // progress bar
         let bar = Rect::new(x + 2.0, meta_y + 34.0, x + w - 56.0, meta_y + 40.0);
         paint::progress(scene, t, bar, frac, c.neutral[3], theme.accent_primary);
@@ -3638,6 +3662,97 @@ impl BooksApp {
         if hit_bot > hit_top {
             self.push_hit(Rect::new(x, hit_top, x + w, hit_bot), Action::OpenBook(idx));
         }
+    }
+
+    /// The trailing "Add books" tile — a standing affordance to bring more
+    /// titles onto the shelf. It reads as a drop target (dashed accent border +
+    /// "Drop EPUB files here" hint) and, when tapped, re-scans the library
+    /// directories through the real load path so books dropped into the Books
+    /// folder appear without a restart. (Browsing for a file needs the shell's
+    /// file-picker portal, which lives outside the app.)
+    fn draw_add_book_card(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        y: f64,
+        w: f64,
+        cover_h: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let tile = Rect::new(x, y, x + w, y + cover_h);
+        let hover = self.is_hover(tile);
+
+        // A quiet, inviting drop surface: faint fill under a dashed accent border.
+        paint::fill_round(
+            scene,
+            t,
+            tile,
+            12.0,
+            if hover { theme.bg_hover } else { c.surfaces.overlay },
+        );
+        let border = if hover {
+            theme.accent_primary
+        } else {
+            theme.accent_primary.with_alpha_factor(0.55)
+        };
+        dashed_round_border(scene, t, tile, 12.0, border, 1.6, 7.0, 5.0);
+
+        // Plus mark inside a soft accent disc.
+        let cx = x + w / 2.0;
+        let disc_cy = y + cover_h * 0.40;
+        let disc_r = 24.0;
+        paint::circle(
+            scene,
+            t,
+            Point::new(cx, disc_cy),
+            disc_r,
+            theme.accent_primary.with_alpha_factor(0.16),
+        );
+        paint::plus(
+            scene,
+            t,
+            Rect::new(cx - 11.0, disc_cy - 11.0, cx + 11.0, disc_cy + 11.0),
+            theme.accent_primary,
+            2.2,
+        );
+
+        // Title + drop-target hint, centred under the mark.
+        let title = "Add books";
+        let (tw, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        tr.draw_text_weighted(
+            scene,
+            title,
+            15.0,
+            c.text_primary,
+            t * Affine::translate((cx - tw as f64 / 2.0, disc_cy + disc_r + 14.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        let hint = "Drop EPUB files here";
+        let (hw, _) = tr.measure(hint, 12.0, None);
+        tr.draw_text(
+            scene,
+            hint,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((cx - hw as f64 / 2.0, disc_cy + disc_r + 36.0)),
+            None,
+        );
+        let hint2 = "or tap to reload your library";
+        let (h2w, _) = tr.measure(hint2, 12.0, None);
+        tr.draw_text(
+            scene,
+            hint2,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((cx - h2w as f64 / 2.0, disc_cy + disc_r + 54.0)),
+            None,
+        );
+
+        self.push_hit(tile, Action::ReloadLibrary);
     }
 }
 
@@ -4676,6 +4791,26 @@ impl BooksApp {
     /// The reading-settings popover summoned by the bottom bar's "Aa" button:
     /// text size, line spacing, typeface, and page tint. A full-surface scrim
     /// behind it makes any tap-away dismiss it. Drawn last so it floats on top.
+    /// Horizontal bounds `(left, right)` for the reading-settings popover,
+    /// kept clear of any docked rail: the right edge is pulled inside a docked
+    /// annotations rail and the left edge is clamped right of a docked contents
+    /// rail, so the popover never overlaps either. Shared by the draw path and
+    /// its layout test.
+    fn type_popover_x_bounds(&self, panel_w: f64) -> (f64, f64) {
+        let r = self.rect;
+        let notes_docked_w = match self.notes_layout() {
+            SplitLayout::Docked => NOTES_W * self.notes_flap.reveal(),
+            SplitLayout::Overlay => 0.0,
+        };
+        let toc_docked_w = match self.toc_layout() {
+            SplitLayout::Docked => TOC_W * self.toc_flap.reveal(),
+            SplitLayout::Overlay => 0.0,
+        };
+        let px1 = r.x1 - 18.0 - notes_docked_w;
+        let px0 = (px1 - panel_w).max(r.x0 + 12.0 + toc_docked_w);
+        (px0, px1)
+    }
+
     fn draw_type_popover(
         &mut self,
         scene: &mut Scene,
@@ -4733,8 +4868,7 @@ impl BooksApp {
         let panel_h = pad * 2.0 + header_h + steppers_h + 22.0 + type_h + 22.0 + page_h;
 
         let bar_top = r.y1 - BOTTOM_BAR;
-        let px1 = r.x1 - 18.0;
-        let px0 = (px1 - panel_w).max(r.x0 + 12.0);
+        let (px0, px1) = self.type_popover_x_bounds(panel_w);
         let py1 = bar_top - 10.0;
         let py0 = (py1 - panel_h).max(r.y0 + TOP_BAR + 8.0);
         let panel = Rect::new(px0, py0, px1, py1);
@@ -5817,6 +5951,39 @@ fn blit_cover(scene: &mut Scene, t: Affine, img: PenikoImage, rect: Rect, radius
     scene.pop_layer();
 }
 
+/// Stroke a dashed border along the straight edges of a rounded rectangle (the
+/// rounded corners are left as small gaps). Reads as a drop-zone outline.
+fn dashed_round_border(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    color: Color,
+    width: f64,
+    dash: f64,
+    gap: f64,
+) {
+    let step = dash + gap;
+    // Top + bottom edges, between the corner radii.
+    let (hx0, hx1) = (rect.x0 + radius, rect.x1 - radius);
+    let mut x = hx0;
+    while x < hx1 {
+        let xe = (x + dash).min(hx1);
+        paint::line(scene, t, Point::new(x, rect.y0), Point::new(xe, rect.y0), color, width);
+        paint::line(scene, t, Point::new(x, rect.y1), Point::new(xe, rect.y1), color, width);
+        x += step;
+    }
+    // Left + right edges.
+    let (vy0, vy1) = (rect.y0 + radius, rect.y1 - radius);
+    let mut y = vy0;
+    while y < vy1 {
+        let ye = (y + dash).min(vy1);
+        paint::line(scene, t, Point::new(rect.x0, y), Point::new(rect.x0, ye), color, width);
+        paint::line(scene, t, Point::new(rect.x1, y), Point::new(rect.x1, ye), color, width);
+        y += step;
+    }
+}
+
 /// Pick a cover spine + readable ink for a book, sourced entirely from theme
 /// tokens (semantic hues + accent) so covers stay on-brand across OS themes.
 fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
@@ -6597,6 +6764,83 @@ mod interaction_tests {
         assert!(!app.library.is_empty(), "reload discovered books through the real load path");
 
         unsafe { std::env::remove_var("EBOOK_LIBRARY_DIR") };
+    }
+
+    #[test]
+    fn populated_shelf_offers_an_add_books_affordance() {
+        // A shelf that already has books still shows the trailing "Add books"
+        // tile, so there is always a way to bring in more titles. Its hit target
+        // is ReloadLibrary — the same real re-scan path the empty shelf uses.
+        let mut app = app_with_sample();
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        assert!(!app.library.is_empty(), "sample shelf has books");
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::OpenBook(_))).is_some(),
+            "book cards are present on the shelf"
+        );
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::ReloadLibrary)).is_some(),
+            "a populated shelf still offers an Add books / import affordance"
+        );
+    }
+
+    #[test]
+    fn card_shows_the_title_once_generated_vs_real_cover() {
+        // A generated cover sets the title in display type on the cover itself,
+        // so `cover_image` yields None and the under-cover shelf label is
+        // suppressed — the title renders exactly once. Real cover art keeps the
+        // shelf label (its embedded title may not be legible on the shelf), and
+        // does not itself re-draw the title, so it too shows once.
+        let mut app = BooksApp::with_library(Vec::new());
+        let generated = Book {
+            id: "gen".into(),
+            title: "Generated".into(),
+            cover: None,
+            ..Default::default()
+        };
+        assert!(
+            app.cover_image(&generated).is_none(),
+            "generated cover has no image → shelf label is suppressed (title only on the cover)"
+        );
+        let real = Book {
+            id: "real".into(),
+            title: "Real".into(),
+            cover: Some(crate::model::Cover {
+                rgba: std::sync::Arc::new(vec![0u8; 2 * 2 * 4]),
+                width: 2,
+                height: 2,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            app.cover_image(&real).is_some(),
+            "real cover art blits → the single title comes from the shelf label"
+        );
+    }
+
+    #[test]
+    fn type_popover_stays_clear_of_the_docked_annotations_rail() {
+        // On a wide window the annotations rail is docked-open; the reading
+        // settings popover must anchor inside the reading area, never crossing
+        // into the rail (which previously hid the lower annotation cards).
+        let mut app = app_with_sample();
+        app.view = View::Reader;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.reconcile_flaps();
+        app.notes_flap.snap(true); // fully docked-open
+        assert_eq!(app.notes_layout(), SplitLayout::Docked, "wide window docks the rail");
+
+        let panel_w = 320.0_f64.min(app.rect.width() - 24.0);
+        let (px0, px1) = app.type_popover_x_bounds(panel_w);
+        let rail_left = app.rect.x1 - NOTES_W;
+        assert!(
+            px1 <= rail_left,
+            "popover right edge {px1} must stay left of the docked annotations rail at {rail_left}"
+        );
+        assert!(px0 >= app.rect.x0, "popover stays on-screen");
+        assert!(px1 - px0 >= 200.0, "popover keeps a usable width");
     }
 
     // ---- delete affordance (was unreachable without hover) ------------------
