@@ -6,6 +6,9 @@ use crate::process::{run, run_capture};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtDeviceInfo {
     pub name: String,
+    /// The device's MAC address — the handle `bluetoothctl connect <mac>`
+    /// takes. Empty only for hand-built fixtures that don't need it.
+    pub mac: String,
     /// Reported via `bluetoothctl info <mac>` (Battery Percentage), or
     /// `0` if the device doesn't expose one.
     pub battery: u8,
@@ -16,6 +19,16 @@ pub struct BtDeviceInfo {
 pub fn set_bluetooth(enabled: bool) -> Result<(), String> {
     let state = if enabled { "on" } else { "off" };
     run("bluetoothctl", &["power", state])
+}
+
+/// Connect a paired device by MAC via `bluetoothctl connect <mac>`.
+pub fn bt_connect(mac: &str) -> Result<(), String> {
+    run("bluetoothctl", &["connect", mac])
+}
+
+/// Disconnect a device by MAC via `bluetoothctl disconnect <mac>`.
+pub fn bt_disconnect(mac: &str) -> Result<(), String> {
+    run("bluetoothctl", &["disconnect", mac])
 }
 
 /// Read the Bluetooth controller state by grepping `bluetoothctl show`
@@ -47,6 +60,7 @@ pub fn list_bt_devices() -> Result<Vec<BtDeviceInfo>, String> {
         let (connected, battery) = parse_bluetoothctl_info(&info_out);
         devices.push(BtDeviceInfo {
             name,
+            mac,
             battery,
             connected,
         });

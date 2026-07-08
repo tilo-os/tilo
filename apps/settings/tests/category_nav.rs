@@ -236,6 +236,7 @@ nav_test!(click_navigates_bluetooth, Category::Bluetooth);
 nav_test!(click_navigates_sound, Category::Sound);
 nav_test!(click_navigates_displays, Category::Displays);
 nav_test!(click_navigates_mouse_keyboard, Category::MouseKeyboard);
+nav_test!(click_navigates_appearance, Category::Appearance);
 nav_test!(click_navigates_time_date, Category::TimeDate);
 nav_test!(click_navigates_users, Category::Users);
 nav_test!(click_navigates_printers, Category::Printers);

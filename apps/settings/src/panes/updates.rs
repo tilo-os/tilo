@@ -573,6 +573,7 @@ mod tests {
     /// last-checked time — proving the button acts, not no-ops.
     #[test]
     fn check_requeries_and_stamps_last_checked() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_check");
         let reb = Arc::new(RecordingRebooter::default());
         let mut pane = pane_with(None, reb);
         let mut doc = AutoCommit::new();
@@ -612,6 +613,7 @@ mod tests {
     /// known channel is accepted.
     #[test]
     fn channel_change_is_adopted_and_validated() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_channel");
         let reb = Arc::new(RecordingRebooter::default());
         let mut pane = pane_with(None, reb);
         let mut doc = AutoCommit::new();

@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -80,6 +83,16 @@ pub struct Scrollable {
     vbar: Scrollbar,
     /// Shared horizontal-bar interaction model.
     hbar: Scrollbar,
+    /// Optional externally-owned scroll position that survives this widget
+    /// being dropped and rebuilt. Apps that recreate their whole widget
+    /// subtree every frame (the file explorer's rebuild-on-command model)
+    /// would otherwise reset the scroll to the top on any structural change
+    /// — clicking a row, typing in search, changing sort. Handing the
+    /// Scrollable a shared `(offset_x, offset_y)` cell via
+    /// [`Scrollable::with_persisted_offset`] lets the fresh instance seed
+    /// itself from where the last one left off; every offset mutation writes
+    /// back through `clamp`, so the cell always mirrors the live position.
+    persisted_offset: Option<Rc<Cell<(f32, f32)>>>,
 }
 
 impl Scrollable {
@@ -105,6 +118,7 @@ impl Scrollable {
             last_cursor: Point::ZERO,
             vbar: Scrollbar::vertical(),
             hbar: Scrollbar::horizontal(),
+            persisted_offset: None,
         }
     }
     pub fn new_vertical() -> Self { Self::new(ScrollAxis::Vertical) }
@@ -133,6 +147,21 @@ impl Scrollable {
     /// Column. See [`Scrollable::fill_parent_height`].
     pub fn fill_parent_height(mut self) -> Self {
         self.fill_parent_height = true;
+        self
+    }
+
+    /// Bind this Scrollable to an externally-owned scroll position so it
+    /// survives the widget being dropped and rebuilt. The fresh instance
+    /// seeds its offset from the cell; every later scroll writes back
+    /// through `clamp`. See [`Scrollable::persisted_offset`]. The seeded
+    /// offset is intentionally left *unclamped* here — content/viewport
+    /// aren't known until the first `apply_layout`, which clamps it (and
+    /// rewrites the cell) against the real extents.
+    pub fn with_persisted_offset(mut self, cell: Rc<Cell<(f32, f32)>>) -> Self {
+        let (x, y) = cell.get();
+        self.offset_x = x;
+        self.offset_y = y;
+        self.persisted_offset = Some(cell);
         self
     }
 
@@ -185,6 +214,12 @@ impl Scrollable {
         let max_y = (self.content_h - self.viewport_h).max(0.0);
         self.offset_x = self.offset_x.clamp(0.0, max_x);
         self.offset_y = self.offset_y.clamp(0.0, max_y);
+        // Mirror the live position into the shared cell (if any) so a fresh
+        // instance rebuilt next frame seeds from here. Every offset mutation
+        // funnels through `clamp`, so this is the single write-back point.
+        if let Some(cell) = &self.persisted_offset {
+            cell.set((self.offset_x, self.offset_y));
+        }
     }
 
     // === Scrollbar geometry ============================================
@@ -988,6 +1023,50 @@ mod tests {
             !scroll.layout_needs_measure(),
             "a laid-out subtree needs no taffy re-solve on a pure scroll",
         );
+    }
+
+    #[test]
+    fn persisted_offset_survives_a_rebuild_into_a_fresh_scrollable() {
+        // The file-explorer model: the whole widget subtree is thrown away and
+        // rebuilt on any structural change. A shared offset cell must let the
+        // fresh Scrollable resume exactly where the previous one was scrolled to
+        // instead of snapping back to the top.
+        let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
+
+        // First instance: scroll it, and confirm it writes the live position
+        // back into the shared cell (through `clamp`).
+        let mut a = vertical(1200.0).with_persisted_offset(cell.clone());
+        a.scroll_by(0.0, 250.0);
+        assert_eq!(a.offset_y(), 250.0);
+        assert_eq!(cell.get().1, 250.0, "scroll writes back into the shared cell");
+
+        // A brand-new instance bound to the same cell seeds from it — this is
+        // the rebuilt widget resuming the scroll.
+        let b = Scrollable::new_vertical().with_persisted_offset(cell.clone());
+        assert_eq!(b.offset_y(), 250.0, "rebuilt Scrollable resumes the saved offset");
+
+        // Independent instances with no persisted cell still start at the top.
+        let c = Scrollable::new_vertical();
+        assert_eq!(c.offset_y(), 0.0, "an unbound Scrollable is unaffected");
+    }
+
+    #[test]
+    fn persisted_offset_reclamps_and_rewrites_when_content_shrinks() {
+        // If the content later shrinks below the saved offset (the directory got
+        // shorter), the next clamp must both cap the offset AND rewrite the
+        // smaller value back so the cell never strands a stale, un-reachable
+        // position.
+        let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
+        let mut s = Scrollable::new_vertical().with_persisted_offset(cell.clone());
+        // Establish a real scrolled state: tall content, then scroll to bottom.
+        s.set_content_size(200.0, 1200.0);
+        s.set_viewport_size(200.0, 300.0); // max scroll 900
+        s.scroll_by(0.0, 900.0);
+        assert_eq!(cell.get().1, 900.0, "scrolled to the bottom, cell tracks it");
+        // The directory shrinks: content now only 400 tall → max scroll 100.
+        s.set_content_size(200.0, 400.0);
+        assert_eq!(s.offset_y(), 100.0, "offset clamped to the new max");
+        assert_eq!(cell.get().1, 100.0, "cell rewritten with the clamped value");
     }
 
     #[test]

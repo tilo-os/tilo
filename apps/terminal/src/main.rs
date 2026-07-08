@@ -235,7 +235,7 @@ fn run_scenario(
                 s.push_str(&format!("\x1b[48;2;{};{};128m \x1b[0m", r, g));
             }
             s.push_str("\r\n\r\n styles:         ");
-            s.push_str("\x1b[1mbold\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
+            s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
             s.push_str("\r\n foreground:     ");
             s.push_str("\x1b[38;2;255;90;90mred \x1b[38;2;90;220;120mgreen \x1b[38;2;110;160;255mblue\x1b[0m\r\n");
             s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, qOS\"\x1b[0m\r\n");

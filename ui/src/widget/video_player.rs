@@ -32,6 +32,7 @@ use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage,
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -68,6 +69,119 @@ pub enum PlaybackState {
     Playing,
     Paused,
     Stopped,
+}
+
+/// Height of one row in the settings-gear menu overlay.
+const MENU_ROW_H: f64 = 30.0;
+/// Width of the settings menu / choice popover panel.
+const MENU_WIDTH: f64 = 224.0;
+/// Minimum scrub-track width preserved when packing setting icons onto the bar.
+const MIN_SCRUB_WIDTH: f64 = 48.0;
+
+/// The value + control kind of an app-registered [`PlayerSetting`].
+///
+/// The embedding app owns the *meaning*; the player owns the *rendering* and
+/// reports interactions back via [`VideoPlayer::take_setting_events`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerSettingControl {
+    /// An on/off switch (captions, autoplay, loop, …). Activating flips it.
+    Toggle { on: bool },
+    /// A one-of-N choice (resolution, playback speed, caption track, …).
+    /// Activating opens a themed option list; picking one selects it.
+    Choice { options: Vec<String>, selected: usize },
+    /// A plain action button (Cast, Download, Open externally, …).
+    Button,
+}
+
+/// A control the embedding app registers on the player's control bar.
+///
+/// `priority` decides placement:
+/// * `0` → tucked inside the settings-gear menu.
+/// * `>= 1` → promoted to its own icon button on the control bar when there is
+///   room; higher priority wins the limited space and any overflow falls back
+///   into the gear.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerSetting {
+    /// Stable key the host uses to read back changes.
+    pub id: String,
+    /// Vector glyph shown on the bar / in the menu row.
+    pub icon: Icon,
+    /// Human-readable name — the tooltip and the gear-menu label.
+    pub name: String,
+    /// Placement priority (see the struct docs).
+    pub priority: i32,
+    /// The value + control kind.
+    pub control: PlayerSettingControl,
+}
+
+impl PlayerSetting {
+    /// A toggle setting. `priority >= 1` promotes it to its own icon button.
+    pub fn toggle(id: impl Into<String>, icon: Icon, name: impl Into<String>, priority: i32, on: bool) -> Self {
+        Self { id: id.into(), icon, name: name.into(), priority, control: PlayerSettingControl::Toggle { on } }
+    }
+
+    /// A one-of-N choice setting (e.g. resolution).
+    pub fn choice(
+        id: impl Into<String>,
+        icon: Icon,
+        name: impl Into<String>,
+        priority: i32,
+        options: Vec<String>,
+        selected: usize,
+    ) -> Self {
+        let selected = selected.min(options.len().saturating_sub(1));
+        Self { id: id.into(), icon, name: name.into(), priority, control: PlayerSettingControl::Choice { options, selected } }
+    }
+
+    /// A plain action button.
+    pub fn button(id: impl Into<String>, icon: Icon, name: impl Into<String>, priority: i32) -> Self {
+        Self { id: id.into(), icon, name: name.into(), priority, control: PlayerSettingControl::Button }
+    }
+}
+
+/// A user interaction with a registered [`PlayerSetting`], drained by the host
+/// each frame via [`VideoPlayer::take_setting_events`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerSettingEvent {
+    /// A toggle flipped to `on`.
+    Toggled { id: String, on: bool },
+    /// A choice selected option `index`.
+    Chose { id: String, index: usize },
+    /// A button was activated.
+    Activated { id: String },
+}
+
+/// Which overlay menu is currently open, and what it is anchored to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OpenMenu {
+    /// The gear menu: lists every priority-0 + overflowed setting.
+    Gear,
+    /// A single [`PlayerSettingControl::Choice`] setting's option list, anchored
+    /// on its own bar icon (`usize` = index into `settings`).
+    Choice(usize),
+}
+
+/// A hit region inside an open menu, recorded each paint so `handle_event` can
+/// route a click without re-deriving the layout.
+#[derive(Clone, Copy, Debug)]
+enum MenuHit {
+    /// A top-level setting row in the gear menu (`usize` = index into `settings`).
+    Setting(usize),
+    /// An option row of a choice (`setting index`, `option index`).
+    Option(usize, usize),
+}
+
+/// Now-playing metadata the embedding app supplies so the player can publish it
+/// to the desktop media controls (MPRIS: media keys + the top-bar widget).
+/// `title`/`artist` show in the system media widget; `art_url` is an http(s)
+/// cover; `track_id` keys the MPRIS track identity.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NowPlaying {
+    pub track_id: String,
+    pub title: String,
+    /// Channel / uploader / artist line.
+    pub artist: String,
+    pub art_url: String,
 }
 
 /// Video surface with an overlaid playback-controls bar.
@@ -124,6 +238,30 @@ pub struct VideoPlayer {
     /// segments inline on the ONE timeline. Empty by default, so every other
     /// consumer (camera, music, editor preview) is unaffected.
     scrub_marks: Vec<(f32, f32, Color)>,
+    /// App-registered settings (resolution, captions, speed, …). Rendered as
+    /// priority icons on the bar and/or under the settings gear.
+    settings: Vec<PlayerSetting>,
+    /// Interactions with `settings` the host drains each frame.
+    setting_events: Vec<PlayerSettingEvent>,
+    /// The currently open settings overlay, if any.
+    open_menu: Option<OpenMenu>,
+    /// Which choice-setting is currently expanded inside the gear menu.
+    gear_expanded: Option<usize>,
+    /// Hit region for the settings gear button (ZERO when not shown).
+    gear_button_rect: Rect,
+    /// Bar icon-button hit regions: `(settings index, rect)`, recomputed each draw.
+    setting_icon_rects: Vec<(usize, Rect)>,
+    /// Which settings indices are tucked under the gear this frame (priority 0 +
+    /// overflow), in menu order. Recomputed each draw.
+    gear_entries: Vec<usize>,
+    /// Open-menu row hit regions, recomputed each draw.
+    menu_hit_rects: Vec<(MenuHit, Rect)>,
+    /// Now-playing metadata the host supplies for the MPRIS top-bar publish.
+    now_playing: NowPlaying,
+    /// The desktop-media (MPRIS) publisher. Inert until [`Self::enable_mpris`].
+    mpris: crate::mpris::MprisHandle,
+    /// Fullscreen output target expressed when the user toggles fullscreen.
+    fullscreen_target: crate::fullscreen::FullscreenTarget,
 }
 
 impl VideoPlayer {
@@ -155,6 +293,17 @@ impl VideoPlayer {
             dirty: true,
             test_id: None,
             scrub_marks: Vec::new(),
+            settings: Vec::new(),
+            setting_events: Vec::new(),
+            open_menu: None,
+            gear_expanded: None,
+            gear_button_rect: Rect::ZERO,
+            setting_icon_rects: Vec::new(),
+            gear_entries: Vec::new(),
+            menu_hit_rects: Vec::new(),
+            now_playing: NowPlaying::default(),
+            mpris: crate::mpris::MprisHandle::disabled(),
+            fullscreen_target: crate::fullscreen::FullscreenTarget::Largest,
         }
     }
 
@@ -170,6 +319,198 @@ impl VideoPlayer {
             self.scrub_marks = marks;
             self.dirty = true;
         }
+    }
+
+    // --- App-registered player settings (resolution, captions, speed, …) ---
+
+    /// Register a setting, or replace an existing one with the same `id`. The
+    /// player renders it as a priority icon and/or a gear-menu row and reports
+    /// interactions via [`Self::take_setting_events`]. Registering is idempotent
+    /// on `id`, so a host may push its current settings every rebuild.
+    pub fn set_setting(&mut self, setting: PlayerSetting) {
+        if let Some(existing) = self.settings.iter_mut().find(|s| s.id == setting.id) {
+            if *existing != setting {
+                *existing = setting;
+                self.dirty = true;
+            }
+        } else {
+            self.settings.push(setting);
+            self.dirty = true;
+        }
+    }
+
+    /// Builder form of [`Self::set_setting`].
+    pub fn with_setting(mut self, setting: PlayerSetting) -> Self {
+        self.set_setting(setting);
+        self
+    }
+
+    /// Remove a registered setting by `id` (no-op if absent).
+    pub fn remove_setting(&mut self, id: &str) {
+        let before = self.settings.len();
+        self.settings.retain(|s| s.id != id);
+        if self.settings.len() != before {
+            self.dirty = true;
+        }
+    }
+
+    /// The registered settings, in registration order.
+    pub fn settings(&self) -> &[PlayerSetting] {
+        &self.settings
+    }
+
+    /// Borrow a registered setting by `id`.
+    pub fn setting(&self, id: &str) -> Option<&PlayerSetting> {
+        self.settings.iter().find(|s| s.id == id)
+    }
+
+    /// Keep a choice setting's selected index in sync from the host (e.g. after
+    /// the backend confirms a resolution switch) without emitting an event.
+    pub fn set_choice_selection(&mut self, id: &str, index: usize) {
+        if let Some(s) = self.settings.iter_mut().find(|s| s.id == id) {
+            if let PlayerSettingControl::Choice { options, selected } = &mut s.control {
+                let idx = index.min(options.len().saturating_sub(1));
+                if *selected != idx {
+                    *selected = idx;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    /// Drain the interactions with registered settings since the last call. The
+    /// host reacts to each (e.g. re-opens the stream at a new resolution).
+    pub fn take_setting_events(&mut self) -> Vec<PlayerSettingEvent> {
+        std::mem::take(&mut self.setting_events)
+    }
+
+    /// Programmatically open the settings-gear menu (e.g. an onboarding hint, or
+    /// a headless capture). Reveals the controls so the menu is visible; it lays
+    /// out on the next paint. `expand` optionally pre-expands a choice entry by id.
+    pub fn open_settings_menu(&mut self, expand: Option<&str>) {
+        self.open_menu = Some(OpenMenu::Gear);
+        self.gear_expanded = expand.and_then(|id| self.settings.iter().position(|s| s.id == id));
+        self.reveal_controls();
+        self.dirty = true;
+    }
+
+    /// Whether the settings gear (or a choice popover) is open. Exposed so hosts
+    /// / tests can assert the menu surfaced.
+    pub fn menu_open(&self) -> bool {
+        self.open_menu.is_some()
+    }
+
+    /// The bar rect a priority-`>=1` setting was laid out into this frame, or
+    /// `None` if it overflowed into the gear (or the controls are hidden). Lets
+    /// hosts / tests confirm a high-priority setting surfaced as its own icon.
+    pub fn setting_icon_rect(&self, id: &str) -> Option<Rect> {
+        let idx = self.settings.iter().position(|s| s.id == id)?;
+        self.setting_icon_rects
+            .iter()
+            .find(|(i, _)| *i == idx)
+            .map(|(_, r)| *r)
+    }
+
+    /// Whether a setting is currently tucked under the settings gear this frame.
+    pub fn setting_in_gear(&self, id: &str) -> bool {
+        match self.settings.iter().position(|s| s.id == id) {
+            Some(idx) => self.gear_entries.contains(&idx),
+            None => false,
+        }
+    }
+
+    // --- Now-playing / desktop media (MPRIS) ---
+
+    /// Supply the now-playing metadata surfaced to the desktop media controls
+    /// (system top-bar widget + media keys). Republished automatically whenever
+    /// it or the transport state changes.
+    pub fn set_now_playing(&mut self, np: NowPlaying) {
+        if self.now_playing != np {
+            self.now_playing = np;
+            self.publish_mpris();
+        }
+    }
+
+    /// The current now-playing metadata.
+    pub fn now_playing(&self) -> &NowPlaying {
+        &self.now_playing
+    }
+
+    /// Bring up the desktop-media (MPRIS) service so media keys + the system
+    /// media widget can drive this player and show its now-playing. `app_id` is
+    /// the MPRIS bus suffix (`org.mpris.MediaPlayer2.<app_id>`) and `identity`
+    /// the human-readable player name. Without the `mpris` feature (or a session
+    /// bus) this is an inert no-op, so the call is always safe.
+    pub fn enable_mpris(&mut self, app_id: &str, identity: &str) {
+        self.mpris = crate::mpris::MprisHandle::spawn(
+            crate::mpris::MprisConfig::new(app_id, identity),
+            self.mpris_snapshot(),
+        );
+    }
+
+    /// Drain external media-control commands (media keys, the system media
+    /// widget, `playerctl`) and apply them to the engine. Call once per frame;
+    /// inert without an active MPRIS service.
+    pub fn pump_media_controls(&mut self) {
+        for cmd in self.mpris.drain_commands() {
+            self.apply_media_command(cmd);
+        }
+    }
+
+    /// Apply one external MPRIS command to the player/engine.
+    fn apply_media_command(&mut self, cmd: crate::mpris::MprisCommand) {
+        use crate::mpris::MprisCommand as C;
+        match cmd {
+            C::Play => self.play(),
+            C::Pause => self.pause(),
+            C::PlayPause => self.toggle_play(),
+            C::Stop => {
+                self.pause();
+                self.state = PlaybackState::Stopped;
+            }
+            C::Seek(us) => {
+                let delta_ms = us / 1000;
+                let target = (self.position_ms as i64 + delta_ms).max(0) as u64;
+                self.seek_to_ms(target);
+            }
+            C::SetPosition(us) => self.seek_to_ms((us.max(0) as u64) / 1000),
+            C::SetVolume(v) => self.set_volume(v as f32),
+            // Next / Previous / Raise / Quit have no single-clip meaning here; the
+            // host can observe them if it later wires a playlist.
+            C::Next | C::Previous | C::Raise | C::Quit => {}
+        }
+    }
+
+    /// Build the MPRIS snapshot from the current transport + metadata.
+    fn mpris_snapshot(&self) -> crate::mpris::PlayerSnapshot {
+        use crate::mpris::{PlaybackStatus, PlayerSnapshot};
+        let status = match self.state {
+            PlaybackState::Playing => PlaybackStatus::Playing,
+            PlaybackState::Paused => PlaybackStatus::Paused,
+            PlaybackState::Stopped => PlaybackStatus::Stopped,
+        };
+        PlayerSnapshot {
+            status,
+            track_id: self.now_playing.track_id.clone(),
+            title: self.now_playing.title.clone(),
+            artist: self.now_playing.artist.clone(),
+            album: String::new(),
+            art_url: self.now_playing.art_url.clone(),
+            length_us: self.duration_ms as i64 * 1000,
+            position_us: self.position_ms as i64 * 1000,
+            volume: self.effective_volume() as f64,
+            can_next: false,
+            can_prev: false,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+        }
+    }
+
+    /// Push the current snapshot to the MPRIS worker (deduped there).
+    fn publish_mpris(&mut self) {
+        let snap = self.mpris_snapshot();
+        self.mpris.publish(snap);
     }
 
     /// Attach a shared [`media::MediaEngine`] (builder form). The widget then
@@ -270,6 +611,9 @@ impl VideoPlayer {
         }
         self.state = PlaybackState::Playing;
         self.dirty = true;
+        if self.mpris.is_active() {
+            self.publish_mpris();
+        }
     }
 
     /// Pause playback.
@@ -279,6 +623,9 @@ impl VideoPlayer {
         }
         self.state = PlaybackState::Paused;
         self.dirty = true;
+        if self.mpris.is_active() {
+            self.publish_mpris();
+        }
     }
 
     /// Toggle play/pause.
@@ -311,6 +658,9 @@ impl VideoPlayer {
             cb(Duration::from_millis(target));
         }
         self.dirty = true;
+        if self.mpris.is_active() {
+            self.publish_mpris();
+        }
     }
 
     /// Set output volume 0..=1 (also unmutes).
@@ -321,6 +671,9 @@ impl VideoPlayer {
             e.set_volume(self.volume);
         }
         self.dirty = true;
+        if self.mpris.is_active() {
+            self.publish_mpris();
+        }
     }
 
     pub fn volume(&self) -> f32 {
@@ -346,6 +699,18 @@ impl VideoPlayer {
         self.fullscreen = !self.fullscreen;
         self.fullscreen_touched = true;
         self.dirty = true;
+    }
+
+    /// Choose which output the player fullscreens onto (default:
+    /// [`crate::fullscreen::FullscreenTarget::Largest`], so immersive video
+    /// lands on the big screen). Reflected through [`Widget::fullscreen_params`].
+    pub fn set_fullscreen_target(&mut self, target: crate::fullscreen::FullscreenTarget) {
+        self.fullscreen_target = target;
+    }
+
+    /// The output the player will fullscreen onto.
+    pub fn fullscreen_target(&self) -> crate::fullscreen::FullscreenTarget {
+        self.fullscreen_target
     }
 
     /// The effective output volume for the meter (0 while muted).
@@ -435,6 +800,11 @@ impl VideoPlayer {
                 self.dirty = true;
             }
         }
+        // Keep the desktop media widget's playhead + status fresh. `publish`
+        // dedups sub-second position jitter, so this is quiet on the bus.
+        if self.mpris.is_active() {
+            self.publish_mpris();
+        }
     }
 
     /// Paint the frame + (conditionally) the controls overlay.
@@ -476,12 +846,16 @@ impl VideoPlayer {
             self.paint_empty_placeholder(scene, transform, theme);
         }
 
-        // 3) Controls overlay — only within the auto-hide window.
-        if !self.controls_visible_now() {
+        // 3) Controls overlay — within the auto-hide window, or whenever a
+        // settings menu is open (so it can't vanish under the user's cursor).
+        if !self.controls_visible_now() && self.open_menu.is_none() {
             self.play_button_rect = Rect::ZERO;
             self.scrub_track_rect = Rect::ZERO;
             self.volume_track_rect = Rect::ZERO;
             self.fullscreen_button_rect = Rect::ZERO;
+            self.gear_button_rect = Rect::ZERO;
+            self.setting_icon_rects.clear();
+            self.menu_hit_rects.clear();
             return;
         }
         self.paint_controls(scene, transform, text_renderer, theme);
@@ -513,14 +887,102 @@ impl VideoPlayer {
         self.play_button_rect = play_btn;
         self.draw_play_glyph(scene, transform, play_btn, colors.text_primary);
 
-        // --- Fullscreen button (far right) ---
+        // --- Right cluster: [ setting icons ][ gear ][ fullscreen ] ---
+        //
+        // Priority-`>=1` settings become their own icon buttons here; higher
+        // priority wins the limited space and any overflow (plus every
+        // priority-0 setting) collapses into the settings gear. The whole
+        // cluster is packed from the right so the fullscreen button stays pinned
+        // to the corner.
         let fs_size = icon;
-        let fs_btn = Rect::new(bar.x1 - pad - fs_size, mid_y - fs_size * 0.5, bar.x1 - pad, mid_y + fs_size * 0.5);
+        let btn = icon;
+        let gap = pad;
+
+        // Time label measured up-front: it feeds the left reserve that bounds
+        // how many setting icons can fit without crushing the scrubber.
+        let time_text = format!(
+            "{} / {}",
+            format_ms(self.position_ms),
+            format_ms(self.duration_ms)
+        );
+        let time_size = 12.0f32;
+        let (tw, _th) = text_renderer.measure(&time_text, time_size, None);
+
+        // Classify registered settings: priority icons (highest first), and the
+        // priority-0 set that always lives under the gear.
+        let mut prio: Vec<usize> =
+            (0..self.settings.len()).filter(|&i| self.settings[i].priority >= 1).collect();
+        prio.sort_by(|&a, &b| {
+            self.settings[b].priority.cmp(&self.settings[a].priority).then(a.cmp(&b))
+        });
+        let zero: Vec<usize> =
+            (0..self.settings.len()).filter(|&i| self.settings[i].priority == 0).collect();
+
+        // Fullscreen pinned far right.
+        let fs_btn = Rect::new(
+            bar.x1 - pad - fs_size,
+            mid_y - fs_size * 0.5,
+            bar.x1 - pad,
+            mid_y + fs_size * 0.5,
+        );
+
+        // How many icon slots fit between the fullscreen button and the reserved
+        // play + scrub + time + volume region on the left.
+        let left_reserve =
+            play_btn.x1 + pad + MIN_SCRUB_WIDTH + pad + tw as f64 + pad + VOLUME_WIDTH + pad;
+        let slot = btn + gap;
+        let avail = (fs_btn.x0 - gap - left_reserve).max(0.0);
+        let max_fit = if slot > 0.0 { (avail / slot).floor() as usize } else { 0 };
+        let (gear_needed, shown) = if zero.is_empty() && prio.len() <= max_fit {
+            (false, prio.len())
+        } else {
+            (true, prio.len().min(max_fit.saturating_sub(1)))
+        };
+
         self.fullscreen_button_rect = fs_btn;
         draw_fullscreen_glyph(scene, transform, fs_btn, colors.text_primary, self.fullscreen);
 
-        // --- Volume control (left of fullscreen) ---
-        let vol_x1 = fs_btn.x0 - pad;
+        // Gear (right of the icons, left of fullscreen) when anything hides in it.
+        let mut cx = fs_btn.x0 - gap;
+        let gear_btn = if gear_needed {
+            let r = Rect::new(cx - btn, mid_y - btn * 0.5, cx, mid_y + btn * 0.5);
+            cx = r.x0 - gap;
+            let tint = if self.open_menu == Some(OpenMenu::Gear) { accent } else { colors.text_primary };
+            Icon::Settings2.draw(scene, transform, inset_rect(r, 4.0), tint);
+            r
+        } else {
+            Rect::ZERO
+        };
+        self.gear_button_rect = gear_btn;
+
+        // Priority icon buttons, packed leftward from the gear.
+        self.setting_icon_rects.clear();
+        for &idx in prio.iter().take(shown) {
+            let r = Rect::new(cx - btn, mid_y - btn * 0.5, cx, mid_y + btn * 0.5);
+            cx = r.x0 - gap;
+            let s = &self.settings[idx];
+            let on = matches!(s.control, PlayerSettingControl::Toggle { on: true });
+            let menu_open = self.open_menu == Some(OpenMenu::Choice(idx));
+            let tint = if on || menu_open { accent } else { colors.text_primary };
+            s.icon.draw(scene, transform, inset_rect(r, 4.0), tint);
+            self.setting_icon_rects.push((idx, r));
+        }
+
+        // Record which settings ended up under the gear (overflow first, then
+        // the always-tucked priority-0 set) for the menu + hit-testing.
+        self.gear_entries.clear();
+        self.gear_entries.extend(prio.iter().skip(shown).copied());
+        self.gear_entries.extend(zero.iter().copied());
+
+        // Leftmost edge the right cluster reached — the volume sits to its left.
+        let cluster_x0 = self
+            .setting_icon_rects
+            .last()
+            .map(|(_, r)| r.x0)
+            .unwrap_or(if gear_needed { gear_btn.x0 } else { fs_btn.x0 });
+
+        // --- Volume control (left of the right cluster) ---
+        let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
         let speaker = Rect::new(vol_x0, mid_y - icon * 0.4, vol_x0 + icon * 0.8, mid_y + icon * 0.4);
         draw_speaker_glyph(scene, transform, speaker, colors.text_primary, self.muted);
@@ -553,13 +1015,6 @@ impl VideoPlayer {
         }
 
         // --- Time label + scrub track (centre) ---
-        let time_text = format!(
-            "{} / {}",
-            format_ms(self.position_ms),
-            format_ms(self.duration_ms)
-        );
-        let time_size = 12.0f32;
-        let (tw, _th) = text_renderer.measure(&time_text, time_size, None);
         let time_x1 = vol_x0 - pad;
         let time_x0 = (time_x1 - tw as f64).max(play_btn.x1 + pad);
         text_renderer.draw_text(
@@ -648,6 +1103,188 @@ impl VideoPlayer {
 
         // Outline so the bar reads as a distinct surface.
         scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &bar);
+
+        // Settings menu (gear list or a choice popover) floats above the bar.
+        self.paint_menu(scene, transform, text_renderer, theme);
+    }
+
+    /// Paint the open settings overlay — the gear menu (every tucked setting) or
+    /// a single choice's option list — as a themed rounded panel above its
+    /// anchor button. Records `menu_hit_rects` for `handle_event`.
+    fn paint_menu(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.menu_hit_rects.clear();
+        let Some(menu) = self.open_menu else { return };
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+
+        // Build the flat row list: each entry is either a top-level setting row
+        // (with, for an expanded choice, its options indented beneath) or, for a
+        // choice popover, just that choice's option rows.
+        enum Row {
+            Setting(usize),
+            Option(usize, usize),
+        }
+        let mut rows: Vec<Row> = Vec::new();
+        let (anchor, title): (Rect, Option<String>) = match menu {
+            OpenMenu::Gear => {
+                for &idx in &self.gear_entries {
+                    rows.push(Row::Setting(idx));
+                    // A choice expands inline (its options appear indented
+                    // beneath it) only while it is the expanded entry, so the
+                    // gear reads as a tidy list until the user drills in.
+                    if self.gear_expanded == Some(idx) {
+                        if let PlayerSettingControl::Choice { options, .. } = &self.settings[idx].control {
+                            for oi in 0..options.len() {
+                                rows.push(Row::Option(idx, oi));
+                            }
+                        }
+                    }
+                }
+                (self.gear_button_rect, None)
+            }
+            OpenMenu::Choice(idx) => {
+                if let Some(s) = self.settings.get(idx) {
+                    if let PlayerSettingControl::Choice { options, .. } = &s.control {
+                        for oi in 0..options.len() {
+                            rows.push(Row::Option(idx, oi));
+                        }
+                    }
+                    let anchor = self
+                        .setting_icon_rects
+                        .iter()
+                        .find(|(i, _)| *i == idx)
+                        .map(|(_, r)| *r)
+                        .unwrap_or(self.gear_button_rect);
+                    (anchor, Some(s.name.clone()))
+                } else {
+                    return;
+                }
+            }
+        };
+        if rows.is_empty() && title.is_none() {
+            return;
+        }
+
+        let row_h = MENU_ROW_H;
+        let pad = theme.tokens.spacing.s2 as f64;
+        let title_h = if title.is_some() { row_h } else { 0.0 };
+        let panel_h = title_h + rows.len() as f64 * row_h + pad;
+        let width = MENU_WIDTH.min(self.rect.width() - 8.0).max(80.0);
+        // Right-align the panel to the anchor, clamped inside the surface.
+        let x1 = anchor.x1.min(self.rect.x1 - 4.0);
+        let x0 = (x1 - width).max(self.rect.x0 + 4.0);
+        let y1 = (anchor.y0 - pad * 0.5).max(self.rect.y0 + panel_h + 4.0);
+        let y0 = y1 - panel_h;
+        let panel = Rect::new(x0, y0, x1, y1);
+
+        // Panel background + border, themed like a raised surface so it reads
+        // as a coherent menu in both light and dark themes.
+        let bg = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &bg);
+        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &bg);
+
+        let mut y = y0 + pad * 0.5;
+        if let Some(t) = &title {
+            text_renderer.draw_text(
+                scene,
+                t,
+                12.0,
+                colors.text_dim,
+                transform * Affine::translate((x0 + pad, y + row_h * 0.5 - 7.0)),
+                None,
+            );
+            y += row_h;
+        }
+
+        for row in &rows {
+            let row_rect = Rect::new(x0 + 3.0, y, x1 - 3.0, y + row_h - 2.0);
+            match row {
+                Row::Setting(idx) => {
+                    let s = &self.settings[*idx];
+                    // Icon.
+                    let icon_r = Rect::new(row_rect.x0 + 4.0, y + 5.0, row_rect.x0 + 22.0, y + row_h - 7.0);
+                    s.icon.draw(scene, transform, icon_r, colors.text_primary);
+                    // Label.
+                    text_renderer.draw_text(
+                        scene,
+                        &s.name,
+                        13.0,
+                        colors.text_primary,
+                        transform * Affine::translate((icon_r.x1 + 8.0, y + row_h * 0.5 - 8.0)),
+                        None,
+                    );
+                    // Right-aligned value affordance.
+                    let value: String = match &s.control {
+                        PlayerSettingControl::Toggle { on } => {
+                            if *on { "On".into() } else { "Off".into() }
+                        }
+                        PlayerSettingControl::Choice { options, selected } => {
+                            options.get(*selected).cloned().unwrap_or_default()
+                        }
+                        PlayerSettingControl::Button => String::new(),
+                    };
+                    if !value.is_empty() {
+                        let (vw, _) = text_renderer.measure(&value, 12.0, None);
+                        let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
+                            .then_some(accent)
+                            .unwrap_or(colors.text_dim);
+                        text_renderer.draw_text(
+                            scene,
+                            &value,
+                            12.0,
+                            tint,
+                            transform * Affine::translate((x1 - pad - vw as f64, y + row_h * 0.5 - 7.0)),
+                            None,
+                        );
+                    }
+                    self.menu_hit_rects.push((MenuHit::Setting(*idx), row_rect));
+                }
+                Row::Option(idx, oi) => {
+                    if let PlayerSettingControl::Choice { options, selected } = &self.settings[*idx].control {
+                        let selected = *selected == *oi;
+                        // Indent options under their choice header when in the
+                        // gear; the standalone popover has no header so no indent.
+                        let indent = if matches!(menu, OpenMenu::Gear) { 26.0 } else { 10.0 };
+                        if selected {
+                            let hl = RoundedRect::from_rect(
+                                Rect::new(row_rect.x0 + 2.0, y + 1.0, row_rect.x1 - 2.0, y + row_h - 3.0),
+                                6.0,
+                            );
+                            scene.fill(Fill::NonZero, transform, accent.multiply_alpha(0.22), None, &hl);
+                        }
+                        let label = options.get(*oi).cloned().unwrap_or_default();
+                        let tint = if selected { accent } else { colors.text_primary };
+                        text_renderer.draw_text(
+                            scene,
+                            &label,
+                            13.0,
+                            tint,
+                            transform * Affine::translate((x0 + indent, y + row_h * 0.5 - 8.0)),
+                            None,
+                        );
+                        if selected {
+                            let (cw, _) = text_renderer.measure("✓", 13.0, None);
+                            text_renderer.draw_text(
+                                scene,
+                                "✓",
+                                13.0,
+                                accent,
+                                transform * Affine::translate((x1 - pad - cw as f64, y + row_h * 0.5 - 8.0)),
+                                None,
+                            );
+                        }
+                        self.menu_hit_rects.push((MenuHit::Option(*idx, *oi), row_rect));
+                    }
+                }
+            }
+            y += row_h;
+        }
     }
 
     /// Paint the empty-surface placeholder: a dim ringed play glyph centred in
@@ -695,6 +1332,11 @@ impl VideoPlayer {
             scene.fill(Fill::NonZero, transform, color, None, &p);
         }
     }
+}
+
+/// Shrink `r` by `d` on every side (used to breathe a glyph inside its button).
+fn inset_rect(r: Rect, d: f64) -> Rect {
+    Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
 }
 
 /// Build a peniko RGBA image from tightly-packed bytes.
@@ -863,33 +1505,11 @@ impl Widget for VideoPlayer {
                 }
                 // Clicking the surface focuses it for keyboard shortcuts.
                 *focus_target = Some(node_id);
+                // Route the press through the controls + settings-menu hit map.
                 // Control hit regions are ZERO while the controls are hidden, so
-                // these `contains` checks naturally fall through to the surface
-                // play/pause toggle when nothing is on screen.
-                if self.play_button_rect.contains(self.last_cursor) {
-                    self.toggle_play();
-                    *handled = true;
-                } else if self.fullscreen_button_rect.contains(self.last_cursor) {
-                    self.toggle_fullscreen();
-                    *handled = true;
-                } else if self.volume_track_rect.contains(self.last_cursor)
-                    && self.volume_track_rect.width() > 0.0
-                {
-                    let frac = ((self.last_cursor.x - self.volume_track_rect.x0)
-                        / self.volume_track_rect.width())
-                    .clamp(0.0, 1.0);
-                    self.set_volume(frac as f32);
-                    *handled = true;
-                } else if self.scrub_track_rect.contains(self.last_cursor)
-                    && self.scrub_track_rect.width() > 0.0
-                {
-                    self.scrubbing = true;
-                    self.seek_from_cursor();
-                    *handled = true;
-                } else {
-                    // A plain click on the video surface toggles play/pause — the
-                    // basic affordance every player has.
-                    self.toggle_play();
+                // these checks naturally fall through to the surface play/pause
+                // toggle when nothing is on screen.
+                if self.press_at_cursor() {
                     *handled = true;
                 }
                 self.show_controls();
@@ -946,11 +1566,16 @@ impl Widget for VideoPlayer {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.controls_visible_now()
-            && (self.play_button_rect.contains(point)
-                || self.fullscreen_button_rect.contains(point)
-                || self.scrub_track_rect.contains(point)
-                || self.volume_track_rect.contains(point))
+        let on_menu_row = self.menu_hit_rects.iter().any(|(_, r)| r.contains(point));
+        let on_setting_icon = self.setting_icon_rects.iter().any(|(_, r)| r.contains(point));
+        if on_menu_row
+            || ((self.controls_visible_now() || self.open_menu.is_some())
+                && (self.play_button_rect.contains(point)
+                    || self.fullscreen_button_rect.contains(point)
+                    || self.scrub_track_rect.contains(point)
+                    || self.volume_track_rect.contains(point)
+                    || (self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(point))
+                    || on_setting_icon))
         {
             Some(winit::window::CursorIcon::Pointer)
         } else {
@@ -970,6 +1595,12 @@ impl Widget for VideoPlayer {
         self.focused
     }
 
+    fn wants_pointer_capture(&self) -> bool {
+        // While mid-drag on the scrub track, own the pointer so the seek keeps
+        // tracking the cursor even after it leaves the thin track band.
+        self.scrubbing
+    }
+
     fn fullscreen_intent(&self) -> Option<bool> {
         // No opinion until the user first toggles fullscreen, so a freshly
         // launched player doesn't force the compositor's window state.
@@ -978,6 +1609,12 @@ impl Widget for VideoPlayer {
         } else {
             None
         }
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        // Immersive video mirrors the app window onto the chosen output (the
+        // largest monitor by default — the big screen).
+        crate::fullscreen::FullscreenRequest::mirror(self.fullscreen_target)
     }
 
     fn on_fullscreen_changed(&mut self, active: bool) {
@@ -1024,6 +1661,141 @@ impl Widget for VideoPlayer {
 }
 
 impl VideoPlayer {
+    /// Route a left-press at `self.last_cursor` (logical coords) through the
+    /// settings menu, the setting icons + gear, and then the standard transport
+    /// controls. Returns whether the press was consumed.
+    fn press_at_cursor(&mut self) -> bool {
+        let p = self.last_cursor;
+
+        // 1) An open menu owns the click. A row wins; a click anywhere off the
+        //    menu (and off the buttons that could re-open it) dismisses it.
+        if self.open_menu.is_some() {
+            if let Some(hit) =
+                self.menu_hit_rects.iter().find(|(_, r)| r.contains(p)).map(|(h, _)| *h)
+            {
+                self.activate_menu_hit(hit);
+                return true;
+            }
+            let on_gear = self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(p);
+            let on_icon = self.setting_icon_rects.iter().any(|(_, r)| r.contains(p));
+            if !on_gear && !on_icon {
+                self.open_menu = None;
+                self.gear_expanded = None;
+                self.dirty = true;
+                return true;
+            }
+            // Otherwise fall through to gear / icon handling below.
+        }
+
+        // 2) Settings gear toggles its menu.
+        if self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(p) {
+            self.open_menu = if self.open_menu == Some(OpenMenu::Gear) { None } else { Some(OpenMenu::Gear) };
+            self.gear_expanded = None;
+            self.dirty = true;
+            return true;
+        }
+
+        // 3) A priority setting's own icon button.
+        if let Some((idx, _)) = self.setting_icon_rects.iter().find(|(_, r)| r.contains(p)).copied() {
+            self.activate_setting_icon(idx);
+            return true;
+        }
+
+        // 4) Standard transport controls.
+        if self.play_button_rect.contains(p) {
+            self.toggle_play();
+            return true;
+        }
+        if self.fullscreen_button_rect.contains(p) {
+            self.toggle_fullscreen();
+            return true;
+        }
+        if self.volume_track_rect.width() > 0.0 && self.volume_track_rect.contains(p) {
+            let frac = ((p.x - self.volume_track_rect.x0) / self.volume_track_rect.width()).clamp(0.0, 1.0);
+            self.set_volume(frac as f32);
+            return true;
+        }
+        if self.scrub_track_rect.width() > 0.0 && self.scrub_track_rect.contains(p) {
+            self.scrubbing = true;
+            self.seek_from_cursor();
+            return true;
+        }
+
+        // 5) A plain click on the video surface toggles play/pause.
+        self.toggle_play();
+        true
+    }
+
+    /// Handle a click on a row inside the open settings menu.
+    fn activate_menu_hit(&mut self, hit: MenuHit) {
+        match hit {
+            MenuHit::Setting(idx) => match &self.settings[idx].control {
+                PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
+                PlayerSettingControl::Button => {
+                    let id = self.settings[idx].id.clone();
+                    self.setting_events.push(PlayerSettingEvent::Activated { id });
+                    self.open_menu = None;
+                    self.dirty = true;
+                }
+                PlayerSettingControl::Choice { .. } => {
+                    // Expand / collapse this choice's options inline.
+                    self.gear_expanded =
+                        if self.gear_expanded == Some(idx) { None } else { Some(idx) };
+                    self.dirty = true;
+                }
+            },
+            MenuHit::Option(idx, oi) => self.choose_option(idx, oi),
+        }
+    }
+
+    /// Handle a click on a priority setting's own bar icon.
+    fn activate_setting_icon(&mut self, idx: usize) {
+        match &self.settings[idx].control {
+            PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
+            PlayerSettingControl::Button => {
+                let id = self.settings[idx].id.clone();
+                self.setting_events.push(PlayerSettingEvent::Activated { id });
+                self.dirty = true;
+            }
+            PlayerSettingControl::Choice { .. } => {
+                // Open (or close) this choice's option popover, anchored on the icon.
+                self.open_menu =
+                    if self.open_menu == Some(OpenMenu::Choice(idx)) { None } else { Some(OpenMenu::Choice(idx)) };
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Flip a toggle setting and record the event.
+    fn toggle_setting(&mut self, idx: usize) {
+        let new_on = if let PlayerSettingControl::Toggle { on } = &mut self.settings[idx].control {
+            *on = !*on;
+            *on
+        } else {
+            return;
+        };
+        let id = self.settings[idx].id.clone();
+        self.setting_events.push(PlayerSettingEvent::Toggled { id, on: new_on });
+        self.dirty = true;
+    }
+
+    /// Select a choice option, record the event, and close the menu.
+    fn choose_option(&mut self, idx: usize, oi: usize) {
+        if let PlayerSettingControl::Choice { options, selected } = &mut self.settings[idx].control {
+            if oi >= options.len() {
+                return;
+            }
+            *selected = oi;
+        } else {
+            return;
+        }
+        let id = self.settings[idx].id.clone();
+        self.setting_events.push(PlayerSettingEvent::Chose { id, index: oi });
+        self.open_menu = None;
+        self.gear_expanded = None;
+        self.dirty = true;
+    }
+
     /// Seek to the playhead the cursor's X maps to on the scrub track.
     fn seek_from_cursor(&mut self) {
         if self.scrub_track_rect.width() <= 0.0 {
@@ -1261,6 +2033,233 @@ mod tests {
         assert_eq!(Widget::fullscreen_intent(&vp), Some(true));
         assert!(dispatch(&mut vp, &press(Key::Character("F".into()))));
         assert_eq!(Widget::fullscreen_intent(&vp), Some(false));
+    }
+
+    // --- Feature 1: shared fullscreen mechanism (player side) ---
+
+    #[test]
+    fn fullscreen_toggle_drives_a_largest_output_mirror_request() {
+        use crate::fullscreen::{FullscreenTarget, FullscreenView};
+        let mut vp = VideoPlayer::new();
+        // No opinion, but the default params already name the largest output.
+        assert_eq!(Widget::fullscreen_intent(&vp), None);
+        assert_eq!(Widget::fullscreen_params(&vp).target, FullscreenTarget::Largest);
+        // The button/key toggle is what the App reconcile consumes.
+        vp.toggle_fullscreen();
+        assert_eq!(Widget::fullscreen_intent(&vp), Some(true), "toggle asks the App to fullscreen");
+        let params = Widget::fullscreen_params(&vp);
+        assert_eq!(params.target, FullscreenTarget::Largest, "immersive video targets the big screen");
+        assert_eq!(params.view, FullscreenView::Mirror, "video mirrors the window, not a distinct view");
+        // The host can retarget (e.g. onto the primary panel).
+        vp.set_fullscreen_target(FullscreenTarget::Primary);
+        assert_eq!(Widget::fullscreen_params(&vp).target, FullscreenTarget::Primary);
+    }
+
+    // --- Feature 2: MPRIS now-playing published from the widget ---
+
+    #[test]
+    fn mpris_snapshot_reflects_metadata_and_controls_on_play() {
+        let mut vp = VideoPlayer::new();
+        vp.duration_ms = 240_000;
+        vp.set_now_playing(NowPlaying {
+            track_id: "yt:abc123".into(),
+            title: "Runaway".into(),
+            artist: "Aurora".into(),
+            art_url: "https://img/a.jpg".into(),
+        });
+        vp.play();
+        let snap = vp.mpris_snapshot();
+        assert_eq!(snap.status, crate::mpris::PlaybackStatus::Playing, "play → Playing on the bus");
+        assert_eq!(snap.title, "Runaway");
+        assert_eq!(snap.artist, "Aurora");
+        assert_eq!(snap.art_url, "https://img/a.jpg");
+        assert_eq!(snap.length_us, 240_000_000, "duration published as µs");
+        assert!(snap.can_play && snap.can_pause && snap.can_seek, "transport controls advertised");
+    }
+
+    #[test]
+    fn external_media_command_pause_reaches_the_player() {
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.play();
+        assert!(vp.is_playing());
+        // A media-key / system-widget Pause command lands as an MprisCommand and
+        // drives the engine through the same path the on-screen button takes.
+        vp.apply_media_command(crate::mpris::MprisCommand::Pause);
+        assert!(!vp.is_playing(), "external Pause paused playback");
+        vp.apply_media_command(crate::mpris::MprisCommand::PlayPause);
+        assert!(vp.is_playing(), "external PlayPause resumed it");
+    }
+
+    // --- Feature 3: app-registered player settings ---
+
+    fn draw_once(vp: &mut VideoPlayer) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    #[test]
+    fn mixed_priority_settings_surface_as_icons_and_under_the_gear() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
+        vp.set_setting(PlayerSetting::toggle("captions", Icon::FileText, "Captions", 2, false));
+        vp.set_setting(PlayerSetting::choice(
+            "resolution",
+            Icon::Monitor,
+            "Resolution",
+            0,
+            vec!["1080p".into(), "720p".into(), "480p".into()],
+            0,
+        ));
+        draw_once(&mut vp);
+        assert!(
+            vp.setting_icon_rect("captions").is_some(),
+            "priority-2 setting surfaces as its own bar icon"
+        );
+        assert!(
+            vp.setting_in_gear("resolution"),
+            "priority-0 setting lives under the settings gear"
+        );
+        assert!(!vp.setting_in_gear("captions"), "the promoted icon is not also in the gear");
+    }
+
+    #[test]
+    fn higher_priority_wins_limited_space_and_overflow_falls_into_the_gear() {
+        let mut vp = VideoPlayer::new();
+        // Narrow bar + many priority settings ⇒ only the top few fit as icons.
+        vp.rect = Rect::new(0.0, 0.0, 560.0, 315.0);
+        vp.show_controls();
+        for p in 1..=8 {
+            vp.set_setting(PlayerSetting::button(
+                format!("act{p}"),
+                Icon::Star,
+                format!("Action {p}"),
+                p,
+            ));
+        }
+        draw_once(&mut vp);
+        let icon_prios: Vec<i32> = vp
+            .setting_icon_rects
+            .iter()
+            .map(|(i, _)| vp.settings[*i].priority)
+            .collect();
+        let overflow_prios: Vec<i32> = vp
+            .gear_entries
+            .iter()
+            .map(|&i| vp.settings[i].priority)
+            .collect();
+        assert!(!icon_prios.is_empty(), "some settings fit as icons");
+        assert!(!overflow_prios.is_empty(), "the rest overflow into the gear at this width");
+        let min_icon = *icon_prios.iter().min().unwrap();
+        let max_overflow = *overflow_prios.iter().max().unwrap();
+        assert!(
+            min_icon >= max_overflow,
+            "every shown icon outranks every overflowed setting ({min_icon} >= {max_overflow})"
+        );
+    }
+
+    #[test]
+    fn resolution_setting_round_trips_through_the_player() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        vp.set_setting(PlayerSetting::choice(
+            "resolution",
+            Icon::Monitor,
+            "Resolution",
+            2, // its own bar icon
+            vec!["1080p".into(), "720p".into(), "480p".into()],
+            0,
+        ));
+        draw_once(&mut vp);
+        let icon = vp.setting_icon_rect("resolution").expect("resolution has a bar icon");
+        // Click the icon → its option popover opens.
+        dispatch(&mut vp, &cursor_moved(icon.center().x, icon.center().y));
+        assert!(dispatch(&mut vp, &mouse_press()), "icon click handled");
+        assert!(vp.menu_open(), "clicking the resolution icon opened its option list");
+        // Lay the popover out, then click the "720p" option row.
+        draw_once(&mut vp);
+        let row = vp
+            .menu_hit_rects
+            .iter()
+            .find(|(h, _)| matches!(h, MenuHit::Option(_, 1)))
+            .map(|(_, r)| *r)
+            .expect("720p option row laid out");
+        dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
+        assert!(dispatch(&mut vp, &mouse_press()), "option click handled");
+        // The selection round-trips: an event for the host + the widget's own state.
+        let events = vp.take_setting_events();
+        assert_eq!(
+            events,
+            vec![PlayerSettingEvent::Chose { id: "resolution".into(), index: 1 }],
+            "picking 720p emits a Chose event the host drains"
+        );
+        match &vp.setting("resolution").unwrap().control {
+            PlayerSettingControl::Choice { selected, .. } => assert_eq!(*selected, 1),
+            _ => panic!("resolution is a choice"),
+        }
+        assert!(!vp.menu_open(), "picking an option closes the popover");
+    }
+
+    #[test]
+    fn gear_toggle_setting_flips_and_emits() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        // Priority 0 ⇒ under the gear.
+        vp.set_setting(PlayerSetting::toggle("autoplay", Icon::Play, "Autoplay", 0, false));
+        draw_once(&mut vp);
+        let gear = vp.gear_button_rect;
+        assert!(gear.width() > 0.0, "gear present for the tucked setting");
+        dispatch(&mut vp, &cursor_moved(gear.center().x, gear.center().y));
+        assert!(dispatch(&mut vp, &mouse_press()), "gear click handled");
+        assert!(vp.menu_open(), "gear opened the menu");
+        draw_once(&mut vp);
+        let row = vp
+            .menu_hit_rects
+            .iter()
+            .find(|(h, _)| matches!(h, MenuHit::Setting(_)))
+            .map(|(_, r)| *r)
+            .expect("autoplay row laid out under the gear");
+        dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
+        assert!(dispatch(&mut vp, &mouse_press()), "row click handled");
+        let events = vp.take_setting_events();
+        assert_eq!(
+            events,
+            vec![PlayerSettingEvent::Toggled { id: "autoplay".into(), on: true }],
+            "toggling the gear row flips it on and emits"
+        );
+    }
+
+    #[test]
+    fn player_embeds_flush_with_no_forced_internal_padding() {
+        // The widget lays itself out as a grow leaf with no margin/padding, so
+        // an embedding app can place it edge-to-edge. Prove the taffy style
+        // carries zero padding + zero margin.
+        let mut vp = VideoPlayer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = vp.build_layout(&mut taffy, &theme, &mut node_map);
+        let style = taffy.style(node).unwrap();
+        let default: taffy::Style = taffy::Style::default();
+        assert_eq!(
+            format!("{:?}", style.padding),
+            format!("{:?}", default.padding),
+            "no forced internal padding — embeds edge-to-edge"
+        );
+        assert_eq!(
+            format!("{:?}", style.margin),
+            format!("{:?}", default.margin),
+            "no forced margin"
+        );
+        assert_eq!(style.flex_grow, 1.0, "the player fills its slot");
     }
 
     #[test]
