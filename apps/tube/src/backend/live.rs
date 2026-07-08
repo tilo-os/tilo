@@ -35,14 +35,14 @@
 use rustypipe::client::RustyPipe;
 use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{
-    Verification, VideoCodec, VideoFormat, VideoItem, VideoPlayer as RpVideoPlayer, VideoStream,
-    YouTubeItem,
+    Comment as RpComment, Verification, VideoCodec, VideoFormat, VideoItem,
+    VideoPlayer as RpVideoPlayer, VideoStream, YouTubeItem,
 };
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
 
 use crate::backend::potoken::{NullPoToken, PoTokenProvider};
 use crate::backend::{BackendError, BackendOutcome, BackendResult, StreamHandle, YtBackend};
-use crate::model::{Channel, Video};
+use crate::model::{Channel, Comment, Video};
 
 /// rustypipe marks channels with a `Verification` enum; map "has a badge" onto
 /// Tube's boolean `verified`.
@@ -147,6 +147,36 @@ fn map_video_item(it: VideoItem) -> Video {
         sponsor: Vec::new(),
         comments: Vec::new(),
         live: it.is_live,
+    }
+}
+
+/// First one/two initials of an author name, for the comment avatar chip.
+fn initials(name: &str) -> String {
+    let mut out = String::new();
+    for word in name.split_whitespace().take(2) {
+        if let Some(c) = word.chars().next() {
+            out.push(c.to_ascii_uppercase());
+        }
+    }
+    if out.is_empty() {
+        out.push('?');
+    }
+    out
+}
+
+/// Map a rustypipe [`RpComment`] onto Tube's plain [`Comment`].
+fn map_comment(c: RpComment) -> Comment {
+    let author = c.author.map(|a| a.name).unwrap_or_else(|| "Unknown".into());
+    let initials = initials(&author);
+    Comment {
+        author,
+        initials,
+        text: c.text.to_plaintext(),
+        likes: c.like_count.unwrap_or(0) as u64,
+        time_ago: c.publish_date_txt,
+        pinned: c.pinned,
+        hearted: c.hearted,
+        replies: c.reply_count,
     }
 }
 
@@ -274,6 +304,21 @@ impl YtBackend for RustyPipeBackend {
         Ok(BackendResult::Videos(items.into_iter().map(map_video_item).collect()))
     }
 
+    fn comments(&self, id: &str) -> Result<Vec<Comment>, BackendError> {
+        // `video_details` carries an (initially empty) top-comments paginator
+        // holding the continuation token; fetching its first page pulls the real
+        // "most liked first" comments via the `next`/comments endpoint.
+        let d = self
+            .block(async { self.rp.query().video_details(id).await })
+            .map_err(|e| BackendError(format!("comments details {id}: {e}")))?;
+        let q = self.rp.query();
+        let page = self
+            .block(async { d.top_comments.next(q).await })
+            .map_err(|e| BackendError(format!("comments page {id}: {e}")))?;
+        let items = page.map(|p| p.items).unwrap_or_default();
+        Ok(items.into_iter().take(60).map(map_comment).collect())
+    }
+
     fn popular_search(&self, query: &str) -> BackendOutcome {
         // "Popular right now" as a real, no-login-required query: view-count
         // sorted, uploaded within the last week, videos only. This is genuine
@@ -325,5 +370,30 @@ impl YtBackend for RustyPipeBackend {
             init_range: s.init_range.as_ref().map(|r| (r.start as u64, r.end as u64)),
             index_range: s.index_range.as_ref().map(|r| (r.start as u64, r.end as u64)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real-path check: actually pull top comments through rustypipe and assert
+    /// the mapping onto Tube's `Comment`. Honestly gated on `TUBE_NET_TESTS=1`
+    /// (never `#[ignore]`d) so offline/CI runs pass trivially. Run with:
+    /// `TUBE_NET_TESTS=1 cargo test -p tube --features live live_comments`.
+    #[test]
+    fn live_comments_when_enabled() {
+        if std::env::var("TUBE_NET_TESTS").is_err() {
+            eprintln!("skipping live comments test (set TUBE_NET_TESTS=1 to run it)");
+            return;
+        }
+        let backend = RustyPipeBackend::new().expect("construct rustypipe backend");
+        // Big Buck Bunny — stable, long-lived, comments enabled.
+        let comments = backend.comments("aqz-KE-bpKQ").expect("real comments call");
+        assert!(!comments.is_empty(), "the video has top comments");
+        assert!(
+            comments.iter().any(|c| !c.text.is_empty() && !c.author.is_empty()),
+            "at least one comment has real author + text"
+        );
     }
 }

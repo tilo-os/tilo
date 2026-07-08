@@ -6,9 +6,11 @@
 //! projection), exactly like `chat/src/storage.rs`: persisting the Automerge
 //! save means a future peer can merge against the file directly.
 //!
-//! The default GUI app keeps its document in memory (seeded each run); this
-//! module is the seam the headless relay ([`crate::relay`]) uses to load and
-//! atomically persist its authoritative copy.
+//! The default GUI app keeps its document in memory, starting from an **empty**
+//! library each run (real tracks arrive from playback, search, or a synced
+//! relay — never fabricated); this module is the seam the headless relay
+//! ([`crate::relay`]) uses to load and atomically persist its authoritative
+//! copy.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

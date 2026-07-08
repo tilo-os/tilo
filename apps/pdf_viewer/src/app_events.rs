@@ -20,6 +20,11 @@ impl PdfApp {
 
     fn set_tool(&mut self, t: Tool) {
         self.tool = t;
+        // Switching tools drops any live text selection so a lingering
+        // highlight doesn't sit under the next tool's work.
+        if t != Tool::Select {
+            self.clear_selection();
+        }
         if t == Tool::Sign {
             self.sidebar_tab = SidebarTab::Signatures;
             if !self.show_sidebar {
@@ -62,6 +67,7 @@ impl PdfApp {
         if self.search_active {
             self.search_active = false;
             self.matches.clear();
+            self.raster_matches.clear();
             self.reflow();
         }
     }
@@ -107,6 +113,9 @@ impl PdfApp {
         let lay = self.toolbar_layout();
         if lay.open.contains(p) {
             return Some(ToolbarHit::Open);
+        }
+        if lay.save.contains(p) {
+            return Some(ToolbarHit::Save);
         }
         for (t, r) in &lay.tools {
             if r.contains(p) {
@@ -178,6 +187,7 @@ impl PdfApp {
             ToolbarHit::ToggleRail => self.toggle_rail(),
             ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
             ToolbarHit::Open => self.request_open_via_portal(),
+            ToolbarHit::Save => self.request_save_via_portal(),
         }
     }
 
@@ -312,15 +322,22 @@ impl PdfApp {
         }
         match self.hit_page(p) {
             Some((page, pt)) => match self.tool {
-                // Select arms a pan-or-click: a press that doesn't move is a
-                // selection; a press that drags pans the canvas.
+                // Select arms one of three gestures. Over real text on a raster
+                // page it begins a text selection; otherwise it is a pan-or-click
+                // (a press that doesn't move is a selection of markup under it; a
+                // press that drags pans the canvas).
                 Tool::Select => {
-                    self.pan = Some(PanState {
-                        start: p,
-                        scroll_x0: self.scroll_x(),
-                        scroll_y0: self.scroll_y(),
-                        moved: false,
-                    });
+                    if self.raster.is_some() && self.begin_selection(page, pt) {
+                        // Text selection armed; motion extends it, release ends it.
+                    } else {
+                        self.clear_selection();
+                        self.pan = Some(PanState {
+                            start: p,
+                            scroll_x0: self.scroll_x(),
+                            scroll_y0: self.scroll_y(),
+                            moved: false,
+                        });
+                    }
                     self.dirty = true;
                 }
                 Tool::Highlight | Tool::Ink => {
@@ -338,6 +355,7 @@ impl PdfApp {
             },
             None => {
                 // Empty canvas: with Select, start a pan; otherwise clear.
+                self.clear_selection();
                 if matches!(self.tool, Tool::Select) {
                     self.pan = Some(PanState {
                         start: p,
@@ -394,6 +412,17 @@ impl PdfApp {
                     self.reflow();
                     self.dirty = true;
                     return;
+                }
+
+                // Text selection drag (Select tool over real text). Map the
+                // pointer onto the selection's page even past the card edge so
+                // the drag can reach the end of a line.
+                if let Some(sel) = self.selection {
+                    if sel.dragging {
+                        let pt = self.page_point(sel.page, p);
+                        self.update_selection(sel.page, pt);
+                        return;
+                    }
                 }
 
                 // Drag-to-pan (Select tool).
@@ -509,7 +538,18 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.rail_drag.take().is_some() {
+                if self.selection.map(|s| s.dragging).unwrap_or(false) {
+                    // End a text-selection drag. A bare click (no drag) selects
+                    // nothing textual, so also let it pick markup underneath.
+                    let was_active = self.selection.map(|s| s.is_active()).unwrap_or(false);
+                    self.finish_selection();
+                    if !was_active {
+                        if let Some((page, pt)) = self.hit_page(self.last_mouse) {
+                            self.select_at(page, pt);
+                        }
+                    }
+                    *handled = true;
+                } else if self.rail_drag.take().is_some() {
                     self.dirty = true;
                     *handled = true;
                 } else if let Some(pan) = self.pan.take() {
@@ -580,6 +620,16 @@ impl PdfApp {
                 self.current_page = self.nearest_page();
                 self.dirty = true;
                 *handled = true;
+            }
+
+            // Touchpad pinch: zoom toward the cursor. winit surfaces this on
+            // macOS/iOS; on Wayland a pinch usually arrives as ctrl+two-finger
+            // scroll (handled by `MouseWheel` above), so both gestures zoom.
+            WindowEvent::PinchGesture { delta, .. } => {
+                if delta.is_finite() && *delta != 0.0 {
+                    self.zoom_at(1.0 + *delta, self.last_mouse);
+                    *handled = true;
+                }
             }
 
             WindowEvent::KeyboardInput { event: key_event, .. }
@@ -698,6 +748,19 @@ impl PdfApp {
                         *handled = true;
                         return;
                     }
+                    "c" | "C" => {
+                        // Copy the live text selection, if any. Falls through
+                        // when nothing is selected so the key is a harmless no-op.
+                        if self.copy_selection() {
+                            *handled = true;
+                            return;
+                        }
+                    }
+                    "s" | "S" => {
+                        self.request_save_via_portal();
+                        *handled = true;
+                        return;
+                    }
                     _ => {}
                 }
             }
@@ -768,37 +831,37 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.selected_sig = None;
                 self.context_menu = None;
+                self.clear_selection();
+                self.status_note = None;
                 self.dirty = true;
                 *handled = true;
             }
-            Key::Named(NamedKey::ArrowDown)
-            | Key::Named(NamedKey::PageDown)
-            | Key::Named(NamedKey::Space) => {
-                self.next_page();
+            // Arrows scroll the document smoothly (a small nudge), not a whole
+            // page jump. Page Up/Down (and Space) scroll a near-viewport-ful.
+            Key::Named(NamedKey::ArrowDown) => {
+                self.scroll_by(0.0, KEY_SCROLL_STEP);
                 *handled = true;
             }
-            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp) => {
-                self.prev_page();
+            Key::Named(NamedKey::ArrowUp) => {
+                self.scroll_by(0.0, -KEY_SCROLL_STEP);
                 *handled = true;
             }
-            // Left/Right pan horizontally when the zoomed page is wider than
-            // the viewport; otherwise they step pages.
             Key::Named(NamedKey::ArrowLeft) => {
-                if self.is_overflowing_x() {
-                    self.viewport.pan_by(-80.0, 0.0);
-                    self.dirty = true;
-                } else {
-                    self.prev_page();
-                }
+                self.scroll_by(-KEY_SCROLL_STEP, 0.0);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if self.is_overflowing_x() {
-                    self.viewport.pan_by(80.0, 0.0);
-                    self.dirty = true;
-                } else {
-                    self.next_page();
-                }
+                self.scroll_by(KEY_SCROLL_STEP, 0.0);
+                *handled = true;
+            }
+            Key::Named(NamedKey::PageDown) | Key::Named(NamedKey::Space) => {
+                let step = (self.canvas_rect.height() * 0.9).max(KEY_SCROLL_STEP);
+                self.scroll_by(0.0, step);
+                *handled = true;
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let step = (self.canvas_rect.height() * 0.9).max(KEY_SCROLL_STEP);
+                self.scroll_by(0.0, -step);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
@@ -822,6 +885,7 @@ impl PdfApp {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+    use serial_test::serial;
 
     fn app() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
@@ -1102,6 +1166,50 @@ mod event_tests {
         );
     }
 
+    /// Arrow keys scroll the document by a small nudge through the real key
+    /// path — not a whole-page jump — and PageDown scrolls much further.
+    #[test]
+    fn arrow_keys_scroll_smoothly_not_by_whole_pages() {
+        use ui::Widget as _;
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.tool = Tool::Select;
+        app.go_to_page(1);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        let sy0 = app.scroll_y();
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::ArrowDown)));
+        let after_down = app.scroll_y();
+        assert!(after_down > sy0, "ArrowDown scrolls down ({sy0} -> {after_down})");
+        assert!(
+            (after_down - sy0) <= KEY_SCROLL_STEP + 0.5,
+            "ArrowDown is a small nudge (~{KEY_SCROLL_STEP}px), not a page jump: moved {}",
+            after_down - sy0
+        );
+
+        // ArrowUp reverses it.
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::ArrowUp)));
+        assert!((app.scroll_y() - sy0).abs() < 0.5, "ArrowUp returns to the start");
+
+        // PageDown scrolls far more than a single arrow nudge.
+        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::PageDown)));
+        assert!(app.scroll_y() > sy0 + KEY_SCROLL_STEP, "PageDown scrolls a viewport-ful");
+    }
+
     #[test]
     fn empty_note_is_discarded_on_commit() {
         // Placing a note then committing without typing must not litter an
@@ -1181,6 +1289,7 @@ mod event_tests {
     /// `sync` — the portal result is injected (no real dialog) and the next
     /// frame must load the document.
     #[test]
+    #[serial(pdfium)]
     fn portal_open_result_loads_document_via_frame_drain() {
         let mut app = PdfApp::empty();
         let mut st = ui::State::new();
@@ -1436,7 +1545,11 @@ mod event_tests {
     /// Ctrl+C / Ctrl+X in the inline editor are real clipboard chords, not
     /// typed characters — driven through `handle_event`. The cut's field-clear
     /// is deterministic regardless of platform-clipboard availability.
+    ///
+    /// `#[serial]` because it *writes* the shared system clipboard, which would
+    /// otherwise race the paste test's read of it.
     #[test]
+    #[serial]
     fn editor_ctrl_chords_are_not_typed_and_cut_clears_the_field() {
         use ui::Widget as _;
 
@@ -1472,31 +1585,44 @@ mod event_tests {
     }
 
     /// Paste inserts the system clipboard's text at the caret via the real
-    /// editor path. Guarded on clipboard availability: where the platform
-    /// clipboard works the round-trip is asserted; where it is unavailable
-    /// (headless CI) paste must be a safe no-op that never corrupts the field.
+    /// editor path. `#[serial]` so no other clipboard-touching test runs
+    /// concurrently — the clipboard is a shared, process-external resource.
+    ///
+    /// The expectation is derived from the clipboard's *actual* content at
+    /// paste time (read back with no concurrent writer under `#[serial]`), not
+    /// from the value we tried to copy, so the assertion is exact whether or
+    /// not the platform clipboard is available: where it round-trips our write,
+    /// the buffer becomes "AB" + that text at the caret; where it is
+    /// unavailable (headless CI), paste is a safe no-op leaving "AB".
     #[test]
+    #[serial]
     fn editor_paste_inserts_clipboard_text_at_caret() {
         let (mut app, _st) = app();
         let cid = app.comments[0].id.clone();
         app.begin_edit(EditTarget::CommentBody(cid), "AB".into()); // caret at end
 
         ui::clipboard_copy("XY");
-        if ui::clipboard_paste().as_deref() == Some("XY") {
-            app.edit_clipboard_paste();
-            assert_eq!(
-                app.editing.as_ref().unwrap().buffer,
-                "ABXY",
-                "paste inserts the clipboard text at the caret"
-            );
+        // Paste reads the clipboard and inserts it at the caret (end of "AB").
+        app.edit_clipboard_paste();
+        let after = app.editing.as_ref().unwrap().buffer.clone();
+
+        // What paste actually inserts is the clipboard's current text with
+        // control chars stripped (matching `edit_insert`). Read it back — no
+        // other test writes it under `#[serial]`, so this equals what paste saw.
+        let clip: String = ui::clipboard_paste()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+
+        if clip.is_empty() {
+            assert_eq!(after, "AB", "paste with no clipboard is a safe no-op");
         } else {
-            // No usable platform clipboard here — paste must leave the field intact.
-            app.edit_clipboard_paste();
-            assert_eq!(
-                app.editing.as_ref().unwrap().buffer,
-                "AB",
-                "paste with no clipboard is a safe no-op"
-            );
+            assert_eq!(after, format!("AB{clip}"), "paste inserts the clipboard text at the caret");
+            // Where a working clipboard round-trips our own write, it is "XY".
+            if ui::clipboard_paste().as_deref() == Some("XY") {
+                assert_eq!(after, "ABXY", "the pasted text is exactly what was copied");
+            }
         }
     }
 }

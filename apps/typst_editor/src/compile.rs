@@ -237,6 +237,25 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
     }
 }
 
+/// Compile `src` to a PDF byte buffer, reusing the same [`World`] the raster
+/// preview is built from so the exported file is identical to what's on screen.
+/// On a clean compile the returned bytes are a complete PDF (they begin with the
+/// `%PDF` magic). A fatal compile error — or a failure inside the PDF backend —
+/// comes back as the flattened [`Diagnostic`]s so the caller can surface them.
+pub fn compile_pdf(parts: &Arc<WorldParts>, src: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let world = TypstWorld::new(parts.clone(), src);
+    let flatten_all = |errors: &[SourceDiagnostic]| -> Vec<Diagnostic> {
+        errors.iter().map(|d| flatten(&world, d)).collect()
+    };
+    let document = typst::compile::<PagedDocument>(&world)
+        .output
+        .map_err(|errors| flatten_all(&errors))?;
+    let options = typst_pdf::PdfOptions::default();
+    let bytes = typst_pdf::pdf(&document, &options).map_err(|errors| flatten_all(&errors))?;
+    comemo::evict(8);
+    Ok(bytes)
+}
+
 /// Walk a compiled page frame and pull out every run of shaped text with its
 /// per-glyph geometry, in page points. Nested groups are followed with their
 /// transform composed in, so text placed inside `#align`, `#box`, tables, etc.
@@ -445,5 +464,63 @@ mod tests {
             d.end_col
         );
         assert_eq!(d.line, Some(1), "on the first line");
+    }
+
+    /// Exporting a clean document yields a real PDF: the byte stream opens with
+    /// the `%PDF` magic and carries substantive content.
+    #[test]
+    fn compile_pdf_produces_pdf_bytes() {
+        let parts = WorldParts::new();
+        let bytes = compile_pdf(&parts, "= Export me\n\nA body paragraph to typeset.\n")
+            .expect("a clean source exports to PDF");
+        assert!(
+            bytes.starts_with(b"%PDF"),
+            "exported bytes begin with the %PDF magic (got {:?})",
+            &bytes[..bytes.len().min(8)]
+        );
+        assert!(bytes.len() > 400, "a real single-page PDF is more than a stub");
+    }
+
+    /// A source that can't compile can't export — the PDF path reports the same
+    /// blocking error the preview would show, not a truncated/empty file.
+    #[test]
+    fn compile_pdf_reports_errors_instead_of_writing_garbage() {
+        let parts = WorldParts::new();
+        let err = compile_pdf(&parts, "Body #undefined_var end.\n")
+            .expect_err("a broken source must not produce PDF bytes");
+        assert!(
+            err.iter().any(|d| d.kind == DiagKind::Error),
+            "the blocking error is surfaced to the caller"
+        );
+    }
+
+    /// The bundled error+warning fixture drives the whole diagnostics surface:
+    /// the real compiler returns **both** an error and a warning, each resolved
+    /// to a distinct source line so the panel, the inline squiggles, and
+    /// click-to-jump all have real spans to act on.
+    #[test]
+    fn error_and_warning_fixture_surfaces_both_severities() {
+        let parts = WorldParts::new();
+        let out = compile_source(&parts, crate::samples::ERROR_WARNING, 2.0);
+        assert!(out.error_count() >= 1, "fixture carries a blocking error");
+        assert!(out.warning_count() >= 1, "fixture carries a warning");
+
+        let err = out
+            .diagnostics
+            .iter()
+            .find(|d| d.kind == DiagKind::Error)
+            .expect("an error diagnostic");
+        let warn = out
+            .diagnostics
+            .iter()
+            .find(|d| d.kind == DiagKind::Warning)
+            .expect("a warning diagnostic");
+        assert!(err.line.is_some() && err.col.is_some(), "error span resolved");
+        assert!(warn.line.is_some() && warn.col.is_some(), "warning span resolved");
+        assert_ne!(
+            err.line, warn.line,
+            "the two diagnostics sit on different lines so a jump is observable"
+        );
+        assert_eq!(warn.line, Some(1), "the font warning is on line 1");
     }
 }

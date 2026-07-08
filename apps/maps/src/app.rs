@@ -953,6 +953,19 @@ impl MapsApp {
         self.mark_dirty();
     }
 
+    /// The wall-clock instant the trip clocks are anchored to. Live sessions use
+    /// the real local time; the offline demo / `--shots` / test path uses a
+    /// fixed base (see [`sample::demo_clock_base`]) so the Drive summary and the
+    /// Transit departures read from one coherent time rather than a
+    /// nondeterministic wall clock. Only affects the demo path — never live data.
+    fn clock_anchor(&self) -> chrono::DateTime<chrono::Local> {
+        if self.online {
+            chrono::Local::now()
+        } else {
+            sample::demo_clock_base()
+        }
+    }
+
     /// Build the transit query time anchor from the picker. "Leave now" sends no
     /// time (the planner uses its own now); otherwise an RFC-3339 wall clock at
     /// `now + offset`, flagged depart/arrive.
@@ -961,7 +974,7 @@ impl MapsApp {
         let time = if tt.is_now() {
             None
         } else {
-            let when = chrono::Local::now() + chrono::Duration::minutes(tt.offset_min as i64);
+            let when = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
             Some(when.to_rfc3339())
         };
         net::TransitQuery {
@@ -1721,6 +1734,18 @@ impl MapsApp {
         let proj = self.projection();
         let clip = self.rect;
 
+        // When the narrow overlay drawer is open it floats over the map. Clip the
+        // marker/label layers to the map area *beside* it, so pins and their name
+        // plates are never sliced at the drawer's edge into unreadable fragments
+        // (docked/closed layouts keep the full clip).
+        let overlay = self.overlay_mode();
+        let map_clip = if overlay && self.nav_open {
+            let left = (self.panel_rect().x1 + GAP).min(clip.x1);
+            Rect::new(left, clip.y0, clip.x1, clip.y1)
+        } else {
+            clip
+        };
+
         // Map layers. Real OSM raster tiles paint first (non-blocking); the
         // stylised vector basemap is the fallback shown only until imagery is
         // available (headless `--shots`, or the very first offline frame).
@@ -1753,18 +1778,23 @@ impl MapsApp {
         // pins.
         let visible_pois = self.visible_poi_indices();
         canvas::draw_pois(
-            scene, t, tr, &proj, &self.pois, &visible_pois, self.selected_poi.as_deref(), theme, &pal, clip,
+            scene, t, tr, &proj, &self.pois, &visible_pois, self.selected_poi.as_deref(), theme, &pal, map_clip,
         );
-        canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, clip);
+        canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, map_clip);
 
         // Side panel: docked when wide, an overlay drawer (with a dimming
-        // scrim over the map) when narrow.
-        let overlay = self.overlay_mode();
+        // scrim over the map) when narrow. While the floating search-results
+        // overlay is up it stands in for the panel — suppress the list behind it
+        // so the same place never appears twice (dropdown + panel). The panel
+        // returns as soon as the results dismiss.
+        let show_panel = !self.search_overlay_active();
         if overlay && self.nav_open {
-            draw::fill_rect(scene, t, clip, draw::alpha(Color::BLACK, 0.42));
+            draw::fill_rect(scene, t, clip, draw::alpha(Color::BLACK, 0.5));
             self.click_targets.push((clip, Hit::CloseNav));
-            self.draw_panel(scene, t, tr, theme);
-        } else if !overlay {
+            if show_panel {
+                self.draw_panel(scene, t, tr, theme);
+            }
+        } else if !overlay && show_panel {
             self.draw_panel(scene, t, tr, theme);
         }
 
@@ -2756,7 +2786,7 @@ impl MapsApp {
     fn road_trip_clock(&self, duration_s: f64) -> (String, String) {
         let tt = self.model.transit_time;
         let dur = chrono::Duration::seconds(duration_s.max(0.0) as i64);
-        let anchor = chrono::Local::now() + chrono::Duration::minutes(tt.offset_min as i64);
+        let anchor = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
         let (dep, arr) = if tt.arrive_by() {
             (anchor - dur, anchor)
         } else {
@@ -2813,7 +2843,7 @@ impl MapsApp {
         draw::fill_rrect(scene, t, plus, 8.0, c.surfaces.base);
         draw::text_center(scene, tr, t, "–", minus.x0, minus.x1, vmid(minus.y0, row_h, 18.0), 18.0, theme.text_primary);
         draw::text_center(scene, tr, t, "+", plus.x0, plus.x1, vmid(plus.y0, row_h, 18.0), 18.0, theme.text_primary);
-        let target = chrono::Local::now() + chrono::Duration::minutes(tt.offset_min as i64);
+        let target = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
         let clock = target.format("%H:%M").to_string();
         let label = if tt.is_now() {
             "Now".to_string()
@@ -3549,6 +3579,62 @@ mod tests {
             .find(|(r, _)| r.contains(row.center()))
             .map(|(_, h)| h.clone());
         assert!(matches!(topmost, Some(Hit::PickSearch(_))), "overlay row is the topmost target");
+    }
+
+    /// While the floating results overlay is up it is the ONLY place list: the
+    /// panel's own rows behind it are suppressed so the same place never appears
+    /// in both. Dismissing the results brings the panel back.
+    #[test]
+    fn search_overlay_suppresses_panel_list_behind_it() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.set_demo_search();
+        assert!(a.search_overlay_active(), "the demo raises the results overlay");
+        assert!(!a.model.results.is_empty(), "the panel would otherwise list places");
+
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let has_pick = a.click_targets.iter().any(|(_, h)| matches!(h, Hit::PickSearch(_)));
+        let has_panel_rows = a
+            .click_targets
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::SelectPlace(_) | Hit::Recent(_)));
+        assert!(has_pick, "the results overlay is drawn");
+        assert!(!has_panel_rows, "the panel list behind the results is suppressed");
+
+        // Dismiss the results → the panel list returns.
+        a.search_focused = false;
+        assert!(!a.search_overlay_active());
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        let panel_rows_back = a
+            .click_targets
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::SelectPlace(_) | Hit::Recent(_)));
+        assert!(panel_rows_back, "the panel list returns once the results dismiss");
+    }
+
+    /// The offline demo Drive and Transit clocks share one coherent base time:
+    /// the Drive summary is anchored to the fixed 09:00 demo base (not a
+    /// nondeterministic wall clock), matching the bundled Transit departures.
+    #[test]
+    fn demo_drive_and_transit_share_base_clock() {
+        let a = app_at(1280.0, 800.0);
+        let route = a.model.route.clone().expect("demo has a road route");
+        let (dep, arr) = a.road_trip_clock(route.duration_s);
+        assert!(dep.starts_with("Leave 09:"), "demo Drive leaves at the demo base hour: {dep}");
+        assert!(
+            arr.starts_with("Arrive 09:") || arr.starts_with("Arrive 10:"),
+            "arrival derived from the base + trip duration: {arr}"
+        );
+        let first = a.model.transit.first().expect("demo has departures");
+        assert_eq!(&first.dep[..2], "09", "Transit departs the same base hour: {}", first.dep);
+        assert_eq!(
+            &dep["Leave ".len()..][..2],
+            "09",
+            "Drive and Transit agree on the base hour"
+        );
     }
 
     // --- POI layer (Overpass) ----------------------------------------------

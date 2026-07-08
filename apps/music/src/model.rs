@@ -281,12 +281,21 @@ impl Library {
         if needle.is_empty() {
             return SearchResults::default();
         }
+        // Genre matches too, so the "Browse all" category chips surface a
+        // genre's artists/albums/songs (and a plain genre-name query works).
+        let artist_genre = |id: &str| {
+            self.artists
+                .get(id)
+                .map(|a| a.genre.to_lowercase())
+                .unwrap_or_default()
+        };
         let mut tracks: Vec<TrackId> = self
             .tracks
             .values()
             .filter(|t| {
                 t.title.to_lowercase().contains(&needle)
                     || self.artist_name(&t.artist_id).to_lowercase().contains(&needle)
+                    || artist_genre(&t.artist_id).contains(&needle)
             })
             .map(|t| t.id.clone())
             .collect();
@@ -294,13 +303,18 @@ impl Library {
         let albums: Vec<AlbumId> = self
             .albums
             .values()
-            .filter(|a| a.title.to_lowercase().contains(&needle))
+            .filter(|a| {
+                a.title.to_lowercase().contains(&needle)
+                    || artist_genre(&a.artist_id).contains(&needle)
+            })
             .map(|a| a.id.clone())
             .collect();
         let artists: Vec<ArtistId> = self
             .artists
             .values()
-            .filter(|a| a.name.to_lowercase().contains(&needle))
+            .filter(|a| {
+                a.name.to_lowercase().contains(&needle) || a.genre.to_lowercase().contains(&needle)
+            })
             .map(|a| a.id.clone())
             .collect();
         SearchResults { tracks, albums, artists }

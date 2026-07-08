@@ -15,7 +15,7 @@ use crate::app::{
 };
 use crate::call::{CallAction, OverlayDrag};
 use crate::doc::{ChatDoc, NewMessage, NOW};
-use crate::model::{self, ChannelKind, Id};
+use crate::model::{ChannelKind, Id};
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -241,7 +241,9 @@ impl ChatApp {
             }
             Hit::RenameConfirm => self.commit_rename(doc),
             Hit::Reaction { msg, emoji } => {
-                ChatDoc::toggle_reaction(doc, &self.active_channel, &msg, &emoji, model::ME);
+                if self.can_participate() {
+                    ChatDoc::toggle_reaction(doc, &self.active_channel, &msg, &emoji, &self.me.id);
+                }
             }
             Hit::AddReaction { msg, anchor } => {
                 self.emoji_open = true;
@@ -265,7 +267,9 @@ impl ChatApp {
             }
             Hit::EmojiChoice(e) => {
                 if let Some(target) = self.emoji_target.take() {
-                    ChatDoc::toggle_reaction(doc, &self.active_channel, &target, &e, model::ME);
+                    if self.can_participate() {
+                        ChatDoc::toggle_reaction(doc, &self.active_channel, &target, &e, &self.me.id);
+                    }
                 } else {
                     self.insert_text(doc, &e);
                 }
@@ -368,22 +372,33 @@ impl ChatApp {
 
     // --- voice / call wiring ---------------------------------------------
 
-    /// Join a voice channel: connect the local member, set call state, play
-    /// the join cue. Gated by the call permission seam.
+    /// Join a voice channel: connect the local member, publish our dialable
+    /// media ticket into the shared voice membership (the call's signalling
+    /// channel — it rides the same collab transport as the messages), dial the
+    /// peers already there, set call state, and play the join cue. Gated by the
+    /// real permission context.
     fn join_voice(&mut self, channel: &str, doc: &mut AutoCommit) {
         if !self.call_allows(CallAction::Join) {
             return;
         }
+        let me = self.me.id.clone();
         // Leaving a prior call first emits a leave cue for that channel.
         if self.call.active && self.call.channel != channel {
-            ChatDoc::voice_leave(doc, &self.call.channel.clone(), model::ME);
+            ChatDoc::voice_leave(doc, &self.call.channel.clone(), &me);
         }
         self.call.join(channel.to_string());
-        ChatDoc::voice_join(doc, channel, model::ME);
+        ChatDoc::voice_join(doc, channel, &me);
+        // Signalling: announce how peers dial our media transport.
+        if let Some(ticket) = self.media.local_ticket() {
+            ChatDoc::voice_set_ticket(doc, channel, &me, &ticket);
+        }
         self.sync_local_voice(doc);
         // Media: publish the local audio track over the (simulated or live)
         // transport so the pipeline is exercised end to end.
         self.media.transport_mut().publish(crate::media::TrackKind::Audio);
+        // Receiving half of the signalling handshake: dial every peer already
+        // in the call and subscribe to their audio.
+        self.connect_call_peers(doc);
         self.sound.join();
         self.request_relayout();
     }
@@ -394,7 +409,7 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_leave(doc, &ch, model::ME);
+        ChatDoc::voice_leave(doc, &ch, &self.me.id);
         self.media.transport_mut().unpublish(crate::media::TrackKind::Audio);
         self.call.leave();
         self.sound.leave();
@@ -412,12 +427,38 @@ impl ChatApp {
         ChatDoc::voice_set_state(
             doc,
             &ch,
-            model::ME,
+            &self.me.id,
             !self.call.muted,
             self.call.muted,
             self.call.deafened,
             self.call.audio_only,
         );
+    }
+
+    /// Dial every remote peer already in the current call by their published
+    /// ticket and subscribe to their audio — the receiving half of the
+    /// ticket-based signalling. The simulated transport accepts locally; the
+    /// live iroh engine opens a QUIC connection per ticket. Idempotent
+    /// (subscriptions de-duplicate), so it is safe to call every frame while
+    /// membership changes.
+    pub(crate) fn connect_call_peers(&mut self, doc: &AutoCommit) {
+        if !self.call.active {
+            return;
+        }
+        let me = self.me.id.clone();
+        let members = ChatDoc::list_voice_members(doc, &self.call.channel);
+        for m in members {
+            if m.user == me {
+                continue;
+            }
+            if let Some(ticket) = &m.ticket {
+                self.media.transport_mut().connect(ticket);
+                self.media.transport_mut().subscribe(crate::media::Subscription {
+                    peer: m.user.clone(),
+                    kind: crate::media::TrackKind::Audio,
+                });
+            }
+        }
     }
 
     // --- structure CRUD ---------------------------------------------------
@@ -710,7 +751,7 @@ impl ChatApp {
     /// editable; a foreign id is ignored. Closes any open popover.
     pub(crate) fn begin_edit(&mut self, id: Id) {
         let Some(m) = self.message(&id) else { return };
-        if m.author != model::ME {
+        if m.author != self.me.id {
             return;
         }
         let text = m.text.clone();
@@ -729,11 +770,12 @@ impl ChatApp {
     fn last_own_message_id(&self) -> Option<Id> {
         let in_thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some();
         let parent = self.thread_open.clone();
+        let me = self.me.id.clone();
         self.messages
             .iter()
             .rev()
             .find(|m| {
-                m.author == model::ME
+                m.author == me
                     && if in_thread { m.parent == parent } else { m.parent.is_none() }
             })
             .map(|m| m.id.clone())
@@ -761,6 +803,11 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut AutoCommit) {
+        // Posting is a write into the workspace: gated by the OS permission
+        // context (a View-only / ungranted peer can read but not send).
+        if !self.can_participate() {
+            return;
+        }
         let (key, parent) = match self.focus {
             Focus::Thread if self.thread_open.is_some() => {
                 (self.thread_draft_key().unwrap(), self.thread_open.clone())
@@ -774,7 +821,7 @@ impl ChatApp {
         ChatDoc::push_message(
             doc,
             &self.active_channel,
-            NewMessage { author: model::ME.into(), ts: now_secs(), text, parent, ..Default::default() },
+            NewMessage { author: self.me.id.clone(), ts: now_secs(), text, parent, ..Default::default() },
         );
         ChatDoc::clear_draft(doc, &key);
         self.caret = 0;
@@ -794,38 +841,46 @@ impl ChatApp {
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
-        self.attach_entries = crate::picker::list_images(&crate::picker::attach_dir());
+        self.attach_entries = crate::picker::list_media(&crate::picker::attach_dir());
         self.attach_open = true;
     }
 
-    /// Share the real file at `path` into the active channel: read its true
-    /// pixel dimensions from the header and post it with its actual filesystem
-    /// path, so the shared [`ui::ImageStore`] decodes the real bytes (projected
-    /// from the FUSE workspace). No caption is invented — the image stands on
-    /// its own. Returns whether a message was posted (a non-image / missing
-    /// file posts nothing).
+    /// Share the real file at `path` into the active channel by reference —
+    /// its actual filesystem path is embedded, never its bytes, so the content
+    /// hydrates from the FUSE workspace on demand (an image decodes through the
+    /// shared [`ui::ImageStore`]; a video renders as an inline play card). An
+    /// image reads its true header dimensions; a video posts with its size. No
+    /// caption is invented — the media stands on its own. Returns whether a
+    /// message was posted (a missing / unshareable file posts nothing).
     pub(crate) fn attach_file(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
         use crate::model::Attachment;
-        let Some((w, h)) = crate::picker::image_dimensions(path) else {
+        // Sharing is a write; a peer that can't participate can't attach.
+        if !self.can_participate() {
             return false;
-        };
+        }
+        let path_str = path.to_string_lossy().into_owned();
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "image".into());
+            .unwrap_or_else(|| "file".into());
+        let attachment = if crate::picker::is_video_name(&name) {
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            // A video's pixel dimensions need a container probe (unavailable in
+            // the default build); post 0×0 and let the card use a 16:9 poster.
+            Attachment::Video { name, path: path_str, w: 0, h: 0, size }
+        } else if let Some((w, h)) = crate::picker::image_dimensions(path) {
+            Attachment::Image { name, path: path_str, w, h }
+        } else {
+            return false;
+        };
         ChatDoc::push_message(
             doc,
             &self.active_channel,
             NewMessage {
-                author: model::ME.into(),
+                author: self.me.id.clone(),
                 ts: now_secs(),
                 text: String::new(),
-                attachment: Some(Attachment::Image {
-                    name,
-                    path: path.to_string_lossy().into_owned(),
-                    w,
-                    h,
-                }),
+                attachment: Some(attachment),
                 ..Default::default()
             },
         );
@@ -840,6 +895,7 @@ impl ChatApp {
 mod tests {
     use super::*;
     use crate::doc::ChatDoc;
+    use crate::model;
 
     fn app_with_doc() -> (ChatApp, AutoCommit) {
         let mut doc = AutoCommit::new();
@@ -866,6 +922,35 @@ mod tests {
         assert!(app.thread_open.is_none(), "stale demo thread dropped");
         // And nothing fake leaked in.
         assert!(app.users.iter().all(|u| u.id == model::ME));
+    }
+
+    #[test]
+    fn live_sync_seeds_empty_starter_never_the_demo() {
+        use ui::Widget;
+        // Drive the real production `sync` for a live instance that has no
+        // persistence (no data dir → no saver). It must scaffold the honest
+        // empty starter — one local user, a `#general` with no messages — and
+        // never the fabricated demo (its people, channels, and the screenshare
+        // conversation thread).
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true; // a live view with no disk behind it
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let ws = ChatDoc::list_workspaces(&doc);
+        assert!(ws.iter().any(|w| w.id == "ws_home"), "the real starter workspace");
+        assert!(ws.iter().all(|w| w.id != "ws_acme"), "no fabricated demo workspace");
+
+        let chans = ChatDoc::list_channels(&doc);
+        assert!(chans.iter().all(|c| c.id != "c_crit"), "no fabricated demo channels");
+
+        assert!(
+            ChatDoc::list_messages(&doc, "c_general").is_empty(),
+            "a fresh live run has no fabricated conversation"
+        );
+        let users = ChatDoc::list_users(&doc);
+        assert_eq!(users.len(), 1, "only the local user — no fabricated people");
+        assert_eq!(users[0].id, model::ME);
     }
 
     #[test]
@@ -1630,5 +1715,225 @@ mod tests {
         assert_eq!(app.history_open.as_deref(), Some("m_sora"), "the history popover opened");
         app.on_hit(Hit::Dismiss, &mut doc);
         assert!(app.history_open.is_none(), "the dismiss scrim closes it");
+    }
+
+    // --- multi-participant collaboration (the real sync path) ------------
+    //
+    // These drive two independent `ChatApp` instances against two Automerge
+    // documents and shuttle the exact incremental deltas the compositor's
+    // collab broker ships (`save_incremental` → peer `load_incremental` — see
+    // `ui::App::broadcast_doc_delta` / `pump_collab_presence`). No mock: the
+    // production event handlers do the writing and the real CRDT does the
+    // merging, so this is a faithful test of live multi-peer chat.
+
+    /// A distinct participant: a fresh app bound to the shared `ws_home`
+    /// starter, authoring under `id` — genuinely different from any other peer.
+    fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
+        let mut app = ChatApp::new_ephemeral();
+        app.me = crate::identity::LocalIdentity {
+            id: id.into(),
+            name: name.into(),
+            initials: initials.into(),
+            color_idx: color,
+        };
+        app.active_ws = "ws_home".into();
+        app.active_channel = "c_general".into();
+        app.thread_open = None;
+        app.focus = Focus::Main;
+        app
+    }
+
+    /// Ship each peer's pending changes to the other — the broker fan-out.
+    fn exchange(a: &mut AutoCommit, b: &mut AutoCommit) {
+        let da = a.save_incremental();
+        if !da.is_empty() {
+            b.load_incremental(&da).unwrap();
+        }
+        let db = b.save_incremental();
+        if !db.is_empty() {
+            a.load_incremental(&db).unwrap();
+        }
+    }
+
+    #[test]
+    fn messages_channels_and_reactions_converge_across_two_participants() {
+        use crate::model::Presence;
+        // Alice seeds a starter workspace; Bob adopts her document (as a
+        // late-joining peer does) and announces himself.
+        let mut doc_a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        let snapshot = doc_a.save(); // resets alice's incremental cursor
+        let mut doc_b = AutoCommit::load(&snapshot).unwrap();
+        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        exchange(&mut doc_a, &mut doc_b);
+
+        let mut a = peer("u_alice", "Alice", "AL", 0);
+        let mut b = peer("u_bob", "Bob", "BO", 1);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+        assert_eq!(a.me.id, "u_alice");
+        assert_eq!(b.me.id, "u_bob");
+
+        // Structure converges: a channel Alice creates shows up for Bob.
+        let chan = ChatDoc::create_channel(&mut doc_a, "ws_home", "cat_home_text", "planning", ChannelKind::Text);
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        assert!(
+            b.channels.iter().any(|c| c.id == chan && c.name == "planning"),
+            "peer B sees the channel peer A created"
+        );
+
+        // Alice sends a message — it reaches Bob, attributed to Alice (not a
+        // shared `u_me`).
+        a.insert_text(&mut doc_a, "morning all");
+        a.send_focused(&mut doc_a);
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let alice_msg = b.messages.iter().find(|m| m.text == "morning all").expect("B sees A's message");
+        assert_eq!(alice_msg.author, "u_alice");
+        assert_eq!(b.user_name("u_alice"), "Alice", "attributed to the right person");
+        let msg_id = alice_msg.id.clone();
+
+        // Bob replies — converges back to Alice, attributed to Bob.
+        b.insert_text(&mut doc_b, "morning!");
+        b.send_focused(&mut doc_b);
+        exchange(&mut doc_a, &mut doc_b);
+        a.reload(&doc_a);
+        let bob_msg = a.messages.iter().find(|m| m.text == "morning!").expect("A sees B's reply");
+        assert_eq!(bob_msg.author, "u_bob");
+        assert_eq!(a.user_name("u_bob"), "Bob");
+
+        // Both react with the SAME emoji to Alice's message. Distinct
+        // identities mean the count is 2 — the exact thing a shared `u_me`
+        // would have collapsed to 1.
+        a.on_hit(Hit::Reaction { msg: msg_id.clone(), emoji: "👍".into() }, &mut doc_a);
+        b.on_hit(Hit::Reaction { msg: msg_id.clone(), emoji: "👍".into() }, &mut doc_b);
+        exchange(&mut doc_a, &mut doc_b);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+        for (who, app) in [("A", &a), ("B", &b)] {
+            let m = app.messages.iter().find(|m| m.id == msg_id).unwrap();
+            let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").expect("👍 present");
+            assert_eq!(thumbs.count(), 2, "peer {who}: both distinct reactors counted once each");
+            assert!(thumbs.reacted_by("u_alice") && thumbs.reacted_by("u_bob"));
+        }
+
+        // Full convergence: identical timelines on both peers.
+        let ids = |app: &ChatApp| app.messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&a), ids(&b), "both peers converge on the same timeline");
+    }
+
+    #[test]
+    fn attaching_a_video_posts_an_inline_video_card() {
+        let (mut app, mut doc) = app_with_doc();
+        let dir = tempfile::tempdir().unwrap();
+        let mp4 = dir.path().join("clip.mp4");
+        std::fs::write(&mp4, b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00moov").unwrap();
+        let before = ChatDoc::list_messages(&doc, "c_crit").len();
+        app.on_hit(Hit::AttachPick(mp4.to_string_lossy().into_owned()), &mut doc);
+        let msgs = ChatDoc::list_messages(&doc, "c_crit");
+        assert_eq!(msgs.len(), before + 1, "the video posted as one message");
+        match &msgs.last().unwrap().attachment {
+            Some(model::Attachment::Video { name, path, size, .. }) => {
+                assert_eq!(name, "clip.mp4");
+                assert_eq!(path, &mp4.to_string_lossy(), "references the real FUSE path, not copied bytes");
+                assert!(*size > 0, "reads the real file size");
+            }
+            other => panic!("expected a Video attachment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
+        use ui::permissions::{
+            PermissionAssignment, PermissionContext, Role, RoleId, RolePermissions, UserId,
+            WorkspaceSettingsView,
+        };
+        let (mut app, mut doc) = app_with_doc();
+        // Restrict this peer to a member role: no file grants, no workspace
+        // admin — exactly what an invite without write/file access produces.
+        let view = WorkspaceSettingsView {
+            roles: vec![Role {
+                id: RoleId("member".into()),
+                name: "Member".into(),
+                permissions: RolePermissions {
+                    app_access: vec![],
+                    file_ops: vec![],
+                    workspace_admin: false,
+                },
+            }],
+            assignments: vec![PermissionAssignment {
+                user: UserId(model::ME.into()),
+                role: RoleId("member".into()),
+            }],
+        };
+        let ctx = PermissionContext::from_workspace_settings(&view, &UserId(model::ME.into())).unwrap();
+        app.perms = crate::permissions::ChatPermissions::from_context(ctx);
+
+        assert!(!app.can_participate(), "a member without admin can't write to the workspace");
+        assert!(!app.embed_allowed("/var/workspace/secret.png"), "an ungranted embed is gated");
+
+        // Sending is a no-op under the gate.
+        let before = ChatDoc::list_messages(&doc, "c_crit").len();
+        app.insert_text(&mut doc, "should not post");
+        app.send_focused(&mut doc);
+        assert_eq!(
+            ChatDoc::list_messages(&doc, "c_crit").len(),
+            before,
+            "gated peer posts nothing"
+        );
+
+        // Attaching is a no-op too.
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("x.png");
+        write_real_png(&png, 32, 32);
+        assert!(!app.attach_file(&mut doc, &png), "a gated peer can't attach either");
+
+        // And reacting is gated.
+        if let Some(id) = app.messages.iter().find(|m| m.reactions.is_empty()).map(|m| m.id.clone()) {
+            app.on_hit(Hit::Reaction { msg: id.clone(), emoji: "👍".into() }, &mut doc);
+            let after = app.messages.iter().find(|mm| mm.id == id).unwrap();
+            assert!(after.reactions.iter().all(|r| r.emoji != "👍"), "gated: no reaction added");
+        }
+    }
+
+    #[test]
+    fn joining_a_call_publishes_a_ticket_and_two_peers_exchange_them() {
+        use crate::model::{CallSession, Presence};
+        let mut doc_a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        let snapshot = doc_a.save();
+        let mut doc_b = AutoCommit::load(&snapshot).unwrap();
+        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        exchange(&mut doc_a, &mut doc_b);
+
+        let mut a = peer("u_alice", "Alice", "AL", 0);
+        let mut b = peer("u_bob", "Bob", "BO", 1);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+
+        // Both join the seed's voice channel (c_lounge). Joining publishes each
+        // peer's dialable media ticket into the shared voice membership — the
+        // signalling channel, riding the same collab transport as the messages.
+        a.on_hit(Hit::Channel("c_lounge".into()), &mut doc_a);
+        b.on_hit(Hit::Channel("c_lounge".into()), &mut doc_b);
+        assert!(a.call.active && a.call.channel == "c_lounge");
+        exchange(&mut doc_a, &mut doc_b);
+
+        // Each peer now sees BOTH members, each carrying a signalling ticket.
+        for doc in [&doc_a, &doc_b] {
+            let members = ChatDoc::list_voice_members(doc, "c_lounge");
+            assert_eq!(members.len(), 2, "both peers are in the call");
+            assert!(members.iter().all(|m| m.ticket.is_some()), "every member published a ticket");
+            assert!(members.iter().any(|m| m.user == "u_alice"));
+            assert!(members.iter().any(|m| m.user == "u_bob"));
+        }
+
+        // The receiving half of the handshake dials the peers without panicking,
+        // and the routing is peer-to-peer for a 2-person call.
+        a.reload(&doc_a);
+        a.connect_call_peers(&doc_a);
+        b.connect_call_peers(&doc_b);
+        assert_eq!(a.call_session(), CallSession::Peer, "a 2-person call meshes peer-to-peer");
     }
 }

@@ -1023,20 +1023,78 @@ impl CameraApp {
         self.push_region(rect, action);
     }
 
+    /// A centred "status" card for sparse states (no camera, empty library):
+    /// a bounded, softly-raised panel holding an icon, title and optional
+    /// subtitle. Anchoring the message in a real panel — capped in width and
+    /// centred in `area` — keeps it from reading as a lone cluster stranded in
+    /// a wide, empty window. Returns the icon's rect so callers can decorate it
+    /// (e.g. a "no camera" slash).
+    fn draw_empty_state(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        icon: &str,
+        title: &str,
+        subtitle: Option<&str>,
+        glass: bool,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
+        // Bounded card, centred in `area`: wide enough to read as a panel,
+        // capped so it never stretches edge-to-edge on ultra-wide windows.
+        let pw = 360.0_f64.min((area.width() - 48.0).max(240.0));
+        let base_h: f64 = if subtitle.is_some() { 208.0 } else { 172.0 };
+        let ph = base_h.min((area.height() - 32.0).max(140.0));
+        let cx = area.center().x;
+        let cy = area.center().y;
+        let panel = Rect::new(cx - pw / 2.0, cy - ph / 2.0, cx + pw / 2.0, cy + ph / 2.0);
+
+        // Glass over the near-black viewfinder; a softly-raised surface over the
+        // content background. Colours come from the theme in both cases.
+        let (fill, title_col, sub_col, icon_col) = if glass {
+            (
+                p::alpha(c.neutral[1], 0.55),
+                p::alpha(white(), 0.92),
+                p::alpha(white(), 0.55),
+                p::alpha(white(), 0.5),
+            )
+        } else {
+            (
+                p::alpha(c.surfaces.raised, 0.55),
+                c.text_primary,
+                c.text_dim,
+                p::alpha(c.text_dim, 0.85),
+            )
+        };
+        p::fill_round(scene, t, panel, 22.0, fill);
+        p::stroke_round(scene, t, panel, 22.0, c.border_white_10, 1.0);
+
+        let icx = panel.center().x;
+        let icy = panel.y0 + 56.0;
+        let icon_r = Rect::new(icx - 24.0, icy - 24.0, icx + 24.0, icy + 24.0);
+        p::icon(scene, t, icon, icon_r, icon_col, 2.0);
+        let ty = panel.y0 + 116.0;
+        p::text_center(scene, tr, icx, ty, title, 16.0, title_col);
+        if let Some(sub) = subtitle {
+            p::text_center(scene, tr, icx, ty + 24.0, sub, 12.5, sub_col);
+        }
+        icon_r
+    }
+
     /// A full-bleed "camera unavailable" placeholder for the camera screen
     /// when no live feed is present. Near-black so it reads as "camera off",
-    /// honest rather than faking a feed.
+    /// honest rather than faking a feed; the message sits in a centred card so
+    /// it stays anchored at wide widths.
     fn draw_no_feed(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, subtitle: &str) {
         let c = &theme.tokens.colors;
         p::fill_rect(scene, t, rect, c.neutral[0]);
-        let cx = (rect.x0 + RAIL_INSET + rect.x1) / 2.0;
-        let cy = rect.center().y;
-        let ic = Rect::new(cx - 26.0, cy - 58.0, cx + 26.0, cy - 6.0);
-        p::icon(scene, t, "camera", ic, p::alpha(white(), 0.5), 2.2);
+        // Centre within the stage to the right of the floating rail.
+        let area = Rect::new(rect.x0 + RAIL_INSET, rect.y0, rect.x1, rect.y1);
+        let ic = self.draw_empty_state(scene, t, tr, theme, area, "camera", "No camera connected", Some(subtitle), true);
         // Slash across the icon to read as "no camera".
-        p::line(scene, t, ic.x0 + 4.0, ic.y0 + 4.0, ic.x1 - 4.0, ic.y1 - 4.0, p::alpha(white(), 0.5), 2.2);
-        p::text_center(scene, tr, cx, cy + 8.0, "No camera connected", 16.0, p::alpha(white(), 0.92));
-        p::text_center(scene, tr, cx, cy + 32.0, subtitle, 12.5, p::alpha(white(), 0.55));
+        p::line(scene, t, ic.x0 + 3.0, ic.y0 + 3.0, ic.x1 - 3.0, ic.y1 - 3.0, p::alpha(white(), 0.5), 2.2);
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1444,7 +1502,7 @@ impl CameraApp {
                 p::circle(scene, t, q.x, q.y, 4.0, green);
             }
             let cxy = s.center();
-            let tag = format!("{}  detected", s.symbology);
+            let tag = detected_label(&s.symbology);
             let tw = p::text_w(tr, &tag, 11.0) as f64 + 18.0;
             let tagx = (full.x0 + cxy.0 as f64 * sx) - tw / 2.0;
             let top = pts.iter().map(|q| q.y).fold(f64::MAX, f64::min);
@@ -1596,6 +1654,12 @@ impl CameraApp {
     }
 }
 
+/// The badge shown over a live-detected code in the scanner viewfinder, e.g.
+/// `"QR Code detected"`. A single space between the symbology and the verb.
+fn detected_label(symbology: &str) -> String {
+    format!("{symbology} detected")
+}
+
 fn code_icon(kind: &CodeKind) -> &'static str {
     match kind {
         CodeKind::Url => "link",
@@ -1638,22 +1702,18 @@ impl CameraApp {
 
         let filtered = self.filtered();
 
-        // Empty state.
+        // Empty state — anchored in a centred card so it never reads as a lone
+        // cluster stranded in a wide, empty window.
         if filtered.is_empty() {
-            let full = Rect::new(content.x0 + pad, content.y0 + 64.0, content.x1 - pad, content.y1 - pad);
-            let cx = full.center().x;
-            let cy = full.center().y;
-            p::icon(scene, t, "gallery", Rect::new(cx - 26.0, cy - 46.0, cx + 26.0, cy + 6.0), p::alpha(c.text_dim, 0.7), 1.8);
+            let area = Rect::new(content.x0 + pad, content.y0 + 64.0, content.x1 - pad, content.y1 - pad);
             let msg = match self.filter {
                 GalleryFilter::All => "No photos yet",
                 GalleryFilter::Photos => "No photos",
                 GalleryFilter::Videos => "No videos",
                 GalleryFilter::Favorites => "No favorites yet",
             };
-            p::text_center(scene, tr, cx, cy + 22.0, msg, 15.0, c.text_primary);
-            if matches!(self.filter, GalleryFilter::All) {
-                p::text_center(scene, tr, cx, cy + 44.0, "Captures you take appear here", 12.5, c.text_dim);
-            }
+            let sub = matches!(self.filter, GalleryFilter::All).then_some("Captures you take appear here");
+            self.draw_empty_state(scene, t, tr, theme, area, "gallery", msg, sub, false);
             return;
         }
 
@@ -1995,6 +2055,13 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc, root)
+    }
+
+    #[test]
+    fn detected_label_has_single_space() {
+        let tag = detected_label("QR Code");
+        assert_eq!(tag, "QR Code detected");
+        assert!(!tag.contains("  "), "detected label must not contain a double space: {tag:?}");
     }
 
     #[test]

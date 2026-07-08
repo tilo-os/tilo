@@ -133,7 +133,7 @@ fn three_page_app() -> (NotesApp, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
     // Keep the temp dir alive for the whole process by leaking it — the
     // app's background savers hold the path; a hermetic per-test dir.
     let path = tmp.keep();
-    let mut app = NotesApp::spawn(path).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(path).unwrap();
     let welcome = app.workspace_pages_for_test()[0].id;
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
     let one = app.selected_for_test().unwrap();
