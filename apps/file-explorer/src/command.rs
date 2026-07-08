@@ -31,6 +31,12 @@ pub enum FileCommand {
     /// A pointer press on entry `index` with modifier state — drives
     /// selection (and, via the app's double-click detection, opening).
     Click { index: usize, ctrl: bool, shift: bool },
+    /// A right-press landed on displayed entry `Some(index)` (or empty space,
+    /// `None`). Selects the target so the context menu that follows acts on
+    /// what was clicked, not a stale selection — unless the target is already
+    /// part of a multi-selection, which is preserved so a menu action can
+    /// apply to all of it. `None` clears the selection (empty-space menu).
+    ContextSelect(Option<usize>),
     /// Activate entry `index` directly (keyboard Enter / grid double-click).
     Activate(usize),
     /// A sortable list header at column `index` was clicked.
