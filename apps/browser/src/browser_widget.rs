@@ -335,6 +335,10 @@ impl BrowserWidget {
     /// Poll the settings pane's one-shot + level intents and act on them.
     fn apply_settings_intents(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let intents = SettingsPane::take_pending(state, root);
+        if intents.close && self.show_settings {
+            self.show_settings = false;
+            self.structure_dirty = true;
+        }
         if intents.clear_cookies {
             self.engine.send(WebViewCommand::ClearWebsiteData);
         }
