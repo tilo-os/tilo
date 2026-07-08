@@ -452,6 +452,21 @@ impl Store {
         true
     }
 
+    /// Unsubscribe: remove a feed and every article belonging to it. Returns
+    /// the ids of the articles that were removed (so callers can clear a stale
+    /// selection). A no-op returning an empty vec if the feed is unknown.
+    pub fn remove_feed(&mut self, id: Id) -> Vec<Id> {
+        let removed: Vec<Id> = self
+            .articles
+            .iter()
+            .filter(|a| a.feed_id == id)
+            .map(|a| a.id)
+            .collect();
+        self.articles.retain(|a| a.feed_id != id);
+        self.feeds.retain(|f| f.id != id);
+        removed
+    }
+
     pub fn next_feed_order(&self, folder: Option<Id>) -> u32 {
         self.feeds
             .iter()
@@ -584,6 +599,28 @@ mod tests {
         let mut a2 = a.clone();
         a2.id = Uuid::new_v4();
         assert!(!s.insert_article_dedup(a2), "same url is a dup");
+    }
+
+    #[test]
+    fn remove_feed_drops_feed_and_its_articles_only() {
+        let mut s = Store::new();
+        let keep = Uuid::new_v4();
+        let drop = Uuid::new_v4();
+        s.upsert_feed(feed(keep, None));
+        s.upsert_feed(feed(drop, None));
+        let survivor = Uuid::new_v4();
+        s.insert_article_dedup(art(survivor, keep, false, false, 1));
+        let doomed = Uuid::new_v4();
+        s.insert_article_dedup(art(doomed, drop, false, false, 2));
+
+        let removed = s.remove_feed(drop);
+        assert_eq!(removed, vec![doomed], "returns the removed article ids");
+        assert!(s.feed(drop).is_none(), "the feed is gone");
+        assert!(s.feed(keep).is_some(), "the other feed survives");
+        assert_eq!(s.articles.len(), 1, "only the doomed feed's article is dropped");
+        assert_eq!(s.articles[0].id, survivor);
+        // Removing an unknown feed is a harmless no-op.
+        assert!(s.remove_feed(Uuid::new_v4()).is_empty());
     }
 
     #[test]

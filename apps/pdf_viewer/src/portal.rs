@@ -51,6 +51,22 @@ pub fn request_open() -> PortalChannel {
     rx
 }
 
+/// Spawn the portal file-*save* on a worker thread and return the receiver the
+/// caller drains each frame. `suggested_name` seeds the dialog's filename. The
+/// chosen path comes back as [`PortalOutcome::Opened`] (the save target), so the
+/// UI thread is never blocked — same contract as [`request_open`].
+pub fn request_save(suggested_name: String) -> PortalChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("pdf-portal-save".into())
+        .spawn(move || {
+            let outcome = run_save_blocking(suggested_name);
+            let _ = tx.send(outcome);
+        })
+        .expect("spawn portal save worker thread");
+    rx
+}
+
 /// Run the portal `OpenFile` round-trip to completion on a private Tokio
 /// runtime. Blocking — only ever called on the worker thread from
 /// [`request_open`]. Split out and `pub` so its result mapping is unit-testable
@@ -61,6 +77,17 @@ fn run_open_blocking() -> PortalOutcome {
         Err(e) => return PortalOutcome::Failed(format!("portal runtime: {e}")),
     };
     rt.block_on(open_future())
+}
+
+/// Run the portal `SaveFile` round-trip to completion on a private Tokio
+/// runtime. Blocking — only ever called on the worker thread from
+/// [`request_save`].
+fn run_save_blocking(suggested_name: String) -> PortalOutcome {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return PortalOutcome::Failed(format!("portal runtime: {e}")),
+    };
+    rt.block_on(save_future(suggested_name))
 }
 
 /// The async portal interaction. Kept separate so the wiring reads cleanly.
@@ -80,6 +107,25 @@ async fn open_future() -> PortalOutcome {
     match request.send().await.and_then(|r| r.response()) {
         Ok(files) => map_uris(files.uris()),
         // A user dismissal surfaces as a "cancelled" response error, not a bug.
+        Err(ashpd::Error::Response(_)) => PortalOutcome::Cancelled,
+        Err(e) => PortalOutcome::Failed(e.to_string()),
+    }
+}
+
+/// The async portal save interaction. Seeds the dialog with `suggested_name`;
+/// the chosen path is returned via [`map_uris`] as an `Opened` outcome.
+async fn save_future(suggested_name: String) -> PortalOutcome {
+    use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
+
+    let request = SelectedFiles::save_file()
+        .title("Save annotated PDF")
+        .accept_label("Save")
+        .modal(true)
+        .current_name(suggested_name.as_str())
+        .filter(FileFilter::new("PDF documents").mimetype("application/pdf"));
+
+    match request.send().await.and_then(|r| r.response()) {
+        Ok(files) => map_uris(files.uris()),
         Err(ashpd::Error::Response(_)) => PortalOutcome::Cancelled,
         Err(e) => PortalOutcome::Failed(e.to_string()),
     }

@@ -145,13 +145,30 @@ pub struct NotesApp {
 }
 
 impl NotesApp {
-    /// Load (or create) the workspace under `root` and wire up the
-    /// debounced background saver. Returns a fully-initialised widget
-    /// ready to be handed to `ui::App`.
+    /// Load the workspace under `root` and wire up the debounced background
+    /// saver. Returns a fully-initialised widget ready to be handed to
+    /// `ui::App`.
+    ///
+    /// A brand-new workspace starts **empty** — no fabricated pages. The
+    /// sidebar's "+" (and its empty-area "New note" menu) is the affordance to
+    /// create the first page. Tests and headless captures that need a starting
+    /// page use [`Self::spawn_with_starter_page`].
     pub fn spawn(root: PathBuf) -> Result<Self, String> {
+        Self::spawn_inner(root, false)
+    }
+
+    /// Like [`Self::spawn`] but seeds a "Welcome" starter page into an empty
+    /// workspace. Used by tests and dev fixtures that need content to exercise;
+    /// the live binary always uses [`Self::spawn`] / [`Self::spawn_default`],
+    /// which start empty.
+    pub fn spawn_with_starter_page(root: PathBuf) -> Result<Self, String> {
+        Self::spawn_inner(root, true)
+    }
+
+    fn spawn_inner(root: PathBuf, seed_starter: bool) -> Result<Self, String> {
         storage::ensure_layout(&root).map_err(|e| e.to_string())?;
         let mut workspace = storage::load_workspace(&root)?.unwrap_or_default();
-        if workspace.pages().is_empty() {
+        if seed_starter && workspace.pages().is_empty() {
             seed_welcome(&root, &mut workspace);
             storage::save_workspace(&root, &workspace).map_err(|e| e.to_string())?;
         }
@@ -1699,9 +1716,21 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn spawn_seeds_welcome_on_empty_root() {
+    fn spawn_starts_empty_by_default() {
+        // The live default (`spawn` / `spawn_default`) must NOT fabricate a
+        // page: a fresh workspace opens empty onto the "New note" affordance.
         let tmp = TempDir::new().unwrap();
         let app = NotesApp::spawn(tmp.path().into()).unwrap();
+        assert!(app.workspace.pages().is_empty(), "a fresh launch seeds no pages");
+        assert!(app.workspace.selected().is_none(), "nothing selected on an empty workspace");
+        assert!(app.main.title().is_none(), "no page bound in the editor");
+    }
+
+    #[test]
+    fn spawn_with_starter_page_seeds_welcome() {
+        // The explicit test/dev fixture constructor still seeds a starter page.
+        let tmp = TempDir::new().unwrap();
+        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
         assert_eq!(app.workspace.pages().len(), 1);
         assert_eq!(app.workspace.pages()[0].title, "Welcome");
         // Welcome page file exists on disk.
@@ -1712,7 +1741,7 @@ mod tests {
     #[test]
     fn apply_event_create_child_appends_and_selects() {
         let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
         let root = app.workspace.pages()[0].id;
         app.apply_event(OutEvent::CreateChild { parent: Some(root) });
         let children = app.workspace.children_of(Some(root));
@@ -1723,7 +1752,7 @@ mod tests {
     #[test]
     fn apply_event_delete_removes_file_and_resets_selection() {
         let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
         let root = app.workspace.pages()[0].id;
         app.apply_event(OutEvent::CreateChild { parent: Some(root) });
         let child = app.workspace.selected().unwrap();
@@ -1755,7 +1784,7 @@ mod tests {
     #[test]
     fn rename_updates_main_panel_title() {
         let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
         let root = app.workspace.pages()[0].id;
         app.apply_event(OutEvent::Rename {
             id: root,

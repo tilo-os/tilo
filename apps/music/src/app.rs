@@ -77,6 +77,9 @@ pub enum View {
 enum Action {
     Nav(View),
     Back,
+    /// Open the Search screen filtered to a genre — the "Browse all" category
+    /// chips route here so a tap actually navigates + filters.
+    BrowseGenre(String),
     /// Play `queue[index]` after replacing the queue.
     Play { queue: Vec<String>, index: usize },
     TogglePlay,
@@ -215,6 +218,11 @@ pub struct MusicApp {
     cover_pick: Option<portal::CoverChannel>,
 
     seeded: bool,
+    /// When `true`, a first `sync` onto an empty document writes the bundled
+    /// sample catalog instead of an empty library. Only the `--shots` renderer
+    /// and tests set this (see [`MusicApp::seed_sample_library`]); the live app
+    /// starts with an empty library and fills it from real playback + search.
+    seed_samples: bool,
     /// Whether the initial playback snapshot has been adopted from the
     /// document. After the first load, playback is authoritative in-memory
     /// (persisted out to the doc on each event) so the smoothly-advancing
@@ -373,7 +381,20 @@ pub struct MusicApp {
     search_edit_at: Option<Instant>,
     /// The last query actually dispatched to the live worker (dedupe debounce).
     live_query_sent: Option<String>,
+
+    // ---- offline downloads -----------------------------------------------
+    /// In-flight offline downloads: track id → when the download started. Each
+    /// frame the progress fraction is derived from the elapsed time and shown as
+    /// an animated spinner on the row; at completion the track flips to
+    /// [`CacheState::Cached`] (persisted). Held in memory only — the document
+    /// stores just the *terminal* cache states, so an advancing download never
+    /// churns the CRDT frame-by-frame.
+    downloads: HashMap<String, Instant>,
 }
+
+/// How long a simulated offline download takes to complete (seconds). Long
+/// enough that the working spinner is visibly distinct from the finished state.
+const DOWNLOAD_SECS: f64 = 2.4;
 
 /// A deferred `--shots` staging action (see [`MusicApp::app_root_for_shot`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,6 +455,7 @@ impl MusicApp {
             mpris_last: None,
             cover_pick: None,
             seeded: false,
+            seed_samples: false,
             playback_loaded: false,
             bound_track: None,
             playhead_ms: 0.0,
@@ -495,6 +517,7 @@ impl MusicApp {
             search_cache: None,
             search_edit_at: preset_search_at,
             live_query_sent: None,
+            downloads: HashMap::new(),
         }
     }
 
@@ -503,6 +526,13 @@ impl MusicApp {
     /// placeholders render deterministically.
     pub fn set_offline_for_shot(&mut self) {
         self.allow_network = false;
+    }
+
+    /// Seed the bundled sample catalog on the first `sync` instead of starting
+    /// with an empty library. Only the `--shots` renderer and tests call this —
+    /// the live app never fabricates a library.
+    pub fn seed_sample_library(&mut self) {
+        self.seed_samples = true;
     }
 
     /// Whether every live fetch this frame needs has settled — used by the
@@ -604,9 +634,19 @@ impl MusicApp {
             return;
         }
         if !doc::is_seeded(state) {
-            let lib = seed::sample_library();
-            let pb = seed::sample_playback(&lib);
-            doc::seed(state, &lib, &pb);
+            if self.seed_samples {
+                // `--shots` / tests: the bundled sample catalog so a headless
+                // frame (and the deterministic tests) have real content.
+                let lib = seed::sample_library();
+                let pb = seed::sample_playback(&lib);
+                doc::seed(state, &lib, &pb);
+            } else {
+                // Live default: an empty library. The document structure is
+                // still initialised (so `is_seeded`, persistence and sync all
+                // work) but carries no fabricated tracks/playlists — the real
+                // library fills in from playback and search.
+                doc::seed(state, &Library::default(), &Playback::default());
+            }
         }
         self.seeded = true;
     }
@@ -617,6 +657,34 @@ impl MusicApp {
     fn reload_library(&mut self, state: &AutoCommit) {
         self.lib = doc::load_library(state);
         self.sync_playlist_covers();
+    }
+
+    /// Advance every in-flight offline download by the wall clock. Called once
+    /// per frame from `sync` (after the library reload) so the freshly-loaded
+    /// terminal cache states get the in-flight progress overlaid back on top,
+    /// and a finished download is persisted to the document exactly once.
+    fn advance_downloads(&mut self, state: &mut AutoCommit) {
+        if self.downloads.is_empty() {
+            return;
+        }
+        let mut done: Vec<String> = Vec::new();
+        for (id, started) in &self.downloads {
+            let frac = (started.elapsed().as_secs_f64() / DOWNLOAD_SECS).min(1.0) as f32;
+            if frac >= 1.0 {
+                done.push(id.clone());
+            } else {
+                // Overlay the live progress on the reloaded library (the doc
+                // holds only Streamed/Cached, never a per-frame Downloading).
+                self.lib.cache.insert(id.clone(), CacheState::Downloading(frac));
+            }
+        }
+        for id in done {
+            self.downloads.remove(&id);
+            doc::set_cache(state, &id, CacheState::Cached);
+            self.lib.cache.insert(id.clone(), CacheState::Cached);
+            let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
+            self.toast = Some((format!("\u{201c}{label}\u{201d} saved for offline"), Instant::now()));
+        }
     }
 
     /// Mirror each playlist's persisted cover URL into the image cache so a
@@ -1124,6 +1192,24 @@ impl MusicApp {
                     self.scroll = 0.0;
                 }
             }
+            Action::BrowseGenre(genre) => {
+                // A "Browse all" category chip: drop the genre into the search
+                // field and stay on Search so the (genre-aware) results render.
+                if self.view != View::Search {
+                    self.nav_back.push(self.view.clone());
+                    self.view = View::Search;
+                }
+                self.search_input.set_text(&genre);
+                self.search_input.set_focus(true);
+                // Invalidate the memoised query so the new results recompute, and
+                // arm the debounced live search (live build surfaces real hits).
+                self.search_cache = None;
+                self.search_edit_at = Some(Instant::now());
+                self.scroll = 0.0;
+                if self.drawer.is_overlay() {
+                    self.drawer.close();
+                }
+            }
             Action::Play { queue, index } => {
                 self.pb.queue = queue;
                 // A fresh queue invalidates any prior shuffle permutation; it's
@@ -1137,6 +1223,12 @@ impl MusicApp {
                 self.persist_playback(state);
             }
             Action::TogglePlay => {
+                // Play/pause is a no-op with nothing loaded: never flip the
+                // transport to a fake "playing" state when there's no current
+                // track. The button simply does nothing until a song is queued.
+                if self.pb.current.is_none() {
+                    return;
+                }
                 self.pb.playing = !self.pb.playing;
                 if self.pb.playing {
                     self.audio.play();
@@ -1208,20 +1300,33 @@ impl MusicApp {
                 self.persist_playback(state);
             }
             Action::ToggleDownload(id) => {
-                let new = match self.lib.cache_state(&id) {
-                    CacheState::Cached => CacheState::Streamed,
-                    _ => CacheState::Cached,
-                };
-                doc::set_cache(state, &id, new);
-                self.lib = doc::load_library(state);
                 let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
-                self.toast = Some((
-                    match new {
-                        CacheState::Cached => format!("Kept \u{201c}{label}\u{201d} for offline"),
-                        _ => format!("Removed \u{201c}{label}\u{201d} from offline"),
-                    },
-                    Instant::now(),
-                ));
+                let toast = match self.lib.cache_state(&id) {
+                    CacheState::Cached => {
+                        // Already offline → drop it.
+                        self.downloads.remove(&id);
+                        doc::set_cache(state, &id, CacheState::Streamed);
+                        self.lib = doc::load_library(state);
+                        format!("Removed \u{201c}{label}\u{201d} from offline")
+                    }
+                    CacheState::Downloading(_) => {
+                        // Tapping an in-flight download cancels it.
+                        self.downloads.remove(&id);
+                        doc::set_cache(state, &id, CacheState::Streamed);
+                        self.lib = doc::load_library(state);
+                        format!("Stopped downloading \u{201c}{label}\u{201d}")
+                    }
+                    CacheState::Streamed => {
+                        // Start a real, time-progressing download. It shows the
+                        // working spinner and flips to Cached when it finishes.
+                        self.downloads.insert(id.clone(), Instant::now());
+                        // Reflect the in-flight state immediately (the doc keeps
+                        // only terminal states; see `advance_downloads`).
+                        self.lib.cache.insert(id.clone(), CacheState::Downloading(0.0));
+                        format!("Downloading \u{201c}{label}\u{201d} for offline")
+                    }
+                };
+                self.toast = Some((toast, Instant::now()));
             }
             Action::DownloadAll(ids) => {
                 // Keep every not-yet-cached track offline in one gesture. Tracks
@@ -1847,6 +1952,23 @@ impl MusicApp {
         self.view = View::Lyrics;
     }
 
+    /// Stage a track list with in-flight offline downloads for a `--shots`
+    /// frame: a few rows show the animated download spinner at different
+    /// progress, alongside the idle download affordance on the rest.
+    pub fn snap_downloading(&mut self) {
+        self.view = View::Songs;
+        let ids: Vec<String> = self.lib.tracks_sorted().iter().map(|t| t.id.clone()).collect();
+        // Backdate each start so this single frame captures a mid-progress
+        // spinner (the per-frame `advance_downloads` recomputes the same frac).
+        for (i, frac) in [0.25_f64, 0.55, 0.85].iter().enumerate() {
+            if let Some(id) = ids.get(i) {
+                let start = Instant::now() - std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac);
+                self.downloads.insert(id.clone(), start);
+                self.lib.cache.insert(id.clone(), CacheState::Downloading(*frac as f32));
+            }
+        }
+    }
+
     /// Start a bundled track playing at `pos_ms` for a deterministic shot.
     /// Prefers `tk_g1` (it carries bundled synced lyrics).
     fn stage_play_bundled(&mut self, pos_ms: f64) {
@@ -2230,6 +2352,12 @@ fn draw_text(
 }
 
 /// Truncate `text` to fit `max_w` px at `size`, appending an ellipsis.
+///
+/// Only appends the ellipsis when at least one real glyph fits before it. When
+/// the column is too narrow for even a single character, this renders **nothing**
+/// (an empty string) rather than a lone `\u{2026}`: a stray ellipsis with no
+/// preceding text conveys nothing and, in a too-narrow column, would spill past
+/// its bounds into the neighbouring UI.
 fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
     if tr.measure_weighted(text, size, None, weight).0 as f64 <= max_w {
         return text.to_string();
@@ -2243,7 +2371,9 @@ fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w
         s.push(ch);
     }
     if s.is_empty() {
-        "\u{2026}".to_string()
+        // Not even one glyph + ellipsis fits — render nothing so the `\u{2026}`
+        // never overflows into an adjacent column.
+        String::new()
     } else {
         format!("{s}\u{2026}")
     }
@@ -2403,6 +2533,11 @@ mod tests {
 
     fn app_with_doc() -> (MusicApp, AutoCommit) {
         let mut app = MusicApp::new();
+        // The behaviour tests exercise playback, queueing and playlists against
+        // the bundled catalog, so — like `--shots` — they opt into the sample
+        // library. The live default (no opt-in) starts empty; see
+        // `default_startup_has_empty_library`.
+        app.seed_sample_library();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
         app.reload(&doc);
@@ -2511,13 +2646,47 @@ mod tests {
     }
 
     #[test]
+    fn default_startup_has_empty_library() {
+        // The live app (no `seed_sample_library` opt-in) must NOT fabricate a
+        // catalog: a fresh document seeds an empty library + playlists.
+        let mut app = MusicApp::new();
+        let mut doc = AutoCommit::new();
+        app.ensure_seeded(&mut doc);
+        app.reload(&doc);
+        assert_eq!(app.lib.total_tracks(), 0, "no fabricated tracks on a fresh launch");
+        assert!(app.lib.playlists.is_empty(), "no fabricated playlists on a fresh launch");
+        assert!(app.pb.current.is_none(), "nothing playing on a fresh launch");
+        // The document is still initialised (so persistence + sync work), just
+        // empty — a second launch adopts it without re-seeding.
+        assert!(doc::is_seeded(&doc), "the empty library still initialises the doc structure");
+    }
+
+    #[test]
     fn toggle_play_round_trips_through_doc() {
         let (mut app, mut doc) = app_with_doc();
+        // Play/pause needs a loaded track (see `play_with_nothing_loaded_is_noop`).
+        app.pb.current = Some("tk_g1".into());
         let was = app.pb.playing;
         app.dispatch(Action::TogglePlay, &mut doc);
         assert_eq!(app.pb.playing, !was);
         // Persisted to the document.
         assert_eq!(doc::load_playback(&doc).playing, !was);
+    }
+
+    #[test]
+    fn play_with_nothing_loaded_is_noop() {
+        let (mut app, mut doc) = app_with_doc();
+        // Nothing queued, nothing current, stopped.
+        assert!(app.pb.current.is_none());
+        assert!(app.pb.queue.is_empty());
+        assert!(!app.pb.playing);
+        // Hitting play with an empty queue / no current track must do nothing —
+        // never flip to a fabricated "playing" state.
+        app.dispatch(Action::TogglePlay, &mut doc);
+        assert!(!app.pb.playing, "play with nothing loaded stays stopped");
+        assert!(app.pb.current.is_none());
+        // And it stayed stopped in the persisted playback too.
+        assert!(!doc::load_playback(&doc).playing);
     }
 
     #[test]
@@ -2565,12 +2734,71 @@ mod tests {
 
     #[test]
     fn download_toggle_persists() {
+        use std::time::Duration;
         let (mut app, mut doc) = app_with_doc();
         // tk_g2 starts streamed.
         assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Streamed);
+        // Clicking download starts a real, in-flight download — a visible
+        // working state, not an instant jump to "cached".
         app.dispatch(Action::ToggleDownload("tk_g2".into()), &mut doc);
+        assert!(
+            matches!(app.lib.cache_state("tk_g2"), CacheState::Downloading(_)),
+            "the click enters the downloading (spinner) state",
+        );
+        assert!(app.downloads.contains_key("tk_g2"));
+        // Let it finish (backdate the start past the download duration) and run
+        // one real frame's sync — the per-frame progression completes it.
+        app.downloads
+            .insert("tk_g2".into(), Instant::now() - Duration::from_secs(30));
+        app.sync(&mut doc, &automerge::ROOT);
+        // It flipped to the done/offline state and persisted to the document.
         assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Cached);
         assert_eq!(doc::load_library(&doc).cache_state("tk_g2"), CacheState::Cached);
+        assert!(
+            !app.downloads.contains_key("tk_g2"),
+            "the finished download is retired from the in-flight set",
+        );
+    }
+
+    #[test]
+    fn download_click_animates_then_completes_and_indicator_survives_reload() {
+        use std::time::Duration;
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot(); // hermetic
+        app.playback_loaded = true;
+        // tk_g1 seeds as already-cached; put it in a streamable state first so
+        // the click genuinely starts a download (not a "remove offline" toggle).
+        doc::set_cache(&mut doc, "tk_g1", CacheState::Streamed);
+        app.lib = doc::load_library(&mut doc);
+        assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Streamed);
+        // Start the download through the real action path.
+        app.dispatch(Action::ToggleDownload("tk_g1".into()), &mut doc);
+        assert!(matches!(app.lib.cache_state("tk_g1"), CacheState::Downloading(_)));
+        // A working download keeps frames flowing so the spinner spins — prove
+        // it's the download driving it (not a lingering toast).
+        app.toast = None;
+        assert!(
+            app.needs_animation_frame(),
+            "an in-flight download alone keeps the frame loop animating",
+        );
+        // The Downloads/Songs list renders the spinner branch without panic, and
+        // the in-flight progress survives the per-frame library reload (the
+        // overlay is re-applied in `sync`/`advance_downloads`).
+        app.view = View::Songs;
+        draw_once(&mut app, &mut doc);
+        assert!(
+            matches!(app.lib.cache_state("tk_g1"), CacheState::Downloading(_)),
+            "download progress survives the per-frame reload",
+        );
+        // Finish it and run a frame: the indicator flips to the done state.
+        app.downloads
+            .insert("tk_g1".into(), Instant::now() - Duration::from_secs(30));
+        draw_once(&mut app, &mut doc);
+        assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Cached);
+        assert!(
+            !app.downloads.contains_key("tk_g1"),
+            "a completed download stops animating (retired from the in-flight set)",
+        );
     }
 
     #[test]
@@ -2582,6 +2810,69 @@ mod tests {
         assert_eq!(app.view, View::Album("al_glasslight".into()));
         app.dispatch(Action::Back, &mut doc);
         assert_eq!(app.view, View::Albums);
+    }
+
+    // ---- text truncation --------------------------------------------------
+
+    #[test]
+    fn elide_renders_nothing_when_no_glyph_fits() {
+        let mut tr = TextRenderer::new();
+        // A width far too narrow for any character + ellipsis: render nothing,
+        // never a stray "…" that would overflow into the next column.
+        let out = elide(&mut tr, "Some Long Album Title", 13.0, TextWeight::Regular, 2.0);
+        assert!(out.is_empty(), "too-narrow column renders no text, got {out:?}");
+        assert!(!out.contains('\u{2026}'), "no lone ellipsis when nothing fits");
+
+        // A genuinely truncating (but non-degenerate) width keeps some glyphs
+        // and appends the ellipsis, and the result stays within the budget.
+        let mid_w = 90.0;
+        let mid = elide(&mut tr, "Some Long Album Title", 13.0, TextWeight::Regular, mid_w);
+        assert!(mid.ends_with('\u{2026}'), "a truncation still shows the ellipsis: {mid:?}");
+        assert!(mid.chars().count() > 1, "at least one real glyph precedes it: {mid:?}");
+        assert!(
+            tr.measure_weighted(&mid, 13.0, None, TextWeight::Regular).0 as f64 <= mid_w,
+            "the elided string fits inside the column budget",
+        );
+
+        // Fits outright → returned unchanged, no ellipsis.
+        let whole = elide(&mut tr, "OK", 13.0, TextWeight::Regular, 500.0);
+        assert_eq!(whole, "OK");
+    }
+
+    // ---- search categories ------------------------------------------------
+
+    #[test]
+    fn search_genre_chips_are_clickable_and_filter() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot(); // hermetic
+        app.playback_loaded = true;
+        // The empty Search screen shows the "Browse all" genre chips.
+        app.view = View::Search;
+        app.search_input.set_text("");
+        draw_once(&mut app, &mut doc);
+        // A genre chip is a real, registered click target (not inert decoration).
+        let chip = app
+            .hits
+            .iter()
+            .find_map(|h| match &h.action {
+                Action::BrowseGenre(g) => Some((h.rect, g.clone())),
+                _ => None,
+            })
+            .expect("a Browse-all genre chip registered a click target");
+        let (rect, genre) = chip;
+        // Clicking it (real hit-test path) activates the filter.
+        app.mouse = rect.center();
+        assert_eq!(app.hit_test(app.mouse), Some(Action::BrowseGenre(genre.clone())));
+        app.dispatch(Action::BrowseGenre(genre.clone()), &mut doc);
+        // The query is now that genre and the results filter to it (non-empty:
+        // at least the genre's own artist matches).
+        assert_eq!(app.search_input.value(), genre);
+        assert_eq!(app.view, View::Search);
+        let res = app.lib.search(&genre);
+        assert!(
+            !res.is_empty(),
+            "clicking the {genre:?} chip surfaces that genre's content",
+        );
     }
 
     // ---- responsive sidebar -----------------------------------------------
@@ -3806,6 +4097,99 @@ mod tests {
             "the progress bar sits below the whole status bar (its bottom edge)"
         );
         assert!(app.scrubber_rect.width() > 300.0, "the progress spans the bar width");
+    }
+
+    #[test]
+    fn compact_scrubber_is_grabbable_not_a_hairline() {
+        // At narrow width the scrub bar must be a real, grabbable track — not a
+        // 1-2px hairline glued to the window edge.
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact bar
+        let sr = app.scrubber_rect;
+        assert!(
+            sr.height() >= 16.0,
+            "the narrow scrub bar has a grabbable hit height (was {})",
+            sr.height()
+        );
+        assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
+        // The hit strip still reaches the window's bottom edge (edge press seeks)…
+        assert!(sr.y1 >= app.rect.y1 - 1.0, "the scrub hit strip reaches the bottom edge");
+        // …but its top clears the transport row, so a play/pause press never seeks.
+        assert!(
+            sr.y0 > app.rect.y1 - NOWPLAYING_H / 2.0,
+            "the scrub strip stays below the transport buttons"
+        );
+    }
+
+    #[test]
+    fn songs_row_columns_are_balanced_not_cavernous() {
+        // A wide row: the album should sit near the row's horizontal middle
+        // (not bunched against the right-hand control cluster) and the title
+        // column must be bounded — so a row reads as one connected line instead
+        // of "title-left / everything-right" with a cavern between.
+        let left = 260.0;
+        let right = 1372.0;
+        let cols = render::track_row_columns(left, right, true);
+        let mid = (left + right) / 2.0;
+        assert!(
+            (cols.album_x - mid).abs() < 130.0,
+            "album sits near the row middle (album {} vs mid {mid})",
+            cols.album_x
+        );
+        assert!(
+            cols.album_x + 150.0 < cols.like_x,
+            "album column leaves room before the control cluster (album {} / like {})",
+            cols.album_x,
+            cols.like_x
+        );
+        let title_col = cols.album_x - cols.text_x;
+        assert!(
+            (200.0..=520.0).contains(&title_col),
+            "title column is bounded, not stretched across the row (was {title_col})"
+        );
+        // Regression guard: the album is pulled well left of the old
+        // right-hugging position (`right - 320`) that left the cavern.
+        assert!(
+            cols.album_x < right - 380.0,
+            "album is not bunched against the right edge (album {})",
+            cols.album_x
+        );
+        // Mid-width rows keep the album ahead of the controls too.
+        let m = render::track_row_columns(60.0, 720.0, true);
+        assert!(m.album_x >= m.text_x + 190.0 && m.album_x <= m.like_x - 150.0);
+    }
+
+    #[test]
+    fn lyrics_wide_layout_is_balanced_with_left_art() {
+        // Wide: cover art fills the left column and the lyric band shifts right
+        // to balance it — not a centred column with an empty left half.
+        let body = Rect::new(232.0, 72.0, 1280.0, 708.0);
+        let band_top = body.y0 + 92.0;
+        let band_bot = body.y1 - 24.0;
+        let layout = render::lyrics_layout(body, band_top, band_bot);
+        let art = layout.art.expect("wide layout shows cover art on the left");
+        let body_mid = (body.x0 + body.x1) / 2.0;
+        assert!(art.center().x < body_mid, "cover art sits in the left half");
+        assert!(art.width() >= 180.0, "the cover art is a substantial square");
+        assert!(
+            layout.lyrics.center().x > body_mid,
+            "the lyrics column shifts right to balance the art"
+        );
+        assert!(layout.lyrics.x1 <= body.x1, "the lyrics column stays within the body");
+        assert!(art.x1 < layout.lyrics.x0, "art and lyrics columns don't overlap");
+
+        // Narrow: a single full-width centred column, no side art.
+        let narrow = Rect::new(0.0, 72.0, 700.0, 708.0);
+        let nl = render::lyrics_layout(narrow, 164.0, 684.0);
+        assert!(nl.art.is_none(), "narrow layout has no side art");
+        assert!(
+            (nl.lyrics.x0 - narrow.x0).abs() < 1.0 && (nl.lyrics.x1 - narrow.x1).abs() < 1.0,
+            "narrow lyrics span the full width"
+        );
     }
 
     #[test]

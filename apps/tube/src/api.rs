@@ -10,30 +10,25 @@
 //! Endpoints (researched, current as of 2026):
 //!   * Invidious   `GET {instance}/api/v1/search?q=&type=video`
 //!                 `GET {instance}/api/v1/videos/{id}`
-//!   * SponsorBlock (privacy hash-prefix mode — only the first 4 hex of
-//!                 sha256(videoID) leave the device):
-//!                 `GET https://sponsor.ajay.app/api/skipSegments/{prefix}`
-//!   * DeArrow     `GET https://sponsor.ajay.app/api/branding/{prefix}`
+//!   * SponsorBlock `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
+//!   * DeArrow     `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
+//!   * Dislikes    `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
 //!
-//! Real video playback resolves through the backend seam, not Invidious:
-//! [`crate::backend::YtBackend::resolve_video_stream`] hands back a googlevideo
-//! H.264 stream, [`crate::backend::stream::fetch_h264`] downloads + demuxes it
-//! to Annex-B, and [`crate::playback::Playback`] decodes it. See `--probe-play`
-//! in `main.rs` for the end-to-end proof path.
+//! Real video playback resolves to a **fully-rangeable** proxied stream URL that
+//! the shared media engine plays. [`crate::backend::proxy::resolve_rangeable`]
+//! probes public Invidious instances for a progressive muxed (video+audio) MP4
+//! whose `local=true` proxy serves arbitrary byte ranges over the whole file
+//! (raw googlevideo URLs truncate after ~1 minute), falling back to the live
+//! backend's direct [`crate::backend::YtBackend::resolve_playback_source`] when
+//! no instance answers. The resolved URL comes back as [`Update::StreamResolved`]
+//! and is opened into the watch page's `ui::widget::VideoPlayer` engine — which
+//! does the actual GStreamer decode + audio out, so no decoder lives here.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
 use std::time::Duration;
-#[cfg(not(feature = "media"))]
-use std::time::Instant;
-
-use sha2::{Digest, Sha256};
 
 use crate::backend::{BackendResult, Query, YtBackend};
-#[cfg(not(feature = "media"))]
-use crate::backend::StreamHandle;
-use crate::model::{Category, Channel, Segment, Video};
+use crate::model::{Category, Channel, Comment, Segment, Video};
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -51,36 +46,12 @@ pub enum Request {
     VideoMeta(String),
     /// Fetch a channel page + its uploads.
     Channel(String),
-    /// Resolve + stream a real playable video for a watch id. The worker
-    /// resolves the googlevideo H.264 stream, then a dedicated playback thread
-    /// pages through the stream's fragments, demuxes each to per-frame access
-    /// units and decodes them with a single reused decoder — all off the UI
-    /// thread — publishing a continuous sequence of frames on the decoded-frame
-    /// channel (drained via [`Worker::poll_frames`]), paced to the frame rate.
+    /// Resolve a real, directly-playable stream URL for a watch id — off the UI
+    /// thread, since it probes public Invidious instances over the network. The
+    /// resolved URL comes back as [`Update::StreamResolved`]; the actual decode +
+    /// audio out happens in the watch page's media-engine-backed `VideoPlayer`,
+    /// not here.
     PlayVideo(String),
-    /// Stop the current playback thread (the user left the watch page). The
-    /// worker signals the thread to finish so it stops downloading/decoding and
-    /// never leaks past the watch view.
-    StopPlayback,
-    /// Reflect the transport play/pause state onto the running playback thread.
-    /// When paused the thread holds the current frame and stops decoding ahead;
-    /// resuming continues from where it left off.
-    SetPlaying(bool),
-}
-
-/// A finished, decoded video frame produced by the worker for the watch page to
-/// paint. Toolkit-free (`RGBA8` bytes) so it crosses the worker boundary without
-/// pulling render types into the data layer. The UI drains these; it does not
-/// decode.
-#[derive(Clone, Debug)]
-pub struct DecodedFrame {
-    /// The watch id this frame belongs to (so a late frame for a since-closed
-    /// video can be dropped).
-    pub video: String,
-    pub width: u32,
-    pub height: u32,
-    /// Tightly-packed RGBA8, `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
 }
 
 /// A result folded back into the model on the UI thread.
@@ -89,8 +60,16 @@ pub enum Update {
     Sponsor(String, Vec<Segment>),
     DeArrow {
         video: String,
+        /// Top-voted crowdsourced title, when one outranks the original.
         title: Option<String>,
-        has_thumbnail: bool,
+        /// Community thumbnail URL (a frame rendered at the top-voted timestamp),
+        /// when one exists.
+        thumbnail_url: Option<String>,
+    },
+    /// Crowdsourced dislike count for a video (Return YouTube Dislike).
+    Dislikes {
+        video: String,
+        count: u64,
     },
     SearchResults(String, Vec<Video>),
     /// Live home/trending catalogue — replaces the on-screen set.
@@ -99,6 +78,12 @@ pub enum Update {
     VideoMeta {
         video: Box<Video>,
         related: Vec<Video>,
+    },
+    /// Real top comments for a video (fetched via rustypipe), folded onto the
+    /// watch page.
+    Comments {
+        video: String,
+        comments: Vec<Comment>,
     },
     /// Live channel page + uploads.
     ChannelPage {
@@ -110,19 +95,17 @@ pub enum Update {
         live: bool,
         label: String,
     },
+    /// A real, directly-playable stream URL resolved for a watch id. The UI
+    /// opens it into the watch page's `VideoPlayer` engine (real decode + audio).
+    StreamResolved {
+        video: String,
+        url: String,
+        has_audio: bool,
+        /// Short quality label for the status log (e.g. `360p`).
+        quality: String,
+    },
     /// Non-fatal note surfaced in the status log.
     Note(String),
-}
-
-/// First 4 lowercase hex chars of sha256(video_id) — the SponsorBlock /
-/// DeArrow privacy prefix.
-pub fn hash_prefix(video_id: &str) -> String {
-    let digest = Sha256::digest(video_id.as_bytes());
-    let mut s = String::with_capacity(4);
-    for b in digest.iter().take(2) {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
 }
 
 fn client() -> reqwest::blocking::Client {
@@ -133,39 +116,42 @@ fn client() -> reqwest::blocking::Client {
         .expect("reqwest client")
 }
 
-/// Fetch SponsorBlock segments using the privacy-preserving hash prefix.
+/// Fetch SponsorBlock segments for a video via the direct
+/// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
+/// API's "no segments for this video" response) is treated as an empty list
+/// rather than an error.
 pub fn fetch_sponsor(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<Vec<Segment>> {
-    let prefix = hash_prefix(video_id);
-    let url = format!("https://sponsor.ajay.app/api/skipSegments/{prefix}");
-    let resp: serde_json::Value = client
-        .get(&url)
-        .query(&[("categories", category_json())])
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let cats = category_json();
+    let resp = client
+        .get("https://sponsor.ajay.app/api/skipSegments")
+        .query(&[("videoID", video_id), ("categories", cats.as_str())])
+        .send()?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    let val: serde_json::Value = resp.error_for_status()?.json()?;
+    Ok(parse_skip_segments(&val))
+}
 
+/// Parse a SponsorBlock `/api/skipSegments?videoID=<id>` response (a flat JSON
+/// array of segment objects) into sorted [`Segment`]s. Pure (no I/O) so it is
+/// unit-tested directly. Unknown categories and malformed rows are skipped.
+pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
     let mut out = Vec::new();
     if let Some(arr) = resp.as_array() {
-        for entry in arr {
-            if entry.get("videoID").and_then(|v| v.as_str()) != Some(video_id) {
-                continue;
-            }
-            if let Some(segs) = entry.get("segments").and_then(|s| s.as_array()) {
-                for s in segs {
-                    let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
-                    let times = s.get("segment").and_then(|t| t.as_array());
-                    if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
-                        let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
-                        let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
-                        out.push(Segment { category: cat, start, end, votes });
-                    }
-                }
+        for s in arr {
+            let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
+            let times = s.get("segment").and_then(|t| t.as_array());
+            if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
+                let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
+                let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
+                out.push(Segment { category: cat, start, end, votes });
             }
         }
     }
     out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(out)
+    out
 }
 
 fn category_json() -> String {
@@ -173,29 +159,96 @@ fn category_json() -> String {
     serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Fetch DeArrow branding (top title + whether a community thumbnail
-/// exists).
+/// Fetch DeArrow branding for a video: the top-voted crowdsourced title (when it
+/// outranks the original) and a community thumbnail URL (a frame rendered at the
+/// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
 pub fn fetch_dearrow(
     client: &reqwest::blocking::Client,
     video_id: &str,
-) -> anyhow::Result<(Option<String>, bool)> {
-    let prefix = hash_prefix(video_id);
-    let url = format!("https://sponsor.ajay.app/api/branding/{prefix}");
-    let resp: serde_json::Value = client.get(&url).send()?.error_for_status()?.json()?;
-    let entry = resp.get(video_id);
-    let title = entry
-        .and_then(|e| e.get("titles"))
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    let resp: serde_json::Value = client
+        .get("https://sponsor.ajay.app/api/branding")
+        .query(&[("videoID", video_id)])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    Ok(parse_dearrow(&resp, video_id))
+}
+
+/// Parse a DeArrow `/api/branding?videoID=<id>` response into `(title,
+/// thumbnail_url)`. Picks the highest-scored non-original entry (a locked entry
+/// wins over vote count, matching DeArrow's own precedence), and skips entries
+/// the community has voted down. Pure (no I/O) so it is unit-tested directly.
+pub fn parse_dearrow(
+    resp: &serde_json::Value,
+    video_id: &str,
+) -> (Option<String>, Option<String>) {
+    // Score an entry: locked entries win outright; otherwise by vote count.
+    // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
+    let score = |e: &serde_json::Value| -> Option<i64> {
+        let original = e.get("original").and_then(|o| o.as_bool()).unwrap_or(false);
+        if original {
+            return None;
+        }
+        let votes = e.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
+        let locked = e.get("locked").and_then(|l| l.as_bool()).unwrap_or(false);
+        if votes < 0 && !locked {
+            return None;
+        }
+        Some(if locked { votes + 1_000_000 } else { votes })
+    };
+
+    let title = resp
+        .get("titles")
         .and_then(|t| t.as_array())
-        .and_then(|a| a.first())
-        .and_then(|t| t.get("title"))
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string());
-    let has_thumb = entry
-        .and_then(|e| e.get("thumbnails"))
+        .and_then(|arr| {
+            arr.iter()
+                .filter_map(|e| Some((score(e)?, e)))
+                .max_by_key(|(s, _)| *s)
+                .and_then(|(_, e)| e.get("title").and_then(|s| s.as_str()))
+                .map(|s| s.to_string())
+        });
+
+    let thumbnail_url = resp
+        .get("thumbnails")
         .and_then(|t| t.as_array())
-        .map(|a| !a.is_empty())
-        .unwrap_or(false);
-    Ok((title, has_thumb))
+        .and_then(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    let s = score(e)?;
+                    let ts = e.get("timestamp").and_then(|v| v.as_f64())?;
+                    Some((s, ts))
+                })
+                .max_by_key(|(s, _)| *s)
+                .map(|(_, ts)| {
+                    format!(
+                        "https://dearrow-thumb.ajay.app/api/v1/getThumbnail?videoID={video_id}&time={ts}"
+                    )
+                })
+        });
+
+    (title, thumbnail_url)
+}
+
+/// Fetch the crowdsourced dislike count for a video via Return YouTube Dislike
+/// (`GET /votes?videoId=<id>`).
+pub fn fetch_dislikes(
+    client: &reqwest::blocking::Client,
+    video_id: &str,
+) -> anyhow::Result<u64> {
+    let resp: serde_json::Value = client
+        .get("https://returnyoutubedislikeapi.com/votes")
+        .query(&[("videoId", video_id)])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
+}
+
+/// Parse a Return YouTube Dislike `/votes` response's dislike count. Pure (no
+/// I/O) so it is unit-tested directly.
+pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
+    resp.get("dislikes").and_then(|v| v.as_u64())
 }
 
 /// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
@@ -274,14 +327,12 @@ pub fn search(
 pub struct Worker {
     tx: Sender<Request>,
     rx: Receiver<Update>,
-    frame_rx: Receiver<DecodedFrame>,
 }
 
 impl Worker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<Update>();
-        let (frame_tx, frame_rx) = std::sync::mpsc::channel::<DecodedFrame>();
         std::thread::Builder::new()
             .name("tube-fetch".into())
             .spawn(move || {
@@ -293,6 +344,10 @@ impl Worker {
                 // orthogonal to the InnerTube source).
                 let offline = crate::backend::default_backend();
                 let live = try_live_backend(&up_tx);
+                // Comments come from rustypipe specifically (see `try_comments_backend`);
+                // constructed lazily on the first watch-open so a session that only
+                // browses never pays for it. Outer `Option` = "attempted yet?".
+                let mut comments_src: Option<Option<Box<dyn YtBackend>>> = None;
                 // Announce the starting posture honestly: even with a live
                 // backend constructed we don't claim "live" until a real fetch
                 // returns, because construction doesn't touch the network.
@@ -304,11 +359,6 @@ impl Worker {
                         "offline — sample data".into()
                     },
                 });
-                // The currently-streaming video, if any. Held here so a new
-                // `PlayVideo` (or a `StopPlayback` on leaving the watch page)
-                // can signal the old thread to finish before a new one starts —
-                // never two decoders running, never a leaked thread.
-                let mut playback: Option<PlaybackHandle> = None;
                 while let Ok(req) = req_rx.recv() {
                     match req {
                         Request::Branding(id) => {
@@ -321,27 +371,47 @@ impl Worker {
                                 }
                             }
                             match fetch_dearrow(&client, &id) {
-                                Ok((title, has)) => {
+                                Ok((title, thumbnail_url)) => {
                                     let _ = up_tx.send(Update::DeArrow {
-                                        video: id,
+                                        video: id.clone(),
                                         title,
-                                        has_thumbnail: has,
+                                        thumbnail_url,
                                     });
                                 }
                                 Err(e) => {
                                     let _ = up_tx.send(Update::Note(format!("DeArrow: {e}")));
                                 }
                             }
+                            match fetch_dislikes(&client, &id) {
+                                Ok(count) => {
+                                    let _ = up_tx.send(Update::Dislikes { video: id, count });
+                                }
+                                Err(e) => {
+                                    let _ = up_tx.send(Update::Note(format!("Dislikes: {e}")));
+                                }
+                            }
                         }
                         Request::Search { query, .. } => {
-                            // Live first, then fall back to the offline sample so
-                            // search always returns something usable.
-                            if let Some((BackendResult::Videos(vs), used_live)) =
-                                fetch(&live, offline.as_ref(), Query::Search(query.clone()), true, &up_tx)
-                            {
-                                send_status(&up_tx, used_live);
-                                let _ = up_tx.send(Update::SearchResults(query, vs));
-                            }
+                            // Live only — NEVER fall back to the bundled sample:
+                            // presenting fabricated videos as real search results
+                            // is exactly what the "no fake content" rule forbids.
+                            // Always emit a (possibly empty) result so the UI can
+                            // drop its loading skeleton and show either real hits
+                            // or an honest "no results".
+                            let vs = match fetch(
+                                &live,
+                                offline.as_ref(),
+                                Query::Search(query.clone()),
+                                false,
+                                &up_tx,
+                            ) {
+                                Some((BackendResult::Videos(vs), used_live)) => {
+                                    send_status(&up_tx, used_live);
+                                    vs
+                                }
+                                _ => Vec::new(),
+                            };
+                            let _ = up_tx.send(Update::SearchResults(query, vs));
                         }
                         Request::Feed => {
                             // Live only: an offline feed is the sample already on
@@ -379,6 +449,23 @@ impl Worker {
                                 send_status(&up_tx, used_live);
                                 let _ = up_tx.send(Update::VideoMeta { video: v, related });
                             }
+                            // Real top comments — always via rustypipe, regardless of
+                            // which backend answered the metadata above.
+                            let cb = comments_src.get_or_insert_with(|| try_comments_backend(&up_tx));
+                            if let Some(b) = cb.as_ref() {
+                                match b.comments(&id) {
+                                    Ok(cs) if !cs.is_empty() => {
+                                        let _ = up_tx.send(Update::Comments {
+                                            video: id.clone(),
+                                            comments: cs,
+                                        });
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                                    }
+                                }
+                            }
                         }
                         Request::Channel(id) => {
                             if let Some((BackendResult::Channel { channel, uploads }, used_live)) =
@@ -389,33 +476,38 @@ impl Worker {
                             }
                         }
                         Request::PlayVideo(id) => {
-                            // Tear down any prior stream first (navigating to a
-                            // new video), then start the new one.
-                            if let Some(h) = playback.take() {
-                                h.stop();
-                            }
-                            playback = start_playback(&live, id, &frame_tx, &up_tx);
-                        }
-                        Request::StopPlayback => {
-                            if let Some(h) = playback.take() {
-                                h.stop();
-                            }
-                        }
-                        Request::SetPlaying(playing) => {
-                            if let Some(h) = &playback {
-                                h.set_paused(!playing);
+                            // Resolve a real, fully-rangeable stream URL for the
+                            // watch page's media engine. Proxy-first (Invidious
+                            // `local=true`, which serves whole-file byte ranges),
+                            // falling back to the live backend's direct URL.
+                            match resolve_stream_url(&live, &id) {
+                                Some((url, has_audio, quality)) => {
+                                    let _ = up_tx.send(Update::Note(format!(
+                                        "stream: {quality} {} [{}]",
+                                        if has_audio { "video+audio" } else { "video only" },
+                                        short_host(&url)
+                                    )));
+                                    let _ = up_tx.send(Update::StreamResolved {
+                                        video: id,
+                                        url,
+                                        has_audio,
+                                        quality,
+                                    });
+                                }
+                                None => {
+                                    let _ = up_tx.send(Update::Note(
+                                        "could not resolve a playable stream (no Invidious \
+                                         instance served bytes, and no direct URL was available)"
+                                            .into(),
+                                    ));
+                                }
                             }
                         }
                     }
                 }
-                // The request channel closed (the app dropped the Worker) — make
-                // sure the playback thread winds down too.
-                if let Some(h) = playback.take() {
-                    h.stop();
-                }
             })
             .expect("spawn tube-fetch");
-        Self { tx: req_tx, rx: up_rx, frame_rx }
+        Self { tx: req_tx, rx: up_rx }
     }
 
     pub fn request(&self, req: Request) {
@@ -426,345 +518,47 @@ impl Worker {
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().collect()
     }
-
-    /// Non-blocking drain of any decoded video frames ready this frame. The
-    /// watch page paints these; decoding already happened on the worker.
-    pub fn poll_frames(&self) -> Vec<DecodedFrame> {
-        self.frame_rx.try_iter().collect()
-    }
 }
 
-/// A handle to the dedicated playback thread. Dropping it detaches; calling
-/// [`PlaybackHandle::stop`] first signals the thread to finish so it never keeps
-/// downloading/decoding after the user has moved on.
-struct PlaybackHandle {
-    /// Set to end the stream. The thread polls it between fragments and frames
-    /// and exits promptly (within one frame interval or one fragment fetch).
-    stop: Arc<AtomicBool>,
-    /// Set to hold playback (transport paused). The thread keeps the last frame
-    /// on screen and stops decoding ahead while true.
-    paused: Arc<AtomicBool>,
-    join: std::thread::JoinHandle<()>,
+/// Short `host…` label for a resolved URL, for the status log.
+fn short_host(url: &str) -> String {
+    url.split('?')
+        .next()
+        .and_then(|u| u.split("://").nth(1))
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("stream")
+        .to_string()
 }
 
-impl PlaybackHandle {
-    /// Signal the thread to finish and detach. Non-blocking: the worker's request
-    /// loop must not stall on a fragment download, so we set the flag and let the
-    /// thread wind itself down (it always observes `stop` and returns). Dropping
-    /// the `JoinHandle` detaches — the thread terminates on its own, no leak.
-    fn stop(self) {
-        self.stop.store(true, Ordering::SeqCst);
-        drop(self.join);
-    }
-
-    fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::SeqCst);
-    }
-}
-
-/// Resolve a real stream for `id` (on the worker thread, using the live backend)
-/// and spawn a dedicated thread that streams + decodes it continuously. Returns a
-/// [`PlaybackHandle`] the worker keeps so it can stop the thread when the user
-/// navigates away. Failures degrade to a status note (the poster stays on
-/// screen) and return `None`.
-fn start_playback(
+/// Resolve a real, directly-playable stream URL for `id`. Tries the rangeable
+/// Invidious proxy first (a progressive muxed video+audio MP4 whose `local=true`
+/// endpoint serves whole-file byte ranges — the reliable path for seeking and
+/// for streaming past the first minute), then falls back to the live backend's
+/// direct playback source (yt-dlp / rustypipe). Returns `(url, has_audio,
+/// quality)`, or `None` when nothing is playable.
+fn resolve_stream_url(
     live: &Option<Box<dyn YtBackend>>,
-    id: String,
-    frame_tx: &Sender<DecodedFrame>,
-    up_tx: &Sender<Update>,
-) -> Option<PlaybackHandle> {
-    let Some(backend) = live.as_ref() else {
-        let _ = up_tx.send(Update::Note(
-            "playback needs the live backend (build with --features live)".into(),
-        ));
-        return None;
-    };
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let paused = Arc::new(AtomicBool::new(false));
-    let stop_t = stop.clone();
-    let paused_t = paused.clone();
-    let frame_tx = frame_tx.clone();
-
-    // GStreamer path (feature `media`): resolve a whole directly-playable URL
-    // via yt-dlp and let GStreamer decode any codec (VP9 / AV1 / H.264) + audio.
-    #[cfg(feature = "media")]
-    {
-        let source = match backend.resolve_playback_source(&id) {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
-                return None;
-            }
-        };
-        let _ = up_tx.send(Update::Note(format!(
-            "stream (gstreamer): {} {}x{}@{}fps audio={} [{}]",
-            source.quality, source.width, source.height, source.fps, source.has_audio, source.format
-        )));
-        let up_tx = up_tx.clone();
-        let join = std::thread::Builder::new()
-            .name("tube-playback".into())
-            .spawn(move || {
-                stream_and_decode_gst(source, id, &frame_tx, &up_tx, &stop_t, &paused_t);
-            })
-            .ok()?;
-        return Some(PlaybackHandle { stop, paused, join });
-    }
-
-    // openh264 path (default `live` build, no `media`): resolve a byte-range
-    // H.264 stream and decode it through the legacy demux + openh264 decoder.
-    #[cfg(not(feature = "media"))]
-    {
-        let handle = match backend.resolve_video_stream(&id) {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = up_tx.send(Update::Note(format!("stream resolve: {e}")));
-                return None;
-            }
-        };
-        let _ = up_tx.send(Update::Note(format!(
-            "stream: itag {} {} {} {}x{}@{}fps",
-            handle.itag, handle.quality, handle.mime, handle.width, handle.height, handle.fps
-        )));
-        let up_tx = up_tx.clone();
-        let join = std::thread::Builder::new()
-            .name("tube-playback".into())
-            .spawn(move || {
-                stream_and_decode(handle, id, &frame_tx, &up_tx, &stop_t, &paused_t);
-            })
-            .ok()?;
-        Some(PlaybackHandle { stop, paused, join })
-    }
-}
-
-/// The GStreamer playback loop (feature `media`), run on the dedicated playback
-/// thread. Opens a `playbin` on the resolved URL, pulls decoded RGBA frames from
-/// its appsink — paced to real time by the sink's `sync=true` — and emits a
-/// [`DecodedFrame`] per picture until the user navigates away or the stream
-/// ends. Audio (when the format is muxed) plays through the system sink.
-#[cfg(feature = "media")]
-fn stream_and_decode_gst(
-    source: crate::backend::PlaybackSource,
-    id: String,
-    frame_tx: &Sender<DecodedFrame>,
-    up_tx: &Sender<Update>,
-    stop: &AtomicBool,
-    paused: &AtomicBool,
-) {
-    use crate::backend::gst_playback::{GstPlayback, Pull};
-
-    let play = match GstPlayback::open(&source.url) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("gstreamer open failed: {e}")));
-            return;
-        }
-    };
-    let mut emitted: u64 = 0;
-    let mut was_paused = false;
-    loop {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        // Reflect transport pause onto the pipeline (holds the clock).
-        let now_paused = paused.load(Ordering::SeqCst);
-        if now_paused != was_paused {
-            play.set_paused(now_paused);
-            was_paused = now_paused;
-        }
-        if now_paused {
-            std::thread::sleep(Duration::from_millis(20));
-            continue;
-        }
-        match play.pull(Duration::from_millis(200)) {
-            Pull::Frame((width, height, rgba)) => {
-                emitted += 1;
-                if frame_tx
-                    .send(DecodedFrame { video: id.clone(), width, height, rgba })
-                    .is_err()
-                {
-                    break; // UI gone.
-                }
-            }
-            Pull::Timeout => continue,
-            Pull::Eos => {
-                let _ = up_tx.send(Update::Note(format!(
-                    "playback finished: {emitted} frames decoded (gstreamer)"
-                )));
-                break;
-            }
-            Pull::Err(e) => {
-                let _ = up_tx.send(Update::Note(format!("gstreamer decode error: {e}")));
-                break;
-            }
-        }
-    }
-    play.stop();
-}
-
-/// The continuous playback loop, run on the dedicated playback thread. Downloads
-/// the stream fragment-by-fragment, demuxes each into per-frame access units,
-/// decodes them through **one reused** decoder so inter-frames resolve against
-/// their references, and emits a [`DecodedFrame`] per picture paced to the
-/// stream's frame rate. Video only — audio is out of scope.
-#[cfg(not(feature = "media"))]
-fn stream_and_decode(
-    handle: StreamHandle,
-    id: String,
-    frame_tx: &Sender<DecodedFrame>,
-    up_tx: &Sender<Update>,
-    stop: &AtomicBool,
-    paused: &AtomicBool,
-) {
-    let client = crate::backend::stream::http_client();
-    let plan = match crate::backend::stream::fetch_stream_plan(&client, &handle) {
-        Ok(p) => p,
-        Err(e) => {
-            // Not a fragmented DASH stream (or the index was unreadable): fall
-            // back to the single bounded-prefix decode so at least a still frame
-            // shows rather than nothing.
-            let _ = up_tx.send(Update::Note(format!(
-                "continuous stream unavailable ({e}); decoding a single-frame prefix"
-            )));
-            decode_single_prefix(&client, &handle, &id, frame_tx, up_tx);
-            return;
-        }
-    };
-    let _ = up_tx.send(Update::Note(format!(
-        "streaming {} fragments @ {}fps ({} {}x{})",
-        plan.fragments.len(),
-        handle.fps,
-        handle.quality,
-        handle.width,
-        handle.height
-    )));
-
-    // One decoder for the whole stream — recreating it per fragment would throw
-    // away the reference frames P/B pictures decode against.
-    let mut playback = crate::playback::Playback::new();
-    let fps = (handle.fps as f64).max(1.0);
-    let start = Instant::now();
-    let mut emitted: u64 = 0;
-
-    for frag in &plan.fragments {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        wait_while_paused(paused, stop);
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let bytes = match crate::backend::stream::fetch_fragment_bytes(&client, &handle, *frag) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = up_tx.send(Update::Note(format!("fragment fetch stopped: {e}")));
-                break;
-            }
-        };
-        for au in crate::backend::mp4::demux_fragment(&bytes, &plan.config) {
-            if stop.load(Ordering::SeqCst) {
-                return;
-            }
-            wait_while_paused(paused, stop);
-            if stop.load(Ordering::SeqCst) {
-                return;
-            }
-            if playback.feed(&au) {
-                if let Some((width, height, rgba)) = playback.latest_rgba() {
-                    emitted += 1;
-                    if frame_tx
-                        .send(DecodedFrame { video: id.clone(), width, height, rgba })
-                        .is_err()
-                    {
-                        return; // UI gone — stop cleanly.
-                    }
-                }
-            }
-            // Pace emitted frames to real time: hold each ~1/fps from the stream
-            // start. If decoding can't keep up the target is already past and we
-            // simply run as fast as the decoder manages (honest, no fake motion).
-            let target = start + Duration::from_secs_f64(emitted as f64 / fps);
-            pace_until(target, stop);
-        }
-    }
-    // Drain any pictures still buffered in the decoder's reorder queue.
-    for (width, height, rgba) in playback.flush() {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        emitted += 1;
-        if frame_tx
-            .send(DecodedFrame { video: id.clone(), width, height, rgba })
-            .is_err()
-        {
-            return;
-        }
-        let target = start + Duration::from_secs_f64(emitted as f64 / fps);
-        pace_until(target, stop);
-    }
-    let _ = up_tx.send(Update::Note(format!(
-        "playback finished: {emitted} frames decoded"
-    )));
-}
-
-/// Single bounded-prefix fallback: download one prefix and decode a single frame
-/// (the pre-streaming behaviour) so a poster-replacement still shows when the
-/// continuous path is unavailable (e.g. a progressive/muxed stream with no sidx).
-#[cfg(not(feature = "media"))]
-fn decode_single_prefix(
-    client: &reqwest::blocking::Client,
-    handle: &StreamHandle,
     id: &str,
-    frame_tx: &Sender<DecodedFrame>,
-    up_tx: &Sender<Update>,
-) {
-    match crate::backend::stream::fetch_h264(client, handle) {
-        Ok(fetched) => {
-            let mut playback = crate::playback::Playback::new();
-            if playback.feed(&fetched.annexb) {
-                if let Some((width, height, rgba)) = playback.latest_rgba() {
-                    let _ = frame_tx.send(DecodedFrame {
-                        video: id.to_string(),
-                        width,
-                        height,
-                        rgba,
-                    });
-                }
-            } else {
-                let _ = up_tx.send(Update::Note(
-                    "stream downloaded but no frame decoded from the first fragment".into(),
-                ));
+) -> Option<(String, bool, String)> {
+    // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
+    // `android_vr` client) that streams the WHOLE video+audio without the
+    // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
+    // play the full length and seek. (Proven with `--probe-engine`: full
+    // duration, buffered to 100%.)
+    if let Some(b) = live.as_ref() {
+        if let Ok(src) = b.resolve_playback_source(id) {
+            if !src.url.is_empty() {
+                return Some((src.url, src.has_audio, src.quality));
             }
         }
-        Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("stream fetch: {e}")));
-        }
     }
-}
-
-/// Sleep until `target`, waking early (and returning) if `stop` is set. Sleeps in
-/// short slices so a stop is honoured within ~20 ms regardless of frame interval.
-#[cfg(not(feature = "media"))]
-fn pace_until(target: Instant, stop: &AtomicBool) {
-    loop {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let now = Instant::now();
-        if now >= target {
-            return;
-        }
-        std::thread::sleep((target - now).min(Duration::from_millis(20)));
+    // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
+    // instance network has largely collapsed, so this is a last resort for when
+    // yt-dlp is unavailable.
+    if let Some(r) = crate::backend::proxy::resolve_rangeable(id) {
+        return Some((r.url, r.has_audio, r.quality));
     }
-}
-
-/// Block while the transport is paused, polling in short slices so a resume or a
-/// stop is honoured promptly. Returns immediately when not paused.
-#[cfg(not(feature = "media"))]
-fn wait_while_paused(paused: &AtomicBool, stop: &AtomicBool) {
-    while paused.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    None
 }
 
 /// Construct the live rustypipe backend when the `live` feature is on and it
@@ -802,6 +596,26 @@ fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
 
 #[cfg(not(feature = "live"))]
 fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+    None
+}
+
+/// Construct the dedicated **rustypipe** comments source. Comments specifically
+/// come from rustypipe's InnerTube `next`/comments continuation — the primary
+/// yt-dlp path does not extract them cheaply — so this is a separate backend
+/// from [`try_live_backend`], regardless of which one answers metadata.
+#[cfg(feature = "live")]
+fn try_comments_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+    match crate::backend::live::RustyPipeBackend::new() {
+        Ok(b) => Some(Box::new(b)),
+        Err(e) => {
+            let _ = up_tx.send(Update::Note(format!("comments source unavailable ({e})")));
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "live"))]
+fn try_comments_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     None
 }
 
@@ -914,16 +728,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hash_prefix_is_4_hex() {
-        let p = hash_prefix("dQw4w9WgXcQ");
-        assert_eq!(p.len(), 4);
-        assert!(p.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
     fn category_json_lists_all() {
         let j = category_json();
         assert!(j.contains("sponsor"));
         assert!(j.contains("music_offtopic"));
+    }
+
+    #[test]
+    fn parse_skip_segments_maps_and_sorts() {
+        // The shape the direct `?videoID=` endpoint returns: a flat array of
+        // segment objects. Unknown categories are dropped; the rest come back
+        // sorted by start time.
+        let resp = serde_json::json!([
+            {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
+            {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
+            {"category": "not_a_real_category", "segment": [1.0, 2.0], "votes": 0},
+            {"category": "intro", "segment": [0.0, 12.0], "votes": 1}
+        ]);
+        let segs = parse_skip_segments(&resp);
+        assert_eq!(segs.len(), 3, "unknown category dropped");
+        assert_eq!(segs[0].category, Category::Intro);
+        assert_eq!(segs[1].category, Category::Sponsor);
+        assert!((segs[1].start - 30.5).abs() < 1e-9);
+        assert_eq!(segs[2].category, Category::Outro);
+        assert_eq!(segs[1].votes, 10);
+    }
+
+    #[test]
+    fn parse_skip_segments_empty_on_non_array() {
+        assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
+    }
+
+    /// Real-path check: actually call SponsorBlock, DeArrow and Return YouTube
+    /// Dislike and assert the parsed shapes. Honestly gated — it only touches
+    /// the network when `TUBE_NET_TESTS=1`, so offline/CI runs pass trivially
+    /// rather than being silently `#[ignore]`d. Run with:
+    /// `TUBE_NET_TESTS=1 cargo test -p tube live_branding_apis`.
+    #[test]
+    fn live_branding_apis_reachable_when_enabled() {
+        if std::env::var("TUBE_NET_TESTS").is_err() {
+            eprintln!("skipping live branding test (set TUBE_NET_TESTS=1 to run it)");
+            return;
+        }
+        let c = client();
+        // Despacito — stable, carries locked SponsorBlock segments, DeArrow
+        // branding, and a large crowdsourced dislike count.
+        let vid = "kJQP7kiw5Fk";
+        let segs = fetch_sponsor(&c, vid).expect("real SponsorBlock call");
+        assert!(!segs.is_empty(), "Despacito has community segments");
+        let (title, thumb) = fetch_dearrow(&c, vid).expect("real DeArrow call");
+        assert!(
+            title.is_some() || thumb.is_some(),
+            "DeArrow returns community branding for Despacito"
+        );
+        let dislikes = fetch_dislikes(&c, vid).expect("real RYD call");
+        assert!(dislikes > 0, "Despacito has crowdsourced dislikes ({dislikes})");
     }
 }

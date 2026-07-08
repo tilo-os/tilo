@@ -154,6 +154,29 @@ impl FeedsDoc {
         ui::doc::put_if_changed(doc, &obj, "content", content.as_str());
     }
 
+    /// Unsubscribe: delete a feed entry and every article belonging to it from
+    /// the document. Merge-friendly — a delete of a key another peer never
+    /// re-adds converges cleanly. Mirrors [`crate::model::Store::remove_feed`]
+    /// so the in-memory store and the CRDT stay in lock-step.
+    pub fn remove_feed(doc: &mut AutoCommit, id: Id) {
+        if let Ok(Some((Value::Object(ObjType::Map), feeds))) = doc.get(&ROOT, "feeds") {
+            let _ = doc.delete(&feeds, id.to_string().as_str());
+        }
+        if let Ok(Some((Value::Object(ObjType::Map), articles))) = doc.get(&ROOT, "articles") {
+            let feed_key = id.to_string();
+            let keys: Vec<String> = doc.keys(&articles).collect();
+            for key in keys {
+                if let Ok(Some((Value::Object(ObjType::Map), obj))) =
+                    doc.get(&articles, key.as_str())
+                {
+                    if Self::get_str(doc, &obj, "feed") == feed_key {
+                        let _ = doc.delete(&articles, key.as_str());
+                    }
+                }
+            }
+        }
+    }
+
     fn article_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
         let articles = match doc.get(&ROOT, "articles") {
             Ok(Some((Value::Object(ObjType::Map), m))) => m,
@@ -411,6 +434,25 @@ mod tests {
         FeedsDoc::set_read(&mut doc, id, true);
         let loaded = FeedsDoc::load(&doc);
         assert!(loaded.articles[0].read);
+    }
+
+    #[test]
+    fn remove_feed_deletes_feed_and_its_articles() {
+        let mut doc = AutoCommit::new();
+        let store = sample_store();
+        FeedsDoc::seed(&mut doc, &store);
+        let feed_id = store.feeds[0].id;
+        assert_eq!(FeedsDoc::load(&doc).feeds.len(), 1);
+        assert_eq!(FeedsDoc::load(&doc).articles.len(), 1);
+
+        FeedsDoc::remove_feed(&mut doc, feed_id);
+
+        let loaded = FeedsDoc::load(&doc);
+        assert!(loaded.feeds.is_empty(), "the feed is deleted from the document");
+        assert!(
+            loaded.articles.is_empty(),
+            "the feed's articles are deleted too"
+        );
     }
 
     #[test]

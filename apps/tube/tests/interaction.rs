@@ -81,35 +81,33 @@ fn palette_result_click_navigates_to_video() {
 }
 
 #[test]
-fn watch_view_paints_the_decoded_frame_when_present() {
-    // With a real decoded frame in app state, the watch page must paint the
-    // live video surface (the on-screen paint path) instead of the poster.
-    // Inject a 16x16 frame for a sample video and assert the surface is laid
-    // out in the real widget tree — proof the frame reaches the screen.
-    let (fw, fh) = (16u32, 16u32);
-    let rgba = vec![210u8; (fw * fh * 4) as usize];
-    let app = TubeApp::new().with_decoded_frame_for_test("vid_donut", fw, fh, rgba);
+fn watch_view_lays_out_the_shared_video_player_surface() {
+    // The watch page mounts the app's persistent, media-engine-backed
+    // `ui::widget::VideoPlayer` (via `PlayerHost`) as its player surface. Assert
+    // it is laid out in the real widget tree on a watch route — proof the shared
+    // player reaches the screen.
+    let app = TubeApp::new().with_route_shot(Route::Watch("vid_donut".into()));
     let h = Harness::new(app, VIEWPORT);
     assert!(
         matches!(h.app.route_for_test(), Route::Watch(_)),
-        "the injected frame opens its watch page"
+        "the app is on a watch page"
     );
     assert!(
         h.has_id("watch_video_surface"),
-        "a decoded frame paints the live video surface, not the poster"
+        "the watch page lays out the shared video-player surface"
     );
 }
 
 #[test]
-fn watch_view_shows_poster_without_a_frame() {
-    // The dual of the above: with no decoded frame, the watch page must NOT
-    // contain the live surface (it falls back to the poster). Proves the swap
-    // is real, not always-on.
-    let app = TubeApp::new().with_route_shot(Route::Watch("vid_donut".into()));
+fn non_watch_views_have_no_video_player_surface() {
+    // The dual: off a watch route (Home) the player surface must not be in the
+    // tree — the surface is scoped to the watch page, not always-on.
+    let app = TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64);
     let h = Harness::new(app, VIEWPORT);
+    assert_eq!(h.app.route_for_test(), &Route::Home);
     assert!(
         !h.has_id("watch_video_surface"),
-        "with no decoded frame the poster stands in for the player"
+        "the video-player surface only exists on the watch page"
     );
 }
 
@@ -235,14 +233,38 @@ fn transport_settings_gear_navigates_to_settings() {
 }
 
 #[test]
-fn play_pause_button_toggles_playing_through_a_real_click() {
-    let mut h = Harness::new(watch_app(), VIEWPORT);
-    let before = h.app.model_for_test().playing;
-    h.click_id("play_pause");
-    assert_ne!(
-        before,
-        h.app.model_for_test().playing,
-        "the play/pause button flips the playing state"
+fn watch_page_lays_out_dislikes_pill_and_sponsorblock_timeline() {
+    // The Return YouTube Dislike pill and the SponsorBlock segment timeline are
+    // both real widgets on the watch page (WATCH_ID carries sponsor segments and
+    // a seeded dislike count). Assert they're laid out in the real tree.
+    let h = Harness::new(watch_app(), VIEWPORT);
+    assert!(
+        h.has_id("dislike_pill"),
+        "the watch page lays out the Return YouTube Dislike pill"
+    );
+    assert!(
+        h.has_id("sb_timeline"),
+        "the watch page lays out the SponsorBlock segment timeline"
+    );
+}
+
+#[test]
+fn settings_category_mode_pill_cycles_the_skip_mode_through_a_real_click() {
+    use tube::model::{Category, SkipMode};
+    let app = TubeApp::new()
+        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_route_shot(Route::Settings);
+    let mut h = Harness::new(app, VIEWPORT);
+    // Sponsor defaults to Auto-skip; clicking its mode pill cycles it to Show.
+    assert_eq!(
+        h.app.model_for_test().settings.mode_of(Category::Sponsor),
+        SkipMode::Skip
+    );
+    h.click_id(&format!("mode_{}", Category::Sponsor.api_key()));
+    assert_eq!(
+        h.app.model_for_test().settings.mode_of(Category::Sponsor),
+        SkipMode::Show,
+        "clicking the mode pill cycles Auto-skip → Show"
     );
 }
 
@@ -265,35 +287,12 @@ fn subscribe_pill_toggles_subscription_through_a_real_click() {
     );
 }
 
-#[test]
-fn seek_bar_drag_seeks_and_auto_skips_a_sponsor_segment() {
-    // Drive the scrubber's real drag handling: drag the playhead into the
-    // SponsorBlock sponsor segment (1440–1570s of a 1620s video). Auto-skip
-    // must fast-forward past it and record a skip notice — the exact
-    // production seek → auto-skip path, through the widget (not app.apply).
-    let mut h = Harness::new(watch_app(), VIEWPORT);
-    let dur = h.app.model_for_test().video(WATCH_ID).unwrap().duration as f64;
-    // Target ~1505s (inside the 1440–1570 sponsor band) as a fraction of width.
-    h.drag_scrubber_to("seek_bar", 1505.0 / dur);
-
-    let playhead = h.app.model_for_test().playhead;
-    assert!(
-        playhead >= 1570.0,
-        "auto-skip must jump the playhead past the sponsor segment end (was {playhead})"
-    );
-    assert!(
-        h.app
-            .model_for_test()
-            .notices
-            .iter()
-            .any(|n| n.contains("Sponsor")),
-        "the auto-skip is surfaced as a notice"
-    );
-    assert!(
-        matches!(h.app.route_for_test(), Route::Watch(id) if id == WATCH_ID),
-        "a mid-video skip does not trigger autoplay-next"
-    );
-}
+// The play/pause and scrub transport now live in the shared `VideoPlayer`'s
+// controls overlay (driven by the `media::MediaEngine`), and SponsorBlock
+// auto-skip runs against the engine playhead each frame. Those paths are proven
+// against the real engine in `app.rs`'s `toggle_play_drives_the_engine` and
+// `auto_skip_seeks_the_engine_past_a_sponsor_segment` unit tests — the headless
+// click harness can't address the player's in-surface controls by id.
 
 // ---------------------------------------------------------------------------
 // settings-page controls

@@ -129,6 +129,51 @@ pub struct VoiceMember {
     pub deafened: bool,
     /// Camera off / audio-only participant.
     pub audio_only: bool,
+    /// The peer's dialable media ticket (iroh node ticket in the live engine;
+    /// a `sim://` placeholder otherwise). Published into the shared voice
+    /// membership on join so every other peer can dial it directly — this map
+    /// **is** the call's signalling channel, riding the same collab transport
+    /// as the messages. `None` until the peer has announced one.
+    pub ticket: Option<String>,
+}
+
+/// How a call's media is routed. Peer-to-peer below the mesh threshold (each
+/// peer sends directly to every other); host-relay above it (peers publish to
+/// one designated host that re-fans the streams), which keeps a growing call's
+/// upload bandwidth flat. Chosen from the live participant count, so a call
+/// transparently promotes from P2P to host-based as people join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallSession {
+    Peer,
+    Host,
+}
+
+impl CallSession {
+    /// Mesh P2P stays practical up to a small fan-out; beyond it the call
+    /// switches to a host relay.
+    pub const PEER_MAX: usize = 3;
+
+    pub fn select(participants: usize) -> Self {
+        if participants <= Self::PEER_MAX {
+            CallSession::Peer
+        } else {
+            CallSession::Host
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CallSession::Peer => "peer-to-peer",
+            CallSession::Host => "host relay",
+        }
+    }
+}
+
+/// The designated relay host for a host-based call: the lexicographically
+/// smallest member id, so every peer independently agrees who relays with **no
+/// extra signalling round-trip**. `None` for an empty call.
+pub fn call_host(members: &[VoiceMember]) -> Option<Id> {
+    members.iter().map(|m| m.user.clone()).min()
 }
 
 #[derive(Clone, Debug)]
@@ -152,12 +197,46 @@ pub enum Attachment {
         w: u32,
         h: u32,
     },
+    /// A video projected from the P2P FUSE filesystem. Rendered inline as a
+    /// poster/preview card with a play affordance and the real resolution; the
+    /// bytes hydrate from the FUSE mount **by reference** on demand (a full
+    /// frame decode needs the media engine's decoder — see [`crate::media`] —
+    /// available only in the `live-media` build), never copied into the CRDT.
+    /// `w`/`h` are the pixel dimensions when known (0 when the container header
+    /// wasn't probed).
+    Video {
+        name: String,
+        path: String,
+        w: u32,
+        h: u32,
+        size: u64,
+    },
     /// A non-image file share (chip with name + size).
     File {
         name: String,
         path: String,
         size: u64,
     },
+}
+
+impl Attachment {
+    /// The FUSE / filesystem path whose bytes back this attachment. Every
+    /// variant references a real projected file — the gate the permissions
+    /// layer checks before hydrating, and the key the image cache loads from.
+    pub fn path(&self) -> &str {
+        match self {
+            Attachment::Image { path, .. }
+            | Attachment::Video { path, .. }
+            | Attachment::File { path, .. } => path,
+        }
+    }
+    pub fn name(&self) -> &str {
+        match self {
+            Attachment::Image { name, .. }
+            | Attachment::Video { name, .. }
+            | Attachment::File { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -398,5 +477,36 @@ mod tests {
         assert_eq!(day_label(now, now), "Today");
         assert_eq!(day_label(now - 86_400, now), "Yesterday");
         assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
+    }
+
+    fn vm(user: &str) -> VoiceMember {
+        VoiceMember {
+            user: user.into(),
+            talking: false,
+            muted: false,
+            deafened: false,
+            audio_only: false,
+            ticket: None,
+        }
+    }
+
+    #[test]
+    fn call_session_promotes_from_p2p_to_host_relay() {
+        // Small calls mesh peer-to-peer; past the threshold they switch to a
+        // host relay so a growing call's upload bandwidth stays flat.
+        assert_eq!(CallSession::select(1), CallSession::Peer);
+        assert_eq!(CallSession::select(CallSession::PEER_MAX), CallSession::Peer);
+        assert_eq!(CallSession::select(CallSession::PEER_MAX + 1), CallSession::Host);
+        assert_eq!(CallSession::Peer.label(), "peer-to-peer");
+        assert_eq!(CallSession::Host.label(), "host relay");
+    }
+
+    #[test]
+    fn call_host_is_the_deterministic_smallest_id() {
+        // Every peer independently agrees on the host (smallest id) with no
+        // extra signalling round-trip.
+        let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
+        assert_eq!(call_host(&members), Some("u_alice".to_string()));
+        assert_eq!(call_host(&[]), None);
     }
 }
