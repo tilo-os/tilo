@@ -661,6 +661,28 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
                 ffi::webkit_user_content_manager_remove_all_filters(ucm);
             }
+            WebViewCommand::SetContentFilters(chunks) => {
+                // Replace all filters, then compile+install each chunk under
+                // its own id (each on_filter_saved adds the compiled list).
+                let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
+                ffi::webkit_user_content_manager_remove_all_filters(ucm);
+                for (i, json) in chunks.iter().enumerate() {
+                    let Ok(id) = CString::new(format!("qos-adblock-{i}")) else {
+                        continue;
+                    };
+                    let bytes =
+                        ffi::g_bytes_new(json.as_ptr() as *const c_void, json.len());
+                    ffi::webkit_user_content_filter_store_save(
+                        state.filter_store,
+                        id.as_ptr(),
+                        bytes,
+                        std::ptr::null_mut(),
+                        on_filter_saved,
+                        state as *mut EngineState as *mut c_void,
+                    );
+                    ffi::g_bytes_unref(bytes);
+                }
+            }
             WebViewCommand::SetUserScripts(scripts) => {
                 let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
                 ffi::webkit_user_content_manager_remove_all_scripts(ucm);
