@@ -30,7 +30,7 @@ webview-wpe = []
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
 # `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
 # copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
-mpris = ["dep:zbus"]
+mpris = ["dep:zbus", "zbus/tokio"]
 
 [dependencies]
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
