@@ -148,6 +148,14 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 ## typst_editor
 - [x] Horizontal scroll / keep caret in view → fixed.
 - [x] Idle spin while editor focused → fixed.
+- [x] Source-editor cut/copy/paste used an app-local buffer, so text couldn't
+      move to/from other apps or the rendered preview → now goes through the
+      OS system clipboard (paste normalises CRLF + strips stray control codes).
+- [x] No word-wise editing → Ctrl+←/→ hop by word and Ctrl+Backspace/Delete
+      remove a word (shared `ui` word-boundary helpers).
+- [x] A failed recompile blanked the preview and lost the reader's place →
+      the last successful render stays on screen under a "showing last
+      successful render" banner until the next clean compile.
 
 ## contacts
 - [x] Toasts auto-dismiss → fixed.

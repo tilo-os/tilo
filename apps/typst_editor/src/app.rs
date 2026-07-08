@@ -172,6 +172,9 @@ pub struct TypstApp {
     /// Screenshot-only: on the next layout pass, select a run of preview text so
     /// the capture proves rendered-text selection.
     demo_preview_select: bool,
+    /// Screenshot-only: on the next layout pass, apply a failed compile over the
+    /// good render so the capture proves the stale-render banner.
+    demo_stale: bool,
 
     // --- layout rects (filled by apply_layout) ---
     rect: Rect,
@@ -267,6 +270,7 @@ impl TypstApp {
             demo_preview_zoom: false,
             demo_preview_pan: false,
             demo_preview_select: false,
+            demo_stale: false,
             rect: Rect::ZERO,
             toolbar_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
@@ -313,6 +317,7 @@ impl TypstApp {
             "preview-zoom" => self.demo_preview_zoom = true,
             "preview-pan" => self.demo_preview_pan = true,
             "select" => self.demo_preview_select = true,
+            "stale" => self.demo_stale = true,
             _ => {}
         }
     }
@@ -392,10 +397,18 @@ impl TypstApp {
         self.elapsed_ms = out.elapsed_ms;
         self.err_count = out.error_count();
         self.warn_count = out.warning_count();
-        self.preview.set_pages_with_text(&out.pages, &out.page_text);
         if out.pages.is_empty() {
-            self.preview
-                .set_placeholder(Some("Compilation failed — see the Problems panel.".into()));
+            // The compile failed. Keep the last successful render on screen (so
+            // the reader doesn't lose their place while fixing a typo) and flag
+            // it stale; only fall back to a placeholder when nothing has ever
+            // rendered.
+            if self.preview.page_count() == 0 {
+                self.preview
+                    .set_placeholder(Some("Compilation failed — see the Problems panel.".into()));
+            }
+            self.preview.set_stale(true);
+        } else {
+            self.preview.set_pages_with_text(&out.pages, &out.page_text);
         }
         self.diagnostics.set_diagnostics(out.diagnostics);
         if self.err_count > 0 {
@@ -716,6 +729,13 @@ impl TypstApp {
         if self.demo_preview_select && self.preview.page_count() > 0 {
             self.demo_preview_select = false;
             self.preview.demo_select_fraction(0.0, 0.03);
+        }
+        if self.demo_stale && self.preview.page_count() > 0 {
+            self.demo_stale = false;
+            // Apply a failed compile over the good render so the capture proves
+            // the last-successful-render fallback + stale banner.
+            let bad = compile::compile_source(&self.parts, "Body #undefined_var end.\n", PPP);
+            self.apply_output(bad);
         }
     }
 
@@ -2063,6 +2083,37 @@ mod tests {
                 d.kind
             );
         }
+    }
+
+    /// A failed recompile keeps the last successful render on screen (flagged
+    /// stale) instead of blanking the preview — so a transient typo doesn't
+    /// throw away the reader's place. Drives the real compile → `apply_output`
+    /// path the background worker feeds.
+    #[test]
+    fn failed_recompile_keeps_last_good_preview() {
+        let (mut app, _doc) = fresh();
+        assert!(app.preview.page_count() >= 1, "the welcome demo rendered a page");
+        assert!(!app.preview.is_stale(), "a clean render is not stale");
+
+        // Compile a broken source (an undefined variable is a fatal error that
+        // stops layout), then feed the result exactly as the worker would.
+        let broken = compile::compile_source(&app.parts, "Body #undefined_var end.\n", PPP);
+        assert!(broken.pages.is_empty(), "the broken source produced no pages");
+        assert!(broken.error_count() >= 1, "and carries a blocking error");
+        app.apply_output(broken);
+
+        assert!(
+            app.preview.page_count() >= 1,
+            "the last good render is retained after a failed compile"
+        );
+        assert!(app.preview.is_stale(), "the retained render is flagged stale");
+        assert!(app.err_count >= 1 && app.show_diagnostics, "the error is surfaced");
+
+        // A subsequent clean compile clears the stale flag and refreshes pages.
+        let good = compile::compile_source(&app.parts, "= Fixed\n\nBody.\n", PPP);
+        assert!(!good.pages.is_empty());
+        app.apply_output(good);
+        assert!(!app.preview.is_stale(), "a clean recompile clears the stale flag");
     }
 
     /// Exporting writes a real `.pdf` next to the source — the file on disk
