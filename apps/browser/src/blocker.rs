@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
+use ui::webview::{SharedEngine, WebViewCommand};
 
 /// Filter lists to fetch, as `(cache file name, URL)`.
 ///
@@ -45,7 +45,7 @@ const LISTS: &[(&str, &str)] = &[
     ),
     (
         "easylist-cookie.txt",
-        "https://easylist.to/easylist/easylist-cookie.txt",
+        "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt",
     ),
     (
         "ublock-filters.txt",
@@ -89,10 +89,15 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
             Ok(filter) => {
                 tracing::info!(
                     rules = filter.rule_count,
+                    chunks = filter.chunks.len(),
                     skipped = filter.skipped,
                     "content filter compiled"
                 );
-                engine.send(WebViewCommand::SetContentFilter(Some(filter.json)));
+                // Installed as several filters — the full rule set exceeds
+                // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`).
+                engine.send(WebViewCommand::SetContentFilters(std::sync::Arc::new(
+                    filter.chunks,
+                )));
             }
             Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
         })
@@ -298,7 +303,7 @@ fn load_list(name: &str, url: &str) -> Option<String> {
     }
 }
 
-fn load_and_compile() -> Result<ui::webview::adblock::CompiledFilter, String> {
+fn load_and_compile() -> Result<ui::webview::adblock::ChunkedFilter, String> {
     let texts: Vec<String> = LISTS
         .iter()
         .filter_map(|(name, url)| load_list(name, url))
@@ -306,8 +311,11 @@ fn load_and_compile() -> Result<ui::webview::adblock::CompiledFilter, String> {
     if texts.is_empty() {
         return Err("no filter lists available (offline with an empty cache)".into());
     }
-    ui::webview::adblock::compile_filter_lists(texts.iter().map(String::as_str))
-        .map_err(|e| e.to_string())
+    ui::webview::adblock::compile_filter_lists_chunked(
+        texts.iter().map(String::as_str),
+        ui::webview::adblock::MAX_RULES_PER_FILTER,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
