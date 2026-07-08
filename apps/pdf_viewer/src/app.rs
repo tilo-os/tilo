@@ -187,6 +187,22 @@ impl TextSelection {
     }
 }
 
+/// A rubber-band region selection over a page (Shift + drag with the Select
+/// tool). On release its pixels are cropped from the page bitmap and copied to
+/// the clipboard as an image. Both corners are in page-point space.
+#[derive(Clone, Copy)]
+struct RegionSelect {
+    page: usize,
+    start: (f64, f64),
+    cur: (f64, f64),
+}
+
+impl RegionSelect {
+    fn rect(&self) -> PtRect {
+        PtRect::from_corners(self.start.0, self.start.1, self.cur.0, self.cur.1)
+    }
+}
+
 /// The target of a right-click "Delete" context menu.
 #[derive(Clone)]
 enum DeleteTarget {
@@ -347,6 +363,10 @@ pub struct PdfApp {
     raster_text: std::collections::HashMap<usize, Arc<PageText>>,
     /// A live text selection over the raster text layer, if any.
     selection: Option<TextSelection>,
+    /// A live image-region marquee (Shift + Select drag), if any.
+    region: Option<RegionSelect>,
+    /// Whether Shift is currently held (drives the region-copy marquee).
+    shift_down: bool,
 
     // Save-back.
     /// The on-disk path the current document was opened from, used to suggest a
@@ -519,6 +539,8 @@ impl PdfApp {
             raster_matches: Vec::new(),
             raster_text: std::collections::HashMap::new(),
             selection: None,
+            region: None,
+            shift_down: false,
             source_path: None,
             status_note: None,
             portal_save_rx: None,
@@ -1188,6 +1210,40 @@ impl PdfApp {
         } else {
             false
         }
+    }
+
+    /// Crop the active image-region marquee out of its page bitmap and copy it
+    /// to the clipboard as an image. Raster backend only. Returns true when a
+    /// region of usable size was cropped (the clipboard push itself is
+    /// best-effort — it silently no-ops in a headless session).
+    fn copy_region(&mut self) -> bool {
+        let Some(region) = self.region else { return false };
+        let rect = region.rect();
+        if rect.w < 3.0 || rect.h < 3.0 {
+            return false;
+        }
+        let page_idx = region.page.saturating_sub(1);
+        let (pgw, pgh) = self
+            .raster
+            .as_ref()
+            .map(|r| r.page_size(page_idx))
+            .unwrap_or((self.pw(), self.ph()));
+        // Render (or reuse) the page at ~2x so the crop is crisp.
+        let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
+        let Some(img) = self.raster.as_mut().and_then(|r| r.render(page_idx, bucket)) else {
+            return false;
+        };
+        let Some((w, h, rgba)) = render::crop_page_region(&img, pgw, pgh, rect) else {
+            return false;
+        };
+        let copied = ui::clipboard_copy_image(w, h, &rgba);
+        self.status_note = Some(if copied {
+            format!("Copied a {w}×{h} image region")
+        } else {
+            "Selected a region (clipboard unavailable)".to_string()
+        });
+        self.dirty = true;
+        true
     }
 
     // ---- save-back (flatten markup onto a real .pdf) ----------------
@@ -2990,6 +3046,65 @@ mod tests {
 
         let rz = saved_reopen(&mut app, "merged.pdf");
         assert_eq!(rz.page_count(), n * 2, "the merged page set persisted");
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn copy_image_region_crops_the_page_bitmap() {
+        let (mut app, _st) = open_laid_out_sample();
+        let (pw, ph) = app.raster.as_ref().unwrap().page_size(0);
+
+        // Marquee the upper-left portion of page 1 and copy it.
+        app.region = Some(RegionSelect { page: 1, start: (40.0, 40.0), cur: (pw * 0.6, ph * 0.5) });
+        assert!(app.copy_region(), "a usable region is cropped: {:?}", app.status_note);
+
+        // The pure crop path yields a correctly-sized sub-image of the page.
+        let bucket = ((pw * 2.0).round() as u32).clamp(96, 4096);
+        let img = app.raster.as_mut().unwrap().render(0, bucket).expect("page 1 renders");
+        let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
+        let (w, h, rgba) = render::crop_page_region(&img, pw, ph, rect).expect("crop succeeds");
+        assert!(w > 0 && h > 0);
+        assert_eq!(rgba.len(), w * h * 4, "RGBA buffer matches the cropped dimensions");
+        assert!(
+            w < img.width as usize && h < img.height as usize,
+            "the crop is a proper sub-region of the full page bitmap"
+        );
+    }
+
+    /// The note/comment card header must never overlap — the author name is
+    /// bounded and truncated so it can't run under the Resolve chip or the ×
+    /// button, whatever its length. Asserts on the production layout helper.
+    #[test]
+    fn comment_header_never_overlaps_even_with_a_long_name() {
+        let app = PdfApp::sample();
+        // A representative inner card rect for the 324px sidebar.
+        let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
+        let hdr = app.comment_header_layout(card);
+
+        assert!(
+            hdr.name_x + hdr.name_max as f64 <= hdr.chip.x0,
+            "the author name stops before the resolve chip (name ends {}, chip at {})",
+            hdr.name_x + hdr.name_max as f64,
+            hdr.chip.x0
+        );
+        assert!(hdr.chip.x1 <= hdr.del.x0, "the resolve chip stops before the delete button");
+        assert!(hdr.del.x1 <= card.x1, "the delete button stays inside the card");
+        assert!(
+            hdr.body_top >= hdr.avatar_c.y + 9.0,
+            "the body starts below the avatar, not overlapping it"
+        );
+
+        // A very long name/email truncates to fit the bounded width.
+        let mut tr = ui::text_render::TextRenderer::new();
+        let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
+        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max);
+        let (w, _) = tr.measure(&shown, 11.5, None);
+        assert!(
+            w as f32 <= hdr.name_max + 0.5,
+            "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
+            hdr.name_max
+        );
+        assert!(shown.chars().count() < long.chars().count(), "the long name was actually truncated");
     }
 
     /// Drive the real fixture PDF through the live frame path to produce the
