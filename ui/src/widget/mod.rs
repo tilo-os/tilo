@@ -510,6 +510,7 @@ pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, Cu
 pub mod slash_menu;     pub use slash_menu::SlashMenu;
 pub mod link_popover;   pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_palette;   pub use page_palette::PageJumpPalette;
+pub mod page_sidebar;   pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;    pub use dropdown::Dropdown;
 pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
 pub mod scrollbar; pub use scrollbar::{Scrollbar, ScrollMetrics, PressOutcome};
