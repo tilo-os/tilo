@@ -34,6 +34,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{card, caption, rows, setting_row, value_row};
 
 pub const AUTO_TIME_KEY: &str = "time.auto";
@@ -52,6 +53,21 @@ pub struct RealNtp;
 impl NtpControl for RealNtp {
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
         os_actions::set_ntp(enabled)
+    }
+}
+
+/// Sink the clock-format toggle persists through. In production it writes the
+/// shared locale (`locale.time_format`) that Region & Formats owns, so the two
+/// panes agree and the choice survives a restart; tests inject a no-op so the
+/// hermetic unit tests never touch the real `settings.json`.
+type FormatSink = Arc<dyn Fn(bool) + Send + Sync>;
+
+/// The production format sink: fold the 24-hour choice into the shared locale.
+fn persist_time_format(h24: bool) {
+    let mut region = RegionSettings::load();
+    region.locale.time_format = if h24 { TimeStyle::H24 } else { TimeStyle::H12 };
+    if let Err(e) = region.save() {
+        warn!(target: "qos::settings", op = "time_format_save", error = %e, "failed to persist clock format");
     }
 }
 
@@ -80,6 +96,7 @@ fn timezone() -> String {
 /// re-render the live clock when the 24-hour preference flips.
 pub struct TimeDatePane {
     ntp: Arc<dyn NtpControl>,
+    persist_format: FormatSink,
     timezone: String,
     h24: bool,
     initial_auto: bool,
@@ -100,13 +117,19 @@ impl Default for TimeDatePane {
 impl TimeDatePane {
     pub fn new() -> Self {
         let initial_auto = os_actions::get_ntp().unwrap_or(true);
+        // The clock format is the same system-wide preference Region & Formats
+        // owns (`locale.time_format`), so the two panes agree and the choice
+        // survives a restart. Reading it here — rather than defaulting to 24h —
+        // makes the toggle rest on the user's actual setting.
+        let h24 = matches!(RegionSettings::load().locale.time_format, TimeStyle::H24);
         Self {
             ntp: Arc::new(RealNtp),
+            persist_format: Arc::new(persist_time_format),
             timezone: timezone(),
-            h24: true,
+            h24,
             initial_auto,
             last_auto: initial_auto,
-            last_h24: true,
+            last_h24: h24,
             needs_seed: true,
             structure_dirty: false,
             composed: None,
@@ -114,10 +137,13 @@ impl TimeDatePane {
         }
     }
 
-    /// Test constructor: inject the NTP control and starting auto-state.
+    /// Test constructor: inject the NTP control and starting auto-state. The
+    /// clock format starts at 24-hour and persists through a no-op sink, so the
+    /// hermetic unit tests neither read the host's locale nor write to disk.
     pub fn with_ntp(ntp: Arc<dyn NtpControl>, initial_auto: bool) -> Self {
         Self {
             ntp,
+            persist_format: Arc::new(|_| {}),
             timezone: timezone(),
             h24: true,
             initial_auto,
@@ -198,13 +224,16 @@ impl Widget for TimeDatePane {
             }
         }
 
-        // 24-hour preference → re-render the live clock in the new format.
+        // 24-hour preference → re-render the live clock AND persist to the
+        // shared locale so Region & Formats and every consumer stay in sync
+        // and the choice survives a restart.
         if let Ok(Some((Value::Scalar(s), _))) = state.get(root, H24_KEY) {
             if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
                 if *b != self.last_h24 {
                     self.last_h24 = *b;
                     self.h24 = *b;
                     self.structure_dirty = true;
+                    (self.persist_format)(*b);
                 }
             }
         }
@@ -387,14 +416,22 @@ mod tests {
         assert!(!timezone().is_empty());
     }
 
-    /// Flipping the 24-hour key re-renders the clock (structure dirty) and
-    /// updates the pane's format flag — proof the toggle is live.
+    /// Flipping the 24-hour key re-renders the clock (structure dirty), updates
+    /// the pane's format flag, and forwards the new value to the format sink —
+    /// proof the toggle is live and drives the persistence path (asserted
+    /// against disk in the `prefs_persistence` integration test).
     #[test]
-    fn h24_toggle_reformats_clock() {
-        let mut pane = TimeDatePane::new();
+    fn h24_toggle_reformats_clock_and_persists_format() {
+        let sunk: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_calls = sunk.clone();
+        // Build the hermetic test pane (24h start, no disk) but swap in a
+        // recording format sink so we can prove the toggle drives persistence.
+        let mut pane = TimeDatePane::with_ntp(Arc::new(RecordingNtp::default()), true);
+        pane.persist_format = Arc::new(move |b| sink_calls.lock().unwrap().push(b));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
+        assert!(sunk.lock().unwrap().is_empty(), "seed must not persist");
         // Seed wrote h24=true; flip to false.
         let _ = doc.put(&root, H24_KEY, automerge::ScalarValue::Boolean(false));
         pane.sync(&mut doc, &root);
@@ -402,6 +439,11 @@ mod tests {
         assert!(
             pane.take_structure_dirty(),
             "changing the clock format requests a re-render"
+        );
+        assert_eq!(
+            sunk.lock().unwrap().as_slice(),
+            [false],
+            "the new clock format is forwarded to the persistence sink once"
         );
     }
 }

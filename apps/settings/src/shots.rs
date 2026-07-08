@@ -174,9 +174,16 @@ pub fn render_to_path(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
+    // First sync seeds the CRDT keys the panes drive their controls from.
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    // Second sync — what the live `ui::App` does after a structural rebuild
+    // (see `App::rebuild_structure`): the widgets built above are fresh
+    // instances, so this sync seeds their CRDT keys and lets a top-level pane's
+    // leaf controls read them back. (A pane rendered directly, e.g. `netdemo`,
+    // has its composition built here, so this alone settles its toggles.)
+    widget.sync(&mut state.doc, &state.root);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -207,6 +214,17 @@ pub fn render_to_path(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Settling sync AFTER layout. `NavSplit` (the responsive sidebar|content
+    // split `SettingsApp` wraps its panes in) builds its children's inner tree
+    // lazily in `apply_layout`, not `build_layout` — so a pane nested inside
+    // `SettingsApp` only has its composition (and thus its Toggle/Slider leaf
+    // controls) after this point. The earlier sync already seeded those panes'
+    // CRDT keys; this sync is what lets the just-built leaf controls read those
+    // seeded values, so a nested pane's switches and sliders render their real
+    // state instead of their constructed default. The live app reaches the same
+    // state after a couple of frames; a single shot needs this explicitly.
+    widget.sync(&mut state.doc, &state.root);
 
     let mut scene = Scene::new();
     widget.draw_with_presence(

@@ -267,6 +267,57 @@ impl SystemPrefs {
     }
 }
 
+/// RAII config-directory isolation for the in-crate unit tests that drive a
+/// pane's real persist path. Pointing `XDG_CONFIG_HOME` at a throwaway
+/// directory keeps those tests from writing the developer's (or a qOS user's)
+/// real `~/.config/qos/settings.json` — running the suite must never mutate
+/// live settings. A process-wide lock serialises the env mutation; the guard
+/// restores the environment and removes the temp directory on drop.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Holds the serialisation lock and the redirected config dir for a test's
+    /// duration. Drop it (let it fall out of scope) to restore the env.
+    pub(crate) struct ConfigGuard {
+        _lock: MutexGuard<'static, ()>,
+        dir: PathBuf,
+    }
+
+    impl ConfigGuard {
+        /// Redirect `XDG_CONFIG_HOME` to a fresh, unique temp dir for this test.
+        pub(crate) fn new(name: &str) -> Self {
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "qos-settings-libtest-{}-{}",
+                std::process::id(),
+                name
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp config dir");
+            // SAFETY: serialised by LOCK against other guards; the surrounding
+            // suite tolerates a redirected (empty → defaults) config on any
+            // read, so a concurrent reader observing the temp dir is harmless.
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", &dir);
+            }
+            Self { _lock: lock, dir }
+        }
+    }
+
+    impl Drop for ConfigGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

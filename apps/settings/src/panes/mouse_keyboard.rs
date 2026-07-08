@@ -454,6 +454,7 @@ mod tests {
     /// right xkb code, and not again while it rests.
     #[test]
     fn selecting_layout_invokes_setter_with_xkb_code() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_layout");
         let setter = Arc::new(RecordingLayout::default());
         let mut pane = MouseKeyboardPane::with_setter(setter.clone(), InputPrefs::default());
         let mut doc = AutoCommit::new();
@@ -472,6 +473,7 @@ mod tests {
     /// state so it isn't re-processed.
     #[test]
     fn pointer_speed_change_is_consumed() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_pointer");
         let setter = Arc::new(RecordingLayout::default());
         let mut pane = MouseKeyboardPane::with_setter(setter, InputPrefs::default());
         let mut doc = AutoCommit::new();
