@@ -200,6 +200,9 @@ impl Widget for MusicApp {
         } else {
             self.reload_library(state);
         }
+        // Progress any in-flight offline downloads (and re-apply their live
+        // progress on top of the just-reloaded terminal cache states).
+        self.advance_downloads(state);
         // External media control (media keys / desktop widget) and a completed
         // file-portal cover pick both mutate the document, so they run here
         // where the CRDT handle is available; then publish the fresh state to
@@ -515,6 +518,8 @@ impl Widget for MusicApp {
             || self.search_edit_at.is_some()
             || (self.home_requested && self.home.is_none())
             || self.detail_loading()
+            // Keep frames flowing so the download spinner spins + progresses.
+            || !self.downloads.is_empty()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -535,7 +540,7 @@ fn frac_in(r: Rect, x: f64) -> f64 {
 }
 
 impl MusicApp {
-    fn hit_test(&self, p: Point) -> Option<Action> {
+    pub(crate) fn hit_test(&self, p: Point) -> Option<Action> {
         for h in self.hits.iter().rev() {
             if h.rect.contains(p) {
                 return Some(h.action.clone());
@@ -1516,10 +1521,33 @@ impl MusicApp {
                         icon::draw(scene, t, Icon::Downloaded, Point::new(dl_x, y + row_h / 2.0), 12.0, c.bg);
                     }
                     CacheState::Downloading(f) => {
-                        let ring = Circle::new(Point::new(dl_x, y + row_h / 2.0), 9.0);
-                        scene.stroke(&Stroke::new(2.0), t, c.dim, None, &ring);
-                        let arc = vello::kurbo::Arc::new(Point::new(dl_x, y + row_h / 2.0), (9.0, 9.0), -std::f64::consts::FRAC_PI_2, std::f64::consts::TAU * f as f64, 0.0);
-                        scene.stroke(&Stroke::new(2.0), t, c.accent, None, &arc.to_path(0.2));
+                        // A spinning "working" indicator: a faint track ring with
+                        // a rotating accent arc whose sweep grows as the download
+                        // nears done. The rotation (off the shared animation
+                        // clock) reads as actively working — clearly distinct from
+                        // the idle download arrow and the finished check badge.
+                        let center = Point::new(dl_x, y + row_h / 2.0);
+                        let radius = 9.0;
+                        scene.stroke(
+                            &Stroke::new(2.0),
+                            t,
+                            c.dim.multiply_alpha(0.4),
+                            None,
+                            &Circle::new(center, radius),
+                        );
+                        // Spin ~1 turn every 1.1s; sweep between a quarter-turn
+                        // (just started) and a near-full turn (almost done).
+                        let spin = anim_time() * (std::f64::consts::TAU / 1.1);
+                        let sweep = std::f64::consts::FRAC_PI_2
+                            + (std::f64::consts::TAU - std::f64::consts::FRAC_PI_2) * f as f64;
+                        let arc = vello::kurbo::Arc::new(center, (radius, radius), spin, sweep, 0.0);
+                        scene.stroke(
+                            &Stroke::new(2.0).with_caps(vello::kurbo::Cap::Round),
+                            t,
+                            c.accent,
+                            None,
+                            &arc.to_path(0.2),
+                        );
                     }
                     CacheState::Streamed => {
                         icon::draw(scene, t, Icon::Download, Point::new(dl_x, y + row_h / 2.0), 16.0, if dl_hover { c.text } else { c.dim });
@@ -2161,10 +2189,16 @@ impl MusicApp {
                 let cx = body.x0 + pad + (i % cols) as f64 * (tile_w + gap);
                 let cy = y + (i / cols) as f64 * (tile_h + gap);
                 let tile = Rect::new(cx, cy, cx + tile_w, cy + tile_h);
+                // The chip is clickable: a tap filters Search to this genre.
+                let hover = self.push_hit(tile, Action::BrowseGenre(g.clone()));
                 let (base, accent) = art::art_colors(g);
                 scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rrect(tile, 12.0));
                 scene.fill(Fill::NonZero, t, base, None, &tile);
                 scene.fill(Fill::NonZero, t, accent.multiply_alpha(0.7), None, &Circle::new(Point::new(tile.x1 - 16.0, tile.y1 - 6.0), 42.0));
+                // Lift the tile on hover so the affordance reads as interactive.
+                if hover {
+                    scene.fill(Fill::NonZero, t, Color::WHITE.multiply_alpha(0.12), None, &tile);
+                }
                 scene.pop_layer();
                 draw_text(tr, scene, t, g, cx + 16.0, cy + 14.0, 16.0, Color::WHITE, TextWeight::Bold, Some((tile_w - 24.0) as f32));
             }
