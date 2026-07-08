@@ -111,6 +111,9 @@ media = [
     "dep:gstreamer",
     "dep:gstreamer-app",
     "dep:gstreamer-video",
+    # Desktop media integration: the watch-page player publishes now-playing +
+    # accepts media keys through the toolkit's MPRIS service.
+    "ui/mpris",
 ]
 # Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
 # the live `GrayjaySyncTransport`; the default build keeps only the deterministic
