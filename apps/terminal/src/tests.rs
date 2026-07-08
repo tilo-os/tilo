@@ -136,6 +136,10 @@ mod tests {
     }
 
     fn send_key(widget: &mut TerminalWidget, doc: &mut AutoCommit, key: winit::keyboard::Key, ctrl: bool, shift: bool) {
+        send_key_mods(widget, doc, key, ctrl, shift, false);
+    }
+
+    fn send_key_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, key: winit::keyboard::Key, ctrl: bool, shift: bool, alt: bool) {
         use winit::event::{WindowEvent, ElementState, KeyEvent, Modifiers};
         use winit::keyboard::{ModifiersState, PhysicalKey, KeyLocation};
         use ui::widget::Widget;
@@ -143,6 +147,7 @@ mod tests {
         let mut state = ModifiersState::empty();
         if ctrl { state |= ModifiersState::CONTROL; }
         if shift { state |= ModifiersState::SHIFT; }
+        if alt { state |= ModifiersState::ALT; }
         let modifiers: Modifiers = state.into();
 
         let mut handled = false;
@@ -231,6 +236,7 @@ mod tests {
         let mut alt_active = false;
         let mut modes = TermModes::default();
         let mut saved_cursor = None;
+        let mut trimmed_front = 0usize;
 
         {
             let mut performer = TerminalPerformer {
@@ -251,6 +257,7 @@ mod tests {
                 saved_cursor: &mut saved_cursor,
                 scroll_top: 0,
                 scroll_bottom: 23,
+                trimmed_front: &mut trimmed_front,
             };
 
             performer.print('H');
@@ -853,5 +860,203 @@ mod tests {
         // report that until a `place_at` reflow changes it.
         let w = TerminalWidget::spawn_command(CommandBuilder::new("/bin/sh")).expect("spawn");
         assert_eq!(w.grid_size(), (80, 24));
+    }
+
+    // ---------------------------------------------------------------
+    // SGR intensity / crossed-out — dim (2) and strikethrough (9).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn sgr_dim_and_strikethrough_parse_into_cells() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        // Faint + crossed-out together.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[2;9mX");
+        w.sync(&mut doc, &automerge::ROOT);
+        let a = w.cell_attr(0, 0);
+        assert!(a.dim, "SGR 2 sets faint: {:?}", a);
+        assert!(a.strike, "SGR 9 sets crossed-out: {:?}", a);
+
+        // SGR 22 clears both bold and faint; SGR 29 clears crossed-out.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[1;2;9mY\x1b[22;29mZ");
+        w.sync(&mut doc, &automerge::ROOT);
+        let z = w.cell_attr(0, 1);
+        assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {:?}", z);
+        assert!(!z.strike, "SGR 29 clears crossed-out: {:?}", z);
+    }
+
+    // ---------------------------------------------------------------
+    // Keyboard encoding — modified cursor/function keys reach the PTY.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn ctrl_arrow_sends_modified_csi_for_word_motion() {
+        use winit::keyboard::{Key, NamedKey};
+        use vello::kurbo::Rect;
+        let (mut w, rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        w.feed(&mut doc, &automerge::ROOT, b""); // init modes
+
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowLeft), true, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[1;5D", "Ctrl+Left = CSI 1;5D (word-left)");
+
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowRight), true, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[1;5C", "Ctrl+Right = CSI 1;5C (word-right)");
+
+        // Shift+arrow (in-app selection) uses modifier param 2.
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowUp), false, true, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[1;2A", "Shift+Up = CSI 1;2A");
+    }
+
+    #[test]
+    fn unmodified_arrow_respects_decckm_app_cursor_keys() {
+        use winit::keyboard::{Key, NamedKey};
+        use vello::kurbo::Rect;
+        let (mut w, rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        // Default (normal cursor keys) → CSI form.
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowUp), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[A", "default arrow = CSI A");
+
+        // App turns on DECCKM; unmodified arrows now use SS3.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1h");
+        assert!(w.modes().app_cursor_keys);
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowUp), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1bOA", "DECCKM arrow = SS3 A");
+    }
+
+    #[test]
+    fn function_keys_send_expected_sequences() {
+        use winit::keyboard::{Key, NamedKey};
+        use vello::kurbo::Rect;
+        let (mut w, rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F1), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1bOP", "F1 = SS3 P");
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F5), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[15~", "F5 = CSI 15~");
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F10), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[21~", "F10 = CSI 21~");
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F12), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[24~", "F12 = CSI 24~");
+    }
+
+    #[test]
+    fn shift_tab_sends_back_tab() {
+        use winit::keyboard::{Key, NamedKey};
+        use vello::kurbo::Rect;
+        let (mut w, rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::Tab), false, false, false);
+        assert_eq!(drain_writes(&rx), b"\t", "plain Tab = HT");
+        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::Tab), false, true, false);
+        assert_eq!(drain_writes(&rx), b"\x1b[Z", "Shift+Tab = CSI Z (back-tab)");
+    }
+
+    #[test]
+    fn alt_letter_sends_meta_escape_but_altgr_symbols_pass_through() {
+        use winit::keyboard::{Key, SmolStr};
+        use vello::kurbo::Rect;
+        let (mut w, rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        // Alt+f → ESC f (readline forward-word).
+        send_key_mods(&mut w, &mut doc, Key::Character(SmolStr::new_static("f")), false, false, true);
+        assert_eq!(drain_writes(&rx), b"\x1bf", "Alt+f = ESC f (Meta)");
+
+        // AltGr on a German layout yields a composed *symbol* as the logical
+        // key (e.g. '@'); Meta must NOT poach it — the symbol itself is sent.
+        send_key_mods(&mut w, &mut doc, Key::Character(SmolStr::new_static("@")), false, false, true);
+        assert_eq!(drain_writes(&rx), b"@", "AltGr-composed '@' passes through verbatim");
+    }
+
+    // ---------------------------------------------------------------
+    // Incremental grid mirror — heavy output stays correct + bounded.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn incremental_sync_and_trim_keep_mirror_aligned() {
+        use vello::kurbo::Rect;
+        // Feed across several syncs, past the (test-shrunk) retained-history
+        // cap, then prove the render mirror — which now only re-reads changed
+        // rows and drains trimmed front lines rather than re-reading the whole
+        // buffer — is still exactly index-aligned with the CRDT: newest kept,
+        // oldest trimmed, survivors intact, memory bounded.
+        let (mut w, _rx, _out) = build_test_widget_io();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 80x24 logical grid
+
+        let mut emitted = 0usize;
+        for _chunk in 0..3 {
+            let mut payload = Vec::new();
+            for _ in 0..50 {
+                payload.extend_from_slice(format!("ROW{:04}\r\n", emitted).as_bytes());
+                emitted += 1;
+            }
+            w.feed(&mut doc, &automerge::ROOT, &payload);
+            w.sync(&mut doc, &automerge::ROOT);
+        }
+        // 150 lines fed, MAX_HISTORY 120 (+8 slack) under cfg(test): a trim
+        // must have run, and the incremental sync must have stayed aligned.
+        let text = w.grid_text();
+        let count = text.lines().count();
+        assert!(count <= 120 + 8 + 24, "history bounded, got {count} lines");
+        assert!(
+            text.lines().any(|l| l.trim_end() == "ROW0149"),
+            "newest line present in the aligned mirror"
+        );
+        assert!(
+            !text.contains("ROW0000"),
+            "oldest line trimmed off the front"
+        );
+        // A surviving mid-history line must be exact (not shifted/garbled by
+        // the drain-alignment).
+        assert!(
+            text.lines().any(|l| l.trim_end() == "ROW0120"),
+            "a surviving scrollback line stays intact: {:?}",
+            text.lines().rev().take(5).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn external_edit_without_local_feed_triggers_full_reread() {
+        use vello::kurbo::Rect;
+        // Simulate a collaborator editing an *old* scrollback line directly in
+        // the CRDT (no local feed). Because the mirror can't assume only the
+        // live screen changed, `sync` must fall back to a full re-read and
+        // surface the remote edit.
+        let (mut w, _rx, _out) = build_test_widget_io();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+
+        let mut payload = Vec::new();
+        for i in 0..40 { payload.extend_from_slice(format!("BASE{:03}\r\n", i).as_bytes()); }
+        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.sync(&mut doc, &automerge::ROOT);
+        assert!(w.grid_text().contains("BASE000"), "base content mirrored");
+
+        // Edit line 0's text object directly (external mutation, no feed).
+        let grid_id = doc.get(&automerge::ROOT, "terminal_grid").unwrap().unwrap().1;
+        let line0 = doc.get(&grid_id, 0).unwrap().unwrap().1;
+        let (_, text_id) = doc.get(&line0, "text").unwrap().unwrap();
+        let len = doc.length(&text_id);
+        doc.splice_text(&text_id, 0, len as isize, "REMOTE_EDIT").unwrap();
+
+        w.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            w.grid_text().contains("REMOTE_EDIT"),
+            "external edit to old scrollback must be picked up by a full re-read"
+        );
     }
 }
