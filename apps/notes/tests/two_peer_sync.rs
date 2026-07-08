@@ -20,7 +20,7 @@ use ui::presence::PresenceKey;
 /// collapsed so the first `sync` seeds immediately.
 fn spawn_app() -> (NotesApp, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let mut app = NotesApp::spawn(dir.path().to_path_buf()).unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(dir.path().to_path_buf()).unwrap();
     app.bypass_seed_grace_for_test();
     (app, dir)
 }

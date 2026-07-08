@@ -2070,7 +2070,10 @@ mod tests {
         app.setup_inputs[4].set_text("imap.host.example");
         app.setup_inputs[6].set_text("smtp.host.example");
         let before = app.shared.borrow().accounts.len();
-        app.save_setup(&mut doc);
+        // Drive the offline probe explicitly so this offline-save flow is
+        // deterministic under both builds (the live probe's connect gating is
+        // covered by the `validate` state-machine tests and the socket tests).
+        app.save_setup_with(&mut doc, &crate::validate::OfflineProbe);
         assert!(!app.setup_open);
         assert_eq!(app.shared.borrow().accounts.len(), before + 1);
         assert_eq!(app.shared.borrow().accounts.active_config().email, "new@host.example");
@@ -2330,6 +2333,12 @@ mod tests {
         assert!(!app.setup_tab_order().contains(&3), "no password field to tab to under OAuth");
     }
 
+    // The Enter-key save runs through the key handler, which uses the build's
+    // default probe. On the offline (default) build that is the offline probe,
+    // so the account persists; the live build performs a real IMAP/SMTP probe
+    // that this test provides no server for (that path is covered by the
+    // `validate` state-machine tests and the live socket tests).
+    #[cfg(not(feature = "live"))]
     #[test]
     fn setup_enter_on_last_field_submits() {
         let (mut app, mut doc) = app();

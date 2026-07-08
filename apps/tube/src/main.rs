@@ -62,11 +62,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe_trending();
     }
 
-    // `--live-shots <dir>` — render REAL offscreen proof stills: a watch page
-    // with a real GStreamer-decoded video frame, and a creator page with real
-    // fetched thumbnails/avatar/banner. Requires `--features "live media"`.
-    if let Some(dir) = parse_two_arg(&args, "--live-shots") {
-        return run_live_shots(&dir);
+    // `--probe-engine [id]` — prove REAL playback through the shared media engine
+    // (the exact production path): resolve a stream, open a `media::MediaEngine`,
+    // and decode a sequence of frames, printing engine events + motion evidence.
+    if let Some(id) = parse_flag_id(&args, "--probe-engine", "aqz-KE-bpKQ") {
+        return run_probe_engine(&id);
+    }
+
+    // `--live-shots <dir> [query]` — render REAL offscreen stills: a search page
+    // with real YouTube results + fetched thumbnails, and a watch page with a
+    // real frame decoded through the media engine from a rangeable proxy stream.
+    // Everything is live data + real decode; requires `--features "live media"`.
+    if let Some((dir, query)) = parse_live_shots_arg(&args) {
+        return run_live_shots(&dir, &query);
     }
 
     // `--probe-ytdlp [query]` — prove the yt-dlp extractor: search + video +
@@ -100,30 +108,43 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe(&query);
     }
 
+    // `--bench-scroll [frames]` — headless scroll-performance benchmark. Times
+    // the exact per-frame passes the live event loop runs (compute_layout /
+    // apply_layout / draw) over a large Home grid, in two modes — the pre-fix
+    // "always re-solve" baseline and the scroll-reposition fast path — and
+    // prints the numbers. No window, no GPU present (matches the QUICK_UI_PERF
+    // main-thread breakdown, which excludes the render worker).
+    if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
+        return run_bench_scroll(frames);
+    }
+
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let (vw, vh) = viewport;
         let narrow = args.iter().any(|a| a == "--narrow");
         let palette = args.iter().any(|a| a == "--palette");
-        // `--frame-demo`: open a watch page with a synthetic decoded frame
-        // already in hand, so the still captures the real on-screen paint path
-        // (VideoSurface, cover-fit) rather than the poster — a visual companion
-        // to `--probe-play` (which proves the *decode*) for eyeballing the paint
-        // geometry without a network or a live decoder.
-        let frame_demo = args.iter().any(|a| a == "--frame-demo");
+        // `--play-demo`: open a watch page with the shared `VideoPlayer` already
+        // playing (a synthesized frame + revealed controls), so the still
+        // captures the real player surface + transport — a visual companion to
+        // `--probe-gst` (which proves the *decode*) for eyeballing the on-screen
+        // player without a network or a live decoder.
+        let play_demo = args.iter().any(|a| a == "--play-demo");
+        // `--empty`: the cold-start loading skeleton (no fabricated sample).
+        let empty_loading = args.iter().any(|a| a == "--empty");
         // Seed the app with the render viewport so the single offscreen frame
         // resolves the responsive layout (rail default, grid columns, watch
         // player size) from the true width instead of the unknown-width
         // fallback. Shots-only — the live event loop below is untouched.
         let mut app = tube::TubeApp::new().with_viewport(vw as f64, vh as f64);
-        if palette {
+        if empty_loading {
+            app = app.with_loading_home_shot();
+        } else if palette {
             // Open the command palette pre-seeded so the still captures the
             // Ctrl+K overlay with live results.
             let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
             app = app.with_palette_open_for_test(&q);
-        } else if frame_demo {
-            let (fw, fh, rgba) = demo_frame();
-            app = app.with_decoded_frame_for_test("vid_donut", fw, fh, rgba);
+        } else if play_demo {
+            app = app.with_playing_demo_for_test();
         } else if narrow {
             app = app.with_open_sidebar_shot();
         } else if let Some(route) = parse_route_arg(&args) {
@@ -161,6 +182,135 @@ fn parse_probe_arg(args: &[String]) -> Option<String> {
     None
 }
 
+/// Parse `--<flag> [id]` / `--<flag>=<id>` with a default id.
+fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return Some(match iter.next() {
+                Some(id) if !id.starts_with("--") => id.clone(),
+                _ => default.to_string(),
+            });
+        }
+        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
+            return Some(if rest.is_empty() { default.to_string() } else { rest.to_string() });
+        }
+    }
+    None
+}
+
+/// `--probe-engine [id]`: prove real playback through the shared `media::MediaEngine`
+/// — the exact path the watch page streams through. Resolves a directly-playable
+/// stream (direct extractor first, then the rangeable Invidious proxy), opens the
+/// engine, plays, and decodes a sequence of frames; prints engine events + a
+/// per-frame checksum proving motion. Exits non-zero if no frame decodes.
+#[cfg(all(feature = "live", feature = "media"))]
+fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+    use tube::backend::{proxy, ytdlp::YtDlpBackend, YtBackend};
+
+    eprintln!("probe-engine: constructing the yt-dlp backend…");
+    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+    let (url, quality) = backend
+        .resolve_playback_source(id)
+        .ok()
+        .map(|s| (s.url, s.quality))
+        .or_else(|| proxy::resolve_rangeable(id).map(|r| (r.url, r.quality)))
+        .ok_or("no directly-playable stream resolved")?;
+    println!("probe-engine: resolved {quality}; url(host)={}", short_url(&url));
+
+    let mut engine = media::MediaEngine::new();
+    println!(
+        "probe-engine: engine real_decode={} (decode compiled={})",
+        engine.is_real_decode(),
+        media::MediaEngine::is_decode_compiled()
+    );
+    engine.open(media::Source::Remote { url });
+    engine.play();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut sums: HashSet<u64> = HashSet::new();
+    let mut distinct = 0u64;
+    let mut errored = false;
+    while Instant::now() < deadline {
+        for ev in engine.poll() {
+            match ev {
+                media::MediaEvent::Error(e) => {
+                    eprintln!("probe-engine: ENGINE ERROR: {e}");
+                    errored = true;
+                }
+                media::MediaEvent::DurationKnown { ms } => {
+                    println!("probe-engine: duration known = {ms} ms");
+                }
+                media::MediaEvent::Buffering { percent } => {
+                    if percent % 25 == 0 {
+                        println!("probe-engine: buffering {percent}%");
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(f) = engine.latest_frame() {
+            let s = checksum(&f.rgba);
+            if sums.insert(s) {
+                distinct += 1;
+                if distinct <= 3 {
+                    println!(
+                        "  frame {distinct}: {}x{} pts={}ms checksum=0x{:016x}",
+                        f.width, f.height, f.pts_ms, s
+                    );
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    println!(
+        "probe-engine: {distinct} DISTINCT frames; final pos={}ms dur={:?}ms buffering={}%",
+        engine.position_ms(),
+        engine.duration_ms(),
+        engine.buffering_percent()
+    );
+    if distinct == 0 {
+        eprintln!(
+            "probe-engine: the media engine produced NO frame (errored={errored}) — reported \
+             honestly, not faked."
+        );
+        std::process::exit(3);
+    }
+    println!("probe-engine: REAL playback through the media engine — {distinct} distinct pictures.");
+    Ok(())
+}
+
+#[cfg(not(all(feature = "live", feature = "media")))]
+fn run_probe_engine(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("probe-engine: needs `--features \"live media\"` (real resolve + media-engine decode).");
+    Ok(())
+}
+
+/// Parse `--live-shots <dir> [query]`. Returns the output directory and the
+/// search query (default "rust programming") to render real stills for.
+fn parse_live_shots_arg(args: &[String]) -> Option<(String, String)> {
+    const DEFAULT_Q: &str = "rust programming";
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let dir = if arg == "--live-shots" {
+            iter.next()?.clone()
+        } else if let Some(rest) = arg.strip_prefix("--live-shots=") {
+            rest.to_string()
+        } else {
+            continue;
+        };
+        let query = match iter.next() {
+            Some(q) if !q.starts_with("--") => q.clone(),
+            _ => DEFAULT_Q.to_string(),
+        };
+        return Some((dir, query));
+    }
+    None
+}
+
 /// Parse `--probe-play <id>` / `--probe-play=<id>`. Returns the video id to
 /// resolve + decode. Defaults to a stable, always-available clip.
 fn parse_probe_play_arg(args: &[String]) -> Option<String> {
@@ -180,20 +330,6 @@ fn parse_probe_play_arg(args: &[String]) -> Option<String> {
     None
 }
 
-/// Parse a `--flag VALUE` / `--flag=VALUE` two-token argument.
-fn parse_two_arg(args: &[String], flag: &str) -> Option<String> {
-    let eq = format!("{flag}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
 
 /// Parse `--flag [query]` / `--flag=<query>` with a default when the flag is
 /// present but no value follows.
@@ -596,6 +732,134 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `--live-shots <dir> [query]`: render REAL offscreen stills — a search page
+/// with real YouTube results + fetched thumbnails, and a watch page with a real
+/// frame decoded through the shared media engine from a rangeable proxy stream.
+#[cfg(all(feature = "live", feature = "media"))]
+fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+    use tube::backend::{proxy, ytdlp::YtDlpBackend, yt_thumb_url, BackendResult, YtBackend};
+    use tube::model::{DataSource, Route, TubeModel, Video};
+
+    let out_dir = std::path::Path::new(dir);
+    std::fs::create_dir_all(out_dir).ok();
+    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+
+    // ---- Real watch page with a real decoded frame ----
+    //
+    // Rendered FIRST on purpose: the media engine's GStreamer decode must run
+    // before any offscreen `render_shot_to_png` initialises the process-wide
+    // wgpu/EGL context — that context otherwise grabs GPU/EGL resources and
+    // starves the decode pipeline, so a search render done first would leave the
+    // watch surface black. (Proven with `--probe-engine`, which decodes fine with
+    // no wgpu in the process.)
+    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY) — long + stable.
+    println!("live-shots[watch]: metadata + rangeable stream for [{watch_id}]…");
+    let video = match backend.video(watch_id) {
+        Ok(BackendResult::Video(v)) => *v,
+        _ => Video {
+            id: watch_id.to_string(),
+            title: "Big Buck Bunny".into(),
+            dearrow_title: None,
+            channel_id: String::new(),
+            channel_name: "Blender".into(),
+            channel_seed: watch_id.to_string(),
+            views: 0,
+            published: String::new(),
+            duration: 0,
+            description: String::new(),
+            likes: 0,
+            seed: watch_id.to_string(),
+            thumbnail_url: yt_thumb_url(watch_id),
+            category: "Video".into(),
+            dearrow_thumb: false,
+            sponsor: Vec::new(),
+            comments: Vec::new(),
+            live: false,
+        },
+    };
+    // For a single-frame still, decode the yt-dlp direct progressive URL first
+    // (small + fast to preroll — the live app instead uses the rangeable
+    // Invidious proxy for seekable, full-length playback), falling back to the
+    // proxy if the direct extractor is unavailable.
+    let resolved = backend
+        .resolve_playback_source(watch_id)
+        .ok()
+        .map(|s| (s.url, s.quality))
+        .or_else(|| proxy::resolve_rangeable(watch_id).map(|r| (r.url, r.quality)));
+    match resolved {
+        Some((url, quality)) => {
+            println!("  resolved {quality} stream; decoding a real frame via the media engine…");
+            let mut wmodel = TubeModel::default();
+            wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
+            wmodel.upsert_video(video.clone());
+            wmodel.data_source = DataSource { live: true, label: "live".into() };
+            let watch_app = tube::TubeApp::new()
+                .with_viewport(1280.0, 860.0)
+                .with_model_for_test(wmodel)
+                .with_live_frame_for_shot(watch_id, url);
+            let watch_png = out_dir.join("watch.png");
+            render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
+            println!("  wrote {}", watch_png.display());
+        }
+        None => {
+            eprintln!(
+                "live-shots[watch]: no Invidious proxy served bytes and no direct URL resolved \
+                 — skipped the watch still (reported honestly, not faked)."
+            );
+        }
+    }
+
+    // ---- Real search page with real thumbnails ----
+    println!("live-shots[search]: searching YouTube for {query:?}…");
+    let videos = match backend.search(query)? {
+        BackendResult::Videos(v) => v,
+        _ => Vec::new(),
+    };
+    if videos.is_empty() {
+        eprintln!("live-shots[search]: no results (network/extractor issue) — skipping search still.");
+    } else {
+        println!("  {} real results; top: {:?}", videos.len(), videos[0].title);
+        let mut smodel = TubeModel::default();
+        let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
+        for v in &videos {
+            smodel.ensure_channel_stub(&v.channel_id, &v.channel_name);
+            smodel.upsert_video(v.clone());
+        }
+        smodel.search_query = query.to_string();
+        smodel.search_hits_query = query.to_string();
+        smodel.search_hits = ids;
+        smodel.route = Route::Search(query.to_string());
+        smodel.data_source = DataSource { live: true, label: "live (yt-dlp)".into() };
+
+        // Fetch + decode the real thumbnails through the toolkit's ImageStore.
+        let store = tube::images::image_store();
+        for v in &videos {
+            store.get(&v.thumbnail_url);
+        }
+        println!("  prewarming {} thumbnails…", videos.len());
+        store.block_until_idle(Duration::from_secs(45));
+        println!("  images settled: {} still pending", store.pending());
+
+        let search_app = tube::TubeApp::new()
+            .with_viewport(1280.0, 860.0)
+            .with_model_for_test(smodel)
+            .with_image_store(store);
+        let search_png = out_dir.join("search.png");
+        render_shot_to_png(Box::new(search_app) as Box<dyn Widget>, (1280, 860), &search_png)?;
+        println!("  wrote {}", search_png.display());
+    }
+
+    println!("live-shots: done ({})", out_dir.display());
+    Ok(())
+}
+
+#[cfg(not(all(feature = "live", feature = "media")))]
+fn run_live_shots(_dir: &str, _query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("live-shots: needs `--features \"live media\"` (real data + real decode + images).");
+    Ok(())
+}
+
 /// Shorten a URL for log lines (host + a hint), so proof output stays readable.
 #[cfg(feature = "live")]
 fn short_url(url: &str) -> String {
@@ -751,120 +1015,6 @@ fn run_probe_gst(_id: &str, _seconds: u64) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Pick the decoded frame with the most non-trivial pixels, so a real-frame
-/// shot isn't an initial black/blank frame.
-#[cfg(all(feature = "live", feature = "media"))]
-fn pick_interesting_frame(
-    frames: &[(u32, u32, Vec<u8>)],
-) -> Option<(u32, u32, Vec<u8>)> {
-    frames
-        .iter()
-        .max_by_key(|(_, _, rgba)| rgba.iter().step_by(37).filter(|&&b| b > 16).count())
-        .cloned()
-}
-
-/// `--live-shots <dir>`: render REAL offscreen proof stills — a watch page with
-/// a real GStreamer-decoded video frame, and a creator page with real fetched
-/// thumbnails/avatar/banner. Everything is live data + real decode; nothing is
-/// sample content.
-#[cfg(all(feature = "live", feature = "media"))]
-fn run_live_shots(dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Duration;
-    use tube::backend::{gst_playback, ytdlp::YtDlpBackend, BackendResult, YtBackend};
-    use tube::model::{Route, TubeModel};
-
-    let out_dir = std::path::Path::new(dir);
-    std::fs::create_dir_all(out_dir).ok();
-    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
-
-    // ---- Watch page with a REAL decoded frame ----
-    let watch_id = "aqz-KE-bpKQ"; // Big Buck Bunny (Blender, CC-BY)
-    println!("live-shots[watch]: metadata + stream for [{watch_id}]…");
-    let video = match backend.video(watch_id)? {
-        BackendResult::Video(v) => *v,
-        _ => return Err("no video".into()),
-    };
-    let src = backend
-        .resolve_playback_source(watch_id)
-        .map_err(|e| format!("resolve: {e}"))?;
-    println!(
-        "  stream {} {}x{}@{}fps audio={}",
-        src.quality, src.width, src.height, src.fps, src.has_audio
-    );
-    let frames = gst_playback::decode_frames(&src.url, 60, Duration::from_secs(45))
-        .map_err(|e| format!("gstreamer decode: {e}"))?;
-    let (fw, fh, rgba) = pick_interesting_frame(&frames).ok_or("no decoded frames")?;
-    println!("  decoded {} frames; painting a real {fw}x{fh} frame", frames.len());
-
-    let mut wmodel = TubeModel::default();
-    wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
-    wmodel.upsert_video(video.clone());
-    let watch_app = tube::TubeApp::new()
-        .with_viewport(1280.0, 860.0)
-        .with_model_for_test(wmodel)
-        .with_decoded_frame_for_test(watch_id, fw, fh, rgba);
-    let watch_png = out_dir.join("watch.png");
-    render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
-
-    // ---- Creator page with REAL images ----
-    let channel_ref = if video.channel_id.is_empty() {
-        "@BlenderStudio".to_string()
-    } else {
-        video.channel_id.clone()
-    };
-    println!("live-shots[creator]: channel [{channel_ref}]…");
-    let (channel, uploads) = match backend.channel(&channel_ref)? {
-        BackendResult::Channel { channel, uploads } => (*channel, uploads),
-        _ => return Err("no channel".into()),
-    };
-    println!(
-        "  {} ({} subs); {} uploads; avatar={} banner={}",
-        channel.name,
-        channel.subscribers,
-        uploads.len(),
-        !channel.avatar_url.is_empty(),
-        !channel.banner_url.is_empty()
-    );
-
-    let mut cmodel = TubeModel::default();
-    let cid = channel.id.clone();
-    cmodel.upsert_channel(channel.clone());
-    for u in &uploads {
-        cmodel.ensure_channel_stub(&u.channel_id, &u.channel_name);
-        cmodel.upsert_video(u.clone());
-    }
-    cmodel.route = Route::Channel(cid);
-
-    let store = tube::images::image_store();
-    store.get(&channel.avatar_url);
-    store.get(&channel.banner_url);
-    for u in &uploads {
-        store.get(&u.thumbnail_url);
-    }
-    println!("  prewarming {} images…", uploads.len() + 2);
-    store.block_until_idle(Duration::from_secs(45));
-    println!("  images settled: {} still pending", store.pending());
-
-    let creator_app = tube::TubeApp::new()
-        .with_viewport(1280.0, 900.0)
-        .with_model_for_test(cmodel)
-        .with_image_store(store);
-    let creator_png = out_dir.join("creator.png");
-    render_shot_to_png(Box::new(creator_app) as Box<dyn Widget>, (1280, 900), &creator_png)?;
-
-    println!(
-        "live-shots: wrote\n  {}\n  {}",
-        watch_png.display(),
-        creator_png.display()
-    );
-    Ok(())
-}
-
-#[cfg(not(all(feature = "live", feature = "media")))]
-fn run_live_shots(_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("live-shots: needs `--features \"live media\"` (real data + decode + images).");
-    Ok(())
-}
 
 /// `--probe-play <id>`: prove real playback end-to-end. Resolves a real
 /// googlevideo H.264 stream, downloads a bounded prefix, demuxes it to Annex-B,
@@ -1070,35 +1220,213 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A synthetic RGBA frame for `--frame-demo`: a deliberately SQUARE (200×200)
-/// source with four coloured quadrants and a centred white cross. Painted
-/// cover-fit into the 16:9 player it must fill the full width undistorted and
-/// crop the top+bottom of the square — so the still visibly proves cover-fit
-/// (crop, not stretch) and the rounded-corner clip. Not a real decode: the real
-/// decode is proven by `--probe-play` / the tests; this only exercises the
-/// on-screen paint geometry.
-fn demo_frame() -> (u32, u32, Vec<u8>) {
-    let (w, h) = (200u32, 200u32);
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let cx = (x as i32 - 100).abs();
-            let cy = (y as i32 - 100).abs();
-            let (r, g, b) = if cx < 6 || cy < 6 {
-                (255, 255, 255) // centred cross
-            } else if x < 100 && y < 100 {
-                (0xE5, 0x3E, 0x3E) // TL red
-            } else if y < 100 {
-                (0x3E, 0xC5, 0x6B) // TR green
-            } else if x < 100 {
-                (0x3E, 0x7B, 0xE5) // BL blue
-            } else {
-                (0xE5, 0xC7, 0x3E) // BR amber
-            };
-            rgba.extend_from_slice(&[r, g, b, 255]);
+/// Parse `--flag [n]` / `--flag=<n>` into a `usize`, with `default` when the
+/// flag is present but no numeric value follows.
+fn parse_flag_usize(args: &[String], flag: &str, default: usize) -> Option<usize> {
+    let eq = format!("{flag}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return Some(iter.next().and_then(|s| s.parse().ok()).unwrap_or(default));
+        }
+        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
+            return Some(rest.parse().ok().unwrap_or(default));
         }
     }
-    (w, h, rgba)
+    None
+}
+
+/// Median of a slice of microsecond samples (sorted copy).
+fn median_us(samples: &[u128]) -> u128 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut s = samples.to_vec();
+    s.sort_unstable();
+    s[s.len() / 2]
+}
+
+fn max_us(samples: &[u128]) -> u128 {
+    samples.iter().copied().max().unwrap_or(0)
+}
+
+fn avg_us(samples: &[u128]) -> u128 {
+    if samples.is_empty() {
+        0
+    } else {
+        samples.iter().sum::<u128>() / samples.len() as u128
+    }
+}
+
+/// `--bench-scroll [frames]`: measure the per-frame main-thread cost of
+/// scrolling a large Home grid, in two modes, and report the numbers.
+fn run_bench_scroll(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Instant;
+    use tube::model::{Route, TubeModel};
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+
+    const CARDS: usize = 80;
+    let (w, h) = (1280u32, 900u32);
+
+    // A large, realistic Home catalogue: grow the sample by cloning cards with
+    // fresh ids so the grid actually stresses layout (the composed live
+    // "popular" feed is this size or larger).
+    let big_model = || -> TubeModel {
+        let mut m = tube::sample::model();
+        let base = m.videos.clone();
+        let mut i = 0usize;
+        while m.videos.len() < CARDS && !base.is_empty() {
+            let mut v = base[i % base.len()].clone();
+            v.id = format!("{}_{i}", v.id);
+            v.seed = v.id.clone();
+            m.videos.push(v);
+            i += 1;
+        }
+        m.route = Route::Home;
+        m
+    };
+
+    // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
+    // taffy every frame). `false` = the scroll fast path (apply_layout only when
+    // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
+    let run_pass = |force_compute: bool| -> (Vec<u128>, Vec<u128>, Vec<u128>, bool) {
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut widget: Box<dyn Widget> = Box::new(
+            tube::TubeApp::new()
+                .with_viewport(w as f64, h as f64)
+                .with_model_for_test(big_model()),
+        );
+        let mut state = ui::State::new();
+        widget.sync(&mut state.doc, &state.root);
+        let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: length(w as f32), height: length(h as f32) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+
+        let solve = |taffy: &mut TaffyTree<()>,
+                     node_map: &HashMap<NodeId, *mut dyn Widget>,
+                     tr: &mut TextRenderer| {
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(w as f32),
+                        height: AvailableSpace::Definite(h as f32),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = node_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, tr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        };
+
+        // Initial full solve + layout + a warm draw (fills the Text/scene caches
+        // so the timed frames measure steady-state scroll, not first-paint).
+        solve(&mut taffy, &node_map, &mut tr);
+        widget.apply_layout(&taffy, child, Point::ORIGIN);
+        {
+            let mut scene = Scene::new();
+            widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+            widget.mark_drawn();
+        }
+
+        let mods = winit::event::Modifiers::default();
+        let mut compute = Vec::with_capacity(frames);
+        let mut apply = Vec::with_capacity(frames);
+        let mut draw = Vec::with_capacity(frames);
+        let mut ever_reposition_only = false;
+
+        for _ in 0..frames {
+            // Real scroll: a wheel notch routed through the widget tree, exactly
+            // as the live event loop delivers it.
+            let wheel = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: TouchPhase::Moved,
+            };
+            let mut handled = false;
+            let mut focus_target = None;
+            widget.handle_event(&wheel, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus_target, child, &taffy);
+
+            // The fast path skips the solve when nothing needs re-measuring.
+            let needs_measure = widget.layout_needs_measure();
+            if !needs_measure {
+                ever_reposition_only = true;
+            }
+            if force_compute || needs_measure {
+                let t = Instant::now();
+                solve(&mut taffy, &node_map, &mut tr);
+                compute.push(t.elapsed().as_micros());
+            } else {
+                compute.push(0);
+            }
+            let t = Instant::now();
+            widget.apply_layout(&taffy, child, Point::ORIGIN);
+            apply.push(t.elapsed().as_micros());
+
+            let t = Instant::now();
+            let mut scene = Scene::new();
+            let prev = presence.push_viewport(vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
+            widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+            presence.pop_viewport(prev);
+            widget.mark_drawn();
+            draw.push(t.elapsed().as_micros());
+        }
+        (compute, apply, draw, ever_reposition_only)
+    };
+
+    let report = |label: &str, c: &[u128], a: &[u128], d: &[u128]| {
+        let total: Vec<u128> = (0..c.len()).map(|i| c[i] + a[i] + d[i]).collect();
+        println!(
+            "  {label:<20} frame(total)  median {:>5.2}ms  avg {:>5.2}ms  max {:>5.2}ms",
+            median_us(&total) as f64 / 1000.0,
+            avg_us(&total) as f64 / 1000.0,
+            max_us(&total) as f64 / 1000.0,
+        );
+        println!(
+            "  {:<20}   compute median {:>5.2}ms | apply median {:>5.2}ms | draw median {:>5.2}ms",
+            "",
+            median_us(c) as f64 / 1000.0,
+            median_us(a) as f64 / 1000.0,
+            median_us(d) as f64 / 1000.0,
+        );
+    };
+
+    println!("tube scroll bench: {CARDS} Home cards, {w}x{h}, {frames} scroll frames\n");
+    let (bc, ba, bd, _) = run_pass(true);
+    report("BASELINE (re-solve)", &bc, &ba, &bd);
+    let (fc, fa, fd, repos) = run_pass(false);
+    report("FAST (reposition)", &fc, &fa, &fd);
+    println!(
+        "\n  scroll frames took the reposition-only fast path: {}",
+        if repos { "yes (compute_layout skipped)" } else { "NO — investigate" }
+    );
+    let base_med = median_us(&(0..bc.len()).map(|i| bc[i] + ba[i] + bd[i]).collect::<Vec<_>>());
+    let fast_med = median_us(&(0..fc.len()).map(|i| fc[i] + fa[i] + fd[i]).collect::<Vec<_>>());
+    if fast_med > 0 {
+        println!(
+            "  median frame: {:.2}ms → {:.2}ms  ({:.1}x faster)",
+            base_med as f64 / 1000.0,
+            fast_med as f64 / 1000.0,
+            base_med as f64 / fast_med as f64,
+        );
+    }
+    Ok(())
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

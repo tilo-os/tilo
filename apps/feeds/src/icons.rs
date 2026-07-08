@@ -165,6 +165,36 @@ pub fn external_link(
     scene.stroke(&stroke, transform, color, None, &head);
 }
 
+/// An import glyph: a downward arrow landing into an open tray. The mirror of
+/// [`external_link`] (export), so the two toolbar buttons read as a pair.
+pub fn import_arrow(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
+    let stroke = Stroke::new(1.4);
+    // Down arrow shaft.
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &Line::new(
+            Point::new(center.x, center.y - half),
+            Point::new(center.x, center.y + half * 0.35),
+        ),
+    );
+    // Arrowhead.
+    let mut head = BezPath::new();
+    head.move_to(Point::new(center.x - half * 0.55, center.y - half * 0.2));
+    head.line_to(Point::new(center.x, center.y + half * 0.35));
+    head.line_to(Point::new(center.x + half * 0.55, center.y - half * 0.2));
+    scene.stroke(&stroke, transform, color, None, &head);
+    // Tray the arrow drops into (open at the top).
+    let mut tray = BezPath::new();
+    tray.move_to(Point::new(center.x - half, center.y + half * 0.55));
+    tray.line_to(Point::new(center.x - half, center.y + half));
+    tray.line_to(Point::new(center.x + half, center.y + half));
+    tray.line_to(Point::new(center.x + half, center.y + half * 0.55));
+    scene.stroke(&stroke, transform, color, None, &tray);
+}
+
 /// A three-line "hamburger" glyph used to summon the collapsed sidebar.
 pub fn hamburger(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
     let stroke = Stroke::new(1.8);

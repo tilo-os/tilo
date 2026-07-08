@@ -440,8 +440,8 @@ mod tests {
         assert_eq!(standup.start.minute(), 30);
 
         // All-day event keeps its flag.
-        let release = events.iter().find(|e| e.title == "Release v0.4").unwrap();
-        assert!(release.all_day);
+        let offsite = events.iter().find(|e| e.title == "Company offsite").unwrap();
+        assert!(offsite.all_day);
     }
 
     #[test]

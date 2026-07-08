@@ -126,6 +126,9 @@ impl Widget for ImageBox {
     fn name(&self) -> &str {
         "ImageBox"
     }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }

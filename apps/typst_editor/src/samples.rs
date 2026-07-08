@@ -31,6 +31,21 @@ pub const SAMPLES: &[Sample] = &[
 /// Index of the demo document shown first in `--shots` and the example gallery.
 pub const DEFAULT_INDEX: usize = 0;
 
+/// A document carrying exactly one **warning** (an unknown font family, on the
+/// first line) and one **error** (a reference to an undefined variable, further
+/// down) — both with source spans the compiler can resolve to a line/column.
+/// Used by the `errors` `--shots` scenario and the diagnostics tests so the
+/// Problems panel, the inline squiggles, and click-to-jump are exercised against
+/// real compiler output spanning both severities.
+pub const ERROR_WARNING: &str = r#"#set text(font: "Brunhilde Sans", size: 11pt)
+
+= Draft with problems
+
+This paragraph references #undefined_value, which the compiler cannot resolve.
+
+The heading above is fine; only the font and the variable are wrong.
+"#;
+
 /// The starter document a fresh install opens with when the user has no saved
 /// `.typ` files yet. Deliberately short and neutral — a blank page to edit,
 /// not a brochure.

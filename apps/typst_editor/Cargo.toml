@@ -29,6 +29,7 @@ dirs = "6.0.0"
 # series so the `typst` crate instance is unified across compile + render.
 typst = "0.14"
 typst-render = "0.14"
+typst-pdf = "0.14"
 typst-assets = { version = "0.14", features = ["fonts"] }
 tiny-skia = "0.11"
 comemo = "0.5"

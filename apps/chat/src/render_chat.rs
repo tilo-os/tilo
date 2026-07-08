@@ -212,7 +212,7 @@ impl ChatApp {
         // avatar lives here (mute + deafen toggles to its right).
         let bar = Rect::new(side.x0, side.y1 - 56.0, side.x1, side.y1);
         fill_rect(scene, tf, bar, c.neutral[0]);
-        if let Some(me) = self.user(model::ME) {
+        if let Some(me) = self.user(&self.me.id) {
             draw_avatar(scene, tf, tr, theme, Point::new(bar.x0 + 28.0, bar.center().y), 16.0, &me.initials, me.color_idx, Some(me.status));
             label(scene, tr, tf, &me.name, 13.0, c.text_primary, bar.x0 + 50.0, bar.center().y - 14.0);
             let sub = if self.call.active { "In voice" } else { "Available" };
@@ -592,6 +592,7 @@ impl ChatApp {
             None => 0.0,
             Some(Attachment::File { .. }) => 70.0,
             Some(Attachment::Image { w, h, .. }) => image_thumb_size(*w, *h, text_w as f64).1 + 24.0,
+            Some(Attachment::Video { w, h, .. }) => video_card_size(*w, *h, text_w as f64).1 + 24.0,
         };
         let react_h = if m.reactions.is_empty() { 0.0 } else { 32.0 };
         // While editing, the "(edited)" marker is suppressed in favour of the
@@ -661,7 +662,7 @@ impl ChatApp {
             // Right-click your own message (header + body) opens the edit menu.
             // Recorded now, before the reaction / thread hits so those still
             // win in their own sub-regions.
-            if m.author == model::ME {
+            if m.author == self.me.id {
                 ChatApp::push_hit(hits, Rect::new(area.x0, content_top, area.x1, *y), Hit::MessageMenu { msg: m.id.clone() });
             }
         }
@@ -758,7 +759,7 @@ impl ChatApp {
         let mut x = text_x;
         let h = 26.0;
         for r in &m.reactions {
-            let mine = r.reacted_by(model::ME);
+            let mine = r.reacted_by(&self.me.id);
             let lbl = format!("{}  {}", r.emoji, r.count());
             let (lw, _) = tr.measure(&lbl, 12.5, None);
             let chip = Rect::new(x, y, x + lw as f64 + 20.0, y + h);
@@ -836,6 +837,14 @@ impl ChatApp {
         text_w: f32,
     ) {
         let c = &theme.tokens.colors;
+        // Permission boundary: an embed this peer hasn't been granted access to
+        // renders as a locked card and never hydrates its bytes off the FUSE
+        // mount. Same footprint as the real embed so the timeline layout is
+        // identical whether granted or gated.
+        if !self.embed_allowed(att.path()) {
+            self.draw_gated_embed(scene, tf, tr, theme, att, x, y, text_w);
+            return;
+        }
         match att {
             Attachment::Image { name, path, w, h } => {
                 let (tw, th) = image_thumb_size(*w, *h, text_w as f64);
@@ -860,6 +869,36 @@ impl ChatApp {
                 let dim = format!("{w}×{h}");
                 label(scene, tr, tf, &dim, 11.0, c.text_dim, rect.x0, rect.y1 + 4.0);
             }
+            Attachment::Video { name, w, h, size, .. } => {
+                let (tw, th) = video_card_size(*w, *h, text_w as f64);
+                let rect = Rect::new(x, y, x + tw, y + th);
+                // A dark poster surface with a play affordance. A real decoded
+                // frame needs the media engine's decoder (live-media only); here
+                // the card references the projected file and hydrates its bytes
+                // on demand — honest, not a fabricated still.
+                fill_round(scene, tf, rect, 12.0, c.neutral[2]);
+                fill_round(
+                    scene, tf,
+                    Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + th * 0.5),
+                    12.0, c.surface_white_5,
+                );
+                // Centred play button.
+                let cc = rect.center();
+                fill_circle(scene, tf, cc, 25.0, Color::from_rgba8(0, 0, 0, 150));
+                fill_circle(scene, tf, cc, 24.0, c.surface_white_10);
+                let (pw, ph) = tr.measure("▶", 20.0, None);
+                text(scene, tr, tf, "▶", 20.0, Color::WHITE, cc.x - pw as f64 / 2.0 + 2.0, cc.y - ph as f64 / 2.0, TextWeight::Regular, None);
+                // Caption scrim + filename, then a framing stroke.
+                fill_round(scene, tf, Rect::new(rect.x0, rect.y1 - 30.0, rect.x1, rect.y1), 12.0, Color::from_rgba8(0, 0, 0, 120));
+                stroke_round(scene, tf, rect, 12.0, c.border_white_10, 1.0);
+                label(scene, tr, tf, &format!("🎬  {name}"), 12.0, Color::WHITE, rect.x0 + 12.0, rect.y1 - 22.0);
+                let meta = if *w > 0 && *h > 0 {
+                    format!("{w}×{h} · {}", human_size(*size))
+                } else {
+                    format!("video · {}", human_size(*size))
+                };
+                label(scene, tr, tf, &meta, 11.0, c.text_dim, rect.x0, rect.y1 + 4.0);
+            }
             Attachment::File { name, size, .. } => {
                 let chip = Rect::new(x, y, x + (text_w as f64).min(360.0), y + 58.0);
                 fill_round(scene, tf, chip, 10.0, c.surfaces.raised);
@@ -874,6 +913,41 @@ impl ChatApp {
                 label(scene, tr, tf, &meta, 11.0, c.text_dim, chip.x0 + 56.0, chip.center().y + 2.0);
             }
         }
+    }
+
+    /// Render an embed this peer isn't permitted to open: a neutral locked card
+    /// with the filename but no hydrated content. Sized to match the granted
+    /// embed's footprint so the timeline layout is identical either way.
+    fn draw_gated_embed(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        att: &Attachment,
+        x: f64,
+        y: f64,
+        text_w: f32,
+    ) {
+        let c = &theme.tokens.colors;
+        let (w, h) = match att {
+            Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, text_w as f64),
+            Attachment::Video { w, h, .. } => video_card_size(*w, *h, text_w as f64),
+            Attachment::File { .. } => ((text_w as f64).min(360.0), 58.0),
+        };
+        let rect = Rect::new(x, y, x + w, y + h);
+        fill_round(scene, tf, rect, 12.0, c.neutral[1]);
+        stroke_round(scene, tf, rect, 12.0, c.border_standard, 1.0);
+        let cx = rect.center().x;
+        let cy = rect.center().y - if h > 64.0 { 8.0 } else { 6.0 };
+        let (lw, lh) = tr.measure("🔒", 18.0, None);
+        text(scene, tr, tf, "🔒", 18.0, c.text_dim, cx - lw as f64 / 2.0, cy - lh as f64 / 2.0, TextWeight::Regular, None);
+        let msg = "Access not granted";
+        let (mw, _) = tr.measure(msg, 12.0, None);
+        label(scene, tr, tf, msg, 12.0, c.text_dim, cx - mw as f64 / 2.0, cy + 12.0);
+        let fname = truncate_to(tr, att.name(), 11.0, rect.width() - 24.0);
+        let (fw, _) = tr.measure(&fname, 11.0, None);
+        label(scene, tr, tf, &fname, 11.0, c.text_dim, cx - fw as f64 / 2.0, cy + 28.0);
     }
 
     // ------------------------------------------------------------ composer
@@ -1063,6 +1137,7 @@ impl ChatApp {
             yy += match att {
                 Attachment::File { .. } => 66.0,
                 Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, tw as f64).1 + 24.0,
+                Attachment::Video { w, h, .. } => video_card_size(*w, *h, tw as f64).1 + 24.0,
             };
         }
         if !m.reactions.is_empty() {
@@ -1136,7 +1211,7 @@ impl ChatApp {
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(scene, tf, tr, theme, avc, 16.0, &u.initials, u.color_idx, Some(u.status));
             let nx = avc.x + 16.0 + 12.0;
-            let display = if u.id == model::ME {
+            let display = if u.id == self.me.id {
                 format!("{} (you)", u.name)
             } else {
                 u.name.clone()
@@ -1206,7 +1281,7 @@ impl ChatApp {
 
         if self.attach_entries.is_empty() {
             let dir = crate::picker::attach_dir();
-            let s = format!("No images in {}", dir.display());
+            let s = format!("No media in {}", dir.display());
             let s = truncate_to(tr, &s, 12.5, panel.width() - 28.0);
             label(scene, tr, tf, &s, 12.5, c.text_dim, panel.x0 + 14.0, panel.y0 + head_h + 10.0);
             return;
@@ -1220,7 +1295,14 @@ impl ChatApp {
             }
             let thumb = Rect::new(row.x0 + 6.0, row.y0 + 5.0, row.x0 + 62.0, row.y1 - 5.0);
             let key = e.key();
-            if let Some(img) = self.images.get(&key) {
+            // A video shows a play glyph (no image decode); an image decodes its
+            // real thumbnail through the shared cache, with a neutral tile until
+            // the bytes hydrate.
+            if e.is_video {
+                fill_round(scene, tf, thumb, 8.0, c.neutral[2]);
+                let (gw, gh) = tr.measure("🎬", 16.0, None);
+                text(scene, tr, tf, "🎬", 16.0, c.text_dim, thumb.center().x - gw as f64 / 2.0, thumb.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
+            } else if let Some(img) = self.images.get(&key) {
                 ui::image_store::paint_image_cover(scene, tf, thumb, &img, 8.0);
             } else {
                 fill_round(scene, tf, thumb, 8.0, c.surfaces.raised);
@@ -1286,6 +1368,17 @@ fn image_thumb_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
         tw = th * w / h;
     }
     (tw, th)
+}
+
+/// Poster size for an inline video card — the real container dimensions when
+/// known, otherwise a 16:9 default, capped exactly like an image thumbnail so
+/// the timeline layout stays consistent.
+fn video_card_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
+    if w == 0 || h == 0 {
+        image_thumb_size(16, 9, max_w)
+    } else {
+        image_thumb_size(w, h, max_w)
+    }
 }
 
 fn human_size(bytes: u64) -> String {
