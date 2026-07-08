@@ -116,6 +116,11 @@ pub enum WebViewCommand {
     /// Compiled WebKit content-blocker JSON (`None` clears the filter).
     /// Backends without native content filtering ignore this.
     SetContentFilter(Option<Arc<String>>),
+    /// Several compiled content-blocker JSON blobs, installed as separate
+    /// filters (replacing any previously set). Used because the full
+    /// filter-list rule set exceeds WebKit's per-filter cap and must be
+    /// split. An empty vec clears all filters.
+    SetContentFilters(Arc<Vec<Arc<String>>>),
     /// Inject JavaScript user scripts (replacing any previously set) —
     /// scriptlet-style blocking the declarative content filter can't
     /// express, e.g. skipping YouTube video ads. Run at document-start in
