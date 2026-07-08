@@ -515,6 +515,84 @@ extern "C" fn on_filter_saved(
     }
 }
 
+/// Per-chunk context for the async load-or-compile of a cached content
+/// filter. Boxed and passed as `user_data`; freed in the terminal callback.
+struct FilterInstall {
+    state: *mut EngineState,
+    id: std::ffi::CString,
+    src: Arc<String>,
+}
+
+/// Read a `GError`'s message (if any) and free it.
+unsafe fn take_gerror(error: *mut ffi::GError) -> Option<String> {
+    if error.is_null() {
+        return None;
+    }
+    let msg = cstr_to_string((*(error as *mut ffi::GErrorRepr)).message);
+    ffi::g_error_free(error);
+    msg
+}
+
+/// Load callback: a hit installs the cached filter immediately; a miss
+/// falls back to compiling this chunk via `save` (reusing the same boxed
+/// context, which the save callback then frees).
+extern "C" fn on_filter_loaded(
+    source: *mut c_void,
+    result: *mut ffi::GAsyncResult,
+    data: *mut c_void,
+) {
+    unsafe {
+        let store = source as *mut ffi::WebKitUserContentFilterStore;
+        let ctx = &*(data as *const FilterInstall);
+        let mut error: *mut ffi::GError = std::ptr::null_mut();
+        let filter = ffi::webkit_user_content_filter_store_load_finish(store, result, &mut error);
+        let _ = take_gerror(error); // a miss is an expected, non-fatal error
+        if !filter.is_null() {
+            let state = &mut *ctx.state;
+            let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
+            ffi::webkit_user_content_manager_add_filter(ucm, filter);
+            tracing::debug!("content filter loaded from cache");
+            drop(Box::from_raw(data as *mut FilterInstall));
+            return;
+        }
+        // Cache miss → compile now; the save callback owns/free the box.
+        let bytes = ffi::g_bytes_new(ctx.src.as_ptr() as *const c_void, ctx.src.len());
+        ffi::webkit_user_content_filter_store_save(
+            store,
+            ctx.id.as_ptr(),
+            bytes,
+            std::ptr::null_mut(),
+            on_filter_saved_boxed,
+            data,
+        );
+        ffi::g_bytes_unref(bytes);
+    }
+}
+
+/// Save callback for the cache-miss path: install the freshly compiled
+/// filter, then free the boxed context.
+extern "C" fn on_filter_saved_boxed(
+    source: *mut c_void,
+    result: *mut ffi::GAsyncResult,
+    data: *mut c_void,
+) {
+    unsafe {
+        let store = source as *mut ffi::WebKitUserContentFilterStore;
+        let ctx = Box::from_raw(data as *mut FilterInstall);
+        let mut error: *mut ffi::GError = std::ptr::null_mut();
+        let filter = ffi::webkit_user_content_filter_store_save_finish(store, result, &mut error);
+        if filter.is_null() {
+            let msg = take_gerror(error).unwrap_or_else(|| "unknown".into());
+            tracing::warn!("compiling content filter in WebKit failed: {msg}");
+            return;
+        }
+        let state = &mut *ctx.state;
+        let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
+        ffi::webkit_user_content_manager_add_filter(ucm, filter);
+        tracing::info!("content filter compiled + cached");
+    }
+}
+
 // ─────────────────────────── command dispatch ─────────────────────────────
 
 extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
@@ -672,26 +750,32 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
                 ffi::webkit_user_content_manager_remove_all_filters(ucm);
             }
-            WebViewCommand::SetContentFilters(chunks) => {
-                // Replace all filters, then compile+install each chunk under
-                // its own id (each on_filter_saved adds the compiled list).
+            WebViewCommand::SetContentFilters { version, chunks } => {
+                // Replace all filters, then install each chunk. The id keys
+                // on the source-list `version` (+ index), so a *previously
+                // compiled* filter is loaded back from the store instead of
+                // recompiling — we only pay WebKit's multi-second compile
+                // when a list actually changed.
                 let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
                 ffi::webkit_user_content_manager_remove_all_filters(ucm);
                 for (i, json) in chunks.iter().enumerate() {
-                    let Ok(id) = CString::new(format!("qos-adblock-{i}")) else {
+                    let Ok(id) = CString::new(format!("qos-adblock-{version:016x}-{i}")) else {
                         continue;
                     };
-                    let bytes =
-                        ffi::g_bytes_new(json.as_ptr() as *const c_void, json.len());
-                    ffi::webkit_user_content_filter_store_save(
+                    // Heap context handed to the async callback so it can
+                    // fall back to compiling this exact chunk on a cache miss.
+                    let ctx = Box::into_raw(Box::new(FilterInstall {
+                        state: state as *mut EngineState,
+                        id: id.clone(),
+                        src: json.clone(),
+                    })) as *mut c_void;
+                    ffi::webkit_user_content_filter_store_load(
                         state.filter_store,
                         id.as_ptr(),
-                        bytes,
                         std::ptr::null_mut(),
-                        on_filter_saved,
-                        state as *mut EngineState as *mut c_void,
+                        on_filter_loaded,
+                        ctx,
                     );
-                    ffi::g_bytes_unref(bytes);
                 }
             }
             WebViewCommand::SetUserScripts(scripts) => {
