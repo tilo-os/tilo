@@ -407,5 +407,8 @@ pub fn model() -> TubeModel {
         // Offline: no real DeArrow community thumbnails (the sample has no
         // network); live fetch populates this.
         dearrow_thumb_url: std::collections::BTreeMap::new(),
+        // The sample is fully populated, so it never shows a loading skeleton.
+        feed_loading: false,
+        search_loading: false,
     }
 }
