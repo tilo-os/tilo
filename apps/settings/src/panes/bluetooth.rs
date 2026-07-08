@@ -1,12 +1,13 @@
 //! Bluetooth pane — controller toggle + paired-device list.
 //!
 //! Plumbs `os_actions::bluetooth::{get_bluetooth, set_bluetooth,
-//! list_bt_devices}`. The connect/disconnect buttons set a per-MAC
-//! CRDT key; the pane reads the key on `sync` and would ordinarily
-//! shell out to `bluetoothctl connect <mac>`. We don't have a typed
-//! dispatcher method for that today (the QS panel doesn't either) so
-//! the click is logged as a stub — clean place to grow the
-//! integration without rejiggering the pane wiring.
+//! list_bt_devices, bt_connect, bt_disconnect}`. Each paired device's
+//! Connect / Disconnect button really acts: clicking it runs
+//! `bluetoothctl connect|disconnect <mac>` through [`BtControl`] against the
+//! device's MAC, then re-reads the paired list so the row's status and its
+//! button label follow the new connection state. On a host without
+//! `bluetoothctl` the shell-out returns a clean error (logged, no crash) and
+//! the list simply stays as it was — the pane never fabricates a connection.
 //
 // CRDT keys:
 //   `bluetooth.enabled`           — bool, controller toggle
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
 use os_actions::{BtDeviceInfo, Dispatcher};
 use taffy::{NodeId, TaffyTree};
-use tracing::{info, warn};
+use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, Toggle, Widget};
 use vello::kurbo::{Affine, Point, Rect};
@@ -36,15 +37,37 @@ fn connect_key(name: &str) -> String {
 
 type BtLister = Arc<dyn Fn() -> Result<Vec<BtDeviceInfo>, String> + Send + Sync>;
 
+/// Side-effect interface for connecting / disconnecting a paired device by
+/// MAC. Production shells out to `bluetoothctl`; tests inject a recorder so
+/// the connect/disconnect path is asserted without touching the radio.
+pub trait BtControl: Send + Sync {
+    fn connect(&self, mac: &str) -> Result<(), String>;
+    fn disconnect(&self, mac: &str) -> Result<(), String>;
+}
+
+/// Production impl — `bluetoothctl connect|disconnect <mac>`.
+pub struct RealBt;
+
+impl BtControl for RealBt {
+    fn connect(&self, mac: &str) -> Result<(), String> {
+        os_actions::bt_connect(mac)
+    }
+    fn disconnect(&self, mac: &str) -> Result<(), String> {
+        os_actions::bt_disconnect(mac)
+    }
+}
+
 pub struct BluetoothPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-    #[allow(dead_code)]
+    bt: Arc<dyn BtControl>,
     lister: BtLister,
     devices: Vec<BtDeviceInfo>,
     initial_bt_enabled: bool,
     last_bt_enabled: bool,
     needs_seed: bool,
-    dispatched_connects: Vec<String>,
+    /// Set when a connect/disconnect re-read the device list, so the host
+    /// rebuilds the pane and the row's status + button label update.
+    structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -62,12 +85,13 @@ impl BluetoothPane {
         let initial_bt = os_actions::get_bluetooth().unwrap_or(false);
         Self {
             dispatcher: dispatcher_or_real(None),
+            bt: Arc::new(RealBt),
             lister,
             devices,
             initial_bt_enabled: initial_bt,
             last_bt_enabled: initial_bt,
             needs_seed: true,
-            dispatched_connects: Vec::new(),
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -82,15 +106,29 @@ impl BluetoothPane {
         let lister: BtLister = Arc::new(move || Ok(snapshot.clone()));
         Self {
             dispatcher,
+            bt: Arc::new(RealBt),
             lister,
             devices,
             initial_bt_enabled,
             last_bt_enabled: initial_bt_enabled,
             needs_seed: true,
-            dispatched_connects: Vec::new(),
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Test / `--shots` builder: inject the connect/disconnect control and,
+    /// optionally, a lister that reflects the post-toggle device state, so the
+    /// real connect path is exercised without touching `bluetoothctl`.
+    pub fn with_bt_control(
+        mut self,
+        bt: Arc<dyn BtControl>,
+        lister: BtLister,
+    ) -> Self {
+        self.bt = bt;
+        self.lister = lister;
+        self
     }
 
     pub fn devices(&self) -> &[BtDeviceInfo] {
@@ -177,28 +215,50 @@ impl Widget for BluetoothPane {
                 }
             }
         }
-        // Per-device connect/disconnect clicks. We don't have a typed
-        // dispatcher method for connect-by-MAC; the click is logged as
-        // a stub. Future work: extend `Dispatcher` with
-        // `bt_connect/bt_disconnect` once the QS popover gains the same
-        // capability.
-        let names: Vec<String> = self.devices.iter().map(|d| d.name.clone()).collect();
-        for name in names {
-            let key = connect_key(&name);
+        // Per-device Connect / Disconnect clicks. The button writes its
+        // `bluetooth.connect.<name>` key true; we read it as a one-shot edge
+        // (clearing it immediately), then drive the real action against the
+        // device's MAC: disconnect a connected device, connect an idle one.
+        // After acting we re-read the paired list so the row's status and its
+        // button label follow the new connection state.
+        let targets: Vec<(String, String, bool, String)> = self
+            .devices
+            .iter()
+            .map(|d| (d.name.clone(), d.mac.clone(), d.connected, connect_key(&d.name)))
+            .collect();
+        let mut toggled_any = false;
+        for (name, mac, connected, key) in targets {
             let pressed = matches!(
                 state.get(root, key.as_str()),
                 Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
             );
-            if pressed && !self.dispatched_connects.contains(&name) {
-                self.dispatched_connects.push(name.clone());
-                let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
-                info!(
+            if !pressed {
+                continue;
+            }
+            let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
+            let res = if connected {
+                self.bt.disconnect(&mac)
+            } else {
+                self.bt.connect(&mac)
+            };
+            if let Err(e) = res {
+                warn!(
                     target: "qos::settings",
-                    op = "bt_connect_stub",
+                    op = if connected { "bt_disconnect" } else { "bt_connect" },
                     device = %name,
-                    "bluetooth connect requested (no dispatcher hook yet)"
+                    error = %e,
+                    "bluetooth connect/disconnect failed"
                 );
             }
+            toggled_any = true;
+        }
+        if toggled_any {
+            // Re-read so the list reflects the new connected state; a failed
+            // shell-out leaves the prior list, never a fabricated status.
+            if let Ok(devs) = (self.lister)() {
+                self.devices = devs;
+            }
+            self.structure_dirty = true;
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -312,26 +372,56 @@ impl Widget for BluetoothPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self
+            .composed
+            .as_mut()
+            .map(|c| c.take_structure_dirty())
+            .unwrap_or(false);
+        own || child
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+    use std::sync::Mutex;
 
     fn sample_devices() -> Vec<BtDeviceInfo> {
         vec![
             BtDeviceInfo {
                 name: "AirPods Pro".to_string(),
+                mac: "AA:BB:CC:DD:EE:01".to_string(),
                 battery: 80,
                 connected: true,
             },
             BtDeviceInfo {
                 name: "Magic Mouse".to_string(),
+                mac: "AA:BB:CC:DD:EE:02".to_string(),
                 battery: 0,
                 connected: false,
             },
         ]
+    }
+
+    /// Records the connect/disconnect calls a device toggle forwards, so the
+    /// test can assert the right MAC + direction reached the backend.
+    #[derive(Default)]
+    struct RecordingBt {
+        calls: Mutex<Vec<String>>,
+    }
+    impl BtControl for RecordingBt {
+        fn connect(&self, mac: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("connect({mac})"));
+            Ok(())
+        }
+        fn disconnect(&self, mac: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("disconnect({mac})"));
+            Ok(())
+        }
     }
 
     #[test]
@@ -362,5 +452,71 @@ mod tests {
         let _ = doc.put(&root, BT_ENABLED_KEY, automerge::ScalarValue::Boolean(false));
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls(), vec!["set_bluetooth(false)"]);
+    }
+
+    /// Clicking a connected device's button disconnects it (by MAC), then
+    /// re-reads the list so the row flips to "Paired" — the real action path,
+    /// not a logged stub.
+    #[test]
+    fn device_button_disconnects_connected_device_and_refreshes() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let bt = Arc::new(RecordingBt::default());
+        // After the disconnect the radio reports AirPods as no longer connected.
+        let after = vec![
+            BtDeviceInfo { name: "AirPods Pro".into(), mac: "AA:BB:CC:DD:EE:01".into(), battery: 80, connected: false },
+            BtDeviceInfo { name: "Magic Mouse".into(), mac: "AA:BB:CC:DD:EE:02".into(), battery: 0, connected: false },
+        ];
+        let lister: BtLister = {
+            let a = after.clone();
+            Arc::new(move || Ok(a.clone()))
+        };
+        let mut pane = BluetoothPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_devices(),
+        )
+        .with_bt_control(bt.clone() as Arc<dyn BtControl>, lister);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert!(bt.calls.lock().unwrap().is_empty(), "seed must not act");
+        // Press the AirPods button (currently connected → should disconnect).
+        let _ = doc.put(&root, connect_key("AirPods Pro").as_str(), true);
+        pane.sync(&mut doc, &root);
+        pane.sync(&mut doc, &root); // one-shot: must not re-fire while at rest
+        assert_eq!(
+            bt.calls.lock().unwrap().as_slice(),
+            ["disconnect(AA:BB:CC:DD:EE:01)"]
+        );
+        assert!(pane.take_structure_dirty(), "a toggle re-reads the list → rebuild");
+        assert!(
+            !pane.devices().iter().any(|d| d.name == "AirPods Pro" && d.connected),
+            "the re-read reflects the disconnected state: {:?}",
+            pane.devices()
+        );
+    }
+
+    /// Clicking an idle device's button connects it (by MAC).
+    #[test]
+    fn device_button_connects_idle_device() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let bt = Arc::new(RecordingBt::default());
+        let lister: BtLister = Arc::new(|| Ok(Vec::new()));
+        let mut pane = BluetoothPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_devices(),
+        )
+        .with_bt_control(bt.clone() as Arc<dyn BtControl>, lister);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        // Magic Mouse is idle → the button connects it.
+        let _ = doc.put(&root, connect_key("Magic Mouse").as_str(), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            bt.calls.lock().unwrap().as_slice(),
+            ["connect(AA:BB:CC:DD:EE:02)"]
+        );
     }
 }
