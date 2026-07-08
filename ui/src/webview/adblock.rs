@@ -64,6 +64,56 @@ pub fn compile_filter_lists<'a>(
     })
 }
 
+/// WebKit rejects a single content-rule list over this many rules with
+/// "Too many rules in JSON array". Its documented cap is higher, but a
+/// conservative split keeps every chunk comfortably valid and still lets
+/// us ship the full multi-list rule set across several filters.
+pub const MAX_RULES_PER_FILTER: usize = 25_000;
+
+/// A rule set compiled into one *or more* content-blocker JSON blobs.
+/// The full EasyList + uBlock + AdGuard set is far larger than WebKit's
+/// per-list rule cap, so it must be installed as several content filters
+/// rather than one giant array (which WebKit refuses to compile).
+pub struct ChunkedFilter {
+    /// Each element is a JSON array of at most [`MAX_RULES_PER_FILTER`]
+    /// rules — install each as its own WebKit content filter.
+    pub chunks: Vec<std::sync::Arc<String>>,
+    /// Total rules across all chunks.
+    pub rule_count: usize,
+    /// Filters with no content-blocker equivalent (see [`CompiledFilter`]).
+    pub skipped: usize,
+}
+
+/// Compile filter-list text(s) into content-blocker JSON split into
+/// chunks of at most `max_rules_per_chunk` rules, so each chunk stays
+/// within WebKit's per-list limit.
+pub fn compile_filter_lists_chunked<'a>(
+    lists: impl IntoIterator<Item = &'a str>,
+    max_rules_per_chunk: usize,
+) -> Result<ChunkedFilter, AdblockError> {
+    let mut set = FilterSet::new(true);
+    for list in lists {
+        set.add_filter_list(list, ParseOptions::default());
+    }
+    let (rules, skipped) = set
+        .into_content_blocking()
+        .map_err(|_| AdblockError::Conversion)?;
+    if rules.is_empty() {
+        return Err(AdblockError::Empty);
+    }
+    let rule_count = rules.len();
+    let max = max_rules_per_chunk.max(1);
+    let mut chunks = Vec::new();
+    for slice in rules.chunks(max) {
+        chunks.push(std::sync::Arc::new(serde_json::to_string(slice)?));
+    }
+    Ok(ChunkedFilter {
+        chunks,
+        rule_count,
+        skipped: skipped.len(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +165,36 @@ example.org##.sponsored
             compile_filter_lists([""]),
             Err(AdblockError::Empty)
         ));
+    }
+
+    #[test]
+    fn chunking_splits_rules_across_multiple_filters() {
+        // The fixture yields several rules; a tiny cap must split them into
+        // more than one chunk, each a valid JSON array, together covering
+        // exactly the full rule count.
+        let compiled =
+            compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
+        assert!(compiled.rule_count >= 3);
+        assert!(
+            compiled.chunks.len() >= 2,
+            "expected multiple chunks, got {}",
+            compiled.chunks.len()
+        );
+        let mut total = 0;
+        for chunk in &compiled.chunks {
+            let arr: serde_json::Value =
+                serde_json::from_str(chunk).expect("each chunk is valid JSON");
+            let n = arr.as_array().expect("array").len();
+            assert!(n <= 2, "chunk exceeds the cap: {n}");
+            total += n;
+        }
+        assert_eq!(total, compiled.rule_count, "chunks must cover every rule");
+    }
+
+    #[test]
+    fn single_chunk_when_under_cap() {
+        let compiled =
+            compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
+        assert_eq!(compiled.chunks.len(), 1);
     }
 }
