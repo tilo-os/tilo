@@ -215,6 +215,24 @@ impl PageSidebar {
         self.menu.is_some()
     }
 
+    /// Maximum scroll offset for the current frame's geometry (0 when the whole
+    /// list fits). Hosts that keep their own scroll figure mirror this.
+    pub fn max_scroll(&self) -> f64 {
+        self.max_scroll
+    }
+
+    /// The live target index a held reorder drag would land at (`0..=count-1`),
+    /// or `None` when no drag is active. Passthrough of the shared
+    /// [`DragController`] so a host can preview / assert the drop row.
+    pub fn drag_insertion(&self) -> Option<usize> {
+        self.drag.insertion()
+    }
+
+    /// The original index of the slide being dragged, once the drag is active.
+    pub fn drag_from(&self) -> Option<usize> {
+        self.drag.from_index()
+    }
+
     /// Drain the events produced since the last call.
     pub fn take_events(&mut self) -> Vec<PageSidebarEvent> {
         std::mem::take(&mut self.pending)
