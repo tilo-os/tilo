@@ -384,6 +384,16 @@ impl VideoPlayer {
         std::mem::take(&mut self.setting_events)
     }
 
+    /// Programmatically open the settings-gear menu (e.g. an onboarding hint, or
+    /// a headless capture). Reveals the controls so the menu is visible; it lays
+    /// out on the next paint. `expand` optionally pre-expands a choice entry by id.
+    pub fn open_settings_menu(&mut self, expand: Option<&str>) {
+        self.open_menu = Some(OpenMenu::Gear);
+        self.gear_expanded = expand.and_then(|id| self.settings.iter().position(|s| s.id == id));
+        self.reveal_controls();
+        self.dirty = true;
+    }
+
     /// Whether the settings gear (or a choice popover) is open. Exposed so hosts
     /// / tests can assert the menu surfaced.
     pub fn menu_open(&self) -> bool {

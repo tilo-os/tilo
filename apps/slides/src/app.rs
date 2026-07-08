@@ -2198,27 +2198,18 @@ impl SlidesApp {
 
     // --- fullscreen + multi-monitor seam -----------------------------------
 
-    /// Whether the app currently wants the window to be a true *borderless
-    /// OS fullscreen* surface. This is the integration seam for real
-    /// fullscreen present mode.
+    /// Whether the app currently wants the window promoted to a true
+    /// *borderless OS fullscreen* surface — i.e. present mode.
     ///
-    /// `ui::App` owns the single `winit::Window` and does not (yet) expose
-    /// it to its root widget, nor a hook to consume this intent — so today
-    /// the present surface is a borderless *full-window* takeover that paints
-    /// over the entire client area (no toolbar/rail/inspector, black
-    /// backdrop, letterboxed slide). That already looks fullscreen inside a
-    /// maximized window.
-    ///
-    /// To make it a true OS fullscreen, exactly one of these must land in
-    /// `ui` / the compositor (neither edited here on purpose):
-    ///   * `ui::App` polls `root.wants_fullscreen()` each frame and calls
-    ///     `window.set_fullscreen(Some(Fullscreen::Borderless(None)))` /
-    ///     `None` to match — a ~5-line change in `ui/src/app.rs`'s redraw
-    ///     path; **or**
-    ///   * under the qOS compositor, the cluster promotes the slides surface
-    ///     to a full-output borderless window when this flag flips (the
-    ///     compositor already owns output geometry — see the multi-monitor
-    ///     seam below).
+    /// This drives the shared [`ui::fullscreen`] mechanism: `ui::App` polls the
+    /// root's [`Widget::fullscreen_intent`] each frame and, via
+    /// [`Widget::fullscreen_params`] (here: the largest output, a distinct
+    /// presentation view), enumerates the live monitors and `set_fullscreen`s
+    /// onto the chosen one — the same path the video player uses for immersive
+    /// fullscreen. On the qOS compositor (which spans one combined scene) that
+    /// becomes a full-output `xdg_toplevel.set_fullscreen`; the present view
+    /// itself is the mode-`Present` draw (no toolbar/rail/inspector, black
+    /// backdrop, letterboxed slide).
     ///
     /// Exposed publicly so either consumer can read it without reaching into
     /// the widget's private state.
@@ -4162,6 +4153,17 @@ impl Widget for SlidesApp {
         Some(self.wants_fullscreen())
     }
 
+    /// Present is a *distinct* view (the slideshow, not the editor) that wants
+    /// the **largest** output — the projector / big screen — via the shared
+    /// [`ui::fullscreen`] mechanism. The App enumerates the live monitors and
+    /// promotes the surface onto the biggest one; on a single-output host it is
+    /// simply that one screen. Same mechanism the video player uses for
+    /// immersive fullscreen — only the target output + the distinct-view flag
+    /// differ.
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        ui::fullscreen::FullscreenRequest::distinct(ui::fullscreen::FullscreenTarget::Largest)
+    }
+
     /// React to the *actual* fullscreen state reported by the host. A
     /// compositor-initiated exit (a global un-fullscreen keybind, or the grant
     /// being revoked) drops us out of present mode so the editor chrome comes
@@ -5614,6 +5616,19 @@ mod tests {
         // Back to editor via Esc: request windowed again.
         app.exit_present();
         assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+    }
+
+    #[test]
+    fn present_uses_the_shared_mechanism_targeting_the_largest_output() {
+        use ui::fullscreen::{FullscreenTarget, FullscreenView};
+        let app = presenting_app();
+        // Present routes through the ONE shared fullscreen mechanism the video
+        // player also uses: a distinct presentation view on the largest monitor
+        // (the projector / big screen), which the App enumerates + selects.
+        let params = Widget::fullscreen_params(&app);
+        assert_eq!(params.target, FullscreenTarget::Largest, "Present targets the big screen");
+        assert_eq!(params.view, FullscreenView::Distinct, "Present shows the slideshow, not the editor");
+        assert_eq!(Widget::fullscreen_intent(&app), Some(true), "and it drives the shared reconcile");
     }
 
     #[test]
