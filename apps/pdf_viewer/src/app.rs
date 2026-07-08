@@ -25,6 +25,7 @@ use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::Tooltip;
+use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::{SmallContentAlign, ViewportState};
 use ui::Widget;
 
@@ -305,6 +306,14 @@ pub struct PdfApp {
     /// view state so it survives across the session.
     show_rail: bool,
     rail_w: f64,
+    /// The shared page-preview rail (thumbnails, drag-reorder, context menu,
+    /// import). Lives on the left; toggled by the left-most toolbar button.
+    page_sidebar: PageSidebar,
+    /// Set when the page order / page set has been edited (reorder, delete,
+    /// duplicate, import) since the last save — the reader shows a save hint.
+    pages_dirty: bool,
+    /// An in-flight XDG-portal *import* request (add a PDF/image as pages).
+    portal_import_rx: Option<crate::portal::PortalChannel>,
     selected_anno: Option<String>,
     /// Active inline text edit (comment body, thread reply, or signer name).
     editing: Option<Editing>,
@@ -489,6 +498,11 @@ impl PdfApp {
             show_sidebar: true,
             show_rail: true,
             rail_w: RAIL_W,
+            page_sidebar: PageSidebar::new(PAGE_H / PAGE_W)
+                .with_header("PAGES")
+                .with_add("Import…"),
+            pages_dirty: false,
+            portal_import_rx: None,
             selected_anno: None,
             editing: None,
             selected_sig: None,
@@ -856,6 +870,172 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    // ---- page editing (driven by the shared page rail) --------------
+
+    /// Apply the events the shared page rail produced this gesture: selection
+    /// jumps, drag-reorder, context-menu duplicate/move/delete, and the import
+    /// affordance.
+    fn apply_sidebar_events(&mut self, _state: &mut AutoCommit) {
+        for ev in self.page_sidebar.take_events() {
+            match ev {
+                PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
+                PageSidebarEvent::Reorder { from, to } => self.reorder_pages(from, to),
+                PageSidebarEvent::Duplicate(i) => self.duplicate_page_at(i),
+                PageSidebarEvent::Delete(i) => self.delete_page_at(i),
+                PageSidebarEvent::Add => self.request_import_via_portal(),
+            }
+        }
+    }
+
+    /// Rebuild the page list to match the (possibly edited) backend page set and
+    /// flag that a save is needed. In raster mode the real page identities live
+    /// in the rasteriser's plan and `doc.pages` are size placeholders; in text
+    /// mode `doc.pages` already carries the reordered content and only needs
+    /// renumbering.
+    fn after_page_edit(&mut self) {
+        if let Some(rz) = self.raster.as_ref() {
+            let n = rz.page_count().max(1);
+            self.doc.pages = (1..=n)
+                .map(|num| model::Page { number: num, blocks: Vec::new() })
+                .collect();
+        } else {
+            for (i, p) in self.doc.pages.iter_mut().enumerate() {
+                p.number = i + 1;
+            }
+        }
+        self.pages_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Whether the document's pages have been edited (reorder / delete /
+    /// duplicate / import) since it was last saved.
+    pub fn pages_dirty(&self) -> bool {
+        self.pages_dirty
+    }
+
+    /// Move displayed page `from` to final index `to`.
+    pub fn reorder_pages(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if let Some(rz) = self.raster.as_mut() {
+            rz.reorder_page(from, to);
+        } else {
+            ui::widget::page_sidebar::move_item(&mut self.doc.pages, from, to);
+        }
+        self.after_page_edit();
+        self.go_to_page(to + 1);
+        self.status_note = Some("Page moved — Save to keep the new order".to_string());
+    }
+
+    /// Duplicate displayed page `i`, inserting the copy right after it.
+    pub fn duplicate_page_at(&mut self, i: usize) {
+        if let Some(rz) = self.raster.as_mut() {
+            rz.duplicate_page(i);
+        } else if i < self.doc.pages.len() {
+            ui::widget::page_sidebar::duplicate_after(&mut self.doc.pages, i);
+        }
+        self.after_page_edit();
+        self.go_to_page(i + 2);
+        self.status_note = Some("Page duplicated — Save to keep it".to_string());
+    }
+
+    /// Remove displayed page `i` (never the last remaining page).
+    pub fn delete_page_at(&mut self, i: usize) {
+        if self.doc.page_count() <= 1 {
+            return;
+        }
+        if let Some(rz) = self.raster.as_mut() {
+            rz.delete_page(i);
+        } else if i < self.doc.pages.len() {
+            self.doc.pages.remove(i);
+        }
+        self.after_page_edit();
+        self.go_to_page((i + 1).min(self.doc.page_count()));
+        self.status_note = Some("Page removed — Save to keep the change".to_string());
+    }
+
+    /// Import a PDF or image file as new page(s) after the current page (raster
+    /// backend only). Returns true on success.
+    pub fn import_file(&mut self, path: &std::path::Path) -> bool {
+        if self.raster.is_none() {
+            self.status_note = Some("Importing pages needs the pdfium backend".to_string());
+            self.dirty = true;
+            return false;
+        }
+        let at = self.current_page; // 0-based index of the slot after the current page
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status_note = Some(format!("Couldn't read {}: {e}", path.display()));
+                self.dirty = true;
+                return false;
+            }
+        };
+        let is_pdf = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false)
+            || bytes.starts_with(b"%PDF");
+        let rz = self.raster.as_mut().unwrap();
+        let result = if is_pdf {
+            rz.import_pdf(bytes, at).map(|n| format!("Imported {n} page(s) — Save to keep them"))
+        } else {
+            rz.import_image(&bytes, at)
+                .map(|_| "Imported image as a page — Save to keep it".to_string())
+        };
+        match result {
+            Ok(note) => {
+                self.after_page_edit();
+                self.go_to_page(at + 1);
+                self.status_note = Some(note);
+                true
+            }
+            Err(e) => {
+                self.status_note = Some(format!("Import failed: {e}"));
+                self.dirty = true;
+                false
+            }
+        }
+    }
+
+    fn request_import_via_portal(&mut self) {
+        if self.raster.is_none() {
+            self.status_note = Some("Importing pages needs the pdfium backend".to_string());
+            self.dirty = true;
+            return;
+        }
+        if self.portal_import_rx.is_some() {
+            return;
+        }
+        self.portal_import_rx = Some(crate::portal::request_import());
+        self.dirty = true;
+    }
+
+    fn drain_portal_import(&mut self) {
+        let Some(rx) = self.portal_import_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_import_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => {
+                        self.import_file(&path);
+                    }
+                    crate::portal::PortalOutcome::Cancelled => {}
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        self.status_note = Some(format!("Couldn't open the import dialog: {reason}"));
+                        self.dirty = true;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_import_rx = None;
+            }
+        }
+    }
+
     // ---- search -----------------------------------------------------
 
     fn search_options(&self) -> SearchOptions {
@@ -1090,6 +1270,7 @@ impl PdfApp {
                     .unwrap_or("the file")
                     .to_string();
                 self.status_note = Some(format!("Saved annotated PDF to {name}"));
+                self.pages_dirty = false;
                 self.dirty = true;
                 true
             }
@@ -1686,6 +1867,8 @@ impl Widget for PdfApp {
         self.drain_portal(state);
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
+        // And any completed import (a PDF/image chosen to add as pages).
+        self.drain_portal_import();
 
         if !self.seeded {
             // Demonstration markup is seeded only on the screenshot / test
@@ -2688,6 +2871,125 @@ mod tests {
             text.contains("Check this claim"),
             "the note body is baked into the saved page text"
         );
+    }
+
+    /// Prepare an opened raster sample for page-editing tests: sync + lay out so
+    /// `current_page` and region rects are valid.
+    fn open_laid_out_sample() -> (PdfApp, ui::State) {
+        let mut app = open_raster_sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        (app, st)
+    }
+
+    fn saved_reopen(app: &mut PdfApp, name: &str) -> crate::source::Rasterizer {
+        let out = std::env::temp_dir().join("qos_pdf_edit").join(name);
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(app.save_annotated_to(&out), "save: {:?}", app.status_note);
+        assert!(!app.pages_dirty(), "a successful save clears the page-dirty flag");
+        crate::source::open(&out)
+            .expect("the edited PDF reopens")
+            .raster
+            .expect("the edited PDF reopens via pdfium")
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn reorder_persists_across_save_and_reopen() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        assert!(n >= 2, "the fixture must have at least two pages to test reordering");
+        let first = app.raster.as_mut().unwrap().page_text(0).text.trim().to_string();
+        let last = app.raster.as_mut().unwrap().page_text(n - 1).text.trim().to_string();
+        assert_ne!(first, last, "the two pages carry distinct text so a swap is observable");
+
+        // Move the first page to the end — the shared rail's Reorder event maps
+        // straight onto this production method.
+        app.reorder_pages(0, n - 1);
+        assert!(app.pages_dirty(), "a reorder flags that a save is needed");
+        assert_eq!(app.doc.page_count(), n, "reorder keeps the page count");
+
+        let mut rz = saved_reopen(&mut app, "reordered.pdf");
+        assert_eq!(rz.page_count(), n, "the page count persisted");
+        assert_eq!(
+            rz.page_text(n - 1).text.trim(),
+            first,
+            "the old first page is now last in the saved-and-reopened file"
+        );
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn delete_page_persists_across_save_and_reopen() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        assert!(n >= 2);
+        let second = app.raster.as_mut().unwrap().page_text(1).text.trim().to_string();
+
+        app.delete_page_at(0);
+        assert_eq!(app.doc.page_count(), n - 1, "delete drops one page");
+        assert!(app.pages_dirty());
+
+        let mut rz = saved_reopen(&mut app, "deleted.pdf");
+        assert_eq!(rz.page_count(), n - 1, "the deletion persisted");
+        assert_eq!(
+            rz.page_text(0).text.trim(),
+            second,
+            "the former second page is now first"
+        );
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn duplicate_page_persists_across_save_and_reopen() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        let first = app.raster.as_mut().unwrap().page_text(0).text.trim().to_string();
+
+        app.duplicate_page_at(0);
+        assert_eq!(app.doc.page_count(), n + 1, "duplicate adds one page");
+
+        let mut rz = saved_reopen(&mut app, "duplicated.pdf");
+        assert_eq!(rz.page_count(), n + 1, "the duplicate persisted");
+        assert_eq!(rz.page_text(0).text.trim(), first);
+        assert_eq!(rz.page_text(1).text.trim(), first, "page 2 is a copy of page 1");
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn import_image_adds_a_page_that_survives_save() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+
+        // A genuine PNG on disk, imported through the real code path.
+        let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
+        let png = std::env::temp_dir().join("qos_pdf_edit").join("swatch.png");
+        std::fs::create_dir_all(png.parent().unwrap()).unwrap();
+        image::DynamicImage::ImageRgba8(img).save(&png).expect("write the test PNG");
+
+        assert!(app.import_file(&png), "import: {:?}", app.status_note);
+        assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
+        assert!(app.pages_dirty());
+
+        let rz = saved_reopen(&mut app, "with_image.pdf");
+        assert_eq!(rz.page_count(), n + 1, "the imported image page persisted");
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn import_pdf_appends_all_its_pages() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        // Import the sample into itself: page count should exactly double.
+        assert!(app.import_file(std::path::Path::new(SAMPLE_PDF)), "import: {:?}", app.status_note);
+        assert_eq!(app.doc.page_count(), n * 2, "every page of the imported PDF was added");
+
+        let rz = saved_reopen(&mut app, "merged.pdf");
+        assert_eq!(rz.page_count(), n * 2, "the merged page set persisted");
     }
 
     /// Drive the real fixture PDF through the live frame path to produce the

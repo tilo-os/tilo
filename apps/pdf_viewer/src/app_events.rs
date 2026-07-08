@@ -282,19 +282,6 @@ impl PdfApp {
         true
     }
 
-    fn apply_rail(&mut self, p: Point) -> bool {
-        if !self.rail_rect.contains(p) {
-            return false;
-        }
-        for (num, r) in self.thumbnail_rects() {
-            if r.contains(p) {
-                self.go_to_page(num);
-                break;
-            }
-        }
-        true
-    }
-
     fn apply_status(&mut self, p: Point) -> bool {
         if !self.status_rect.contains(p) {
             return false;
@@ -414,6 +401,17 @@ impl PdfApp {
                     return;
                 }
 
+                // A live page-rail reorder drag (or an open rail menu) owns the
+                // pointer while it lasts.
+                if self.show_rail
+                    && (self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open())
+                {
+                    if self.page_sidebar.on_motion(p) {
+                        self.dirty = true;
+                    }
+                    return;
+                }
+
                 // Text selection drag (Select tool over real text). Map the
                 // pointer onto the selection's page even past the card edge so
                 // the drag can reach the end of a line.
@@ -505,7 +503,10 @@ impl PdfApp {
                     *handled = true;
                     return;
                 }
-                // Rail resize grip: a thin strip on the rail's right edge.
+                // The page rail: its resize grip (a thin strip on the right
+                // edge) first, then the shared rail widget (select, begin a
+                // reorder drag, the "Import…" button, or a click that dismisses
+                // an open menu).
                 if self.show_rail {
                     let rail = self.rail_rect;
                     if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
@@ -514,10 +515,13 @@ impl PdfApp {
                         *handled = true;
                         return;
                     }
-                }
-                if self.apply_rail(p) {
-                    *handled = true;
-                    return;
+                    if rail.contains(p) || self.page_sidebar.menu_open() {
+                        self.page_sidebar.on_press(p);
+                        self.apply_sidebar_events(state);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
                 }
                 // On a narrow window a click on the scrim (canvas area not
                 // covered by an open overlay panel) dismisses the panels.
@@ -538,6 +542,15 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Commit a page-rail reorder drag (or clear its pending press).
+                if self.page_sidebar.is_pending_drag() {
+                    if self.page_sidebar.on_release() {
+                        self.dirty = true;
+                    }
+                    self.apply_sidebar_events(state);
+                    *handled = true;
+                    return;
+                }
                 if self.selection.map(|s| s.dragging).unwrap_or(false) {
                     // End a text-selection drag. A bare click (no drag) selects
                     // nothing textual, so also let it pick markup underneath.
@@ -576,6 +589,15 @@ impl PdfApp {
                 ..
             } => {
                 let p = self.last_mouse;
+                // Right-click a page thumbnail → the shared rail's duplicate /
+                // move / delete menu.
+                if self.show_rail && self.rail_rect.contains(p) {
+                    self.page_sidebar.on_right_press(p);
+                    self.apply_sidebar_events(state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.canvas_rect.contains(p) {
                     self.open_context_menu(p);
                     *handled = true;
@@ -590,6 +612,15 @@ impl PdfApp {
                 };
                 let mods = modifiers.state();
                 let ctrl = mods.control_key() || mods.super_key();
+
+                // Wheel over the page rail scrolls its thumbnail list.
+                if self.show_rail && self.rail_rect.contains(p) {
+                    if self.page_sidebar.on_wheel(-raw_y) {
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
 
                 // Wheel over the sidebar scrolls its list.
                 if self.show_sidebar && self.sidebar_rect.contains(p) {
@@ -831,6 +862,7 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.selected_sig = None;
                 self.context_menu = None;
+                self.page_sidebar.on_escape();
                 self.clear_selection();
                 self.status_note = None;
                 self.dirty = true;
