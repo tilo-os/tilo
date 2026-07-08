@@ -2,10 +2,12 @@
 //! text view that edits an Automerge `Text` object directly.
 //!
 //! State that belongs in the CRDT (the source text) lives there; this struct
-//! holds only ephemeral view state — caret, selection anchor, scroll offset,
-//! and a tiny internal clipboard. Caret/anchor are **char indices** into the
-//! text, which is exactly the unit Automerge's `splice_text` uses, so edits
-//! and cursor maths stay in one coordinate system.
+//! holds only ephemeral view state — caret, selection anchor, and scroll
+//! offset. Cut/copy/paste go through the OS-wide system clipboard so text moves
+//! freely between the editor, the rendered preview, and every other app.
+//! Caret/anchor are **char indices** into the text, which is exactly the unit
+//! Automerge's `splice_text` uses, so edits and cursor maths stay in one
+//! coordinate system.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -42,8 +44,6 @@ pub struct SourceEditor {
     line_h: f64,
     /// Preferred column for vertical caret motion (sticky across up/down).
     desired_col: Option<usize>,
-    /// Internal clipboard for Ctrl+C/X/V (no system clipboard dependency).
-    clipboard: String,
     /// Last known hover position (window space), or `None` when the pointer is
     /// off the pane. Drives the inline-diagnostic tooltip.
     hover: Option<Point>,
@@ -61,7 +61,6 @@ impl Default for SourceEditor {
             char_w: FONT_SIZE as f64 * 0.6,
             line_h: (FONT_SIZE as f64 * 1.5).round(),
             desired_col: None,
-            clipboard: String::new(),
             hover: None,
         }
     }
@@ -252,37 +251,72 @@ impl SourceEditor {
 
         // Editing/navigation shortcuts with Ctrl/Cmd.
         if ctrl {
-            if let Key::Character(c) = logical_key {
-                match c.to_lowercase().as_str() {
-                    "a" => {
-                        self.anchor = 0;
-                        self.caret = len;
-                        return true;
+            match logical_key {
+                // Word-wise caret motion — the boundary rule is shared with
+                // every other qOS text surface.
+                Key::Named(NamedKey::ArrowLeft) => {
+                    let new = ui::prev_word_boundary_chars(&current, self.caret);
+                    self.caret = new;
+                    if !shift {
+                        self.anchor = new;
                     }
-                    "c" => {
-                        if let Some((lo, hi)) = self.selection() {
-                            self.clipboard = substring(&current, lo, hi);
-                        }
-                        return true;
-                    }
-                    "x" => {
-                        if let Some((lo, hi)) = self.selection() {
-                            self.clipboard = substring(&current, lo, hi);
-                            self.delete_range(doc, text_id, lo, hi);
-                        }
-                        return true;
-                    }
-                    "v" => {
-                        let paste = self.clipboard.clone();
-                        if !paste.is_empty() {
-                            self.insert_str(doc, text_id, &current, &paste);
-                        }
-                        return true;
-                    }
-                    _ => return false, // let the app handle other Ctrl combos
+                    self.desired_col = None;
+                    self.after_edit(doc, text_id);
+                    return true;
                 }
+                Key::Named(NamedKey::ArrowRight) => {
+                    let new = ui::next_word_boundary_chars(&current, self.caret);
+                    self.caret = new;
+                    if !shift {
+                        self.anchor = new;
+                    }
+                    self.desired_col = None;
+                    self.after_edit(doc, text_id);
+                    return true;
+                }
+                // Word-wise delete: an active selection wins; otherwise chew
+                // back / forward to the nearest word boundary.
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some((lo, hi)) = self.selection() {
+                        self.delete_range(doc, text_id, lo, hi);
+                    } else {
+                        let start = ui::prev_word_boundary_chars(&current, self.caret);
+                        if start < self.caret {
+                            self.delete_range(doc, text_id, start, self.caret);
+                        }
+                    }
+                    self.desired_col = None;
+                    self.after_edit(doc, text_id);
+                    return true;
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if let Some((lo, hi)) = self.selection() {
+                        self.delete_range(doc, text_id, lo, hi);
+                    } else {
+                        let end = ui::next_word_boundary_chars(&current, self.caret);
+                        if end > self.caret {
+                            self.delete_range(doc, text_id, self.caret, end);
+                        }
+                    }
+                    self.desired_col = None;
+                    self.after_edit(doc, text_id);
+                    return true;
+                }
+                Key::Character(c) => {
+                    match c.to_lowercase().as_str() {
+                        "a" => {
+                            self.anchor = 0;
+                            self.caret = len;
+                        }
+                        "c" => self.copy_selection(&current),
+                        "x" => self.cut_selection(doc, text_id, &current),
+                        "v" => self.paste_clipboard(doc, text_id, &current),
+                        _ => return false, // let the app handle other Ctrl combos
+                    }
+                    return true;
+                }
+                _ => return false,
             }
-            return false;
         }
 
         match logical_key {
@@ -394,6 +428,39 @@ impl SourceEditor {
                     }
                 }
                 false
+            }
+        }
+    }
+
+    // ----- clipboard (system-backed) --------------------------------------
+
+    /// Copy the active selection to the system clipboard. No-op when nothing is
+    /// selected or no clipboard backend is available (e.g. a headless session).
+    fn copy_selection(&self, current: &str) {
+        if let Some((lo, hi)) = self.selection() {
+            ui::clipboard_copy(&substring(current, lo, hi));
+        }
+    }
+
+    /// Cut the active selection: copy it to the system clipboard, then delete it
+    /// through the CRDT.
+    fn cut_selection(&mut self, doc: &mut AutoCommit, text_id: &ObjId, current: &str) {
+        if let Some((lo, hi)) = self.selection() {
+            ui::clipboard_copy(&substring(current, lo, hi));
+            self.delete_range(doc, text_id, lo, hi);
+            self.desired_col = None;
+            self.after_edit(doc, text_id);
+        }
+    }
+
+    /// Paste the system clipboard at the caret, replacing any selection. The
+    /// pasted text is normalised (CRLF → LF, stray control codes dropped) so a
+    /// paste from another app can't inject odd bytes into the source.
+    fn paste_clipboard(&mut self, doc: &mut AutoCommit, text_id: &ObjId, current: &str) {
+        if let Some(raw) = ui::clipboard_paste() {
+            let text = sanitize_paste(&raw);
+            if !text.is_empty() {
+                self.insert_str(doc, text_id, current, &text);
             }
         }
     }
@@ -881,6 +948,17 @@ fn substring(text: &str, lo: usize, hi: usize) -> String {
     text.chars().skip(lo).take(hi.saturating_sub(lo)).collect()
 }
 
+/// Normalise pasted text for the source buffer: fold CRLF / lone CR to LF, and
+/// drop other control characters (keeping tabs and newlines) so a paste from
+/// another application can't smuggle control codes into the document.
+fn sanitize_paste(s: &str) -> String {
+    s.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1028,5 +1106,93 @@ mod tests {
         let err = diag(2, 4, 2, 6);
         let map = worst_severity_by_line(&[warn, err]);
         assert_eq!(map.get(&1), Some(&DiagKind::Error));
+    }
+
+    /// Ctrl+ArrowRight / ArrowLeft hop the caret a whole word at a time, driven
+    /// through the production `handle_key` path with the Ctrl modifier held.
+    #[test]
+    fn ctrl_arrows_move_by_word() {
+        use winit::event::Modifiers;
+        use winit::keyboard::ModifiersState;
+        let (mut doc, id) = doc_with("hello world again");
+        let mut ed = SourceEditor::new();
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+        assert!(ed.handle_key(&named_key(NamedKey::ArrowRight), &ctrl, &mut doc, &id));
+        let after_first = ed.caret;
+        assert!(after_first > 0, "jumped past the first word (caret={after_first})");
+        assert!(after_first <= "hello world".len(), "did not overshoot past a word");
+
+        assert!(ed.handle_key(&named_key(NamedKey::ArrowRight), &ctrl, &mut doc, &id));
+        let after_second = ed.caret;
+        assert!(after_second > after_first, "second word hop advances further");
+        assert!(ed.handle_key(&named_key(NamedKey::ArrowLeft), &ctrl, &mut doc, &id));
+        assert!(ed.caret < after_second, "Ctrl+Left retreats by a word");
+    }
+
+    /// Ctrl+Backspace with no selection deletes the word before the caret via
+    /// the CRDT (the real edit path).
+    #[test]
+    fn ctrl_backspace_deletes_word() {
+        use winit::event::Modifiers;
+        use winit::keyboard::ModifiersState;
+        let (mut doc, id) = doc_with("hello world");
+        let mut ed = SourceEditor::new();
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        ed.caret = 11; // end of "world"
+        ed.anchor = 11;
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(ed.handle_key(&named_key(NamedKey::Backspace), &ctrl, &mut doc, &id));
+        assert_eq!(doc.text(&id).unwrap(), "hello ", "the trailing word was removed");
+        assert_eq!(ed.caret, 6);
+    }
+
+    /// Paste sanitisation folds CRLF/CR to LF and strips stray control codes
+    /// while keeping tabs and newlines.
+    #[test]
+    fn paste_sanitises_control_chars_and_newlines() {
+        assert_eq!(sanitize_paste("a\r\nb\tc\u{7}d"), "a\nb\tcd");
+        assert_eq!(sanitize_paste("x\ry"), "x\ny");
+    }
+
+    /// Cut then paste round-trips through the **system** clipboard when a
+    /// backend is present; skips cleanly on a headless session (the helper is
+    /// silent on absence). Exercises the production `cut_selection` /
+    /// `paste_clipboard` methods the Ctrl+X / Ctrl+V keys call.
+    #[test]
+    fn cut_paste_round_trips_via_system_clipboard() {
+        ui::clipboard_copy("__qos_probe__");
+        if ui::clipboard_paste().as_deref() != Some("__qos_probe__") {
+            eprintln!("cut_paste_round_trips: no clipboard backend, skipping");
+            return;
+        }
+        let (mut doc, id) = doc_with("hello world");
+        let mut ed = SourceEditor::new();
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        ed.anchor = 0;
+        ed.caret = 6; // select "hello "
+        ed.cut_selection(&mut doc, &id, "hello world");
+        assert_eq!(doc.text(&id).unwrap(), "world", "cut removed the selection");
+        let now = doc.text(&id).unwrap();
+        ed.caret = now.chars().count();
+        ed.anchor = ed.caret;
+        ed.paste_clipboard(&mut doc, &id, &now);
+        assert_eq!(doc.text(&id).unwrap(), "worldhello ", "paste re-inserted the cut text");
+    }
+
+    /// Build a Named-key press event for the editor tests.
+    fn named_key(key: NamedKey) -> WindowEvent {
+        use winit::event::DeviceId;
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        let device_id: DeviceId = unsafe { std::mem::zeroed() };
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(key);
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id, event: ev, is_synthetic: false }
     }
 }
