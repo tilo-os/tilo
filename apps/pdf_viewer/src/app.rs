@@ -292,6 +292,9 @@ pub struct PdfApp {
     /// Screenshot-only: drop the caret into the first comment on the first
     /// sync so a still frame can show the inline editor. Never set at runtime.
     shots_edit_first_comment: bool,
+    /// Screenshot-only: arm a live page-rail reorder drag each frame so a still
+    /// frame captures the drag ghost + reflow gap. Never set at runtime.
+    shots_rail_drag: bool,
 
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -488,6 +491,39 @@ impl PdfApp {
         Self::empty()
     }
 
+    /// Screenshot-only: arm a live page-rail reorder drag so a still frame shows
+    /// the drag ghost + reflow gap. The rail is forced open.
+    pub fn arm_shots_rail_drag(&mut self) {
+        self.shots_rail_drag = true;
+        self.show_rail = true;
+    }
+
+    /// Screenshot / demo helper: import a distinctive generated image as a new
+    /// page after the current one, so a still frame shows an imported image page
+    /// in the rail + canvas. No-op on the text backend.
+    pub fn demo_import_image(&mut self) {
+        self.show_rail = true;
+        if self.raster.is_none() {
+            return;
+        }
+        // A recognisable swatch (diagonal split, bright colours) written to a
+        // temp PNG and imported through the real code path.
+        let (w, h) = (480u32, 360u32);
+        let mut img = image::RgbaImage::new(w, h);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let above = (x as f32 / w as f32) > (y as f32 / h as f32);
+            *px = if above {
+                image::Rgba([64, 132, 246, 255])
+            } else {
+                image::Rgba([246, 132, 64, 255])
+            };
+        }
+        let png = std::env::temp_dir().join("qos_pdf_demo_import.png");
+        if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
+            self.import_file(&png);
+        }
+    }
+
     fn build(doc: Document, seed_sample: bool) -> Self {
         let author = std::env::var("QUICK_APP_ID")
             .ok()
@@ -501,6 +537,7 @@ impl PdfApp {
             load_error: None,
             seed_sample,
             shots_edit_first_comment: false,
+            shots_rail_drag: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
