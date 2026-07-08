@@ -24,6 +24,13 @@ webview-adblock = ["dep:adblock"]
 # os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
 # prefix). Off by default so the workspace builds without the libraries.
 webview-wpe = []
+# Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) for the
+# `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
+# drive playback and show the current title/artist/art. Off by default so the
+# hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
+# `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
+# copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
+mpris = ["dep:zbus"]
 
 [dependencies]
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
@@ -86,6 +93,11 @@ openh264 = { version = "0.9", features = ["source"] }
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
 media = { path = "../crates/media" }
+# MPRIS D-Bus media control for the `VideoPlayer` widget (behind the `mpris`
+# feature). Pinned to 4.4 with `p2p` to match `apps/music` + `apps/chat`, so the
+# workspace resolves a single zbus 4.4 copy (the hermetic p2p round-trip test
+# also uses the `p2p` transport).
+zbus = { version = "4.4", optional = true, features = ["p2p"] }
 # System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
 # Wayland uses `wl_data_device`; X11 uses the selection protocol —
 # `arboard` wraps both. The "wayland-data-control" feature lets us
