@@ -1466,14 +1466,21 @@ impl ContactsApp {
             1 => "1 person".to_string(),
             n => format!("{n} people"),
         };
-        tr.draw_text(
-            scene,
-            &count,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((self.rect.x0 + PAD + 110.0, self.rect.y0 + 21.0)),
-            None,
-        );
+        // Draw the count subtitle only when it clears the right-aligned toolbar
+        // buttons — on a narrow window the buttons crowd in and it would
+        // otherwise bleed under the Import button.
+        let count_x = self.rect.x0 + PAD + 110.0;
+        let count_w = tr.measure(&count, 12.0, None).0 as f64;
+        if count_x + count_w < self.hit.import.x0 - 12.0 {
+            tr.draw_text(
+                scene,
+                &count,
+                12.0,
+                c.text_dim,
+                t * Affine::translate((count_x, self.rect.y0 + 21.0)),
+                None,
+            );
+        }
 
         toolbar_button(scene, t, tr, theme, self.hit.import, "Import", false);
         toolbar_button(scene, t, tr, theme, self.hit.export, "Export", false);
@@ -3347,6 +3354,7 @@ impl ContactsApp {
                 f.ti.set_selection(end, end);
             }
         }
+        self.scroll_focused_field_into_view();
         self.dirty = true;
         self.relayout = true;
         true
@@ -3393,9 +3401,55 @@ impl ContactsApp {
                 f.ti.set_selection(end, end);
             }
         }
+        self.scroll_focused_field_into_view();
         self.dirty = true;
         self.relayout = true;
         true
+    }
+
+    /// Scroll the edit-form body so the just-focused field (and its label) is
+    /// fully visible. Keyboard navigation (Tab / Shift+Tab / the arrow keys)
+    /// can land on a field below or above the fold on a long form; without this
+    /// the focus ring would sit on a field the user can't see. Uses the field's
+    /// last-laid-out rect and the same body geometry `draw_form` clips to, and
+    /// nudges `detail_scroll` by exactly the overflow so the next layout brings
+    /// the field into view.
+    fn scroll_focused_field_into_view(&mut self) {
+        if self.mode != Mode::Edit {
+            return;
+        }
+        let off = self.detail_top_offset();
+        let body_top =
+            self.detail_rect.y0 + FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0 + off;
+        let body_bot = self.detail_rect.y1;
+        // The focused field's last-laid-out rect (reflecting the current
+        // scroll). `Rect` is `Copy`, so the borrow of `self.form` ends here.
+        let r = match self
+            .form
+            .as_ref()
+            .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
+        {
+            Some(fi) => fi.ti.get_rect(),
+            None => return,
+        };
+        if r.width() <= 0.0 {
+            return; // not laid out yet (e.g. focus set before the first frame)
+        }
+        // The section label is drawn ~18px above the field; keep it visible too.
+        let top_margin = 22.0;
+        let bottom_margin = 8.0;
+        let delta = if r.y0 - top_margin < body_top {
+            r.y0 - top_margin - body_top // negative: reveal upward
+        } else if r.y1 + bottom_margin > body_bot {
+            r.y1 + bottom_margin - body_bot // positive: reveal downward
+        } else {
+            0.0
+        };
+        if delta != 0.0 {
+            self.detail_scroll = (self.detail_scroll + delta).max(0.0);
+            self.relayout = true;
+            self.dirty = true;
+        }
     }
 
     /// Whether the focused edit-form field has its caret at the very start with
@@ -3920,7 +3974,15 @@ impl ContactsApp {
             return;
         }
 
-        // Global shortcuts (no field focused).
+        // Global list shortcuts. These fire only in view mode with no popup
+        // open, so a stray bare key ('n', 'e', '/', Delete, an arrow) can never
+        // silently discard an open edit form or fire behind a transient popup.
+        // In edit mode the form's own keyboard handling above owns navigation;
+        // a printable key reaches a field only once that field is focused
+        // (Tab / click), matching how a form should behave.
+        if self.mode != Mode::View || self.popup.is_some() {
+            return;
+        }
         match &ke.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 self.move_selection(1);
@@ -3931,12 +3993,10 @@ impl ContactsApp {
                 *handled = true;
             }
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                if self.mode == Mode::View {
-                    if let Some(id) = self.selected {
-                        self.confirm_delete = Some(id);
-                        *handled = true;
-                        self.dirty = true;
-                    }
+                if let Some(id) = self.selected {
+                    self.confirm_delete = Some(id);
+                    *handled = true;
+                    self.dirty = true;
                 }
             }
             Key::Character(c) => {
@@ -3949,7 +4009,7 @@ impl ContactsApp {
                         self.begin_edit(nc, true);
                         *handled = true;
                     }
-                    "e" if self.mode == Mode::View => {
+                    "e" => {
                         if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
                             self.begin_edit(c, false);
                             *handled = true;
@@ -4570,6 +4630,72 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_focus_scrolls_a_below_the_fold_field_into_view() {
+        // On a form taller than the pane, moving focus to a field past the fold
+        // must scroll it into the visible body — otherwise the focus ring lands
+        // on a field the user can't see.
+        let mut h = Harness::new(1000, 420); // short pane → the form overflows
+        assert!(!h.app.narrow, "1000px is the docked split");
+        let mut c = Contact::new();
+        c.first = "Long".into();
+        c.last = "Form".into();
+        for _ in 0..4 {
+            c.phones.push(Labeled::new("mobile", ""));
+        }
+        for _ in 0..4 {
+            c.emails.push(Labeled::new("home", ""));
+        }
+        h.app.begin_edit(c, true);
+        h.relayout();
+
+        let rect_of = |h: &Harness, slot: Slot| {
+            h.app
+                .form
+                .as_ref()
+                .unwrap()
+                .inputs
+                .iter()
+                .find(|i| i.slot == slot)
+                .unwrap()
+                .ti
+                .get_rect()
+        };
+
+        // The last field (Groups) starts well below the visible body.
+        let body_bot = h.app.detail_rect.y1;
+        assert!(
+            rect_of(&h, Slot::Groups).y1 > body_bot,
+            "precondition: the last field is off-screen below the fold",
+        );
+
+        // Shift+Tab (nothing focused) lands on the last field; it must now be
+        // scrolled fully into view.
+        assert!(h.press_shift_tab());
+        assert_eq!(h.focused_slot(), Some(Slot::Groups));
+        h.relayout(); // apply the scroll the focus move requested
+        assert!(h.app.detail_scroll > 0.0, "focusing an off-screen field scrolled the form");
+        assert!(
+            rect_of(&h, Slot::Groups).y1 <= h.app.detail_rect.y1 + 0.5,
+            "the focused last field is now within the visible pane",
+        );
+
+        // Tab forward wraps back to the first field and scrolls back to the top.
+        h.press_named(NamedKey::Tab);
+        assert_eq!(h.focused_slot(), Some(Slot::First));
+        h.relayout();
+        let body_top = h.app.detail_rect.y0
+            + FORM_TITLE_TOP
+            + FORM_TITLE_H
+            + FORM_ROW_GAP
+            + 32.0
+            + h.app.detail_top_offset();
+        assert!(
+            rect_of(&h, Slot::First).y0 >= body_top - 24.0,
+            "wrapping to the first field scrolled back to the top",
+        );
+    }
+
+    #[test]
     fn single_click_detail_field_does_not_enter_edit() {
         let mut h = Harness::new(1280, 800);
         let rect = h
@@ -4599,6 +4725,39 @@ mod tests {
             .expect("the website is rendered via a Link widget");
         assert_eq!(link.url(), website, "the link opens the contact's website");
         assert!(link.get_rect().width() > 0.0, "the link is laid out with a hit rect");
+    }
+
+    #[test]
+    fn clicking_the_website_opens_it_through_the_link_widget() {
+        // Drive the whole click path (press → hit-test → Link::activate) and
+        // confirm the contact's URL is what gets opened. The Link's `on_open`
+        // sink records the URL instead of spawning the OS browser (its
+        // documented test hook), so this exercises the production click path
+        // hermetically — no xdg-open side effect.
+        let mut h = Harness::new(1280, 800);
+        let id = h.app.selected.unwrap();
+        let url = h.app.store.get(id).unwrap().website.clone();
+        assert!(!url.is_empty(), "the selected seed has a website");
+
+        let recorded = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let sink = recorded.clone();
+        // Same URL as the contact, so the detail draw preserves this instance
+        // (it only rebuilds the link when the URL changes) and lays it out.
+        h.app.website_link =
+            Some(Link::new(&url).with_font_size(14.0).on_open(move |u| {
+                *sink.borrow_mut() = Some(u.to_string());
+            }));
+        h.relayout();
+        let rect = h.app.website_link.as_ref().unwrap().get_rect();
+        assert!(rect.width() > 0.0, "the website link has a hit rect after layout");
+
+        assert!(h.press_left(rect.center()), "clicking the website link is handled");
+        assert_eq!(
+            recorded.borrow().as_deref(),
+            Some(url.as_str()),
+            "the click opened the contact's website via the Link widget",
+        );
+        assert_eq!(h.app.mode, Mode::View, "opening a link does not enter edit mode");
     }
 
     #[test]
@@ -4882,6 +5041,43 @@ mod tests {
         h.press_left(h.row_center(other_idx));
         assert_eq!(h.app.pending_switch, Some(other_id), "the guard defers the switch");
         assert_eq!(h.app.mode, Mode::Edit, "still editing behind the modal");
+    }
+
+    #[test]
+    fn bare_keys_do_not_discard_an_open_edit_form() {
+        // Regression: with the edit form open but no field yet focused (its
+        // initial state right after opening), a stray 'n' used to start a
+        // brand-new contact — silently discarding the in-progress edit with no
+        // unsaved guard — and '/' yanked focus to the list search. The form's
+        // own keys own the keyboard until a field is focused.
+        let mut h = edit_harness();
+        assert_eq!(h.app.mode, Mode::Edit);
+        assert!(h.app.form.as_ref().unwrap().is_new);
+        assert!(h.focused_slot().is_none(), "the form opens with no field focused");
+        let draft_id = h.app.form.as_ref().unwrap().draft.id;
+
+        // 'n' must NOT start a new contact / swap the draft out from under us.
+        h.press_char("n");
+        assert_eq!(h.app.mode, Mode::Edit, "'n' does not leave the edit form");
+        assert_eq!(
+            h.app.form.as_ref().unwrap().draft.id,
+            draft_id,
+            "'n' did not replace the in-progress draft",
+        );
+
+        // '/' must NOT steal focus to the list search while editing.
+        h.press_char("/");
+        assert!(!h.app.search.is_focused(), "'/' does not steal focus mid-edit");
+        assert_eq!(h.app.mode, Mode::Edit, "still editing");
+
+        // Once a field IS focused, the very same key types into it normally.
+        assert!(h.focus_field(Slot::First));
+        h.type_text("n");
+        assert!(
+            h.field_value(Slot::First).contains('n'),
+            "with a field focused the key types into it: {:?}",
+            h.field_value(Slot::First),
+        );
     }
 
     // =================================================================
