@@ -363,22 +363,33 @@ extern "C" fn on_export_shm_buffer(
             {
                 let swizzle_start = std::time::Instant::now();
                 let opaque = format == WL_SHM_FORMAT_XRGB8888;
-                let mut rgba = vec![0u8; width as usize * height as usize * 4];
+                let w = width as usize;
+                let n = w * height as usize * 4;
+                // Fill an *uninitialised* buffer — every byte is written
+                // below, so the `vec![0u8; n]` zero-init was a wasted 5 MB
+                // memset per frame. Swap B<->R a whole 32-bit pixel at a
+                // time (LLVM vectorises the word op): source is little-
+                // endian [AX]RGB8888 = bytes B,G,R,[AX] → word
+                // `A<<24|R<<16|G<<8|B`; RGBA wants `A<<24|B<<16|G<<8|R`.
+                let mut rgba = Vec::<u8>::with_capacity(n);
+                let dst = rgba.as_mut_ptr();
                 for row in 0..height as usize {
-                    let src_row = std::slice::from_raw_parts(
-                        src.add(row * stride),
-                        width as usize * 4,
-                    );
-                    let dst_row =
-                        &mut rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
-                    // Little-endian [AX]RGB8888 in memory is B,G,R,[AX].
-                    for px in 0..width as usize {
-                        dst_row[px * 4] = src_row[px * 4 + 2];
-                        dst_row[px * 4 + 1] = src_row[px * 4 + 1];
-                        dst_row[px * 4 + 2] = src_row[px * 4];
-                        dst_row[px * 4 + 3] = if opaque { 0xFF } else { src_row[px * 4 + 3] };
+                    let mut s = src.add(row * stride) as *const u32;
+                    let mut d = dst.add(row * w * 4) as *mut u32;
+                    for _ in 0..w {
+                        let px = s.read_unaligned();
+                        let mut out = (px & 0xFF00_FF00)
+                            | ((px >> 16) & 0x0000_00FF)
+                            | ((px & 0x0000_00FF) << 16);
+                        if opaque {
+                            out |= 0xFF00_0000;
+                        }
+                        d.write_unaligned(out);
+                        s = s.add(1);
+                        d = d.add(1);
                     }
                 }
+                rgba.set_len(n);
                 crate::webview::profile::record_frame(width, height, swizzle_start.elapsed());
                 *state.shared.frames.lock().unwrap() = Some(Frame {
                     rgba: Arc::new(rgba),
