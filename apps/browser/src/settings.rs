@@ -34,8 +34,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Row, Scrollable, ScrollAxis, Text, TextInput, Toggle, Widget,
+    Button, Column, Container, Row, Scrollable, ScrollAxis, Spacer, Text, TextInput, Toggle, Widget,
 };
+
+/// Boxed-widget currency the `ui` tree speaks.
+type El = Box<dyn Widget>;
 
 // === CRDT paths ======================================================
 // Flat scalar/text paths written on the app root object, mirroring the
@@ -54,6 +57,8 @@ pub const CLEAR_COOKIES_FLAG: &str = "settings.clear_cookies_clicked";
 pub const SEARCH_ENGINE_PATH: &str = "settings.search_engine";
 /// Automerge `Text` object holding the homepage URL.
 pub const HOMEPAGE_PATH: &str = "settings.homepage";
+/// Click-flag raised by the "Done" button to close the settings pane.
+pub const CLOSE_FLAG: &str = "settings.close_clicked";
 
 /// Default search-engine query template. The `?q=` suffix lets the
 /// chrome build a search URL by appending typed terms.
@@ -211,6 +216,8 @@ pub struct SettingsIntents {
     pub adblock_enabled: Option<bool>,
     /// Current clear-on-exit toggle state, or `None` before bootstrap.
     pub clear_on_exit: Option<bool>,
+    /// The "Done" button was pressed this frame — close the pane.
+    pub close: bool,
 }
 
 /// Read a boolean scalar at `path`, returning `None` when the path is
@@ -284,6 +291,7 @@ impl SettingsPane {
             clear_cookies: take_flag(state, root, CLEAR_COOKIES_FLAG),
             adblock_enabled: read_bool(state, root, ADBLOCK_PATH),
             clear_on_exit: read_bool(state, root, CLEAR_ON_EXIT_PATH),
+            close: take_flag(state, root, CLOSE_FLAG),
         }
     }
 
@@ -297,64 +305,106 @@ impl SettingsPane {
         // real button press.
         put_bool_if_absent(state, root, CLEAR_HISTORY_FLAG, false);
         put_bool_if_absent(state, root, CLEAR_COOKIES_FLAG, false);
+        put_bool_if_absent(state, root, CLOSE_FLAG, false);
         put_text_if_absent(state, root, SEARCH_ENGINE_PATH, &self.initial.search_engine);
         put_text_if_absent(state, root, HOMEPAGE_PATH, &self.initial.homepage);
     }
 
     /// Build the composed widget tree from the CRDT-backed controls.
+    ///
+    /// The layout follows the qOS settings grammar: a header, then a stack
+    /// of titled "cards", each a group of label/control rows. Vertical
+    /// rhythm is done with explicit spacer rows because an intrinsic-height
+    /// column lays out as a block stack that ignores taffy's inter-child
+    /// gap — a plain `.push().push()` renders the rows touching.
     fn build_composition(&self) -> Box<dyn Widget> {
-        let column = Column::new()
-            .with_intrinsic_height()
+        let header = Row::new()
             .push(Box::new(Text::new("Settings").with_size(24.0)))
-            .push(labeled_toggle(
-                "Block ads & trackers",
-                ADBLOCK_PATH,
-                "settings.adblock",
-            ))
-            .push(labeled_toggle(
-                "Clear history & cookies on exit",
-                CLEAR_ON_EXIT_PATH,
-                "settings.clear_on_exit",
-            ))
+            .push(Box::new(Spacer::new()))
             .push(Box::new(
-                // Explicit widths: the toolkit's 120px button default is
-                // narrower than these labels, which would overflow and
-                // overlap.
-                Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            "settings.clear_history",
-                            "Clear history now",
-                            Some(CLEAR_HISTORY_FLAG),
-                        )
-                        .with_size(180.0, 40.0),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            "settings.clear_cookies",
-                            "Clear cookies & site data now",
-                            Some(CLEAR_COOKIES_FLAG),
-                        )
-                        .with_size(260.0, 40.0),
-                    )),
-            ))
-            .push(labeled_field(
-                "Search engine",
-                SEARCH_ENGINE_PATH,
-                "settings.search_engine_input",
-                DEFAULT_SEARCH_ENGINE,
-            ))
-            .push(labeled_field(
-                "Homepage",
-                HOMEPAGE_PATH,
-                "settings.homepage_input",
-                DEFAULT_HOMEPAGE,
+                Button::new("settings.close", "Done", Some(CLOSE_FLAG))
+                    .with_size(96.0, 36.0),
             ));
 
+        let general = card(
+            "General",
+            rows(vec![
+                field_block(
+                    "Homepage",
+                    HOMEPAGE_PATH,
+                    "settings.homepage_input",
+                    DEFAULT_HOMEPAGE,
+                ),
+                field_block(
+                    "Search engine",
+                    SEARCH_ENGINE_PATH,
+                    "settings.search_engine_input",
+                    DEFAULT_SEARCH_ENGINE,
+                ),
+            ]),
+        );
+
+        let privacy = card(
+            "Privacy & Security",
+            rows(vec![
+                setting_row_described(
+                    "Block ads & trackers",
+                    "Blocks ads, trackers, and YouTube video ads.",
+                    Box::new(
+                        Toggle::new("settings.adblock", ADBLOCK_PATH)
+                            .with_id("settings.adblock")
+                            .with_accessible_name("Block ads & trackers"),
+                    ),
+                ),
+                setting_row_described(
+                    "Clear data when the browser closes",
+                    "Wipe history and cookies on exit.",
+                    Box::new(
+                        Toggle::new("settings.clear_on_exit", CLEAR_ON_EXIT_PATH)
+                            .with_id("settings.clear_on_exit")
+                            .with_accessible_name("Clear data when the browser closes"),
+                    ),
+                ),
+                setting_row_described(
+                    "Browsing data",
+                    "Clear stored history and site data now.",
+                    Box::new(
+                        Row::new()
+                            .push(Box::new(
+                                Button::new(
+                                    "settings.clear_history",
+                                    "Clear history",
+                                    Some(CLEAR_HISTORY_FLAG),
+                                )
+                                .with_size(140.0, 36.0),
+                            ))
+                            .push(Box::new(
+                                Button::new(
+                                    "settings.clear_cookies",
+                                    "Clear cookies & data",
+                                    Some(CLEAR_COOKIES_FLAG),
+                                )
+                                .with_size(200.0, 36.0),
+                            )),
+                    ),
+                ),
+            ]),
+        );
+
+        let body = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(header))
+            .push(vgap(20.0))
+            .push(general)
+            .push(vgap(CARD_GAP))
+            .push(privacy);
+
+        // Inset from the window edges (a Container's default padding) and
+        // scroll if the window is short.
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
-                .with_child(Box::new(column)),
+                .with_child(Box::new(Container::new().with_child(Box::new(body)))),
         )
     }
 }
@@ -365,28 +415,84 @@ impl Default for SettingsPane {
     }
 }
 
-/// A settings row: a leading label followed by a [`Toggle`] bound to
-/// `path`. `id` disambiguates the toggle for the e2e harness and names
-/// it for a screen reader.
-fn labeled_toggle(label: &str, path: &str, id: &str) -> Box<dyn Widget> {
+// === composition helpers (qOS settings grammar) ======================
+// Bundle the recurring shapes — titled card, label/control row, labelled
+// field — so the pane reads consistently. Explicit spacer rows give the
+// per-gap control an intrinsic-height column doesn't (its taffy gap is
+// ignored in block layout), matching the system settings app.
+
+/// Gap between stacked cards.
+const CARD_GAP: f32 = 16.0;
+/// Gap between a card's title and its body.
+const CARD_TITLE_GAP: f32 = 12.0;
+/// Gap between rows inside one card.
+const ROW_GAP: f32 = 12.0;
+
+/// The dim foreground colour, read from the OS dark theme (the builders
+/// run before `draw`, where the live `Theme` would otherwise supply it).
+fn dim() -> vello::peniko::Color {
+    Theme::dark().text_dim
+}
+
+/// A fixed-height empty box, to inject deliberate vertical space.
+fn vgap(px: f32) -> El {
+    Box::new(Container::new().with_no_padding().with_height(px))
+}
+
+/// A titled card: a heading above a bordered, padded surface holding the
+/// body. Keeping the title inside the background `Container` makes it draw
+/// reliably (a bare `Text` in a column can be dropped by the cached draw).
+fn card(title: &str, body: El) -> El {
+    let inner = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(
+            Row::new().push(Box::new(Text::new(title).with_size(16.0))),
+        ))
+        .push(vgap(CARD_TITLE_GAP))
+        .push(body);
+    Box::new(Container::new().with_background().with_child(Box::new(inner)))
+}
+
+/// A vertical stack of rows with explicit inter-row spacing.
+fn rows(items: Vec<El>) -> El {
+    let mut col = Column::new().with_no_padding().with_intrinsic_height();
+    let last = items.len().saturating_sub(1);
+    for (i, item) in items.into_iter().enumerate() {
+        col = col.push(item);
+        if i != last {
+            col = col.push(vgap(ROW_GAP));
+        }
+    }
+    Box::new(col)
+}
+
+/// A label with a dim helper line beneath it, paired with a trailing
+/// control. The `Spacer` pushes the control to the trailing edge.
+fn setting_row_described(label: &str, description: &str, control: El) -> El {
+    let text_block = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(Text::new(label).with_size(14.0)))
+        .push(vgap(2.0))
+        .push(Box::new(Text::new(description).with_size(12.0).with_color(dim())));
     Box::new(
         Row::new()
-            .push(Box::new(Text::new(label)))
-            .push(Box::new(
-                Toggle::new(id, path)
-                    .with_id(id)
-                    .with_accessible_name(label),
-            )),
+            .push(Box::new(text_block))
+            .push(Box::new(Spacer::new()))
+            .push(control),
     )
 }
 
-/// A labelled text field: a dim caption above a [`TextInput`] bound to
-/// the CRDT `Text` object at `path`.
-fn labeled_field(label: &str, path: &str, id: &str, placeholder: &str) -> Box<dyn Widget> {
+/// A labelled full-width text field: a caption above a [`TextInput`]
+/// bound to the CRDT `Text` object at `path`.
+fn field_block(label: &str, path: &str, id: &str, placeholder: &str) -> El {
     Box::new(
         Column::new()
+            .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(Text::new(label).with_size(13.0)))
+            .push(Box::new(Text::new(label).with_size(14.0)))
+            .push(vgap(6.0))
             .push(Box::new(
                 TextInput::new(vec![])
                     .with_id(id)
