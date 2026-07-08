@@ -98,6 +98,8 @@ pub fn app_root() -> Box<dyn Widget> {
 ///   a live equalizer on the current row). Pair with a narrow `--viewport` to
 ///   capture the compact bottom bar.
 /// * `"lyrics"` — the synced-lyrics view with the current line highlighted.
+/// * `"downloading"` — the song list with a few rows mid-download (the animated
+///   download spinner) beside idle rows.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     // Hermetic: a headless shot never spawns a worker or fetches covers, so the
@@ -115,6 +117,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "skeleton" => app.snap_skeleton(),
         "nowplaying" => app.snap_nowplaying(),
         "lyrics" => app.snap_lyrics(),
+        "downloading" => app.snap_downloading(),
         _ => {}
     }
     Box::new(app)
