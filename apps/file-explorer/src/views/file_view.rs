@@ -84,6 +84,10 @@ pub struct FileView {
     hover: Option<usize>,
     last_cursor: Point,
     is_focused: bool,
+    /// The scroll viewport observed at the last `draw`, so the header
+    /// hit-test can follow the pinned header (which sits at the viewport top
+    /// once the list is scrolled). `None` before the first paint.
+    last_vp: Option<Rect>,
 }
 
 impl FileView {
@@ -101,6 +105,7 @@ impl FileView {
             hover: None,
             last_cursor: Point::ZERO,
             is_focused: false,
+            last_vp: None,
         }
     }
 
@@ -184,6 +189,12 @@ impl FileView {
                 if pt.y < body_top {
                     return None;
                 }
+                // Reject clicks that land on the pinned header band (which
+                // floats over the scrolled-away top rows) so a click there
+                // hits the header, not the row hidden beneath it.
+                if pt.y < self.header_top(self.last_vp) + self.header_h() {
+                    return None;
+                }
                 let idx = ((pt.y - body_top) / self.row_h()) as usize;
                 (idx < self.entries.len()).then_some(idx)
             }
@@ -230,16 +241,22 @@ impl FileView {
     }
 
     /// The `SortColumn` command index for a header click at `pt`, if any.
+    /// The header band follows the pinned header position, so header clicks
+    /// keep sorting even after the list is scrolled.
     fn header_sort_at(&self, pt: Point) -> Option<usize> {
         if self.mode != ViewMode::List {
             return None;
         }
-        if pt.y < self.rect.y0 || pt.y >= self.rect.y0 + self.header_h() {
+        let top = self.header_top(self.last_vp);
+        if pt.y < top || pt.y >= top + self.header_h() {
             return None;
         }
         for (i, col) in LIST_COLUMNS.iter().enumerate() {
-            if self.col_visible(i) && self.header_col_rect(i).contains(pt) {
-                return Some(col.sort_col);
+            if self.col_visible(i) {
+                let cr = self.header_col_rect(i);
+                if pt.x >= cr.x0 && pt.x < cr.x1 {
+                    return Some(col.sort_col);
+                }
             }
         }
         None
@@ -287,18 +304,39 @@ impl FileView {
 
     // --- draw -------------------------------------------------------------
 
-    fn draw_list(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    /// The y-coordinate the column header paints at. It sits at the top of the
+    /// content while at rest, but once the list is scrolled it pins to the
+    /// viewport's top edge (`vp.y0`) so the Name/Size/Modified labels + the
+    /// active sort caret stay visible while the rows scroll beneath — the
+    /// GNOME Files / Finder sticky-header behaviour.
+    fn header_top(&self, vp: Option<Rect>) -> f64 {
+        match vp {
+            Some(v) if self.rect.y0 < v.y0 => v.y0,
+            _ => self.rect.y0,
+        }
+    }
+
+    /// Paint the (possibly pinned) column header: an opaque band so rows scroll
+    /// cleanly beneath it, the Name/Size/Modified labels, the active sort
+    /// caret, and the hairline separator. Drawn *after* the rows so it always
+    /// composites on top.
+    fn draw_list_header(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, vp: Option<Rect>) {
         let tokens = &theme.tokens;
         let header_h = self.header_h();
         let hsize = self.header_text(theme);
-        // Column headers (dim, uppercase-ish small labels) + a sort caret on
-        // the active column. Hidden (collapsed) columns are skipped.
+        let top = self.header_top(vp);
+        // Opaque band matching the content background so scrolled rows never
+        // bleed through the (transparent-text) header.
+        let band = Rect::new(self.rect.x0, top, self.rect.x1, top + header_h);
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &band);
+        // Column labels + a sort caret on the active column. Hidden (collapsed)
+        // columns are skipped.
         for (i, col) in LIST_COLUMNS.iter().enumerate() {
             if !self.col_visible(i) {
                 continue;
             }
             let cr = self.header_col_rect(i);
-            let ty = cr.y0 + (header_h - hsize as f64) / 2.0;
+            let ty = top + (header_h - hsize as f64) / 2.0;
             tr.draw_text(
                 scene,
                 col.header,
@@ -320,23 +358,26 @@ impl FileView {
                 );
             }
         }
-        // Quiet header separator.
+        // Quiet header separator along the band's bottom edge.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             tokens.colors.border_white_10,
             None,
             &Line::new(
-                (self.rect.x0 + self.pad_x(), self.rect.y0 + header_h),
-                (self.rect.x1 - self.pad_x(), self.rect.y0 + header_h),
+                (self.rect.x0 + self.pad_x(), top + header_h),
+                (self.rect.x1 - self.pad_x(), top + header_h),
             ),
         );
+    }
 
+    fn draw_list(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, vp: Option<Rect>) {
+        let tokens = &theme.tokens;
         let size = self.body_text(theme);
         let icon_px = LIST_ICON * self.scale;
         for (i, entry) in self.entries.iter().enumerate() {
             let row = self.list_row_rect(i);
-            if presence_cull(row) {
+            if cull(vp, row) {
                 continue;
             }
             let selected = self.selection.is_selected(i);
@@ -413,15 +454,18 @@ impl FileView {
                 );
             }
         }
+        // Header last so it composites above the rows (and stays put while
+        // they scroll beneath the pinned band).
+        self.draw_list_header(scene, transform, tr, theme, vp);
     }
 
-    fn draw_grid(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_grid(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, vp: Option<Rect>) {
         let tokens = &theme.tokens;
         let size = self.body_text(theme);
         let icon_px = GRID_ICON * self.scale;
         for (i, entry) in self.entries.iter().enumerate() {
             let cell = self.cell_rect(i);
-            if presence_cull(cell) {
+            if cull(vp, cell) {
                 continue;
             }
             let selected = self.selection.is_selected(i);
@@ -538,11 +582,18 @@ impl Widget for FileView {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
+        // The enclosing `Scrollable` publishes its viewport rect here; cull
+        // rows/cells outside it so a long directory only paints what's on
+        // screen (the wheel scrolls thousands of files without paying to emit
+        // every off-screen row's icon + text runs each frame). Remember it so
+        // the header hit-test can follow the pinned header on the next event.
+        let vp = presence.viewport.get();
+        self.last_vp = vp;
         match self.mode {
-            ViewMode::List => self.draw_list(scene, transform, tr, theme),
-            ViewMode::Grid => self.draw_grid(scene, transform, tr, theme),
+            ViewMode::List => self.draw_list(scene, transform, tr, theme, vp),
+            ViewMode::Grid => self.draw_grid(scene, transform, tr, theme, vp),
         }
         if self.is_focused {
             if let Some(i) = self.selection.primary() {
@@ -553,7 +604,7 @@ impl Widget for FileView {
                     }
                     ViewMode::Grid => self.cell_rect(i),
                 };
-                if !presence_cull(r) {
+                if !cull(vp, r) {
                     scene.stroke(
                         &Stroke::new(2.0),
                         transform,
@@ -606,6 +657,21 @@ impl Widget for FileView {
                     *handled = true;
                 }
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // Select the row under the cursor before the context menu opens
+                // (the app opens the menu after draining this) so the menu's
+                // actions target what was right-clicked, not a stale selection.
+                let target = self.item_at(self.last_cursor);
+                if let Some(i) = target {
+                    if !self.selection.is_selected(i) {
+                        self.selection.select_only(i);
+                    }
+                    *focus_target = Some(node_id);
+                }
+                push(&self.sink, FileCommand::ContextSelect(target));
+                // Not marked handled: the app still needs to see the right-press
+                // to open the menu.
+            }
             _ => {}
         }
     }
@@ -637,11 +703,19 @@ impl Widget for FileView {
     }
 }
 
-/// Cull rows/cells fully outside a sane paint window. We don't know the
-/// viewport here (the pane is inside a `Scrollable`), so only reject content at
-/// clearly-absurd coordinates; the `Scrollable` clips the rest.
-fn presence_cull(_r: Rect) -> bool {
-    false
+/// Cull a row/cell whose vertical extent falls entirely outside the scroll
+/// viewport `vp` (the enclosing `Scrollable`'s clip rect, published via the
+/// presence context). A small margin keeps the row just off each edge alive so
+/// a partially-visible row at the boundary always paints. When no viewport is
+/// active (a plain, un-scrolled draw) nothing is culled.
+fn cull(vp: Option<Rect>, r: Rect) -> bool {
+    match vp {
+        Some(v) => {
+            const MARGIN: f64 = 4.0;
+            r.y1 < v.y0 - MARGIN || r.y0 > v.y1 + MARGIN
+        }
+        None => false,
+    }
 }
 
 /// Trim `text` with an ellipsis until it fits `max_w`.
@@ -669,8 +743,21 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::new_sink;
+    use crate::command::{new_sink, FileCommand};
     use std::path::PathBuf;
+
+    fn dev() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: WindowEvent) {
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        v.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, tree);
+    }
 
     fn ent(name: &str, is_dir: bool) -> Entry {
         Entry {
@@ -757,6 +844,107 @@ mod tests {
         assert!(!v.show_size() && !v.show_modified(), "very narrow shows name only");
         let name = v.header_col_rect(0);
         assert!(name.x1 >= v.rect.x1 - v.pad_x() - 1.0, "name fills the pane when both details hide");
+    }
+
+    #[test]
+    fn rows_outside_the_scroll_viewport_are_culled() {
+        // The paint path calls `cull(vp, row)` for every row/cell; a long
+        // directory must only pay to draw what the viewport actually shows.
+        let vp = Some(Rect::new(0.0, 100.0, 600.0, 400.0));
+        // Well above the viewport → culled.
+        assert!(cull(vp, Rect::new(0.0, 0.0, 600.0, 20.0)));
+        // Well below → culled.
+        assert!(cull(vp, Rect::new(0.0, 500.0, 600.0, 520.0)));
+        // Squarely inside → drawn.
+        assert!(!cull(vp, Rect::new(0.0, 200.0, 600.0, 220.0)));
+        // Straddling the top edge (within the keep-alive margin) → drawn.
+        assert!(!cull(vp, Rect::new(0.0, 98.0, 600.0, 102.0)));
+        // No active viewport (a plain, un-scrolled draw) → never culled.
+        assert!(!cull(None, Rect::new(0.0, 99_999.0, 600.0, 100_000.0)));
+    }
+
+    #[test]
+    fn header_pins_to_the_viewport_top_once_scrolled() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(40), &sel, &sink);
+        let vp = Some(Rect::new(0.0, 0.0, 600.0, 300.0));
+        // At rest the content's top aligns with the viewport top → the header
+        // sits at the content top.
+        v.rect = Rect::new(0.0, 0.0, 600.0, 800.0);
+        assert_eq!(v.header_top(vp), 0.0);
+        // Scrolled: the content is pushed up (rect.y0 < viewport top) so the
+        // header pins to the viewport's top edge and stays visible.
+        v.rect = Rect::new(0.0, -250.0, 600.0, 550.0);
+        assert_eq!(v.header_top(vp), 0.0, "pinned to the viewport top");
+        // Without a viewport the header just tracks the content top.
+        assert_eq!(v.header_top(None), -250.0);
+    }
+
+    #[test]
+    fn header_click_sorts_even_after_the_list_is_scrolled() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(40), &sel, &sink);
+        // Scrolled up by 250px; the viewport starts at y=0.
+        v.rect = Rect::new(0.0, -250.0, 900.0, 550.0);
+        v.last_vp = Some(Rect::new(0.0, 0.0, 900.0, 300.0));
+        // A click on the pinned Name header (in the viewport-top band) still
+        // resolves to the name sort column.
+        let name = v.header_col_rect(0);
+        let pt = Point::new(name.x0 + 5.0, v.header_h() / 2.0);
+        assert_eq!(v.header_sort_at(pt), Some(1), "pinned Name header sorts");
+        // A click where the header *used* to be (scrolled off the top) does not
+        // sort — it's off-screen above the viewport.
+        assert_eq!(
+            v.header_sort_at(Point::new(name.x0 + 5.0, -250.0 + v.header_h() / 2.0)),
+            None,
+        );
+    }
+
+    #[test]
+    fn right_press_selects_the_row_under_the_cursor_for_the_menu() {
+        // The dangerous bug this guards: a right-click must target the row it
+        // lands on, not whatever was selected before. The FileView emits a
+        // `ContextSelect(Some(row))` the app drains before opening the menu.
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(10), &sel, &sink);
+        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
+
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        // Move the cursor onto row 3, then right-press.
+        let y = v.rect.y0 + v.header_h() + 3.0 * v.row_h() + v.row_h() / 2.0;
+        dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (50.0, y).into() });
+        dispatch(&mut v, &tree, node, WindowEvent::MouseInput { device_id: dev(), state: ElementState::Pressed, button: MouseButton::Right });
+
+        let cmds = sink.borrow();
+        assert!(
+            cmds.iter().any(|c| matches!(c, FileCommand::ContextSelect(Some(3)))),
+            "right-press emits ContextSelect for the row it lands on: {cmds:?}",
+        );
+    }
+
+    #[test]
+    fn right_press_on_empty_space_clears_the_selection_for_the_menu() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(3), &sel, &sink);
+        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
+
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        // Right-press well below the 3 rows → empty space.
+        let y = v.rect.y0 + v.header_h() + 40.0 * v.row_h();
+        dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (50.0, y).into() });
+        dispatch(&mut v, &tree, node, WindowEvent::MouseInput { device_id: dev(), state: ElementState::Pressed, button: MouseButton::Right });
+
+        let cmds = sink.borrow();
+        assert!(
+            cmds.iter().any(|c| matches!(c, FileCommand::ContextSelect(None))),
+            "right-press on empty space clears the selection: {cmds:?}",
+        );
     }
 
     #[test]

@@ -125,7 +125,14 @@ impl PlacesSidebar {
         self.rect.y0 + TOP + HEADER_H
     }
     fn sys_header_y(&self) -> f64 {
-        self.fav_first_y() + self.fav_count() as f64 * ROW_H + SECTION_GAP
+        // With no favourites there is no Favourites header to reserve room
+        // for, so the System section starts at the very top instead of
+        // leaving an empty gap where the (unshown) header would be.
+        if self.fav_count() == 0 {
+            self.rect.y0 + TOP
+        } else {
+            self.fav_first_y() + self.fav_count() as f64 * ROW_H + SECTION_GAP
+        }
     }
     fn sys_first_y(&self) -> f64 {
         self.sys_header_y() + HEADER_H
@@ -300,8 +307,11 @@ impl Widget for PlacesSidebar {
             &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
         );
 
-        // Favourites header.
-        self.draw_header(scene, transform, tr, theme, self.rect.y0 + TOP, "Favourites");
+        // Favourites header — only when there are favourites to head (an empty
+        // section header reads as a bug).
+        if self.fav_count() > 0 {
+            self.draw_header(scene, transform, tr, theme, self.rect.y0 + TOP, "Favourites");
+        }
 
         // Favourite rows (with live reflow + ghost while dragging). Compute the
         // list geometry BEFORE borrowing the store (metrics reads the store).
