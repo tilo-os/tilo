@@ -38,7 +38,7 @@ use crate::widgets::{Flex, SharedPlayer};
 const STATE_KEY: &str = "tube_state";
 const SEARCH_KEY: &str = "search_query";
 const PALETTE_KEY: &str = "palette_query";
-const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
+pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 /// Known public Invidious instances the "Source" setting cycles through. The
 /// selected one is what [`Action::SubmitSearch`] actually queries.
 const INSTANCES: [&str; 4] = [
@@ -134,6 +134,11 @@ pub struct TubeApp {
     /// Tracked here so a *transition* (playhead entering/leaving the segment)
     /// dirties the tree — the advancing playhead alone doesn't rebuild it.
     show_skip_end: Option<f64>,
+
+    /// Whether the shared player's desktop-media (MPRIS) service has been brought
+    /// up. Spawned once, on the first real stream load in the online app, so the
+    /// system top-bar widget + media keys drive playback. Never in `--shots`/tests.
+    mpris_started: bool,
 }
 
 impl Default for TubeApp {
@@ -168,6 +173,7 @@ impl TubeApp {
             player_video: None,
             images: None,
             show_skip_end: None,
+            mpris_started: false,
         }
     }
 
@@ -593,6 +599,24 @@ impl TubeApp {
     /// [`Update::StreamResolved`] and the transport tests take. A resolution for
     /// a video that is no longer the open watch page is dropped (returns `false`)
     /// so audio never bleeds across pages.
+    /// Apply one player-setting interaction drained from the shared player. The
+    /// resolution choice round-trips into the model's preferred quality; other
+    /// settings are ignored for now. This is the production drain path (called
+    /// from `sync`), factored out so it is directly testable.
+    fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
+        use ui::widget::video_player::PlayerSettingEvent as E;
+        if let E::Chose { id, index } = ev {
+            if id == "resolution" {
+                if let Some(q) = QUALITIES.get(index) {
+                    if self.model.settings.preferred_quality != *q {
+                        self.model.settings.preferred_quality = q.to_string();
+                        self.structure_dirty = true;
+                    }
+                }
+            }
+        }
+    }
+
     fn load_resolved_stream(
         &mut self,
         video: String,
@@ -603,10 +627,30 @@ impl TubeApp {
         if !matches!(&self.model.route, Route::Watch(id) if *id == video) {
             return false;
         }
+        // Now-playing metadata for the desktop media widget (MPRIS): title,
+        // channel and the real thumbnail, built before we take the player borrow.
+        let now_playing = self.model.video(&video).map(|v| {
+            let dearrow = self.model.settings.dearrow_titles_on();
+            ui::widget::video_player::NowPlaying {
+                track_id: v.id.clone(),
+                title: v.display_title(dearrow).to_string(),
+                artist: v.channel_name.clone(),
+                art_url: v.thumbnail_url.clone(),
+            }
+        });
         {
             let mut p = self.player.borrow_mut();
             p.open(media::Source::Remote { url });
             p.play();
+            if let Some(np) = now_playing {
+                p.set_now_playing(np);
+            }
+        }
+        // Bring up MPRIS once, in the live app, so media keys + the system media
+        // widget can drive this player and show its now-playing.
+        if self.online && !self.mpris_started {
+            self.player.borrow_mut().enable_mpris("qos-tube", "qOS Tube");
+            self.mpris_started = true;
         }
         self.player_video = Some(video);
         self.model.playing = true;
@@ -1149,6 +1193,16 @@ impl Widget for TubeApp {
         if let Some(c) = &mut self.root_child {
             c.sync(state, path);
         }
+        // External media-control commands (media keys / the system media widget)
+        // → the shared player, so hardware keys drive playback.
+        self.player.borrow_mut().pump_media_controls();
+        // App-registered player settings the user changed on the player itself
+        // (the resolution selector now lives ON the player). Round-trip each
+        // back into the model so the preferred quality persists.
+        let setting_events = self.player.borrow_mut().take_setting_events();
+        for ev in setting_events {
+            self.apply_player_setting_event(ev);
+        }
         // The watch page's player pumped its engine in the sync above; now mirror
         // the engine playhead onto the model and run SponsorBlock auto-skip /
         // autoplay-next against the real position. Only flags a rebuild when a
@@ -1439,6 +1493,23 @@ impl Widget for TubeApp {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    // Forward the watch-page player's fullscreen contract up to `ui::App` (which
+    // only polls the ROOT widget). Without this the player's fullscreen button
+    // flips its own flag but never reaches the window. The player names the
+    // largest output via `fullscreen_params`, so hitting fullscreen promotes the
+    // surface onto the big screen through the shared mechanism.
+    fn fullscreen_intent(&self) -> Option<bool> {
+        self.player.borrow().fullscreen_intent()
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        self.player.borrow().fullscreen_params()
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        self.player.borrow_mut().on_fullscreen_changed(active);
+    }
 }
 
 #[cfg(test)]
@@ -1460,6 +1531,46 @@ mod tests {
             .borrow_mut()
             .set_engine(media::MediaEngine::new_synthesized());
         (app, doc)
+    }
+
+    #[test]
+    fn resolution_player_setting_round_trips_into_the_model() {
+        // The resolution selector now lives ON the player; a `Chose` event it
+        // emits (drained in `sync`) must round-trip into the model's preferred
+        // quality via the production `apply_player_setting_event` path.
+        let (mut app, _) = fresh();
+        assert_eq!(app.model.settings.preferred_quality, "1080p");
+        app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
+            id: "resolution".into(),
+            index: 1,
+        });
+        assert_eq!(app.model.settings.preferred_quality, "720p", "picking index 1 selects 720p");
+        assert!(app.structure_dirty, "a resolution change rebuilds the watch tree");
+        // A different setting id is ignored (no accidental clobber).
+        app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
+            id: "unrelated".into(),
+            index: 3,
+        });
+        assert_eq!(app.model.settings.preferred_quality, "720p");
+    }
+
+    #[test]
+    fn player_fullscreen_toggle_reaches_the_root_via_the_shared_mechanism() {
+        // The fullscreen button was inert because `TubeApp` didn't forward the
+        // player's intent up to `ui::App` (which only polls the root). Prove the
+        // toggle now surfaces on the root, targeting the largest output.
+        let (mut app, _) = fresh_synth();
+        assert_eq!(Widget::fullscreen_intent(&app), None, "no opinion until the user acts");
+        app.player.borrow_mut().toggle_fullscreen();
+        assert_eq!(Widget::fullscreen_intent(&app), Some(true), "toggle reaches the root");
+        assert_eq!(
+            Widget::fullscreen_params(&app).target,
+            ui::fullscreen::FullscreenTarget::Largest,
+            "immersive video targets the big screen"
+        );
+        // A compositor-driven exit flows back to the player through the root.
+        Widget::on_fullscreen_changed(&mut app, false);
+        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
     }
 
     #[test]
