@@ -137,6 +137,16 @@ Active work, one page each.
 - garlic, chili, good olive oil
 
 - a handful of parsley
+
+## Method
+
+1. Boil the pasta in well-salted water.
+
+2. Warm the oil, garlic and chili gently.
+
+3. Toss the drained pasta through the oil.
+
+4. Finish with parsley off the heat.
 ",
         ),
     ];
@@ -145,6 +155,59 @@ Active work, one page each.
     for (id, body) in bodies {
         storage::write_page_body(root, id, body).expect("seed page body");
     }
+}
+
+/// Run the five-pass layout cycle until the responsive structure settles,
+/// returning the final taffy tree + root child node so a scenario can
+/// dispatch events against — and the frame draw from — the same live tree.
+fn settle_layout(
+    app: &mut NotesApp,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    w: u32,
+    h: u32,
+) -> Result<(TaffyTree<()>, NodeId), Box<dyn std::error::Error>> {
+    let mut kept: Option<(TaffyTree<()>, NodeId)> = None;
+    for _ in 0..5 {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = app.build_layout(&mut taffy, theme, &mut node_map);
+        let root_node = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )?;
+        {
+            let measure_map = node_map.clone();
+            let tr = &mut *text_renderer;
+            taffy.compute_layout_with_measure(
+                root_node,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )?;
+        }
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        let settled = !app.take_structure_dirty();
+        kept = Some((taffy, child));
+        if settled {
+            break;
+        }
+    }
+    Ok(kept.expect("layout cycle runs at least once"))
 }
 
 /// Render the notes app at `viewport` into a PNG at `out`, optionally in a
@@ -156,6 +219,7 @@ Active work, one page each.
 ///   live reflow gap).
 /// - `Some("menu")` — open a page row's right-click context menu.
 /// - `Some("slash")` — open the editor's `/` block menu.
+/// - `Some("recipes")` — select the Recipes page (shows a numbered list).
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
@@ -182,52 +246,15 @@ pub fn render_to_path(
     // Run the layout cycle until the responsive structure settles, keeping
     // the final taffy tree so a scenario can dispatch events against a live
     // layout (the same tree the frame draws from).
-    let mut kept: Option<(TaffyTree<()>, NodeId)> = None;
-    for _ in 0..5 {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root_node = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )?;
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut text_renderer;
-            taffy.compute_layout_with_measure(
-                root_node,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )?;
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let settled = !app.take_structure_dirty();
-        kept = Some((taffy, child));
-        // Settle: once no structural change is pending, this frame's
-        // tree matches the observed width.
-        if settled {
-            break;
-        }
-    }
+    let kept = settle_layout(&mut app, &theme, &mut text_renderer, w, h)?;
 
-    if let Some((taffy, child)) = kept.as_ref() {
-        drive_scenario(&mut app, &mut state, taffy, *child, scenario);
-    }
+    drive_scenario(&mut app, &mut state, &kept.0, kept.1, scenario);
+
+    // A scenario that switches the selected page (or converts a block)
+    // changes the editor's block set, so re-settle the tree before drawing —
+    // otherwise the new page's blocks would have no layout and render blank.
+    let kept = settle_layout(&mut app, &theme, &mut text_renderer, w, h)?;
+    let _ = kept;
 
     let mut scene = Scene::new();
     app.draw_with_presence(
@@ -337,6 +364,14 @@ fn drive_scenario(
         Some("slash") => {
             // The editor holds focus on load; `/` opens the block menu.
             send(app, &char_key("/"));
+        }
+        Some("recipes") => {
+            // Select the "Recipes" row (index 4) so the shot shows the
+            // numbered "Method" list rendered with its ordinals.
+            if let Some(row) = app.sidebar_row_center_for_test(4) {
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            }
         }
         _ => {}
     }
