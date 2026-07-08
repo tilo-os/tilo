@@ -14,6 +14,7 @@ use automerge::transaction::Transactable;
 use automerge::AutoCommit;
 use settings::accounts::{AccountDirectory, AccountKind};
 use settings::prefs::SystemPrefs;
+use settings::region::{RegionSettings, TimeStyle};
 use ui::widget::Widget;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -95,6 +96,36 @@ fn input_pointer_speed_persists_to_disk() {
         (reloaded.input.pointer_speed - 0.9).abs() < 1e-6,
         "pointer speed persisted, got {}",
         reloaded.input.pointer_speed
+    );
+}
+
+/// The Time & Date "24-hour clock" toggle folds into the shared locale that
+/// Region & Formats owns, so the two panes agree and the choice survives a
+/// restart. Driving the pane's real `sync` must write `locale.time_format`.
+#[test]
+fn time_date_clock_format_persists_to_shared_locale() {
+    let _g = ENV_LOCK.lock().unwrap();
+    let _home = temp_home("timedate");
+
+    // Fresh install defaults to 24-hour.
+    assert_eq!(RegionSettings::load().locale.time_format, TimeStyle::H24);
+
+    let mut pane = settings::panes::time_date::build();
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    pane.sync(&mut doc, &root); // seeds h24 = true from the default locale
+    // Flip the clock to 12-hour the way the Toggle would on click.
+    let _ = doc.put(
+        &root,
+        settings::panes::time_date::H24_KEY,
+        automerge::ScalarValue::Boolean(false),
+    );
+    pane.sync(&mut doc, &root);
+
+    assert_eq!(
+        RegionSettings::load().locale.time_format,
+        TimeStyle::H12,
+        "the clock-format toggle wrote through to the shared locale"
     );
 }
 
