@@ -62,6 +62,7 @@ pub enum BlockSpec {
     Paragraph(InlineText),
     Heading { level: u8, text: InlineText },
     Bullet { indent: u8, text: InlineText },
+    Numbered { indent: u8, text: InlineText },
     Checklist { indent: u8, done: bool, text: InlineText },
     CodeBlock { lang: Option<String>, text: String },
     Divider,
@@ -97,6 +98,18 @@ impl BlockSpec {
     }
     pub fn bullet_marks(indent: u8, s: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
         BlockSpec::Bullet {
+            indent: indent.min(MAX_LIST_INDENT),
+            text: InlineText::new(s, marks),
+        }
+    }
+    pub fn numbered(indent: u8, s: impl Into<String>) -> Self {
+        BlockSpec::Numbered {
+            indent: indent.min(MAX_LIST_INDENT),
+            text: InlineText::plain(s),
+        }
+    }
+    pub fn numbered_marks(indent: u8, s: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
+        BlockSpec::Numbered {
             indent: indent.min(MAX_LIST_INDENT),
             text: InlineText::new(s, marks),
         }
@@ -142,6 +155,27 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
         }
     }
     (level, &line[bytes..])
+}
+
+/// Detect an ordered-list marker (`123. ` or `123) `) at the start of
+/// `body`. Returns the text after the marker if present. The number
+/// itself is discarded — ordinals are recomputed on render + serialise,
+/// so a source file that numbers everything `1.` still displays 1, 2, 3.
+fn strip_ordered_prefix(body: &str) -> Option<&str> {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    // At least one digit, then `. ` or `) `.
+    if i == 0 || i + 1 >= bytes.len() {
+        return None;
+    }
+    if (bytes[i] == b'.' || bytes[i] == b')') && bytes[i + 1] == b' ' {
+        Some(&body[i + 2..])
+    } else {
+        None
+    }
 }
 
 fn push_indent(out: &mut String, indent: u8) {
@@ -461,6 +495,14 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             });
             continue;
         }
+        if let Some(num_body) = strip_ordered_prefix(body) {
+            let inline = parse_inline(num_body);
+            blocks.push(BlockSpec::Numbered {
+                indent: indent.min(MAX_LIST_INDENT),
+                text: inline,
+            });
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("### ") {
             blocks.push(BlockSpec::Heading {
                 level: 3,
@@ -489,9 +531,22 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
 /// Inverse of [`parse`]. Always emits a trailing newline.
 pub fn serialize(blocks: &[BlockSpec]) -> String {
     let mut out = String::new();
+    // Ordinal counters per indent level for numbered lists, mirroring the
+    // renderer's `numbered_ordinals`: a numbered item increments its
+    // level and resets deeper ones; any other block resets all counters.
+    let mut counters = [0usize; MAX_LIST_INDENT as usize + 1];
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 {
             out.push_str("\n\n");
+        }
+        if let BlockSpec::Numbered { indent, .. } = b {
+            let lvl = (*indent as usize).min(MAX_LIST_INDENT as usize);
+            counters[lvl] += 1;
+            for c in counters.iter_mut().skip(lvl + 1) {
+                *c = 0;
+            }
+        } else {
+            counters = [0usize; MAX_LIST_INDENT as usize + 1];
         }
         match b {
             BlockSpec::Paragraph(t) => out.push_str(&serialize_inline(t)),
@@ -507,6 +562,12 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
             BlockSpec::Bullet { indent, text } => {
                 push_indent(&mut out, *indent);
                 out.push_str("- ");
+                out.push_str(&serialize_inline(text));
+            }
+            BlockSpec::Numbered { indent, text } => {
+                push_indent(&mut out, *indent);
+                let n = counters[(*indent as usize).min(MAX_LIST_INDENT as usize)];
+                out.push_str(&format!("{n}. "));
                 out.push_str(&serialize_inline(text));
             }
             BlockSpec::Checklist { indent, done, text } => {
@@ -553,6 +614,11 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
             }
             BlockSpec::Bullet { indent, text } => {
                 let mut b = Block::bullet(*indent, &text.text);
+                b.line.set_marks(text.marks.clone());
+                out.push(b);
+            }
+            BlockSpec::Numbered { indent, text } => {
+                let mut b = Block::numbered(*indent, &text.text);
                 b.line.set_marks(text.marks.clone());
                 out.push(b);
             }
@@ -612,6 +678,13 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 });
                 i += 1;
             }
+            BlockKind::Numbered { indent } => {
+                out.push(BlockSpec::Numbered {
+                    indent: *indent,
+                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
+                });
+                i += 1;
+            }
             BlockKind::Checklist { indent, done } => {
                 out.push(BlockSpec::Checklist {
                     indent: *indent,
@@ -665,6 +738,7 @@ where
             BlockSpec::Paragraph(t)
             | BlockSpec::Heading { text: t, .. }
             | BlockSpec::Bullet { text: t, .. }
+            | BlockSpec::Numbered { text: t, .. }
             | BlockSpec::Checklist { text: t, .. } => t,
             _ => continue,
         };
@@ -904,6 +978,75 @@ Last paragraph.
         let blocks = specs_to_blocks(&parse(md));
         let re = serialize(&blocks_to_specs(&blocks));
         assert_eq!(re, md, "multi-line code block must round-trip byte-stably");
+    }
+
+    #[test]
+    fn parse_numbered_list_items() {
+        let blocks = parse("1. first\n\n2. second\n\n3. third\n");
+        assert_eq!(
+            blocks,
+            vec![
+                BlockSpec::numbered(0, "first"),
+                BlockSpec::numbered(0, "second"),
+                BlockSpec::numbered(0, "third"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_numbered_accepts_paren_and_arbitrary_start() {
+        // `7) ` is a valid ordered marker; the stored spec drops the
+        // number (it's recomputed), so it round-trips to `1. `.
+        let blocks = parse("7) lucky\n");
+        assert_eq!(blocks, vec![BlockSpec::numbered(0, "lucky")]);
+    }
+
+    #[test]
+    fn round_trip_numbered_list() {
+        let md = "1. first\n\n2. second\n\n3. third\n";
+        assert_eq!(serialize(&parse(md)), md);
+    }
+
+    #[test]
+    fn serialize_renumbers_sequentially() {
+        // Source that numbers everything `1.` is normalised to 1, 2, 3 on
+        // save — ordinals track list position, not the literal digits.
+        let blocks = parse("1. a\n\n1. b\n\n1. c\n");
+        assert_eq!(serialize(&blocks), "1. a\n\n2. b\n\n3. c\n");
+    }
+
+    #[test]
+    fn round_trip_nested_numbered_list() {
+        // A nested level restarts at 1; returning to the outer level
+        // continues its own count.
+        let md = "1. one\n\n  1. inner a\n\n  2. inner b\n\n2. two\n";
+        assert_eq!(serialize(&parse(md)), md);
+    }
+
+    #[test]
+    fn numbered_run_resets_after_paragraph() {
+        // A paragraph between two numbered lists breaks the run: the
+        // second list restarts at 1.
+        let md = "1. a\n\n2. b\n\nbreak\n\n1. c\n";
+        assert_eq!(serialize(&parse(md)), md);
+    }
+
+    #[test]
+    fn round_trip_numbered_with_inline_marks() {
+        let md = "1. run `cargo build` and **ship**\n";
+        assert_eq!(serialize(&parse(md)), md);
+    }
+
+    #[test]
+    fn numbered_block_survives_editor_block_round_trip() {
+        use ui::widget::BlockKind;
+        let specs = parse("1. alpha\n\n2. beta\n");
+        let blocks = specs_to_blocks(&specs);
+        assert!(matches!(blocks[0].kind, BlockKind::Numbered { indent: 0 }));
+        assert!(matches!(blocks[1].kind, BlockKind::Numbered { indent: 0 }));
+        // Round-trips back through the block layer byte-stably.
+        let re = serialize(&blocks_to_specs(&blocks));
+        assert_eq!(re, "1. alpha\n\n2. beta\n");
     }
 
     #[test]

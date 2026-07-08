@@ -121,6 +121,11 @@ impl SlashMenu {
                 kind: BlockKind::Bullet { indent: 0 },
             },
             MenuRow {
+                label: "Numbered list",
+                keywords: &["numbered", "number", "ordered", "ol", "1."],
+                kind: BlockKind::Numbered { indent: 0 },
+            },
+            MenuRow {
                 label: "Checklist",
                 keywords: &["checklist", "todo", "task", "check"],
                 kind: BlockKind::Checklist { indent: 0, done: false },
@@ -486,7 +491,8 @@ mod tests {
     fn new_starts_hidden_with_full_row_set() {
         let m = SlashMenu::new();
         assert!(!m.is_visible());
-        assert_eq!(m.visible_len(), 8); // 8 canonical rows
+        // Paragraph, H1-3, Bullet, Numbered, Checklist, Code block, Divider.
+        assert_eq!(m.visible_len(), 9);
     }
 
     #[test]
@@ -607,6 +613,23 @@ mod tests {
         let consumed = m.handle_key(&char_press("h"));
         assert!(!consumed);
         assert_eq!(m.filter(), "");
+    }
+
+    #[test]
+    fn filter_number_then_enter_commits_numbered_list() {
+        // Typing `/number` narrows to the "Numbered list" row and Enter
+        // commits an ordered-list block.
+        let mut m = SlashMenu::new();
+        m.set_visible(true);
+        for c in ["n", "u", "m", "b", "e", "r"] {
+            m.handle_key(&char_press(c));
+        }
+        assert_eq!(m.visible_len(), 1, "`number` matches only Numbered list");
+        m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+        assert_eq!(
+            m.take_selected_kind(),
+            Some(BlockKind::Numbered { indent: 0 })
+        );
     }
 
     #[test]
