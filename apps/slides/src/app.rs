@@ -26,7 +26,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    ColorPicker, DragController, FlapState, ListMetrics, NumberInput, SplitLayout, TextInput,
+    ColorPicker, FlapState, NumberInput, PageSidebar, PageSidebarEvent, SplitLayout, TextInput,
     Widget, DEFAULT_BREAKPOINT,
 };
 use ui::ColorCompat;
@@ -159,8 +159,6 @@ enum Drag {
         start: Point,
         orig: (f64, f64, f64, f64),
     },
-    /// Dragging the slide-rail scrollbar thumb (edit mode).
-    ScrollRail { start_y: f64, orig_scroll: f64 },
     /// Dragging the overview grid scrollbar thumb.
     ScrollOverview { start_y: f64, orig_scroll: f64 },
 }
@@ -182,8 +180,6 @@ enum Hit {
     CyclePalette,
     Insert(ElementKind),
     SelectSlide(usize),
-    MoveSlideUp,
-    MoveSlideDown,
     SetFill(String),
     SetStroke(String),
     /// Open the embeddable colour picker popover for the selected element's fill.
@@ -211,7 +207,6 @@ enum Hit {
 enum LabelColor {
     Primary,
     Dim,
-    Accent,
 }
 
 #[derive(Clone)]
@@ -286,20 +281,6 @@ struct InspectorRects {
 const FILL_PICKER_W: f64 = 260.0;
 const FILL_PICKER_H: f64 = 220.0;
 
-/// Thumbnail-list metrics for the slide rail (see [`SlidesApp::rail_metrics`]).
-struct RailMetrics {
-    tpad: f64,
-    tw: f64,
-    th: f64,
-    gap: f64,
-    /// Y of the first thumbnail before the scroll offset is applied.
-    list_top: f64,
-    /// Clip region for the scrolling thumbnail list.
-    viewport: Rect,
-    /// Maximum scroll offset (content height minus viewport height, clamped ≥0).
-    max_scroll: f64,
-}
-
 struct Chrome {
     toolbar: Rect,
     /// Clickable region of the deck title in the toolbar — a press here starts
@@ -315,18 +296,16 @@ struct Chrome {
     inspector: Rect,
     slide_dest: Rect,
     scale: f64,
+    /// Thumbnail slot rects `(index, rect)` for this frame, read back from the
+    /// shared [`PageSidebar`] so hit-testing / auto-scroll / the `--shots` demo
+    /// agree with what it paints.
     thumbs: Vec<(usize, Rect)>,
     buttons: Vec<UiButton>,
     labels: Vec<Label>,
-    /// Per-thumbnail number labels — clipped to [`Chrome::rail_viewport`] and
-    /// scrolled with the rail (kept separate from the fixed `labels`).
-    thumb_labels: Vec<Label>,
     /// The scrolling viewport for the thumbnail list (between the "SLIDES"
-    /// header and the pinned Add/Dup/Del row). Thumbnails are clipped to it so
-    /// they can never overlap the action buttons.
+    /// header and the pinned Add/Dup/Del row) — the rect handed to the shared
+    /// rail's `begin_frame`.
     rail_viewport: Rect,
-    /// `(track, thumb)` rects of the rail scrollbar when the list overflows.
-    rail_scrollbar: Option<(Rect, Rect)>,
     notes_box: Option<Rect>,
     /// Where the font-size [`NumberInput`] sits (only when a text element is
     /// selected). Positioned + drawn by the widget itself, not as a `UiButton`.
@@ -400,12 +379,14 @@ pub struct SlidesApp {
 
     last_mouse: Point,
     drag: Drag,
-    /// Drag-to-reorder the slide thumbnails in the rail — the shared toolkit
-    /// [`DragController`] primitive (same one the notes sidebar uses), keyed by
-    /// slide id. It drives the live reflow gap, the floating ghost, and the
-    /// insertion index; a plain click that never crosses the threshold stays a
-    /// select, and a real drag commits a `move_slide` into the CRDT on release.
-    slide_drag: DragController<Id>,
+    /// The slide-thumbnail rail — the shared [`PageSidebar`] widget. It owns the
+    /// list geometry, the scroll offset, drag-to-reorder (live reflow gap +
+    /// floating ghost), the index numbers, its scrollbar and its own right-click
+    /// menu. Slides keeps drawing the panel background, the "SLIDES" header and
+    /// the pinned Add/Dup/Del action row around it (`with_panel(false)`). Pointer
+    /// input is fed to it from the rail branches of the event handlers and the
+    /// events it emits are applied to the deck in [`SlidesApp::apply_rail_event`].
+    page_sidebar: PageSidebar,
     /// Last left-press on a canvas element: `(id, when, where)`. A second press
     /// on the same element within the double-click window enters text edit; a
     /// single press just selects and arms a move, so a selected element drags on
@@ -605,7 +586,7 @@ impl SlidesApp {
             presenter_view: false,
             last_mouse: Point::ZERO,
             drag: Drag::None,
-            slide_drag: DragController::vertical(),
+            page_sidebar: PageSidebar::new(SLIDE_H / SLIDE_W).with_panel(false),
             last_click: None,
             needs_commit: false,
             rail_flap: FlapState::open_when_docked(),
@@ -957,56 +938,78 @@ impl SlidesApp {
         }
     }
 
-    /// Thumbnail-list metrics for `rail` (the single source of truth shared by
-    /// chrome layout, hit-testing and wheel/drag scrolling).
-    fn rail_metrics(&self, rail: Rect) -> RailMetrics {
+    /// The scrolling viewport for the thumbnail list — the region between the
+    /// fixed "SLIDES" header and the pinned Add/Dup/Del action row. This is the
+    /// rect handed to the shared [`PageSidebar`]'s `begin_frame`; the widget
+    /// owns the thumbnail geometry + scrollbar inside it.
+    fn rail_viewport(&self, rail: Rect) -> Rect {
         let tpad = 14.0;
-        let tw = (rail.width() - 2.0 * tpad - 22.0).max(1.0);
-        let th = tw * SLIDE_H / SLIDE_W;
-        let gap = 12.0;
         let rb_h = 30.0;
         let list_top = rail.y0 + tpad + 20.0;
         let list_bottom = (rail.y1 - tpad - rb_h - 12.0).max(list_top);
-        let viewport = Rect::new(rail.x0, list_top, rail.x1, list_bottom);
-        let n = self.deck.slides.len();
-        let content_h = if n == 0 {
-            0.0
-        } else {
-            n as f64 * th + (n as f64 - 1.0) * gap
-        };
-        let max_scroll = (content_h - viewport.height()).max(0.0);
-        RailMetrics { tpad, tw, th, gap, list_top, viewport, max_scroll }
+        Rect::new(rail.x0, list_top, rail.x1, list_bottom)
     }
 
-    /// Uniform list geometry of the thumbnail rail for the shared
-    /// [`DragController`]: the first thumbnail's *scroll-adjusted* top edge, the
-    /// thumbnail height as the slot extent, the inter-thumbnail gap, and the
-    /// slide count. Rebuilt from live rail metrics each use so the insertion
-    /// index and reflow stay correct while the rail scrolls under a held drag.
-    fn rail_list_metrics(&self, rail: Rect) -> ListMetrics {
-        let m = self.rail_metrics(rail);
-        let scroll = self.rail_scroll.clamp(0.0, m.max_scroll);
-        ListMetrics::uniform(m.list_top - scroll, m.th, m.gap, self.deck.slides.len())
+    /// Sync the shared page rail to this frame's geometry + scroll before it is
+    /// drawn or hit-tested. Feeds it the live viewport, the slide count and the
+    /// current slide (which clamps the scroll and re-pins any held drag gap),
+    /// then mirrors the clamped scroll back into `rail_scroll` so the widget
+    /// stays the single source of truth for the list geometry.
+    fn sync_page_rail(&mut self) {
+        let viewport = self.rail_viewport(self.rail_rect());
+        self.page_sidebar.set_aspect(SLIDE_H / SLIDE_W);
+        self.page_sidebar.set_scroll(self.rail_scroll);
+        self.page_sidebar
+            .begin_frame(viewport, self.deck.slides.len(), self.cur_slide);
+        self.rail_scroll = self.page_sidebar.scroll();
     }
 
-    /// Adjust the rail scroll so the current slide's thumbnail is fully in
-    /// view (called after keyboard navigation / selection changes).
+    /// Adjust the rail scroll so the current slide's thumbnail is fully in view
+    /// (called after keyboard navigation / selection changes). Delegates to the
+    /// shared rail's `scroll_to`, then mirrors the offset back.
     fn scroll_rail_to_current(&mut self) {
-        let m = self.rail_metrics(self.rail_rect());
-        if m.max_scroll <= 0.0 {
-            self.rail_scroll = 0.0;
-            return;
+        self.sync_page_rail();
+        self.page_sidebar.scroll_to(self.cur_slide);
+        self.rail_scroll = self.page_sidebar.scroll();
+    }
+
+    /// Run the shared rail's frame sync and return its thumbnail slot rects —
+    /// the entry point tests + the `--shots` demo use to source click
+    /// coordinates, mirroring how `compute_chrome` reads them back.
+    fn rail_thumb_rects(&mut self) -> Vec<(usize, Rect)> {
+        self.sync_page_rail();
+        self.page_sidebar.thumb_rects()
+    }
+
+    /// Apply one event emitted by the shared page rail to the deck (and CRDT).
+    /// The single mapping used by both the live event path and the tests.
+    fn apply_rail_event(&mut self, doc: &mut AutoCommit, ev: PageSidebarEvent) {
+        match ev {
+            PageSidebarEvent::Select(i) => self.apply_hit(doc, Hit::SelectSlide(i)),
+            PageSidebarEvent::Reorder { from, to } => {
+                SlidesDoc::move_slide(doc, from, to);
+                self.cur_slide = to;
+                self.mark();
+                self.reload(doc);
+                self.scroll_rail_to_current();
+            }
+            PageSidebarEvent::Duplicate(i) => {
+                self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
+                self.duplicate_slide(doc);
+            }
+            PageSidebarEvent::Delete(i) => {
+                self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
+                self.delete_slide(doc);
+            }
+            PageSidebarEvent::Add => self.new_slide(doc),
         }
-        let i = self.cur_slide as f64;
-        let top = i * (m.th + m.gap);
-        let bottom = top + m.th;
-        let vh = m.viewport.height();
-        if self.rail_scroll > top {
-            self.rail_scroll = top;
-        } else if self.rail_scroll + vh < bottom {
-            self.rail_scroll = bottom - vh;
+    }
+
+    /// Drain and apply every event the shared page rail produced this gesture.
+    fn apply_rail_events(&mut self, doc: &mut AutoCommit) {
+        for ev in self.page_sidebar.take_events() {
+            self.apply_rail_event(doc, ev);
         }
-        self.rail_scroll = self.rail_scroll.clamp(0.0, m.max_scroll);
     }
 
     // --- geometry -----------------------------------------------------------
@@ -1191,16 +1194,15 @@ impl SlidesApp {
             self.layout_tools(&mut buttons, tools_x, tools_right, by, bh, toolbar);
 
         // Thumbnail rail ----------------------------------------------------
-        // The list scrolls inside a viewport between the "SLIDES" header and
-        // the pinned action row, so a deck of any length stays reachable and
-        // the thumbnails can never overlap the Add/Dup/Del buttons.
-        let m = self.rail_metrics(rail);
-        let tpad = m.tpad;
-        let tw = m.tw;
-        let th = m.th;
-        let scroll = self.rail_scroll.clamp(0.0, m.max_scroll);
-        let mut thumbs = Vec::new();
-        let mut thumb_labels: Vec<Label> = Vec::new();
+        // The shared PageSidebar owns the list geometry, scroll and reorder
+        // drag inside `rail_viewport` (between the "SLIDES" header and the
+        // pinned action row); read back the slot rects it computed this frame so
+        // hit-testing, auto-scroll and the `--shots` demo agree with its paint.
+        // Slides keeps drawing the panel chrome: the header label here and the
+        // Add/Dup/Del action row below.
+        let tpad = 14.0;
+        let rail_viewport = self.rail_viewport(rail);
+        let thumbs = self.page_sidebar.thumb_rects();
         labels.push(Label {
             pos: Point::new(rail.x0 + tpad, rail.y0 + 6.0),
             text: "SLIDES".into(),
@@ -1208,25 +1210,6 @@ impl SlidesApp {
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
         });
-        for (i, _s) in self.deck.slides.iter().enumerate() {
-            let tx = rail.x0 + tpad + 20.0;
-            let ty = m.list_top - scroll + i as f64 * (th + m.gap);
-            let rect = Rect::new(tx, ty, tx + tw, ty + th);
-            thumbs.push((i, rect));
-            thumb_labels.push(Label {
-                pos: Point::new(rail.x0 + tpad - 2.0, ty + th / 2.0 - 8.0),
-                text: format!("{}", i + 1),
-                font: 12.0,
-                color: if i == self.cur_slide {
-                    LabelColor::Accent
-                } else {
-                    LabelColor::Dim
-                },
-                weight: TextWeight::Semibold,
-            });
-        }
-        // Scrollbar thumb on the viewport's right edge when the list overflows.
-        let rail_scrollbar = scrollbar_rects(m.viewport, scroll, m.max_scroll);
         // Rail action buttons at the bottom.
         let rb_h = 30.0;
         let rb_y = rail.y1 - tpad - rb_h;
@@ -1274,9 +1257,7 @@ impl SlidesApp {
             thumbs,
             buttons,
             labels,
-            thumb_labels,
-            rail_viewport: m.viewport,
-            rail_scrollbar,
+            rail_viewport,
             notes_box,
             font_input_rect,
             fill_picker_rect,
@@ -1765,27 +1746,11 @@ impl SlidesApp {
             Hit::Insert(ElementKind::Image) => self.request_image_open(),
             Hit::Insert(kind) => self.insert_element(doc, kind),
             Hit::SelectSlide(i) => {
-                self.cur_slide = i;
+                self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
                 self.sel = None;
                 self.editing_text = false;
                 self.editing_notes = false;
                 self.scroll_rail_to_current();
-            }
-            Hit::MoveSlideUp => {
-                if self.cur_slide > 0 {
-                    SlidesDoc::move_slide(doc, self.cur_slide, self.cur_slide - 1);
-                    self.cur_slide -= 1;
-                    self.mark();
-                    self.scroll_rail_to_current();
-                }
-            }
-            Hit::MoveSlideDown => {
-                if self.cur_slide + 1 < self.deck.slides.len() {
-                    SlidesDoc::move_slide(doc, self.cur_slide, self.cur_slide + 1);
-                    self.cur_slide += 1;
-                    self.mark();
-                    self.scroll_rail_to_current();
-                }
             }
             Hit::SetFill(role) => self.set_sel_str(doc, "fill", &role),
             Hit::OpenFillPicker => {
@@ -2481,7 +2446,7 @@ impl SlidesApp {
     // --- drawing ------------------------------------------------------------
 
     fn draw_editor(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2633,60 +2598,23 @@ impl SlidesApp {
                 self.draw_label(scene, t, tr, theme, &pal, l);
             }
         }
-        // Scrolling thumbnail list, clipped to the rail viewport. While a
-        // drag-to-reorder is live the other thumbnails reflow (via the shared
-        // DragController's per-item shift) to open a one-slot gap at the drop,
-        // and the grabbed slide lifts out as a floating ghost drawn below.
+        // Scrolling thumbnail list — the shared PageSidebar paints the
+        // thumbnails, selection ring, index numbers, the live reorder ghost +
+        // reflow gap, its scrollbar and its own right-click menu, all clipped to
+        // the rail viewport it was given in `begin_frame`. It renders each slide
+        // through the closure; slides keeps the panel chrome (fill + SLIDES
+        // header + Add/Dup/Del) around it. Move the rail out of `self` so the
+        // closure can borrow the deck + image cache alongside it.
         if chrome.rail.width() > 1.0 {
-            let metrics = self.rail_list_metrics(chrome.rail);
-            let drag_from = self.slide_drag.from_index();
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &chrome.rail_viewport);
-            for (i, rect) in &chrome.thumbs {
-                if Some(*i) == drag_from {
-                    continue; // lifted out — painted as the floating ghost below
+            let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(SLIDE_H / SLIDE_W));
+            let deck = &self.deck;
+            let images = &self.images;
+            sb.render(scene, t, tr, theme, |scene, tr, base, i, rect| {
+                if let Some(slide) = deck.slides.get(i) {
+                    render::draw_slide(scene, base, tr, theme, &pal, slide, rect, 6.0, images);
                 }
-                let rect = *rect + vello::kurbo::Vec2::new(0.0, self.slide_drag.item_shift(*i, &metrics));
-                if let Some(slide) = self.deck.slides.get(*i) {
-                    render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 6.0, &self.images);
-                    let ring = if *i == self.cur_slide { pal.accent } else { render::with_alpha(c.text_primary, 26) };
-                    let w = if *i == self.cur_slide { 2.5 } else { 1.0 };
-                    chrome::stroke_rrect(scene, t, rect, 6.0, ring, w);
-                }
-            }
-            for (i, l) in chrome.thumb_labels.iter().enumerate() {
-                if Some(i) == drag_from {
-                    continue;
-                }
-                let mut l = l.clone();
-                l.pos.y += self.slide_drag.item_shift(i, &metrics);
-                self.draw_label(scene, t, tr, theme, &pal, &l);
-            }
-            scene.pop_layer();
-            // Floating ghost of the grabbed thumbnail, tracking the cursor. It
-            // may overlap the header / action row, so it's clipped only to the
-            // rail column and drawn with a lifted shadow + accent ring.
-            let rm = self.rail_metrics(chrome.rail);
-            if let (Some(from), Some(ghost)) = (
-                drag_from,
-                self.slide_drag.ghost_rect_sized(
-                    chrome.rail.x0 + rm.tpad + 20.0,
-                    vello::kurbo::Size::new(rm.tw, rm.th),
-                ),
-            ) {
-                if let Some(slide) = self.deck.slides.get(from) {
-                    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &chrome.rail);
-                    let sh = ghost + vello::kurbo::Vec2::new(0.0, 4.0);
-                    chrome::fill_rrect(scene, t, sh.inflate(2.0, 2.0), 8.0, render::with_alpha(Color::BLACK, 100));
-                    render::draw_slide(scene, t, tr, theme, &pal, slide, ghost, 6.0, &self.images);
-                    chrome::stroke_rrect(scene, t, ghost, 6.0, pal.accent, 2.5);
-                    scene.pop_layer();
-                }
-            }
-            // Scrollbar over the (unclipped) viewport edge.
-            if let Some((track, thumb)) = chrome.rail_scrollbar {
-                chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
-                chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
-            }
+            });
+            self.page_sidebar = sb;
         }
 
         // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
@@ -2820,11 +2748,10 @@ impl SlidesApp {
         );
     }
 
-    fn label_color(&self, lc: LabelColor, theme: &Theme, pal: &Palette) -> Color {
+    fn label_color(&self, lc: LabelColor, theme: &Theme, _pal: &Palette) -> Color {
         match lc {
             LabelColor::Primary => theme.tokens.colors.text_primary,
             LabelColor::Dim => theme.tokens.colors.text_dim,
-            LabelColor::Accent => pal.accent,
         }
     }
 
@@ -4114,38 +4041,34 @@ impl Widget for SlidesApp {
         // than sticking past the end of the list.
         match self.mode {
             Mode::Edit => {
-                let rail_max = self.rail_metrics(self.rail_rect()).max_scroll;
-                self.rail_scroll = self.rail_scroll.clamp(0.0, rail_max);
+                // Auto-scroll the rail while a thumbnail reorder drag hovers near
+                // the viewport edges, so a slide can be dropped at a position
+                // currently scrolled off-screen.
+                if self.page_sidebar.is_dragging() {
+                    let vp = self.rail_viewport(self.rail_rect());
+                    let edge = 40.0;
+                    let y = self.last_mouse.y;
+                    let v = if y < vp.y0 + edge {
+                        -((vp.y0 + edge - y) / edge).clamp(0.0, 1.0)
+                    } else if y > vp.y1 - edge {
+                        ((y - (vp.y1 - edge)) / edge).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    if v != 0.0 {
+                        self.rail_scroll += v * 900.0 * dt;
+                    }
+                }
+                // Sync the shared rail to this frame's geometry + scroll, which
+                // clamps the offset and re-pins the insertion gap to the held
+                // ghost against the freshest (possibly just-scrolled) geometry.
+                self.sync_page_rail();
             }
             Mode::Overview => {
                 let (_, _, ov_max) = self.compute_overview();
                 self.overview_scroll = self.overview_scroll.clamp(0.0, ov_max);
             }
             Mode::Present => {}
-        }
-        // Auto-scroll the rail while a thumbnail reorder drag hovers near the
-        // viewport edges, so a slide can be dropped at a position currently
-        // scrolled off-screen. Then re-pin the insertion gap to the held ghost
-        // against the freshest (possibly just-scrolled) list geometry.
-        if self.mode == Mode::Edit && self.slide_drag.is_active() {
-            let rail = self.rail_rect();
-            let m = self.rail_metrics(rail);
-            if m.max_scroll > 0.0 {
-                let edge = 40.0;
-                let y = self.last_mouse.y;
-                let v = if y < m.viewport.y0 + edge {
-                    -((m.viewport.y0 + edge - y) / edge).clamp(0.0, 1.0)
-                } else if y > m.viewport.y1 - edge {
-                    ((y - (m.viewport.y1 - edge)) / edge).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                if v != 0.0 {
-                    self.rail_scroll = (self.rail_scroll + v * 900.0 * dt).clamp(0.0, m.max_scroll);
-                }
-            }
-            let metrics = self.rail_list_metrics(rail);
-            self.slide_drag.sync_insertion(&metrics);
         }
         // `--shots`-only: pop a context menu now that the layout rect is known.
         if let Some(kind) = self.demo_menu.take() {
@@ -4159,31 +4082,32 @@ impl Widget for SlidesApp {
                     self.open_element_menu(p);
                 }
                 DemoMenu::Slide => {
+                    // Open the shared rail's own duplicate / move / delete menu on
+                    // the current slide's thumbnail.
                     let p = chrome
                         .thumbs
                         .iter()
                         .find(|(i, _)| *i == self.cur_slide)
                         .map(|(_, r)| r.center())
                         .unwrap_or_else(|| Point::new(120.0, 220.0));
-                    self.open_slide_menu(p);
+                    self.page_sidebar.on_right_press(p);
+                    let _ = self.page_sidebar.take_events();
                 }
             }
         }
         // `--shots`-only: stage a live reorder drag so the capture shows the
         // floating ghost + the reflowed drop gap.
         if std::mem::take(&mut self.demo_reorder) {
-            let chrome = self.compute_chrome();
-            if chrome.thumbs.len() > 2 {
-                let (i0, r0) = chrome.thumbs[0];
-                let start = r0.center();
-                let id = self.deck.slides.get(i0).map(|s| s.id.clone()).unwrap_or_default();
-                self.slide_drag.begin(id, i0, start.y - r0.y0, start);
+            let thumbs = self.rail_thumb_rects();
+            if thumbs.len() > 2 {
+                let start = thumbs[0].1.center();
                 // Drop it two slots down: the ghost floats at the cursor and the
                 // list reflows to open the gap at that slot.
-                let target = Point::new(start.x, chrome.thumbs[2].1.center().y);
+                let target = thumbs[2].1.center();
                 self.last_mouse = target;
-                let metrics = self.rail_list_metrics(chrome.rail);
-                self.slide_drag.pointer_moved(target, &metrics);
+                self.page_sidebar.on_press(start);
+                self.page_sidebar.on_motion(target);
+                let _ = self.page_sidebar.take_events();
             }
         }
         match self.mode {
@@ -4223,7 +4147,7 @@ impl Widget for SlidesApp {
             || self.images.any_loading()
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
-            || self.slide_drag.is_active()
+            || self.page_sidebar.is_dragging()
     }
 
     /// Present mode wants the surface promoted to true OS fullscreen so the
@@ -4320,11 +4244,11 @@ impl Widget for SlidesApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
-                if self.slide_drag.is_pending() {
-                    // Feed the reorder controller this frame's live rail geometry
-                    // so the insertion gap tracks the cursor as the list scrolls.
-                    let metrics = self.rail_list_metrics(self.rail_rect());
-                    self.slide_drag.pointer_moved(p, &metrics);
+                if self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open() {
+                    // Feed the shared rail's reorder controller / menu hover; the
+                    // gap + hover track the cursor. (The rail's list geometry is
+                    // refreshed each frame in `draw` and on press.)
+                    self.page_sidebar.on_motion(p);
                     *handled = true;
                 } else if self.drag.active() {
                     self.drag_move(p);
@@ -4365,7 +4289,7 @@ impl Widget for SlidesApp {
     /// Keep receiving pointer events for the whole of a canvas move/resize or a
     /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
-        self.drag.active() || self.slide_drag.wants_capture()
+        self.drag.active() || self.page_sidebar.is_pending_drag()
     }
 
     fn on_commit(&mut self) {
@@ -4446,16 +4370,6 @@ impl SlidesApp {
         // Scrollbar-thumb drags don't need slide-space mapping — resolve them
         // first (they can be live in overview mode, where there is no canvas).
         match self.drag.clone() {
-            Drag::ScrollRail { start_y, orig_scroll } => {
-                let m = self.rail_metrics(self.rail_rect());
-                self.rail_scroll = scroll_from_thumb_drag(
-                    m.viewport,
-                    orig_scroll,
-                    m.max_scroll,
-                    p.y - start_y,
-                );
-                return;
-            }
             Drag::ScrollOverview { start_y, orig_scroll } => {
                 let (area, _, max_scroll) = self.compute_overview();
                 self.overview_scroll = scroll_from_thumb_drag(
@@ -4535,7 +4449,7 @@ impl SlidesApp {
                     }
                 }
             }
-            // `ScrollRail` / `ScrollOverview` are resolved above; `None` is a no-op.
+            // `ScrollOverview` is resolved above; everything else is a no-op here.
             _ => {}
         }
     }
@@ -4588,6 +4502,17 @@ impl SlidesApp {
         }
         let chrome = self.compute_chrome();
 
+        // The shared rail's own context menu is modal while open: the press
+        // picks one of its rows or dismisses it, ahead of all other chrome.
+        if self.page_sidebar.menu_open() {
+            self.sync_page_rail();
+            self.page_sidebar.on_press(p);
+            self.apply_rail_events(doc);
+            self.rail_scroll = self.page_sidebar.scroll();
+            *handled = true;
+            return;
+        }
+
         // A click anywhere but the title itself commits an in-flight rename.
         if self.editing_title && !chrome.title_rect.contains(p) {
             self.editing_title = false;
@@ -4618,20 +4543,6 @@ impl SlidesApp {
                 .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu) && b.rect.contains(p));
             if !on_toggle {
                 self.toolbar_menu_open = false;
-                *handled = true;
-                return;
-            }
-        }
-
-        // Rail scrollbar thumb → start a scroll drag (wins over thumbnail hits
-        // beneath it).
-        if let Some((_, thumb)) = chrome.rail_scrollbar {
-            if thumb.contains(p) {
-                let m = self.rail_metrics(chrome.rail);
-                self.drag = Drag::ScrollRail {
-                    start_y: p.y,
-                    orig_scroll: self.rail_scroll.clamp(0.0, m.max_scroll),
-                };
                 *handled = true;
                 return;
             }
@@ -4672,25 +4583,20 @@ impl SlidesApp {
                 return;
             }
         }
-        // Thumbnails. A press selects the slide AND arms a drag-to-reorder: if
-        // the pointer clears the threshold it becomes a live reorder (ghost +
-        // reflow, committed on release); a plain click that never moves stays a
-        // select, and on a narrow window reveals the chosen slide by closing the
-        // overlay flap (deferred to `on_release` so a drag doesn't close it).
+        // The slide-thumbnail rail. The shared PageSidebar owns selection and
+        // the drag-to-reorder gesture: a press selects the slide and arms a
+        // drag; if the pointer clears the threshold it becomes a live reorder
+        // (ghost + reflow, committed on release), while a plain click that never
+        // moves stays a select and — on a narrow window — reveals the chosen
+        // slide by closing the overlay flap (deferred to `on_release` so a drag
+        // doesn't close it). Sync the rail's geometry to this frame first.
         if chrome.rail_viewport.contains(p) {
-            for (i, rect) in &chrome.thumbs {
-                if rect.contains(p) {
-                    self.cur_slide = *i;
-                    self.sel = None;
-                    self.editing_text = false;
-                    self.editing_notes = false;
-                    if let Some(id) = self.deck.slides.get(*i).map(|s| s.id.clone()) {
-                        self.slide_drag.begin(id, *i, p.y - rect.y0, p);
-                    }
-                    *handled = true;
-                    return;
-                }
-            }
+            self.sync_page_rail();
+            self.page_sidebar.on_press(p);
+            self.apply_rail_events(doc);
+            self.rail_scroll = self.page_sidebar.scroll();
+            *handled = true;
+            return;
         }
         // Canvas: handle selection / drag.
         if chrome.slide_dest.inflate(12.0, 12.0).contains(p) {
@@ -4825,18 +4731,22 @@ impl SlidesApp {
             return;
         }
         let chrome = self.compute_chrome();
-        // A slide thumbnail (only when it's actually in the visible viewport).
+        // A slide thumbnail → the shared rail's own duplicate / move / delete
+        // menu (only when it's actually in the visible viewport). The widget
+        // selects the slide under the cursor and opens its menu; we apply the
+        // emitted selection so the rest of the editor follows.
         if chrome.rail_viewport.contains(p) {
-            for (i, rect) in &chrome.thumbs {
-                if rect.contains(p) {
-                    self.apply_hit(doc, Hit::SelectSlide(*i));
-                    self.open_slide_menu(p);
-                    return;
-                }
+            self.sync_page_rail();
+            if self.page_sidebar.on_right_press(p) {
+                self.apply_rail_events(doc);
+                self.rail_scroll = self.page_sidebar.scroll();
+                return;
             }
         }
         // A canvas element.
         if chrome.slide_dest.contains(p) {
+            // Close any open rail menu first so the two never stack.
+            self.page_sidebar.on_escape();
             if let Some(id) = self.element_at(&chrome, p) {
                 self.sel = Some(id);
                 self.editing_text = false;
@@ -4886,20 +4796,6 @@ impl SlidesApp {
         );
     }
 
-    fn open_slide_menu(&mut self, p: Point) {
-        self.open_menu_at(
-            p,
-            &[
-                Some(("New slide", Hit::NewSlide)),
-                Some(("Duplicate slide", Hit::DuplicateSlide)),
-                None,
-                Some(("Move up", Hit::MoveSlideUp)),
-                Some(("Move down", Hit::MoveSlideDown)),
-                None,
-                Some(("Delete slide", Hit::DeleteSlide)),
-            ],
-        );
-    }
 
     /// Forward an event to the open context menu and apply any chosen action.
     /// Returns `true` if a menu was open (and thus consumed the event).
@@ -5068,30 +4964,24 @@ impl SlidesApp {
     }
 
     fn on_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
-        // A thumbnail drag-to-reorder: commit the move to the CRDT, or — if the
-        // press never crossed the threshold into a real drag — treat it as a
-        // plain select and, on a narrow window, reveal the chosen slide by
-        // closing the overlay flap.
-        if self.slide_drag.is_pending() {
-            match self.slide_drag.commit() {
-                Some((from, to)) => {
-                    SlidesDoc::move_slide(doc, from, to);
-                    self.cur_slide = to;
-                    self.mark();
-                    self.reload(doc);
-                    self.scroll_rail_to_current();
-                }
-                None => {
-                    if self.rail_layout() == SplitLayout::Overlay {
-                        self.rail_flap.close();
-                    }
-                }
+        // A thumbnail drag-to-reorder: the shared rail commits the move (emitting
+        // a Reorder we apply to the CRDT) or — if the press never crossed the
+        // threshold into a real drag — nothing, in which case it stays a plain
+        // select and, on a narrow window, reveals the chosen slide by closing
+        // the overlay flap.
+        if self.page_sidebar.is_pending_drag() {
+            let was_click = !self.page_sidebar.is_dragging();
+            self.page_sidebar.on_release();
+            self.apply_rail_events(doc);
+            self.rail_scroll = self.page_sidebar.scroll();
+            if was_click && self.rail_layout() == SplitLayout::Overlay {
+                self.rail_flap.close();
             }
             *handled = true;
             return;
         }
         // A scrollbar-thumb drag ends with no document write, in any mode.
-        if matches!(self.drag, Drag::ScrollRail { .. } | Drag::ScrollOverview { .. }) {
+        if matches!(self.drag, Drag::ScrollOverview { .. }) {
             self.drag = Drag::None;
             *handled = true;
             return;
@@ -5133,9 +5023,11 @@ impl SlidesApp {
         match self.mode {
             Mode::Edit => {
                 if self.rail_rect().contains(self.last_mouse) {
-                    let m = self.rail_metrics(self.rail_rect());
-                    if m.max_scroll > 0.0 {
-                        self.rail_scroll = (self.rail_scroll - dy).clamp(0.0, m.max_scroll);
+                    // The shared rail owns the scroll: sync its geometry, feed it
+                    // the wheel (its `on_wheel` takes +down), and mirror back.
+                    self.sync_page_rail();
+                    if self.page_sidebar.on_wheel(-dy) {
+                        self.rail_scroll = self.page_sidebar.scroll();
                         *handled = true;
                     }
                 }
@@ -5162,10 +5054,14 @@ impl SlidesApp {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
-        // Escape aborts an in-flight thumbnail reorder drag, restoring the
-        // original order (the model is only mutated on a committed drop).
-        if self.slide_drag.is_pending() && matches!(key, Key::Named(NamedKey::Escape)) {
-            self.slide_drag.cancel();
+        // Escape aborts an in-flight thumbnail reorder drag (restoring the
+        // original order — the model is only mutated on a committed drop) or
+        // closes the shared rail's open context menu.
+        if matches!(key, Key::Named(NamedKey::Escape))
+            && (self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open())
+        {
+            self.page_sidebar.on_escape();
+            self.rail_scroll = self.page_sidebar.scroll();
             *handled = true;
             return;
         }
@@ -6072,8 +5968,11 @@ mod tests {
     #[test]
     fn wheel_scrolls_the_thumbnail_rail_only_over_the_rail() {
         let mut app = tall_editor(16, 560.0);
-        let m = app.rail_metrics(app.rail_rect());
-        assert!(m.max_scroll > 0.0, "a 16-slide rail overflows a 560px window");
+        // The shared rail is the scroll authority: sync it to this frame, then
+        // read the overflow it computed.
+        app.sync_page_rail();
+        let max_scroll = app.page_sidebar.max_scroll();
+        assert!(max_scroll > 0.0, "a 16-slide rail overflows a 560px window");
 
         // Pointer over the rail → wheel scrolls it (down).
         let rail = app.rail_rect();
@@ -6088,7 +5987,7 @@ mod tests {
             let mut h = false;
             app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
         }
-        assert!((app.rail_scroll - m.max_scroll).abs() < 1.0, "rail scroll clamps to max");
+        assert!((app.rail_scroll - max_scroll).abs() < 1.0, "rail scroll clamps to max");
 
         // Pointer over the canvas → the rail does not move.
         app.rail_scroll = 0.0;
@@ -6520,7 +6419,7 @@ mod tests {
         assert!(!app.drag.active(), "entering edit does not arm a drag");
     }
 
-    // === thumbnail drag-to-reorder (shared DragController) ================
+    // === thumbnail drag-to-reorder (shared PageSidebar) ==================
 
     /// A 5-slide editor seeded into a doc, sized so the whole rail fits.
     fn reorder_app() -> (SlidesApp, AutoCommit) {
@@ -6542,23 +6441,25 @@ mod tests {
         let (mut app, mut doc) = reorder_app();
         let first_id = loaded(&doc).slides[0].id.clone();
 
-        let chrome = app.compute_chrome();
-        let start = chrome.thumbs[0].1.center();
-        let target = chrome.thumbs[3].1.center();
+        // Source click coordinates from the shared rail's own slot rects (after
+        // it syncs this frame's geometry).
+        let thumbs = app.rail_thumb_rects();
+        let start = thumbs[0].1.center();
+        let target = thumbs[3].1.center();
 
         app.last_mouse = start;
         let mut h = false;
         app.on_press(&mut doc, start, &mut h);
-        assert!(app.slide_drag.is_pending(), "pressing a thumbnail arms a reorder drag");
+        assert!(app.page_sidebar.is_pending_drag(), "pressing a thumbnail arms a reorder drag");
 
         // Move the cursor onto slide 4's row through the live event path.
         app_dispatch(&mut app, &mut doc, &cursor_ev(target));
-        assert!(app.slide_drag.is_active(), "moving past the threshold promotes to a live reorder");
-        assert_eq!(app.slide_drag.insertion(), Some(3), "the gap tracks to the drop row");
+        assert!(app.page_sidebar.is_dragging(), "moving past the threshold promotes to a live reorder");
+        assert_eq!(app.page_sidebar.drag_insertion(), Some(3), "the gap tracks to the drop row");
 
         let mut h2 = false;
         app.on_release(&mut doc, &mut h2);
-        assert!(h2 && !app.slide_drag.is_pending(), "release commits and clears the drag");
+        assert!(h2 && !app.page_sidebar.is_pending_drag(), "release commits and clears the drag");
 
         let after = loaded(&doc);
         let new_pos = after.slides.iter().position(|s| s.id == first_id).expect("slide survived");
@@ -6574,8 +6475,7 @@ mod tests {
         let (mut app, mut doc) = reorder_app();
         let order0: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
 
-        let chrome = app.compute_chrome();
-        let (idx, rect) = chrome.thumbs[2];
+        let (idx, rect) = app.rail_thumb_rects()[2];
         let p = rect.center();
         app.last_mouse = p;
         let mut h = false;
@@ -6588,35 +6488,33 @@ mod tests {
         assert_eq!(order0, order1, "a plain click leaves the deck order unchanged");
     }
 
-    /// While a reorder drag is live the grabbed slide lifts out as a floating
-    /// ghost and a neighbour reflows to open the gap — the exact quantities
-    /// `draw_editor` reads to paint live feedback.
+    /// While a reorder drag is live the grabbed slide lifts out (its original
+    /// index) and the reflow opens a gap at the drop row — the state the shared
+    /// rail paints live feedback from. (The ghost-rect / per-item-shift geometry
+    /// itself is now owned + unit-tested inside `ui`'s `PageSidebar`.)
     #[test]
     fn a_live_thumbnail_drag_lifts_a_ghost_and_opens_a_reflow_gap() {
         let (mut app, mut doc) = reorder_app();
-        let chrome = app.compute_chrome();
-        let start = chrome.thumbs[0].1.center();
-        let target = chrome.thumbs[2].1.center();
+        let thumbs = app.rail_thumb_rects();
+        let start = thumbs[0].1.center();
+        let target = thumbs[2].1.center();
 
         app.last_mouse = start;
         let mut h = false;
         app.on_press(&mut doc, start, &mut h);
         app_dispatch(&mut app, &mut doc, &cursor_ev(target));
 
-        assert_eq!(app.slide_drag.from_index(), Some(0), "the grabbed slide is the one lifted out");
-        let metrics = app.rail_list_metrics(app.rail_rect());
-        assert!(
-            app.slide_drag.ghost_rect_sized(chrome.rail.x0, vello::kurbo::Size::new(10.0, 10.0)).is_some(),
-            "a floating ghost is produced for the render pass"
-        );
-        assert!(
-            app.slide_drag.item_shift(1, &metrics) != 0.0,
-            "a neighbour reflows to open the one-slot gap at the drop"
+        assert!(app.page_sidebar.is_dragging(), "the drag is live once past the threshold");
+        assert_eq!(app.page_sidebar.drag_from(), Some(0), "the grabbed slide is the one lifted out");
+        assert_eq!(
+            app.page_sidebar.drag_insertion(),
+            Some(2),
+            "the reflow gap opens at the drop row"
         );
         // Escape aborts without mutating the deck.
         let order0: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
         assert!(keyn(&mut app, &mut doc, NamedKey::Escape));
-        assert!(!app.slide_drag.is_pending(), "Escape cancels the in-flight drag");
+        assert!(!app.page_sidebar.is_pending_drag(), "Escape cancels the in-flight drag");
         let order1: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
         assert_eq!(order0, order1, "a cancelled drag never touched the deck order");
     }
@@ -6705,8 +6603,8 @@ mod tests {
         assert!(!app.ctx_menu.is_open(), "choosing a row closes the menu");
     }
 
-    /// Right-clicking a slide thumbnail selects that slide and opens the slide
-    /// menu; the Delete row removes it.
+    /// Right-clicking a slide thumbnail selects that slide and opens the shared
+    /// rail's own duplicate / move / delete menu; choosing Delete removes it.
     #[test]
     fn right_click_thumbnail_opens_slide_menu() {
         let mut app = SlidesApp::new();
@@ -6716,24 +6614,18 @@ mod tests {
         app.reload(&doc);
         sized(&mut app, 1280.0, 800.0);
 
-        let chrome = app.compute_chrome();
-        let (idx, rect) = chrome.thumbs[2];
+        let (idx, rect) = app.rail_thumb_rects()[2];
         let p = rect.center();
         let mut h = false;
         app.last_mouse = p;
         app.on_right_press(&mut doc, p, &mut h);
-        assert!(app.ctx_menu.is_open(), "right-click on a thumbnail opens the slide menu");
+        assert!(app.page_sidebar.menu_open(), "right-click on a thumbnail opens the rail menu");
         assert_eq!(app.cur_slide, idx, "the right-clicked slide becomes current");
 
-        // The last row is Delete slide.
+        // The menu's Delete action (mapped from the widget's Delete row, unit
+        // tested in `ui`) removes the slide via the production apply path.
         let before = loaded(&doc).slides.len();
-        let del = app.ctx_hits.len() - 1;
-        app.ctx_menu.click_item(del);
-        if let Some(sel) = app.ctx_menu.take_selection() {
-            if let Some(Some(hit)) = app.ctx_hits.get(sel).cloned() {
-                app.apply_hit(&mut doc, hit);
-            }
-        }
+        app.apply_rail_event(&mut doc, PageSidebarEvent::Delete(idx));
         assert_eq!(loaded(&doc).slides.len(), before - 1, "Delete slide removed one");
     }
 
@@ -7202,14 +7094,15 @@ mod tests {
         assert_eq!(loaded(&doc).slides.len(), n0 + 2);
         assert_eq!(app.cur_slide, 3);
 
-        // Move up / down reorders and tracks cur_slide.
+        // Move up / down (the rail menu's Reorder events) reorders and tracks
+        // cur_slide, on the production apply path.
         let moved_id = loaded(&doc).slides[3].id.clone();
-        app.apply_hit(&mut doc, Hit::MoveSlideUp);
+        app.apply_rail_event(&mut doc, PageSidebarEvent::Reorder { from: 3, to: 2 });
         assert_eq!(app.cur_slide, 2);
-        assert_eq!(loaded(&doc).slides[2].id, moved_id, "MoveSlideUp reordered the deck");
-        app.apply_hit(&mut doc, Hit::MoveSlideDown);
+        assert_eq!(loaded(&doc).slides[2].id, moved_id, "move up reordered the deck");
+        app.apply_rail_event(&mut doc, PageSidebarEvent::Reorder { from: 2, to: 3 });
         assert_eq!(app.cur_slide, 3);
-        assert_eq!(loaded(&doc).slides[3].id, moved_id, "MoveSlideDown reordered it back");
+        assert_eq!(loaded(&doc).slides[3].id, moved_id, "move down reordered it back");
 
         // Delete removes the current slide.
         app.apply_hit(&mut doc, Hit::DeleteSlide);
