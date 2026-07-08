@@ -635,4 +635,110 @@ mod tests {
             ..PlayerSnapshot::default()
         });
     }
+
+    /// Hermetic D-Bus round-trip (`--features mpris`): serve the real MPRIS
+    /// interfaces over an in-process p2p socket pair (no session bus), then from
+    /// a client proxy call Pause / Next / Play and read `PlaybackStatus` +
+    /// `Metadata` — proving the toolkit's MPRIS service *responds* and *reflects*
+    /// the player state a `VideoPlayer` publishes.
+    #[cfg(feature = "mpris")]
+    #[tokio::test]
+    async fn mpris_interface_responds_and_reflects_state() {
+        use std::sync::mpsc::channel;
+        use tokio::net::UnixStream;
+        use zbus::connection::Builder;
+
+        const GUID: &str = "0123456789abcdef0123456789abcdef";
+
+        let (cmd_tx, cmd_rx) = channel::<MprisCommand>();
+        let snap = PlayerSnapshot {
+            status: PlaybackStatus::Playing,
+            track_id: "yt:abc123".into(),
+            title: "Runaway".into(),
+            artist: "Aurora".into(),
+            length_us: 240_000_000,
+            can_next: true,
+            can_pause: true,
+            ..PlayerSnapshot::default()
+        };
+
+        let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+        let player = imp::PlayerIface { snap: snap.clone(), cmd: cmd_tx.clone() };
+        let root = imp::RootIface {
+            cmd: cmd_tx.clone(),
+            identity: "qOS Player".into(),
+            desktop_entry: "qos-player".into(),
+        };
+        let server_builder = Builder::unix_stream(server_sock)
+            .server(GUID)
+            .expect("guid")
+            .p2p()
+            .serve_at(OBJECT_PATH, player)
+            .expect("serve player")
+            .serve_at(OBJECT_PATH, root)
+            .expect("serve root");
+        let client_builder = Builder::unix_stream(client_sock).p2p();
+        let (server_conn, client_conn) =
+            tokio::join!(server_builder.build(), client_builder.build());
+        let server_conn = server_conn.expect("server conn");
+        let client_conn = client_conn.expect("client conn");
+
+        let player_proxy: zbus::Proxy = zbus::proxy::Builder::new(&client_conn)
+            .destination("org.mpris.MediaPlayer2.qos-player")
+            .expect("proxy destination")
+            .path(OBJECT_PATH)
+            .expect("proxy path")
+            .interface("org.mpris.MediaPlayer2.Player")
+            .expect("proxy interface")
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .expect("player proxy");
+
+        let status: String = player_proxy
+            .get_property("PlaybackStatus")
+            .await
+            .expect("read PlaybackStatus");
+        assert_eq!(status, "Playing", "served status reflected over D-Bus");
+
+        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
+            player_proxy.get_property("Metadata").await.expect("read Metadata");
+        let title: String = metadata
+            .get("xesam:title")
+            .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
+            .or_else(|| {
+                metadata
+                    .get("xesam:title")
+                    .and_then(|v| String::try_from(v.try_clone().unwrap()).ok())
+            })
+            .expect("title in metadata");
+        assert_eq!(title, "Runaway", "served now-playing reflected over D-Bus");
+
+        // Media-key style control reaches the widget as commands.
+        player_proxy.call_method("Pause", &()).await.expect("Pause call");
+        player_proxy.call_method("Next", &()).await.expect("Next call");
+        player_proxy.call_method("Play", &()).await.expect("Play call");
+        let mut got = Vec::new();
+        for _ in 0..3 {
+            got.push(cmd_rx.recv().expect("command delivered"));
+        }
+        assert_eq!(
+            got,
+            vec![MprisCommand::Pause, MprisCommand::Next, MprisCommand::Play],
+            "external control reaches the widget as commands"
+        );
+
+        // A published state change propagates + is readable as new state.
+        let mut updated = snap.clone();
+        updated.status = PlaybackStatus::Paused;
+        imp::apply_update(&server_conn, &snap, &updated).await.expect("apply update");
+        let status: String = player_proxy
+            .get_property("PlaybackStatus")
+            .await
+            .expect("re-read PlaybackStatus");
+        assert_eq!(status, "Paused", "a Pause reflects on PlaybackStatus");
+
+        drop(client_conn);
+        drop(server_conn);
+    }
 }
