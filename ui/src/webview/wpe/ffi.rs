@@ -72,9 +72,6 @@ unsafe extern "C" {
         destroy_data: GClosureNotify,
         connect_flags: c_uint,
     ) -> u64;
-    pub fn g_object_ref(obj: *mut c_void) -> *mut c_void;
-    pub fn g_object_unref(obj: *mut c_void);
-    pub fn g_object_set(obj: *mut c_void, first_property_name: *const c_char, ...);
     /// `GType` is `gsize`. Construction property list is NULL-terminated.
     pub fn g_object_new(object_type: usize, first_property_name: *const c_char, ...)
         -> *mut c_void;
