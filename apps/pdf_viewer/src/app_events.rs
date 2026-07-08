@@ -314,7 +314,12 @@ impl PdfApp {
                 // (a press that doesn't move is a selection of markup under it; a
                 // press that drags pans the canvas).
                 Tool::Select => {
-                    if self.raster.is_some() && self.begin_selection(page, pt) {
+                    if self.shift_down && self.raster.is_some() {
+                        // Shift + Select drags a rubber-band image-region marquee
+                        // to copy; it never pans or selects text.
+                        self.clear_selection();
+                        self.region = Some(RegionSelect { page, start: pt, cur: pt });
+                    } else if self.raster.is_some() && self.begin_selection(page, pt) {
                         // Text selection armed; motion extends it, release ends it.
                     } else {
                         self.clear_selection();
@@ -386,6 +391,7 @@ impl PdfApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        self.shift_down = modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -409,6 +415,16 @@ impl PdfApp {
                     if self.page_sidebar.on_motion(p) {
                         self.dirty = true;
                     }
+                    return;
+                }
+
+                // Image-region marquee drag (Shift + Select).
+                if let Some(region) = self.region {
+                    let pt = self.page_point(region.page, p);
+                    if let Some(r) = self.region.as_mut() {
+                        r.cur = pt;
+                    }
+                    self.dirty = true;
                     return;
                 }
 
@@ -542,6 +558,13 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // End an image-region marquee: crop + copy the region.
+                if self.region.is_some() {
+                    self.copy_region();
+                    self.region = None;
+                    *handled = true;
+                    return;
+                }
                 // Commit a page-rail reorder drag (or clear its pending press).
                 if self.page_sidebar.is_pending_drag() {
                     if self.page_sidebar.on_release() {
