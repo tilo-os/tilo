@@ -28,6 +28,8 @@ pub mod image_store;
 pub mod render_thread;
 pub mod warmup;
 pub mod webview;
+pub mod fullscreen;
+pub mod mpris;
 
 pub use app::App;
 pub use color_compat::ColorCompat;

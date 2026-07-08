@@ -335,6 +335,7 @@ mod tests {
 
     #[test]
     fn changing_currency_key_updates_settings() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("region_currency");
         let mut pane = RegionPane::with_settings(RegionSettings::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -347,6 +348,7 @@ mod tests {
 
     #[test]
     fn changing_date_and_time_and_units_updates_settings() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("region_dtu");
         let mut pane = RegionPane::with_settings(RegionSettings::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;

@@ -396,6 +396,7 @@ mod tests {
 
     #[test]
     fn changing_theme_key_updates_and_resolves() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("appearance_theme");
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -410,6 +411,7 @@ mod tests {
 
     #[test]
     fn changing_text_size_and_toggles_updates_prefs() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("appearance_textsize");
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;

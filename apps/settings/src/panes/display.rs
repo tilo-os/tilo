@@ -76,9 +76,21 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
     }
 }
 
+/// Whether a DRM connector directory name is a *virtual* connector rather
+/// than a user-facing display port. The compositor's writeback connector
+/// (`card0-Writeback-1`) and any `Virtual`/`None` connectors are not physical
+/// outputs a user plugs a monitor into, so they must not appear in the
+/// arrangement list.
+fn is_virtual_connector(conn: &str) -> bool {
+    let lower = conn.to_ascii_lowercase();
+    lower.contains("writeback") || lower.contains("virtual")
+}
+
 /// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
 /// an empty vec when the directory is unavailable (a container under
 /// `--shots`), in which case the pane shows an honest "no displays" note.
+/// Virtual connectors (compositor writeback) are skipped — they are not
+/// displays a user can plug into.
 fn read_outputs() -> Vec<DisplayOutput> {
     let mut out = Vec::new();
     let Ok(dir) = std::fs::read_dir("/sys/class/drm") else {
@@ -91,13 +103,21 @@ fn read_outputs() -> Vec<DisplayOutput> {
         if !name.contains('-') || !name.starts_with("card") {
             continue;
         }
+        if is_virtual_connector(&name) {
+            continue;
+        }
         let status_path = entry.path().join("status");
         if let Ok(status) = std::fs::read_to_string(&status_path) {
             out.push(classify_connector(&name, &status));
         }
     }
-    // Deterministic order: built-in first, then alphabetical.
-    out.sort_by(|a, b| b.builtin.cmp(&a.builtin).then(a.label.cmp(&b.label)));
+    // Deterministic order: built-in first, then connected, then alphabetical.
+    out.sort_by(|a, b| {
+        b.builtin
+            .cmp(&a.builtin)
+            .then(b.connected.cmp(&a.connected))
+            .then(a.label.cmp(&b.label))
+    });
     out
 }
 
@@ -168,9 +188,19 @@ impl DisplayPane {
         &self.outputs
     }
 
+    /// The outputs the arrangement card lists as rows: only the connected
+    /// ones. Disconnected physical ports are unused hardware, not displays —
+    /// enumerating each one (a laptop's GPU can expose a dozen idle DP
+    /// connectors) is noise, so they are summarised in a caption instead.
+    fn connected_outputs(&self) -> Vec<&DisplayOutput> {
+        self.outputs.iter().filter(|o| o.connected).collect()
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
-        // --- Arrangement card: the real connected outputs.
-        let arrangement = if self.outputs.is_empty() {
+        // --- Arrangement card: the real *connected* outputs.
+        let connected = self.connected_outputs();
+        let disconnected = self.outputs.len() - connected.len();
+        let arrangement = if connected.is_empty() {
             card(
                 "Displays",
                 rows(vec![caption(
@@ -179,17 +209,16 @@ impl DisplayPane {
             )
         } else {
             let mut out_rows: Vec<El> = Vec::new();
-            for o in &self.outputs {
-                let status = if o.connected {
-                    if o.builtin { "Active · primary" } else { "Connected" }
-                } else {
-                    "Not connected"
-                };
+            for o in &connected {
+                let status = if o.builtin { "Active · primary" } else { "Connected" };
                 out_rows.push(value_row(&o.label, status));
             }
-            out_rows.push(caption(
-                "Connect a second display to extend or mirror your screen.",
-            ));
+            // One honest line about the idle ports rather than a row each.
+            out_rows.push(caption(if disconnected == 0 {
+                "Connect a second display to extend or mirror your screen."
+            } else {
+                "Connect a display to a free port to extend or mirror your screen."
+            }));
             card("Displays", rows(out_rows))
         };
 
@@ -507,5 +536,36 @@ mod tests {
         ]);
         assert_eq!(pane.outputs().len(), 2);
         assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
+    }
+
+    /// The compositor's writeback connector and other virtual connectors are
+    /// not displays a user plugs into, so they are filtered from the list.
+    #[test]
+    fn virtual_connectors_are_filtered() {
+        assert!(is_virtual_connector("card0-Writeback-1"));
+        assert!(is_virtual_connector("card0-Virtual-1"));
+        assert!(!is_virtual_connector("card0-eDP-1"));
+        assert!(!is_virtual_connector("card0-HDMI-A-1"));
+        assert!(!is_virtual_connector("card0-DP-2"));
+    }
+
+    /// Only connected outputs become rows; a laptop's dozen idle DP ports are
+    /// summarised in a caption rather than enumerated one-per-row.
+    #[test]
+    fn arrangement_lists_only_connected_outputs() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let pane = DisplayPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            0.5,
+        )
+        .with_outputs(vec![
+            DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
+            DisplayOutput { label: "DP-1".into(), connected: false, builtin: false },
+            DisplayOutput { label: "DP-2".into(), connected: false, builtin: false },
+            DisplayOutput { label: "HDMI-A-1".into(), connected: false, builtin: false },
+        ]);
+        let shown = pane.connected_outputs();
+        assert_eq!(shown.len(), 1, "only the connected built-in display is listed");
+        assert_eq!(shown[0].label, "Built-in display");
     }
 }
