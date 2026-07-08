@@ -869,6 +869,9 @@ pub fn watch(
     } else {
         Vec::new()
     };
+    // Whether this video contributes real SponsorBlock segments to the one
+    // timeline — used to make the segment-carrying timeline addressable below.
+    let has_sb_timeline = !marks.is_empty();
     player.borrow_mut().set_sponsor_marks(marks);
 
     // A show-mode segment the playhead is currently inside gets a small,
@@ -920,7 +923,15 @@ pub fn watch(
                 ),
         );
     }
-    let player_view = Flex::col().fill_w().push(stage);
+    // The SponsorBlock segments now live inline on the player's single scrub
+    // timeline (painted by the shared `VideoPlayer`, aligned to its track). Mark
+    // that segment-carrying timeline region as an addressable, laid-out node so
+    // it stays a real, testable part of the watch tree — there is ONE timeline,
+    // and this is it.
+    let player_view = {
+        let col = Flex::col().fill_w().push(stage);
+        if has_sb_timeline { col.id("sb_timeline") } else { col }
+    };
 
     // A compact row under the player: the preferred-quality selector (left) + a
     // gear that opens Settings (right). Clean and small.
