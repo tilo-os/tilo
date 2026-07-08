@@ -115,10 +115,22 @@ template-report = Report
 template-resume = Resume
 template-meeting-notes = Meeting Notes
 
+## Built-in style display names (localized). Blocks store a stable English name
+## for export interop; these are what the picker + style header actually show.
+style-body = Body
+style-heading1 = Heading 1
+style-heading2 = Heading 2
+style-heading3 = Heading 3
+style-list = List Item
+style-quote = Quote
+
 ## Paragraph panel
 panel-this-paragraph = THIS PARAGRAPH
 panel-line-spacing = Line spacing
 panel-style = PARAGRAPH STYLE
+# Caption under the style name — makes the preset-vs-direct distinction explicit:
+# the toolbar formats the selection; this section edits the shared style.
+panel-style-hint = Changes every "{ $name }" paragraph
 panel-caret-hint = Place the caret in a paragraph
 panel-paragraph-styles = PARAGRAPH STYLES
 panel-style-properties = STYLE PROPERTIES
@@ -167,6 +179,12 @@ outline-untitled = (untitled)
 layout-margins = Margins
 layout-spacing = Spacing
 layout-none-hint = Page layout — pick Margins or Spacing, then drag on the page
+layout-margins-readout = margins  L { $l }  T { $t }  R { $r }  B { $b }   ·   drag = opposite pair · Shift = one side · Ctrl = all proportional
+layout-spacing-readout = { $name } spacing  { $px } px   ·   drag the handle — every "{ $name }" block follows
 
 ## Canvas
 page-indicator = Page { $n }
+# On-page placeholders (a missing/undecodable image; an embedded object we render
+# as a fidelity box rather than its content).
+canvas-image-missing = image
+canvas-embedded-content = ⟦ embedded content ⟧
