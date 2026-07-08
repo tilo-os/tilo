@@ -605,6 +605,44 @@ pub fn draw_thumbnail(
     }
 }
 
+/// Crop a rectangular region (in page-point space) out of a rendered page
+/// bitmap, returning `(width_px, height_px, rgba)` ready for the clipboard.
+/// The page bitmap covers the whole page (`page_w × page_h` points) at
+/// `img.width × img.height` pixels, so the region maps by a simple scale.
+/// Returns `None` for an empty region or a malformed bitmap.
+pub fn crop_page_region(
+    img: &PenikoImage,
+    page_w: f64,
+    page_h: f64,
+    rect: crate::model::PtRect,
+) -> Option<(usize, usize, Vec<u8>)> {
+    let iw = img.width as usize;
+    let ih = img.height as usize;
+    if iw == 0 || ih == 0 || page_w <= 0.0 || page_h <= 0.0 {
+        return None;
+    }
+    let sx = iw as f64 / page_w;
+    let sy = ih as f64 / page_h;
+    let x0 = ((rect.x * sx).floor().max(0.0) as usize).min(iw);
+    let y0 = ((rect.y * sy).floor().max(0.0) as usize).min(ih);
+    let x1 = ((((rect.x + rect.w) * sx).ceil()).max(0.0) as usize).min(iw);
+    let y1 = ((((rect.y + rect.h) * sy).ceil()).max(0.0) as usize).min(ih);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let src = img.data.data();
+    if src.len() < iw * ih * 4 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(cw * ch * 4);
+    for row in y0..y1 {
+        let start = (row * iw + x0) * 4;
+        out.extend_from_slice(&src[start..start + cw * 4]);
+    }
+    Some((cw, ch, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
