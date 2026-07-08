@@ -300,6 +300,25 @@ pub fn clipboard_copy(text: &str) {
     }
 }
 
+/// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto
+/// the system clipboard as image data, so it can be pasted into an image editor
+/// or chat. Returns true on success; a silent `false` when arboard couldn't
+/// open (headless test env) or the buffer size is wrong. Used by the PDF reader
+/// to copy a selected page region.
+pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
+    if width == 0 || height == 0 || rgba.len() != width * height * 4 {
+        return false;
+    }
+    let Some(cb) = clipboard() else { return false };
+    let Ok(mut handle) = cb.lock() else { return false };
+    let img = arboard::ImageData {
+        width,
+        height,
+        bytes: std::borrow::Cow::Borrowed(rgba),
+    };
+    handle.set_image(img).is_ok()
+}
+
 /// Pull the current clipboard contents as a UTF-8 string. Returns
 /// `None` when the clipboard is empty / unavailable / non-text.
 pub fn clipboard_paste() -> Option<String> {

@@ -11,6 +11,23 @@ struct CommentMetrics {
     compose_h: f64,
 }
 
+/// Non-overlapping layout of a comment/note card's header row. The author name
+/// gets a bounded width so a long name (or an email address) truncates instead
+/// of running under the Resolve chip and the × button. Pure geometry so both
+/// the draw pass and a test can assert the pieces never collide.
+struct CommentHeader {
+    avatar_c: Point,
+    name_x: f64,
+    /// Baseline (top) y for the author name.
+    name_y: f64,
+    /// Max text width for the author name before the resolve chip.
+    name_max: f32,
+    chip: Rect,
+    del: Rect,
+    /// Top y where the card body should begin, clear of the header row.
+    body_top: f64,
+}
+
 struct ToolbarLayout {
     open: Rect,
     save: Rect,
@@ -673,7 +690,6 @@ impl PdfApp {
     /// an accent band. All rectangles come from the real pdfium glyph boxes, so
     /// they sit exactly over the printed characters.
     fn draw_text_overlays(&self, scene: &mut Scene, base: Affine, theme: &Theme, page_num: usize, origin: Point) {
-        let Some(layer) = self.raster_text.get(&page_num) else { return };
         let z = self.zoom();
         let to_screen = |r: &PtRect| {
             Rect::new(
@@ -683,6 +699,24 @@ impl PdfApp {
                 origin.y + (r.y + r.h) * z,
             )
         };
+
+        // Image-region marquee (Shift + Select): a translucent accent rectangle
+        // with a dashed border, drawn even when the page has no text layer.
+        if let Some(region) = self.region {
+            if region.page == page_num {
+                let sr = to_screen(&region.rect());
+                scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 40), None, &sr);
+                scene.stroke(
+                    &Stroke::new(1.5).with_dashes(0.0, [5.0, 4.0]),
+                    base,
+                    theme.accent_primary,
+                    None,
+                    &sr,
+                );
+            }
+        }
+
+        let Some(layer) = self.raster_text.get(&page_num) else { return };
 
         // Search hits.
         let hit_col = theme.tokens.colors.semantic.warning;
@@ -1093,13 +1127,38 @@ impl PdfApp {
     /// Measured heights for one comment card. Computed once and shared by the
     /// scroll layout and the draw pass so the two never disagree about how tall
     /// a card is (which would misplace every card below it).
+    /// Lay out a comment/note card header so the avatar, author name, resolve
+    /// chip and delete button never overlap regardless of name length. The name
+    /// is clamped to the space left of the chip (with an 8px gap), and the body
+    /// starts below the header band.
+    fn comment_header_layout(&self, card: Rect) -> CommentHeader {
+        let del = Rect::new(card.x1 - 10.0 - 18.0, card.y0 + 6.0, card.x1 - 10.0, card.y0 + 24.0);
+        let chip_w = 54.0;
+        let chip = Rect::new(del.x0 - 8.0 - chip_w, card.y0 + 6.0, del.x0 - 8.0, card.y0 + 22.0);
+        let avatar_c = Point::new(card.x0 + 12.0 + 9.0, card.y0 + 15.0);
+        let name_x = avatar_c.x + 14.0;
+        // Stop 8px short of the chip so a long name truncates cleanly.
+        let name_max = ((chip.x0 - 8.0) - name_x).max(24.0) as f32;
+        CommentHeader {
+            avatar_c,
+            name_x,
+            name_y: card.y0 + 9.0,
+            name_max,
+            chip,
+            del,
+            body_top: card.y0 + 30.0,
+        }
+    }
+
     fn comment_metrics(&self, tr: &mut TextRenderer, cm: &Comment, inner_w: f64) -> CommentMetrics {
         // The body shows the live edit buffer while this comment is focused.
         let editing_body = self.editing.as_ref().filter(|e| e.target == EditTarget::CommentBody(cm.id.clone()));
         let body_text = editing_body.map(|e| e.buffer.as_str()).unwrap_or(cm.body.as_str());
         let body_probe = if body_text.is_empty() { "M" } else { body_text };
         let (_, bh) = tr.measure(body_probe, 12.0, Some(inner_w as f32 - 16.0));
-        let mut card_h = 18.0 + 6.0 + bh as f64 + 12.0;
+        // Header band (avatar + name + chips) is 24px, then a 6px gap, the body,
+        // and a 12px bottom pad. Mirrors `comment_header_layout`'s `body_top`.
+        let mut card_h = 24.0 + 6.0 + bh as f64 + 12.0;
         let mut reply_heights = Vec::with_capacity(cm.replies.len());
         for r in &cm.replies {
             let (_, rh) = tr.measure(&r.body, 11.0, Some(inner_w as f32 - 36.0));
@@ -1235,20 +1294,23 @@ impl PdfApp {
             let border = if selected { theme.accent_primary } else { c.border_standard };
             scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), base, border, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
 
-            // author avatar + name + page pin
-            let av_c = Point::new(card.x0 + 12.0 + 9.0, card.y0 + 14.0);
-            draw_avatar(scene, base, tr, theme, &cm.author, av_c, 9.0);
+            // Header row: avatar + author name (bounded so it never runs under
+            // the chips) + resolve chip + delete button, laid out so nothing
+            // overlaps regardless of the name's length.
+            let hdr = self.comment_header_layout(card);
+            draw_avatar(scene, base, tr, theme, &cm.author, hdr.avatar_c, 9.0);
+            let name = truncate_to_width(tr, &cm.author, 11.5, hdr.name_max);
             tr.draw_text_weighted(
                 scene,
-                &cm.author,
+                &name,
                 11.5,
                 theme.text_primary,
-                base * Affine::translate((av_c.x + 14.0, card.y0 + 8.0)),
-                None,
+                base * Affine::translate((hdr.name_x, hdr.name_y)),
+                Some(hdr.name_max),
                 TextWeight::Semibold,
             );
             // Right-edge chips: a delete (×) button, then the resolve chip.
-            let del = Rect::new(card.x1 - 10.0 - 18.0, card.y0 + 6.0, card.x1 - 10.0, card.y0 + 24.0);
+            let del = hdr.del;
             let del_hot = del.contains(self.last_mouse);
             if del_hot {
                 scene.fill(Fill::NonZero, base, render::alpha(c.semantic.danger, 40), None, &RoundedRect::from_rect(del, theme.tokens.radii.sm as f64));
@@ -1259,8 +1321,7 @@ impl PdfApp {
             scene.stroke(&Stroke::new(1.5), base, dcol, None, &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)));
             hits.push((SidebarHit::DeleteComment(cm.id.clone()), del));
 
-            let chip_w = 54.0;
-            let chip = Rect::new(del.x0 - 8.0 - chip_w, card.y0 + 6.0, del.x0 - 8.0, card.y0 + 22.0);
+            let chip = hdr.chip;
             let (chip_label, chip_fill, chip_text) = if cm.resolved {
                 ("Resolved", c.semantic.success, Color::WHITE)
             } else {
@@ -1280,7 +1341,7 @@ impl PdfApp {
 
             // ---- body (click to edit; caret while focused) ----
             let body_x = card.x0 + 12.0;
-            let body_top = card.y0 + 24.0;
+            let body_top = hdr.body_top;
             let body_wrap = inner_w as f32 - 16.0;
             let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
             let shown: &str = self
