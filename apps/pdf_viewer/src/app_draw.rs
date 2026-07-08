@@ -75,8 +75,6 @@ impl PdfApp {
         };
         let toggle_sidebar = place(bw, &mut rx);
         rx -= gap;
-        let toggle_rail = place(bw, &mut rx);
-        rx -= gap;
         let search = place(bw, &mut rx);
         rx -= 14.0;
         let fitw = if compact { bw } else { 40.0 };
@@ -87,9 +85,11 @@ impl PdfApp {
         let zoom_out = place(28.0, &mut rx);
         let right_start = zoom_out.x0;
 
-        // ---- left cluster: wordmark reserve + Open + Save buttons ----
-        let left_w = if self.tb_show_wordmark() { 150.0 } else { 26.0 };
-        let open = row(tb.x0 + 16.0 + left_w + 8.0, bw);
+        // ---- left cluster: page-rail toggle (LEFT-MOST) + wordmark + Open + Save ----
+        let toggle_rail = row(tb.x0 + 12.0, bw);
+        let wordmark_x = toggle_rail.x1 + 10.0;
+        let left_w = if self.tb_show_wordmark() { 150.0 } else { 20.0 };
+        let open = row(wordmark_x + left_w + 8.0, bw);
         let save = row(open.x1 + gap, bw);
         let left_end = save.x1;
 
@@ -235,30 +235,6 @@ impl PdfApp {
         ]
     }
 
-    fn thumbnail_rects(&self) -> Vec<(usize, Rect)> {
-        let rail = self.rail_rect;
-        let n = self.doc.page_count();
-        if n == 0 {
-            return vec![];
-        }
-        let pad = 12.0;
-        let label_h = 14.0;
-        let gap = 10.0;
-        let avail = rail.height() - 2.0 * pad;
-        let slot = (avail - (n as f64 - 1.0) * gap) / n as f64;
-        let thumb_h = (slot - label_h).clamp(44.0, 124.0);
-        let thumb_w = thumb_h * self.pw() / self.ph();
-        let cx = (rail.x0 + rail.x1) / 2.0;
-        let mut y = rail.y0 + pad;
-        let mut out = Vec::new();
-        for i in 0..n {
-            let r = Rect::new(cx - thumb_w / 2.0, y, cx + thumb_w / 2.0, y + thumb_h);
-            out.push((i + 1, r));
-            y += thumb_h + label_h + gap;
-        }
-        out
-    }
-
     fn pages_with_markup(&self) -> HashSet<usize> {
         let mut set = HashSet::new();
         for a in &self.annotations {
@@ -297,6 +273,14 @@ impl PdfApp {
 
         // Resolve sidebar scroll + any reveal request before painting it.
         self.prepare_sidebar_scroll(tr);
+
+        // Resolve the page rail's geometry for this frame before rasterising, so
+        // the thumbnail slots (which pages, at what width) are known.
+        if self.show_rail {
+            self.page_sidebar.set_aspect(self.ph() / self.pw());
+            let cur = self.current_page.saturating_sub(1);
+            self.page_sidebar.begin_frame(self.rail_rect, self.doc.page_count(), cur);
+        }
 
         // Rasterise the pages + thumbnails on screen once, up front.
         let (page_imgs, thumb_imgs) = self.rasterize_visible();
@@ -367,12 +351,13 @@ impl PdfApp {
         let mut want_thumbs: Vec<(usize, u32)> = Vec::new();
         if self.show_rail {
             let rail = self.rail_rect;
-            for (num, r) in self.thumbnail_rects() {
+            // 0-based display indices + widths, from the shared rail's geometry.
+            for (i, r) in self.page_sidebar.thumb_rects() {
                 if r.y0 > rail.y1 || r.y1 < rail.y0 {
                     continue;
                 }
                 let tw = ((r.width() * 2.0).round() as u32).clamp(96, 600);
-                want_thumbs.push((num - 1, tw));
+                want_thumbs.push((i, tw));
             }
         }
 
@@ -763,7 +748,7 @@ impl PdfApp {
     // ---- thumbnail rail --------------------------------------------
 
     fn draw_rail(
-        &self,
+        &mut self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -774,51 +759,45 @@ impl PdfApp {
             return;
         }
         let rail = self.rail_rect;
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rail);
-        // Right divider doubles as the resize grip; brighten it while the
+        let markup = self.pages_with_markup();
+        let pw = self.pw();
+
+        // The shared page rail draws the panel, thumbnails, selection ring,
+        // index numbers, drag reflow + ghost, scrollbar, context menu and the
+        // "Import…" affordance. It renders the host's page content through this
+        // closure — a real pdfium bitmap when the raster backend has one,
+        // otherwise the abstract block sketch. Move the rail out of `self` so
+        // the closure can borrow the (immutable) document alongside it.
+        let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(1.0));
+        let doc = &self.doc;
+        sb.render(scene, base, tr, theme, |scene, _tr, base, i, rect| {
+            let num = i + 1;
+            if let Some(page) = doc.page(num) {
+                render::draw_thumbnail(
+                    scene,
+                    theme,
+                    base,
+                    page,
+                    rect,
+                    pw,
+                    thumb_imgs.get(&num),
+                    false,
+                    markup.contains(&num),
+                );
+            }
+        });
+        self.page_sidebar = sb;
+
+        // The right divider doubles as a resize grip; brighten it while the
         // pointer is over the grip strip or actively dragging it.
         let grip_hot = self.rail_drag.is_some()
             || (self.last_mouse.x >= rail.x1 - RAIL_GRIP
                 && self.last_mouse.x <= rail.x1 + RAIL_GRIP
                 && self.last_mouse.y >= rail.y0
                 && self.last_mouse.y <= rail.y1);
-        let div_col = if grip_hot { theme.accent_primary } else { c.border_standard };
-        let div_w = if grip_hot { 2.0 } else { 1.0 };
-        let div = Rect::new(rail.x1 - div_w, rail.y0, rail.x1, rail.y1);
-        scene.fill(Fill::NonZero, base, div_col, None, &div);
-
-        let markup = self.pages_with_markup();
-        for (num, r) in self.thumbnail_rects() {
-            if r.y0 > rail.y1 || r.y1 < rail.y0 {
-                continue;
-            }
-            if let Some(page) = self.doc.page(num) {
-                render::draw_thumbnail(
-                    scene,
-                    theme,
-                    base,
-                    page,
-                    r,
-                    self.pw(),
-                    thumb_imgs.get(&num),
-                    num == self.current_page,
-                    markup.contains(&num),
-                );
-            }
-            let label = format!("{}", num);
-            let (lw, _) = tr.measure(&label, 10.0, None);
-            let lx = (r.x0 + r.x1) / 2.0 - lw as f64 / 2.0;
-            let col = if num == self.current_page { theme.text_primary } else { theme.text_dim };
-            tr.draw_text_weighted(
-                scene,
-                &label,
-                10.0,
-                col,
-                base * Affine::translate((lx, r.y1 + 2.0)),
-                None,
-                if num == self.current_page { TextWeight::Semibold } else { TextWeight::Regular },
-            );
+        if grip_hot {
+            let div = Rect::new(rail.x1 - 2.0, rail.y0, rail.x1, rail.y1);
+            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &div);
         }
     }
 
@@ -832,8 +811,9 @@ impl PdfApp {
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
         // Wordmark: the document name + page count. (No decorative glyph — it
-        // read as a redundant, meaningless icon next to the filename.)
-        let gx = tb.x0 + 16.0;
+        // read as a redundant, meaningless icon next to the filename.) It starts
+        // just right of the left-most page-rail toggle button.
+        let gx = tb.x0 + 12.0 + 34.0 + 10.0;
         if self.tb_show_wordmark() {
             let max = 148.0;
             let name = if self.doc_name.is_empty() { "PDF".to_string() } else { self.doc_name.clone() };
@@ -876,6 +856,13 @@ impl PdfApp {
         self.icon_button_bg(scene, base, theme, lay.save, false, can_save && lay.save.contains(self.last_mouse));
         let save_col = if can_save { theme.text_primary } else { theme.text_dim };
         draw_save_glyph(scene, base, icon_inset(lay.save), save_col);
+        // Unsaved page edits (reorder / delete / duplicate / import) surface as
+        // an accent dot on the Save button.
+        if self.pages_dirty && can_save {
+            let d = 3.5;
+            let dot = Circle::new((lay.save.x1 - 6.0, lay.save.y0 + 6.0), d);
+            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &dot);
+        }
 
         for (t, r) in &lay.tools {
             let active = *t == self.tool;
