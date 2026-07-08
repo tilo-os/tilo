@@ -713,17 +713,33 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     )
 }
 
+/// The results-page header label. Deliberately does **not** echo the search
+/// query — the query is shown exactly once, in the top-bar search field — so the
+/// results page never duplicates it. It reports the loading state or the result
+/// count instead. (The old header printed the raw query as a 21px title *and*
+/// the top bar showed it too, so the same words appeared twice.)
+fn search_status_label(query: &str, loading: bool, count: usize) -> String {
+    if loading {
+        "Searching…".to_string()
+    } else if query.trim().is_empty() {
+        "Search Tube".to_string()
+    } else if count == 1 {
+        "1 result".to_string()
+    } else {
+        format!("{count} results")
+    }
+}
+
 pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, query: &str) -> Scrollable {
     let results = model.search_display(query);
     let cards: Vec<Flex> = results.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
-    // While a fetch is in flight, show a skeleton — NEVER a premature "No
-    // results" (the bug that shipped). An empty query invites a search.
-    let header = if model.search_loading {
-        "Searching…".to_string()
-    } else {
-        format!("{} results", cards.len())
-    };
+    // The header states the search's *status* (loading / count) — never the
+    // query itself, which lives in the top-bar field. Showing it in both places
+    // was the reported duplication.
+    let status = search_status_label(query, model.search_loading, cards.len());
     let body = if model.search_loading {
+        // While a fetch is in flight, show a skeleton — NEVER a premature "No
+        // results" (the bug that shipped).
         skeleton_grid(theme, 8)
     } else if query.trim().is_empty() {
         empty_state(theme, "Search Tube", "Type a query above to find videos and channels.")
@@ -742,9 +758,7 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
                 .gap(10.0)
                 .align(Align::Center)
                 .push(icon(IconKind::Search, 20.0, theme.accent_primary))
-                .push(text(if query.is_empty() { "Search" } else { query }, 21.0))
-                .push(spring())
-                .push(dim(theme, &header, 13.0)),
+                .push(text(&status, 21.0)),
         )
         .push(chip_bar(model, theme, bus))
         .push(body);
@@ -839,18 +853,19 @@ pub fn watch(
     };
     let dearrow = model.settings.dearrow_titles_on();
 
-    // Responsive watch geometry. Below `WATCH_TWO_COL_MIN` the "Up next" rail
-    // stacks under the player instead of sitting beside it, so neither column
-    // is squeezed on a narrow window. The player is a 16:9 surface derived from
-    // its column's width and capped so it never dominates a tall window.
-    let inner = (content_w - WATCH_PAD * 2.0).max(0.0);
-    let two_col = inner >= WATCH_TWO_COL_MIN;
-    let player_col_w = if two_col {
-        (inner - WATCH_COL_GAP - UP_NEXT_W).max(0.0)
-    } else {
-        inner
-    };
-    let player_h = ((player_col_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
+    // Responsive watch geometry. The player is **full-bleed**: it spans the
+    // whole content width, flush to the top/left/right edges (no page padding),
+    // so there is no gap to the window edge or the nav rail. Its height is a
+    // 16:9 surface derived from the full content width, capped so it never
+    // dominates a tall window (when capped, the player letterboxes internally).
+    //
+    // Everything *below* the player (details + "Up next") lives in a padded
+    // region that splits into two columns on a wide window; below
+    // `WATCH_TWO_COL_MIN` the rail stacks under the details so neither column is
+    // squeezed on a narrow one.
+    let player_h = ((content_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
+    let lower_inner = (content_w - WATCH_PAD * 2.0).max(0.0);
+    let two_col = lower_inner >= WATCH_TWO_COL_MIN;
 
     // ONE timeline: feed the enabled community SponsorBlock segments to the
     // shared player so they render inline on its own scrub track (the app no
@@ -873,6 +888,26 @@ pub fn watch(
     // timeline — used to make the segment-carrying timeline addressable below.
     let has_sb_timeline = !marks.is_empty();
     player.borrow_mut().set_sponsor_marks(marks);
+
+    // The resolution selector lives ON the player now, registered as a
+    // player-setting (its own priority icon in the control bar) instead of a
+    // separate row below the video. Picking a value round-trips back to the
+    // model via `take_setting_events` (drained in `TubeApp::sync`).
+    {
+        let qualities: Vec<String> = crate::app::QUALITIES.iter().map(|q| q.to_string()).collect();
+        let sel = crate::app::QUALITIES
+            .iter()
+            .position(|q| *q == model.settings.preferred_quality)
+            .unwrap_or(0);
+        player.borrow_mut().set_setting(ui::widget::video_player::PlayerSetting::choice(
+            "resolution",
+            ui::icons::Icon::Monitor,
+            "Resolution",
+            1,
+            qualities,
+            sel,
+        ));
+    }
 
     // A show-mode segment the playhead is currently inside gets a small,
     // unintrusive "Skip" button floated over the video (bottom-right, above the
@@ -933,13 +968,13 @@ pub fn watch(
         if has_sb_timeline { col.id("sb_timeline") } else { col }
     };
 
-    // A compact row under the player: the preferred-quality selector (left) + a
-    // gear that opens Settings (right). Clean and small.
+    // A compact row under the player: just a gear that opens the app's Settings
+    // (right). The resolution selector moved onto the player itself, so there's
+    // no separate quality row here anymore.
     let player_actions = Flex::row()
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
-        .push(quality_menu(model, theme, bus))
         .push(spring())
         .push(
             icon_button(theme, bus, IconKind::Settings, Action::Navigate(Route::Settings))
@@ -1032,9 +1067,12 @@ pub fn watch(
         comments = comments.push(dim(theme, "Comments hidden (enable in settings).", 13.0));
     }
 
-    let left = Flex::col()
+    // The details column — everything that sits *below* the full-bleed player:
+    // the transport actions, notices, title/meta, channel row, description and
+    // comments. The player itself is hoisted out of this column so it can span
+    // the full width flush to the edges.
+    let details = Flex::col()
         .gap(14.0)
-        .push(player_view)
         .push(player_actions)
         .push_if(!model.notices.is_empty(), notices_view(theme, model))
         .push(title)
@@ -1059,24 +1097,31 @@ pub fn watch(
         up = up.push(compact_card(model, theme, bus, imgs, r));
     }
 
-    // Wide: player column grows beside a fixed-width "Up next" rail. Narrow:
-    // the rail stacks below the player so both keep a readable width.
-    let body = if two_col {
+    // Wide: the details column grows beside a fixed-width "Up next" rail. Narrow:
+    // the rail stacks below the details so both keep a readable width.
+    let lower = if two_col {
         Flex::row()
             .fill_w()
             .gap(WATCH_COL_GAP as f32)
             .align(Align::Start)
-            .push(left.grow(1.0))
+            .push(details.grow(1.0))
             .push(up.w(Len::Px(UP_NEXT_W as f32)))
     } else {
         Flex::col()
             .fill_w()
             .gap(WATCH_COL_GAP as f32)
-            .push(left.fill_w())
+            .push(details.fill_w())
             .push(up)
     };
 
-    scroll(Flex::col().fill_w().pad(WATCH_PAD as f32).push(body))
+    // The player is flush (no padding) at the very top of the scroll content;
+    // the details/up-next region below it carries the page padding.
+    scroll(
+        Flex::col()
+            .fill_w()
+            .push(player_view)
+            .push(Flex::col().fill_w().pad(WATCH_PAD as f32).push(lower)),
+    )
 }
 
 fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
@@ -1576,5 +1621,140 @@ mod selected_contrast_tests {
                 s.ratio()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod search_screen_tests {
+    use super::*;
+    use crate::model::Route;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use taffy::prelude::*;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::widget::Widget;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+    use vello_encoding::DrawTag;
+
+    /// A tiny valid PNG (4×4 opaque green) so a test can seed the image store
+    /// with a decodable thumbnail without a network.
+    fn px_png() -> Vec<u8> {
+        let (w, h) = (4u32, 4u32);
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..(w * h) {
+            rgba.extend_from_slice(&[20, 200, 60, 255]);
+        }
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut writer = enc.write_header().unwrap();
+            writer.write_image_data(&rgba).unwrap();
+        }
+        out
+    }
+
+    /// Issue 1 — the query is shown once. The results-page header reports the
+    /// search *status* (loading / count), and must NEVER echo the query itself
+    /// (which lives in the top-bar field), so the same words don't appear twice.
+    #[test]
+    fn search_header_never_echoes_the_query() {
+        for q in ["rust programming", "cats", "lofi hip hop", "42"] {
+            for loading in [true, false] {
+                for count in [0usize, 1, 8, 30] {
+                    let label = search_status_label(q, loading, count);
+                    assert!(
+                        !label.contains(q),
+                        "results header {label:?} must not echo the query {q:?}"
+                    );
+                }
+            }
+        }
+        // It still communicates the real state.
+        assert_eq!(search_status_label("x", true, 5), "Searching…");
+        assert_eq!(search_status_label("x", false, 1), "1 result");
+        assert_eq!(search_status_label("x", false, 8), "8 results");
+        assert_eq!(search_status_label("", false, 0), "Search Tube");
+    }
+
+    /// Issue 2 — a search-result row paints the fetched thumbnail. Rendered
+    /// through the real `search` screen with an image store that has decoded the
+    /// result's thumbnail URL, the card must emit an IMAGE draw (the real still),
+    /// not just the gradient poster — the same `video_card` image path
+    /// Home/Trending use.
+    #[test]
+    fn search_result_row_paints_the_fetched_thumbnail() {
+        let store = ui::ImageStore::new(Arc::new(|_u: &str| Some(px_png())));
+
+        let mut model = crate::sample::model();
+        let mut v = model.videos[0].clone();
+        v.thumbnail_url = "https://i.ytimg.com/vi/testresult/hqdefault.jpg".to_string();
+        let vid = v.id.clone();
+        let thumb = v.thumbnail_url.clone();
+        model.videos = vec![v];
+        model.search_hits_query = "q".to_string();
+        model.search_hits = vec![vid];
+        model.route = Route::Search("q".to_string());
+
+        // Pre-warm the store so the build captures the decoded image.
+        store.get(&thumb);
+        store.block_until_idle(Duration::from_secs(5));
+        assert!(store.get(&thumb).is_some(), "the result thumbnail decoded + cached");
+
+        let theme = Theme::dark();
+        let bus = crate::action::new_bus();
+        let imgs = Imgs(Some(&store));
+        let mut screen = search(&model, &theme, &bus, imgs, "q");
+
+        // Lay the real screen out in a definite viewport, then draw it.
+        let (w, h) = (1280.0f32, 800.0f32);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: length(w), height: length(h) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(w),
+                        height: AvailableSpace::Definite(h),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        screen.apply_layout(&taffy, child, Point::ORIGIN);
+
+        let mut scene = Scene::new();
+        screen.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+        let images = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::IMAGE)
+            .count();
+        assert!(
+            images >= 1,
+            "the search result row must paint the fetched thumbnail (IMAGE draw), got {images}"
+        );
     }
 }

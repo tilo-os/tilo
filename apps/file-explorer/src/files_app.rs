@@ -12,7 +12,9 @@ use crate::command::{new_sink, CommandSink, FileCommand};
 use crate::model::{initial_path, read_dir_sync, sort_entries, Entry, SortBy, SortOrder, ViewMode};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::{config, favorites, fileops, templates};
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget};
@@ -113,6 +115,13 @@ pub struct FileExplorerWidget {
     /// …). Drives the standard favourites so a German desktop shows
     /// *Dokumente / Bilder / Musik*, not hard-coded English names.
     user_dirs: favorites::UserDirs,
+    /// The content pane's live scroll position, owned here so it survives the
+    /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
+    /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
+    /// it, selecting a row, typing in search, or changing sort — all of which
+    /// rebuild the composition — would snap the list back to the top. Reset to
+    /// `(0, 0)` whenever the directory changes (a new folder starts at top).
+    scroll_offset: Rc<Cell<(f32, f32)>>,
 }
 
 impl Default for FileExplorerWidget {
@@ -195,6 +204,7 @@ impl FileExplorerWidget {
             zoom_level,
             show_hidden,
             user_dirs,
+            scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
@@ -327,6 +337,7 @@ impl FileExplorerWidget {
         view_col = view_col.push(Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
+                .with_persisted_offset(self.scroll_offset.clone())
                 .with_child(view_child),
         ));
 
@@ -451,6 +462,9 @@ impl FileExplorerWidget {
         self.error = None;
         self.last_click = None;
         self.status = None;
+        // A new directory starts at the top; the persisted scroll offset only
+        // survives *structural* rebuilds within the same directory.
+        self.scroll_offset.set((0.0, 0.0));
         match read_dir_sync(&path) {
             Ok(mut entries) => {
                 if !self.show_hidden {
@@ -595,6 +609,20 @@ impl FileExplorerWidget {
                     // Double-click → open / enter.
                     self.open_path(path);
                 }
+                true
+            }
+            FileCommand::ContextSelect(target) => {
+                match target {
+                    // A right-press on a row that isn't already part of the
+                    // selection selects just it; one inside an existing
+                    // multi-selection leaves that selection intact so the menu
+                    // action applies to every highlighted item.
+                    Some(i) if !self.selection.is_selected(i) => self.selection.select_only(i),
+                    Some(_) => {}
+                    // Right-press on empty space clears the selection.
+                    None => self.selection.clear(),
+                }
+                self.last_click = None;
                 true
             }
             FileCommand::Activate(index) => {
@@ -949,6 +977,39 @@ impl FileExplorerWidget {
     pub fn cancel_rename(&mut self) {
         self.renaming = None;
         self.rename_seed_pending = false;
+    }
+
+    /// Paint the app background and lazily build the composition if it is
+    /// missing (a tab activated after boot never ran `build_layout`). Shared
+    /// by [`Widget::draw`] and [`Widget::draw_with_presence`].
+    fn paint_background(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        theme: &ui::Theme,
+    ) {
+        // Paint the app background so the explorer is self-contained (light
+        // text reads on it, and it looks right over any compositor surface).
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        // `self.composed` is normally built inside `build_layout`. When this
+        // widget is hosted inside a shell's TabBar (e.g. the Files tab on a
+        // qOS shell that boots Notes-active), `build_layout` doesn't run for
+        // inactive tabs — so switching to Files later produces a widget with
+        // `composed = None` and nothing visible renders even though
+        // `self.rect` is correct. Lazy-build here so the first paint after tab
+        // activation populates a tree we can hand to taffy on the NEXT layout
+        // pass, flagging structure-dirty so the host rebuilds taffy with the
+        // composition included on the next frame.
+        if self.composed.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            self.composed = Some(self.build_composition(theme));
+            self.structure_dirty = true;
+        }
     }
 
     /// Commit the in-progress rename: rename the target file to
@@ -1417,38 +1478,29 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        // Paint the app background so the explorer is self-contained (light
-        // text reads on it, and it looks right over any compositor surface).
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        // `self.composed` is normally built inside `build_layout`. When
-        // this widget is hosted inside a shell's TabBar (e.g. Files
-        // tab on the qOS shell that boots Notes-active), `build_layout`
-        // doesn't run for inactive tabs — so switching to Files later
-        // produces a widget with `composed = None` and nothing visible
-        // renders even though `self.rect` is correct. Lazy-build here
-        // so the first paint after tab activation populates a tree we
-        // can hand to taffy on the NEXT layout pass. We trigger a
-        // structure-dirty flag so the host rebuilds taffy with the
-        // composition included on the next frame.
-        if self.composed.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
-            // Build the composition (toolbar + breadcrumbs + file
-            // list) so a structure-dirty relayout next frame includes
-            // it. The current frame still won't render content (no
-            // valid taffy layout for the composed tree yet) but the
-            // next frame will — the host's `take_structure_dirty`
-            // pump rebuilds taffy and the third frame onward is
-            // populated correctly.
-            self.composed = Some(self.build_composition(theme));
-            self.structure_dirty = true;
-        }
+        self.paint_background(scene, transform, theme);
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+        permissions: &ui::permissions::PermissionContext,
+    ) {
+        self.paint_background(scene, transform, theme);
+        // Recurse with `draw_with_presence` (not the plain `draw`) so the
+        // inner `Scrollable` pushes its viewport rect and the file list culls
+        // rows outside it. The default trait impl would call our own `draw`,
+        // which breaks that chain — a long directory would then emit every
+        // row's glyphs every frame regardless of what's visible.
+        if let Some(c) = &mut self.composed {
+            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
     }
 
@@ -1518,9 +1570,24 @@ impl Widget for FileExplorerWidget {
             }
         }
 
-        // Right-click opens the context menu (selecting the row under the
-        // cursor first if the press landed on one).
+        // Right-click opens the context menu. First deliver the press to the
+        // composed tree so the content pane selects the row under the cursor
+        // (it pushes `ContextSelect`); draining that before building the menu
+        // is what makes the menu's actions target what was actually clicked
+        // rather than a stale selection from an earlier click.
         if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } = event {
+            if let Some(c) = &mut self.composed {
+                if let Ok(children) = taffy.children(node_id) {
+                    if let Some(&child_node) = children.first() {
+                        let mut child_handled = false;
+                        c.handle_event(
+                            event, scale_factor, modifiers, state, path,
+                            &mut child_handled, focus_target, child_node, taffy,
+                        );
+                    }
+                }
+            }
+            self.drain_commands();
             self.open_context_menu(self.last_cursor);
             *handled = true;
             self.structure_dirty = true;
@@ -2201,6 +2268,71 @@ mod command_path_tests {
         assert!(w.entries_snapshot().iter().any(|e| e.name == ".secret"), "dotfiles shown after toggle");
         w.apply_command(FileCommand::ToggleHidden);
         assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "toggled back off");
+    }
+
+    #[test]
+    fn scroll_position_survives_a_structural_rebuild_but_resets_on_navigation() {
+        // The real fix: selecting a row / re-sorting rebuilds the whole
+        // composition (a fresh Scrollable), which used to snap the list back to
+        // the top. The persisted offset cell — the exact one the rebuilt
+        // Scrollable binds to via `with_persisted_offset` — must carry the
+        // position across those rebuilds, and only reset when the directory
+        // actually changes.
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a");
+        std::fs::create_dir(&a).unwrap();
+        for i in 0..6 {
+            std::fs::write(a.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        let b = d.path().join("b");
+        std::fs::create_dir(&b).unwrap();
+
+        let (mut w, _cfg) = hermetic();
+        w.navigate(a.clone());
+        // Simulate the list having been scrolled down 240px.
+        w.scroll_offset.set((0.0, 240.0));
+
+        // Selecting a row is a structural rebuild — scroll must hold.
+        w.apply_command(FileCommand::Click { index: 0, ctrl: false, shift: false });
+        assert_eq!(w.scroll_offset.get().1, 240.0, "selecting a row keeps the scroll");
+        // Re-sorting is a structural rebuild — scroll must hold.
+        w.apply_command(FileCommand::SetSort(SortBy::Size));
+        assert_eq!(w.scroll_offset.get().1, 240.0, "re-sorting keeps the scroll");
+
+        // Navigating to a different directory starts at the top.
+        w.navigate(b.clone());
+        assert_eq!(w.scroll_offset.get(), (0.0, 0.0), "a new directory scrolls to the top");
+    }
+
+    #[test]
+    fn context_select_targets_the_clicked_row_not_a_stale_selection() {
+        // Guards the dangerous bug: a right-click's menu must act on the row it
+        // landed on, not whatever happened to be selected. `ContextSelect` is
+        // the command the content pane pushes on a right-press.
+        let (mut w, _cfg) = hermetic();
+        w.entries = vec![
+            ent("a.txt", false, "text/plain"),
+            ent("b.txt", false, "text/plain"),
+            ent("c.txt", false, "text/plain"),
+        ];
+        // Stale selection on row 0.
+        w.selection.select_only(0);
+        // Right-press on row 2 moves the selection there.
+        assert!(w.apply_command(FileCommand::ContextSelect(Some(2))));
+        assert_eq!(w.selected_indices(), vec![2], "context select targets the clicked row");
+
+        // A right-press inside an existing multi-selection preserves all of it
+        // (so a menu action applies to every highlighted item).
+        w.selection.select_only(1);
+        w.selection.toggle(2);
+        w.apply_command(FileCommand::ContextSelect(Some(1)));
+        let mut got = w.selected_indices();
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 2], "right-click within a multi-selection keeps it");
+
+        // A right-press on empty space clears the selection.
+        w.apply_command(FileCommand::ContextSelect(None));
+        assert!(w.selected_indices().is_empty(), "empty-space right-click clears selection");
     }
 
     #[test]

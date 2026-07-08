@@ -225,6 +225,21 @@ pub trait Widget {
     /// own "immersive" state.
     fn fullscreen_intent(&self) -> Option<bool> { None }
 
+    /// Output + view parameters the App uses **when it promotes this root widget
+    /// to fullscreen** (i.e. when [`Self::fullscreen_intent`] resolves to
+    /// `Some(true)`). This is where an app names the target output — e.g.
+    /// [`crate::fullscreen::FullscreenTarget::Largest`] to put a presentation /
+    /// immersive video on the big screen — and whether the fullscreen surface
+    /// shows a distinct presentation view or mirrors the app window.
+    ///
+    /// The App enumerates the live monitors and runs
+    /// [`crate::fullscreen::select_output`] against this each time it enters
+    /// fullscreen, so returning a steady value is correct. Default: the largest
+    /// output, mirroring the window.
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
+    }
+
     /// Notification from the host that the *actual* OS-fullscreen state changed
     /// (the compositor granted fullscreen, or exited it). Called on the root
     /// widget only, on the rising/falling edge. Lets an app react to a

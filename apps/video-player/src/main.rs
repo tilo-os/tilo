@@ -40,7 +40,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // frame asynchronously, so pump `sync` until a picture is on the surface
         // (the synthesized fallback produces one on the first pump). This makes a
         // `--features decode --open <file>` capture a genuine decoded frame.
-        let mut app = video_player::PlayerApp::for_shot(open);
+        let scenario = parse_value_arg(&args, "--scenario");
+        let mut app = video_player::PlayerApp::for_shot(open, scenario.as_deref());
         {
             let mut warm = ui::State::new();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
