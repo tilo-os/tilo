@@ -163,6 +163,12 @@ struct EngineState {
     /// Whether the mobile UA is currently presented (see the Resize
     /// handler's breakpoint switch).
     mobile_mode: bool,
+    /// A UA change is waiting for a reload once the window stops resizing
+    /// — so dragging across the mobile breakpoint doesn't reload (and
+    /// flash blank) on every intermediate size.
+    ua_reload_pending: bool,
+    /// Timestamp of the last Resize, to debounce that reload.
+    last_resize: Option<std::time::Instant>,
 }
 
 fn engine_thread(
@@ -202,6 +208,8 @@ fn engine_thread(
             button_modifiers: 0,
             scale_factor: 1.0,
             mobile_mode: false,
+            ua_reload_pending: false,
+            last_resize: None,
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
 
@@ -503,6 +511,18 @@ extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
     while let Ok(cmd) = state.rx.try_recv() {
         dispatch(state, cmd);
     }
+    // Debounced UA reload: once resizing has been quiet for a moment,
+    // reload so the current page re-serves at the new (mobile/desktop)
+    // width. Deferred to here so a drag across the breakpoint doesn't
+    // reload on every step.
+    if state.ua_reload_pending {
+        if let Some(t) = state.last_resize {
+            if t.elapsed() > std::time::Duration::from_millis(350) {
+                state.ua_reload_pending = false;
+                unsafe { ffi::webkit_web_view_reload(state.view) };
+            }
+        }
+    }
     1 // keep the source
 }
 
@@ -533,10 +553,10 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 ffi::wpe_view_backend_dispatch_set_size(state.backend, lw, lh);
 
                 // Present a phone UA below the breakpoint so UA-sniffing
-                // sites serve their fits-any-width mobile layout. Only
-                // reload when the mode actually flips (the UA change only
-                // takes effect on the next load), so dragging within one
-                // side of the breakpoint costs nothing.
+                // sites serve their fits-any-width mobile layout. The UA
+                // takes effect on the next load, so mark a reload pending
+                // and fire it once the window stops resizing (see the
+                // drain loop) — never mid-drag, which would flash blank.
                 let want_mobile = wants_mobile(lw);
                 if want_mobile != state.mobile_mode {
                     state.mobile_mode = want_mobile;
@@ -544,8 +564,9 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                         state.view,
                         if want_mobile { USER_AGENT_MOBILE } else { USER_AGENT_DESKTOP },
                     );
-                    ffi::webkit_web_view_reload(state.view);
+                    state.ua_reload_pending = true;
                 }
+                state.last_resize = Some(std::time::Instant::now());
             }
             WebViewCommand::MouseMove { x, y } => {
                 let mut event = ffi::wpe_input_pointer_event {
