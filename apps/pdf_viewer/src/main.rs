@@ -52,10 +52,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Pick the widget for the current invocation: an explicit file wins, then the
 /// `--sample` demonstration document, otherwise the empty state.
 fn build_widget(args: &Args) -> Box<dyn Widget> {
+    // Screenshot scenarios take precedence so they can also target a real file.
+    match args.scenario.as_deref() {
+        Some("edit-comment") => return pdf_viewer::app_root_sample_editing(),
+        Some("reorder") => return pdf_viewer::app_root_reorder_demo(args.file.as_deref()),
+        Some("import") => return pdf_viewer::app_root_import_demo(args.file.as_deref()),
+        _ => {}
+    }
     if let Some(file) = &args.file {
         pdf_viewer::app_root_open(file)
-    } else if args.scenario.as_deref() == Some("edit-comment") {
-        pdf_viewer::app_root_sample_editing()
     } else if args.sample {
         pdf_viewer::app_root_sample()
     } else {
