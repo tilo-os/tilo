@@ -31,9 +31,18 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
-# Clipboard for cell-grid text selection (Ctrl+Shift+C). Mirrors the
-# feature set used by `ui::widget::text_input` so Wayland data-control
-# works without a hard dep on X11. Tracked as a fallback: a parallel
-# subagent is extracting a shared `ui::clipboard_copy` helper; once that
-# lands the terminal can drop this direct dep and call the helper.
+# OSC 52 clipboard writes carry base64-encoded payloads.
+base64 = "0.22.1"
+
+[dev-dependencies]
+# Clipboard round-trip assertions in the selection tests. Production code
+# copies/pastes through `ui::clipboard_copy` / `ui::clipboard_paste`
+# (and `ui::clipboard_copy_primary` for the mouse primary selection), so
+# arboard is only a test dependency now — the shared `ui` helper replaced
+# the terminal's former direct use.
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+# Serialises the tests that touch the shared system clipboard / primary
+# selection so they don't race each other under the default parallel runner
+# (selecting text sets the primary selection, which a middle-click paste test
+# then reads — they must not interleave).
+serial_test = "3.4.0"
