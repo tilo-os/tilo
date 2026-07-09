@@ -195,6 +195,17 @@ futures = "0.3"
 # already use for the same envelopes / keys.
 postcard = { version = "1", features = ["alloc"] }
 
+# Search infrastructure.
+# `walkdir` powers the files provider's name-index walker + the tantivy
+# content indexer.
+walkdir = "2.5"
+# tantivy is the BM25 content index behind the files provider's
+# full-text search. `mmap` avoids reading the whole segment file into
+# RAM for each query; disabling default features drops the parquet
+# writer, ICU tokenizer, and other extras we don't need for a
+# home-directory index.
+tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+
 [dev-dependencies]
 wayland-client = "0.31"
 tokio-test = "0.4"
