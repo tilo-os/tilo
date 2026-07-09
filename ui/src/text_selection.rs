@@ -327,6 +327,47 @@ pub fn clipboard_paste() -> Option<String> {
     handle.get_text().ok()
 }
 
+/// Push `text` onto the X11/Wayland **primary selection** — the mouse-driven
+/// "select then middle-click paste" buffer, distinct from the Ctrl+C
+/// clipboard. Terminals and editors set this whenever a range is selected so
+/// a middle-click paste in any app receives it. Silent no-op when the backend
+/// can't serve it (headless test env, or a Wayland compositor without
+/// primary-selection support). On non-Linux it falls back to the regular
+/// clipboard so callers stay portable.
+pub fn clipboard_copy_primary(text: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::{LinuxClipboardKind, SetExtLinux};
+        if let Some(cb) = clipboard() {
+            if let Ok(mut handle) = cb.lock() {
+                let _ = handle
+                    .set()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text(text.to_string());
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    clipboard_copy(text);
+}
+
+/// Read the X11/Wayland **primary selection** as a UTF-8 string — what a
+/// middle-click paste should insert. `None` when empty / unavailable. On
+/// non-Linux it falls back to the regular clipboard.
+pub fn clipboard_paste_primary() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::{GetExtLinux, LinuxClipboardKind};
+        let cb = clipboard()?;
+        let mut handle = cb.lock().ok()?;
+        handle.get().clipboard(LinuxClipboardKind::Primary).text().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        clipboard_paste()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

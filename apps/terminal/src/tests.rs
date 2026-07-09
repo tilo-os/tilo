@@ -226,6 +226,7 @@ mod tests {
 
         // The performer also needs a (possibly empty) alternate buffer list.
         let alt_grid_id = doc.put_object(ROOT, "terminal_grid_alt", ObjType::List).unwrap();
+        let links_id = doc.put_object(ROOT, "terminal_links", ObjType::Map).unwrap();
 
         let cursor_id = doc.put_object(ROOT, "cursor", ObjType::Map).unwrap();
         doc.put(&cursor_id, "x", 0u64).unwrap();
@@ -237,6 +238,8 @@ mod tests {
         let mut modes = TermModes::default();
         let mut saved_cursor = None;
         let mut trimmed_front = 0usize;
+        let mut next_link_id = 0u16;
+        let mut title_out = None;
 
         {
             let mut performer = TerminalPerformer {
@@ -244,6 +247,7 @@ mod tests {
                 main_grid_id: grid_id,
                 alt_grid_id,
                 cursor_id,
+                links_id,
                 main_line_ids: &mut line_ids,
                 alt_line_ids: &mut alt_line_ids,
                 alt_active: &mut alt_active,
@@ -258,6 +262,9 @@ mod tests {
                 scroll_top: 0,
                 scroll_bottom: 23,
                 trimmed_front: &mut trimmed_front,
+                next_link_id: &mut next_link_id,
+                current_link_id: 0,
+                title_out: &mut title_out,
             };
 
             performer.print('H');
@@ -436,6 +443,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn selection_anchor_and_cursor_track_drag() {
         // Press at (col=5, row=2), drag to (col=20, row=6). Anchor must
         // stay at the press location while cursor moves with the pointer.
@@ -565,6 +573,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    #[serial_test::serial]
     fn ctrl_shift_c_copies_selected_text_to_arboard() {
         // Linux CI typically has no display server, so arboard returns
         // an error during `Clipboard::new()`. In that case the test
@@ -1057,6 +1066,396 @@ mod tests {
         assert!(
             w.grid_text().contains("REMOTE_EDIT"),
             "external edit to old scrollback must be picked up by a full re-read"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Full text selection — multi-click word/line, shift-extend, and
+    // buffer-anchored selection that survives scrolling.
+    // ---------------------------------------------------------------
+
+    /// Send a left press with explicit modifiers (for shift-extend).
+    fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift: bool) {
+        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
+        use winit::keyboard::ModifiersState;
+        use ui::widget::Widget;
+        let mut handled = false;
+        let mut focus = None;
+        let mut state = ModifiersState::empty();
+        if shift { state |= ModifiersState::SHIFT; }
+        let modifiers: Modifiers = state.into();
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+        let ev = WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    /// Send a middle-button press (primary-selection paste).
+    fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
+        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
+        use ui::widget::Widget;
+        let mut handled = false;
+        let mut focus = None;
+        let modifiers = Modifiers::default();
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+        let ev = WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Middle,
+        };
+        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    /// Logical x for the centre of grid column `col` given `char_w=10`,
+    /// `padding=4` (the widget's default gutter).
+    fn col_center_x(col: usize) -> f64 { 4.0 + col as f64 * 10.0 + 5.0 }
+
+    #[test]
+    #[serial_test::serial]
+    fn double_click_selects_word() {
+        // A double-click selects the whole word under the pointer via the real
+        // press → press gesture path (toolkit `DragSelect` counts the clicks,
+        // `word_boundaries` finds the bounds).
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        w.force_viewport_start(0);
+        w.force_grid(vec!["hello world foobar".to_string()]);
+
+        // Point at a cell inside "world" (cols 6..=10) and double-click.
+        send_cursor_move(&mut w, &mut doc, col_center_x(8), 10.0);
+        send_left_press(&mut w, &mut doc);
+        send_left_release(&mut w, &mut doc);
+        send_left_press(&mut w, &mut doc); // 2nd click within threshold → word
+        assert_eq!(
+            w.test_selected_text().as_deref(),
+            Some("world"),
+            "double-click selects the word under the pointer"
+        );
+        send_left_release(&mut w, &mut doc);
+        assert!(w.selection().is_some(), "word selection survives release");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn triple_click_selects_line() {
+        // A triple-click selects the whole grid line.
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        w.force_viewport_start(0);
+        w.force_grid(vec!["hello world foobar".to_string()]);
+
+        send_cursor_move(&mut w, &mut doc, col_center_x(8), 10.0);
+        send_left_press(&mut w, &mut doc);
+        send_left_release(&mut w, &mut doc);
+        send_left_press(&mut w, &mut doc); // 2nd → word
+        send_left_release(&mut w, &mut doc);
+        send_left_press(&mut w, &mut doc); // 3rd → line
+        assert_eq!(
+            w.test_selected_text().as_deref(),
+            Some("hello world foobar"),
+            "triple-click selects the whole line (trailing padding trimmed)"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn shift_click_extends_existing_selection() {
+        // Drag-select "llo w", then shift+click further right to extend the
+        // selection while keeping the original anchor.
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        w.force_viewport_start(0);
+        w.force_grid(vec!["hello world foobar".to_string()]);
+
+        // Drag from col 2 to col 5 → selection [2,5).
+        send_cursor_move(&mut w, &mut doc, col_center_x(2), 10.0);
+        send_left_press(&mut w, &mut doc);
+        send_cursor_move(&mut w, &mut doc, col_center_x(5), 10.0);
+        send_left_release(&mut w, &mut doc);
+        assert_eq!(w.test_selected_text().as_deref(), Some("llo"), "initial drag selection");
+
+        // Shift+click at col 10 extends the caret, anchor pinned at col 2.
+        send_cursor_move(&mut w, &mut doc, col_center_x(10), 10.0);
+        send_left_press_mods(&mut w, &mut doc, /*shift=*/ true);
+        // cols [2,10) of "hello world foobar" = "llo worl".
+        assert_eq!(
+            w.test_selected_text().as_deref(),
+            Some("llo worl"),
+            "shift+click extends from the original anchor"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn selection_is_buffer_anchored_and_survives_scrolling() {
+        // The headline property: a selection anchors to absolute buffer rows,
+        // so scrolling the viewport does not change what is selected. Drive a
+        // real double-click over a scrollback row, then move the viewport and
+        // confirm the selected text is byte-identical.
+        let (mut w, _write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 12 visible rows
+        // A deterministic 20-row buffer; row 5 carries a distinctive word.
+        let mut grid: Vec<String> = (0..20).map(|i| format!("row{:02} filler text", i)).collect();
+        grid[5] = "alpha bravo charlie".to_string();
+        w.force_grid(grid);
+        // Simulate the draw having scrolled so row 5 is the top visible row.
+        w.force_viewport_start(5);
+        w.set_select_to_copy(true);
+
+        // Double-click "bravo" (cols 6..=10) on the top visible row (vrow 0).
+        send_cursor_move(&mut w, &mut doc, col_center_x(8), 10.0);
+        send_left_press(&mut w, &mut doc);
+        send_left_release(&mut w, &mut doc);
+        send_left_press(&mut w, &mut doc); // word
+        assert_eq!(w.test_selected_text().as_deref(), Some("bravo"), "selected the right word");
+        send_left_release(&mut w, &mut doc); // finish → primary (+ clipboard: select_to_copy)
+
+        // The selection lives on absolute row 5.
+        let sel = w.selection().expect("selection present");
+        assert_eq!(sel.anchor.row, 5, "selection anchored to absolute buffer row 5");
+
+        // "Scroll": move the viewport elsewhere. The selected text must not move.
+        w.force_viewport_start(0);
+        assert_eq!(
+            w.test_selected_text().as_deref(),
+            Some("bravo"),
+            "selection stays on the same buffer cells after scrolling"
+        );
+        w.force_viewport_start(8);
+        assert_eq!(w.test_selected_text().as_deref(), Some("bravo"));
+
+        // Clipboard round-trip (skipped when no backend is available).
+        if arboard::Clipboard::new().is_ok() {
+            let mut cb = arboard::Clipboard::new().unwrap();
+            if let Ok(text) = cb.get_text() {
+                assert_eq!(text, "bravo", "select-to-copy put exactly the selection on the clipboard");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    fn middle_click_pastes_primary_selection() {
+        // Middle-click inserts the primary selection into the PTY. Requires a
+        // working primary selection (a Wayland compositor / X server); skipped
+        // when unavailable so headless CI doesn't flake.
+        ui::clipboard_copy_primary("PASTED");
+        if ui::clipboard_paste_primary().as_deref() != Some("PASTED") {
+            eprintln!("middle_click_pastes_primary_selection: no primary selection backend, skipping");
+            return;
+        }
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        w.feed(&mut doc, &automerge::ROOT, b""); // init modes (no bracketed paste)
+        send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
+        send_middle_press(&mut w, &mut doc);
+        let got = drain_writes(&write_rx);
+        assert_eq!(got, b"PASTED", "middle-click pastes the primary selection to the PTY");
+    }
+
+    // ---------------------------------------------------------------
+    // Collaboration — two peers converge on the same terminal grid via
+    // the real CRDT save/load-incremental path the toolkit App uses.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn two_peers_converge_on_terminal_grid_via_crdt() {
+        // Peer A runs a session; peer B late-joins from A's full snapshot
+        // (`SyncCRDT`) and then receives A's live output as an incremental
+        // delta (`SyncIncremental`) — exactly the save/load path `ui::App`
+        // drives. Both peers must converge on an identical grid.
+        let (mut a, _rx_a) = build_test_widget();
+        let mut doc_a = AutoCommit::new();
+        doc_a.set_actor(automerge::ActorId::from(b"alice".as_slice()));
+        a.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        a.feed(&mut doc_a, &automerge::ROOT, b"peer-a-line-one\r\n");
+        a.sync(&mut doc_a, &automerge::ROOT);
+        assert!(a.grid_text().contains("peer-a-line-one"));
+
+        // Late join: B adopts A's shared document.
+        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
+        doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+        let (mut b, _rx_b) = build_test_widget();
+        b.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        b.sync(&mut doc_b, &automerge::ROOT);
+        assert!(
+            b.grid_text().contains("peer-a-line-one"),
+            "B adopts A's grid on join; B grid:\n{}",
+            b.grid_text()
+        );
+
+        // Re-baseline A's incremental cursor after the full save (App does this).
+        let _ = doc_a.save_incremental();
+
+        // A produces more output; deliver the delta to B.
+        a.feed(&mut doc_a, &automerge::ROOT, b"peer-a-line-two\r\n");
+        a.sync(&mut doc_a, &automerge::ROOT);
+        let delta = doc_a.save_incremental();
+        assert!(!delta.is_empty(), "A produced an incremental change to share");
+        doc_b.load_incremental(&delta).unwrap();
+        b.sync(&mut doc_b, &automerge::ROOT);
+        assert!(
+            b.grid_text().contains("peer-a-line-two"),
+            "B sees A's live output over the incremental sync path"
+        );
+
+        // Full convergence: identical grids on both peers.
+        assert_eq!(
+            a.grid_text(),
+            b.grid_text(),
+            "peers converge on the same terminal grid"
+        );
+    }
+
+    #[test]
+    fn peers_share_pane_id_and_presence_key() {
+        // Presence must be keyed on a shared pane id so a peer's caret /
+        // selection is filed and rendered under the same key both sides use.
+        use ui::presence::PresenceKey;
+        use ui::widget::Widget as _;
+        let (mut a, _rx_a) = build_test_widget();
+        let mut doc_a = AutoCommit::new();
+        a.feed(&mut doc_a, &automerge::ROOT, b"");
+        a.sync(&mut doc_a, &automerge::ROOT);
+
+        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
+        let (mut b, _rx_b) = build_test_widget();
+        b.sync(&mut doc_b, &automerge::ROOT);
+
+        let ka = a.presence_key().expect("A presence key");
+        let kb = b.presence_key().expect("B presence key");
+        assert_eq!(ka, kb, "both peers scope presence under the same shared pane id");
+        match ka {
+            PresenceKey::App { app, .. } => {
+                assert_eq!(app, ui::permissions::AppKind::Terminal);
+            }
+            other => panic!("expected App presence key, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn presence_payload_reports_selection_then_cursor() {
+        use ui::collaboration::PresencePayload;
+        use ui::widget::Widget as _;
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.init_crdt(&mut doc, &automerge::ROOT);
+        w.force_grid(vec!["abcdefgh".to_string()]);
+
+        // With a selection, the payload is a Selection over linear indices.
+        w.force_selection(Some(Selection {
+            anchor: GridPos { row: 0, col: 2 },
+            cursor: GridPos { row: 0, col: 5 },
+        }));
+        let (_key, payload) = w.presence_payload().expect("payload with selection");
+        match payload {
+            // width defaults to 80, so row 0 linearises to the column itself.
+            PresencePayload::Selection { start, end } => {
+                assert_eq!((start, end), (2, 5), "selection linearised to cell columns");
+            }
+            other => panic!("expected Selection payload, got {:?}", other),
+        }
+
+        // Without a selection, the payload is a Caret at the cursor.
+        w.force_selection(None);
+        let (_key, payload) = w.presence_payload().expect("payload with cursor");
+        assert!(matches!(payload, PresencePayload::Caret { .. }), "cursor payload");
+    }
+
+    // ---------------------------------------------------------------
+    // Spec compliance — OSC 0/2 title, OSC 52 clipboard, OSC 8 links.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn osc_window_title_updates_app_title() {
+        use ui::AppWidget;
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // OSC 2 ; <title> BEL
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b]2;my session\x07");
+        assert_eq!(w.title(), "my session", "OSC 2 sets the window title");
+        assert_eq!(w.app_title(), "my session", "app_title reflects the OSC title");
+
+        // OSC 0 (icon + title) also sets it; ST-terminated form.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b]0;another\x1b\\");
+        assert_eq!(w.title(), "another", "OSC 0 sets the window title too");
+
+        // The title rides the CRDT: a second widget on the same doc reads it.
+        w.sync(&mut doc, &automerge::ROOT);
+        let (mut peer, _) = build_test_widget();
+        let mut peer_doc = AutoCommit::load(&doc.save()).unwrap();
+        peer.sync(&mut peer_doc, &automerge::ROOT);
+        assert_eq!(peer.title(), "another", "a collaborator sees the same title");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    fn osc_52_writes_clipboard_from_base64() {
+        // OSC 52 ; c ; <base64> sets the clipboard. Skipped without a backend.
+        if arboard::Clipboard::new().is_err() {
+            eprintln!("osc_52_writes_clipboard_from_base64: no clipboard backend, skipping");
+            return;
+        }
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // base64("qos-osc52") = cW9zLW9zYzUy
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b]52;c;cW9zLW9zYzUy\x07");
+        let mut cb = arboard::Clipboard::new().unwrap();
+        if let Ok(text) = cb.get_text() {
+            assert_eq!(text, "qos-osc52", "OSC 52 decodes base64 into the clipboard");
+        }
+    }
+
+    #[test]
+    fn osc_8_hyperlink_marks_cells_and_resolves_url() {
+        // OSC 8 ; ; <uri> ST … OSC 8 ; ; ST wraps the cells in between with a
+        // hyperlink that resolves back to the URL (rendered underlined and
+        // clickable). The link registry rides the CRDT so peers resolve it too.
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        // Home, open link, print "link", close link.
+        w.feed(
+            &mut doc,
+            &automerge::ROOT,
+            b"\x1b[H\x1b]8;;https://qos.example/docs\x1b\\link\x1b]8;;\x1b\\",
+        );
+        w.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
+        assert_eq!(
+            w.hyperlink_at(0, 0),
+            Some("https://qos.example/docs"),
+            "first link cell resolves to the URL"
+        );
+        assert_eq!(
+            w.hyperlink_at(0, 3),
+            Some("https://qos.example/docs"),
+            "last link cell resolves to the URL"
+        );
+        assert_eq!(w.hyperlink_at(0, 10), None, "cells outside the link have no URL");
+
+        // A peer on the same doc resolves the same hyperlink.
+        let (mut peer, _) = build_test_widget();
+        peer.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        let mut peer_doc = AutoCommit::load(&doc.save()).unwrap();
+        peer.sync(&mut peer_doc, &automerge::ROOT);
+        assert_eq!(
+            peer.hyperlink_at(0, 1),
+            Some("https://qos.example/docs"),
+            "a collaborator resolves the same OSC 8 hyperlink"
         );
     }
 }
