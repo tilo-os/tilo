@@ -14,6 +14,10 @@ fn main() {
         "wayland-server",
         "glib-2.0",
         "gobject-2.0",
+        // DMA-BUF zero-copy path (QOS_WEBVIEW_DMABUF=1): EGL to receive
+        // WebKit's exported EGLImage + gbm to open the render node.
+        "egl",
+        "gbm",
     ] {
         if let Err(err) = pkg_config::probe_library(lib) {
             panic!(
