@@ -37,7 +37,9 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::accounts::{
     AccountConfig, AccountDirectory, AccountKind, AccountView, DavStore, NextcloudStore,
 };
-use crate::widgets::{card, card_with_action, caption, rows, setting_row, El};
+use crate::widgets::{
+    card, card_with_action, caption, hgap, icon_button, rows, setting_row, status_pill, El,
+};
 
 /// Key the "Add" button on the Email card writes to open the form.
 pub const ADD_MAIL_KEY: &str = "settings.accounts.add.mail";
@@ -208,30 +210,33 @@ impl AccountsPane {
             ("Disabled", ui::Theme::dark().text_dim)
         };
 
-        let text_block = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
+        // Top line: the account label with the status chip and (for real
+        // accounts) a compact trash button inline at the right. A single
+        // leading `Text` keeps the trailing controls on the same line — a
+        // multi-line block on the left would seize the row and wrap them
+        // below. The connection summary goes on its own line beneath.
+        let mut top = Row::new()
             .push(Box::new(Text::new(&view.label).with_size(13.0)))
-            .push(Box::new(
-                Text::new(&view.summary)
-                    .with_size(11.0)
-                    .with_color(ui::Theme::dark().text_dim),
-            ));
-
-        let mut controls = Row::new().push(Box::new(
-            Text::new(status).with_size(11.0).with_color(status_color),
-        ));
+            .push(Box::new(Spacer::new()))
+            .push(status_pill(status, status_color));
         if !self.is_sample {
             let rk = remove_key(&view.id);
             let remove_id = format!("settings.accounts.remove.{}", view.id);
-            controls = controls.push(Box::new(Button::new(&remove_id, "\u{f01b4}", Some(&rk))));
+            top = top
+                .push(hgap(10.0))
+                .push(icon_button(&remove_id, "\u{f01b4}", &rk));
         }
 
         Box::new(
-            Row::new()
-                .push(Box::new(text_block))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(controls)),
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(top))
+                .push(Box::new(
+                    Text::new(&view.summary)
+                        .with_size(11.0)
+                        .with_color(ui::Theme::dark().text_dim),
+                )),
         )
     }
 
