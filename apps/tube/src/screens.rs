@@ -760,7 +760,7 @@ fn search_type_chips(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex 
 
 /// A playlist search-result card: the cover thumbnail with a "N videos"
 /// stacked-list badge, then the title + creator. Opens the playlist page.
-fn playlist_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Flex {
+fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Flex {
     let badge = Flex::col()
         .float()
         .fill_w()
@@ -897,7 +897,7 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
         }
         if !playlists.is_empty() {
             let cards: Vec<Flex> =
-                playlists.iter().map(|p| playlist_card(model, theme, bus, imgs, p)).collect();
+                playlists.iter().map(|p| playlist_card(theme, bus, imgs, p)).collect();
             col = col.push(grid_with_id(cards, "playlist_grid"));
         }
         if !videos.is_empty() {
