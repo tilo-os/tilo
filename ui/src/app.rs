@@ -403,6 +403,19 @@ pub struct App {
     /// pre-existing behaviour, kept for examples, tests and the shell's
     /// hosted chrome, none of which own a package id.
     autosave: Option<crate::persist::Autosave>,
+
+    /// The Ctrl+K action palette, `Some` while open. Scoped to the focused app
+    /// instance's open resources (collected from the root widget each time it
+    /// opens). See [`Self::open_action_palette`].
+    action_palette: Option<crate::action_palette::ActionPalette>,
+    /// Decoders for every action type the hosted app registered (via
+    /// [`Self::action_registry_mut`]). The palette resolves a chosen row through
+    /// this — the same path a remote peer uses to replay an action.
+    action_registry: qos_actions::ActionRegistry,
+    /// Where dispatched actions are replicated / submitted. Defaults to a
+    /// local-only transport; the shell/session swaps in a peer/host transport
+    /// via [`Self::set_action_transport`].
+    action_transport: Box<dyn qos_actions::ActionTransport>,
 }
 
 impl App {
@@ -461,6 +474,9 @@ impl App {
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
+            action_palette: None,
+            action_registry: qos_actions::ActionRegistry::new(),
+            action_transport: Box::new(qos_actions::LocalTransport::new()),
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -480,6 +496,91 @@ impl App {
     /// reflects every active preference.
     fn rebuild_theme(&mut self) {
         self.theme = self.base_theme.clone().with_a11y(&self.a11y, self.text_scale);
+    }
+
+    /// Mutable access to the action registry so the hosted app can register its
+    /// action types (`app.action_registry_mut().register::<TubeAction>("tube.action")`).
+    /// Both the palette (local execution) and remote replay decode through it.
+    pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
+        &mut self.action_registry
+    }
+
+    /// Swap in a peer/host-aware transport for dispatched actions. The default
+    /// is a local-only transport (`ClientLocal` replicate is a no-op sink,
+    /// `ServerPreferred` falls back to local execution).
+    pub fn set_action_transport(&mut self, transport: Box<dyn qos_actions::ActionTransport>) {
+        self.action_transport = transport;
+    }
+
+    /// The resource-collection hook: the tree of open resources the focused app
+    /// instance (the root widget) currently publishes. Called each time the
+    /// action palette opens (and drivable directly in tests).
+    pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+        self.root_widget.resources(&self.state.doc)
+    }
+
+    /// Open the Ctrl+K action palette, scoped to the focused instance's open
+    /// resources + their exported actions. No-op-safe to call repeatedly.
+    pub fn open_action_palette(&mut self) {
+        let resources = self.collect_resources();
+        let mut palette = crate::action_palette::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.open();
+        self.action_palette = Some(palette);
+    }
+
+    /// Close + drop the action palette.
+    pub fn close_action_palette(&mut self) {
+        self.action_palette = None;
+    }
+
+    /// Read access to the action palette (for hosts/tests that inspect it).
+    pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
+        self.action_palette.as_ref()
+    }
+
+    /// Route a keyboard event to the open action palette. Returns whether the
+    /// event was consumed. On a selection it dispatches the chosen action
+    /// against the CRDT doc (honoring its execution locus), records it on the
+    /// undo stack, and re-syncs the widget tree; Escape closes the palette.
+    fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
+        let Some(palette) = self.action_palette.as_mut() else {
+            return false;
+        };
+        let root = self.state.root.clone();
+        let before = self.state.doc.get_heads();
+        let consumed = palette.handle_key(
+            event,
+            &self.modifiers,
+            &mut self.state.doc,
+            &root,
+        );
+        // A selection may have fired: drain + dispatch it.
+        let dispatched = self
+            .action_palette
+            .as_mut()
+            .and_then(|p| p.take_dispatch(&mut self.state.doc, &self.action_registry, self.action_transport.as_mut()));
+        if let Some(result) = dispatched {
+            match result {
+                Ok(d) if d.mutated_local() => {
+                    self.state.record_committed_action(before, None, None);
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                }
+                Ok(_) => {} // submitted to host; no local mutation
+                Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
+            }
+        }
+        // If the palette closed (Escape, or a non-prompted selection), drop it.
+        if self
+            .action_palette
+            .as_ref()
+            .map(|p| !p.is_open())
+            .unwrap_or(false)
+        {
+            self.action_palette = None;
+        }
+        consumed
     }
 
     /// Whether the environment opts the screen reader on at startup. Reads
@@ -2545,6 +2646,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.theme,
                     &app.presence_ctx,
                 );
+
+                // The Ctrl+K action palette paints last so it composites above
+                // the whole app. Centered near the top, sized to its content.
+                if let Some(ap) = app.action_palette.as_mut() {
+                    let palette = ap.palette_mut();
+                    let (pw, ph) = palette.desired_size();
+                    let win_w = (width as f64) / (scale_factor as f64);
+                    let x0 = ((win_w - pw) / 2.0).max(0.0);
+                    let y0 = (height as f64 / (scale_factor as f64) * 0.12).max(24.0);
+                    palette.set_rect(KurboRect::new(x0, y0, x0 + pw, y0 + ph));
+                    palette.draw(
+                        &mut scene,
+                        transform,
+                        &mut app.text_renderer,
+                        &app.theme,
+                        &app.presence_ctx,
+                    );
+                }
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
                 // Draw Remote Cursors (legacy path — `state.collab.cursors`
@@ -2781,6 +2900,31 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let mut focus_target = None;
                 let mut is_undo_redo = false;
 
+                // The Ctrl+K action palette, while open, owns the keyboard: it
+                // consumes keys (typing filters, Enter dispatches the selected
+                // action, Escape closes) before anything reaches the app behind.
+                // Ctrl+K itself is handled below (toggle), so let it through.
+                if app.action_palette.is_some() {
+                    let is_ctrl_k = matches!(
+                        &event,
+                        WindowEvent::KeyboardInput {
+                            event: winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Character(c),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                            ..
+                        } if (c.as_str() == "k" || c.as_str() == "K")
+                            && app.modifiers.state().control_key()
+                    );
+                    if !is_ctrl_k
+                        && matches!(event, WindowEvent::KeyboardInput { .. })
+                        && app.action_palette_handle_key(&event)
+                    {
+                        handled = true;
+                    }
+                }
+
                 // Screen-reader command layer: `Insert + <key>` drives the
                 // reading cursor / say-all / stop without colliding with normal
                 // navigation. Runs FIRST so it wins over Tab/arrow handling, and
@@ -2901,6 +3045,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                     app.apply_undo_entry(e);
                                 }
                                 is_undo_redo = true;
+                                handled = true;
+                            }
+                            // Ctrl+K opens the action palette scoped to the
+                            // focused app instance's open resources. A second
+                            // Ctrl+K (palette already open) closes it.
+                            "k" | "K" => {
+                                if app.action_palette.is_some() {
+                                    app.close_action_palette();
+                                } else {
+                                    app.open_action_palette();
+                                }
                                 handled = true;
                             }
                             _ => {}
@@ -4789,5 +4944,172 @@ mod fullscreen_tests {
         assert!(app.note_actual_fullscreen(true));
         assert!(app.needs_sync);
         assert!(app.layout_dirty);
+    }
+}
+
+#[cfg(test)]
+mod action_palette_tests {
+    use super::*;
+    use crate::widget::Widget;
+    use automerge::transaction::Transactable;
+    use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, ROOT};
+    use qos_actions::{Action, ActionError, ActionSpec, Doc, Resource};
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use winit::event::{ElementState, KeyEvent};
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+
+    /// A minimal replayable action: set a boolean flag under a root key.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Flip {
+        key: String,
+    }
+    const FLIP_TYPE: &str = "test.flip";
+    impl Action for Flip {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            doc.put(&ROOT, self.key.as_str(), ScalarValue::Boolean(true))?;
+            Ok(())
+        }
+    }
+
+    /// A root widget that publishes one open resource exporting one immediate
+    /// [`Flip`] action — i.e. exactly what an app instance offers Ctrl+K.
+    struct Publisher;
+    impl Widget for Publisher {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _p: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "publisher"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+        fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+            vec![
+                Resource::new("test.obj:1", "test.obj", "Widget Object").with_action(
+                    ActionSpec::immediate(
+                        "flip",
+                        "Flip it",
+                        FLIP_TYPE,
+                        &Flip {
+                            key: "flipped".into(),
+                        },
+                    )
+                    .unwrap(),
+                ),
+            ]
+        }
+    }
+
+    /// Synthesise a pressed `Enter` key event. Mirrors the `mem::zeroed`
+    /// workaround the palette's own tests use — winit 0.30 keeps a `KeyEvent`
+    /// field `pub(crate)`, so a struct literal can't build one.
+    fn synth_enter() -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Enter);
+        ev.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// The full `ui::App` Ctrl+K path: the palette scopes to the focused root
+    /// widget's published resources, and choosing one dispatches its action
+    /// against the CRDT (honouring its locus), records it on the undo stack, and
+    /// marks the app for re-sync — proving the wiring, not just the pieces.
+    #[test]
+    fn ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo() {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        // The app registers its action decoders — the same path a remote peer
+        // uses to replay a dispatched action.
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+
+        // The resource-collection hook reflects what the focused widget publishes.
+        let res = app.collect_resources();
+        assert_eq!(res.len(), 1, "one open resource");
+        assert_eq!(res[0].kind, "test.obj");
+
+        // Opening Ctrl+K scopes the palette to those resources.
+        app.open_action_palette();
+        let ap = app.action_palette().expect("palette is open");
+        assert!(ap.is_open());
+        let labels: Vec<String> = ap
+            .palette()
+            .visible_entries()
+            .iter()
+            .map(|e| e.label.clone())
+            .collect();
+        assert!(
+            labels.iter().any(|l| l.contains("Flip it")),
+            "palette lists the widget's action: {labels:?}"
+        );
+
+        // Preconditions: flag unset, nothing recorded to undo.
+        assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
+        assert!(app.state.peek_last_undo().is_none());
+        app.needs_sync = false;
+        app.layout_dirty = false;
+
+        // Enter selects the single row and dispatches it through the real path.
+        let consumed = app.action_palette_handle_key(&synth_enter());
+        assert!(consumed, "the open palette consumed the Enter key");
+
+        // The action mutated the shared CRDT...
+        let flipped = app
+            .state
+            .doc
+            .get(&ROOT, "flipped")
+            .unwrap()
+            .and_then(|(v, _)| v.to_bool());
+        assert_eq!(flipped, Some(true), "dispatched action set the flag in the CRDT");
+        // ...it is recorded as an undo point...
+        assert!(
+            app.state.peek_last_undo().is_some(),
+            "the dispatched action is undoable"
+        );
+        // ...the app is marked for re-sync + relayout so the widget tree adopts it...
+        assert!(app.needs_sync, "dispatch marks the app for re-sync");
+        assert!(app.layout_dirty, "dispatch marks the app for relayout");
+        // ...and a non-prompted selection closes + drops the palette.
+        assert!(app.action_palette().is_none(), "palette closed after selection");
     }
 }

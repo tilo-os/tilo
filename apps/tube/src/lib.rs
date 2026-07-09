@@ -15,6 +15,7 @@
 //! that spawns on launch (online) or on the first real interaction.
 
 pub mod action;
+pub mod actions;
 pub mod api;
 pub mod app;
 pub mod backend;

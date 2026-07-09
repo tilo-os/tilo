@@ -25,6 +25,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use qos_actions::{ActionInput, FlatAction};
 
 /// Scope chip in the GlobalSearch filter strip — concept renders these
 /// as pill toggles immediately under the prompt row
@@ -279,6 +280,33 @@ impl CommandEntry {
     {
         self.on_select = Some(Arc::new(f));
         self
+    }
+
+    /// Build a palette row for one resource-scoped action exported by an app
+    /// (see [`qos_actions`]). The row `id` is the flattened composite key so the
+    /// host resolves the selection back to a replayable `qos_actions::Action`;
+    /// the label reads `"<resource> — <action>"`. A [`ActionInput::Prompted`]
+    /// action becomes an argument-collecting row via [`with_argument`].
+    ///
+    /// This is the seam that scopes Ctrl+K to the focused app instance's open
+    /// resources — `ui::action_palette` builds the parallel id→action index.
+    ///
+    /// [`with_argument`]: CommandEntry::with_argument
+    pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
+        let mut entry = CommandEntry::new(
+            fa.key.clone(),
+            format!("{} — {}", fa.resource_label, fa.action.label),
+        );
+        if let Some(desc) = &fa.action.description {
+            entry = entry.description(desc.clone());
+        }
+        if let ActionInput::Prompted {
+            prompt, placeholder, ..
+        } = &fa.action.input
+        {
+            entry = entry.with_argument(prompt.clone(), placeholder.clone());
+        }
+        entry
     }
 
     /// Does the entry match `query` as a case-insensitive subsequence over its
@@ -2220,6 +2248,40 @@ impl Widget for CommandPalette {
                     ..Default::default()
                 }),
         )
+    }
+}
+
+impl CommandPalette {
+    /// Drive the palette from a keyboard event without a taffy node, for hosts
+    /// that render it as a free-floating overlay (the `ui::App` Ctrl+K action
+    /// palette). Returns whether the event was consumed. The palette's
+    /// [`Widget::handle_event`] ignores the taffy tree + node id, so a throwaway
+    /// single-leaf tree drives the exact same keyboard logic — one code path,
+    /// no duplication.
+    pub fn handle_overlay_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).expect("leaf never fails");
+        <Self as Widget>::handle_event(
+            self,
+            event,
+            1.0,
+            modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
     }
 }
 
