@@ -95,6 +95,53 @@ pub fn load(bytes: &[u8]) -> Result<QpkgMeta> {
     })
 }
 
+/// Serialise the blobs of a packed bundle into `.qpkg` tar bytes —
+/// the inverse of [`load`], matching the layout `qos-pkg pack` writes.
+/// Used by publish tooling + tests that build a bundle in memory.
+pub fn write_bytes(id: PackageId, store: &MemoryBlobStore) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    {
+        let mut tar = tar::Builder::new(&mut buf);
+
+        let header = format!("package_id = \"{id}\"\nformat = 1\n");
+        append(&mut tar, "qpkg.toml", header.as_bytes())?;
+
+        let signed_bytes = store
+            .get(&BlobHash(*id.as_bytes()))
+            .map_err(|e| anyhow!("store: {e}"))?
+            .ok_or_else(|| anyhow!("signed-root blob missing"))?;
+        append(&mut tar, "signed-root", &signed_bytes)?;
+        let signed = SignedRoot::decode(&signed_bytes).context("decode signed-root")?;
+
+        let manifest = store
+            .get(&signed.manifest_hash)
+            .map_err(|e| anyhow!("store: {e}"))?
+            .ok_or_else(|| anyhow!("manifest blob missing"))?;
+        append(&mut tar, "manifest.toml", &manifest)?;
+        let collection = store
+            .get(&signed.payload_root_hash)
+            .map_err(|e| anyhow!("store: {e}"))?
+            .ok_or_else(|| anyhow!("collection blob missing"))?;
+        append(&mut tar, "collection.qcl", &collection)?;
+
+        for (h, b) in store.iter() {
+            append(&mut tar, &format!("blobs/{h}"), b)?;
+        }
+        tar.finish().context("finalise qpkg tar")?;
+    }
+    Ok(buf)
+}
+
+fn append<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    tar.append_data(&mut header, name, bytes)
+        .with_context(|| format!("write tar entry {name}"))?;
+    Ok(())
+}
+
 /// Verify downloaded `.qpkg` bytes fail-closed:
 ///
 /// - the header package-id must equal `expected_id`;
@@ -126,5 +173,134 @@ pub fn verify_bytes(
             hex::encode(identity)
         ),
         other => bail!("qpkg failed verification: {other:?}"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_fixture {
+    //! Shared fixture builder — a tiny, real, signed `.qpkg`. Also used
+    //! by the crate's integration tests.
+    use super::*;
+    use pkg::pack::{SigningIdentity, pack};
+
+    /// A signed `.qpkg` for `dev.qos.editor@1.0.0`. Returns the bytes,
+    /// its [`PackageId`], and the publisher's public key.
+    pub fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
+        let pubhex = hex::encode(identity.public_key_bytes());
+        let dir = tempfile::tempdir().unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\nqos app\n").unwrap();
+        let manifest_toml = format!(
+            r#"
+[package]
+id = "dev.qos.editor"
+version = "1.0.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:{pubhex}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "qos-default"
+landlock = "strict"
+
+[sandbox.fs]
+read = []
+write = []
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#
+        );
+        let manifest = Manifest::from_toml_str(&manifest_toml).unwrap();
+        let mut store = MemoryBlobStore::new();
+        let id = pack(&payload, &manifest, identity, &mut store).unwrap();
+        let bytes = write_bytes(id, &store).unwrap();
+        (bytes, id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_fixture::signed_qpkg;
+    use super::*;
+    use pkg::pack::SigningIdentity;
+
+    #[test]
+    fn load_reads_manifest_and_id() {
+        let identity = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&identity);
+        let meta = load(&bytes).unwrap();
+        assert_eq!(meta.package_id, id);
+        assert_eq!(meta.manifest.package.id, "dev.qos.editor");
+        assert_eq!(meta.manifest.package.version, "1.0.0");
+    }
+
+    #[test]
+    fn verify_accepts_the_real_publisher() {
+        let identity = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&identity);
+        assert_eq!(
+            verify_bytes(&bytes, id, identity.public_key_bytes()).unwrap(),
+            id
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_different_expected_publisher() {
+        let identity = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&identity);
+        // A publisher the entry claims but the qpkg was NOT signed by.
+        let other = SigningIdentity::generate().public_key_bytes();
+        assert!(verify_bytes(&bytes, id, other).is_err());
+    }
+
+    #[test]
+    fn verify_rejects_a_mismatched_package_id() {
+        let identity = SigningIdentity::generate();
+        let (bytes, _id) = signed_qpkg(&identity);
+        let wrong = PackageId::from_bytes([3u8; 32]);
+        assert!(verify_bytes(&bytes, wrong, identity.public_key_bytes()).is_err());
+    }
+
+    #[test]
+    fn verify_rejects_a_tampered_signature() {
+        let identity = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&identity);
+
+        // Rebuild the bundle with one bit of the signature flipped and
+        // its (now different) package-id in the header. The id matches
+        // the header, so verify reaches — and fails — the signature
+        // check.
+        let meta = load(&bytes).unwrap();
+        let signed_bytes = meta
+            .store
+            .get(&BlobHash(*id.as_bytes()))
+            .unwrap()
+            .unwrap();
+        let mut signed = SignedRoot::decode(&signed_bytes).unwrap();
+        let mut sig = signed.signature.unwrap();
+        sig[0] ^= 0xff;
+        signed.signature = Some(sig);
+
+        let mut store = MemoryBlobStore::new();
+        for (h, b) in meta.store.iter() {
+            if h != &BlobHash(*id.as_bytes()) {
+                store.put(b).unwrap();
+            }
+        }
+        let tampered_signed = signed.encode();
+        store.put(&tampered_signed).unwrap();
+        let new_id = signed.package_id();
+
+        let tampered = write_bytes(new_id, &store).unwrap();
+        assert!(verify_bytes(&tampered, new_id, identity.public_key_bytes()).is_err());
     }
 }
