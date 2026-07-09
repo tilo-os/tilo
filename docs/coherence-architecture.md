@@ -13,6 +13,15 @@ identity (TPM+FIDO2)                     ← qos-user-identity
                  └─ search (Ctrl+K) = query over the resources actions operate on
 ```
 
+**The app does not own presentation chrome.** The OS/compositor draws window
+decorations — the title renders as a **floating pill for the window group**, not by the
+app. Apps expose their title via `AppWidget::app_title()` and must NOT draw a title/app-name
+header themselves; an app's own top bar holds only app-specific *controls*. Same rule as
+**search = Ctrl+K** (search is a toolkit/OS affordance over the app's exported resources,
+not an app-owned bar) and **presence/decorations/close-minimize** — the OS/toolkit owns
+chrome, the app owns content + exported actions/resources. "The application should not have
+full control over the presentation; the UI toolkit sets defaults."
+
 **Actions are the universal currency.** Collaboration *replicates* them, permissions
 *gate* them, search *finds their resources*, an LLM *calls* them, version history *logs*
 them, and presentation is a *pure function* of the state they mutate. Get the action
