@@ -1,0 +1,199 @@
+//! Reproduce the "page goes blank ~5s after load" bug by isolating the
+//! ad blocker. Loads a page, captures it, then installs (a) the content
+//! filter, (b) the user scripts, or (c) both — per the arg — waits, and
+//! captures again. If the "after" frame is blank, that component is the
+//! culprit.
+//!
+//! Run:
+//!   WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
+//!   cargo run -p browser --example adblock_blank_repro --features wpe --release -- both
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use ui::webview::wpe::WpeEngine;
+use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
+
+const OUT: &str = "/tmp/claude-1000/-var-home-user-Development-quickdesktop/4b954627-69cb-4365-8ed0-231ae0028e62/scratchpad";
+
+fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
+    engine.frames().lock().unwrap().as_ref().map(|f| (f.rgba.clone(), f.width, f.height))
+}
+
+fn uniformity(rgba: &[u8]) -> f64 {
+    if rgba.len() < 4 {
+        return 1.0;
+    }
+    let (r0, g0, b0) = (rgba[0], rgba[1], rgba[2]);
+    let (mut same, mut total) = (0u64, 0u64);
+    for px in rgba.chunks_exact(4) {
+        total += 1;
+        if px[0] == r0 && px[1] == g0 && px[2] == b0 {
+            same += 1;
+        }
+    }
+    same as f64 / total.max(1) as f64
+}
+
+fn save(engine: &dyn WebViewEngine, name: &str) {
+    let _ = OUT;
+    match latest(engine) {
+        Some((rgba, w, h)) => {
+            let u = uniformity(&rgba) * 100.0;
+            println!("  {name}: {w}x{h} uniformity {u:.1}% {}", if u > 97.0 { "<< BLANK" } else { "" });
+        }
+        None => println!("  {name}: NO FRAME"),
+    }
+}
+
+fn main() {
+    let mode = std::env::args().nth(1).unwrap_or_else(|| "both".into());
+    let url = std::env::args().nth(2).unwrap_or_else(|| "https://duckduckgo.com".into());
+    println!("mode={mode} url={url}");
+
+    if mode == "analyze" {
+        analyze();
+        return;
+    }
+
+    let engine: SharedEngine = WpeEngine::new().expect("engine");
+    engine.send(WebViewCommand::Resize { width: 900, height: 600, scale_factor: 1.0 });
+    engine.send(WebViewCommand::Navigate(url));
+
+    // Wait for the real page.
+    let deadline = Instant::now() + Duration::from_secs(25);
+    while Instant::now() < deadline {
+        if let Some((r, _, _)) = latest(&*engine) {
+            if uniformity(&r) < 0.9 {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    println!("== before ad blocker ==");
+    save(&*engine, "adblock-1-before.png");
+
+    // Optional 3rd arg: install only the first N compiled chunks (to find
+    // whether it's a volume limit). Default: all, via the real loader.
+    let max_chunks: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    match mode.as_str() {
+        "filter" | "both" => {
+            if max_chunks == usize::MAX {
+                println!("installing content filter (all chunks)…");
+                browser::blocker::spawn_filter_loader(engine.clone());
+            } else {
+                println!("installing content filter (first {max_chunks} chunks)…");
+                // REPRO_LISTS=easylist,easyprivacy restricts to those lists
+                // (name prefix match); default = all cached lists.
+                let want = std::env::var("REPRO_LISTS").unwrap_or_default();
+                let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
+                let texts: Vec<String> = std::fs::read_dir(&dir)
+                    .unwrap()
+                    .flatten()
+                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("txt"))
+                    .filter(|e| {
+                        want.is_empty() || {
+                            let n = e.file_name().to_string_lossy().to_string();
+                            want.split(',').any(|w| n.starts_with(w.trim()))
+                        }
+                    })
+                    .filter_map(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        std::fs::read_to_string(e.path()).ok().map(|t| { println!("  + {n}"); t })
+                    })
+                    .collect();
+                let chunked = ui::webview::adblock::compile_filter_lists_chunked(
+                    texts.iter().map(String::as_str),
+                    25_000,
+                )
+                .unwrap();
+                let chunks: Vec<Arc<String>> = chunked.chunks.into_iter().take(max_chunks).collect();
+                println!("  sending {} chunks", chunks.len());
+                // Distinct version per N so the store doesn't serve a
+                // cached superset.
+                engine.send(WebViewCommand::SetContentFilters {
+                    version: 0xADB1_0C00_u64 + max_chunks as u64,
+                    chunks: Arc::new(chunks),
+                });
+            }
+        }
+        _ => {}
+    }
+    if mode == "scripts" || mode == "both" {
+        println!("installing user scripts…");
+        engine.send(WebViewCommand::SetUserScripts(Arc::new(browser::blocker::user_scripts())));
+    }
+
+    // Wait past the async fetch + compile + install (~5–15s).
+    for i in 1..=18 {
+        std::thread::sleep(Duration::from_secs(1));
+        if i % 3 == 0 {
+            let u = latest(&*engine).map(|(r, _, _)| uniformity(&r) * 100.0).unwrap_or(0.0);
+            println!("  t+{i}s uniformity {u:.1}%");
+        }
+    }
+    println!("== after ==");
+    save(&*engine, "adblock-2-after.png");
+    println!("done");
+}
+
+/// Compile the cached filter lists and print any rule that could blank an
+/// entire page: a `css-display-none` on a page-wide selector, or a block
+/// rule matching everything with no domain restriction.
+fn analyze() {
+    let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
+    let mut texts = Vec::new();
+    let mut names = Vec::new();
+    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("txt") {
+            if let Ok(t) = std::fs::read_to_string(&p) {
+                names.push(p.file_name().unwrap().to_string_lossy().to_string());
+                texts.push(t);
+            }
+        }
+    }
+    println!("lists: {names:?}");
+    let chunked = ui::webview::adblock::compile_filter_lists_chunked(
+        texts.iter().map(String::as_str),
+        25_000,
+    )
+    .expect("compile");
+    println!("rules={} chunks={}", chunked.rule_count, chunked.chunks.len());
+
+    let broad = |sel: &str| {
+        let s = sel.trim();
+        matches!(s, "html" | "body" | ":root" | "*" | "html *" | "body *")
+            || s.is_empty()
+            || s == "html, body"
+    };
+    let (mut blank_css, mut block_all) = (0u32, 0u32);
+    for chunk in &chunked.chunks {
+        let arr: serde_json::Value = serde_json::from_str(chunk).unwrap();
+        for r in arr.as_array().unwrap() {
+            let action = r["action"]["type"].as_str().unwrap_or("");
+            if action == "css-display-none" {
+                if let Some(sel) = r["action"]["selector"].as_str() {
+                    if broad(sel) {
+                        blank_css += 1;
+                        if blank_css <= 10 {
+                            println!("  BLANK-CSS selector={sel:?} trigger={}", r["trigger"]);
+                        }
+                    }
+                }
+            } else if action == "block" {
+                let uf = r["trigger"]["url-filter"].as_str().unwrap_or("");
+                let restricted = r["trigger"].get("if-domain").is_some()
+                    || r["trigger"].get("unless-domain").is_some()
+                    || r["trigger"].get("resource-type").is_some();
+                if (uf == ".*" || uf == "^https?://" || uf.is_empty()) && !restricted {
+                    block_all += 1;
+                    if block_all <= 10 {
+                        println!("  BLOCK-ALL trigger={}", r["trigger"]);
+                    }
+                }
+            }
+        }
+    }
+    println!("page-blanking css rules: {blank_css}, block-all rules: {block_all}");
+}
